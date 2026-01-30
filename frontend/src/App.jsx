@@ -331,6 +331,7 @@ function App() {
     }
   };
 
+
   const handleDictionaryLookup = async (event) => {
     event.preventDefault();
     if (!initData) {
@@ -466,6 +467,24 @@ function App() {
                   );
                 })
               )}
+              <div className="webapp-actions webapp-actions-footer">
+                <button
+                  type="button"
+                  onClick={handleSubmitToGroup}
+                  className={`secondary-button ${groupSubmitStatus === 'sent' ? 'status-sent' : ''}`}
+                  disabled={webappLoading}
+                >
+                  {groupSubmitStatus === 'sent' ? 'Отправлено' : 'Отправить в группу'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleFinishTranslation}
+                  className={`secondary-button ${finishStatus === 'done' ? 'status-done' : ''}`}
+                  disabled={webappLoading}
+                >
+                  {finishStatus === 'done' ? 'Завершено 🙂' : 'Завершить перевод'}
+                </button>
+              </div>
             </section>
 
             <button className="primary-button" type="submit" disabled={webappLoading}>
