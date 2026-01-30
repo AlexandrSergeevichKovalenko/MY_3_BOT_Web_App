@@ -1493,6 +1493,13 @@ async def check_translation(original_text, user_translation, update: Update | No
             print(f"❌ Ошибка в цикле обработки: {e}")
             await asyncio.sleep(5)
 
+    if not score or not str(score).isdigit():
+        reassessed_score = await recheck_score_only(original_text, user_translation)
+        score = reassessed_score if reassessed_score else "0"
+
+    if not correct_translation:
+        correct_translation = "—"
+
 
     # ✅ Убираем лишние пробелы для ровного форматирования
     result_text = f"""
@@ -2197,7 +2204,7 @@ async def check_user_translation_webapp(user_id: int, username: str | None, tran
                 })
                 continue
 
-            score_value = int(score) if score and str(score).isdigit() else 50
+            score_value = int(score) if score and str(score).isdigit() else 0
 
             cursor.execute("""
                 INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id, user_translation, score, feedback)
