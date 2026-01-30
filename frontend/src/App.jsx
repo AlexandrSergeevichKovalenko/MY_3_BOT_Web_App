@@ -306,6 +306,42 @@ function App() {
     }
   };
 
+  const handleExplainTranslation = async (item) => {
+    if (!initData) {
+      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    const key = String(item.sentence_number ?? item.original_text);
+    setExplanationLoading((prev) => ({ ...prev, [key]: true }));
+    try {
+      const response = await fetch('/api/webapp/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          original_text: item.original_text,
+          user_translation: item.user_translation,
+        }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      setExplanations((prev) => ({ ...prev, [key]: data.explanation }));
+    } catch (error) {
+      setWebappError(`Ошибка объяснения: ${error.message}`);
+    } finally {
+      setExplanationLoading((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
   const handleDictionaryLookup = async (event) => {
     event.preventDefault();
     if (!initData) {
@@ -441,6 +477,24 @@ function App() {
                   );
                 })
               )}
+              <div className="webapp-actions webapp-actions-footer">
+                <button
+                  type="button"
+                  onClick={handleSubmitToGroup}
+                  className={`secondary-button ${groupSubmitStatus === 'sent' ? 'status-sent' : ''}`}
+                  disabled={webappLoading}
+                >
+                  {groupSubmitStatus === 'sent' ? 'Отправлено' : 'Отправить в группу'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleFinishTranslation}
+                  className={`secondary-button ${finishStatus === 'done' ? 'status-done' : ''}`}
+                  disabled={webappLoading}
+                >
+                  {finishStatus === 'done' ? 'Завершено 🙂' : 'Завершить перевод'}
+                </button>
+              </div>
             </section>
 
             <button className="primary-button" type="submit" disabled={webappLoading}>
