@@ -37,6 +37,31 @@ function App() {
   const [explanations, setExplanations] = useState({});
   const [explanationLoading, setExplanationLoading] = useState({});
 
+  const safeStorageGet = (key) => {
+    try {
+      return window.localStorage.getItem(key);
+    } catch (error) {
+      console.warn('localStorage unavailable', error);
+      return null;
+    }
+  };
+
+  const safeStorageSet = (key, value) => {
+    try {
+      window.localStorage.setItem(key, value);
+    } catch (error) {
+      console.warn('localStorage unavailable', error);
+    }
+  };
+
+  const safeStorageRemove = (key) => {
+    try {
+      window.localStorage.removeItem(key);
+    } catch (error) {
+      console.warn('localStorage unavailable', error);
+    }
+  };
+
   // Состояние для хранения токена доступа. Изначально его нет.
   // Мы говорим React'у: "Создай ячейку памяти. Изначально положи туда null (пустоту)".
   // Когда мы захотим обновить эту ячейку, мы будем использовать функцию setToken.
@@ -130,7 +155,7 @@ function App() {
       return;
     }
     const storageKey = `webappDrafts_${webappUser.id}_${sessionId || 'nosession'}`;
-    const stored = localStorage.getItem(storageKey);
+    const stored = safeStorageGet(storageKey);
     const sentenceIds = sentences.map((item) => String(item.id_for_mistake_table));
     let initial = sentenceIds.reduce((acc, id) => ({ ...acc, [id]: '' }), {});
     if (stored) {
@@ -154,7 +179,7 @@ function App() {
       return;
     }
     const storageKey = `webappDrafts_${webappUser.id}_${sessionId || 'nosession'}`;
-    localStorage.setItem(storageKey, JSON.stringify(translationDrafts));
+    safeStorageSet(storageKey, JSON.stringify(translationDrafts));
   }, [translationDrafts, webappUser?.id, sessionId]);
 
   useEffect(() => {
@@ -215,7 +240,7 @@ function App() {
       const data = await response.json();
       setResults(data.results || []);
       const storageKey = `webappDrafts_${webappUser?.id || 'unknown'}_${sessionId || 'nosession'}`;
-      localStorage.removeItem(storageKey);
+      safeStorageRemove(storageKey);
       setTranslationDrafts({});
     } catch (error) {
       setWebappError(`Ошибка проверки: ${error.message}`);
@@ -260,7 +285,7 @@ function App() {
       setFinishMessage(data.message || 'Перевод завершён.');
       setFinishStatus('done');
       const storageKey = `webappDrafts_${webappUser?.id || 'unknown'}_${sessionId || 'nosession'}`;
-      localStorage.removeItem(storageKey);
+      safeStorageRemove(storageKey);
       setTranslationDrafts({});
       await loadSentences();
     } catch (error) {
