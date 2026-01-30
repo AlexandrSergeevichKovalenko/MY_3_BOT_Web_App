@@ -306,41 +306,6 @@ function App() {
     }
   };
 
-  const handleExplainTranslation = async (item) => {
-    if (!initData) {
-      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
-      return;
-    }
-    const key = String(item.sentence_number ?? item.original_text);
-    setExplanationLoading((prev) => ({ ...prev, [key]: true }));
-    try {
-      const response = await fetch('/api/webapp/explain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          original_text: item.original_text,
-          user_translation: item.user_translation,
-        }),
-      });
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
-      }
-      const data = await response.json();
-      setExplanations((prev) => ({ ...prev, [key]: data.explanation }));
-    } catch (error) {
-      setWebappError(`Ошибка объяснения: ${error.message}`);
-    } finally {
-      setExplanationLoading((prev) => ({ ...prev, [key]: false }));
-    }
-  };
 
   const handleDictionaryLookup = async (event) => {
     event.preventDefault();
