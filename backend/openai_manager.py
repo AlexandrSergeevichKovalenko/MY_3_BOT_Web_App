@@ -691,3 +691,106 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
             "usage_examples": [],
             "raw_text": content,
         }
+
+
+async def run_translation_explanation(original_text: str, user_translation: str) -> str:
+    task_name = "check_translation_with_claude"
+    system_instruction_key = "check_translation_with_claude"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    user_message = (
+        f'**Original sentence (Russian):** "{original_text}"\n'
+        f'**User\'s translation (German):** "{user_translation}"'
+    )
+
+    response_text = None
+
+    for _ in range(3):
+        await client.beta.threads.messages.create(
+            thread_id=thread_id,
+            role="user",
+            content=user_message,
+        )
+
+        run = await client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=assistant_id,
+        )
+
+        while True:
+            run_status = await client.beta.threads.runs.retrieve(
+                thread_id=thread_id,
+                run_id=run.id,
+            )
+            if run_status.status == "completed":
+                break
+            await asyncio.sleep(1)
+
+        messages = await client.beta.threads.messages.list(thread_id=thread_id)
+        last_message = messages.data[0]
+        response_text = last_message.content[0].text.value
+        if response_text:
+            break
+        await asyncio.sleep(5)
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    if not response_text:
+        return "❌ Ошибка: Не удалось обработать ответ от Claude."
+
+    list_of_errors_pattern = re.findall(r'(Error)\s*(\d+)\:*\s*(.+?)(?:\n|$)', response_text, flags=re.DOTALL)
+    correct_translation = re.findall(r'(Correct Translation)\:\s*(.+?)(?:\n|$)', response_text, flags=re.DOTALL)
+    grammar_explanation_pattern = re.findall(
+        r'(Grammar Explanation)\s*\:*\s*\n*(.+?)(?=\n[A-Z][a-zA-Z\s]+:|\Z)',
+        response_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    altern_sentence_pattern = re.findall(
+        r'(Alternative Construction|Alternative Sentence Construction)\:*\s*(.+?)(?=Synonyms|$)',
+        response_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    synonyms_pattern = re.findall(r'Synonyms\:*\n([\s\S]*?)(?=\Z)', response_text, flags=re.DOTALL | re.IGNORECASE)
+
+    if not list_of_errors_pattern and not correct_translation:
+        return "❌ Ошибка: Не удалось обработать ответ от Claude."
+
+    result_list = [
+        "📥 *Detailed grammar explanation*:\n",
+        f"🟢*Original russian sentence*:\n{original_text}\n",
+        f"🟣*User translation*:\n{user_translation}\n",
+    ]
+
+    for line in list_of_errors_pattern:
+        result_list.append(f"🔴*{line[0]} {line[1]}*: {line[2]}\n")
+
+    for item in correct_translation:
+        result_list.append(f"✅*{item[0]}*:\n➡️ {item[1]}\n")
+
+    for item in grammar_explanation_pattern:
+        result_list.append(f"🟡*{item[0]}*:")
+        grammar_parts = item[1].split("\n")
+        for part in grammar_parts:
+            clean_part = part.strip()
+            if clean_part and clean_part not in ["-", ":"]:
+                result_list.append(f"🔥{clean_part}")
+
+    for item in altern_sentence_pattern:
+        result_list.append(f"\n🔵*{item[0]}*:\n {item[1].strip()}\n")
+
+    if synonyms_pattern:
+        result_list.append("➡️ *Synonyms*:")
+        for synonym_block in synonyms_pattern:
+            synonym_parts = synonym_block.split("\n")
+            for part in synonym_parts:
+                clean_part = part.strip()
+                if clean_part:
+                    result_list.append(f"• {clean_part}")
+
+    return "\n".join(result_list).strip()

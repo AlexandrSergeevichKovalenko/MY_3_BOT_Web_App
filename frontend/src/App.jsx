@@ -33,6 +33,9 @@ function App() {
   const [dictionaryError, setDictionaryError] = useState('');
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
   const [dictionarySaved, setDictionarySaved] = useState('');
+  const [finishStatus, setFinishStatus] = useState('idle');
+  const [explanations, setExplanations] = useState({});
+  const [explanationLoading, setExplanationLoading] = useState({});
 
   // Состояние для хранения токена доступа. Изначально его нет.
   // Мы говорим React'у: "Создай ячейку памяти. Изначально положи туда null (пустоту)".
@@ -116,6 +119,7 @@ function App() {
       const data = await response.json();
       setSentences(data.items || []);
       setResults([]);
+      setFinishStatus('idle');
     } catch (error) {
       setWebappError(`Ошибка загрузки предложений: ${error.message}`);
     }
@@ -187,6 +191,8 @@ function App() {
     setWebappLoading(true);
     setWebappError('');
     setResults([]);
+    setExplanations({});
+    setExplanationLoading({});
 
     try {
       const response = await fetch('/api/message', {
@@ -225,47 +231,6 @@ function App() {
     }));
   };
 
-  const handleSubmitToGroup = async () => {
-    if (!initData) {
-      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
-      return;
-    }
-    if (Object.values(translationDrafts).every((text) => !text.trim())) {
-      setWebappError('Заполните хотя бы один перевод.');
-      return;
-    }
-    setWebappLoading(true);
-    setWebappError('');
-    try {
-      const response = await fetch('/api/webapp/submit-group', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          translations: Object.entries(translationDrafts).map(([id, translation]) => ({
-            id_for_mistake_table: Number(id),
-            translation,
-          })),
-        }),
-      });
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
-      }
-      setWebappError('Отправлено в группу ✅');
-    } catch (error) {
-      setWebappError(`Ошибка отправки в группу: ${error.message}`);
-    } finally {
-      setWebappLoading(false);
-    }
-  };
-
   const handleFinishTranslation = async () => {
     if (!initData) {
       setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
@@ -274,6 +239,7 @@ function App() {
     setWebappLoading(true);
     setWebappError('');
     setFinishMessage('');
+    setFinishStatus('idle');
     try {
       const response = await fetch('/api/webapp/finish', {
         method: 'POST',
@@ -292,6 +258,7 @@ function App() {
       }
       const data = await response.json();
       setFinishMessage(data.message || 'Перевод завершён.');
+      setFinishStatus('done');
       const storageKey = `webappDrafts_${webappUser?.id || 'unknown'}_${sessionId || 'nosession'}`;
       localStorage.removeItem(storageKey);
       setTranslationDrafts({});
@@ -300,6 +267,42 @@ function App() {
       setWebappError(`Ошибка завершения: ${error.message}`);
     } finally {
       setWebappLoading(false);
+    }
+  };
+
+  const handleExplainTranslation = async (item) => {
+    if (!initData) {
+      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    const key = String(item.sentence_number ?? item.original_text);
+    setExplanationLoading((prev) => ({ ...prev, [key]: true }));
+    try {
+      const response = await fetch('/api/webapp/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          original_text: item.original_text,
+          user_translation: item.user_translation,
+        }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      setExplanations((prev) => ({ ...prev, [key]: data.explanation }));
+    } catch (error) {
+      setWebappError(`Ошибка объяснения: ${error.message}`);
+    } finally {
+      setExplanationLoading((prev) => ({ ...prev, [key]: false }));
     }
   };
 
@@ -417,14 +420,6 @@ function App() {
             <section className="webapp-translation-list">
               <div className="webapp-history-head">
                 <h3>Ваши переводы</h3>
-                <div className="webapp-actions">
-                  <button type="button" onClick={handleSubmitToGroup} className="secondary-button">
-                    Отправить в группу
-                  </button>
-                  <button type="button" onClick={handleFinishTranslation} className="secondary-button">
-                    Завершить перевод
-                  </button>
-                </div>
               </div>
               {sentences.length === 0 ? (
                 <p className="webapp-muted">Все предложения текущей сессии переведены. Запросите новые.</p>
@@ -466,11 +461,22 @@ function App() {
                       <div className="webapp-error">{item.error}</div>
                     ) : (
                       <>
-                        <div><strong>Предложение:</strong> {item.sentence_number}</div>
-                        <div><strong>Оценка:</strong> {item.score}/100</div>
-                        <div><strong>Оригинал:</strong> {item.original_text}</div>
-                        <div><strong>Перевод:</strong> {item.user_translation}</div>
-                        <div><strong>Правильный перевод:</strong> {item.correct_translation}</div>
+                        <pre className="webapp-result-text">{item.feedback}</pre>
+                        <button
+                          type="button"
+                          className="secondary-button explanation-button"
+                          onClick={() => handleExplainTranslation(item)}
+                          disabled={explanationLoading[String(item.sentence_number ?? item.original_text)]}
+                        >
+                          {explanationLoading[String(item.sentence_number ?? item.original_text)]
+                            ? 'Запрашиваем объяснение...'
+                            : 'Объяснить ошибки'}
+                        </button>
+                        {explanations[String(item.sentence_number ?? item.original_text)] && (
+                          <pre className="webapp-explanation">
+                            {explanations[String(item.sentence_number ?? item.original_text)]}
+                          </pre>
+                        )}
                       </>
                     )}
                   </div>
@@ -478,6 +484,17 @@ function App() {
               </div>
             </section>
           )}
+
+          <div className="webapp-actions webapp-actions-footer">
+            <button
+              type="button"
+              onClick={handleFinishTranslation}
+              className={`secondary-button ${finishStatus === 'done' ? 'status-done' : ''}`}
+              disabled={webappLoading}
+            >
+              {finishStatus === 'done' ? 'Завершено 🙂' : 'Завершить перевод'}
+            </button>
+          </div>
 
           <section className="webapp-dictionary">
             <h3>Словарь</h3>
@@ -701,4 +718,3 @@ if (!token) {
 }
 
 export default App;
-

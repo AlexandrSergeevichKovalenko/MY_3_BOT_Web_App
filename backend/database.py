@@ -216,6 +216,29 @@ def save_webapp_dictionary_query(
             ))
 
 
+def get_random_dictionary_entry() -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    word_ru,
+                    translation_de,
+                    response_json
+                FROM bt_3_webapp_dictionary_queries
+                WHERE response_json IS NOT NULL
+                ORDER BY RANDOM()
+                LIMIT 1;
+            """)
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "word_ru": row[0],
+                "translation_de": row[1],
+                "response_json": row[2],
+            }
+
+
 def _get_latest_session_id(cursor, user_id: int) -> str | None:
     cursor.execute(
         """
