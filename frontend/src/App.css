@@ -339,6 +339,7 @@ body {
   font-family: inherit;
   font-size: 14px;
   background: #fffdfa;
+  caret-color: #000;
 }
 
 .webapp-error {
@@ -397,12 +398,6 @@ body {
 
 .explanation-button {
   align-self: flex-start;
-}
-
-.status-sent {
-  background: #dbeafe;
-  color: #1e40af;
-  border-color: transparent;
 }
 
 .status-done {
@@ -537,6 +532,8 @@ body {
   font-family: inherit;
   font-size: 14px;
   background: #fffdfa;
+  caret-color: #000;
+  font-weight: 600;
 }
 
 .webapp-sentences li {

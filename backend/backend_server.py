@@ -515,11 +515,19 @@ def finish_webapp_translation():
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
+    user_name = user_data.get("first_name") or "User"
+    username = user_data.get("username")
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     result = finish_translation_webapp(user_id)
+    summary = build_user_daily_summary(user_id=user_id, username=username or user_name)
+    if summary:
+        try:
+            _send_group_message(summary)
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка отправки в группу: {exc}"}), 500
     return jsonify({"ok": True, **result})
 
 
