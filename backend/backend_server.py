@@ -71,7 +71,7 @@ from livekit.api import AccessToken, VideoGrants
 from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-from backend.openai_manager import run_check_translation, run_dictionary_lookup
+from backend.openai_manager import run_check_translation, run_dictionary_lookup, run_translation_explanation
 from backend.database import (
     ensure_webapp_tables,
     get_pending_daily_sentences,
@@ -471,6 +471,36 @@ def submit_webapp_group_message():
     return jsonify({"ok": True})
 
 
+@app.route("/api/webapp/explain", methods=["POST"])
+def explain_webapp_translation():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    original_text = (payload.get("original_text") or "").strip()
+    user_translation = (payload.get("user_translation") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not original_text or not user_translation:
+        return jsonify({"error": "original_text и user_translation обязательны"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        explanation = asyncio.run(run_translation_explanation(original_text, user_translation))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка объяснения: {exc}"}), 500
+
+    return jsonify({"ok": True, "explanation": explanation})
+
+
 @app.route("/api/webapp/finish", methods=["POST"])
 def finish_webapp_translation():
     payload = request.get_json(silent=True) or {}
@@ -485,11 +515,19 @@ def finish_webapp_translation():
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
+    user_name = user_data.get("first_name") or "User"
+    username = user_data.get("username")
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     result = finish_translation_webapp(user_id)
+    summary = build_user_daily_summary(user_id=user_id, username=username or user_name)
+    if summary:
+        try:
+            _send_group_message(summary)
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка отправки в группу: {exc}"}), 500
     return jsonify({"ok": True, **result})
 
 
