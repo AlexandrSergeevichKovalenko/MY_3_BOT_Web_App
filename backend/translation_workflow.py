@@ -564,11 +564,11 @@ def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
     display_name = username or f"user_{user_id}"
 
     return (
-        f"📊 Итоги пользователя {display_name}:\n"
+        f"📅 Сегодняшняя статистика ({display_name})\n"
         f"📜 Всего предложений: {total_sentences}\n"
         f"✅ Переведено: {translated}\n"
         f"🚨 Не переведено: {missed}\n"
-        f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
+        f"⏱ Среднее время сессии: {avg_minutes:.1f} мин\n"
         f"⏱ Время общее: {total_minutes:.1f} мин\n"
         f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
         f"🏆 Итоговый балл: {final_score:.1f}"
