@@ -406,20 +406,6 @@ body {
   border-color: transparent;
 }
 
-.finish-button {
-  background: #1f1c17;
-  color: #fffaf2;
-}
-
-.finish-button:hover {
-  background: #352f28;
-}
-
-.finish-button.status-done {
-  background: #16a34a;
-  color: #ffffff;
-}
-
 .webapp-dictionary {
   background: rgba(255, 255, 255, 0.92);
   border-radius: 18px;
