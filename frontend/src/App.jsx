@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   LiveKitRoom,
   ControlBar,
@@ -11,7 +11,43 @@ import './App.css';
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
 
-function App() {
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('WebApp crashed:', error, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="webapp-page">
+          <div className="webapp-card">
+            <header className="webapp-header">
+              <span className="pill">Telegram Web App</span>
+              <h1>Ошибка загрузки</h1>
+              <p>Произошла ошибка при запуске приложения. Попробуйте перезагрузить.</p>
+            </header>
+            <div className="webapp-error">
+              {this.state.error?.message || 'Неизвестная ошибка'}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function AppInner() {
   const telegramApp = useMemo(() => window.Telegram?.WebApp, []);
   const isWebAppMode = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
@@ -761,4 +797,10 @@ if (!token) {
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
+  );
+}
