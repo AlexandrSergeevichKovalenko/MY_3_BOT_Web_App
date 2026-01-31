@@ -2,11 +2,12 @@ import os
 import openai
 from openai import OpenAI
 import logging
+import json
 import psycopg2
 import datetime
 from datetime import datetime, time
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults
+from telegram import Update, Poll
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
@@ -35,7 +36,7 @@ from datetime import datetime
 import logging
 import sys
 from backend.openai_manager import client, get_or_create_openai_resources, system_message # Теперь импортируем client и system_message
-from backend.database import init_db
+from backend.database import init_db, get_random_dictionary_entry
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
 from load_data_from_db import load_data_for_analytics 
 from users_comparison_analytics import create_comparison_report_async
@@ -44,6 +45,11 @@ from datetime import date, timedelta
 from backend.config_mistakes_data import VALID_CATEGORIES, VALID_SUBCATEGORIES, VALID_CATEGORIES_lower, VALID_SUBCATEGORIES_lower
 
 application = None
+
+QUIZ_SCHEDULE_HOURS = [8, 14, 18]
+QUIZ_FEEDBACK_TTL_SECONDS = 120
+QUIZ_CACHE_TTL_SECONDS = 60 * 60 * 24
+active_quizzes = {}
 
 
 # === Логирование ===
@@ -1487,6 +1493,13 @@ async def check_translation(original_text, user_translation, update: Update | No
             print(f"❌ Ошибка в цикле обработки: {e}")
             await asyncio.sleep(5)
 
+    if not score or not str(score).isdigit():
+        reassessed_score = await recheck_score_only(original_text, user_translation)
+        score = reassessed_score if reassessed_score else "0"
+
+    if not correct_translation:
+        correct_translation = "—"
+
 
     # ✅ Убираем лишние пробелы для ровного форматирования
     result_text = f"""
@@ -2191,7 +2204,7 @@ async def check_user_translation_webapp(user_id: int, username: str | None, tran
                 })
                 continue
 
-            score_value = int(score) if score and str(score).isdigit() else 50
+            score_value = int(score) if score and str(score).isdigit() else 0
 
             cursor.execute("""
                 INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id, user_translation, score, feedback)
@@ -3520,6 +3533,224 @@ async def send_users_comparison_bar_chart(context: CallbackContext, period):
         logging.error(f"Critical error during users_comparison analytics execution: {e}")
 
 
+def _coerce_response_json(response_json: object) -> dict:
+    if isinstance(response_json, dict):
+        return response_json
+    if isinstance(response_json, str):
+        try:
+            return json.loads(response_json)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _build_quiz_fallback(word_ru: str, translation_de: str | None, article: str | None) -> dict:
+    if article and translation_de:
+        correct_option = f"{article} {translation_de}"
+        options = [
+            correct_option,
+            *(f"{other} {translation_de}" for other in ["der", "die", "das"] if other != article),
+        ]
+        if len(options) < 4:
+            options.append(translation_de)
+        question = f"Какой артикль и перевод правильны для «{word_ru}»?"
+        correct_option_id = options.index(correct_option)
+    elif translation_de:
+        options = [
+            translation_de,
+            f"der {translation_de}",
+            f"die {translation_de}",
+            f"das {translation_de}",
+        ]
+        question = f"Как переводится слово «{word_ru}» на немецкий?"
+        correct_option_id = 0
+    else:
+        options = [
+            word_ru,
+            f"{word_ru} (DE)",
+            f"die {word_ru}",
+            f"das {word_ru}",
+        ]
+        question = f"Выберите правильный немецкий вариант для «{word_ru}»."
+        correct_option_id = 0
+
+    return {
+        "question": question,
+        "options": options[:4],
+        "correct_option_id": correct_option_id,
+        "quiz_type": "fallback",
+    }
+
+
+def _normalize_quiz_payload(payload: dict, fallback: dict) -> dict:
+    question = payload.get("question")
+    options = payload.get("options")
+    correct_option_id = payload.get("correct_option_id")
+
+    if not isinstance(question, str) or not isinstance(options, list):
+        return fallback
+
+    correct_text = None
+    if isinstance(correct_option_id, int) and 0 <= correct_option_id < len(options):
+        correct_text = str(options[correct_option_id]).strip()
+
+    cleaned_options = []
+    seen = set()
+    for option in options:
+        text = str(option).strip()
+        if text and text not in seen:
+            cleaned_options.append(text)
+            seen.add(text)
+
+    if len(cleaned_options) < 2:
+        return fallback
+
+    if not correct_text:
+        return fallback
+    if correct_text not in cleaned_options:
+        return fallback
+    correct_option_id = cleaned_options.index(correct_text)
+
+    if len(cleaned_options) > 10:
+        cleaned_options = cleaned_options[:10]
+        if correct_text not in cleaned_options:
+            return fallback
+        correct_option_id = cleaned_options.index(correct_text)
+
+    if len(cleaned_options) < 4:
+        for option in fallback["options"]:
+            if option not in cleaned_options:
+                cleaned_options.append(option)
+            if len(cleaned_options) >= 4:
+                break
+
+    if correct_option_id is None:
+        return fallback
+
+    return {
+        "question": question.strip(),
+        "options": cleaned_options,
+        "correct_option_id": correct_option_id,
+        "quiz_type": payload.get("quiz_type", "generated"),
+    }
+
+
+async def generate_word_quiz(entry: dict) -> dict | None:
+    word_ru = (entry.get("word_ru") or "").strip()
+    translation_de = (entry.get("translation_de") or "").strip()
+    response_json = _coerce_response_json(entry.get("response_json"))
+
+    if not word_ru:
+        return None
+
+    article = response_json.get("article")
+    part_of_speech = response_json.get("part_of_speech")
+    usage_examples = response_json.get("usage_examples") or []
+
+    fallback = _build_quiz_fallback(word_ru, translation_de, article)
+
+    prompt_payload = {
+        "word_ru": word_ru,
+        "translation_de": translation_de or response_json.get("translation_de"),
+        "article": article,
+        "part_of_speech": part_of_speech,
+        "usage_examples": usage_examples,
+    }
+
+    system_prompt = (
+        "You create one Telegram quiz question for Russian-speaking learners of German. "
+        "The question must be in Russian and must include the Russian word/phrase. "
+        "Answer options must be in German. Provide exactly 4 options with one correct answer. "
+        "Focus on translation, article, part of speech, prepositions, or fill-in-the-blank based on provided data. "
+        "Return STRICT JSON with keys: question, options (array of strings), correct_option_id (0-based int), quiz_type."
+    )
+
+    response = await client.chat.completions.create(
+        model="gpt-4.1-2025-04-14",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
+        ],
+        temperature=0.4,
+        response_format={"type": "json_object"},
+    )
+
+    content = response.choices[0].message.content or "{}"
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return fallback
+
+    return _normalize_quiz_payload(payload, fallback)
+
+
+async def cleanup_quiz_cache(context: CallbackContext) -> None:
+    poll_id = context.job.data.get("poll_id")
+    if poll_id in active_quizzes:
+        active_quizzes.pop(poll_id, None)
+
+
+async def delete_temporary_message(context: CallbackContext) -> None:
+    chat_id = context.job.data.get("chat_id")
+    message_id = context.job.data.get("message_id")
+    if chat_id and message_id:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+
+
+async def send_scheduled_quiz(context: CallbackContext) -> None:
+    entry = get_random_dictionary_entry()
+    if not entry:
+        logging.warning("⚠️ Нет слов в базе для генерации квиза.")
+        return
+
+    quiz = await generate_word_quiz(entry)
+    if not quiz:
+        logging.warning("⚠️ Не удалось сгенерировать квиз.")
+        return
+
+    poll_message = await context.bot.send_poll(
+        chat_id=BOT_GROUP_CHAT_ID_Deutsch,
+        question=quiz["question"],
+        options=quiz["options"],
+        type=Poll.QUIZ,
+        correct_option_id=quiz["correct_option_id"],
+        is_anonymous=False,
+        allows_multiple_answers=False,
+    )
+
+    active_quizzes[poll_message.poll.id] = {
+        "chat_id": BOT_GROUP_CHAT_ID_Deutsch,
+        "correct_option_id": quiz["correct_option_id"],
+        "message_id": poll_message.message_id,
+    }
+
+    context.job_queue.run_once(
+        cleanup_quiz_cache,
+        when=QUIZ_CACHE_TTL_SECONDS,
+        data={"poll_id": poll_message.poll.id},
+    )
+
+
+async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    poll_answer = update.poll_answer
+    quiz_data = active_quizzes.get(poll_answer.poll_id)
+    if not quiz_data or not poll_answer.option_ids:
+        return
+
+    is_correct = poll_answer.option_ids[0] == quiz_data["correct_option_id"]
+    emoji = "🎉" if is_correct else "💩"
+    message = await context.bot.send_message(
+        chat_id=quiz_data["chat_id"],
+        text=emoji,
+        reply_to_message_id=quiz_data["message_id"],
+    )
+    context.job_queue.run_once(
+        delete_temporary_message,
+        when=QUIZ_FEEDBACK_TTL_SECONDS,
+        data={"chat_id": quiz_data["chat_id"], "message_id": message.message_id},
+    )
+
+
 
 def main():
     global application
@@ -3546,6 +3777,7 @@ def main():
 
     application.add_handler(CallbackQueryHandler(topic_selected)) #Он ждет любые нажатия на inline-кнопки.
     application.add_handler(MessageHandler(filters.TEXT, log_all_messages, block=False), group=2)  # 👈 Добавляем в main()
+    application.add_handler(PollAnswerHandler(handle_poll_answer))
 
     application.add_error_handler(error_handler)
     
@@ -3614,6 +3846,14 @@ def main():
     print("📌 Добавляем задачу в scheduler...")
     scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
     scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
+
+    for hour in QUIZ_SCHEDULE_HOURS:
+        scheduler.add_job(
+            lambda: submit_async(send_scheduled_quiz, CallbackContext(application=application)),
+            "cron",
+            hour=hour,
+            minute=0,
+        )
 
     scheduler.add_job(
         lambda: submit_async(send_german_news, CallbackContext(application=application)), 

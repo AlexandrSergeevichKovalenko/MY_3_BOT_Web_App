@@ -339,6 +339,7 @@ body {
   font-family: inherit;
   font-size: 14px;
   background: #fffdfa;
+  caret-color: #000;
 }
 
 .webapp-error {
@@ -363,6 +364,11 @@ body {
   gap: 8px;
 }
 
+.webapp-actions-footer {
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+
 .webapp-result-list {
   display: grid;
   gap: 12px;
@@ -370,12 +376,48 @@ body {
 }
 
 .webapp-result-card {
-  white-space: pre-wrap;
   background: #f2f5ff;
   border-radius: 16px;
   padding: 16px;
   font-size: 14px;
   color: #3c332b;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.webapp-result-text,
+.webapp-explanation {
+  white-space: pre-wrap;
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 12px;
+  border: 1px solid rgba(60, 51, 43, 0.2);
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+.explanation-button {
+  align-self: flex-start;
+}
+
+.status-done {
+  background: #dcfce7;
+  color: #166534;
+  border-color: transparent;
+}
+
+.finish-button {
+  background: #1f1c17;
+  color: #fffaf2;
+}
+
+.finish-button:hover {
+  background: #352f28;
+}
+
+.finish-button.status-done {
+  background: #16a34a;
+  color: #ffffff;
 }
 
 .webapp-dictionary {
@@ -504,6 +546,8 @@ body {
   font-family: inherit;
   font-size: 14px;
   background: #fffdfa;
+  caret-color: #000;
+  font-weight: 600;
 }
 
 .webapp-sentences li {
