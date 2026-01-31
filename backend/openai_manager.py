@@ -707,6 +707,8 @@ async def run_translation_explanation(original_text: str, user_translation: str)
     )
 
     response_text = None
+    terminal_statuses = {"failed", "cancelled", "expired"}
+    deadline = asyncio.get_running_loop().time() + 60
 
     for _ in range(3):
         await client.beta.threads.messages.create(
@@ -727,7 +729,18 @@ async def run_translation_explanation(original_text: str, user_translation: str)
             )
             if run_status.status == "completed":
                 break
+            if run_status.status in terminal_statuses:
+                response_text = None
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                response_text = None
+                break
             await asyncio.sleep(1)
+
+        if run_status.status in terminal_statuses:
+            break
+        if asyncio.get_running_loop().time() >= deadline:
+            break
 
         messages = await client.beta.threads.messages.list(thread_id=thread_id)
         last_message = messages.data[0]

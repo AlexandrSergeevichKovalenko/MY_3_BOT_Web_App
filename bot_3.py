@@ -3590,6 +3590,10 @@ def _normalize_quiz_payload(payload: dict, fallback: dict) -> dict:
     if not isinstance(question, str) or not isinstance(options, list):
         return fallback
 
+    correct_text = None
+    if isinstance(correct_option_id, int) and 0 <= correct_option_id < len(options):
+        correct_text = str(options[correct_option_id]).strip()
+
     cleaned_options = []
     seen = set()
     for option in options:
@@ -3601,16 +3605,17 @@ def _normalize_quiz_payload(payload: dict, fallback: dict) -> dict:
     if len(cleaned_options) < 2:
         return fallback
 
-    if isinstance(correct_option_id, int):
-        if not (0 <= correct_option_id < len(cleaned_options)):
-            return fallback
-    else:
-        correct_option_id = None
+    if not correct_text:
+        return fallback
+    if correct_text not in cleaned_options:
+        return fallback
+    correct_option_id = cleaned_options.index(correct_text)
 
     if len(cleaned_options) > 10:
-        if correct_option_id is not None and correct_option_id >= 10:
-            return fallback
         cleaned_options = cleaned_options[:10]
+        if correct_text not in cleaned_options:
+            return fallback
+        correct_option_id = cleaned_options.index(correct_text)
 
     if len(cleaned_options) < 4:
         for option in fallback["options"]:
