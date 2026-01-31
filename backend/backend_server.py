@@ -84,6 +84,7 @@ from backend.translation_workflow import (
     build_user_daily_summary,
     check_user_translation_webapp,
     finish_translation_webapp,
+    get_daily_translation_history,
 )
 
 load_dotenv()
@@ -325,6 +326,29 @@ def get_webapp_history():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     history = get_webapp_translation_history(user_id=user_id, limit=int(limit))
+    return jsonify({"ok": True, "items": history})
+
+
+@app.route("/api/webapp/history/daily", methods=["POST"])
+def get_webapp_daily_history():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    limit = payload.get("limit", 50)
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    history = get_daily_translation_history(user_id=user_id, limit=int(limit))
     return jsonify({"ok": True, "items": history})
 
 

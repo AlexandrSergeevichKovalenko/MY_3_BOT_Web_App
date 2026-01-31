@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, WebAppInfo, KeyboardButton
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import CallbackQueryHandler
 import hashlib
 import re
@@ -514,13 +514,11 @@ async def simulate_typing(context, chat_id, duration=3):
 # Buttons in Telegram
 async def send_main_menu(update: Update, context: CallbackContext):
     """Принудительно обновляет главное меню с кнопками."""
-    web_app_url = await asyncio.to_thread(get_webapp_url)
     keyboard = [
         ["📌 Выбрать тему"],  # ❗ Убедись, что текст здесь правильный
         ["🚀 Начать перевод", "✅ Завершить перевод"],
         ["📜 Проверить перевод", "🟡 Посмотреть свою статистику"],
-        ["🎙 Начать урок", "👥 Групповой звонок"],
-        [KeyboardButton("🌐 Web App", web_app=WebAppInfo(url=web_app_url))]
+        ["🎙 Начать урок", "👥 Групповой звонок"]
     ]
     
     # создаем в словаре клю service_message_ids Список для хранения всех id Сообщений, Для того чтобы потом можно было их удалить после выполнения перевода
@@ -879,26 +877,50 @@ async def letsgo(update: Update, context: CallbackContext):
     context.user_data["pending_translations"] = []
 
 
-    # ✅ Отправляем одно сообщение с предложениями **и таймером**
+    # ✅ Отправляем либо ссылку на личку (в группе), либо предложения (в личке)
     task_text = "\n".join(tasks)
     print(f"Sentences before sending to the user: {task_text}")
 
-    text= (
-    f"🚀 {user.first_name}, Вы начали перевод! Время пошло.\n\n"
-    "✏️ Отправьте ваши переводы в формате:\n1. Mein Name ist Konchita.\n\n"
-    )
+    chat_type = update.effective_chat.type if update.effective_chat else "private"
+    if chat_type in ("group", "supergroup"):
+        bot_username = context.bot.username
+        if not bot_username:
+            bot_info = await context.bot.get_me()
+            bot_username = bot_info.username
 
-    msg_4 = await context.bot.send_message(chat_id=update.message.chat_id, text=text)
-    logging.info(f"📩 Отправлено сообщение о начале перевода с ID={msg_4.message_id}")
-    add_service_msg_id(context, msg_4.message_id)
+        bot_link = f"https://t.me/{bot_username}"
+        message_text = (
+            f"🚀 {user.first_name}, перевод начат.\n\n"
+            "Чтобы получить предложения и открыть Web App, перейдите в личку с ботом."
+        )
+        reply_markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Открыть личку с ботом", url=bot_link)]]
+        )
 
-    msg_5 = await update.message.reply_text(
-        f"{user.first_name}, Ваши предложения:\n{task_text}\n\n"
-        #"После того как вы отправите все переводы, нажмите **'📜 Проверить перевод'**, чтобы проверить их.\n"
-        #"Когда все переводы будут проверены, нажмите **'✅ Завершить перевод'**, чтобы зафиксировать время!"
-    )
-    logging.info(f"📩 Отправлено сообщение с предложениями с ID={msg_5.message_id}")
-    add_service_msg_id(context, msg_5.message_id)
+        msg_4 = await context.bot.send_message(
+            chat_id=update.message.chat_id,
+            text=message_text,
+            reply_markup=reply_markup,
+        )
+        logging.info(f"📩 Отправлено сообщение с ссылкой в личку ID={msg_4.message_id}")
+        add_service_msg_id(context, msg_4.message_id)
+    else:
+        text = (
+            f"🚀 {user.first_name}, Вы начали перевод! Время пошло.\n\n"
+            "✏️ Отправьте ваши переводы в формате:\n1. Mein Name ist Konchita.\n\n"
+        )
+
+        msg_4 = await context.bot.send_message(chat_id=update.message.chat_id, text=text)
+        logging.info(f"📩 Отправлено сообщение о начале перевода с ID={msg_4.message_id}")
+        add_service_msg_id(context, msg_4.message_id)
+
+        msg_5 = await update.message.reply_text(
+            f"{user.first_name}, Ваши предложения:\n{task_text}\n\n"
+            #"После того как вы отправите все переводы, нажмите **'📜 Проверить перевод'**, чтобы проверить их.\n"
+            #"Когда все переводы будут проверены, нажмите **'✅ Завершить перевод'**, чтобы зафиксировать время!"
+        )
+        logging.info(f"📩 Отправлено сообщение с предложениями с ID={msg_5.message_id}")
+        add_service_msg_id(context, msg_5.message_id)
 
 
 

@@ -69,6 +69,10 @@ function AppInner() {
   const [dictionaryError, setDictionaryError] = useState('');
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
   const [dictionarySaved, setDictionarySaved] = useState('');
+  const [historyItems, setHistoryItems] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const [historyVisible, setHistoryVisible] = useState(false);
   const [finishStatus, setFinishStatus] = useState('idle');
   const [explanations, setExplanations] = useState({});
   const [explanationLoading, setExplanationLoading] = useState({});
@@ -447,6 +451,39 @@ function AppInner() {
     }
   };
 
+  const handleLoadDailyHistory = async () => {
+    if (!initData) {
+      setHistoryError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const response = await fetch('/api/webapp/history/daily', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, limit: 50 }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      setHistoryItems(data.items || []);
+      setHistoryVisible(true);
+    } catch (error) {
+      setHistoryError(`Ошибка загрузки истории: ${error.message}`);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   if (isWebAppMode) {
     return (
       <div className="webapp-page">
@@ -556,10 +593,43 @@ function AppInner() {
             >
               {finishStatus === 'done' ? 'Завершено 🙂' : 'Завершить перевод'}
             </button>
+            <button
+              type="button"
+              onClick={handleLoadDailyHistory}
+              className="secondary-button"
+              disabled={webappLoading || historyLoading}
+            >
+              {historyLoading ? 'Загружаем...' : 'История за сегодня'}
+            </button>
             {results.length === 0 && !webappLoading && (
               <div className="webapp-muted">Сначала проверьте перевод, чтобы завершить.</div>
             )}
           </div>
+
+          {historyError && <div className="webapp-error">{historyError}</div>}
+
+          {historyVisible && (
+            <section className="webapp-result">
+              <h3>История переводов за сегодня</h3>
+              {historyItems.length === 0 ? (
+                <p className="webapp-muted">Сегодня пока нет завершённых переводов.</p>
+              ) : (
+                <div className="webapp-result-list">
+                  {historyItems.map((item, index) => (
+                    <div key={item.id ?? index} className="webapp-result-card">
+                      <pre className="webapp-result-text">
+                        {`🟢 Sentence number: ${item.sentence_number ?? '—'}\n✅ Score: ${
+                          item.score ?? '—'
+                        }/100\n🔵 Original Sentence: ${item.original_text ?? '—'}\n🟡 User Translation: ${
+                          item.user_translation ?? '—'
+                        }\n🟣 Correct Translation: ${item.correct_translation ?? '—'}`}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
           <section className="webapp-dictionary">
             <h3>Словарь</h3>

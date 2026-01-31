@@ -114,7 +114,18 @@ async def check_translation(
 
             if score_str and correct_translation:
                 score = int(score_str) if score_str.isdigit() else None
-                return collected_text, categories, subcategories, score, correct_translation
+                score_display = score if score is not None else 0
+                sentence_label = sentence_number if sentence_number is not None else "—"
+
+                result_text = (
+                    f"🟢 *Sentence number:* {sentence_label}\n"
+                    f"✅ *Score:* {score_display}/100\n"
+                    f"🔵 *Original Sentence:* {original_text}\n"
+                    f"🟡 *User Translation:* {user_translation}\n"
+                    f"🟣 *Correct Translation:* {correct_translation}\n"
+                )
+
+                return result_text, categories, subcategories, score, correct_translation
 
         except Exception as exc:
             logging.error(
@@ -127,6 +138,58 @@ async def check_translation(
             await asyncio.sleep(1)
 
     return "Ошибка: не удалось проверить перевод.", [], [], 0, None
+
+
+def _extract_correct_translation(feedback: str | None) -> str | None:
+    if not feedback:
+        return None
+    match = re.search(r"Correct Translation:\*?\s*(.+)", feedback)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def get_daily_translation_history(user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    t.id,
+                    t.score,
+                    t.user_translation,
+                    t.feedback,
+                    t.timestamp,
+                    ds.sentence,
+                    ds.unique_id
+                FROM bt_3_translations t
+                JOIN bt_3_daily_sentences ds
+                    ON ds.id = t.sentence_id
+                WHERE t.user_id = %s
+                  AND t.timestamp::date = CURRENT_DATE
+                ORDER BY t.timestamp DESC
+                LIMIT %s;
+                """,
+                (user_id, limit),
+            )
+            rows = cursor.fetchall()
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        feedback = row[3]
+        items.append(
+            {
+                "id": row[0],
+                "score": row[1],
+                "user_translation": row[2],
+                "feedback": feedback,
+                "created_at": row[4].isoformat() if row[4] else None,
+                "original_text": row[5],
+                "sentence_number": row[6],
+                "correct_translation": _extract_correct_translation(feedback),
+            }
+        )
+    return items
 
 
 async def log_translation_mistake(
