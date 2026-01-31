@@ -672,6 +672,14 @@ body {
   box-shadow: 0 12px 24px rgba(31, 28, 23, 0.2);
 }
 
+.finish-button {
+  background: #2d5a3a;
+}
+
+.finish-button:hover {
+  box-shadow: 0 12px 24px rgba(45, 90, 58, 0.28);
+}
+
 @keyframes float {
   0% {
     transform: translateY(0);

@@ -70,7 +70,6 @@ function AppInner() {
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
   const [dictionarySaved, setDictionarySaved] = useState('');
   const [finishStatus, setFinishStatus] = useState('idle');
-  const [groupSubmitStatus, setGroupSubmitStatus] = useState('idle');
   const [explanations, setExplanations] = useState({});
   const [explanationLoading, setExplanationLoading] = useState({});
 
@@ -182,7 +181,6 @@ function AppInner() {
       setSentences(data.items || []);
       setResults([]);
       setFinishStatus('idle');
-      setGroupSubmitStatus('idle');
     } catch (error) {
       setWebappError(`Ошибка загрузки предложений: ${error.message}`);
     }
@@ -328,55 +326,6 @@ function AppInner() {
       await loadSentences();
     } catch (error) {
       setWebappError(`Ошибка завершения: ${error.message}`);
-    } finally {
-      setWebappLoading(false);
-    }
-  };
-
-  const handleSubmitToGroup = async () => {
-    if (!initData) {
-      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
-      return;
-    }
-    if (sentences.length === 0) {
-      setWebappError('Нет предложений для отправки.');
-      return;
-    }
-
-    const translations = Object.entries(translationDrafts)
-      .map(([id, translation]) => ({
-        id_for_mistake_table: Number(id),
-        translation,
-      }))
-      .filter((entry) => entry.translation && entry.translation.trim());
-
-    if (translations.length === 0) {
-      setWebappError('Заполните хотя бы один перевод.');
-      return;
-    }
-
-    setWebappLoading(true);
-    setWebappError('');
-    setGroupSubmitStatus('idle');
-    try {
-      const response = await fetch('/api/webapp/submit-group', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, translations }),
-      });
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
-      }
-      setGroupSubmitStatus('sent');
-    } catch (error) {
-      setWebappError(`Ошибка отправки в группу: ${error.message}`);
     } finally {
       setWebappLoading(false);
     }
@@ -554,24 +503,6 @@ function AppInner() {
                   );
                 })
               )}
-              <div className="webapp-actions webapp-actions-footer">
-                <button
-                  type="button"
-                  onClick={handleSubmitToGroup}
-                  className={`secondary-button ${groupSubmitStatus === 'sent' ? 'status-sent' : ''}`}
-                  disabled={webappLoading}
-                >
-                  {groupSubmitStatus === 'sent' ? 'Отправлено' : 'Отправить в группу'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleFinishTranslation}
-                  className={`secondary-button ${finishStatus === 'done' ? 'status-done' : ''}`}
-                  disabled={webappLoading}
-                >
-                  {finishStatus === 'done' ? 'Завершено 🙂' : 'Завершить перевод'}
-                </button>
-              </div>
             </section>
 
             <button className="primary-button" type="submit" disabled={webappLoading}>
@@ -620,11 +551,14 @@ function AppInner() {
             <button
               type="button"
               onClick={handleFinishTranslation}
-              className={`secondary-button ${finishStatus === 'done' ? 'status-done' : ''}`}
-              disabled={webappLoading}
+              className={`primary-button finish-button ${finishStatus === 'done' ? 'status-done' : ''}`}
+              disabled={webappLoading || results.length === 0}
             >
               {finishStatus === 'done' ? 'Завершено 🙂' : 'Завершить перевод'}
             </button>
+            {results.length === 0 && !webappLoading && (
+              <div className="webapp-muted">Сначала проверьте перевод, чтобы завершить.</div>
+            )}
           </div>
 
           <section className="webapp-dictionary">
