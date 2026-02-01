@@ -16,7 +16,8 @@ RUN apt-get update && apt-get install -y ffmpeg
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 -r requirements.txt
-RUN python -m spacy download de_core_news_sm
+RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 \
+  https://github.com/explosion/spacy-models/releases/download/de_core_news_sm-3.7.0/de_core_news_sm-3.7.0-py3-none-any.whl
 
 # Копируем исходный код
 COPY . .
