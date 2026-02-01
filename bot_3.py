@@ -36,7 +36,7 @@ from datetime import datetime
 import logging
 import sys
 from backend.openai_manager import client, get_or_create_openai_resources, system_message # Теперь импортируем client и system_message
-from backend.database import init_db, get_random_dictionary_entry
+from backend.database import init_db, get_random_dictionary_entry, record_quiz_word, ensure_webapp_tables
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
 from load_data_from_db import load_data_for_analytics 
 from users_comparison_analytics import create_comparison_report_async
@@ -3720,7 +3720,7 @@ async def delete_temporary_message(context: CallbackContext) -> None:
 
 
 async def send_scheduled_quiz(context: CallbackContext) -> None:
-    entry = get_random_dictionary_entry()
+    entry = get_random_dictionary_entry(cooldown_days=5)
     if not entry:
         logging.warning("⚠️ Нет слов в базе для генерации квиза.")
         return
@@ -3739,6 +3739,8 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
         is_anonymous=False,
         allows_multiple_answers=False,
     )
+
+    record_quiz_word(entry.get("word_ru"))
 
     active_quizzes[poll_message.poll.id] = {
         "chat_id": BOT_GROUP_CHAT_ID_Deutsch,
@@ -3779,6 +3781,7 @@ def main():
     
     # Инициализация базы данных from database.py 
     init_db()
+    ensure_webapp_tables()
 
     #defaults = Defaults(timeout=60)  # увеличили таймаут до 60 секунд
     application = Application.builder().token(TELEGRAM_Deutsch_BOT_TOKEN).build()

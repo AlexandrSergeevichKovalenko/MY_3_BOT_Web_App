@@ -130,6 +130,17 @@ def ensure_webapp_tables() -> None:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_quiz_history (
+                    id SERIAL PRIMARY KEY,
+                    word_ru TEXT NOT NULL,
+                    asked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_quiz_history_word_time
+                ON bt_3_quiz_history (word_ru, asked_at);
+            """)
 
 
 def save_webapp_translation(
@@ -216,7 +227,7 @@ def save_webapp_dictionary_query(
             ))
 
 
-def get_random_dictionary_entry() -> dict | None:
+def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -226,17 +237,49 @@ def get_random_dictionary_entry() -> dict | None:
                     response_json
                 FROM bt_3_webapp_dictionary_queries
                 WHERE response_json IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM bt_3_quiz_history h
+                      WHERE h.word_ru = bt_3_webapp_dictionary_queries.word_ru
+                        AND h.asked_at >= NOW() - INTERVAL %s
+                  )
                 ORDER BY RANDOM()
                 LIMIT 1;
-            """)
+            """, (f"{cooldown_days} days",))
             row = cursor.fetchone()
             if not row:
-                return None
+                cursor.execute("""
+                    SELECT
+                        word_ru,
+                        translation_de,
+                        response_json
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE response_json IS NOT NULL
+                    ORDER BY RANDOM()
+                    LIMIT 1;
+                """)
+                row = cursor.fetchone()
+                if not row:
+                    return None
             return {
                 "word_ru": row[0],
                 "translation_de": row[1],
                 "response_json": row[2],
             }
+
+
+def record_quiz_word(word_ru: str) -> None:
+    if not word_ru:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_quiz_history (word_ru, asked_at)
+                VALUES (%s, NOW());
+                """,
+                (word_ru,),
+            )
 
 
 def _get_latest_session_id(cursor, user_id: int) -> str | None:
