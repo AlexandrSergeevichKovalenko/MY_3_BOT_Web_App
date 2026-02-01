@@ -69,6 +69,9 @@ function AppInner() {
   const [dictionaryError, setDictionaryError] = useState('');
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
   const [dictionarySaved, setDictionarySaved] = useState('');
+  const [youtubeInput, setYoutubeInput] = useState('');
+  const [youtubeId, setYoutubeId] = useState('');
+  const [youtubeError, setYoutubeError] = useState('');
   const [historyItems, setHistoryItems] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
@@ -227,6 +230,22 @@ function AppInner() {
       loadSentences();
     }
   }, [initData, isWebAppMode]);
+
+  useEffect(() => {
+    const stored = safeStorageGet('webapp_youtube');
+    if (!stored) return;
+    try {
+      const parsed = JSON.parse(stored);
+      if (parsed?.input) {
+        setYoutubeInput(parsed.input);
+      }
+      if (parsed?.id) {
+        setYoutubeId(parsed.id);
+      }
+    } catch (error) {
+      // ignore
+    }
+  }, []);
 
   const handleWebappSubmit = async (event) => {
     event.preventDefault();
@@ -478,6 +497,46 @@ function AppInner() {
     }
   };
 
+  const extractYoutubeId = (value) => {
+    if (!value) return '';
+    const trimmed = value.trim();
+    if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
+      return trimmed;
+    }
+    const patterns = [
+      /v=([a-zA-Z0-9_-]{11})/,
+      /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+      /embed\/([a-zA-Z0-9_-]{11})/,
+      /shorts\/([a-zA-Z0-9_-]{11})/,
+    ];
+    for (const pattern of patterns) {
+      const match = trimmed.match(pattern);
+      if (match) return match[1];
+    }
+    return '';
+  };
+
+  useEffect(() => {
+    const trimmed = youtubeInput.trim();
+    if (!trimmed) {
+      setYoutubeId('');
+      setYoutubeError('');
+      safeStorageRemove('webapp_youtube');
+      return;
+    }
+    const id = extractYoutubeId(trimmed);
+    if (id) {
+      setYoutubeId(id);
+      setYoutubeError('');
+      safeStorageSet('webapp_youtube', JSON.stringify({ input: trimmed, id }));
+    } else if (trimmed.length > 8) {
+      setYoutubeError('Не удалось распознать ссылку или ID видео.');
+      setYoutubeId('');
+    } else {
+      setYoutubeError('');
+    }
+  }, [youtubeInput]);
+
   const handleLoadDailyHistory = async () => {
     if (!initData) {
       setHistoryError('initData не найдено. Откройте Web App внутри Telegram.');
@@ -665,6 +724,49 @@ function AppInner() {
               )}
             </section>
           )}
+
+          <section className="webapp-video">
+            <h3>Видео YouTube</h3>
+            <div className="webapp-video-form">
+              <label className="webapp-field">
+                <span>Ссылка или ID видео</span>
+                <input
+                  type="text"
+                  value={youtubeInput}
+                  onChange={(event) => setYoutubeInput(event.target.value)}
+                  placeholder="https://youtu.be/VIDEO_ID"
+                />
+              </label>
+              <div className="webapp-video-actions">
+                {youtubeId && (
+                  <a
+                    className="secondary-button"
+                    href={`https://www.youtube.com/watch?v=${youtubeId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Открыть в YouTube
+                  </a>
+                )}
+              </div>
+            </div>
+            {youtubeError && <div className="webapp-error">{youtubeError}</div>}
+            {youtubeId ? (
+              <div className="webapp-video-frame">
+                <iframe
+                  title="YouTube player"
+                  src={`https://www.youtube.com/embed/${youtubeId}`}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  allowFullScreen
+                />
+              </div>
+            ) : (
+              <p className="webapp-muted">Вставьте ссылку на видео, чтобы смотреть прямо здесь.</p>
+            )}
+            <p className="webapp-muted">
+              Если видео не воспроизводится внутри Web App, используйте кнопку «Открыть в YouTube».
+            </p>
+          </section>
 
           <section className="webapp-dictionary">
             <h3>Словарь</h3>
