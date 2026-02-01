@@ -16,3 +16,5 @@ python-dotenv
 
 gunicorn
 youtube-transcript-api==0.6.2
+spacy==3.7.4
+de-core-news-sm==3.7.0

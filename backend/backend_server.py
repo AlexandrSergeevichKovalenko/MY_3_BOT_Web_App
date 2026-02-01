@@ -71,6 +71,7 @@ from livekit.api import AccessToken, VideoGrants
 from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
+import spacy
 
 from backend.openai_manager import run_check_translation, run_dictionary_lookup, run_translation_explanation
 from backend.database import (
@@ -220,6 +221,37 @@ def _send_group_message(text: str) -> None:
     )
     if response.status_code >= 400:
         raise RuntimeError(f"Telegram API error: {response.text}")
+
+
+_de_nlp = None
+
+
+def _get_de_nlp():
+    global _de_nlp
+    if _de_nlp is None:
+        _de_nlp = spacy.load("de_core_news_sm")
+    return _de_nlp
+
+
+def _normalize_german_text(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    nlp = _get_de_nlp()
+    doc = nlp(cleaned)
+    lemmas = []
+    for token in doc:
+        if token.is_space:
+            continue
+        if token.pos_ in ("PUNCT", "SYM"):
+            continue
+        lemma = token.lemma_ if token.lemma_ else token.text
+        if token.pos_ in ("NOUN", "PROPN"):
+            lemma = lemma.capitalize()
+        else:
+            lemma = lemma.lower()
+        lemmas.append(lemma)
+    return " ".join(lemmas).strip()
 
 
 def _fetch_youtube_transcript(video_id: str) -> dict:
@@ -475,6 +507,35 @@ def get_youtube_transcript():
             "is_generated": data.get("is_generated"),
         }
     )
+
+
+@app.route("/api/webapp/normalize/de", methods=["POST"])
+def normalize_german():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    text = (payload.get("text") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not text:
+        return jsonify({"error": "text обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        normalized = _normalize_german_text(text)
+    except Exception as exc:
+        return jsonify({"error": f"Не удалось нормализовать текст: {exc}"}), 500
+
+    return jsonify({"ok": True, "normalized": normalized})
 
 
 @app.route("/api/webapp/sentences", methods=["POST"])

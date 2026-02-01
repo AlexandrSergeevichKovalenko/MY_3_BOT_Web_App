@@ -366,15 +366,29 @@ function AppInner() {
       setDictionaryError('initData не найдено. Откройте Web App внутри Telegram.');
       return;
     }
+    let normalized = cleaned;
+    try {
+      const normalizeResponse = await fetch('/api/webapp/normalize/de', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, text: cleaned }),
+      });
+      if (normalizeResponse.ok) {
+        const data = await normalizeResponse.json();
+        normalized = data.normalized || cleaned;
+      }
+    } catch (error) {
+      // ignore normalization errors
+    }
     setDictionaryLoading(true);
     setDictionaryError('');
     setDictionarySaved('');
-    setDictionaryWord(cleaned);
+    setDictionaryWord(normalized);
     try {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word: cleaned }),
+        body: JSON.stringify({ initData, word: normalized }),
       });
       if (!response.ok) {
         let message = await response.text();
@@ -392,7 +406,7 @@ function AppInner() {
       const saveResponse = await fetch('/api/webapp/dictionary/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word_ru: cleaned, response_json: data.item || {} }),
+        body: JSON.stringify({ initData, word_ru: normalized, response_json: data.item || {} }),
       });
       if (!saveResponse.ok) {
         let message = await saveResponse.text();
@@ -408,6 +422,57 @@ function AppInner() {
       clearSelection();
     } catch (error) {
       setDictionaryError(`Ошибка сохранения: ${error.message}`);
+    } finally {
+      setDictionaryLoading(false);
+    }
+  };
+
+  const handleQuickLookupDictionary = async (text) => {
+    const cleaned = normalizeSelectionText(text);
+    if (!cleaned) return;
+    if (!initData) {
+      setDictionaryError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    let normalized = cleaned;
+    try {
+      const normalizeResponse = await fetch('/api/webapp/normalize/de', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, text: cleaned }),
+      });
+      if (normalizeResponse.ok) {
+        const data = await normalizeResponse.json();
+        normalized = data.normalized || cleaned;
+      }
+    } catch (error) {
+      // ignore normalization errors
+    }
+    setDictionaryLoading(true);
+    setDictionaryError('');
+    setDictionarySaved('');
+    setDictionaryWord(normalized);
+    try {
+      const response = await fetch('/api/webapp/dictionary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, word: normalized }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      setDictionaryResult(data.item || null);
+      clearSelection();
+    } catch (error) {
+      setDictionaryError(`Ошибка словаря: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
     }
@@ -1093,6 +1158,13 @@ function AppInner() {
               onMouseLeave={clearSelection}
             >
               <div className="webapp-selection-text">{selectionText}</div>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => handleQuickLookupDictionary(selectionText)}
+              >
+                Перевести
+              </button>
               <button
                 type="button"
                 className="secondary-button"
