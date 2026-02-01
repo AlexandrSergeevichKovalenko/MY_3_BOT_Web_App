@@ -473,6 +473,90 @@ body {
   border: 0;
 }
 
+.webapp-subtitles {
+  display: grid;
+  gap: 12px;
+  padding-top: 6px;
+}
+
+.webapp-subtitles-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.webapp-subtitles-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.webapp-subtitles-list {
+  max-height: 220px;
+  overflow: auto;
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid rgba(60, 51, 43, 0.12);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.webapp-subtitles-list p {
+  margin: 0 0 6px;
+}
+
+.webapp-subtitles-fallback textarea {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(60, 51, 43, 0.2);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.clickable-word {
+  cursor: pointer;
+  color: #1d4ed8;
+}
+
+.clickable-word:hover {
+  text-decoration: underline;
+}
+
+.webapp-feedback-line {
+  margin-bottom: 6px;
+}
+
+.webapp-feedback-label {
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.webapp-feedback-value {
+  display: inline;
+}
+
+.webapp-selection-menu {
+  position: fixed;
+  z-index: 50;
+  background: #fff;
+  border: 1px solid rgba(60, 51, 43, 0.18);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 12px 24px rgba(31, 28, 23, 0.18);
+  display: grid;
+  gap: 8px;
+  min-width: 180px;
+}
+
+.webapp-selection-text {
+  font-size: 12px;
+  color: #5a4b3f;
+  word-break: break-word;
+}
+
 @media (max-width: 900px) {
   .webapp-video-dictionary.is-split {
     grid-template-columns: 1fr;

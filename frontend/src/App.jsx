@@ -73,6 +73,12 @@ function AppInner() {
   const [youtubeId, setYoutubeId] = useState('');
   const [youtubeError, setYoutubeError] = useState('');
   const [videoExpanded, setVideoExpanded] = useState(false);
+  const [youtubeTranscript, setYoutubeTranscript] = useState([]);
+  const [youtubeTranscriptError, setYoutubeTranscriptError] = useState('');
+  const [youtubeTranscriptLoading, setYoutubeTranscriptLoading] = useState(false);
+  const [manualTranscript, setManualTranscript] = useState('');
+  const [selectionText, setSelectionText] = useState('');
+  const [selectionPos, setSelectionPos] = useState(null);
   const [historyItems, setHistoryItems] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
@@ -332,6 +338,123 @@ function AppInner() {
     }));
   };
 
+  const normalizeSelectionText = (value) => {
+    if (!value) return '';
+    return value.replace(/\s+/g, ' ').trim();
+  };
+
+  const handleSelection = (event, overrideText = '') => {
+    const text = overrideText || normalizeSelectionText(window.getSelection()?.toString() || '');
+    if (!text) {
+      setSelectionText('');
+      setSelectionPos(null);
+      return;
+    }
+    setSelectionText(text);
+    setSelectionPos({ x: event.clientX, y: event.clientY });
+  };
+
+  const clearSelection = () => {
+    setSelectionText('');
+    setSelectionPos(null);
+  };
+
+  const handleQuickAddToDictionary = async (text) => {
+    const cleaned = normalizeSelectionText(text);
+    if (!cleaned) return;
+    if (!initData) {
+      setDictionaryError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    setDictionaryLoading(true);
+    setDictionaryError('');
+    setDictionarySaved('');
+    setDictionaryWord(cleaned);
+    try {
+      const response = await fetch('/api/webapp/dictionary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, word: cleaned }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      setDictionaryResult(data.item || null);
+
+      const saveResponse = await fetch('/api/webapp/dictionary/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, word_ru: cleaned, response_json: data.item || {} }),
+      });
+      if (!saveResponse.ok) {
+        let message = await saveResponse.text();
+        try {
+          const payload = JSON.parse(message);
+          message = payload.error || message;
+        } catch (error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      setDictionarySaved('Добавлено в словарь ✅');
+      clearSelection();
+    } catch (error) {
+      setDictionaryError(`Ошибка сохранения: ${error.message}`);
+    } finally {
+      setDictionaryLoading(false);
+    }
+  };
+
+  const renderClickableText = (text) => {
+    if (!text) return null;
+    return text.split(/\s+/).map((word, index) => {
+      const cleaned = word.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿ'’-]/g, '');
+      if (!cleaned) {
+        return <span key={`w-${index}`}>{word} </span>;
+      }
+      return (
+        <span
+          key={`w-${index}`}
+          className="clickable-word"
+          onClick={(event) => handleSelection(event, cleaned)}
+        >
+          {word}{' '}
+        </span>
+      );
+    });
+  };
+
+  const parseTranscriptInput = (value) => {
+    const lines = value
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !/^\d+$/.test(line))
+      .filter((line) => !/^\d{2}:\d{2}:\d{2}/.test(line))
+      .filter((line) => !/^\d{2}:\d{2}/.test(line))
+      .filter((line) => !/-->/.test(line))
+      .filter((line) => !/^WEBVTT/i.test(line));
+    return lines.map((line, index) => ({
+      text: line,
+      start: index,
+      duration: 0,
+    }));
+  };
+
+  const handleManualTranscript = () => {
+    const parsed = parseTranscriptInput(manualTranscript);
+    setYoutubeTranscript(parsed);
+    setYoutubeTranscriptError('');
+  };
+
   const handleFinishTranslation = async () => {
     if (!initData) {
       setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
@@ -416,6 +539,33 @@ function AppInner() {
     return escaped
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.+?)\*/g, '<strong>$1</strong>');
+  };
+
+  const renderFeedback = (feedback) => {
+    if (!feedback) return null;
+    const lines = feedback.split('\n').map((line) => line.trim()).filter(Boolean);
+    return lines.map((line, index) => {
+      const match = line.match(/Correct Translation:\*?\s*(.+)$/i);
+      if (match) {
+        return (
+          <div
+            key={`fb-${index}`}
+            className="webapp-feedback-line"
+            onMouseUp={handleSelection}
+          >
+            <span className="webapp-feedback-label">🟣 Correct Translation:</span>
+            <span className="webapp-feedback-value">{renderClickableText(match[1])}</span>
+          </div>
+        );
+      }
+      return (
+        <div
+          key={`fb-${index}`}
+          className="webapp-feedback-line"
+          dangerouslySetInnerHTML={{ __html: renderRichText(line) }}
+        />
+      );
+    });
   };
 
 
@@ -538,6 +688,45 @@ function AppInner() {
     }
   }, [youtubeInput]);
 
+  useEffect(() => {
+    const fetchTranscript = async () => {
+      if (!youtubeId || !initData) {
+        setYoutubeTranscript([]);
+        setYoutubeTranscriptError('');
+        return;
+      }
+      setYoutubeTranscriptLoading(true);
+      setYoutubeTranscriptError('');
+      try {
+        const response = await fetch('/api/webapp/youtube/transcript', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, videoId: youtubeId }),
+        });
+        if (!response.ok) {
+          let message = await response.text();
+          try {
+            const data = JSON.parse(message);
+            message = data.error || message;
+          } catch (error) {
+            // ignore parsing errors
+          }
+          throw new Error(message);
+        }
+        const data = await response.json();
+        setYoutubeTranscript(data.items || []);
+        setManualTranscript('');
+      } catch (error) {
+        setYoutubeTranscript([]);
+        setYoutubeTranscriptError(`Авто-субтитры недоступны: ${error.message}`);
+      } finally {
+        setYoutubeTranscriptLoading(false);
+      }
+    };
+
+    fetchTranscript();
+  }, [youtubeId, initData]);
+
   const handleLoadDailyHistory = async () => {
     if (!initData) {
       setHistoryError('initData не найдено. Откройте Web App внутри Telegram.');
@@ -647,10 +836,7 @@ function AppInner() {
                       <div className="webapp-error">{item.error}</div>
                     ) : (
                       <>
-                        <div
-                          className="webapp-result-text"
-                          dangerouslySetInnerHTML={{ __html: renderRichText(item.feedback) }}
-                        />
+                        <div className="webapp-result-text">{renderFeedback(item.feedback)}</div>
                         <button
                           type="button"
                           className="secondary-button explanation-button"
@@ -775,6 +961,47 @@ function AppInner() {
               <p className="webapp-muted">
                 Если видео не воспроизводится внутри Web App, используйте кнопку «Открыть в YouTube».
               </p>
+
+              <div className="webapp-subtitles">
+                <div className="webapp-subtitles-header">
+                  <h4>Субтитры</h4>
+                  <div className="webapp-subtitles-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => handleManualTranscript()}
+                      disabled={!manualTranscript.trim()}
+                    >
+                      Использовать вставленные
+                    </button>
+                  </div>
+                </div>
+
+                {youtubeTranscriptLoading && <div className="webapp-muted">Загружаем субтитры...</div>}
+                {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
+
+                {youtubeTranscript.length > 0 ? (
+                  <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
+                    {youtubeTranscript.map((item, index) => (
+                      <p key={`${item.start}-${index}`}>
+                        {renderClickableText(item.text)}
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="webapp-subtitles-fallback">
+                    <p className="webapp-muted">
+                      Если авто-субтитры недоступны, вставьте текст субтитров ниже.
+                    </p>
+                    <textarea
+                      rows={5}
+                      value={manualTranscript}
+                      onChange={(event) => setManualTranscript(event.target.value)}
+                      placeholder="Вставьте .srt/.vtt или обычный текст субтитров"
+                    />
+                  </div>
+                )}
+              </div>
             </section>
 
             <section className="webapp-dictionary">
@@ -857,8 +1084,24 @@ function AppInner() {
                   )}
                 </div>
               )}
-            </section>
+          </section>
           </div>
+          {selectionText && selectionPos && (
+            <div
+              className="webapp-selection-menu"
+              style={{ left: `${selectionPos.x + 8}px`, top: `${selectionPos.y + 8}px` }}
+              onMouseLeave={clearSelection}
+            >
+              <div className="webapp-selection-text">{selectionText}</div>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => handleQuickAddToDictionary(selectionText)}
+              >
+                Добавить в словарь
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );

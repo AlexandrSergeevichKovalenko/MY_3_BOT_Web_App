@@ -70,6 +70,7 @@ from dotenv import load_dotenv
 from livekit.api import AccessToken, VideoGrants
 from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 
 from backend.openai_manager import run_check_translation, run_dictionary_lookup, run_translation_explanation
 from backend.database import (
@@ -219,6 +220,30 @@ def _send_group_message(text: str) -> None:
     )
     if response.status_code >= 400:
         raise RuntimeError(f"Telegram API error: {response.text}")
+
+
+def _fetch_youtube_transcript(video_id: str) -> dict:
+    try:
+        transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
+        preferred = None
+        for lang in ("de", "en", "ru"):
+            try:
+                preferred = transcripts.find_transcript([lang])
+                break
+            except Exception:
+                continue
+        if preferred is None:
+            preferred = transcripts.find_transcript([t.language_code for t in transcripts])
+        transcript = preferred.fetch()
+        return {
+            "items": transcript,
+            "language": preferred.language_code,
+            "is_generated": preferred.is_generated,
+        }
+    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as exc:
+        raise RuntimeError(str(exc)) from exc
+    except Exception as exc:
+        raise RuntimeError("Не удалось загрузить субтитры") from exc
 
 
 @app.errorhandler(Exception)
@@ -414,6 +439,42 @@ def save_webapp_dictionary_entry():
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
 
     return jsonify({"ok": True})
+
+
+@app.route("/api/webapp/youtube/transcript", methods=["POST"])
+def get_youtube_transcript():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    video_id = (payload.get("videoId") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not video_id:
+        return jsonify({"error": "videoId обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        data = _fetch_youtube_transcript(video_id)
+    except Exception as exc:
+        return jsonify({"error": f"Не удалось получить субтитры: {exc}"}), 404
+
+    return jsonify(
+        {
+            "ok": True,
+            "items": data.get("items", []),
+            "language": data.get("language"),
+            "is_generated": data.get("is_generated"),
+        }
+    )
 
 
 @app.route("/api/webapp/sentences", methods=["POST"])

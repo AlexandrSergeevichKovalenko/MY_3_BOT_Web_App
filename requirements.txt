@@ -224,8 +224,8 @@ Flask-Cors
 
 # Environment variables
 python-dotenv
+youtube-transcript-api==0.6.2
 
 gunicorn
-
 
 
