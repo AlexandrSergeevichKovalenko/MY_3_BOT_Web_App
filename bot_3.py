@@ -46,7 +46,7 @@ from backend.config_mistakes_data import VALID_CATEGORIES, VALID_SUBCATEGORIES, 
 
 application = None
 
-QUIZ_SCHEDULE_HOURS = [8, 14, 18]
+QUIZ_SCHEDULE_HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
 QUIZ_FEEDBACK_TTL_SECONDS = 120
 QUIZ_CACHE_TTL_SECONDS = 60 * 60 * 24
 active_quizzes = {}
