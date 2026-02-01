@@ -260,6 +260,9 @@ function AppInner() {
     setExplanationLoading({});
 
     try {
+      const submittedIds = Object.entries(translationDrafts)
+        .filter(([, text]) => text && text.trim())
+        .map(([id]) => Number(id));
       const response = await fetch('/api/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -279,9 +282,22 @@ function AppInner() {
       }
       const data = await response.json();
       setResults(data.results || []);
-      const storageKey = `webappDrafts_${webappUser?.id || 'unknown'}_${sessionId || 'nosession'}`;
-      safeStorageRemove(storageKey);
-      setTranslationDrafts({});
+      if (submittedIds.length > 0) {
+        setSentences((prev) => prev.filter((item) => !submittedIds.includes(Number(item.id_for_mistake_table))));
+        setTranslationDrafts((prev) => {
+          const next = { ...prev };
+          submittedIds.forEach((id) => {
+            delete next[String(id)];
+          });
+          const storageKey = `webappDrafts_${webappUser?.id || 'unknown'}_${sessionId || 'nosession'}`;
+          if (Object.keys(next).length === 0) {
+            safeStorageRemove(storageKey);
+          } else {
+            safeStorageSet(storageKey, JSON.stringify(next));
+          }
+          return next;
+        });
+      }
     } catch (error) {
       setWebappError(`Ошибка проверки: ${error.message}`);
     } finally {
@@ -369,6 +385,17 @@ function AppInner() {
     } finally {
       setExplanationLoading((prev) => ({ ...prev, [key]: false }));
     }
+  };
+
+  const renderRichText = (text) => {
+    if (!text) return '';
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return escaped
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<strong>$1</strong>');
   };
 
 
@@ -531,7 +558,7 @@ function AppInner() {
                         {item.unique_id ?? index + 1}. {item.sentence}
                       </span>
                       <textarea
-                        rows={3}
+                        rows={5}
                         value={draft}
                         onChange={(event) => handleDraftChange(item.id_for_mistake_table, event.target.value)}
                         placeholder="Введите перевод..."
@@ -560,7 +587,10 @@ function AppInner() {
                       <div className="webapp-error">{item.error}</div>
                     ) : (
                       <>
-                        <pre className="webapp-result-text">{item.feedback}</pre>
+                        <div
+                          className="webapp-result-text"
+                          dangerouslySetInnerHTML={{ __html: renderRichText(item.feedback) }}
+                        />
                         <button
                           type="button"
                           className="secondary-button explanation-button"
@@ -572,9 +602,14 @@ function AppInner() {
                             : 'Объяснить ошибки'}
                         </button>
                         {explanations[String(item.sentence_number ?? item.original_text)] && (
-                          <pre className="webapp-explanation">
-                            {explanations[String(item.sentence_number ?? item.original_text)]}
-                          </pre>
+                          <div
+                            className="webapp-explanation"
+                            dangerouslySetInnerHTML={{
+                              __html: renderRichText(
+                                explanations[String(item.sentence_number ?? item.original_text)]
+                              ),
+                            }}
+                          />
                         )}
                       </>
                     )}
