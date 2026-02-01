@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y ffmpeg
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 -r requirements.txt
+RUN python -m spacy download de_core_news_sm
 
 # Копируем исходный код
 COPY . .

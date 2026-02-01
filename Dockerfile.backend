@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 1) Ставим зависимости backend
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN python -m spacy download de_core_news_sm
 
 # 2) Копируем backend-код
 COPY backend/ /app/backend/
