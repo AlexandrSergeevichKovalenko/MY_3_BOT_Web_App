@@ -415,6 +415,13 @@ body {
   gap: 16px;
 }
 
+.webapp-video-dictionary.is-split .webapp-dictionary {
+  position: sticky;
+  top: 18px;
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+}
+
 .webapp-video {
   background: rgba(255, 255, 255, 0.92);
   border-radius: 18px;
@@ -422,6 +429,16 @@ body {
   box-shadow: 0 16px 32px rgba(65, 52, 41, 0.12);
   display: grid;
   gap: 14px;
+}
+
+.webapp-video-dictionary {
+  display: grid;
+  gap: 16px;
+}
+
+.webapp-video-dictionary.is-split {
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr);
+  align-items: start;
 }
 
 .webapp-video-form {
@@ -444,12 +461,22 @@ body {
   background: #000;
 }
 
+.webapp-video-frame.is-expanded {
+  padding-top: 48%;
+}
+
 .webapp-video-frame iframe {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   border: 0;
+}
+
+@media (max-width: 900px) {
+  .webapp-video-dictionary.is-split {
+    grid-template-columns: 1fr;
+  }
 }
 
 .webapp-dictionary-form {

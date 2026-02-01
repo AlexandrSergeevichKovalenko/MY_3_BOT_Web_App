@@ -72,6 +72,7 @@ function AppInner() {
   const [youtubeInput, setYoutubeInput] = useState('');
   const [youtubeId, setYoutubeId] = useState('');
   const [youtubeError, setYoutubeError] = useState('');
+  const [videoExpanded, setVideoExpanded] = useState(false);
   const [historyItems, setHistoryItems] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
@@ -725,130 +726,139 @@ function AppInner() {
             </section>
           )}
 
-          <section className="webapp-video">
-            <h3>Видео YouTube</h3>
-            <div className="webapp-video-form">
-              <label className="webapp-field">
-                <span>Ссылка или ID видео</span>
-                <input
-                  type="text"
-                  value={youtubeInput}
-                  onChange={(event) => setYoutubeInput(event.target.value)}
-                  placeholder="https://youtu.be/VIDEO_ID"
-                />
-              </label>
-              <div className="webapp-video-actions">
-                {youtubeId && (
-                  <a
+          <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
+            <section className="webapp-video">
+              <h3>Видео YouTube</h3>
+              <div className="webapp-video-form">
+                <label className="webapp-field">
+                  <span>Ссылка или ID видео</span>
+                  <input
+                    type="text"
+                    value={youtubeInput}
+                    onChange={(event) => setYoutubeInput(event.target.value)}
+                    placeholder="https://youtu.be/VIDEO_ID"
+                  />
+                </label>
+                <div className="webapp-video-actions">
+                  <button
+                    type="button"
                     className="secondary-button"
-                    href={`https://www.youtube.com/watch?v=${youtubeId}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                    onClick={() => setVideoExpanded((prev) => !prev)}
                   >
-                    Открыть в YouTube
-                  </a>
-                )}
-              </div>
-            </div>
-            {youtubeError && <div className="webapp-error">{youtubeError}</div>}
-            {youtubeId ? (
-              <div className="webapp-video-frame">
-                <iframe
-                  title="YouTube player"
-                  src={`https://www.youtube.com/embed/${youtubeId}`}
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                  allowFullScreen
-                />
-              </div>
-            ) : (
-              <p className="webapp-muted">Вставьте ссылку на видео, чтобы смотреть прямо здесь.</p>
-            )}
-            <p className="webapp-muted">
-              Если видео не воспроизводится внутри Web App, используйте кнопку «Открыть в YouTube».
-            </p>
-          </section>
-
-          <section className="webapp-dictionary">
-            <h3>Словарь</h3>
-            <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
-              <label className="webapp-field">
-                <span>Слово или фраза (русский)</span>
-                <input
-                  type="text"
-                  value={dictionaryWord}
-                  onChange={(event) => setDictionaryWord(event.target.value)}
-                  placeholder="Например: отказаться, уважение, несмотря на"
-                />
-              </label>
-              <div className="dictionary-actions">
-                <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
-                  {dictionaryLoading ? 'Ищем...' : 'Перевести'}
-                </button>
-                <button
-                  className="secondary-button dictionary-save-button"
-                  type="button"
-                  onClick={handleDictionarySave}
-                  disabled={dictionaryLoading || !dictionaryResult}
-                >
-                  Добавить в словарь
-                </button>
-              </div>
-            </form>
-
-            {dictionaryError && <div className="webapp-error">{dictionaryError}</div>}
-            {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
-
-            {dictionaryResult && (
-              <div className="webapp-dictionary-result">
-                <div className="dictionary-row">
-                  <strong>Перевод:</strong> {dictionaryResult.translation_de || '—'}
+                    {videoExpanded ? 'Обычный режим' : 'Словарь рядом'}
+                  </button>
+                  {youtubeId && (
+                    <a
+                      className="secondary-button"
+                      href={`https://www.youtube.com/watch?v=${youtubeId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Открыть в YouTube
+                    </a>
+                  )}
                 </div>
-                <div className="dictionary-row">
-                  <strong>Часть речи:</strong> {dictionaryResult.part_of_speech || '—'}
+              </div>
+              {youtubeError && <div className="webapp-error">{youtubeError}</div>}
+              {youtubeId ? (
+                <div className={`webapp-video-frame ${videoExpanded ? 'is-expanded' : ''}`}>
+                  <iframe
+                    title="YouTube player"
+                    src={`https://www.youtube.com/embed/${youtubeId}`}
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    allowFullScreen
+                  />
                 </div>
-                {dictionaryResult.article && (
+              ) : (
+                <p className="webapp-muted">Вставьте ссылку на видео, чтобы смотреть прямо здесь.</p>
+              )}
+              <p className="webapp-muted">
+                Если видео не воспроизводится внутри Web App, используйте кнопку «Открыть в YouTube».
+              </p>
+            </section>
+
+            <section className="webapp-dictionary">
+              <h3>Словарь</h3>
+              <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
+                <label className="webapp-field">
+                  <span>Слово или фраза (русский)</span>
+                  <input
+                    type="text"
+                    value={dictionaryWord}
+                    onChange={(event) => setDictionaryWord(event.target.value)}
+                    placeholder="Например: отказаться, уважение, несмотря на"
+                  />
+                </label>
+                <div className="dictionary-actions">
+                  <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
+                    {dictionaryLoading ? 'Ищем...' : 'Перевести'}
+                  </button>
+                  <button
+                    className="secondary-button dictionary-save-button"
+                    type="button"
+                    onClick={handleDictionarySave}
+                    disabled={dictionaryLoading || !dictionaryResult}
+                  >
+                    Добавить в словарь
+                  </button>
+                </div>
+              </form>
+
+              {dictionaryError && <div className="webapp-error">{dictionaryError}</div>}
+              {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
+
+              {dictionaryResult && (
+                <div className="webapp-dictionary-result">
                   <div className="dictionary-row">
-                    <strong>Артикль:</strong> {dictionaryResult.article}
+                    <strong>Перевод:</strong> {dictionaryResult.translation_de || '—'}
                   </div>
-                )}
-                {dictionaryResult.forms && (
-                  <div className="dictionary-forms">
-                    <div><strong>Plural:</strong> {dictionaryResult.forms.plural || '—'}</div>
-                    <div><strong>Präteritum:</strong> {dictionaryResult.forms.praeteritum || '—'}</div>
-                    <div><strong>Perfekt:</strong> {dictionaryResult.forms.perfekt || '—'}</div>
-                    <div><strong>Konjunktiv I:</strong> {dictionaryResult.forms.konjunktiv1 || '—'}</div>
-                    <div><strong>Konjunktiv II:</strong> {dictionaryResult.forms.konjunktiv2 || '—'}</div>
+                  <div className="dictionary-row">
+                    <strong>Часть речи:</strong> {dictionaryResult.part_of_speech || '—'}
                   </div>
-                )}
+                  {dictionaryResult.article && (
+                    <div className="dictionary-row">
+                      <strong>Артикль:</strong> {dictionaryResult.article}
+                    </div>
+                  )}
+                  {dictionaryResult.forms && (
+                    <div className="dictionary-forms">
+                      <div><strong>Plural:</strong> {dictionaryResult.forms.plural || '—'}</div>
+                      <div><strong>Präteritum:</strong> {dictionaryResult.forms.praeteritum || '—'}</div>
+                      <div><strong>Perfekt:</strong> {dictionaryResult.forms.perfekt || '—'}</div>
+                      <div><strong>Konjunktiv I:</strong> {dictionaryResult.forms.konjunktiv1 || '—'}</div>
+                      <div><strong>Konjunktiv II:</strong> {dictionaryResult.forms.konjunktiv2 || '—'}</div>
+                    </div>
+                  )}
 
-                {Array.isArray(dictionaryResult.prefixes) && dictionaryResult.prefixes.length > 0 && (
-                  <div className="dictionary-prefixes">
-                    <strong>Префиксы/варианты:</strong>
-                    <ul>
-                      {dictionaryResult.prefixes.map((item, index) => (
-                        <li key={`${item.variant}-${index}`}>
-                          <div><strong>{item.variant}:</strong> {item.translation_de || '—'}</div>
-                          {item.explanation && <div>{item.explanation}</div>}
-                          {item.example_de && <div><em>{item.example_de}</em></div>}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                  {Array.isArray(dictionaryResult.prefixes) && dictionaryResult.prefixes.length > 0 && (
+                    <div className="dictionary-prefixes">
+                      <strong>Префиксы/варианты:</strong>
+                      <ul>
+                        {dictionaryResult.prefixes.map((item, index) => (
+                          <li key={`${item.variant}-${index}`}>
+                            <div><strong>{item.variant}:</strong> {item.translation_de || '—'}</div>
+                            {item.explanation && <div>{item.explanation}</div>}
+                            {item.example_de && <div><em>{item.example_de}</em></div>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
-                {Array.isArray(dictionaryResult.usage_examples) && dictionaryResult.usage_examples.length > 0 && (
-                  <div className="dictionary-examples">
-                    <strong>Примеры:</strong>
-                    <ul>
-                      {dictionaryResult.usage_examples.map((example, index) => (
-                        <li key={`${index}-${example}`}>{example}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            )}
-          </section>
+                  {Array.isArray(dictionaryResult.usage_examples) && dictionaryResult.usage_examples.length > 0 && (
+                    <div className="dictionary-examples">
+                      <strong>Примеры:</strong>
+                      <ul>
+                        {dictionaryResult.usage_examples.map((example, index) => (
+                          <li key={`${index}-${example}`}>{example}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          </div>
         </div>
       </div>
     );
