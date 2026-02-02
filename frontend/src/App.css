@@ -644,6 +644,28 @@ body {
   margin-top: 12px;
 }
 
+.webapp-section-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 8px 0 12px;
+}
+
+.webapp-section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.is-active-section {
+  color: #b00020;
+  font-weight: 800;
+}
+
+.webapp-history-head.is-active h3 {
+  color: #b00020;
+}
+
 .dictionary-row {
   font-size: 14px;
 }
@@ -713,6 +735,13 @@ body {
   padding: 8px 10px;
   background: rgba(255, 255, 255, 0.7);
   border-radius: 10px;
+}
+
+.flashcard-context-visible {
+  font-size: 15px;
+  font-weight: 800;
+  color: #b00020;
+  background: rgba(255, 215, 215, 0.6);
 }
 
 .flashcard-options {

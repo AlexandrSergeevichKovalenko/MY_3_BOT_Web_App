@@ -82,6 +82,10 @@ from backend.database import (
     get_latest_daily_sentences,
     save_webapp_dictionary_query,
     save_webapp_translation,
+    get_dictionary_cache,
+    upsert_dictionary_cache,
+    record_flashcard_answer,
+    get_flashcard_set,
 )
 from backend.translation_workflow import (
     build_user_daily_summary,
@@ -431,10 +435,17 @@ def lookup_webapp_dictionary():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
+    cached = get_dictionary_cache(word_ru)
+    if cached:
+        return jsonify({"ok": True, "item": cached})
+
     try:
         result = asyncio.run(run_dictionary_lookup(word_ru))
     except Exception as exc:
         return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
+
+    if result:
+        upsert_dictionary_cache(word_ru, result)
 
     return jsonify({"ok": True, "item": result})
 
@@ -499,6 +510,64 @@ def get_webapp_dictionary_cards():
         return jsonify({"error": f"Ошибка получения словаря: {exc}"}), 500
 
     return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/webapp/flashcards/set", methods=["POST"])
+def get_webapp_flashcard_set():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    set_size = int(payload.get("set_size", 15))
+    wrong_size = int(payload.get("wrong_size", 5))
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        items = get_flashcard_set(user_id=user_id, set_size=set_size, wrong_size=wrong_size)
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка получения карточек: {exc}"}), 500
+
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/webapp/flashcards/answer", methods=["POST"])
+def record_webapp_flashcard_answer():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    entry_id = payload.get("entry_id")
+    is_correct = payload.get("is_correct")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if entry_id is None or is_correct is None:
+        return jsonify({"error": "entry_id и is_correct обязательны"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        record_flashcard_answer(user_id=user_id, entry_id=int(entry_id), is_correct=bool(is_correct))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения ответа: {exc}"}), 500
+
+    return jsonify({"ok": True})
 
 
 @app.route("/api/webapp/youtube/transcript", methods=["POST"])

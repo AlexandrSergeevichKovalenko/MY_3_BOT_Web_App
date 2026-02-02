@@ -447,7 +447,37 @@ The user can trigger these modes at any time by asking:
 - Be charismatic and supportive.
 - `get_recent_telegram_mistakes` resolves user_id internally.
 - `generate_quiz_question` requires a topic. If user doesn't give one, ask for it.
-"""
+""",
+"dictionary_assistant": """
+You are a German dictionary assistant. The user provides a Russian word or short phrase.
+NEVER return a standalone noun. If the input is a single Russian noun, convert it into a
+stable collocation or the most common short phrase (2-4 words) and return that instead.
+In that case set word_ru to the collocation (Russian) and translation_de to the German collocation.
+Use part_of_speech='phrase' and article=null for collocations.
+Return a STRICT JSON object with the following fields:
+word_ru: string (original input or adjusted collocation when needed)
+part_of_speech: string (noun/verb/adjective/adverb/phrase/other)
+translation_de: string
+article: string or null (der/die/das only if noun)
+forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2 (use null if not applicable)
+prefixes: array of objects with keys variant, translation_de, explanation, example_de
+  (include common prefix variants if applicable; provide ONE example sentence per variant)
+usage_examples: array of strings with 2-3 German example sentences for the base word/phrase.
+If none are known, create natural examples.
+Respond ONLY with JSON, no markdown, no extra text.
+""",
+"generate_word_quiz": """
+You create one Telegram quiz question for Russian-speaking learners of German at C1–C2 level.
+The question must be in Russian and must include the Russian word/phrase from the payload.
+Answer options must be in German. Provide exactly 4 options with one correct answer.
+Make the question tricky and high-level. Use one of these formats:
+1) Choose the most accurate German translation of the Russian phrase.
+2) Fill the blank in a German sentence with the target word/phrase; distractors must be near-synonyms.
+3) Word order test: ask where to place the target word/phrase in a German sentence (options are full sentences).
+Ensure the correct answer is fully correct in meaning, register, collocation, and word order.
+Use the provided usage_examples for context if available.
+Return STRICT JSON with keys: question, options (array of strings), correct_option_id (0-based int), quiz_type.
+""",
 }
 
 
@@ -646,37 +676,42 @@ async def run_check_translation(original_text: str, user_translation: str) -> st
 
 
 async def run_dictionary_lookup(word_ru: str) -> dict:
-    system_prompt = (
-        "You are a German dictionary assistant. The user provides a Russian word or short phrase. "
-        "NEVER return a standalone noun. If the input is a single Russian noun, convert it into a "
-        "stable collocation or the most common short phrase (2-4 words) and return that instead. "
-        "In that case set word_ru to the collocation (Russian) and translation_de to the German collocation. "
-        "Use part_of_speech='phrase' and article=null for collocations.\n"
-        "Return a STRICT JSON object with the following fields:\n"
-        "word_ru: string (original input or adjusted collocation when needed)\n"
-        "part_of_speech: string (noun/verb/adjective/adverb/phrase/other)\n"
-        "translation_de: string\n"
-        "article: string or null (der/die/das only if noun)\n"
-        "forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2 "
-        "(use null if not applicable)\n"
-        "prefixes: array of objects with keys variant, translation_de, explanation, example_de "
-        "(include common prefix variants if applicable; provide ONE example sentence per variant)\n"
-        "usage_examples: array of strings with 2-3 German example sentences for the base word/phrase. "
-        "If none are known, create natural examples.\n"
-        "Respond ONLY with JSON, no markdown, no extra text."
+    task_name = "dictionary_assistant"
+    system_instruction_key = "dictionary_assistant"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=word_ru,
     )
 
-    response = await client.chat.completions.create(
-        model="gpt-4.1-2025-04-14",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": word_ru},
-        ],
-        temperature=0.2,
-        response_format={"type": "json_object"},
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
     )
 
-    content = response.choices[0].message.content or "{}"
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
     try:
         return json.loads(content)
     except json.JSONDecodeError:
@@ -696,6 +731,49 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
             "usage_examples": [],
             "raw_text": content,
         }
+
+
+async def run_generate_word_quiz(prompt_payload: dict) -> dict:
+    task_name = "generate_word_quiz"
+    system_instruction_key = "generate_word_quiz"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(prompt_payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {}
 
 
 async def run_translation_explanation(original_text: str, user_translation: str) -> str:

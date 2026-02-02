@@ -19,7 +19,7 @@ else:
 
 @contextmanager
 def get_db_connection_context(): #
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require') #
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=8) #
     try:
         yield conn #
         conn.commit() #
@@ -140,6 +140,32 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_quiz_history_word_time
                 ON bt_3_quiz_history (word_ru, asked_at);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_dictionary_cache (
+                    word_ru TEXT PRIMARY KEY,
+                    response_json JSONB NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_flashcard_stats (
+                    user_id BIGINT NOT NULL,
+                    entry_id BIGINT NOT NULL,
+                    correct_count INT DEFAULT 0,
+                    wrong_count INT DEFAULT 0,
+                    last_result BOOLEAN,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, entry_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_flashcard_seen (
+                    user_id BIGINT NOT NULL,
+                    entry_id BIGINT NOT NULL,
+                    seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, entry_id, seen_at)
+                );
             """)
 
 
@@ -336,6 +362,149 @@ def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translati
                     json.dumps(response_json, ensure_ascii=False),
                     entry_id,
                 ))
+
+
+def get_dictionary_cache(word_ru: str) -> dict | None:
+    if not word_ru:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT response_json
+                FROM bt_3_dictionary_cache
+                WHERE word_ru = %s;
+            """, (word_ru,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            response_json = row[0]
+            if isinstance(response_json, str):
+                try:
+                    return json.loads(response_json)
+                except json.JSONDecodeError:
+                    return None
+            return response_json
+
+
+def upsert_dictionary_cache(word_ru: str, response_json: dict) -> None:
+    if not word_ru:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO bt_3_dictionary_cache (word_ru, response_json, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (word_ru) DO UPDATE
+                SET response_json = EXCLUDED.response_json,
+                    updated_at = NOW();
+            """, (
+                word_ru,
+                json.dumps(response_json, ensure_ascii=False),
+            ))
+
+
+def record_flashcard_answer(user_id: int, entry_id: int, is_correct: bool) -> None:
+    if not user_id or not entry_id:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO bt_3_flashcard_stats (user_id, entry_id, correct_count, wrong_count, last_result, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id, entry_id) DO UPDATE
+                SET correct_count = bt_3_flashcard_stats.correct_count + %s,
+                    wrong_count = bt_3_flashcard_stats.wrong_count + %s,
+                    last_result = EXCLUDED.last_result,
+                    updated_at = NOW();
+            """, (
+                user_id,
+                entry_id,
+                1 if is_correct else 0,
+                0 if is_correct else 1,
+                is_correct,
+                1 if is_correct else 0,
+                0 if is_correct else 1,
+            ))
+            cursor.execute("""
+                INSERT INTO bt_3_flashcard_seen (user_id, entry_id, seen_at)
+                VALUES (%s, %s, NOW());
+            """, (user_id, entry_id))
+
+
+def get_flashcard_set(user_id: int, set_size: int = 15, wrong_size: int = 5) -> list[dict]:
+    if not user_id:
+        return []
+    wrong_ids: list[int] = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT entry_id
+                FROM bt_3_flashcard_stats
+                WHERE user_id = %s AND last_result = FALSE
+                ORDER BY updated_at DESC
+                LIMIT %s;
+            """, (user_id, wrong_size))
+            wrong_ids = [row[0] for row in cursor.fetchall()]
+
+            if len(wrong_ids) < wrong_size:
+                cursor.execute("""
+                    SELECT entry_id
+                    FROM bt_3_flashcard_stats
+                    WHERE user_id = %s
+                      AND entry_id <> ALL(%s::bigint[])
+                    ORDER BY (wrong_count - correct_count) DESC, updated_at DESC
+                    LIMIT %s;
+                """, (user_id, wrong_ids or [0], wrong_size - len(wrong_ids)))
+                wrong_ids.extend([row[0] for row in cursor.fetchall()])
+
+            cursor.execute("""
+                SELECT id, word_ru, translation_de, response_json
+                FROM bt_3_webapp_dictionary_queries
+                WHERE user_id = %s
+                  AND id <> ALL(%s::bigint[])
+                  AND id NOT IN (
+                      SELECT entry_id
+                      FROM bt_3_flashcard_seen
+                      WHERE user_id = %s
+                        AND seen_at >= NOW() - INTERVAL '2 days'
+                  )
+                ORDER BY RANDOM()
+                LIMIT %s;
+            """, (user_id, wrong_ids or [0], user_id, max(set_size - len(wrong_ids), 0)))
+            random_rows = cursor.fetchall()
+
+            if len(random_rows) < max(set_size - len(wrong_ids), 0):
+                cursor.execute("""
+                    SELECT id, word_ru, translation_de, response_json
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE user_id = %s
+                      AND id <> ALL(%s::bigint[])
+                    ORDER BY RANDOM()
+                    LIMIT %s;
+                """, (user_id, wrong_ids or [0], max(set_size - len(wrong_ids), 0)))
+                random_rows = cursor.fetchall()
+
+            if wrong_ids:
+                cursor.execute("""
+                    SELECT id, word_ru, translation_de, response_json
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE user_id = %s
+                      AND id = ANY(%s::bigint[]);
+                """, (user_id, wrong_ids))
+                wrong_rows = cursor.fetchall()
+            else:
+                wrong_rows = []
+
+    rows = wrong_rows + random_rows
+    items = []
+    for row in rows:
+        items.append({
+            "id": row[0],
+            "word_ru": row[1],
+            "translation_de": row[2],
+            "response_json": row[3],
+        })
+    return items
 
 
 def _get_latest_session_id(cursor, user_id: int) -> str | None:

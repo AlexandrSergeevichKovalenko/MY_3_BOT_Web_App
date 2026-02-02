@@ -36,13 +36,21 @@ import io
 from datetime import datetime
 import logging
 import sys
-from backend.openai_manager import client, get_or_create_openai_resources, system_message, run_dictionary_lookup # Теперь импортируем client и system_message
+from backend.openai_manager import (
+    client,
+    get_or_create_openai_resources,
+    system_message,
+    run_dictionary_lookup,
+    run_generate_word_quiz,
+)
 from backend.database import (
     init_db,
     get_random_dictionary_entry,
     record_quiz_word,
     ensure_webapp_tables,
     update_webapp_dictionary_entry,
+    get_dictionary_cache,
+    upsert_dictionary_cache,
 )
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
 from load_data_from_db import load_data_for_analytics 
@@ -54,6 +62,7 @@ from backend.config_mistakes_data import VALID_CATEGORIES, VALID_SUBCATEGORIES, 
 application = None
 
 QUIZ_SCHEDULE_HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+QUIZ_SCHEDULE_MINUTES = [0, 15, 30, 45]
 QUIZ_FEEDBACK_TTL_SECONDS = 120
 QUIZ_CACHE_TTL_SECONDS = 60 * 60 * 24
 QUIZ_FREEFORM_OPTION = "keine korrekte Antworten"
@@ -3766,16 +3775,21 @@ async def generate_word_quiz(entry: dict) -> dict | None:
         return None
 
     if not response_json:
-        try:
-            lookup = await run_dictionary_lookup(word_ru)
-        except Exception as exc:
-            logging.warning(f"⚠️ Dictionary lookup failed for quiz: {exc}")
-            lookup = None
-        if lookup:
-            if translation_de:
-                lookup["translation_de"] = translation_de
-            response_json = lookup
-            update_webapp_dictionary_entry(entry_id, response_json, translation_de or lookup.get("translation_de"))
+        cached = get_dictionary_cache(word_ru)
+        if cached:
+            response_json = cached
+        else:
+            try:
+                lookup = await run_dictionary_lookup(word_ru)
+            except Exception as exc:
+                logging.warning(f"⚠️ Dictionary lookup failed for quiz: {exc}")
+                lookup = None
+            if lookup:
+                if translation_de:
+                    lookup["translation_de"] = translation_de
+                response_json = lookup
+                upsert_dictionary_cache(word_ru, response_json)
+                update_webapp_dictionary_entry(entry_id, response_json, translation_de or lookup.get("translation_de"))
 
     article = response_json.get("article") if response_json else None
     part_of_speech = response_json.get("part_of_speech") if response_json else None
@@ -3792,33 +3806,8 @@ async def generate_word_quiz(entry: dict) -> dict | None:
         "usage_examples": usage_examples,
     }
 
-    system_prompt = (
-        "You create one Telegram quiz question for Russian-speaking learners of German at C1–C2 level. "
-        "The question must be in Russian and must include the Russian word/phrase from the payload. "
-        "Answer options must be in German. Provide exactly 4 options with one correct answer. "
-        "Make the question tricky and high-level. Use one of these formats:\n"
-        "1) Choose the most accurate German translation of the Russian phrase.\n"
-        "2) Fill the blank in a German sentence with the target word/phrase; distractors must be near-synonyms.\n"
-        "3) Word order test: ask where to place the target word/phrase in a German sentence (options are full sentences).\n"
-        "Ensure the correct answer is fully correct in meaning, register, collocation, and word order. "
-        "Use the provided usage_examples for context if available. "
-        "Return STRICT JSON with keys: question, options (array of strings), correct_option_id (0-based int), quiz_type."
-    )
-
-    response = await client.chat.completions.create(
-        model="gpt-4.1-2025-04-14",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
-        ],
-        temperature=0.4,
-        response_format={"type": "json_object"},
-    )
-
-    content = response.choices[0].message.content or "{}"
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError:
+    payload = await run_generate_word_quiz(prompt_payload)
+    if not payload:
         return _apply_quiz_freeform_option(fallback)
 
     quiz = _normalize_quiz_payload(payload, fallback)
@@ -4027,12 +4016,13 @@ def main():
         )
 
     for hour in QUIZ_SCHEDULE_HOURS:
-        scheduler.add_job(
-            lambda: submit_async(send_scheduled_quiz, CallbackContext(application=application)),
-            "cron",
-            hour=hour,
-            minute=0,
-        )
+        for minute in QUIZ_SCHEDULE_MINUTES:
+            scheduler.add_job(
+                lambda: submit_async(send_scheduled_quiz, CallbackContext(application=application)),
+                "cron",
+                hour=hour,
+                minute=minute,
+            )
 
     scheduler.add_job(
         lambda: submit_async(send_german_news, CallbackContext(application=application)), 

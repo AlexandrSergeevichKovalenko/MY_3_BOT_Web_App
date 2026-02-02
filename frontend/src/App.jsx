@@ -97,6 +97,7 @@ function AppInner() {
   const [flashcardIndex, setFlashcardIndex] = useState(0);
   const [flashcardSelection, setFlashcardSelection] = useState(null);
   const [flashcardOptions, setFlashcardOptions] = useState([]);
+  const [activeSection, setActiveSection] = useState('all');
 
   const dictionaryRef = useRef(null);
   const flashcardsRef = useRef(null);
@@ -559,10 +560,10 @@ function AppInner() {
     setFlashcardsLoading(true);
     setFlashcardsError('');
     try {
-      const response = await fetch('/api/webapp/dictionary/cards', {
+      const response = await fetch('/api/webapp/flashcards/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, limit: 200 }),
+        body: JSON.stringify({ initData, set_size: 15, wrong_size: 5 }),
       });
       if (!response.ok) {
         throw new Error(await response.text());
@@ -601,6 +602,21 @@ function AppInner() {
       [options[i], options[j]] = [options[j], options[i]];
     }
     return options;
+  };
+
+  const recordFlashcardAnswer = async (entryId, isCorrect) => {
+    if (!initData || !entryId) {
+      return;
+    }
+    try {
+      await fetch('/api/webapp/flashcards/answer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, entry_id: entryId, is_correct: isCorrect }),
+      });
+    } catch (error) {
+      // ignore answer tracking errors
+    }
   };
 
   const renderClickableText = (text) => {
@@ -951,6 +967,11 @@ function AppInner() {
     }
   };
 
+  const endActiveSection = () => {
+    setActiveSection('all');
+    setFlashcardsOnly(false);
+  };
+
   if (isWebAppMode) {
     return (
       <div className="webapp-page">
@@ -971,6 +992,24 @@ function AppInner() {
             </div>
           </section>
 
+          <div className="webapp-section-nav">
+            <button type="button" className="secondary-button" onClick={() => setActiveSection('translations')}>
+              Переводы
+            </button>
+            <button type="button" className="secondary-button" onClick={() => setActiveSection('youtube')}>
+              YouTube
+            </button>
+            <button type="button" className="secondary-button" onClick={() => setActiveSection('dictionary')}>
+              Словарь
+            </button>
+            <button type="button" className="secondary-button" onClick={() => setActiveSection('flashcards')}>
+              Карточки
+            </button>
+            <button type="button" className="secondary-button" onClick={endActiveSection}>
+              Все разделы
+            </button>
+          </div>
+
           {!telegramApp?.initData && (
             <label className="webapp-field">
               <span>initData (для локального теста)</span>
@@ -983,10 +1022,21 @@ function AppInner() {
             </label>
           )}
 
-          {!flashcardsOnly && (
+          {activeSection !== 'all' && (
+            <div className="webapp-section-actions">
+              <button type="button" className="secondary-button" onClick={endActiveSection}>
+                Показать все разделы
+              </button>
+            </div>
+          )}
+
+          {!flashcardsOnly && activeSection === 'all' && (
             <form className="webapp-form" onSubmit={handleWebappSubmit}>
-              <section className="webapp-translation-list">
-                <div className="webapp-history-head">
+              <section
+                className="webapp-translation-list"
+                onClick={() => setActiveSection('translations')}
+              >
+                <div className={`webapp-history-head ${activeSection === 'translations' ? 'is-active' : ''}`}>
                   <h3>Ваши переводы</h3>
                 </div>
                 {sentences.length === 0 ? (
@@ -1017,10 +1067,10 @@ function AppInner() {
             </form>
           )}
 
-          {!flashcardsOnly && webappError && <div className="webapp-error">{webappError}</div>}
-          {!flashcardsOnly && finishMessage && <div className="webapp-success">{finishMessage}</div>}
+          {!flashcardsOnly && activeSection === 'all' && webappError && <div className="webapp-error">{webappError}</div>}
+          {!flashcardsOnly && activeSection === 'all' && finishMessage && <div className="webapp-success">{finishMessage}</div>}
 
-          {!flashcardsOnly && results.length > 0 && (
+          {!flashcardsOnly && activeSection === 'all' && results.length > 0 && (
             <section className="webapp-result">
               <h3>Результат проверки</h3>
               <div className="webapp-result-list">
@@ -1059,7 +1109,7 @@ function AppInner() {
             </section>
           )}
 
-          {!flashcardsOnly && (
+          {!flashcardsOnly && activeSection === 'all' && (
             <div className="webapp-actions webapp-actions-footer">
               <button
                 type="button"
@@ -1083,9 +1133,9 @@ function AppInner() {
             </div>
           )}
 
-          {!flashcardsOnly && historyError && <div className="webapp-error">{historyError}</div>}
+          {!flashcardsOnly && activeSection === 'all' && historyError && <div className="webapp-error">{historyError}</div>}
 
-          {!flashcardsOnly && historyVisible && (
+          {!flashcardsOnly && activeSection === 'all' && historyVisible && (
             <section className="webapp-result">
               <h3>История переводов за сегодня</h3>
               {historyItems.length === 0 ? (
@@ -1108,10 +1158,11 @@ function AppInner() {
             </section>
           )}
 
-          {!flashcardsOnly && (
+          {!flashcardsOnly && (activeSection === 'all' || activeSection === 'youtube' || activeSection === 'dictionary') && (
             <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
-              <section className="webapp-video">
-                <h3>Видео YouTube</h3>
+              {(activeSection === 'all' || activeSection === 'youtube') && (
+              <section className="webapp-video" onClick={() => setActiveSection('youtube')}>
+                <h3 className={activeSection === 'youtube' ? 'is-active-section' : ''}>Видео YouTube</h3>
                 <div className="webapp-video-form">
                   <label className="webapp-field">
                     <span>Ссылка или ID видео</span>
@@ -1200,9 +1251,11 @@ function AppInner() {
                   )}
                 </div>
               </section>
+              )}
 
-              <section className="webapp-dictionary" ref={dictionaryRef}>
-                <h3>Словарь</h3>
+              {(activeSection === 'all' || activeSection === 'dictionary') && (
+              <section className="webapp-dictionary" ref={dictionaryRef} onClick={() => setActiveSection('dictionary')}>
+                <h3 className={activeSection === 'dictionary' ? 'is-active-section' : ''}>Словарь</h3>
                 <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                   <label className="webapp-field">
                     <span>Слово или фраза (русский)</span>
@@ -1297,6 +1350,7 @@ function AppInner() {
                     onClick={() => {
                       setFlashcardsVisible(true);
                       setFlashcardsOnly(true);
+                      setActiveSection('flashcards');
                       scrollToFlashcards();
                     }}
                   >
@@ -1304,11 +1358,13 @@ function AppInner() {
                   </button>
                 </div>
               </section>
+              )}
             </div>
           )}
 
-          <section className="webapp-flashcards" ref={flashcardsRef}>
-            <h3>Карточки</h3>
+          {(activeSection === 'all' || activeSection === 'flashcards') && (
+          <section className="webapp-flashcards" ref={flashcardsRef} onClick={() => setActiveSection('flashcards')}>
+            <h3 className={activeSection === 'flashcards' ? 'is-active-section' : ''}>Карточки</h3>
             {!flashcardsVisible && (
               <div className="webapp-muted">
                 Нажмите «📌 Повторить слова», чтобы начать тренировку.
@@ -1316,13 +1372,14 @@ function AppInner() {
             )}
             {flashcardsVisible && (
               <div className="flashcards-panel">
-                {flashcardsOnly && (
+                {(flashcardsOnly || activeSection !== 'all') && (
                   <button
                     type="button"
                     className="secondary-button"
                     onClick={() => {
                       setFlashcardsOnly(false);
                       setFlashcardsVisible(false);
+                      endActiveSection();
                     }}
                   >
                     Закончить повтор
@@ -1356,7 +1413,9 @@ function AppInner() {
                         </button>
                       </div>
                       <div className="flashcard-word">{entry.word_ru || '—'}</div>
-                      {context && <div className="flashcard-context">{context}</div>}
+                      {flashcardSelection !== null && context && (
+                        <div className="flashcard-context flashcard-context-visible">{context}</div>
+                      )}
                       <div className="flashcard-options">
                         {flashcardOptions.map((option, idx) => {
                           const isSelected = flashcardSelection === idx;
@@ -1377,6 +1436,7 @@ function AppInner() {
                               onClick={() => {
                                 if (flashcardSelection !== null) return;
                                 setFlashcardSelection(idx);
+                                recordFlashcardAnswer(entry.id, option === correct);
                               }}
                             >
                               {option}
@@ -1404,7 +1464,8 @@ function AppInner() {
               </div>
             )}
           </section>
-          {selectionText && selectionPos && (
+          )}
+          {selectionText && selectionPos && (activeSection === 'all' || activeSection === 'youtube' || activeSection === 'dictionary') && (
             <div
               className="webapp-selection-menu"
               style={{ left: `${selectionPos.x + 8}px`, top: `${selectionPos.y + 8}px` }}
