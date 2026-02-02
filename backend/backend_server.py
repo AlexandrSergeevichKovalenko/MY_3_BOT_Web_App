@@ -77,6 +77,7 @@ from backend.openai_manager import run_check_translation, run_dictionary_lookup,
 from backend.database import (
     ensure_webapp_tables,
     get_pending_daily_sentences,
+    get_webapp_dictionary_entries,
     get_webapp_translation_history,
     get_latest_daily_sentences,
     save_webapp_dictionary_query,
@@ -471,6 +472,33 @@ def save_webapp_dictionary_entry():
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
 
     return jsonify({"ok": True})
+
+
+@app.route("/api/webapp/dictionary/cards", methods=["POST"])
+def get_webapp_dictionary_cards():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    limit = payload.get("limit", 100)
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        items = get_webapp_dictionary_entries(user_id=user_id, limit=int(limit))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка получения словаря: {exc}"}), 500
+
+    return jsonify({"ok": True, "items": items})
 
 
 @app.route("/api/webapp/youtube/transcript", methods=["POST"])

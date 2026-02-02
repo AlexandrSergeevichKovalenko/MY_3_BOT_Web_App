@@ -227,6 +227,29 @@ def save_webapp_dictionary_query(
             ))
 
 
+def get_webapp_dictionary_entries(user_id: int, limit: int = 100) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT word_ru, translation_de, response_json, created_at
+                FROM bt_3_webapp_dictionary_queries
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s;
+            """, (user_id, limit))
+            rows = cursor.fetchall()
+
+    items = []
+    for row in rows:
+        items.append({
+            "word_ru": row[0],
+            "translation_de": row[1],
+            "response_json": row[2],
+            "created_at": row[3].isoformat() if row[3] else None,
+        })
+    return items
+
+
 def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

@@ -16,6 +16,7 @@ from telegram.ext import CallbackQueryHandler
 import hashlib
 import re
 import html
+import random
 import requests
 import aiohttp
 from telegram.ext import CallbackContext
@@ -49,7 +50,11 @@ application = None
 QUIZ_SCHEDULE_HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
 QUIZ_FEEDBACK_TTL_SECONDS = 120
 QUIZ_CACHE_TTL_SECONDS = 60 * 60 * 24
+QUIZ_FREEFORM_OPTION = "keine korrekte Antworten"
+QUIZ_HIDE_CORRECT_PROBABILITY = 0.3
+FLASHCARD_REMINDER_TIMES = [(10, 30), (16, 30), (21, 0)]
 active_quizzes = {}
+pending_quiz_freeform = {}
 
 
 # === Логирование ===
@@ -735,6 +740,20 @@ async def send_morning_reminder(context:CallbackContext):
     await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text = message)
     #await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text= commands)
 
+async def send_flashcard_reminder(context: CallbackContext):
+    webapp_url = get_webapp_url()
+    review_url = f"{webapp_url}?review=1"
+    message = (
+        "📌 Пора повторить слова!\n"
+        f'Перейти к тренировке: <a href="{review_url}">Открыть карточки</a>'
+    )
+    await context.bot.send_message(
+        chat_id=BOT_GROUP_CHAT_ID_Deutsch,
+        text=message,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
 
 
 async def letsgo(update: Update, context: CallbackContext):
@@ -933,6 +952,26 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
     user_id = update.message.from_user.id
     text = update.message.text.strip()
+
+    pending = pending_quiz_freeform.get(user_id)
+    if pending:
+        correct_text = pending.get("correct_text") or ""
+        is_correct = False
+        if correct_text:
+            is_correct = _normalize_quiz_text(text) == _normalize_quiz_text(correct_text)
+        result_text = "✅ Правильно!" if is_correct else f"❌ Неправильно. Правильный ответ: {correct_text or '—'}"
+        message = await context.bot.send_message(
+            chat_id=pending.get("chat_id") or update.message.chat_id,
+            text=result_text,
+            reply_to_message_id=pending.get("message_id"),
+        )
+        pending_quiz_freeform.pop(user_id, None)
+        context.job_queue.run_once(
+            delete_temporary_message,
+            when=QUIZ_FEEDBACK_TTL_SECONDS,
+            data={"chat_id": message.chat_id, "message_id": message.message_id},
+        )
+        return
 
     # Проверяем, является ли сообщение переводом (поддержка многострочных сообщений)
     pattern = re.compile(r"^(\d+)\.\s*([^\d\n]+(?:\n[^\d\n]+)*)", re.MULTILINE)
@@ -3657,6 +3696,60 @@ def _normalize_quiz_payload(payload: dict, fallback: dict) -> dict:
     }
 
 
+def _normalize_quiz_text(value: str) -> str:
+    lowered = value.lower()
+    cleaned = re.sub(r"[^a-zäöüßà-ÿ0-9\s'\-]", " ", lowered)
+    cleaned = cleaned.replace("-", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _apply_quiz_freeform_option(quiz: dict) -> dict:
+    options = [str(option).strip() for option in quiz.get("options", []) if str(option).strip()]
+    if not options:
+        return quiz
+
+    correct_option_id = quiz.get("correct_option_id")
+    if not isinstance(correct_option_id, int) or not (0 <= correct_option_id < len(options)):
+        return quiz
+
+    correct_text = options[correct_option_id]
+    if QUIZ_FREEFORM_OPTION not in options:
+        options.append(QUIZ_FREEFORM_OPTION)
+
+    hide_correct = random.random() < QUIZ_HIDE_CORRECT_PROBABILITY
+    if hide_correct:
+        options = [option for option in options if option != correct_text]
+        if QUIZ_FREEFORM_OPTION not in options:
+            options.append(QUIZ_FREEFORM_OPTION)
+
+    if len(options) > 10:
+        trimmed = []
+        for option in options:
+            if option == QUIZ_FREEFORM_OPTION:
+                continue
+            trimmed.append(option)
+            if len(trimmed) >= 9:
+                break
+        if QUIZ_FREEFORM_OPTION not in trimmed:
+            trimmed.append(QUIZ_FREEFORM_OPTION)
+        options = trimmed
+
+    if hide_correct:
+        correct_option_id = options.index(QUIZ_FREEFORM_OPTION)
+    else:
+        if correct_text not in options:
+            return quiz
+        correct_option_id = options.index(correct_text)
+
+    quiz = dict(quiz)
+    quiz["options"] = options
+    quiz["correct_option_id"] = correct_option_id
+    quiz["correct_text"] = correct_text
+    quiz["hide_correct"] = hide_correct
+    return quiz
+
+
 async def generate_word_quiz(entry: dict) -> dict | None:
     word_ru = (entry.get("word_ru") or "").strip()
     translation_de = (entry.get("translation_de") or "").strip()
@@ -3701,9 +3794,11 @@ async def generate_word_quiz(entry: dict) -> dict | None:
     try:
         payload = json.loads(content)
     except json.JSONDecodeError:
-        return fallback
+        return _apply_quiz_freeform_option(fallback)
 
-    return _normalize_quiz_payload(payload, fallback)
+    quiz = _normalize_quiz_payload(payload, fallback)
+    quiz = _apply_quiz_freeform_option(quiz)
+    return quiz
 
 
 async def cleanup_quiz_cache(context: CallbackContext) -> None:
@@ -3745,6 +3840,9 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
     active_quizzes[poll_message.poll.id] = {
         "chat_id": BOT_GROUP_CHAT_ID_Deutsch,
         "correct_option_id": quiz["correct_option_id"],
+        "correct_text": quiz.get("correct_text"),
+        "options": quiz["options"],
+        "freeform_option": QUIZ_FREEFORM_OPTION,
         "message_id": poll_message.message_id,
     }
 
@@ -3761,7 +3859,31 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not quiz_data or not poll_answer.option_ids:
         return
 
-    is_correct = poll_answer.option_ids[0] == quiz_data["correct_option_id"]
+    selected_index = poll_answer.option_ids[0]
+    options = quiz_data.get("options") or []
+    freeform_option = quiz_data.get("freeform_option")
+    selected_text = options[selected_index] if 0 <= selected_index < len(options) else ""
+
+    if freeform_option and selected_text == freeform_option:
+        pending_quiz_freeform[poll_answer.user.id] = {
+            "poll_id": poll_answer.poll_id,
+            "chat_id": quiz_data["chat_id"],
+            "message_id": quiz_data["message_id"],
+            "correct_text": quiz_data.get("correct_text") or "",
+        }
+        prompt_message = await context.bot.send_message(
+            chat_id=quiz_data["chat_id"],
+            text=f"✍️ {poll_answer.user.first_name}, введите ваш вариант ответа одним сообщением.",
+            reply_to_message_id=quiz_data["message_id"],
+        )
+        context.job_queue.run_once(
+            delete_temporary_message,
+            when=QUIZ_FEEDBACK_TTL_SECONDS,
+            data={"chat_id": quiz_data["chat_id"], "message_id": prompt_message.message_id},
+        )
+        return
+
+    is_correct = selected_index == quiz_data["correct_option_id"]
     emoji = "🎉" if is_correct else "💩"
     message = await context.bot.send_message(
         chat_id=quiz_data["chat_id"],
@@ -3871,6 +3993,13 @@ def main():
     print("📌 Добавляем задачу в scheduler...")
     scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
     scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
+    for hour, minute in FLASHCARD_REMINDER_TIMES:
+        scheduler.add_job(
+            lambda: submit_async(send_flashcard_reminder, CallbackContext(application=application)),
+            "cron",
+            hour=hour,
+            minute=minute,
+        )
 
     for hour in QUIZ_SCHEDULE_HOURS:
         scheduler.add_job(

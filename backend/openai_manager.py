@@ -648,8 +648,12 @@ async def run_check_translation(original_text: str, user_translation: str) -> st
 async def run_dictionary_lookup(word_ru: str) -> dict:
     system_prompt = (
         "You are a German dictionary assistant. The user provides a Russian word or short phrase. "
+        "NEVER return a standalone noun. If the input is a single Russian noun, convert it into a "
+        "stable collocation or the most common short phrase (2-4 words) and return that instead. "
+        "In that case set word_ru to the collocation (Russian) and translation_de to the German collocation. "
+        "Use part_of_speech='phrase' and article=null for collocations.\n"
         "Return a STRICT JSON object with the following fields:\n"
-        "word_ru: string (original input)\n"
+        "word_ru: string (original input or adjusted collocation when needed)\n"
         "part_of_speech: string (noun/verb/adjective/adverb/phrase/other)\n"
         "translation_de: string\n"
         "article: string or null (der/die/das only if noun)\n"
@@ -657,7 +661,8 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
         "(use null if not applicable)\n"
         "prefixes: array of objects with keys variant, translation_de, explanation, example_de "
         "(include common prefix variants if applicable; provide ONE example sentence per variant)\n"
-        "usage_examples: array of strings with 2-3 German example sentences for the base word/phrase\n"
+        "usage_examples: array of strings with 2-3 German example sentences for the base word/phrase. "
+        "If none are known, create natural examples.\n"
         "Respond ONLY with JSON, no markdown, no extra text."
     )
 

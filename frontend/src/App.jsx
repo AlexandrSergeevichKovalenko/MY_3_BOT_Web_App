@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   LiveKitRoom,
   ControlBar,
@@ -79,6 +79,7 @@ function AppInner() {
   const [manualTranscript, setManualTranscript] = useState('');
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
+  const [lastLookupScrollY, setLastLookupScrollY] = useState(null);
   const [historyItems, setHistoryItems] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
@@ -86,6 +87,16 @@ function AppInner() {
   const [finishStatus, setFinishStatus] = useState('idle');
   const [explanations, setExplanations] = useState({});
   const [explanationLoading, setExplanationLoading] = useState({});
+  const [flashcardsVisible, setFlashcardsVisible] = useState(false);
+  const [flashcardsLoading, setFlashcardsLoading] = useState(false);
+  const [flashcardsError, setFlashcardsError] = useState('');
+  const [flashcards, setFlashcards] = useState([]);
+  const [flashcardIndex, setFlashcardIndex] = useState(0);
+  const [flashcardSelection, setFlashcardSelection] = useState(null);
+  const [flashcardOptions, setFlashcardOptions] = useState([]);
+
+  const dictionaryRef = useRef(null);
+  const flashcardsRef = useRef(null);
 
   const safeStorageGet = (key) => {
     try {
@@ -109,6 +120,31 @@ function AppInner() {
       window.localStorage.removeItem(key);
     } catch (error) {
       console.warn('localStorage unavailable', error);
+    }
+  };
+
+  const coerceResponseJson = (value) => {
+    if (!value) return null;
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch (error) {
+        return null;
+      }
+    }
+    if (typeof value === 'object') return value;
+    return null;
+  };
+
+  const scrollToDictionary = () => {
+    if (dictionaryRef.current) {
+      dictionaryRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  const scrollToFlashcards = () => {
+    if (flashcardsRef.current) {
+      flashcardsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   };
 
@@ -176,6 +212,31 @@ function AppInner() {
 
     bootstrap();
   }, [initData, isWebAppMode]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('review') === '1') {
+      setFlashcardsVisible(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!flashcardsVisible) {
+      return;
+    }
+    loadFlashcards();
+    scrollToFlashcards();
+  }, [flashcardsVisible, initData]);
+
+  useEffect(() => {
+    if (!flashcards.length) {
+      setFlashcardOptions([]);
+      return;
+    }
+    const entry = flashcards[flashcardIndex];
+    setFlashcardOptions(buildFlashcardOptions(entry, flashcards));
+    setFlashcardSelection(null);
+  }, [flashcards, flashcardIndex]);
 
   const loadSentences = async () => {
     if (!initData) {
@@ -384,6 +445,7 @@ function AppInner() {
     setDictionaryError('');
     setDictionarySaved('');
     setDictionaryWord(normalized);
+    setLastLookupScrollY(window.scrollY);
     try {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
@@ -402,6 +464,7 @@ function AppInner() {
       }
       const data = await response.json();
       setDictionaryResult(data.item || null);
+      scrollToDictionary();
 
       const saveResponse = await fetch('/api/webapp/dictionary/save', {
         method: 'POST',
@@ -452,6 +515,7 @@ function AppInner() {
     setDictionaryError('');
     setDictionarySaved('');
     setDictionaryWord(normalized);
+    setLastLookupScrollY(window.scrollY);
     try {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
@@ -470,12 +534,65 @@ function AppInner() {
       }
       const data = await response.json();
       setDictionaryResult(data.item || null);
+      scrollToDictionary();
       clearSelection();
     } catch (error) {
       setDictionaryError(`Ошибка словаря: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
     }
+  };
+
+  const loadFlashcards = async () => {
+    if (!initData) {
+      setFlashcardsError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    setFlashcardsLoading(true);
+    setFlashcardsError('');
+    try {
+      const response = await fetch('/api/webapp/dictionary/cards', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, limit: 200 }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      const items = (data.items || []).map((item) => ({
+        ...item,
+        response_json: coerceResponseJson(item.response_json),
+      }));
+      setFlashcards(items);
+      setFlashcardIndex(0);
+      setFlashcardSelection(null);
+    } catch (error) {
+      setFlashcardsError(`Ошибка карточек: ${error.message}`);
+    } finally {
+      setFlashcardsLoading(false);
+    }
+  };
+
+  const buildFlashcardOptions = (entry, allEntries) => {
+    const responseJson = entry?.response_json || {};
+    const correct = entry?.translation_de || responseJson.translation_de || '';
+    if (!correct) return [];
+    const distractors = allEntries
+      .filter((item) => item !== entry)
+      .map((item) => item.translation_de || item.response_json?.translation_de || '')
+      .filter(Boolean)
+      .filter((value) => value !== correct)
+      .slice(0, 6);
+    const options = Array.from(new Set([correct, ...distractors])).filter(Boolean).slice(0, 4);
+    while (options.length < 4) {
+      options.push(correct);
+    }
+    for (let i = options.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [options[i], options[j]] = [options[j], options[i]];
+    }
+    return options;
   };
 
   const renderClickableText = (text) => {
@@ -648,6 +765,7 @@ function AppInner() {
     setDictionaryError('');
     setDictionaryResult(null);
     setDictionarySaved('');
+    setLastLookupScrollY(null);
     try {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
@@ -1069,7 +1187,7 @@ function AppInner() {
               </div>
             </section>
 
-            <section className="webapp-dictionary">
+            <section className="webapp-dictionary" ref={dictionaryRef}>
               <h3>Словарь</h3>
               <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                 <label className="webapp-field">
@@ -1101,6 +1219,15 @@ function AppInner() {
 
               {dictionaryResult && (
                 <div className="webapp-dictionary-result">
+                  {lastLookupScrollY !== null && (
+                    <button
+                      type="button"
+                      className="dictionary-back-button"
+                      onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
+                    >
+                      ← вернуться назад
+                    </button>
+                  )}
                   <div className="dictionary-row">
                     <strong>Перевод:</strong> {dictionaryResult.translation_de || '—'}
                   </div>
@@ -1149,6 +1276,104 @@ function AppInner() {
                   )}
                 </div>
               )}
+              <div className="dictionary-flashcards">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setFlashcardsVisible(true);
+                    scrollToFlashcards();
+                  }}
+                >
+                  📌 Повторить слова
+                </button>
+              </div>
+          </section>
+
+          <section className="webapp-flashcards" ref={flashcardsRef}>
+            <h3>Карточки</h3>
+            {!flashcardsVisible && (
+              <div className="webapp-muted">
+                Нажмите «📌 Повторить слова», чтобы начать тренировку.
+              </div>
+            )}
+            {flashcardsVisible && (
+              <div className="flashcards-panel">
+                {flashcardsLoading && <div className="webapp-muted">Загружаем карточки...</div>}
+                {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
+                {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && (
+                  <div className="webapp-muted">Словарь пуст. Сначала добавьте слова.</div>
+                )}
+                {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && (() => {
+                  const entry = flashcards[flashcardIndex] || {};
+                  const responseJson = entry.response_json || {};
+                  const correct = entry.translation_de || responseJson.translation_de || '—';
+                  const context = Array.isArray(responseJson.usage_examples)
+                    ? responseJson.usage_examples[0]
+                    : '';
+
+                  return (
+                    <div className="flashcard">
+                      <div className="flashcard-header">
+                        <span className="flashcard-counter">
+                          {flashcardIndex + 1} / {flashcards.length}
+                        </span>
+                        <button
+                          type="button"
+                          className="flashcard-refresh"
+                          onClick={loadFlashcards}
+                        >
+                          Обновить
+                        </button>
+                      </div>
+                      <div className="flashcard-word">{entry.word_ru || '—'}</div>
+                      {context && <div className="flashcard-context">{context}</div>}
+                      <div className="flashcard-options">
+                        {flashcardOptions.map((option, idx) => {
+                          const isSelected = flashcardSelection === idx;
+                          const isCorrect = option === correct;
+                          const showResult = flashcardSelection !== null;
+                          const className = [
+                            'flashcard-option',
+                            showResult && isCorrect ? 'is-correct' : '',
+                            showResult && isSelected && !isCorrect ? 'is-wrong' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ');
+                          return (
+                            <button
+                              key={`${option}-${idx}`}
+                              type="button"
+                              className={className}
+                              onClick={() => {
+                                if (flashcardSelection !== null) return;
+                                setFlashcardSelection(idx);
+                              }}
+                            >
+                              {option}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="flashcard-actions">
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => {
+                            const next = (flashcardIndex + 1) % flashcards.length;
+                            setFlashcardIndex(next);
+                            setFlashcardSelection(null);
+                          }}
+                          disabled={flashcards.length <= 1}
+                        >
+                          Следующая карточка
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
           </section>
           </div>
           {selectionText && selectionPos && (
