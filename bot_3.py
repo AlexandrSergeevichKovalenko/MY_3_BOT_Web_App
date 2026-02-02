@@ -36,8 +36,14 @@ import io
 from datetime import datetime
 import logging
 import sys
-from backend.openai_manager import client, get_or_create_openai_resources, system_message # Теперь импортируем client и system_message
-from backend.database import init_db, get_random_dictionary_entry, record_quiz_word, ensure_webapp_tables
+from backend.openai_manager import client, get_or_create_openai_resources, system_message, run_dictionary_lookup # Теперь импортируем client и system_message
+from backend.database import (
+    init_db,
+    get_random_dictionary_entry,
+    record_quiz_word,
+    ensure_webapp_tables,
+    update_webapp_dictionary_entry,
+)
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
 from load_data_from_db import load_data_for_analytics 
 from users_comparison_analytics import create_comparison_report_async
@@ -3754,13 +3760,27 @@ async def generate_word_quiz(entry: dict) -> dict | None:
     word_ru = (entry.get("word_ru") or "").strip()
     translation_de = (entry.get("translation_de") or "").strip()
     response_json = _coerce_response_json(entry.get("response_json"))
+    entry_id = entry.get("id")
 
     if not word_ru:
         return None
 
-    article = response_json.get("article")
-    part_of_speech = response_json.get("part_of_speech")
-    usage_examples = response_json.get("usage_examples") or []
+    if not response_json:
+        try:
+            lookup = await run_dictionary_lookup(word_ru)
+        except Exception as exc:
+            logging.warning(f"⚠️ Dictionary lookup failed for quiz: {exc}")
+            lookup = None
+        if lookup:
+            if translation_de:
+                lookup["translation_de"] = translation_de
+            response_json = lookup
+            update_webapp_dictionary_entry(entry_id, response_json, translation_de or lookup.get("translation_de"))
+
+    article = response_json.get("article") if response_json else None
+    part_of_speech = response_json.get("part_of_speech") if response_json else None
+    usage_examples = response_json.get("usage_examples") if response_json else []
+    usage_examples = usage_examples or []
 
     fallback = _build_quiz_fallback(word_ru, translation_de, article)
 

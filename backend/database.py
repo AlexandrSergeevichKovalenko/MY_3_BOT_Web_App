@@ -255,6 +255,8 @@ def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
         with conn.cursor() as cursor:
             cursor.execute("""
                 SELECT
+                    id,
+                    user_id,
                     word_ru,
                     translation_de,
                     response_json
@@ -273,6 +275,8 @@ def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
             if not row:
                 cursor.execute("""
                     SELECT
+                        id,
+                        user_id,
                         word_ru,
                         translation_de,
                         response_json
@@ -285,9 +289,11 @@ def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
                 if not row:
                     return None
             return {
-                "word_ru": row[0],
-                "translation_de": row[1],
-                "response_json": row[2],
+                "id": row[0],
+                "user_id": row[1],
+                "word_ru": row[2],
+                "translation_de": row[3],
+                "response_json": row[4],
             }
 
 
@@ -303,6 +309,33 @@ def record_quiz_word(word_ru: str) -> None:
                 """,
                 (word_ru,),
             )
+
+
+def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translation_de: str | None = None) -> None:
+    if not entry_id:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if translation_de is not None:
+                cursor.execute("""
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET response_json = %s,
+                        translation_de = %s
+                    WHERE id = %s;
+                """, (
+                    json.dumps(response_json, ensure_ascii=False),
+                    translation_de,
+                    entry_id,
+                ))
+            else:
+                cursor.execute("""
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET response_json = %s
+                    WHERE id = %s;
+                """, (
+                    json.dumps(response_json, ensure_ascii=False),
+                    entry_id,
+                ))
 
 
 def _get_latest_session_id(cursor, user_id: int) -> str | None:
