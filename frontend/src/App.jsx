@@ -1404,7 +1404,6 @@ function AppInner() {
               </div>
             )}
           </section>
-          </div>
           {selectionText && selectionPos && (
             <div
               className="webapp-selection-menu"
