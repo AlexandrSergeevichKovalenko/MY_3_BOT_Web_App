@@ -612,6 +612,20 @@ body {
   border: 1px solid rgba(255, 185, 115, 0.4);
 }
 
+.webapp-mode-banner {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #2d2218;
+  background: rgba(255, 185, 115, 0.35);
+  border: 1px solid rgba(255, 185, 115, 0.6);
+}
+
 .dictionary-back-button {
   align-self: flex-start;
   border: none;

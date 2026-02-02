@@ -741,8 +741,8 @@ async def send_morning_reminder(context:CallbackContext):
     #await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text= commands)
 
 async def send_flashcard_reminder(context: CallbackContext):
-    webapp_url = get_webapp_url()
-    review_url = f"{webapp_url}?review=1"
+    base_url = get_public_web_url()
+    review_url = f"{base_url}/webapp/review"
     message = (
         "📌 Пора повторить слова!\n"
         f'Перейти к тренировке: <a href="{review_url}">Открыть карточки</a>'
@@ -3773,10 +3773,15 @@ async def generate_word_quiz(entry: dict) -> dict | None:
     }
 
     system_prompt = (
-        "You create one Telegram quiz question for Russian-speaking learners of German. "
-        "The question must be in Russian and must include the Russian word/phrase. "
+        "You create one Telegram quiz question for Russian-speaking learners of German at C1–C2 level. "
+        "The question must be in Russian and must include the Russian word/phrase from the payload. "
         "Answer options must be in German. Provide exactly 4 options with one correct answer. "
-        "Focus on translation, article, part of speech, prepositions, or fill-in-the-blank based on provided data. "
+        "Make the question tricky and high-level. Use one of these formats:\n"
+        "1) Choose the most accurate German translation of the Russian phrase.\n"
+        "2) Fill the blank in a German sentence with the target word/phrase; distractors must be near-synonyms.\n"
+        "3) Word order test: ask where to place the target word/phrase in a German sentence (options are full sentences).\n"
+        "Ensure the correct answer is fully correct in meaning, register, collocation, and word order. "
+        "Use the provided usage_examples for context if available. "
         "Return STRICT JSON with keys: question, options (array of strings), correct_option_id (0-based int), quiz_type."
     )
 
