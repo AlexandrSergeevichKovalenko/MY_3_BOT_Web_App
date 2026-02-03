@@ -73,7 +73,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import spacy
 
-from backend.openai_manager import run_check_translation, run_dictionary_lookup, run_translation_explanation
+from backend.openai_manager import run_check_translation, run_dictionary_lookup, run_dictionary_lookup_de, run_translation_explanation
 from backend.database import (
     ensure_webapp_tables,
     get_pending_daily_sentences,
@@ -437,19 +437,22 @@ def lookup_webapp_dictionary():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    cached = get_dictionary_cache(word_ru)
-    if cached:
-        return jsonify({"ok": True, "item": cached})
-
     try:
-        result = asyncio.run(run_dictionary_lookup(word_ru))
+        is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word_ru)
+        if is_ru:
+            cached = get_dictionary_cache(word_ru)
+            if cached:
+                return jsonify({"ok": True, "item": cached, "direction": "ru-de"})
+            result = asyncio.run(run_dictionary_lookup(word_ru))
+        else:
+            result = asyncio.run(run_dictionary_lookup_de(word_ru))
     except Exception as exc:
         return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
 
-    if result:
+    if result and is_ru:
         upsert_dictionary_cache(word_ru, result)
 
-    return jsonify({"ok": True, "item": result})
+    return jsonify({"ok": True, "item": result, "direction": "ru-de" if is_ru else "de-ru"})
 
 
 @app.route("/api/webapp/dictionary/save", methods=["POST"])
@@ -457,13 +460,16 @@ def save_webapp_dictionary_entry():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     word_ru = (payload.get("word_ru") or "").strip()
+    word_de = (payload.get("word_de") or "").strip()
+    translation_de = (payload.get("translation_de") or "").strip()
+    translation_ru = (payload.get("translation_ru") or "").strip()
     response_json = payload.get("response_json") or {}
     folder_id = payload.get("folder_id")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
-    if not word_ru:
-        return jsonify({"error": "word_ru обязателен"}), 400
+    if not word_ru and not word_de:
+        return jsonify({"error": "word_ru или word_de обязателен"}), 400
 
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
@@ -476,10 +482,14 @@ def save_webapp_dictionary_entry():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     try:
+        resolved_word_ru = word_ru or response_json.get("word_ru")
+        resolved_word_de = word_de or response_json.get("word_de")
         save_webapp_dictionary_query(
             user_id=user_id,
-            word_ru=word_ru,
-            translation_de=response_json.get("translation_de"),
+            word_ru=resolved_word_ru if resolved_word_ru else None,
+            translation_de=translation_de or response_json.get("translation_de"),
+            word_de=resolved_word_de if resolved_word_de else None,
+            translation_ru=translation_ru or response_json.get("translation_ru"),
             response_json=response_json,
             folder_id=int(folder_id) if folder_id is not None else None,
         )

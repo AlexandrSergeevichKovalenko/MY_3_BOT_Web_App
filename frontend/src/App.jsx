@@ -71,6 +71,7 @@ function AppInner() {
   const [dictionaryError, setDictionaryError] = useState('');
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
   const [dictionarySaved, setDictionarySaved] = useState('');
+  const [dictionaryDirection, setDictionaryDirection] = useState('ru-de');
   const [youtubeInput, setYoutubeInput] = useState('');
   const [youtubeId, setYoutubeId] = useState('');
   const [youtubeError, setYoutubeError] = useState('');
@@ -94,6 +95,7 @@ function AppInner() {
   const [flashcardsLoading, setFlashcardsLoading] = useState(false);
   const [flashcardsError, setFlashcardsError] = useState('');
   const [flashcards, setFlashcards] = useState([]);
+  const [flashcardPool, setFlashcardPool] = useState([]);
   const [flashcardIndex, setFlashcardIndex] = useState(0);
   const [flashcardSelection, setFlashcardSelection] = useState(null);
   const [flashcardOptions, setFlashcardOptions] = useState([]);
@@ -114,10 +116,13 @@ function AppInner() {
   const [newFolderColor, setNewFolderColor] = useState('#5ddcff');
   const [newFolderIcon, setNewFolderIcon] = useState('book');
   const [userAvatar, setUserAvatar] = useState('');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuMultiSelect, setMenuMultiSelect] = useState(false);
 
   const dictionaryRef = useRef(null);
   const flashcardsRef = useRef(null);
   const translationsRef = useRef(null);
+  const youtubeRef = useRef(null);
   const autoAdvanceTimeoutRef = useRef(null);
   const avatarInputRef = useRef(null);
 
@@ -183,6 +188,9 @@ function AppInner() {
 
   const toggleSection = (key) => {
     setSelectedSections((prev) => {
+      if (!menuMultiSelect) {
+        return new Set([key]);
+      }
       const next = new Set(prev);
       if (next.has(key)) {
         next.delete(key);
@@ -216,6 +224,30 @@ function AppInner() {
 
   const hideAllSections = () => {
     setSelectedSections(new Set());
+  };
+
+  const handleMenuSelection = (key, ref) => {
+    setSelectedSections((prev) => {
+      if (!menuMultiSelect) {
+        return new Set([key]);
+      }
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+    if (key === 'flashcards') {
+      setFlashcardsVisible(true);
+    }
+    setMenuOpen(false);
+    if (ref?.current) {
+      setTimeout(() => {
+        ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 120);
+    }
   };
 
   const resolveFolderIconLabel = (icon) => {
@@ -593,6 +625,16 @@ function AppInner() {
     return value.replace(/\s+/g, ' ').trim();
   };
 
+  const resolveDictionaryDirection = (item) => {
+    if (!item) return 'ru-de';
+    if (item.translation_de) return 'ru-de';
+    if (item.translation_ru) return 'de-ru';
+    if (item.word_de) return 'de-ru';
+    return 'ru-de';
+  };
+
+  const hasCyrillic = (value) => /[А-Яа-яЁё]/.test(value || '');
+
   const handleSelection = (event, overrideText = '') => {
     const text = overrideText || normalizeSelectionText(window.getSelection()?.toString() || '');
     if (!text) {
@@ -617,18 +659,20 @@ function AppInner() {
       return;
     }
     let normalized = cleaned;
-    try {
-      const normalizeResponse = await fetch('/api/webapp/normalize/de', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, text: cleaned }),
-      });
-      if (normalizeResponse.ok) {
-        const data = await normalizeResponse.json();
-        normalized = data.normalized || cleaned;
+    if (!hasCyrillic(cleaned)) {
+      try {
+        const normalizeResponse = await fetch('/api/webapp/normalize/de', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, text: cleaned }),
+        });
+        if (normalizeResponse.ok) {
+          const data = await normalizeResponse.json();
+          normalized = data.normalized || cleaned;
+        }
+      } catch (error) {
+        // ignore normalization errors
       }
-    } catch (error) {
-      // ignore normalization errors
     }
     setDictionaryLoading(true);
     setDictionaryError('');
@@ -653,6 +697,8 @@ function AppInner() {
       }
       const data = await response.json();
       setDictionaryResult(data.item || null);
+      const detectedDirection = data.direction || resolveDictionaryDirection(data.item);
+      setDictionaryDirection(detectedDirection);
       scrollToDictionary();
 
       const saveResponse = await fetch('/api/webapp/dictionary/save', {
@@ -660,7 +706,10 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          word_ru: normalized,
+          word_ru: detectedDirection === 'ru-de' ? normalized : '',
+          word_de: detectedDirection === 'de-ru' ? normalized : '',
+          translation_de: data.item?.translation_de || '',
+          translation_ru: data.item?.translation_ru || '',
           response_json: data.item || {},
           folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
         }),
@@ -692,18 +741,20 @@ function AppInner() {
       return;
     }
     let normalized = cleaned;
-    try {
-      const normalizeResponse = await fetch('/api/webapp/normalize/de', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, text: cleaned }),
-      });
-      if (normalizeResponse.ok) {
-        const data = await normalizeResponse.json();
-        normalized = data.normalized || cleaned;
+    if (!hasCyrillic(cleaned)) {
+      try {
+        const normalizeResponse = await fetch('/api/webapp/normalize/de', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, text: cleaned }),
+        });
+        if (normalizeResponse.ok) {
+          const data = await normalizeResponse.json();
+          normalized = data.normalized || cleaned;
+        }
+      } catch (error) {
+        // ignore normalization errors
       }
-    } catch (error) {
-      // ignore normalization errors
     }
     setDictionaryLoading(true);
     setDictionaryError('');
@@ -728,6 +779,7 @@ function AppInner() {
       }
       const data = await response.json();
       setDictionaryResult(data.item || null);
+      setDictionaryDirection(data.direction || resolveDictionaryDirection(data.item));
       scrollToDictionary();
       clearSelection();
     } catch (error) {
@@ -774,6 +826,25 @@ function AppInner() {
         correct: 0,
         wrong: 0,
       });
+
+      const poolResponse = await fetch('/api/webapp/dictionary/cards', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          limit: 60,
+          folder_mode: flashcardFolderMode,
+          folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
+        }),
+      });
+      if (poolResponse.ok) {
+        const poolData = await poolResponse.json();
+        const poolItems = (poolData.items || []).map((item) => ({
+          ...item,
+          response_json: coerceResponseJson(item.response_json),
+        }));
+        setFlashcardPool(poolItems);
+      }
     } catch (error) {
       setFlashcardsError(`Ошибка карточек: ${error.message}`);
     } finally {
@@ -845,15 +916,37 @@ function AppInner() {
 
   const buildFlashcardOptions = (entry, allEntries) => {
     const responseJson = entry?.response_json || {};
-    const correct = entry?.translation_de || responseJson.translation_de || '';
+    const correct = entry?.translation_de
+      || responseJson.translation_de
+      || entry?.translation_ru
+      || responseJson.translation_ru
+      || '';
     if (!correct) return [];
-    const distractors = allEntries
-      .filter((item) => item !== entry)
-      .map((item) => item.translation_de || item.response_json?.translation_de || '')
-      .filter(Boolean)
-      .filter((value) => value !== correct)
-      .slice(0, 6);
-    const options = Array.from(new Set([correct, ...distractors])).filter(Boolean).slice(0, 4);
+    const pool = [...allEntries, ...flashcardPool]
+      .filter((item) => item && item.id !== entry?.id);
+    const values = Array.from(new Set(
+      pool
+        .map((item) => (
+          item.translation_de
+            || item.response_json?.translation_de
+            || item.translation_ru
+            || item.response_json?.translation_ru
+            || ''
+        ))
+        .filter(Boolean)
+        .filter((value) => value !== correct)
+    ));
+
+    const distractors = [];
+    while (distractors.length < 3 && values.length > 0) {
+      const index = Math.floor(Math.random() * values.length);
+      distractors.push(values.splice(index, 1)[0]);
+    }
+
+    const options = Array.from(new Set([correct, ...distractors]));
+    while (options.length < 4 && values.length > 0) {
+      options.push(values.shift());
+    }
     while (options.length < 4) {
       options.push(correct);
     }
@@ -861,7 +954,7 @@ function AppInner() {
       const j = Math.floor(Math.random() * (i + 1));
       [options[i], options[j]] = [options[j], options[i]];
     }
-    return options;
+    return options.slice(0, 4);
   };
 
   const recordFlashcardAnswer = async (entryId, isCorrect) => {
@@ -1095,6 +1188,7 @@ function AppInner() {
       }
       const data = await response.json();
       setDictionaryResult(data.item || null);
+      setDictionaryDirection(data.direction || resolveDictionaryDirection(data.item));
     } catch (error) {
       setDictionaryError(`Ошибка словаря: ${error.message}`);
     } finally {
@@ -1120,7 +1214,14 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          word_ru: dictionaryResult.word_ru || dictionaryWord.trim(),
+          word_ru: dictionaryDirection === 'ru-de'
+            ? (dictionaryResult.word_ru || dictionaryWord.trim())
+            : '',
+          word_de: dictionaryDirection === 'de-ru'
+            ? (dictionaryResult.word_de || dictionaryWord.trim())
+            : '',
+          translation_de: dictionaryResult.translation_de || '',
+          translation_ru: dictionaryResult.translation_ru || '',
           response_json: dictionaryResult,
           folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
         }),
@@ -1305,6 +1406,14 @@ function AppInner() {
               </button>
             </div>
             <div className="webapp-menu-actions">
+              <label className="menu-toggle-row">
+                <input
+                  type="checkbox"
+                  checked={menuMultiSelect}
+                  onChange={(event) => setMenuMultiSelect(event.target.checked)}
+                />
+                <span>Мультивыбор</span>
+              </label>
               <button type="button" className="secondary-button" onClick={showAllSections} disabled={flashcardsOnly}>
                 Показать все
               </button>
@@ -1318,6 +1427,86 @@ function AppInner() {
           </aside>
 
           <div className="webapp-main">
+            <div className="webapp-topbar">
+              <button
+                type="button"
+                className="menu-toggle"
+                onClick={() => setMenuOpen(true)}
+              >
+                <span />
+                <span />
+                <span />
+              </button>
+              <div className="topbar-title">DeutschFlow</div>
+            </div>
+
+            {menuOpen && (
+              <div className="webapp-overlay">
+                <div className="overlay-backdrop" onClick={() => setMenuOpen(false)} />
+                <div className="overlay-panel">
+                  <div className="overlay-header">
+                    <div className="brand-title">DeutschFlow</div>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      Закрыть
+                    </button>
+                  </div>
+                <div className="overlay-menu">
+                    <label className="menu-toggle-row">
+                      <input
+                        type="checkbox"
+                        checked={menuMultiSelect}
+                        onChange={(event) => setMenuMultiSelect(event.target.checked)}
+                      />
+                      <span>Мультивыбор</span>
+                    </label>
+                    <button
+                      type="button"
+                      className={`menu-item ${selectedSections.has('translations') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('translations', translationsRef)}
+                      disabled={flashcardsOnly}
+                    >
+                      Переводы
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item ${selectedSections.has('youtube') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('youtube', youtubeRef)}
+                      disabled={flashcardsOnly}
+                    >
+                      YouTube
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item ${selectedSections.has('dictionary') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('dictionary', dictionaryRef)}
+                      disabled={flashcardsOnly}
+                    >
+                      Словарь
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item ${selectedSections.has('flashcards') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('flashcards', flashcardsRef)}
+                    >
+                      Карточки
+                    </button>
+                  </div>
+                  <div className="overlay-actions">
+                    <button type="button" className="secondary-button" onClick={showAllSections} disabled={flashcardsOnly}>
+                      Показать все
+                    </button>
+                    <button type="button" className="secondary-button" onClick={hideAllSections} disabled={flashcardsOnly}>
+                      Скрыть всё
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <header className="webapp-hero">
               <div className="webapp-hero-copy">
                 <span className="pill">Telegram Web App</span>
@@ -1533,7 +1722,7 @@ function AppInner() {
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
                 {isSectionVisible('youtube') && (
-                  <section className="webapp-video">
+                  <section className="webapp-video" ref={youtubeRef}>
                     <h3>Видео YouTube</h3>
                     <div className="webapp-video-form">
                       <label className="webapp-field">
@@ -1721,12 +1910,12 @@ function AppInner() {
 
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
-                        <span>Слово или фраза (русский)</span>
+                        <span>Слово или фраза (русский / немецкий)</span>
                         <input
                           type="text"
                           value={dictionaryWord}
                           onChange={(event) => setDictionaryWord(event.target.value)}
-                          placeholder="Например: отказаться, уважение, несмотря на"
+                          placeholder="Например: отказаться, уважение, несмотря на / verzichten, Respekt"
                         />
                       </label>
                       <div className="dictionary-actions">
@@ -1759,7 +1948,13 @@ function AppInner() {
                           </button>
                         )}
                         <div className="dictionary-row">
-                          <strong>Перевод:</strong> {dictionaryResult.translation_de || '—'}
+                          <strong>Перевод:</strong>{' '}
+                          {dictionaryDirection === 'ru-de'
+                            ? (dictionaryResult.translation_de || '—')
+                            : (dictionaryResult.translation_ru || '—')}
+                          <span className="dictionary-direction">
+                            {dictionaryDirection === 'ru-de' ? 'RU → DE' : 'DE → RU'}
+                          </span>
                         </div>
                         <div className="dictionary-row">
                           <strong>Часть речи:</strong> {dictionaryResult.part_of_speech || '—'}
@@ -1925,7 +2120,16 @@ function AppInner() {
                           (() => {
                             const entry = flashcards[flashcardIndex] || {};
                             const responseJson = entry.response_json || {};
-                            const correct = entry.translation_de || responseJson.translation_de || '—';
+                            const correct = entry.translation_de
+                              || responseJson.translation_de
+                              || entry.translation_ru
+                              || responseJson.translation_ru
+                              || '—';
+                            const questionWord = entry.word_ru
+                              || responseJson.word_ru
+                              || entry.word_de
+                              || responseJson.word_de
+                              || '—';
                             const context = Array.isArray(responseJson.usage_examples)
                               ? responseJson.usage_examples[0]
                               : '';
@@ -1962,7 +2166,7 @@ function AppInner() {
                                     </button>
                                   </div>
                                 </div>
-                                <div className="flashcard-word">{entry.word_ru || '—'}</div>
+                                <div className="flashcard-word">{questionWord}</div>
                                 {flashcardSelection !== null && context && (
                                   <div className="flashcard-context flashcard-context-visible">{context}</div>
                                 )}

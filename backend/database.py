@@ -124,8 +124,10 @@ def ensure_webapp_tables() -> None:
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_dictionary_queries (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
-                    word_ru TEXT NOT NULL,
+                    word_ru TEXT,
                     translation_de TEXT,
+                    word_de TEXT,
+                    translation_ru TEXT,
                     response_json JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -133,6 +135,18 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_webapp_dictionary_queries
                 ADD COLUMN IF NOT EXISTS folder_id BIGINT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ALTER COLUMN word_ru DROP NOT NULL;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS word_de TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS translation_ru TEXT;
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_folders (
@@ -253,8 +267,10 @@ def get_webapp_translation_history(user_id: int, limit: int = 20) -> list[dict]:
 
 def save_webapp_dictionary_query(
     user_id: int,
-    word_ru: str,
+    word_ru: str | None,
     translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
     response_json: dict,
     folder_id: int | None = None,
 ) -> None:
@@ -266,14 +282,18 @@ def save_webapp_dictionary_query(
                     word_ru,
                     folder_id,
                     translation_de,
+                    word_de,
+                    translation_ru,
                     response_json
                 )
-                VALUES (%s, %s, %s, %s, %s);
+                VALUES (%s, %s, %s, %s, %s, %s, %s);
             """, (
                 user_id,
                 word_ru,
                 folder_id,
                 translation_de,
+                word_de,
+                translation_ru,
                 json.dumps(response_json, ensure_ascii=False),
             ))
 
@@ -295,7 +315,7 @@ def get_webapp_dictionary_entries(
                 where_clause += " AND folder_id IS NULL"
             params.append(limit)
             cursor.execute(f"""
-                SELECT id, word_ru, translation_de, response_json, folder_id, created_at
+                SELECT id, word_ru, translation_de, word_de, translation_ru, response_json, folder_id, created_at
                 FROM bt_3_webapp_dictionary_queries
                 {where_clause}
                 ORDER BY created_at DESC
@@ -309,9 +329,11 @@ def get_webapp_dictionary_entries(
             "id": row[0],
             "word_ru": row[1],
             "translation_de": row[2],
-            "response_json": row[3],
-            "folder_id": row[4],
-            "created_at": row[5].isoformat() if row[5] else None,
+            "word_de": row[3],
+            "translation_ru": row[4],
+            "response_json": row[5],
+            "folder_id": row[6],
+            "created_at": row[7].isoformat() if row[7] else None,
         })
     return items
 
@@ -529,7 +551,7 @@ def get_flashcard_set(
                 base_where += " AND folder_id IS NULL"
             base_params.extend([user_id, max(set_size - len(wrong_ids), 0)])
             cursor.execute(f"""
-                SELECT id, word_ru, translation_de, response_json
+                SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
                 FROM bt_3_webapp_dictionary_queries
                 WHERE {base_where}
                   AND id NOT IN (
@@ -553,12 +575,12 @@ def get_flashcard_set(
                     fallback_where += " AND folder_id IS NULL"
                 fallback_params.append(max(set_size - len(wrong_ids), 0))
                 cursor.execute(f"""
-                    SELECT id, word_ru, translation_de, response_json
-                    FROM bt_3_webapp_dictionary_queries
-                    WHERE {fallback_where}
-                    ORDER BY RANDOM()
-                    LIMIT %s;
-                """, fallback_params)
+                SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
+                FROM bt_3_webapp_dictionary_queries
+                WHERE {fallback_where}
+                ORDER BY RANDOM()
+                LIMIT %s;
+            """, fallback_params)
                 random_rows = cursor.fetchall()
 
             if wrong_ids:
@@ -570,7 +592,7 @@ def get_flashcard_set(
                 elif folder_mode == "none":
                     wrong_where += " AND folder_id IS NULL"
                 cursor.execute(f"""
-                    SELECT id, word_ru, translation_de, response_json
+                    SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
                     FROM bt_3_webapp_dictionary_queries
                     WHERE {wrong_where};
                 """, wrong_params)
@@ -585,7 +607,9 @@ def get_flashcard_set(
             "id": row[0],
             "word_ru": row[1],
             "translation_de": row[2],
-            "response_json": row[3],
+            "word_de": row[3],
+            "translation_ru": row[4],
+            "response_json": row[5],
         })
     return items
 

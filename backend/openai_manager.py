@@ -466,6 +466,18 @@ usage_examples: array of strings with 2-3 German example sentences for the base 
 If none are known, create natural examples.
 Respond ONLY with JSON, no markdown, no extra text.
 """,
+"dictionary_assistant_de": """
+You are a German dictionary assistant. The user provides a German word or short phrase.
+Return a STRICT JSON object with the following fields:
+word_de: string (original German input)
+part_of_speech: string (noun/verb/adjective/adverb/phrase/other)
+translation_ru: string (natural Russian translation)
+article: string or null (der/die/das only if noun)
+forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2 (use null if not applicable)
+usage_examples: array of strings with 2-3 German example sentences for the base word/phrase.
+If none are known, create natural examples.
+Respond ONLY with JSON, no markdown, no extra text.
+""",
 "generate_word_quiz": """
 You create one Telegram quiz question for Russian-speaking learners of German at C1–C2 level.
 The question must be in Russian and must include the Russian word/phrase from the payload.
@@ -728,6 +740,63 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
                 "konjunktiv2": None,
             },
             "prefixes": [],
+            "usage_examples": [],
+            "raw_text": content,
+        }
+
+
+async def run_dictionary_lookup_de(word_de: str) -> dict:
+    task_name = "dictionary_assistant_de"
+    system_instruction_key = "dictionary_assistant_de"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=word_de,
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {
+            "word_de": word_de,
+            "part_of_speech": "other",
+            "translation_ru": "",
+            "article": None,
+            "forms": {
+                "plural": None,
+                "praeteritum": None,
+                "perfekt": None,
+                "konjunktiv1": None,
+                "konjunktiv2": None,
+            },
             "usage_examples": [],
             "raw_text": content,
         }
