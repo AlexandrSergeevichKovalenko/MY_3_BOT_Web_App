@@ -125,11 +125,14 @@ def ensure_webapp_tables() -> None:
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
                     word_ru TEXT NOT NULL,
-                    folder_id BIGINT,
                     translation_de TEXT,
                     response_json JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS folder_id BIGINT;
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_folders (
@@ -148,10 +151,6 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_folder
                 ON bt_3_webapp_dictionary_queries (user_id, folder_id);
-            """)
-            cursor.execute("""
-                ALTER TABLE bt_3_webapp_dictionary_queries
-                ADD COLUMN IF NOT EXISTS folder_id BIGINT;
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_quiz_history (
