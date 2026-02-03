@@ -125,10 +125,33 @@ def ensure_webapp_tables() -> None:
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
                     word_ru TEXT NOT NULL,
+                    folder_id BIGINT,
                     translation_de TEXT,
                     response_json JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_dictionary_folders (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    name TEXT NOT NULL,
+                    color TEXT NOT NULL,
+                    icon TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_folders_user
+                ON bt_3_dictionary_folders (user_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_folder
+                ON bt_3_webapp_dictionary_queries (user_id, folder_id);
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS folder_id BIGINT;
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_quiz_history (
@@ -234,6 +257,7 @@ def save_webapp_dictionary_query(
     word_ru: str,
     translation_de: str | None,
     response_json: dict,
+    folder_id: int | None = None,
 ) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -241,37 +265,54 @@ def save_webapp_dictionary_query(
                 INSERT INTO bt_3_webapp_dictionary_queries (
                     user_id,
                     word_ru,
+                    folder_id,
                     translation_de,
                     response_json
                 )
-                VALUES (%s, %s, %s, %s);
+                VALUES (%s, %s, %s, %s, %s);
             """, (
                 user_id,
                 word_ru,
+                folder_id,
                 translation_de,
                 json.dumps(response_json, ensure_ascii=False),
             ))
 
 
-def get_webapp_dictionary_entries(user_id: int, limit: int = 100) -> list[dict]:
+def get_webapp_dictionary_entries(
+    user_id: int,
+    limit: int = 100,
+    folder_mode: str = "all",
+    folder_id: int | None = None,
+) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT word_ru, translation_de, response_json, created_at
+            where_clause = "WHERE user_id = %s"
+            params = [user_id]
+            if folder_mode == "folder" and folder_id is not None:
+                where_clause += " AND folder_id = %s"
+                params.append(folder_id)
+            elif folder_mode == "none":
+                where_clause += " AND folder_id IS NULL"
+            params.append(limit)
+            cursor.execute(f"""
+                SELECT id, word_ru, translation_de, response_json, folder_id, created_at
                 FROM bt_3_webapp_dictionary_queries
-                WHERE user_id = %s
+                {where_clause}
                 ORDER BY created_at DESC
                 LIMIT %s;
-            """, (user_id, limit))
+            """, params)
             rows = cursor.fetchall()
 
     items = []
     for row in rows:
         items.append({
-            "word_ru": row[0],
-            "translation_de": row[1],
-            "response_json": row[2],
-            "created_at": row[3].isoformat() if row[3] else None,
+            "id": row[0],
+            "word_ru": row[1],
+            "translation_de": row[2],
+            "response_json": row[3],
+            "folder_id": row[4],
+            "created_at": row[5].isoformat() if row[5] else None,
         })
     return items
 
@@ -431,37 +472,67 @@ def record_flashcard_answer(user_id: int, entry_id: int, is_correct: bool) -> No
             """, (user_id, entry_id))
 
 
-def get_flashcard_set(user_id: int, set_size: int = 15, wrong_size: int = 5) -> list[dict]:
+def get_flashcard_set(
+    user_id: int,
+    set_size: int = 15,
+    wrong_size: int = 5,
+    folder_mode: str = "all",
+    folder_id: int | None = None,
+) -> list[dict]:
     if not user_id:
         return []
     wrong_ids: list[int] = []
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT entry_id
-                FROM bt_3_flashcard_stats
-                WHERE user_id = %s AND last_result = FALSE
-                ORDER BY updated_at DESC
+            wrong_where = "s.user_id = %s AND s.last_result = FALSE"
+            wrong_params = [user_id]
+            if folder_mode == "folder" and folder_id is not None:
+                wrong_where += " AND q.folder_id = %s"
+                wrong_params.append(folder_id)
+            elif folder_mode == "none":
+                wrong_where += " AND q.folder_id IS NULL"
+            wrong_params.append(wrong_size)
+            cursor.execute(f"""
+                SELECT s.entry_id
+                FROM bt_3_flashcard_stats s
+                JOIN bt_3_webapp_dictionary_queries q ON q.id = s.entry_id
+                WHERE {wrong_where}
+                ORDER BY s.updated_at DESC
                 LIMIT %s;
-            """, (user_id, wrong_size))
+            """, wrong_params)
             wrong_ids = [row[0] for row in cursor.fetchall()]
 
             if len(wrong_ids) < wrong_size:
-                cursor.execute("""
-                    SELECT entry_id
-                    FROM bt_3_flashcard_stats
-                    WHERE user_id = %s
-                      AND entry_id <> ALL(%s::bigint[])
-                    ORDER BY (wrong_count - correct_count) DESC, updated_at DESC
+                extra_where = "s.user_id = %s AND s.entry_id <> ALL(%s::bigint[])"
+                extra_params = [user_id, wrong_ids or [0]]
+                if folder_mode == "folder" and folder_id is not None:
+                    extra_where += " AND q.folder_id = %s"
+                    extra_params.append(folder_id)
+                elif folder_mode == "none":
+                    extra_where += " AND q.folder_id IS NULL"
+                extra_params.append(wrong_size - len(wrong_ids))
+                cursor.execute(f"""
+                    SELECT s.entry_id
+                    FROM bt_3_flashcard_stats s
+                    JOIN bt_3_webapp_dictionary_queries q ON q.id = s.entry_id
+                    WHERE {extra_where}
+                    ORDER BY (s.wrong_count - s.correct_count) DESC, s.updated_at DESC
                     LIMIT %s;
-                """, (user_id, wrong_ids or [0], wrong_size - len(wrong_ids)))
+                """, extra_params)
                 wrong_ids.extend([row[0] for row in cursor.fetchall()])
 
-            cursor.execute("""
+            base_where = "user_id = %s AND id <> ALL(%s::bigint[])"
+            base_params = [user_id, wrong_ids or [0]]
+            if folder_mode == "folder" and folder_id is not None:
+                base_where += " AND folder_id = %s"
+                base_params.append(folder_id)
+            elif folder_mode == "none":
+                base_where += " AND folder_id IS NULL"
+            base_params.extend([user_id, max(set_size - len(wrong_ids), 0)])
+            cursor.execute(f"""
                 SELECT id, word_ru, translation_de, response_json
                 FROM bt_3_webapp_dictionary_queries
-                WHERE user_id = %s
-                  AND id <> ALL(%s::bigint[])
+                WHERE {base_where}
                   AND id NOT IN (
                       SELECT entry_id
                       FROM bt_3_flashcard_seen
@@ -470,27 +541,40 @@ def get_flashcard_set(user_id: int, set_size: int = 15, wrong_size: int = 5) -> 
                   )
                 ORDER BY RANDOM()
                 LIMIT %s;
-            """, (user_id, wrong_ids or [0], user_id, max(set_size - len(wrong_ids), 0)))
+            """, base_params)
             random_rows = cursor.fetchall()
 
             if len(random_rows) < max(set_size - len(wrong_ids), 0):
-                cursor.execute("""
+                fallback_where = "user_id = %s AND id <> ALL(%s::bigint[])"
+                fallback_params = [user_id, wrong_ids or [0]]
+                if folder_mode == "folder" and folder_id is not None:
+                    fallback_where += " AND folder_id = %s"
+                    fallback_params.append(folder_id)
+                elif folder_mode == "none":
+                    fallback_where += " AND folder_id IS NULL"
+                fallback_params.append(max(set_size - len(wrong_ids), 0))
+                cursor.execute(f"""
                     SELECT id, word_ru, translation_de, response_json
                     FROM bt_3_webapp_dictionary_queries
-                    WHERE user_id = %s
-                      AND id <> ALL(%s::bigint[])
+                    WHERE {fallback_where}
                     ORDER BY RANDOM()
                     LIMIT %s;
-                """, (user_id, wrong_ids or [0], max(set_size - len(wrong_ids), 0)))
+                """, fallback_params)
                 random_rows = cursor.fetchall()
 
             if wrong_ids:
-                cursor.execute("""
+                wrong_where = "user_id = %s AND id = ANY(%s::bigint[])"
+                wrong_params = [user_id, wrong_ids]
+                if folder_mode == "folder" and folder_id is not None:
+                    wrong_where += " AND folder_id = %s"
+                    wrong_params.append(folder_id)
+                elif folder_mode == "none":
+                    wrong_where += " AND folder_id IS NULL"
+                cursor.execute(f"""
                     SELECT id, word_ru, translation_de, response_json
                     FROM bt_3_webapp_dictionary_queries
-                    WHERE user_id = %s
-                      AND id = ANY(%s::bigint[]);
-                """, (user_id, wrong_ids))
+                    WHERE {wrong_where};
+                """, wrong_params)
                 wrong_rows = cursor.fetchall()
             else:
                 wrong_rows = []
@@ -505,6 +589,51 @@ def get_flashcard_set(user_id: int, set_size: int = 15, wrong_size: int = 5) -> 
             "response_json": row[3],
         })
     return items
+
+
+def create_dictionary_folder(
+    user_id: int,
+    name: str,
+    color: str,
+    icon: str,
+) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO bt_3_dictionary_folders (user_id, name, color, icon)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, name, color, icon, created_at;
+            """, (user_id, name, color, icon))
+            row = cursor.fetchone()
+            return {
+                "id": row[0],
+                "name": row[1],
+                "color": row[2],
+                "icon": row[3],
+                "created_at": row[4].isoformat() if row[4] else None,
+            }
+
+
+def get_dictionary_folders(user_id: int) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, name, color, icon, created_at
+                FROM bt_3_dictionary_folders
+                WHERE user_id = %s
+                ORDER BY created_at DESC;
+            """, (user_id,))
+            rows = cursor.fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "color": row[2],
+                    "icon": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None,
+                }
+                for row in rows
+            ]
 
 
 def _get_latest_session_id(cursor, user_id: int) -> str | None:

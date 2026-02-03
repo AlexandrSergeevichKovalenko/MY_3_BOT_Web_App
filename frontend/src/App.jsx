@@ -97,10 +97,29 @@ function AppInner() {
   const [flashcardIndex, setFlashcardIndex] = useState(0);
   const [flashcardSelection, setFlashcardSelection] = useState(null);
   const [flashcardOptions, setFlashcardOptions] = useState([]);
-  const [activeSection, setActiveSection] = useState('all');
+  const [selectedSections, setSelectedSections] = useState(
+    new Set(['translations', 'youtube', 'dictionary', 'flashcards'])
+  );
+  const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
+  const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
+  const [autoAdvancePaused, setAutoAdvancePaused] = useState(false);
+  const [folders, setFolders] = useState([]);
+  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [foldersError, setFoldersError] = useState('');
+  const [dictionaryFolderId, setDictionaryFolderId] = useState('none');
+  const [flashcardFolderMode, setFlashcardFolderMode] = useState('all');
+  const [flashcardFolderId, setFlashcardFolderId] = useState('');
+  const [showNewFolderForm, setShowNewFolderForm] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderColor, setNewFolderColor] = useState('#5ddcff');
+  const [newFolderIcon, setNewFolderIcon] = useState('book');
+  const [userAvatar, setUserAvatar] = useState('');
 
   const dictionaryRef = useRef(null);
   const flashcardsRef = useRef(null);
+  const translationsRef = useRef(null);
+  const autoAdvanceTimeoutRef = useRef(null);
+  const avatarInputRef = useRef(null);
 
   const safeStorageGet = (key) => {
     try {
@@ -150,6 +169,112 @@ function AppInner() {
     if (flashcardsRef.current) {
       flashcardsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+  };
+
+  const folderColorOptions = ['#5ddcff', '#7c5cff', '#ff6b6b', '#ffd166', '#06d6a0', '#f78c6b'];
+  const folderIconOptions = ['book', 'bolt', 'star', 'target', 'flag', 'check'];
+
+  const isSectionVisible = (key) => {
+    if (flashcardsOnly) {
+      return key === 'flashcards';
+    }
+    return selectedSections.has(key);
+  };
+
+  const toggleSection = (key) => {
+    setSelectedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const ensureSectionVisible = (key) => {
+    setSelectedSections((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+  };
+
+  const openSectionAndScroll = (key, ref) => {
+    ensureSectionVisible(key);
+    setTimeout(() => {
+      if (ref?.current) {
+        ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 80);
+  };
+
+  const showAllSections = () => {
+    setSelectedSections(new Set(['translations', 'youtube', 'dictionary', 'flashcards']));
+  };
+
+  const hideAllSections = () => {
+    setSelectedSections(new Set());
+  };
+
+  const resolveFolderIconLabel = (icon) => {
+    const map = {
+      book: 'Book',
+      bolt: 'Bolt',
+      star: 'Star',
+      target: 'Target',
+      flag: 'Flag',
+      check: 'Check',
+    };
+    return map[icon] || 'Folder';
+  };
+
+  const renderFolderIcon = (icon, color) => {
+    const fill = color || '#5ddcff';
+    const stroke = '#0b1020';
+    if (icon === 'bolt') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" fill={fill} stroke={stroke} strokeWidth="1.4" />
+        </svg>
+      );
+    }
+    if (icon === 'star') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 2l2.7 5.6 6.2.9-4.5 4.4 1 6.2L12 16.8 6.6 19.1l1-6.2-4.5-4.4 6.2-.9L12 2z" fill={fill} stroke={stroke} strokeWidth="1.2" />
+        </svg>
+      );
+    }
+    if (icon === 'target') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke={fill} strokeWidth="2.4" />
+          <circle cx="12" cy="12" r="5" fill="none" stroke={fill} strokeWidth="2.4" />
+          <circle cx="12" cy="12" r="2" fill={fill} />
+        </svg>
+      );
+    }
+    if (icon === 'flag') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 3v18M6 4h11l-2 3 2 3H6" fill={fill} stroke={stroke} strokeWidth="1.4" />
+        </svg>
+      );
+    }
+    if (icon === 'check') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 12l4 4 10-10" fill="none" stroke={fill} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    }
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 6h8l2 2h6v10a2 2 0 0 1-2 2H4z" fill={fill} stroke={stroke} strokeWidth="1.2" />
+      </svg>
+    );
   };
 
   // Состояние для хранения токена доступа. Изначально его нет.
@@ -230,12 +355,26 @@ function AppInner() {
   }, []);
 
   useEffect(() => {
+    const storedAvatar = safeStorageGet('webapp_avatar');
+    if (storedAvatar) {
+      setUserAvatar(storedAvatar);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      return;
+    }
+    loadFolders();
+  }, [initData, isWebAppMode]);
+
+  useEffect(() => {
     if (!flashcardsVisible) {
       return;
     }
     loadFlashcards();
     scrollToFlashcards();
-  }, [flashcardsVisible, initData]);
+  }, [flashcardsVisible, initData, flashcardFolderMode, flashcardFolderId]);
 
   useEffect(() => {
     if (!flashcards.length) {
@@ -246,6 +385,47 @@ function AppInner() {
     setFlashcardOptions(buildFlashcardOptions(entry, flashcards));
     setFlashcardSelection(null);
   }, [flashcards, flashcardIndex]);
+
+  useEffect(() => {
+    if (flashcardSelection === null) {
+      return;
+    }
+    if (flashcardSetComplete) {
+      return;
+    }
+    if (autoAdvancePaused) {
+      return;
+    }
+    if (!flashcards.length) {
+      return;
+    }
+    if (autoAdvanceTimeoutRef.current) {
+      clearTimeout(autoAdvanceTimeoutRef.current);
+    }
+    autoAdvanceTimeoutRef.current = setTimeout(() => {
+      advanceFlashcard();
+    }, 10000);
+
+    return () => {
+      if (autoAdvanceTimeoutRef.current) {
+        clearTimeout(autoAdvanceTimeoutRef.current);
+        autoAdvanceTimeoutRef.current = null;
+      }
+    };
+  }, [
+    flashcardSelection,
+    flashcardIndex,
+    autoAdvancePaused,
+    flashcardSetComplete,
+    flashcards.length,
+  ]);
+
+  useEffect(() => {
+    if (!flashcardsVisible && autoAdvanceTimeoutRef.current) {
+      clearTimeout(autoAdvanceTimeoutRef.current);
+      autoAdvanceTimeoutRef.current = null;
+    }
+  }, [flashcardsVisible]);
 
   const loadSentences = async () => {
     if (!initData) {
@@ -478,7 +658,12 @@ function AppInner() {
       const saveResponse = await fetch('/api/webapp/dictionary/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word_ru: normalized, response_json: data.item || {} }),
+        body: JSON.stringify({
+          initData,
+          word_ru: normalized,
+          response_json: data.item || {},
+          folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
+        }),
       });
       if (!saveResponse.ok) {
         let message = await saveResponse.text();
@@ -563,7 +748,13 @@ function AppInner() {
       const response = await fetch('/api/webapp/flashcards/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, set_size: 15, wrong_size: 5 }),
+        body: JSON.stringify({
+          initData,
+          set_size: 15,
+          wrong_size: 5,
+          folder_mode: flashcardFolderMode,
+          folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
+        }),
       });
       if (!response.ok) {
         throw new Error(await response.text());
@@ -576,10 +767,79 @@ function AppInner() {
       setFlashcards(items);
       setFlashcardIndex(0);
       setFlashcardSelection(null);
+      setFlashcardSetComplete(false);
+      setAutoAdvancePaused(false);
+      setFlashcardStats({
+        total: items.length,
+        correct: 0,
+        wrong: 0,
+      });
     } catch (error) {
       setFlashcardsError(`Ошибка карточек: ${error.message}`);
     } finally {
       setFlashcardsLoading(false);
+    }
+  };
+
+  const loadFolders = async () => {
+    if (!initData) {
+      return;
+    }
+    setFoldersLoading(true);
+    setFoldersError('');
+    try {
+      const response = await fetch('/api/webapp/dictionary/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      setFolders(data.items || []);
+    } catch (error) {
+      setFoldersError(`Ошибка папок: ${error.message}`);
+    } finally {
+      setFoldersLoading(false);
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    if (!initData) {
+      setFoldersError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    if (!newFolderName.trim()) {
+      setFoldersError('Введите название папки.');
+      return;
+    }
+    setFoldersLoading(true);
+    setFoldersError('');
+    try {
+      const response = await fetch('/api/webapp/dictionary/folders/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          name: newFolderName.trim(),
+          color: newFolderColor,
+          icon: newFolderIcon,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      const created = data.item;
+      setFolders((prev) => [created, ...prev]);
+      setDictionaryFolderId(String(created.id));
+      setShowNewFolderForm(false);
+      setNewFolderName('');
+    } catch (error) {
+      setFoldersError(`Ошибка создания папки: ${error.message}`);
+    } finally {
+      setFoldersLoading(false);
     }
   };
 
@@ -617,6 +877,33 @@ function AppInner() {
     } catch (error) {
       // ignore answer tracking errors
     }
+  };
+
+  const advanceFlashcard = () => {
+    if (autoAdvanceTimeoutRef.current) {
+      clearTimeout(autoAdvanceTimeoutRef.current);
+      autoAdvanceTimeoutRef.current = null;
+    }
+    const nextIndex = flashcardIndex + 1;
+    if (nextIndex >= flashcards.length) {
+      setFlashcardSetComplete(true);
+      return;
+    }
+    setFlashcardIndex(nextIndex);
+    setFlashcardSelection(null);
+  };
+
+  const handleAvatarUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      if (!result) return;
+      setUserAvatar(result);
+      safeStorageSet('webapp_avatar', result);
+    };
+    reader.readAsDataURL(file);
   };
 
   const renderClickableText = (text) => {
@@ -835,6 +1122,7 @@ function AppInner() {
           initData,
           word_ru: dictionaryResult.word_ru || dictionaryWord.trim(),
           response_json: dictionaryResult,
+          folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
         }),
       });
       if (!response.ok) {
@@ -854,6 +1142,10 @@ function AppInner() {
       setDictionaryLoading(false);
     }
   };
+
+  const selectedDictionaryFolder = folders.find(
+    (folder) => String(folder.id) === dictionaryFolderId
+  );
 
   const extractYoutubeId = (value) => {
     if (!value) return '';
@@ -967,527 +1259,786 @@ function AppInner() {
     }
   };
 
-  const endActiveSection = () => {
-    setActiveSection('all');
-    setFlashcardsOnly(false);
-  };
-
   if (isWebAppMode) {
     return (
       <div className="webapp-page">
-        <div className="webapp-card">
-          <header className="webapp-header">
-            <span className="pill">Telegram Web App</span>
-            <h1>Проверка переводов</h1>
-            <p>Введите оригинальное предложение и свой перевод, чтобы получить оценку.</p>
-            {flashcardsOnly && <div className="webapp-mode-banner">🧠 Режим повторения</div>}
-          </header>
-
-          <section className="webapp-meta">
-            <div>
-              <strong>Пользователь:</strong> {webappUser?.first_name || 'Гость'}
+        <div className="webapp-shell">
+          <aside className="webapp-sidebar">
+            <div className="webapp-brand">
+              <div className="brand-mark">DF</div>
+              <div>
+                <div className="brand-title">DeutschFlow</div>
+                <div className="brand-subtitle">Переводы • Видео • Словарь</div>
+              </div>
             </div>
-            <div>
-              <strong>Session ID:</strong> {sessionId || '—'}
-            </div>
-          </section>
-
-          <div className="webapp-section-nav">
-            <button type="button" className="secondary-button" onClick={() => setActiveSection('translations')}>
-              Переводы
-            </button>
-            <button type="button" className="secondary-button" onClick={() => setActiveSection('youtube')}>
-              YouTube
-            </button>
-            <button type="button" className="secondary-button" onClick={() => setActiveSection('dictionary')}>
-              Словарь
-            </button>
-            <button type="button" className="secondary-button" onClick={() => setActiveSection('flashcards')}>
-              Карточки
-            </button>
-            <button type="button" className="secondary-button" onClick={endActiveSection}>
-              Все разделы
-            </button>
-          </div>
-
-          {!telegramApp?.initData && (
-            <label className="webapp-field">
-              <span>initData (для локального теста)</span>
-              <textarea
-                rows={3}
-                value={initData}
-                onChange={(event) => setInitData(event.target.value)}
-                placeholder="Вставьте initData из Telegram"
-              />
-            </label>
-          )}
-
-          {activeSection !== 'all' && (
-            <div className="webapp-section-actions">
-              <button type="button" className="secondary-button" onClick={endActiveSection}>
-                Показать все разделы
+            <div className="webapp-menu">
+              <button
+                type="button"
+                className={`menu-item ${selectedSections.has('translations') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('translations')}
+                disabled={flashcardsOnly}
+              >
+                Переводы
+              </button>
+              <button
+                type="button"
+                className={`menu-item ${selectedSections.has('youtube') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('youtube')}
+                disabled={flashcardsOnly}
+              >
+                YouTube
+              </button>
+              <button
+                type="button"
+                className={`menu-item ${selectedSections.has('dictionary') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('dictionary')}
+                disabled={flashcardsOnly}
+              >
+                Словарь
+              </button>
+              <button
+                type="button"
+                className={`menu-item ${selectedSections.has('flashcards') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('flashcards')}
+              >
+                Карточки
               </button>
             </div>
-          )}
+            <div className="webapp-menu-actions">
+              <button type="button" className="secondary-button" onClick={showAllSections} disabled={flashcardsOnly}>
+                Показать все
+              </button>
+              <button type="button" className="secondary-button" onClick={hideAllSections} disabled={flashcardsOnly}>
+                Скрыть всё
+              </button>
+            </div>
+            {flashcardsOnly && (
+              <div className="webapp-menu-note">Режим повторения активен</div>
+            )}
+          </aside>
 
-          {!flashcardsOnly && activeSection === 'all' && (
-            <form className="webapp-form" onSubmit={handleWebappSubmit}>
-              <section
-                className="webapp-translation-list"
-                onClick={() => setActiveSection('translations')}
+          <div className="webapp-main">
+            <header className="webapp-hero">
+              <div className="webapp-hero-copy">
+                <span className="pill">Telegram Web App</span>
+                <h1>Учите немецкий в потоке</h1>
+                <p>
+                  Переводы, словарь, видео и карточки — всё в одном месте. Короткие шаги,
+                  быстрые проверки и понятный прогресс без перегруза.
+                </p>
+              </div>
+              <div className="webapp-user-badge">
+                <input
+                  ref={avatarInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="avatar-input"
+                  onChange={handleAvatarUpload}
+                />
+                <button
+                  type="button"
+                  className="avatar-button"
+                  onClick={() => avatarInputRef.current?.click()}
+                >
+                  {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                </button>
+                <div className="user-name">{webappUser?.first_name || 'Гость'}</div>
+              </div>
+            </header>
+
+            <section className="webapp-hero-cards">
+              <div className="hero-card">
+                <h3>Переводите</h3>
+                <p>Напишите перевод, получите оценку и объяснения ошибок.</p>
+              </div>
+              <div className="hero-card">
+                <h3>Сохраняйте</h3>
+                <p>Добавляйте слова в словарь и группируйте по папкам.</p>
+              </div>
+              <div className="hero-card">
+                <h3>Тренируйтесь</h3>
+                <p>Повторяйте слова сетами по 15 карточек с прогрессом.</p>
+              </div>
+            </section>
+
+            <section className="webapp-quickstart">
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => openSectionAndScroll('translations', translationsRef)}
+                disabled={flashcardsOnly}
               >
-                <div className={`webapp-history-head ${activeSection === 'translations' ? 'is-active' : ''}`}>
-                  <h3>Ваши переводы</h3>
+                Начать перевод
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => openSectionAndScroll('dictionary', dictionaryRef)}
+                disabled={flashcardsOnly}
+              >
+                Открыть словарь
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  setFlashcardsVisible(true);
+                  setFlashcardsOnly(false);
+                  openSectionAndScroll('flashcards', flashcardsRef);
+                }}
+              >
+                Повторить слова
+              </button>
+            </section>
+
+            {flashcardsOnly && <div className="webapp-mode-banner">Режим повторения</div>}
+
+            {!telegramApp?.initData && (
+              <label className="webapp-field">
+                <span>initData (для локального теста)</span>
+                <textarea
+                  rows={3}
+                  value={initData}
+                  onChange={(event) => setInitData(event.target.value)}
+                  placeholder="Вставьте initData из Telegram"
+                />
+              </label>
+            )}
+
+            {!flashcardsOnly && isSectionVisible('translations') && (
+              <section className="webapp-section" ref={translationsRef}>
+                <div className="webapp-section-title">
+                  <h2>Ваши переводы</h2>
                 </div>
-                {sentences.length === 0 ? (
-                  <p className="webapp-muted">Все предложения текущей сессии переведены. Запросите новые.</p>
-                ) : (
-                  sentences.map((item, index) => {
-                    const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
-                    return (
-                      <label key={item.id_for_mistake_table} className="webapp-translation-item">
-                        <span>
-                          {item.unique_id ?? index + 1}. {item.sentence}
-                        </span>
-                        <textarea
-                          rows={5}
-                          value={draft}
-                          onChange={(event) => handleDraftChange(item.id_for_mistake_table, event.target.value)}
-                          placeholder="Введите перевод..."
-                        />
-                      </label>
-                    );
-                  })
+                <form className="webapp-form" onSubmit={handleWebappSubmit}>
+                  <section className="webapp-translation-list">
+                    {sentences.length === 0 ? (
+                      <p className="webapp-muted">Все предложения текущей сессии переведены. Запросите новые.</p>
+                    ) : (
+                      sentences.map((item, index) => {
+                        const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
+                        return (
+                          <label key={item.id_for_mistake_table} className="webapp-translation-item">
+                            <span>
+                              {item.unique_id ?? index + 1}. {item.sentence}
+                            </span>
+                            <textarea
+                              rows={5}
+                              value={draft}
+                              onChange={(event) => handleDraftChange(item.id_for_mistake_table, event.target.value)}
+                              placeholder="Введите перевод..."
+                            />
+                          </label>
+                        );
+                      })
+                    )}
+                  </section>
+
+                  <button className="primary-button" type="submit" disabled={webappLoading}>
+                    {webappLoading ? 'Проверяем...' : 'Проверить перевод'}
+                  </button>
+                </form>
+
+                {webappError && <div className="webapp-error">{webappError}</div>}
+                {finishMessage && <div className="webapp-success">{finishMessage}</div>}
+
+                {results.length > 0 && (
+                  <section className="webapp-result">
+                    <h3>Результат проверки</h3>
+                    <div className="webapp-result-list">
+                      {results.map((item, index) => (
+                        <div key={`${item.sentence_number ?? index}`} className="webapp-result-card">
+                          {item.error ? (
+                            <div className="webapp-error">{item.error}</div>
+                          ) : (
+                            <>
+                              <div className="webapp-result-text">{renderFeedback(item.feedback)}</div>
+                              <button
+                                type="button"
+                                className="secondary-button explanation-button"
+                                onClick={() => handleExplainTranslation(item)}
+                                disabled={explanationLoading[String(item.sentence_number ?? item.original_text)]}
+                              >
+                                {explanationLoading[String(item.sentence_number ?? item.original_text)]
+                                  ? 'Запрашиваем объяснение...'
+                                  : 'Объяснить ошибки'}
+                              </button>
+                              {explanations[String(item.sentence_number ?? item.original_text)] && (
+                                <div
+                                  className="webapp-explanation"
+                                  dangerouslySetInnerHTML={{
+                                    __html: renderRichText(
+                                      explanations[String(item.sentence_number ?? item.original_text)]
+                                    ),
+                                  }}
+                                />
+                              )}
+                            </>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                <div className="webapp-actions webapp-actions-footer">
+                  <button
+                    type="button"
+                    onClick={handleFinishTranslation}
+                    className={`primary-button finish-button ${finishStatus === 'done' ? 'status-done' : ''}`}
+                    disabled={webappLoading || results.length === 0}
+                  >
+                    {finishStatus === 'done' ? 'Завершено' : 'Завершить перевод'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLoadDailyHistory}
+                    className="secondary-button"
+                    disabled={webappLoading || historyLoading}
+                  >
+                    {historyLoading ? 'Загружаем...' : 'История за сегодня'}
+                  </button>
+                  {results.length === 0 && !webappLoading && (
+                    <div className="webapp-muted">Сначала проверьте перевод, чтобы завершить.</div>
+                  )}
+                </div>
+
+                {historyError && <div className="webapp-error">{historyError}</div>}
+
+                {historyVisible && (
+                  <section className="webapp-result">
+                    <h3>История переводов за сегодня</h3>
+                    {historyItems.length === 0 ? (
+                      <p className="webapp-muted">Сегодня пока нет завершённых переводов.</p>
+                    ) : (
+                      <div className="webapp-result-list">
+                        {historyItems.map((item, index) => (
+                          <div key={item.id ?? index} className="webapp-result-card">
+                            <pre className="webapp-result-text">
+                              {`Sentence number: ${item.sentence_number ?? '—'}\nScore: ${
+                                item.score ?? '—'
+                              }/100\nOriginal: ${item.original_text ?? '—'}\nTranslation: ${
+                                item.user_translation ?? '—'
+                              }\nCorrect: ${item.correct_translation ?? '—'}`}
+                            </pre>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
                 )}
               </section>
+            )}
 
-              <button className="primary-button" type="submit" disabled={webappLoading}>
-                {webappLoading ? 'Проверяем...' : 'Проверить перевод'}
-              </button>
-            </form>
-          )}
-
-          {!flashcardsOnly && activeSection === 'all' && webappError && <div className="webapp-error">{webappError}</div>}
-          {!flashcardsOnly && activeSection === 'all' && finishMessage && <div className="webapp-success">{finishMessage}</div>}
-
-          {!flashcardsOnly && activeSection === 'all' && results.length > 0 && (
-            <section className="webapp-result">
-              <h3>Результат проверки</h3>
-              <div className="webapp-result-list">
-                {results.map((item, index) => (
-                  <div key={`${item.sentence_number ?? index}`} className="webapp-result-card">
-                    {item.error ? (
-                      <div className="webapp-error">{item.error}</div>
-                    ) : (
-                      <>
-                        <div className="webapp-result-text">{renderFeedback(item.feedback)}</div>
+            {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
+              <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
+                {isSectionVisible('youtube') && (
+                  <section className="webapp-video">
+                    <h3>Видео YouTube</h3>
+                    <div className="webapp-video-form">
+                      <label className="webapp-field">
+                        <span>Ссылка или ID видео</span>
+                        <input
+                          type="text"
+                          value={youtubeInput}
+                          onChange={(event) => setYoutubeInput(event.target.value)}
+                          placeholder="https://youtu.be/VIDEO_ID"
+                        />
+                      </label>
+                      <div className="webapp-video-actions">
                         <button
                           type="button"
-                          className="secondary-button explanation-button"
-                          onClick={() => handleExplainTranslation(item)}
-                          disabled={explanationLoading[String(item.sentence_number ?? item.original_text)]}
+                          className="secondary-button"
+                          onClick={() => setVideoExpanded((prev) => !prev)}
                         >
-                          {explanationLoading[String(item.sentence_number ?? item.original_text)]
-                            ? 'Запрашиваем объяснение...'
-                            : 'Объяснить ошибки'}
+                          {videoExpanded ? 'Обычный режим' : 'Словарь рядом'}
                         </button>
-                        {explanations[String(item.sentence_number ?? item.original_text)] && (
-                          <div
-                            className="webapp-explanation"
-                            dangerouslySetInnerHTML={{
-                              __html: renderRichText(
-                                explanations[String(item.sentence_number ?? item.original_text)]
-                              ),
-                            }}
+                        {youtubeId && (
+                          <a
+                            className="secondary-button"
+                            href={`https://www.youtube.com/watch?v=${youtubeId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            Открыть в YouTube
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                    {youtubeError && <div className="webapp-error">{youtubeError}</div>}
+                    {youtubeId ? (
+                      <div className={`webapp-video-frame ${videoExpanded ? 'is-expanded' : ''}`}>
+                        <iframe
+                          title="YouTube player"
+                          src={`https://www.youtube.com/embed/${youtubeId}`}
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                          allowFullScreen
+                        />
+                      </div>
+                    ) : (
+                      <p className="webapp-muted">Вставьте ссылку на видео, чтобы смотреть прямо здесь.</p>
+                    )}
+                    <p className="webapp-muted">
+                      Если видео не воспроизводится внутри Web App, используйте кнопку «Открыть в YouTube».
+                    </p>
+
+                    {/*
+                    <div className="webapp-subtitles">
+                      <div className="webapp-subtitles-header">
+                        <h4>Субтитры</h4>
+                        <div className="webapp-subtitles-actions">
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => handleManualTranscript()}
+                            disabled={!manualTranscript.trim()}
+                          >
+                            Использовать вставленные
+                          </button>
+                        </div>
+                      </div>
+
+                      {youtubeTranscriptLoading && <div className="webapp-muted">Загружаем субтитры...</div>}
+                      {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
+
+                      {youtubeTranscript.length > 0 ? (
+                        <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
+                          {youtubeTranscript.map((item, index) => (
+                            <p key={`${item.start}-${index}`}>
+                              {renderClickableText(item.text)}
+                            </p>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="webapp-subtitles-fallback">
+                          <p className="webapp-muted">
+                            Если авто-субтитры недоступны, вставьте текст субтитров ниже.
+                          </p>
+                          <textarea
+                            rows={5}
+                            value={manualTranscript}
+                            onChange={(event) => setManualTranscript(event.target.value)}
+                            placeholder="Вставьте .srt/.vtt или обычный текст субтитров"
                           />
+                        </div>
+                      )}
+                    </div>
+                    */}
+                  </section>
+                )}
+
+                {isSectionVisible('dictionary') && (
+                  <section className="webapp-dictionary" ref={dictionaryRef}>
+                    <h3>Словарь</h3>
+                    <div className="folder-panel">
+                      <div className="folder-row">
+                        <label className="webapp-field">
+                          <span>Папка для сохранения</span>
+                          <select
+                            value={dictionaryFolderId}
+                            onChange={(event) => setDictionaryFolderId(event.target.value)}
+                          >
+                            <option value="none">Без папки</option>
+                            {folders.map((folder) => (
+                              <option key={folder.id} value={folder.id}>
+                                {resolveFolderIconLabel(folder.icon)} • {folder.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {dictionaryFolderId !== 'none' && selectedDictionaryFolder && (
+                          <div className="folder-preview">
+                            {renderFolderIcon(
+                              selectedDictionaryFolder.icon,
+                              selectedDictionaryFolder.color
+                            )}
+                            <span>{selectedDictionaryFolder.name}</span>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => setShowNewFolderForm((prev) => !prev)}
+                        >
+                          Новая папка
+                        </button>
+                      </div>
+                      {showNewFolderForm && (
+                        <div className="folder-create">
+                          <label className="webapp-field">
+                            <span>Название</span>
+                            <input
+                              type="text"
+                              value={newFolderName}
+                              onChange={(event) => setNewFolderName(event.target.value)}
+                              placeholder="Например: Путешествия"
+                            />
+                          </label>
+                          <div className="folder-pickers">
+                            <div className="folder-picker">
+                              <span>Цвет</span>
+                              <div className="folder-color-options">
+                                {folderColorOptions.map((color) => (
+                                  <button
+                                    key={color}
+                                    type="button"
+                                    className={`color-dot ${newFolderColor === color ? 'is-active' : ''}`}
+                                    style={{ background: color }}
+                                    onClick={() => setNewFolderColor(color)}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                            <div className="folder-picker">
+                              <span>Иконка</span>
+                              <div className="folder-icon-options">
+                                {folderIconOptions.map((icon) => (
+                                  <button
+                                    key={icon}
+                                    type="button"
+                                    className={`icon-dot ${newFolderIcon === icon ? 'is-active' : ''}`}
+                                    onClick={() => setNewFolderIcon(icon)}
+                                  >
+                                    {renderFolderIcon(icon, newFolderColor)}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="primary-button"
+                            onClick={handleCreateFolder}
+                            disabled={foldersLoading}
+                          >
+                            {foldersLoading ? 'Создаём...' : 'Создать папку'}
+                          </button>
+                          {foldersError && <div className="webapp-error">{foldersError}</div>}
+                        </div>
+                      )}
+                      {!showNewFolderForm && foldersError && <div className="webapp-error">{foldersError}</div>}
+                    </div>
+
+                    <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
+                      <label className="webapp-field">
+                        <span>Слово или фраза (русский)</span>
+                        <input
+                          type="text"
+                          value={dictionaryWord}
+                          onChange={(event) => setDictionaryWord(event.target.value)}
+                          placeholder="Например: отказаться, уважение, несмотря на"
+                        />
+                      </label>
+                      <div className="dictionary-actions">
+                        <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
+                          {dictionaryLoading ? 'Ищем...' : 'Перевести'}
+                        </button>
+                        <button
+                          className="secondary-button dictionary-save-button"
+                          type="button"
+                          onClick={handleDictionarySave}
+                          disabled={dictionaryLoading || !dictionaryResult}
+                        >
+                          Добавить в словарь
+                        </button>
+                      </div>
+                    </form>
+
+                    {dictionaryError && <div className="webapp-error">{dictionaryError}</div>}
+                    {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
+
+                    {dictionaryResult && (
+                      <div className="webapp-dictionary-result">
+                        {lastLookupScrollY !== null && (
+                          <button
+                            type="button"
+                            className="dictionary-back-button"
+                            onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
+                          >
+                            ← вернуться назад
+                          </button>
+                        )}
+                        <div className="dictionary-row">
+                          <strong>Перевод:</strong> {dictionaryResult.translation_de || '—'}
+                        </div>
+                        <div className="dictionary-row">
+                          <strong>Часть речи:</strong> {dictionaryResult.part_of_speech || '—'}
+                        </div>
+                        {dictionaryResult.article && (
+                          <div className="dictionary-row">
+                            <strong>Артикль:</strong> {dictionaryResult.article}
+                          </div>
+                        )}
+                        {dictionaryResult.forms && (
+                          <div className="dictionary-forms">
+                            <div><strong>Plural:</strong> {dictionaryResult.forms.plural || '—'}</div>
+                            <div><strong>Präteritum:</strong> {dictionaryResult.forms.praeteritum || '—'}</div>
+                            <div><strong>Perfekt:</strong> {dictionaryResult.forms.perfekt || '—'}</div>
+                            <div><strong>Konjunktiv I:</strong> {dictionaryResult.forms.konjunktiv1 || '—'}</div>
+                            <div><strong>Konjunktiv II:</strong> {dictionaryResult.forms.konjunktiv2 || '—'}</div>
+                          </div>
+                        )}
+
+                        {Array.isArray(dictionaryResult.prefixes) && dictionaryResult.prefixes.length > 0 && (
+                          <div className="dictionary-prefixes">
+                            <strong>Префиксы/варианты:</strong>
+                            <ul>
+                              {dictionaryResult.prefixes.map((item, index) => (
+                                <li key={`${item.variant}-${index}`}>
+                                  <div><strong>{item.variant}:</strong> {item.translation_de || '—'}</div>
+                                  {item.explanation && <div>{item.explanation}</div>}
+                                  {item.example_de && <div><em>{item.example_de}</em></div>}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {Array.isArray(dictionaryResult.usage_examples) && dictionaryResult.usage_examples.length > 0 && (
+                          <div className="dictionary-examples">
+                            <strong>Примеры:</strong>
+                            <ul>
+                              {dictionaryResult.usage_examples.map((example, index) => (
+                                <li key={`${index}-${example}`}>{example}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div className="dictionary-flashcards">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => {
+                          setFlashcardsVisible(true);
+                          setFlashcardsOnly(true);
+                          ensureSectionVisible('flashcards');
+                          scrollToFlashcards();
+                        }}
+                      >
+                        Повторить слова
+                      </button>
+                    </div>
+                  </section>
+                )}
+              </div>
+            )}
+
+            {isSectionVisible('flashcards') && (
+              <section className="webapp-flashcards" ref={flashcardsRef}>
+                <h3>Карточки</h3>
+                {!flashcardsVisible && (
+                  <div className="webapp-muted">
+                    Нажмите «Повторить слова», чтобы начать тренировку.
+                  </div>
+                )}
+                {flashcardsVisible && (
+                  <div className="flashcards-panel">
+                    {flashcardsOnly && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => {
+                          setFlashcardsOnly(false);
+                          setFlashcardsVisible(false);
+                        }}
+                      >
+                        Закончить повтор
+                      </button>
+                    )}
+                    <div className="flashcards-filter">
+                      <label className="webapp-field">
+                        <span>Папка для тренировки</span>
+                        <select
+                          value={flashcardFolderMode === 'folder' ? flashcardFolderId : flashcardFolderMode}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            if (value === 'all') {
+                              setFlashcardFolderMode('all');
+                              setFlashcardFolderId('');
+                            } else if (value === 'none') {
+                              setFlashcardFolderMode('none');
+                              setFlashcardFolderId('');
+                            } else {
+                              setFlashcardFolderMode('folder');
+                              setFlashcardFolderId(value);
+                            }
+                          }}
+                        >
+                          <option value="all">Все папки</option>
+                          <option value="none">Без папки</option>
+                          {folders.map((folder) => (
+                            <option key={folder.id} value={folder.id}>
+                              {resolveFolderIconLabel(folder.icon)} • {folder.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    {flashcardsLoading && <div className="webapp-muted">Загружаем карточки...</div>}
+                    {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
+                    {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && (
+                      <div className="webapp-muted">Словарь пуст. Сначала добавьте слова.</div>
+                    )}
+                    {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && (
+                      <>
+                        {flashcardSetComplete ? (
+                          <div className="flashcard-summary">
+                            <h4>Сет завершён</h4>
+                            <div className="summary-grid">
+                              <div>
+                                <span>Итого слов</span>
+                                <strong>{flashcardStats.total}</strong>
+                              </div>
+                              <div>
+                                <span>Верно</span>
+                                <strong>{flashcardStats.correct}</strong>
+                              </div>
+                              <div>
+                                <span>Неверно</span>
+                                <strong>{flashcardStats.wrong}</strong>
+                              </div>
+                            </div>
+                            <div className="summary-actions">
+                              <button
+                                type="button"
+                                className="primary-button"
+                                onClick={loadFlashcards}
+                              >
+                                Да, следующий сет
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => {
+                                  setFlashcardsVisible(false);
+                                  setFlashcardsOnly(false);
+                                }}
+                              >
+                                Нет, завершить
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          (() => {
+                            const entry = flashcards[flashcardIndex] || {};
+                            const responseJson = entry.response_json || {};
+                            const correct = entry.translation_de || responseJson.translation_de || '—';
+                            const context = Array.isArray(responseJson.usage_examples)
+                              ? responseJson.usage_examples[0]
+                              : '';
+
+                            return (
+                              <div className="flashcard">
+                                <div className="flashcard-header">
+                                  <span className="flashcard-counter">
+                                    {flashcardIndex + 1} / {flashcards.length}
+                                  </span>
+                                  <div className="flashcard-actions-row">
+                                    <button
+                                      type="button"
+                                      className={`flashcard-pause ${autoAdvancePaused ? 'is-paused' : ''}`}
+                                      onClick={() => {
+                                        if (autoAdvancePaused) {
+                                          setAutoAdvancePaused(false);
+                                          if (flashcardSelection !== null) {
+                                            advanceFlashcard();
+                                          }
+                                        } else {
+                                          setAutoAdvancePaused(true);
+                                        }
+                                      }}
+                                    >
+                                      {autoAdvancePaused ? 'Продолжить' : 'Пауза'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="flashcard-refresh"
+                                      onClick={loadFlashcards}
+                                    >
+                                      Обновить
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="flashcard-word">{entry.word_ru || '—'}</div>
+                                {flashcardSelection !== null && context && (
+                                  <div className="flashcard-context flashcard-context-visible">{context}</div>
+                                )}
+                                <div className="flashcard-options">
+                                  {flashcardOptions.map((option, idx) => {
+                                    const isSelected = flashcardSelection === idx;
+                                    const isCorrect = option === correct;
+                                    const showResult = flashcardSelection !== null;
+                                    const className = [
+                                      'flashcard-option',
+                                      showResult && isCorrect ? 'is-correct' : '',
+                                      showResult && isSelected && !isCorrect ? 'is-wrong' : '',
+                                    ]
+                                      .filter(Boolean)
+                                      .join(' ');
+                                    return (
+                                      <button
+                                        key={`${option}-${idx}`}
+                                        type="button"
+                                        className={className}
+                                        onClick={() => {
+                                          if (flashcardSelection !== null) return;
+                                          setFlashcardSelection(idx);
+                                          recordFlashcardAnswer(entry.id, option === correct);
+                                          setFlashcardStats((prev) => ({
+                                            ...prev,
+                                            correct: prev.correct + (option === correct ? 1 : 0),
+                                            wrong: prev.wrong + (option === correct ? 0 : 1),
+                                          }));
+                                        }}
+                                      >
+                                        {option}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                {flashcardSelection !== null && (
+                                  <div className="flashcard-hint">
+                                    Следующая карточка через 10 секунд
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()
                         )}
                       </>
                     )}
                   </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {!flashcardsOnly && activeSection === 'all' && (
-            <div className="webapp-actions webapp-actions-footer">
-              <button
-                type="button"
-                onClick={handleFinishTranslation}
-                className={`primary-button finish-button ${finishStatus === 'done' ? 'status-done' : ''}`}
-                disabled={webappLoading || results.length === 0}
-              >
-                {finishStatus === 'done' ? 'Завершено 🙂' : 'Завершить перевод'}
-              </button>
-              <button
-                type="button"
-                onClick={handleLoadDailyHistory}
-                className="secondary-button"
-                disabled={webappLoading || historyLoading}
-              >
-                {historyLoading ? 'Загружаем...' : 'История за сегодня'}
-              </button>
-              {results.length === 0 && !webappLoading && (
-                <div className="webapp-muted">Сначала проверьте перевод, чтобы завершить.</div>
-              )}
-            </div>
-          )}
-
-          {!flashcardsOnly && activeSection === 'all' && historyError && <div className="webapp-error">{historyError}</div>}
-
-          {!flashcardsOnly && activeSection === 'all' && historyVisible && (
-            <section className="webapp-result">
-              <h3>История переводов за сегодня</h3>
-              {historyItems.length === 0 ? (
-                <p className="webapp-muted">Сегодня пока нет завершённых переводов.</p>
-              ) : (
-                <div className="webapp-result-list">
-                  {historyItems.map((item, index) => (
-                    <div key={item.id ?? index} className="webapp-result-card">
-                      <pre className="webapp-result-text">
-                        {`🟢 Sentence number: ${item.sentence_number ?? '—'}\n✅ Score: ${
-                          item.score ?? '—'
-                        }/100\n🔵 Original Sentence: ${item.original_text ?? '—'}\n🟡 User Translation: ${
-                          item.user_translation ?? '—'
-                        }\n🟣 Correct Translation: ${item.correct_translation ?? '—'}`}
-                      </pre>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-
-          {!flashcardsOnly && (activeSection === 'all' || activeSection === 'youtube' || activeSection === 'dictionary') && (
-            <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
-              {(activeSection === 'all' || activeSection === 'youtube') && (
-              <section className="webapp-video" onClick={() => setActiveSection('youtube')}>
-                <h3 className={activeSection === 'youtube' ? 'is-active-section' : ''}>Видео YouTube</h3>
-                <div className="webapp-video-form">
-                  <label className="webapp-field">
-                    <span>Ссылка или ID видео</span>
-                    <input
-                      type="text"
-                      value={youtubeInput}
-                      onChange={(event) => setYoutubeInput(event.target.value)}
-                      placeholder="https://youtu.be/VIDEO_ID"
-                    />
-                  </label>
-                  <div className="webapp-video-actions">
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => setVideoExpanded((prev) => !prev)}
-                    >
-                      {videoExpanded ? 'Обычный режим' : 'Словарь рядом'}
-                    </button>
-                    {youtubeId && (
-                      <a
-                        className="secondary-button"
-                        href={`https://www.youtube.com/watch?v=${youtubeId}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        Открыть в YouTube
-                      </a>
-                    )}
-                  </div>
-                </div>
-                {youtubeError && <div className="webapp-error">{youtubeError}</div>}
-                {youtubeId ? (
-                  <div className={`webapp-video-frame ${videoExpanded ? 'is-expanded' : ''}`}>
-                    <iframe
-                      title="YouTube player"
-                      src={`https://www.youtube.com/embed/${youtubeId}`}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                      allowFullScreen
-                    />
-                  </div>
-                ) : (
-                  <p className="webapp-muted">Вставьте ссылку на видео, чтобы смотреть прямо здесь.</p>
                 )}
-                <p className="webapp-muted">
-                  Если видео не воспроизводится внутри Web App, используйте кнопку «Открыть в YouTube».
-                </p>
-
-                <div className="webapp-subtitles">
-                  <div className="webapp-subtitles-header">
-                    <h4>Субтитры</h4>
-                    <div className="webapp-subtitles-actions">
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => handleManualTranscript()}
-                        disabled={!manualTranscript.trim()}
-                      >
-                        Использовать вставленные
-                      </button>
-                    </div>
-                  </div>
-
-                  {youtubeTranscriptLoading && <div className="webapp-muted">Загружаем субтитры...</div>}
-                  {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
-
-                  {youtubeTranscript.length > 0 ? (
-                    <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
-                      {youtubeTranscript.map((item, index) => (
-                        <p key={`${item.start}-${index}`}>
-                          {renderClickableText(item.text)}
-                        </p>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="webapp-subtitles-fallback">
-                      <p className="webapp-muted">
-                        Если авто-субтитры недоступны, вставьте текст субтитров ниже.
-                      </p>
-                      <textarea
-                        rows={5}
-                        value={manualTranscript}
-                        onChange={(event) => setManualTranscript(event.target.value)}
-                        placeholder="Вставьте .srt/.vtt или обычный текст субтитров"
-                      />
-                    </div>
-                  )}
-                </div>
               </section>
-              )}
+            )}
 
-              {(activeSection === 'all' || activeSection === 'dictionary') && (
-              <section className="webapp-dictionary" ref={dictionaryRef} onClick={() => setActiveSection('dictionary')}>
-                <h3 className={activeSection === 'dictionary' ? 'is-active-section' : ''}>Словарь</h3>
-                <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
-                  <label className="webapp-field">
-                    <span>Слово или фраза (русский)</span>
-                    <input
-                      type="text"
-                      value={dictionaryWord}
-                      onChange={(event) => setDictionaryWord(event.target.value)}
-                      placeholder="Например: отказаться, уважение, несмотря на"
-                    />
-                  </label>
-                  <div className="dictionary-actions">
-                    <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
-                      {dictionaryLoading ? 'Ищем...' : 'Перевести'}
-                    </button>
-                    <button
-                      className="secondary-button dictionary-save-button"
-                      type="button"
-                      onClick={handleDictionarySave}
-                      disabled={dictionaryLoading || !dictionaryResult}
-                    >
-                      Добавить в словарь
-                    </button>
-                  </div>
-                </form>
-
-                {dictionaryError && <div className="webapp-error">{dictionaryError}</div>}
-                {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
-
-                {dictionaryResult && (
-                  <div className="webapp-dictionary-result">
-                    {lastLookupScrollY !== null && (
-                      <button
-                        type="button"
-                        className="dictionary-back-button"
-                        onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
-                      >
-                        ← вернуться назад
-                      </button>
-                    )}
-                    <div className="dictionary-row">
-                      <strong>Перевод:</strong> {dictionaryResult.translation_de || '—'}
-                    </div>
-                    <div className="dictionary-row">
-                      <strong>Часть речи:</strong> {dictionaryResult.part_of_speech || '—'}
-                    </div>
-                    {dictionaryResult.article && (
-                      <div className="dictionary-row">
-                        <strong>Артикль:</strong> {dictionaryResult.article}
-                      </div>
-                    )}
-                    {dictionaryResult.forms && (
-                      <div className="dictionary-forms">
-                        <div><strong>Plural:</strong> {dictionaryResult.forms.plural || '—'}</div>
-                        <div><strong>Präteritum:</strong> {dictionaryResult.forms.praeteritum || '—'}</div>
-                        <div><strong>Perfekt:</strong> {dictionaryResult.forms.perfekt || '—'}</div>
-                        <div><strong>Konjunktiv I:</strong> {dictionaryResult.forms.konjunktiv1 || '—'}</div>
-                        <div><strong>Konjunktiv II:</strong> {dictionaryResult.forms.konjunktiv2 || '—'}</div>
-                      </div>
-                    )}
-
-                    {Array.isArray(dictionaryResult.prefixes) && dictionaryResult.prefixes.length > 0 && (
-                      <div className="dictionary-prefixes">
-                        <strong>Префиксы/варианты:</strong>
-                        <ul>
-                          {dictionaryResult.prefixes.map((item, index) => (
-                            <li key={`${item.variant}-${index}`}>
-                              <div><strong>{item.variant}:</strong> {item.translation_de || '—'}</div>
-                              {item.explanation && <div>{item.explanation}</div>}
-                              {item.example_de && <div><em>{item.example_de}</em></div>}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {Array.isArray(dictionaryResult.usage_examples) && dictionaryResult.usage_examples.length > 0 && (
-                      <div className="dictionary-examples">
-                        <strong>Примеры:</strong>
-                        <ul>
-                          {dictionaryResult.usage_examples.map((example, index) => (
-                            <li key={`${index}-${example}`}>{example}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div className="dictionary-flashcards">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => {
-                      setFlashcardsVisible(true);
-                      setFlashcardsOnly(true);
-                      setActiveSection('flashcards');
-                      scrollToFlashcards();
-                    }}
-                  >
-                    📌 Повторить слова
-                  </button>
-                </div>
-              </section>
-              )}
-            </div>
-          )}
-
-          {(activeSection === 'all' || activeSection === 'flashcards') && (
-          <section className="webapp-flashcards" ref={flashcardsRef} onClick={() => setActiveSection('flashcards')}>
-            <h3 className={activeSection === 'flashcards' ? 'is-active-section' : ''}>Карточки</h3>
-            {!flashcardsVisible && (
-              <div className="webapp-muted">
-                Нажмите «📌 Повторить слова», чтобы начать тренировку.
+            {selectionText && selectionPos && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
+              <div
+                className="webapp-selection-menu"
+                style={{ left: `${selectionPos.x + 8}px`, top: `${selectionPos.y + 8}px` }}
+                onMouseLeave={clearSelection}
+              >
+                <div className="webapp-selection-text">{selectionText}</div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => handleQuickLookupDictionary(selectionText)}
+                >
+                  Перевести
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => handleQuickAddToDictionary(selectionText)}
+                >
+                  Добавить в словарь
+                </button>
               </div>
             )}
-            {flashcardsVisible && (
-              <div className="flashcards-panel">
-                {(flashcardsOnly || activeSection !== 'all') && (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => {
-                      setFlashcardsOnly(false);
-                      setFlashcardsVisible(false);
-                      endActiveSection();
-                    }}
-                  >
-                    Закончить повтор
-                  </button>
-                )}
-                {flashcardsLoading && <div className="webapp-muted">Загружаем карточки...</div>}
-                {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
-                {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && (
-                  <div className="webapp-muted">Словарь пуст. Сначала добавьте слова.</div>
-                )}
-                {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && (() => {
-                  const entry = flashcards[flashcardIndex] || {};
-                  const responseJson = entry.response_json || {};
-                  const correct = entry.translation_de || responseJson.translation_de || '—';
-                  const context = Array.isArray(responseJson.usage_examples)
-                    ? responseJson.usage_examples[0]
-                    : '';
-
-                  return (
-                    <div className="flashcard">
-                      <div className="flashcard-header">
-                        <span className="flashcard-counter">
-                          {flashcardIndex + 1} / {flashcards.length}
-                        </span>
-                        <button
-                          type="button"
-                          className="flashcard-refresh"
-                          onClick={loadFlashcards}
-                        >
-                          Обновить
-                        </button>
-                      </div>
-                      <div className="flashcard-word">{entry.word_ru || '—'}</div>
-                      {flashcardSelection !== null && context && (
-                        <div className="flashcard-context flashcard-context-visible">{context}</div>
-                      )}
-                      <div className="flashcard-options">
-                        {flashcardOptions.map((option, idx) => {
-                          const isSelected = flashcardSelection === idx;
-                          const isCorrect = option === correct;
-                          const showResult = flashcardSelection !== null;
-                          const className = [
-                            'flashcard-option',
-                            showResult && isCorrect ? 'is-correct' : '',
-                            showResult && isSelected && !isCorrect ? 'is-wrong' : '',
-                          ]
-                            .filter(Boolean)
-                            .join(' ');
-                          return (
-                            <button
-                              key={`${option}-${idx}`}
-                              type="button"
-                              className={className}
-                              onClick={() => {
-                                if (flashcardSelection !== null) return;
-                                setFlashcardSelection(idx);
-                                recordFlashcardAnswer(entry.id, option === correct);
-                              }}
-                            >
-                              {option}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <div className="flashcard-actions">
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() => {
-                            const next = (flashcardIndex + 1) % flashcards.length;
-                            setFlashcardIndex(next);
-                            setFlashcardSelection(null);
-                          }}
-                          disabled={flashcards.length <= 1}
-                        >
-                          Следующая карточка
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            )}
-          </section>
-          )}
-          {selectionText && selectionPos && (activeSection === 'all' || activeSection === 'youtube' || activeSection === 'dictionary') && (
-            <div
-              className="webapp-selection-menu"
-              style={{ left: `${selectionPos.x + 8}px`, top: `${selectionPos.y + 8}px` }}
-              onMouseLeave={clearSelection}
-            >
-              <div className="webapp-selection-text">{selectionText}</div>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => handleQuickLookupDictionary(selectionText)}
-              >
-                Перевести
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => handleQuickAddToDictionary(selectionText)}
-              >
-                Добавить в словарь
-              </button>
-            </div>
-          )}
+          </div>
         </div>
       </div>
     );

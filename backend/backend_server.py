@@ -86,6 +86,8 @@ from backend.database import (
     upsert_dictionary_cache,
     record_flashcard_answer,
     get_flashcard_set,
+    create_dictionary_folder,
+    get_dictionary_folders,
 )
 from backend.translation_workflow import (
     build_user_daily_summary,
@@ -456,6 +458,7 @@ def save_webapp_dictionary_entry():
     init_data = payload.get("initData")
     word_ru = (payload.get("word_ru") or "").strip()
     response_json = payload.get("response_json") or {}
+    folder_id = payload.get("folder_id")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -478,6 +481,7 @@ def save_webapp_dictionary_entry():
             word_ru=word_ru,
             translation_de=response_json.get("translation_de"),
             response_json=response_json,
+            folder_id=int(folder_id) if folder_id is not None else None,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
@@ -490,6 +494,8 @@ def get_webapp_dictionary_cards():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     limit = payload.get("limit", 100)
+    folder_mode = payload.get("folder_mode", "all")
+    folder_id = payload.get("folder_id")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -505,11 +511,77 @@ def get_webapp_dictionary_cards():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     try:
-        items = get_webapp_dictionary_entries(user_id=user_id, limit=int(limit))
+        items = get_webapp_dictionary_entries(
+            user_id=user_id,
+            limit=int(limit),
+            folder_mode=folder_mode,
+            folder_id=int(folder_id) if folder_id is not None else None,
+        )
     except Exception as exc:
         return jsonify({"error": f"Ошибка получения словаря: {exc}"}), 500
 
     return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/webapp/dictionary/folders", methods=["POST"])
+def list_webapp_dictionary_folders():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        items = get_dictionary_folders(user_id=user_id)
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка получения папок: {exc}"}), 500
+
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/webapp/dictionary/folders/create", methods=["POST"])
+def create_webapp_dictionary_folder():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    name = (payload.get("name") or "").strip()
+    color = (payload.get("color") or "").strip()
+    icon = (payload.get("icon") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not name:
+        return jsonify({"error": "name обязателен"}), 400
+    if not color:
+        return jsonify({"error": "color обязателен"}), 400
+    if not icon:
+        return jsonify({"error": "icon обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        folder = create_dictionary_folder(user_id=user_id, name=name, color=color, icon=icon)
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка создания папки: {exc}"}), 500
+
+    return jsonify({"ok": True, "item": folder})
 
 
 @app.route("/api/webapp/flashcards/set", methods=["POST"])
@@ -518,6 +590,8 @@ def get_webapp_flashcard_set():
     init_data = payload.get("initData")
     set_size = int(payload.get("set_size", 15))
     wrong_size = int(payload.get("wrong_size", 5))
+    folder_mode = payload.get("folder_mode", "all")
+    folder_id = payload.get("folder_id")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -533,7 +607,13 @@ def get_webapp_flashcard_set():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     try:
-        items = get_flashcard_set(user_id=user_id, set_size=set_size, wrong_size=wrong_size)
+        items = get_flashcard_set(
+            user_id=user_id,
+            set_size=set_size,
+            wrong_size=wrong_size,
+            folder_mode=folder_mode,
+            folder_id=int(folder_id) if folder_id is not None else None,
+        )
     except Exception as exc:
         return jsonify({"error": f"Ошибка получения карточек: {exc}"}), 500
 
