@@ -102,7 +102,6 @@ function AppInner() {
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
-  const [autoAdvancePaused, setAutoAdvancePaused] = useState(false);
   const [folders, setFolders] = useState([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [foldersError, setFoldersError] = useState('');
@@ -122,6 +121,9 @@ function AppInner() {
   const translationsRef = useRef(null);
   const youtubeRef = useRef(null);
   const autoAdvanceTimeoutRef = useRef(null);
+  const revealTimeoutRef = useRef(null);
+  const flashcardIndexRef = useRef(0);
+  const flashcardSelectionRef = useRef(null);
   const avatarInputRef = useRef(null);
 
   const safeStorageGet = (key) => {
@@ -419,22 +421,31 @@ function AppInner() {
   }, [flashcards, flashcardIndex]);
 
   useEffect(() => {
-    if (flashcardSelection === null) {
-      return;
-    }
-    if (flashcardSetComplete) {
-      return;
-    }
-    if (autoAdvancePaused) {
-      return;
-    }
-    if (!flashcards.length) {
+    flashcardIndexRef.current = flashcardIndex;
+  }, [flashcardIndex]);
+
+  useEffect(() => {
+    flashcardSelectionRef.current = flashcardSelection;
+  }, [flashcardSelection]);
+
+  useEffect(() => {
+    if (!flashcardsVisible || flashcardSetComplete || !flashcards.length) {
       return;
     }
     if (autoAdvanceTimeoutRef.current) {
       clearTimeout(autoAdvanceTimeoutRef.current);
     }
     autoAdvanceTimeoutRef.current = setTimeout(() => {
+      const currentIndex = flashcardIndexRef.current;
+      const currentSelection = flashcardSelectionRef.current;
+      if (currentSelection !== null) return;
+      const entry = flashcards[currentIndex];
+      if (!entry) return;
+      recordFlashcardAnswer(entry.id, false);
+      setFlashcardStats((prev) => ({
+        ...prev,
+        wrong: prev.wrong + 1,
+      }));
       advanceFlashcard();
     }, 10000);
 
@@ -444,18 +455,16 @@ function AppInner() {
         autoAdvanceTimeoutRef.current = null;
       }
     };
-  }, [
-    flashcardSelection,
-    flashcardIndex,
-    autoAdvancePaused,
-    flashcardSetComplete,
-    flashcards.length,
-  ]);
+  }, [flashcardsVisible, flashcardSetComplete, flashcards, flashcardIndex]);
 
   useEffect(() => {
     if (!flashcardsVisible && autoAdvanceTimeoutRef.current) {
       clearTimeout(autoAdvanceTimeoutRef.current);
       autoAdvanceTimeoutRef.current = null;
+    }
+    if (!flashcardsVisible && revealTimeoutRef.current) {
+      clearTimeout(revealTimeoutRef.current);
+      revealTimeoutRef.current = null;
     }
   }, [flashcardsVisible]);
 
@@ -820,7 +829,6 @@ function AppInner() {
       setFlashcardIndex(0);
       setFlashcardSelection(null);
       setFlashcardSetComplete(false);
-      setAutoAdvancePaused(false);
       setFlashcardStats({
         total: items.length,
         correct: 0,
@@ -914,6 +922,23 @@ function AppInner() {
     }
   };
 
+  const shuffleArray = (items) => {
+    const array = [...items];
+    const rand = () => {
+      if (window.crypto?.getRandomValues) {
+        const buf = new Uint32Array(1);
+        window.crypto.getRandomValues(buf);
+        return buf[0] / 2 ** 32;
+      }
+      return Math.random();
+    };
+    for (let i = array.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(rand() * (i + 1));
+      [array[i], array[j]] = [array[j], array[i]];
+    }
+    return array;
+  };
+
   const buildFlashcardOptions = (entry, allEntries) => {
     const responseJson = entry?.response_json || {};
     const correct = entry?.translation_de
@@ -950,11 +975,7 @@ function AppInner() {
     while (options.length < 4) {
       options.push(correct);
     }
-    for (let i = options.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [options[i], options[j]] = [options[j], options[i]];
-    }
-    return options.slice(0, 4);
+    return shuffleArray(options).slice(0, 4);
   };
 
   const recordFlashcardAnswer = async (entryId, isCorrect) => {
@@ -2123,22 +2144,6 @@ function AppInner() {
                                   <div className="flashcard-actions-row">
                                     <button
                                       type="button"
-                                      className={`flashcard-pause ${autoAdvancePaused ? 'is-paused' : ''}`}
-                                      onClick={() => {
-                                        if (autoAdvancePaused) {
-                                          setAutoAdvancePaused(false);
-                                          if (flashcardSelection !== null) {
-                                            advanceFlashcard();
-                                          }
-                                        } else {
-                                          setAutoAdvancePaused(true);
-                                        }
-                                      }}
-                                    >
-                                      {autoAdvancePaused ? 'Продолжить' : 'Пауза'}
-                                    </button>
-                                    <button
-                                      type="button"
                                       className="flashcard-refresh"
                                       onClick={loadFlashcards}
                                     >
@@ -2176,6 +2181,16 @@ function AppInner() {
                                             correct: prev.correct + (option === correct ? 1 : 0),
                                             wrong: prev.wrong + (option === correct ? 0 : 1),
                                           }));
+                                          if (autoAdvanceTimeoutRef.current) {
+                                            clearTimeout(autoAdvanceTimeoutRef.current);
+                                            autoAdvanceTimeoutRef.current = null;
+                                          }
+                                          if (revealTimeoutRef.current) {
+                                            clearTimeout(revealTimeoutRef.current);
+                                          }
+                                          revealTimeoutRef.current = setTimeout(() => {
+                                            advanceFlashcard();
+                                          }, 3000);
                                         }}
                                       >
                                         {option}
@@ -2185,7 +2200,7 @@ function AppInner() {
                                 </div>
                                 {flashcardSelection !== null && (
                                   <div className="flashcard-hint">
-                                    Следующая карточка через 10 секунд
+                                    Следующая карточка через 3 секунды
                                   </div>
                                 )}
                               </div>
