@@ -99,9 +99,7 @@ function AppInner() {
   const [flashcardIndex, setFlashcardIndex] = useState(0);
   const [flashcardSelection, setFlashcardSelection] = useState(null);
   const [flashcardOptions, setFlashcardOptions] = useState([]);
-  const [selectedSections, setSelectedSections] = useState(
-    new Set(['translations', 'youtube', 'dictionary', 'flashcards'])
-  );
+  const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
   const [autoAdvancePaused, setAutoAdvancePaused] = useState(false);
@@ -117,7 +115,7 @@ function AppInner() {
   const [newFolderIcon, setNewFolderIcon] = useState('book');
   const [userAvatar, setUserAvatar] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
-  const [menuMultiSelect, setMenuMultiSelect] = useState(false);
+  const [menuMultiSelect, setMenuMultiSelect] = useState(true);
 
   const dictionaryRef = useRef(null);
   const flashcardsRef = useRef(null);
@@ -185,6 +183,8 @@ function AppInner() {
     }
     return selectedSections.has(key);
   };
+
+  const showHero = !flashcardsOnly && selectedSections.size === 0;
 
   const toggleSection = (key) => {
     setSelectedSections((prev) => {
@@ -1507,6 +1507,7 @@ function AppInner() {
               </div>
             )}
 
+            {showHero && (
             <header className="webapp-hero">
               <div className="webapp-hero-copy">
                 <span className="pill">Telegram Web App</span>
@@ -1534,7 +1535,9 @@ function AppInner() {
                 <div className="user-name">{webappUser?.first_name || 'Гость'}</div>
               </div>
             </header>
+            )}
 
+            {showHero && (
             <section className="webapp-hero-cards">
               <div className="hero-card">
                 <h3>Переводите</h3>
@@ -1549,36 +1552,13 @@ function AppInner() {
                 <p>Повторяйте слова сетами по 15 карточек с прогрессом.</p>
               </div>
             </section>
+            )}
 
+            {showHero && (
             <section className="webapp-quickstart">
-              <button
-                type="button"
-                className="primary-button"
-                onClick={() => openSectionAndScroll('translations', translationsRef)}
-                disabled={flashcardsOnly}
-              >
-                Начать перевод
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => openSectionAndScroll('dictionary', dictionaryRef)}
-                disabled={flashcardsOnly}
-              >
-                Открыть словарь
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => {
-                  setFlashcardsVisible(true);
-                  setFlashcardsOnly(false);
-                  openSectionAndScroll('flashcards', flashcardsRef);
-                }}
-              >
-                Повторить слова
-              </button>
+              <div className="webapp-muted">Выберите раздел в меню, чтобы начать.</div>
             </section>
+            )}
 
             {flashcardsOnly && <div className="webapp-mode-banner">Режим повторения</div>}
 
