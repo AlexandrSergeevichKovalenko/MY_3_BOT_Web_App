@@ -77,6 +77,8 @@ function AppInner() {
   const [collocationsError, setCollocationsError] = useState('');
   const [collocationOptions, setCollocationOptions] = useState([]);
   const [selectedCollocation, setSelectedCollocation] = useState(null);
+  const [flashcardExitSummary, setFlashcardExitSummary] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
   const [youtubeInput, setYoutubeInput] = useState('');
   const [youtubeId, setYoutubeId] = useState('');
   const [youtubeError, setYoutubeError] = useState('');
@@ -390,6 +392,11 @@ function AppInner() {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
     }
+    const startParam = telegramApp?.initDataUnsafe?.start_param;
+    if (startParam === 'review' || startParam === 'flashcards') {
+      setFlashcardsVisible(true);
+      setFlashcardsOnly(true);
+    }
     if (window.location.pathname === '/webapp/review') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
@@ -667,8 +674,10 @@ function AppInner() {
       setSelectionPos(null);
       return;
     }
+    const clientX = event?.clientX ?? event?.touches?.[0]?.clientX ?? window.innerWidth / 2;
+    const clientY = event?.clientY ?? event?.touches?.[0]?.clientY ?? window.innerHeight / 3;
     setSelectionText(text);
-    setSelectionPos({ x: event.clientX, y: event.clientY });
+    setSelectionPos({ x: clientX, y: clientY });
   };
 
   const clearSelection = () => {
@@ -846,6 +855,7 @@ function AppInner() {
       setFlashcardSelection(null);
       setFlashcardSetComplete(false);
       setFlashcardTimedOut(false);
+      setFlashcardExitSummary(false);
       setFlashcardStats({
         total: items.length,
         correct: 0,
@@ -1329,6 +1339,42 @@ function AppInner() {
     }
   };
 
+  const handleExportDictionaryPdf = async () => {
+    if (!initData) {
+      setDictionaryError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    setExportLoading(true);
+    setDictionaryError('');
+    try {
+      const response = await fetch('/api/webapp/dictionary/export/pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          folder_mode: dictionaryFolderId !== 'none' ? 'folder' : 'all',
+          folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'dictionary.pdf';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      setDictionaryError(`Ошибка выгрузки PDF: ${error.message}`);
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
   const selectedDictionaryFolder = folders.find(
     (folder) => String(folder.id) === dictionaryFolderId
   );
@@ -1706,7 +1752,11 @@ function AppInner() {
                             <div className="webapp-error">{item.error}</div>
                           ) : (
                             <>
-                              <div className="webapp-result-text" onMouseUp={handleSelection}>
+                              <div
+                                className="webapp-result-text"
+                                onMouseUp={handleSelection}
+                                onTouchEnd={handleSelection}
+                              >
                                 {renderFeedback(item.feedback)}
                               </div>
                               <button
@@ -1886,9 +1936,35 @@ function AppInner() {
                 {isSectionVisible('dictionary') && (
                   <section className="webapp-dictionary" ref={dictionaryRef}>
                     <h3>Словарь</h3>
+                    <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
+                      <label className="webapp-field">
+                        <span>Слово или фраза (русский / немецкий)</span>
+                        <input
+                          className="dictionary-input"
+                          type="text"
+                          value={dictionaryWord}
+                          onChange={(event) => setDictionaryWord(event.target.value)}
+                          placeholder="Например: отказаться, уважение, несмотря на / verzichten, Respekt"
+                        />
+                      </label>
+                      <div className="dictionary-actions">
+                        <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
+                          {dictionaryLoading ? 'Ищем...' : 'Перевести'}
+                        </button>
+                        <button
+                          className="secondary-button dictionary-save-button"
+                          type="button"
+                          onClick={handleDictionarySave}
+                          disabled={dictionaryLoading || !dictionaryResult}
+                        >
+                          Добавить в словарь
+                        </button>
+                      </div>
+                    </form>
+
                     <div className="folder-panel">
                       <div className="folder-row">
-                        <label className="webapp-field">
+                        <label className="webapp-field folder-select">
                           <span>Папка для сохранения</span>
                           <select
                             value={dictionaryFolderId}
@@ -1917,6 +1993,14 @@ function AppInner() {
                           onClick={() => setShowNewFolderForm((prev) => !prev)}
                         >
                           Новая папка
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={handleExportDictionaryPdf}
+                          disabled={exportLoading}
+                        >
+                          {exportLoading ? 'Готовим PDF...' : 'Выгрузить PDF'}
                         </button>
                       </div>
                       {showNewFolderForm && (
@@ -1974,32 +2058,6 @@ function AppInner() {
                       )}
                       {!showNewFolderForm && foldersError && <div className="webapp-error">{foldersError}</div>}
                     </div>
-
-                    <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
-                      <label className="webapp-field">
-                        <span>Слово или фраза (русский / немецкий)</span>
-                        <input
-                          className="dictionary-input"
-                          type="text"
-                          value={dictionaryWord}
-                          onChange={(event) => setDictionaryWord(event.target.value)}
-                          placeholder="Например: отказаться, уважение, несмотря на / verzichten, Respekt"
-                        />
-                      </label>
-                      <div className="dictionary-actions">
-                        <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
-                          {dictionaryLoading ? 'Ищем...' : 'Перевести'}
-                        </button>
-                        <button
-                          className="secondary-button dictionary-save-button"
-                          type="button"
-                          onClick={handleDictionarySave}
-                          disabled={dictionaryLoading || !dictionaryResult}
-                        >
-                          Добавить в словарь
-                        </button>
-                      </div>
-                    </form>
 
                     {dictionaryError && <div className="webapp-error">{dictionaryError}</div>}
                     {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
@@ -2178,9 +2236,9 @@ function AppInner() {
                     )}
                     {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && (
                       <div className="flashcard-stage">
-                        {flashcardSetComplete ? (
+                        {(flashcardSetComplete || flashcardExitSummary) ? (
                           <div className="flashcard-summary">
-                            <h4>Сет завершён</h4>
+                            <h4>{flashcardSetComplete ? 'Сет завершён' : 'Повтор завершён'}</h4>
                             <div className="summary-grid">
                               <div>
                                 <span>Итого слов</span>
@@ -2209,6 +2267,7 @@ function AppInner() {
                                 onClick={() => {
                                   setFlashcardsVisible(false);
                                   setFlashcardsOnly(false);
+                                  setFlashcardExitSummary(false);
                                 }}
                               >
                                 Нет, завершить
@@ -2317,8 +2376,7 @@ function AppInner() {
                           type="button"
                           className="secondary-button"
                           onClick={() => {
-                            setFlashcardsOnly(false);
-                            setFlashcardsVisible(false);
+                            setFlashcardExitSummary(true);
                           }}
                         >
                           Закончить повтор

@@ -1099,7 +1099,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 70vh;
+  min-height: 72vh;
 }
 
 .flashcard-stage {
@@ -1107,7 +1107,12 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: center;
+  align-items: center;
   gap: 12px;
+}
+
+.flashcard {
+  width: min(520px, 100%);
 }
 
 .flashcard {
@@ -1279,6 +1284,10 @@ body {
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 12px;
+}
+
+.folder-select {
+  max-width: 220px;
 }
 
 .folder-preview {

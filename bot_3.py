@@ -599,10 +599,10 @@ def get_webapp_url():
     return f"{base_url}/webapp"
 
 
-def get_webapp_deeplink(path: str = "review") -> str:
-    bot_username = os.getenv("TELEGRAM_BOT_USERNAME") or ""
-    if bot_username:
-        return f"https://t.me/{bot_username}?startapp={path}"
+def get_webapp_deeplink(path: str = "review", bot_username: str | None = None) -> str:
+    resolved_username = (bot_username or os.getenv("TELEGRAM_BOT_USERNAME") or "").lstrip("@")
+    if resolved_username:
+        return f"https://t.me/{resolved_username}?startapp={path}"
     return f"{get_webapp_url()}/{path}"
 
 async def handle_button_click(update: Update, context: CallbackContext):
@@ -764,7 +764,11 @@ async def send_morning_reminder(context:CallbackContext):
 
 async def send_flashcard_reminder(context: CallbackContext):
     base_url = get_public_web_url()
-    review_url = get_webapp_deeplink("review")
+    bot_username = context.bot.username
+    if not bot_username:
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+    review_url = get_webapp_deeplink("review", bot_username=bot_username)
     message = (
         "📌 Пора повторить слова!\n"
         f'Перейти к тренировке: <a href="{review_url}">Открыть карточки</a>'

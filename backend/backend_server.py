@@ -62,9 +62,10 @@ import json
 import asyncio
 import logging
 import requests
+from io import BytesIO
 from uuid import uuid4
 from urllib.parse import parse_qsl
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from livekit.api import AccessToken, VideoGrants
@@ -480,6 +481,116 @@ def get_webapp_dictionary_collocations():
         return jsonify({"error": f"Ошибка генерации связок: {exc}"}), 500
 
     return jsonify({"ok": True, "items": result.get("items", []), "direction": direction})
+
+
+def _wrap_text(text: str, max_chars: int = 80) -> list[str]:
+    if not text:
+        return []
+    words = text.split()
+    lines = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if len(candidate) <= max_chars:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+@app.route("/api/webapp/dictionary/export/pdf", methods=["POST"])
+def export_webapp_dictionary_pdf():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    folder_mode = payload.get("folder_mode", "all")
+    folder_id = payload.get("folder_id")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        items = get_webapp_dictionary_entries(
+            user_id=user_id,
+            limit=500,
+            folder_mode=folder_mode,
+            folder_id=int(folder_id) if folder_id is not None else None,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка получения словаря: {exc}"}), 500
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    x = 40
+    y = height - 40
+    line_height = 14
+
+    pdf.setFont("Helvetica-Bold", 14)
+    title = "Словарь"
+    pdf.drawString(x, y, title)
+    y -= 2 * line_height
+
+    pdf.setFont("Helvetica", 11)
+    for item in items:
+        response_json = item.get("response_json") or {}
+        word = item.get("word_ru") or response_json.get("word_ru") or item.get("word_de") or response_json.get("word_de") or "—"
+        translation = (
+            item.get("translation_de")
+            or response_json.get("translation_de")
+            or item.get("translation_ru")
+            or response_json.get("translation_ru")
+            or "—"
+        )
+        created_at = item.get("created_at") or ""
+        examples = response_json.get("usage_examples") or []
+        if isinstance(examples, str):
+            examples = [examples]
+
+        lines = [
+            f"Слово: {word}",
+            f"Перевод: {translation}",
+            f"Дата: {created_at}",
+        ]
+        if examples:
+            lines.append("Примеры:")
+            for example in examples[:3]:
+                lines.extend([f"- {line}" for line in _wrap_text(example, 90)])
+
+        for line in lines:
+            if y < 60:
+                pdf.showPage()
+                pdf.setFont("Helvetica", 11)
+                y = height - 40
+            pdf.drawString(x, y, line)
+            y -= line_height
+
+        y -= line_height
+
+    pdf.save()
+    buffer.seek(0)
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name="dictionary.pdf",
+        mimetype="application/pdf",
+    )
 
 
 @app.route("/api/webapp/dictionary/save", methods=["POST"])
