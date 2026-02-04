@@ -5,7 +5,8 @@ import logging
 import json
 import psycopg2
 import datetime
-from datetime import datetime, time
+import calendar
+from datetime import datetime, time, date, timedelta
 from telegram import Update, Poll
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -28,6 +29,7 @@ import tempfile
 import sys
 import livekit.api # Нужен для LiveKit комнат
 from google.cloud import texttospeech
+from backend.analytics import fetch_user_summary, get_period_bounds
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -2970,102 +2972,33 @@ async def user_stats(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
     username = update.message.from_user.first_name
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    today_bounds = get_period_bounds("day")
+    week_bounds = get_period_bounds("week")
 
-    # 📌 Статистика за сегодняшний день (обновлено для среднего времени) Если за семь дней считать то нужно так: WHERE date BETWEEN CURRENT_DATE - INTERVAL '7 days' AND CURRENT_DATE - INTERVAL '1 day'
-    cursor.execute("""
-        SELECT 
-            COUNT(DISTINCT t.sentence_id) AS переведено,  
-            COALESCE(AVG(t.score), 0) AS средняя_оценка,
-            COALESCE((
-                SELECT AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time)) / 60)  -- ✅ Используем AVG вместо SUM
-                FROM bt_3_user_progress p
-                WHERE p.user_id = t.user_id 
-                    AND p.start_time::date = CURRENT_DATE
-                    AND p.completed = TRUE
-            ), 0) AS среднее_время_сессии_в_минутах,  -- ✅ Обновили название, чтобы было понятно
-            GREATEST(0, (SELECT COUNT(*) FROM bt_3_daily_sentences 
-                        WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(DISTINCT t.sentence_id)) AS пропущено,
-            COALESCE(AVG(t.score), 0) 
-                - (COALESCE((
-                    SELECT AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time)) / 60)  -- ✅ Здесь тоже AVG
-                    FROM bt_3_user_progress p
-                    WHERE p.user_id = t.user_id 
-                        AND p.start_time::date = CURRENT_DATE
-                        AND p.completed = TRUE
-                ), 0) * 1) 
-                - (GREATEST(0, (SELECT COUNT(*) FROM bt_3_daily_sentences
-                                WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(DISTINCT t.sentence_id)) * 20) AS итоговый_балл
-        FROM bt_3_translations t
-        WHERE t.user_id = %s AND t.timestamp::date = CURRENT_DATE
-        GROUP BY t.user_id;
-    """, (user_id,))
+    today_summary = fetch_user_summary(user_id, today_bounds.start_date, today_bounds.end_date)
+    week_summary = fetch_user_summary(user_id, week_bounds.start_date, week_bounds.end_date)
 
-    today_stats = cursor.fetchone()
-
-    # 📌 Недельная статистика (обновлено для среднего времени)
-    cursor.execute("""
-        SELECT 
-            t.user_id,
-            COUNT(DISTINCT t.sentence_id) AS всего_переводов,
-            COALESCE(AVG(t.score), 0) AS средняя_оценка,
-            COALESCE(p.avg_session_time, 0) AS среднее_время_сессии_в_минутах,  
-            COALESCE(p.total_time, 0) AS общее_время_за_неделю,  
-            GREATEST(0, COALESCE(ds.total_sentences, 0) - COUNT(DISTINCT t.sentence_id)) AS пропущено_за_неделю,
-            COALESCE(AVG(t.score), 0) 
-                - (COALESCE(p.avg_session_time, 0) * 1)  
-                - (GREATEST(0, COALESCE(ds.total_sentences, 0) - COUNT(DISTINCT t.sentence_id)) * 20) AS итоговый_балл
-        FROM bt_3_translations t
-        LEFT JOIN (
-            -- ✅ Отдельный подзапрос для корректного расчёта времени по каждому пользователю
-            SELECT 
-                user_id, 
-                AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS avg_session_time, 
-                SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS total_time 
-            FROM bt_3_user_progress
-            WHERE completed = TRUE 
-                AND start_time >= CURRENT_DATE - INTERVAL '6 days'
-            GROUP BY user_id
-        ) p ON t.user_id = p.user_id
-        LEFT JOIN (
-            SELECT user_id, COUNT(*) AS total_sentences
-            FROM bt_3_daily_sentences
-            WHERE date >= CURRENT_DATE - INTERVAL '6 days'
-            GROUP BY user_id
-        ) ds ON t.user_id = ds.user_id
-        WHERE t.timestamp >= CURRENT_DATE - INTERVAL '6 days' 
-            AND t.user_id = %s  -- ✅ Фильтр по конкретному пользователю
-        GROUP BY t.user_id, p.avg_session_time, p.total_time, ds.total_sentences;
-    """, (user_id,))
-
-    weekly_stats = cursor.fetchone()
-
-    cursor.close()
-    conn.close()
-
-    # 📌 Формирование ответа
-    if today_stats:
+    if today_summary and today_summary.get("total_translations", 0) > 0:
         today_text = (
             f"📅 Сегодняшняя статистика ({username})\n"
-            f"🔹 Переведено: {today_stats[0]}\n"
-            f"🎯 Средняя оценка: {today_stats[1]:.1f}/100\n"
-            f"⏱ Среднее время сессии: {today_stats[2]:.1f} мин\n"
-            f"🚨 Пропущено: {today_stats[3]}\n"
-            f"🏆 Итоговый балл: {today_stats[4]:.1f}\n"
+            f"🔹 Переведено: {today_summary['total_translations']}\n"
+            f"🎯 Средняя оценка: {today_summary['avg_score']:.1f}/100\n"
+            f"⏱ Среднее время сессии: {today_summary.get('avg_session_time_min', 0):.1f} мин\n"
+            f"🚨 Пропущено: {today_summary['missed_sentences']}\n"
+            f"🏆 Итоговый балл: {today_summary['final_score']:.1f}\n"
         )
     else:
         today_text = f"📅 **Сегодняшняя статистика ({username})**\n❌ Нет данных (вы ещё не переводили)."
 
-    if weekly_stats:
+    if week_summary and week_summary.get("total_translations", 0) > 0:
         weekly_text = (
             f"\n📆 Статистика за неделю\n"
-            f"🔹 Переведено: {weekly_stats[1]}\n"
-            f"🎯 Средняя оценка: {weekly_stats[2]:.1f}/100\n"
-            f"⏱ Среднее время сессии: {weekly_stats[3]:.1f} мин\n"
-            f"⏱ Общее время за неделю: {weekly_stats[4]:.1f} мин\n"
-            f"🚨 Пропущено за неделю: {weekly_stats[5]}\n"
-            f"🏆 Итоговый балл: {weekly_stats[6]:.1f}\n"
+            f"🔹 Переведено: {week_summary['total_translations']}\n"
+            f"🎯 Средняя оценка: {week_summary['avg_score']:.1f}/100\n"
+            f"⏱ Среднее время сессии: {week_summary.get('avg_session_time_min', 0):.1f} мин\n"
+            f"⏱ Общее время за неделю: {week_summary['total_time_min']:.1f} мин\n"
+            f"🚨 Пропущено за неделю: {week_summary['missed_sentences']}\n"
+            f"🏆 Итоговый балл: {week_summary['final_score']:.1f}\n"
         )
     else:
         weekly_text = "\n📆 **Статистика за неделю**\n❌ Нет данных."
@@ -3530,21 +3463,34 @@ async def get_yesterdays_mistakes_for_audio_message(context: CallbackContext):
 def get_date_range(period: str) -> tuple[date, date]:
     end_date = date.today()
     start_date = end_date
-    
-    if period == 'day': # Для еженедельного отчёта (последние 7 дней)
-        # если функция будет вызываться в любой другой день но не в воскресенье. У меня в main указано вызов в воскресенье сейчас
-        # weekday() в Python: Понедельник = 0, Воскресенье = 6
-        # Отнимаем от сегодняшней даты количество дней, прошедших с понедельника
+
+    if period == "day":
+        start_date = end_date
+    elif period == "week":
         start_date = end_date - timedelta(days=end_date.weekday())
-    elif period == 'week': # Для ежемесячного отчёта (текущий месяц)
+        end_date = start_date + timedelta(days=6)
+    elif period == "month":
         start_date = end_date.replace(day=1)
-    elif period == 'month': # Для квартального отчёта (последние 3 месяца)
-        start_date = end_date - relativedelta(months=3)
-    elif period == 'half_year': # Для half-year отчёта (последние 3 месяца)
-        start_date = end_date - relativedelta(months=6)    
-    elif period == 'quarter': # Для годового отчёта (последние 12 месяцев)
-        start_date = end_date - relativedelta(years=1)
-    
+        last_day = calendar.monthrange(end_date.year, end_date.month)[1]
+        end_date = end_date.replace(day=last_day)
+    elif period == "quarter":
+        quarter_index = (end_date.month - 1) // 3
+        start_month = quarter_index * 3 + 1
+        end_month = start_month + 2
+        start_date = date(end_date.year, start_month, 1)
+        last_day = calendar.monthrange(end_date.year, end_month)[1]
+        end_date = date(end_date.year, end_month, last_day)
+    elif period == "half_year":
+        if end_date.month <= 6:
+            start_date = date(end_date.year, 1, 1)
+            end_date = date(end_date.year, 6, 30)
+        else:
+            start_date = date(end_date.year, 7, 1)
+            end_date = date(end_date.year, 12, 31)
+    elif period == "year":
+        start_date = date(end_date.year, 1, 1)
+        end_date = date(end_date.year, 12, 31)
+
     return start_date, end_date
 
 

@@ -62,6 +62,7 @@ import json
 import asyncio
 import logging
 import requests
+from datetime import datetime
 from io import BytesIO
 from uuid import uuid4
 from urllib.parse import parse_qsl
@@ -95,6 +96,14 @@ from backend.translation_workflow import (
     check_user_translation_webapp,
     finish_translation_webapp,
     get_daily_translation_history,
+)
+from backend.analytics import (
+    fetch_user_summary,
+    fetch_user_timeseries,
+    fetch_comparison_leaderboard,
+    get_period_bounds,
+    _normalize_granularity,
+    _normalize_period,
 )
 
 load_dotenv()
@@ -416,6 +425,153 @@ def get_webapp_daily_history():
     history = get_daily_translation_history(user_id=user_id, limit=int(limit))
     return jsonify({"ok": True, "items": history})
 
+
+def _parse_iso_date(value: str | None):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).date()
+    except ValueError:
+        return None
+
+
+@app.route("/api/webapp/analytics/summary", methods=["POST"])
+def get_webapp_analytics_summary():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    period = payload.get("period", "week")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        period = _normalize_period(period)
+        bounds = get_period_bounds(period)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    summary = fetch_user_summary(user_id, bounds.start_date, bounds.end_date)
+    return jsonify(
+        {
+            "ok": True,
+            "period": {
+                "period": period,
+                "start_date": bounds.start_date.isoformat(),
+                "end_date": bounds.end_date.isoformat(),
+            },
+            "summary": summary,
+        }
+    )
+
+
+@app.route("/api/webapp/analytics/timeseries", methods=["POST"])
+def get_webapp_analytics_timeseries():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    period = payload.get("period", "week")
+    granularity = payload.get("granularity")
+    start_date_raw = payload.get("start_date")
+    end_date_raw = payload.get("end_date")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    start_date = _parse_iso_date(start_date_raw)
+    end_date = _parse_iso_date(end_date_raw)
+    try:
+        period = _normalize_period(period)
+        if not start_date or not end_date:
+            bounds = get_period_bounds(period)
+            start_date = bounds.start_date
+            end_date = bounds.end_date
+        granularity = _normalize_granularity(granularity)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    points = fetch_user_timeseries(user_id, start_date, end_date, granularity)
+    return jsonify(
+        {
+            "ok": True,
+            "period": {
+                "period": period,
+                "granularity": granularity,
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+            },
+            "points": points,
+        }
+    )
+
+
+@app.route("/api/webapp/analytics/compare", methods=["POST"])
+def get_webapp_analytics_compare():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    period = payload.get("period", "week")
+    start_date_raw = payload.get("start_date")
+    end_date_raw = payload.get("end_date")
+    limit = int(payload.get("limit", 10))
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    start_date = _parse_iso_date(start_date_raw)
+    end_date = _parse_iso_date(end_date_raw)
+    try:
+        period = _normalize_period(period)
+        if not start_date or not end_date:
+            bounds = get_period_bounds(period)
+            start_date = bounds.start_date
+            end_date = bounds.end_date
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    leaderboard = fetch_comparison_leaderboard(start_date, end_date, limit=limit)
+    user_rank = None
+    for index, item in enumerate(leaderboard, start=1):
+        if int(item.get("user_id")) == int(user_id):
+            user_rank = index
+            break
+
+    return jsonify(
+        {
+            "ok": True,
+            "period": {
+                "period": period,
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+            },
+            "items": leaderboard,
+            "self": {"user_id": user_id, "rank": user_rank},
+        }
+    )
 
 @app.route("/api/webapp/dictionary", methods=["POST"])
 def lookup_webapp_dictionary():

@@ -1,216 +1,97 @@
-from load_data_from_db import load_data_for_analytics
 import asyncio
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg') # <-- Встановити неінтерактивний бекенд
 import matplotlib.pyplot as plt # <-- Імпортувати pyplot ПІСЛЯ встановлення бекенду
 import numpy as np
+from backend.analytics import fetch_user_timeseries
 
 
 async def prepare_aggregate_data_by_period_and_draw_analytic_for_user(user_id, start_date, end_date):
-    """Loads user analytics data, enriches it with error statistics, 
-    calculates session-based metrics, and returns a merged DataFrame."""
-
-    # 🔹 Load data for a specific user (replace this with a loop for all users if needed)
-    loop= asyncio.get_running_loop()
-    dfs = await loop.run_in_executor(
+    """Loads pre-aggregated daily analytics based on actual translations."""
+    loop = asyncio.get_running_loop()
+    points = await loop.run_in_executor(
         None,
-        load_data_for_analytics,
-        user_id, start_date, end_date
-        )
-
-    all_user_sentences = dfs["sentences"].copy()
-    all_user_sentences.rename(columns={"id": "sentence_id"}, inplace=True)
-    not_succeded_sentences = dfs["not_succesed_attempts"].copy()
-    not_succeded_sentences.rename(columns={
-        "attempt":"attempt_not_succeded"
-    }, inplace=True)
-
-    successful_user_translation = dfs["success"].copy()
-    
-    time_costs_for_user = dfs["progress"]
-    still_mistakes = dfs["mistakes"].copy()
-
-    # 🔹 Rename columns for joining (так как в таблице detailed_mistakes Под sentence_id На самом деле находится id_for_mistake_table)
-    still_mistakes.rename(columns={
-        "sentence_id": "id_for_mistake_table",
-        "score": "current_score"
-    }, inplace=True)
-
-    successful_user_translation.rename(columns={
-        "sentence_id": "id_for_mistake_table"
-    }, inplace=True)   
-
-    
-    # 🔹 Align date formats for join (set time to 00:00:00)
-    #still_mistakes["added_data"] = pd.to_datetime(still_mistakes["added_data"]).dt.floor("D")
-    all_user_sentences["date"] = pd.to_datetime(all_user_sentences["date"]).dt.floor("D")
-    
-
-    successful_user_translation.rename(columns={
-        "date": "date_of_success"
-    }, inplace=True)
-    successful_user_translation["date_of_success"] = pd.to_datetime(successful_user_translation["date_of_success"].dt.floor("D"))
-    
-    # 🔹 Merge base user sentence data
-    ds_for_plot = all_user_sentences.merge(
-        successful_user_translation,
-        on="id_for_mistake_table", 
-        how="left"
+        fetch_user_timeseries,
+        user_id,
+        start_date,
+        end_date,
+        "day",
     )
 
-    ds_for_plot = ds_for_plot.merge(
-        time_costs_for_user[["session_id", "username", "start_time", "end_time"]],
-        on="session_id", 
-        how="left"
-        )
+    if not points:
+        return pd.DataFrame()
 
-    # 🔹 Rename, compute durations
-    ds_for_plot["start_session"] = ds_for_plot["start_time"]
-    ds_for_plot["end_session"] = ds_for_plot["end_time"]
-    ds_for_plot.drop(["start_time", "end_time"], axis="columns", inplace=True)
-
-    ds_for_plot["session_duration"] = (
-        ds_for_plot["end_session"] - ds_for_plot["start_session"]
-    ).dt.total_seconds()
-
-    # groupby("date"): группирует все строки по дате
-    # ["sentence_id"]: выбирает колонку sentence_id в каждой группе
-    # .count(): считает количество непустых sentence_id в каждой группе
-    # transform("count"): возвращает столько же строк, сколько в исходном DataFrame, с одинаковым значением для всех строк той же группы
-    # count() возвращает одну строку на группу (например: date | count)
-    # but transform("count") возвращает одну строку на каждую запись, и позволяет использовать это значение внутри оригинального DataFrame — например, для деления
-    ds_for_plot["sentences_in_session"] = ds_for_plot.groupby(["date", "session_id"])["sentence_id"].transform("count")
-
-    ds_for_plot["avg_min_sentence_session"] = round(
-        ((ds_for_plot["session_duration"] / ds_for_plot["sentences_in_session"]) / 60), 2
-    )
-
-    # 🔹 Rename column for clarity
-    ds_for_plot.rename(
+    df = pd.DataFrame(points)
+    df.rename(
         columns={
-            "attempt": "attempt_successed",
-            "score": "score_successed"}, 
-        inplace=True
-        )
-
-    ds_for_plot["sentences_in_day"] = ds_for_plot.groupby("date")["sentence_id"].transform("count")
-    session_durations = ds_for_plot.drop_duplicates("session_id")[["date", "session_id", "session_duration"]]
-    total_time_per_day = session_durations.groupby("date")["session_duration"].sum()
-    
-    ds_for_plot = ds_for_plot.merge(
-    total_time_per_day.rename("spent_time_per_day"),
-    on="date",
-    how="left"
+            "period_start": "date",
+            "avg_time_min": "avg_min_per_translation",
+        },
+        inplace=True,
     )
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df
 
-    ds_for_plot["avg_min_sentence_day"] = round(
-        ((ds_for_plot["spent_time_per_day"] / ds_for_plot["sentences_in_day"]) / 60), 2
-    )
-
-    ds_for_plot = ds_for_plot.merge(
-    not_succeded_sentences,
-    on=["id_for_mistake_table", "user_id"],
-    how="left"
-    )
-
-    # 🔹 Merge with mistake statistics
-    ds_for_plot = ds_for_plot.merge(
-        still_mistakes,
-        on=["id_for_mistake_table"],
-        how="left"
-    )
-
-    # 🔹 Optional: add flag whether the sentence had a mistake
-    ds_for_plot["user_stil_has_mistake"] = ds_for_plot["attempt_not_succeded"].notna()
-
-
-    # 🔹 Export to Excel (optional)
-    ds_for_plot.to_excel("test_ds.xlsx", index=False)
-
-    return ds_for_plot
-
-async def aggregate_data_for_charts(df: pd.DataFrame, period: str="week") -> pd.DataFrame:
+async def aggregate_data_for_charts(df: pd.DataFrame, period: str = "week") -> pd.DataFrame:
     """
-    Агрегує дані для побудови графіків згідно з наданими макетами.
-    Враховує унікальність перекладів за парою (session_id, id_for_mistake_table).
-    
-    Args:
-        df (pd.DataFrame): Вхідний DataFrame (ds_for_plot).
-        period (str): Період для агрегації: 'day', 'week', 'month', 'quarter', 'year'.
-
-    Returns:
-        pd.DataFrame: DataFrame з усіма показниками, необхідними для графіків.
+    Aggregates already-prepared daily analytics into requested period.
     """
+    if df.empty:
+        return df
 
-    # 1. Створюємо "очищений" DataFrame, видаляючи дублікати спроб перекладу
-    # Це ключовий крок, який реалізує вашу логіку підрахунку
-    cleaned_df = df.drop_duplicates(subset=['session_id', 'id_for_mistake_table']).copy()
-    cleaned_df['date'] = pd.to_datetime(cleaned_df['date'])
-
-    # 2. Додаємо допоміжні стовпці для зручності агрегації
-    cleaned_df['is_successful'] = cleaned_df['score_successed'] >= 80
-    cleaned_df['is_unsuccessful'] = cleaned_df['score_successed'] < 80
-    total_unsuccessful = cleaned_df['is_unsuccessful'].sum()
-    print(total_unsuccessful)
-    cleaned_df['attempt_1_success'] = (cleaned_df['is_successful']) & (cleaned_df['attempt_successed'] == 1)
-    cleaned_df['attempt_2_success'] = (cleaned_df['is_successful']) & (cleaned_df['attempt_successed'] == 2)
-    cleaned_df['attempt_3plus_success'] = (cleaned_df['is_successful']) & (cleaned_df['attempt_successed'] >= 3)
-    
-    # Словник для гнучкого вибору періоду групування
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
     period_mappers = {
-        "day": cleaned_df["date"].dt.to_period("D"),
-        "week": cleaned_df["date"].dt.to_period("W"),
-        "month": cleaned_df["date"].dt.to_period("M"),
-        "quarter": cleaned_df["date"].dt.to_period("Q"),
-        "year": cleaned_df["date"].dt.to_period("Y")
+        "day": df["date"].dt.to_period("D"),
+        "week": df["date"].dt.to_period("W"),
+        "month": df["date"].dt.to_period("M"),
+        "quarter": df["date"].dt.to_period("Q"),
+        "half-year": df["date"].dt.to_period("Q"),
+        "year": df["date"].dt.to_period("Y"),
     }
     if period not in period_mappers:
-        raise ValueError("Used incorrected grouped period. Please use 'day', 'week', 'month', 'quarter' або 'year'.")
-    
-    grouper = period_mappers[period]
-    # 3. Агрегація показників для графіків з "очищених" даних
-    sentence_agg = cleaned_df.groupby(grouper).agg(
-        # Показники для Графіку 1
-        total_translations = ("session_id", "count"),
-        successful_translations = ('is_successful', 'sum'),
-        unsuccessful_translations = ('is_unsuccessful', 'sum'),
-        # Показники для Графіку 2
-        success_on_1st_attempt=('attempt_1_success', 'sum'),
-        success_on_2nd_attempt=('attempt_2_success', 'sum'),
-        success_on_3plus_attempt=('attempt_3plus_success', 'sum'),
+        raise ValueError("Used incorrected grouped period. Please use 'day', 'week', 'month', 'quarter', 'half-year' або 'year'.")
+
+    if period == "half-year":
+        half = df["date"].dt.month.apply(lambda m: 1 if m <= 6 else 2)
+        year = df["date"].dt.year
+        grouper = pd.PeriodIndex(year.astype(str) + "-H" + half.astype(str), freq="2Q")
+    else:
+        grouper = period_mappers[period]
+
+    df["total_time_min"] = df.get("total_time_min", 0)
+    df["avg_score"] = df.get("avg_score", 0)
+    df["success_on_1st_attempt"] = df.get("success_on_1st_attempt", 0)
+    df["success_on_2nd_attempt"] = df.get("success_on_2nd_attempt", 0)
+    df["success_on_3plus_attempt"] = df.get("success_on_3plus_attempt", 0)
+
+    grouped = df.groupby(grouper).apply(
+        lambda group: pd.Series(
+            {
+                "total_translations": group["total_translations"].sum(),
+                "successful_translations": group["successful_translations"].sum(),
+                "unsuccessful_translations": group["unsuccessful_translations"].sum(),
+                "success_on_1st_attempt": group["success_on_1st_attempt"].sum(),
+                "success_on_2nd_attempt": group["success_on_2nd_attempt"].sum(),
+                "success_on_3plus_attempt": group["success_on_3plus_attempt"].sum(),
+                "total_time_min": group["total_time_min"].sum(),
+                "avg_score": (
+                    (group["avg_score"] * group["total_translations"]).sum()
+                    / group["total_translations"].sum()
+                    if group["total_translations"].sum() > 0
+                    else 0
+                ),
+            }
+        )
     )
 
-
-    # 4. Окремо агрегуємо час, щоб уникнути подвійного підрахунку
-    session_unique_df = df.drop_duplicates(subset=['date', 'session_id'])
-    session_agg = session_unique_df.groupby(grouper).agg(
-        total_time_spent_sec = ('session_duration', 'sum')
+    grouped["avg_min_per_translation"] = grouped.apply(
+        lambda row: round(row["total_time_min"] / row["total_translations"], 2) if row["total_translations"] > 0 else 0,
+        axis=1,
     )
 
-    # 5. Об'єднуємо все в одну таблицю
-    df_grouped = pd.concat([sentence_agg, session_agg], axis=1).fillna(0)
-
-    # 6. Розраховуємо фінальні відносні показники (долі, середній час)
-    df_grouped['total_time_spent_min'] = round(df_grouped['total_time_spent_sec']/ 60, 2)
-    df_grouped['avg_min_per_translation'] = df_grouped.apply(
-        lambda row: round(row["total_time_spent_min"] / row["total_translations"], 2) if row["total_translations"] > 0 else 0,
-        axis=1
-    )
-
-    # Розрахунок долей для Графіку 1
-    df_grouped['share_successful'] = df_grouped.apply(
-        lambda row: round(row["successful_translations"]/ row["total_translations"] * 100, 1) if row["successful_translations"] > 0 else 0,
-        axis=1
-    )
-    df_grouped['share_unsuccessful'] = 100 - df_grouped['share_successful']
-
-    # Видаляємо непотрібний стовпець
-    df_grouped.drop(columns=['total_time_spent_sec'], inplace=True)
-
-    df_grouped.to_excel("grouped_ds.xlsx", index=True)
-
-    return df_grouped
+    return grouped
 
 
 def plot_user_analytics(ax, df, title, chart_type='time_and_success'):
@@ -303,7 +184,5 @@ async def create_analytics_figure_async(daily_data, weekly_data, user_id):
     plt.close(fig)
 
     return figure_path
-
-
 
 

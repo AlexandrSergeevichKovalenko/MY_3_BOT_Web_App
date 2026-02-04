@@ -27,17 +27,13 @@ async def prepare_comparison_data(start_date, end_date):
     for user_id, username in all_users:
         full_user_data = await prepare_aggregate_data_by_period_and_draw_analytic_for_user(user_id, start_date, end_date)
         if not full_user_data.empty:
-            daily_data = await aggregate_data_for_charts(full_user_data, period='day')
-            weekly_data = await aggregate_data_for_charts(full_user_data, period='week')
+            daily_data = await aggregate_data_for_charts(full_user_data, period="day")
+            weekly_data = await aggregate_data_for_charts(full_user_data, period="week")
 
-            # Добавляем username для последующего использования в pivot_table
-            # Важно: сбрасываем индекс, чтобы 'date' и 'period' стали обычными столбцами
-            # После операции .groupby(), столбец, по которому вы группировали (например, 'date'), 
-            # перестаёт быть обычным столбцом и становится индексом DataFrame. Индекс — это как номера строк или заголовки, он стоит особняком.
-            daily_data['username'] = username
+            daily_data["username"] = username
             daily_data.reset_index(inplace=True)
 
-            weekly_data['username'] = username
+            weekly_data["username"] = username
             weekly_data.reset_index(inplace=True)
 
             daily_reports_list.append(daily_data)
@@ -61,14 +57,14 @@ async def prepare_comparison_data(start_date, end_date):
 
     # Создаём "широкую" таблицу для дневных данных
     pivoted_merged_daily_df = merged_daily_df.pivot_table(
-        index= "date", ## Что будет строками в новой таблице?
+        index="date", ## Что будет строками в новой таблице?
         columns="username", ## Что станет столбцами?
         values= metrics_to_pivot # Какие значения будут в ячейках?
     )
 
     # Создаём "широкую" таблицу для недельных данных
     pivoted_merged_weekly_df = merged_weekly_df.pivot_table(
-        index= "date", ## Что будет строками в новой таблице?
+        index="date", ## Что будет строками в новой таблице?
         columns="username", ## Что станет столбцами?
         values= metrics_to_pivot# Какие значения будут в ячейках?
 
@@ -126,9 +122,10 @@ def plot_comparison_chart(ax, pivoted_df, title):
 
 
 async def create_comparison_report_async(start_date, end_date, period="week"):
-    pivoted_weekly_df, pivoted_daily_df = await prepare_comparison_data(start_date, end_date)
-    df_for_plot = pivoted_weekly_df if period=="week" else pivoted_daily_df
-    title = "Weekly Users comparison" if period=="week" else "Daily Users comparison"
+    pivoted_daily_df, pivoted_weekly_df = await prepare_comparison_data(start_date, end_date)
+    use_weekly = period != "day"
+    df_for_plot = pivoted_weekly_df if use_weekly else pivoted_daily_df
+    title = "Weekly Users comparison" if use_weekly else "Daily Users comparison"
 
     fig, ax = plt.subplots(figsize=(15,8))
 
@@ -165,4 +162,3 @@ async def create_comparison_report_async(start_date, end_date, period="week"):
 
 
     
-

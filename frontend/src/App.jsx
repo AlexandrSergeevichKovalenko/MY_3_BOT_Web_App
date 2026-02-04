@@ -7,6 +7,7 @@ import {
 } from '@livekit/components-react';
 import '@livekit/components-styles';
 import './App.css';
+import * as echarts from 'echarts';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
@@ -123,6 +124,13 @@ function AppInner() {
   const [userAvatar, setUserAvatar] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuMultiSelect, setMenuMultiSelect] = useState(true);
+  const [analyticsPeriod, setAnalyticsPeriod] = useState('week');
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState('');
+  const [analyticsSummary, setAnalyticsSummary] = useState(null);
+  const [analyticsPoints, setAnalyticsPoints] = useState([]);
+  const [analyticsCompare, setAnalyticsCompare] = useState([]);
+  const [analyticsRank, setAnalyticsRank] = useState(null);
 
   const dictionaryRef = useRef(null);
   const flashcardsRef = useRef(null);
@@ -133,6 +141,9 @@ function AppInner() {
   const flashcardIndexRef = useRef(0);
   const flashcardSelectionRef = useRef(null);
   const avatarInputRef = useRef(null);
+  const analyticsRef = useRef(null);
+  const analyticsTrendRef = useRef(null);
+  const analyticsCompareRef = useRef(null);
 
   const safeStorageGet = (key) => {
     try {
@@ -229,7 +240,7 @@ function AppInner() {
   };
 
   const showAllSections = () => {
-    setSelectedSections(new Set(['translations', 'youtube', 'dictionary', 'flashcards']));
+    setSelectedSections(new Set(['translations', 'youtube', 'dictionary', 'flashcards', 'analytics']));
   };
 
   const hideAllSections = () => {
@@ -1491,6 +1502,234 @@ function AppInner() {
     }
   };
 
+  const resolveAnalyticsGranularity = (periodValue) => {
+    switch (periodValue) {
+      case 'day':
+      case 'week':
+      case 'month':
+        return 'day';
+      case 'quarter':
+        return 'week';
+      case 'half-year':
+      case 'year':
+        return 'month';
+      default:
+        return 'day';
+    }
+  };
+
+  const loadAnalytics = async (overridePeriod) => {
+    if (!initData) {
+      setAnalyticsError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    const period = overridePeriod || analyticsPeriod;
+    const granularity = resolveAnalyticsGranularity(period);
+    setAnalyticsLoading(true);
+    setAnalyticsError('');
+    try {
+      const summaryResponse = await fetch('/api/webapp/analytics/summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, period }),
+      });
+      if (!summaryResponse.ok) {
+        throw new Error(await summaryResponse.text());
+      }
+      const summaryData = await summaryResponse.json();
+      setAnalyticsSummary(summaryData.summary || null);
+
+      const seriesResponse = await fetch('/api/webapp/analytics/timeseries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, period, granularity }),
+      });
+      if (!seriesResponse.ok) {
+        throw new Error(await seriesResponse.text());
+      }
+      const seriesData = await seriesResponse.json();
+      setAnalyticsPoints(seriesData.points || []);
+
+      const compareResponse = await fetch('/api/webapp/analytics/compare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, period, limit: 8 }),
+      });
+      if (!compareResponse.ok) {
+        throw new Error(await compareResponse.text());
+      }
+      const compareData = await compareResponse.json();
+      setAnalyticsCompare(compareData.items || []);
+      setAnalyticsRank(compareData.self?.rank ?? null);
+    } catch (error) {
+      setAnalyticsError(`Ошибка аналитики: ${error.message}`);
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      return;
+    }
+    if (!flashcardsOnly && isSectionVisible('analytics')) {
+      loadAnalytics();
+    }
+  }, [initData, isWebAppMode, analyticsPeriod, selectedSections, flashcardsOnly]);
+
+  useEffect(() => {
+    if (!analyticsTrendRef.current) {
+      return;
+    }
+    const chart = echarts.init(analyticsTrendRef.current);
+    const labels = analyticsPoints.map((item) => item.period_start);
+    const success = analyticsPoints.map((item) => item.successful_translations || 0);
+    const fail = analyticsPoints.map((item) => item.unsuccessful_translations || 0);
+    const avgScore = analyticsPoints.map((item) => item.avg_score || 0);
+    const avgTime = analyticsPoints.map((item) => item.avg_time_min || 0);
+
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (params) => {
+          const map = {};
+          params.forEach((entry) => {
+            map[entry.seriesName] = entry.value;
+          });
+          const index = params[0]?.dataIndex ?? 0;
+          const timeValue = avgTime[index] ?? 0;
+          return `
+            <strong>${labels[index] || ''}</strong><br/>
+            Успешно: ${map['Успешно'] ?? 0}<br/>
+            Ошибки: ${map['Нужно доработать'] ?? 0}<br/>
+            Ср. балл: ${map['Средний балл'] ?? 0}<br/>
+            Ср. время: ${timeValue} мин
+          `;
+        },
+      },
+      legend: {
+        data: ['Успешно', 'Нужно доработать', 'Средний балл'],
+        textStyle: { color: '#dbe7ff' },
+      },
+      grid: { left: 32, right: 32, top: 40, bottom: 40 },
+      xAxis: {
+        type: 'category',
+        data: labels,
+        axisLine: { lineStyle: { color: '#2f3f5f' } },
+        axisLabel: { color: '#c7d2f1' },
+      },
+      yAxis: [
+        {
+          type: 'value',
+          name: 'Переводы',
+          axisLabel: { color: '#c7d2f1' },
+          splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+        },
+        {
+          type: 'value',
+          name: 'Баллы',
+          min: 0,
+          max: 100,
+          axisLabel: { color: '#c7d2f1' },
+          splitLine: { show: false },
+        },
+      ],
+      series: [
+        {
+          name: 'Успешно',
+          type: 'bar',
+          stack: 'total',
+          data: success,
+          itemStyle: { color: '#06d6a0' },
+          barWidth: 22,
+        },
+        {
+          name: 'Нужно доработать',
+          type: 'bar',
+          stack: 'total',
+          data: fail,
+          itemStyle: { color: '#ff6b6b' },
+          barWidth: 22,
+        },
+        {
+          name: 'Средний балл',
+          type: 'line',
+          yAxisIndex: 1,
+          data: avgScore,
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 8,
+          itemStyle: { color: '#ffd166' },
+          lineStyle: { width: 3 },
+        },
+      ],
+    });
+
+    return () => {
+      chart.dispose();
+    };
+  }, [analyticsPoints, analyticsPeriod]);
+
+  useEffect(() => {
+    if (!analyticsCompareRef.current) {
+      return;
+    }
+    const chart = echarts.init(analyticsCompareRef.current);
+    const selfId = webappUser?.id;
+    const names = analyticsCompare.map((item) => item.username);
+    const data = analyticsCompare.map((item) => ({
+      value: item.final_score || 0,
+      itemStyle: {
+        color: item.user_id === selfId ? '#ffd166' : '#5ddcff',
+      },
+    }));
+
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'item',
+        formatter: (params) => {
+          const item = analyticsCompare[params.dataIndex];
+          if (!item) return '';
+          return `
+            <strong>${item.username}</strong><br/>
+            Итоговый балл: ${item.final_score}<br/>
+            Успех: ${item.success_rate}%<br/>
+            Ср. балл: ${item.avg_score}<br/>
+            Переводы: ${item.total_translations}<br/>
+            Пропущено: ${item.missed_sentences}
+          `;
+        },
+      },
+      grid: { left: 20, right: 20, top: 20, bottom: 20, containLabel: true },
+      xAxis: {
+        type: 'value',
+        axisLabel: { color: '#c7d2f1' },
+        splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+      },
+      yAxis: {
+        type: 'category',
+        data: names,
+        axisLabel: { color: '#c7d2f1' },
+        inverse: true,
+      },
+      series: [
+        {
+          type: 'bar',
+          data,
+          barWidth: 18,
+          borderRadius: [8, 8, 8, 8],
+        },
+      ],
+    });
+
+    return () => {
+      chart.dispose();
+    };
+  }, [analyticsCompare, webappUser]);
+
   if (isWebAppMode) {
     return (
       <div className="webapp-page">
@@ -1534,6 +1773,14 @@ function AppInner() {
                 onClick={() => toggleSection('flashcards')}
               >
                 Карточки
+              </button>
+              <button
+                type="button"
+                className={`menu-item ${selectedSections.has('analytics') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('analytics')}
+                disabled={flashcardsOnly}
+              >
+                Аналитика
               </button>
             </div>
             <div className="webapp-menu-actions">
@@ -1624,6 +1871,14 @@ function AppInner() {
                       onClick={() => handleMenuSelection('flashcards', flashcardsRef)}
                     >
                       Карточки
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item ${selectedSections.has('analytics') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('analytics', analyticsRef)}
+                      disabled={flashcardsOnly}
+                    >
+                      Аналитика
                     </button>
                   </div>
                   <div className="overlay-actions">
@@ -2385,6 +2640,75 @@ function AppInner() {
                     )}
                   </div>
                 )}
+              </section>
+            )}
+
+            {!flashcardsOnly && isSectionVisible('analytics') && (
+              <section className="webapp-section webapp-analytics" ref={analyticsRef}>
+                <div className="webapp-section-title">
+                  <h2>Аналитика</h2>
+                </div>
+                <div className="analytics-controls">
+                  <label className="webapp-field">
+                    <span>Период</span>
+                    <select
+                      value={analyticsPeriod}
+                      onChange={(event) => setAnalyticsPeriod(event.target.value)}
+                    >
+                      <option value="day">День</option>
+                      <option value="week">Неделя</option>
+                      <option value="month">Месяц</option>
+                      <option value="quarter">Квартал</option>
+                      <option value="half-year">Полугодие</option>
+                      <option value="year">Год</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => loadAnalytics()}
+                    disabled={analyticsLoading}
+                  >
+                    {analyticsLoading ? 'Считаем...' : 'Обновить'}
+                  </button>
+                  {analyticsRank && (
+                    <div className="analytics-rank">Ваше место: #{analyticsRank}</div>
+                  )}
+                </div>
+
+                {analyticsError && <div className="webapp-error">{analyticsError}</div>}
+
+                {analyticsSummary && (
+                  <div className="analytics-cards">
+                    <div className="analytics-card">
+                      <span>Переводы</span>
+                      <strong>{analyticsSummary.total_translations}</strong>
+                    </div>
+                    <div className="analytics-card">
+                      <span>Успех</span>
+                      <strong>{analyticsSummary.success_rate}%</strong>
+                    </div>
+                    <div className="analytics-card">
+                      <span>Средний балл</span>
+                      <strong>{analyticsSummary.avg_score}</strong>
+                    </div>
+                    <div className="analytics-card">
+                      <span>Среднее время</span>
+                      <strong>{analyticsSummary.avg_time_min} мин</strong>
+                    </div>
+                    <div className="analytics-card">
+                      <span>Пропущено</span>
+                      <strong>{analyticsSummary.missed_sentences}</strong>
+                    </div>
+                    <div className="analytics-card">
+                      <span>Итоговый балл</span>
+                      <strong>{analyticsSummary.final_score}</strong>
+                    </div>
+                  </div>
+                )}
+
+                <div className="analytics-chart" ref={analyticsTrendRef} />
+                <div className="analytics-chart analytics-compare" ref={analyticsCompareRef} />
               </section>
             )}
 
