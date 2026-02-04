@@ -663,9 +663,9 @@ def _get_latest_session_id(cursor, user_id: int) -> str | None:
     cursor.execute(
         """
         SELECT session_id
-        FROM bt_3_daily_sentences
-        WHERE user_id = %s
-        ORDER BY id DESC
+        FROM bt_3_user_progress
+        WHERE user_id = %s AND completed = FALSE
+        ORDER BY start_time DESC
         LIMIT 1;
         """,
         (user_id,),

@@ -73,7 +73,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import spacy
 
-from backend.openai_manager import run_check_translation, run_dictionary_lookup, run_dictionary_lookup_de, run_translation_explanation
+from backend.openai_manager import run_check_translation, run_dictionary_lookup, run_dictionary_lookup_de, run_dictionary_collocations, run_translation_explanation
 from backend.database import (
     ensure_webapp_tables,
     get_pending_daily_sentences,
@@ -453,6 +453,33 @@ def lookup_webapp_dictionary():
         upsert_dictionary_cache(word_ru, result)
 
     return jsonify({"ok": True, "item": result, "direction": "ru-de" if is_ru else "de-ru"})
+
+
+@app.route("/api/webapp/dictionary/collocations", methods=["POST"])
+def get_webapp_dictionary_collocations():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    word = (payload.get("word") or "").strip()
+    direction = (payload.get("direction") or "").strip() or None
+    translation = (payload.get("translation") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not word:
+        return jsonify({"error": "word обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    try:
+        if not direction:
+            is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word)
+            direction = "ru-de" if is_ru else "de-ru"
+        result = asyncio.run(run_dictionary_collocations(direction, word, translation))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка генерации связок: {exc}"}), 500
+
+    return jsonify({"ok": True, "items": result.get("items", []), "direction": direction})
 
 
 @app.route("/api/webapp/dictionary/save", methods=["POST"])

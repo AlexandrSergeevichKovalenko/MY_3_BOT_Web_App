@@ -634,6 +634,18 @@ body {
   color: #f8fafc;
 }
 
+.dictionary-input {
+  font-size: 16px;
+  font-weight: 700;
+  border: 2px solid rgba(93, 220, 255, 0.6);
+  background: rgba(93, 220, 255, 0.12);
+  box-shadow: 0 0 0 2px rgba(93, 220, 255, 0.1), 0 0 18px rgba(93, 220, 255, 0.25);
+}
+
+.dictionary-input::placeholder {
+  color: rgba(248, 250, 252, 0.55);
+}
+
 .webapp-error {
   color: #fecaca;
   background: rgba(239, 68, 68, 0.12);
@@ -1021,6 +1033,62 @@ body {
   gap: 8px;
 }
 
+.dictionary-collocations {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.65);
+  display: grid;
+  gap: 12px;
+}
+
+.dictionary-collocations h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.collocation-list {
+  display: grid;
+  gap: 10px;
+}
+
+.collocation-item {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.7);
+}
+
+.collocation-source {
+  font-weight: 700;
+}
+
+.collocation-target {
+  font-size: 13px;
+  color: rgba(248, 250, 252, 0.75);
+}
+
+.collocation-tag {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(93, 220, 255, 0.2);
+  border: 1px solid rgba(93, 220, 255, 0.4);
+}
+
+.collocation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .webapp-flashcards {
   display: grid;
   gap: 12px;
@@ -1028,7 +1096,17 @@ body {
 }
 
 .flashcards-panel {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 70vh;
+}
+
+.flashcard-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   gap: 12px;
 }
 
@@ -1112,6 +1190,12 @@ body {
   justify-content: flex-end;
 }
 
+.flashcard-end {
+  margin-top: auto;
+  display: flex;
+  justify-content: flex-end;
+}
+
 .flashcard-actions-row {
   display: flex;
   align-items: center;
@@ -1121,6 +1205,14 @@ body {
 .flashcard-hint {
   font-size: 12px;
   color: rgba(248, 250, 252, 0.6);
+}
+
+.flashcard-timeout {
+  font-size: 14px;
+  font-weight: 800;
+  color: #ff4d6d;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .flashcards-filter {

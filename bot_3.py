@@ -62,12 +62,12 @@ from backend.config_mistakes_data import VALID_CATEGORIES, VALID_SUBCATEGORIES, 
 application = None
 
 QUIZ_SCHEDULE_HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
-QUIZ_SCHEDULE_MINUTES = [0, 15, 30, 45]
+QUIZ_SCHEDULE_MINUTES = [0, 30]
 QUIZ_FEEDBACK_TTL_SECONDS = 120
 QUIZ_CACHE_TTL_SECONDS = 60 * 60 * 24
 QUIZ_FREEFORM_OPTION = "keine korrekte Antworten"
 QUIZ_HIDE_CORRECT_PROBABILITY = 0.3
-FLASHCARD_REMINDER_TIMES = [(10, 30), (16, 30), (21, 0)]
+FLASHCARD_REMINDER_TIMES = [(7, 0), (16, 30)]
 active_quizzes = {}
 pending_quiz_freeform = {}
 
@@ -598,6 +598,13 @@ def get_webapp_url():
         return base_url
     return f"{base_url}/webapp"
 
+
+def get_webapp_deeplink(path: str = "review") -> str:
+    bot_username = os.getenv("TELEGRAM_BOT_USERNAME") or ""
+    if bot_username:
+        return f"https://t.me/{bot_username}?startapp={path}"
+    return f"{get_webapp_url()}/{path}"
+
 async def handle_button_click(update: Update, context: CallbackContext):
     """Обрабатывает нажатия на кнопки главного меню."""
     
@@ -757,7 +764,7 @@ async def send_morning_reminder(context:CallbackContext):
 
 async def send_flashcard_reminder(context: CallbackContext):
     base_url = get_public_web_url()
-    review_url = f"{base_url}/webapp/review"
+    review_url = get_webapp_deeplink("review")
     message = (
         "📌 Пора повторить слова!\n"
         f'Перейти к тренировке: <a href="{review_url}">Открыть карточки</a>'

@@ -72,6 +72,11 @@ function AppInner() {
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
   const [dictionarySaved, setDictionarySaved] = useState('');
   const [dictionaryDirection, setDictionaryDirection] = useState('ru-de');
+  const [collocationsVisible, setCollocationsVisible] = useState(false);
+  const [collocationsLoading, setCollocationsLoading] = useState(false);
+  const [collocationsError, setCollocationsError] = useState('');
+  const [collocationOptions, setCollocationOptions] = useState([]);
+  const [selectedCollocation, setSelectedCollocation] = useState(null);
   const [youtubeInput, setYoutubeInput] = useState('');
   const [youtubeId, setYoutubeId] = useState('');
   const [youtubeError, setYoutubeError] = useState('');
@@ -102,6 +107,7 @@ function AppInner() {
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
+  const [flashcardTimedOut, setFlashcardTimedOut] = useState(false);
   const [folders, setFolders] = useState([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [foldersError, setFoldersError] = useState('');
@@ -244,7 +250,9 @@ function AppInner() {
     if (key === 'flashcards') {
       setFlashcardsVisible(true);
     }
-    setMenuOpen(false);
+    if (!menuMultiSelect) {
+      setMenuOpen(false);
+    }
     if (ref?.current) {
       setTimeout(() => {
         ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -435,6 +443,7 @@ function AppInner() {
     if (autoAdvanceTimeoutRef.current) {
       clearTimeout(autoAdvanceTimeoutRef.current);
     }
+    setFlashcardTimedOut(false);
     autoAdvanceTimeoutRef.current = setTimeout(() => {
       const currentIndex = flashcardIndexRef.current;
       const currentSelection = flashcardSelectionRef.current;
@@ -446,7 +455,14 @@ function AppInner() {
         ...prev,
         wrong: prev.wrong + 1,
       }));
-      advanceFlashcard();
+      setFlashcardTimedOut(true);
+      setFlashcardSelection(-1);
+      if (revealTimeoutRef.current) {
+        clearTimeout(revealTimeoutRef.current);
+      }
+      revealTimeoutRef.current = setTimeout(() => {
+        advanceFlashcard();
+      }, 3000);
     }, 10000);
 
     return () => {
@@ -829,6 +845,7 @@ function AppInner() {
       setFlashcardIndex(0);
       setFlashcardSelection(null);
       setFlashcardSetComplete(false);
+      setFlashcardTimedOut(false);
       setFlashcardStats({
         total: items.length,
         correct: 0,
@@ -1226,6 +1243,56 @@ function AppInner() {
       setDictionaryError('Сначала выполните перевод в словаре.');
       return;
     }
+    setCollocationsVisible(true);
+    setCollocationsLoading(true);
+    setCollocationsError('');
+    setCollocationOptions([]);
+    setSelectedCollocation(null);
+    try {
+      const response = await fetch('/api/webapp/dictionary/collocations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          word: dictionaryWord.trim() || dictionaryResult.word_ru || dictionaryResult.word_de,
+          translation: dictionaryDirection === 'ru-de'
+            ? (dictionaryResult.translation_de || '')
+            : (dictionaryResult.translation_ru || ''),
+          direction: dictionaryDirection,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      const baseSource = dictionaryDirection === 'ru-de'
+        ? (dictionaryResult.word_ru || dictionaryWord.trim())
+        : (dictionaryResult.word_de || dictionaryWord.trim());
+      const baseTarget = dictionaryDirection === 'ru-de'
+        ? (dictionaryResult.translation_de || '')
+        : (dictionaryResult.translation_ru || '');
+      const options = [
+        { source: baseSource, target: baseTarget, isBase: true },
+        ...(data.items || []).map((item) => ({
+          source: item.source,
+          target: item.target,
+          isBase: false,
+        })),
+      ].filter((item) => item.source && item.target);
+      setCollocationOptions(options);
+      setSelectedCollocation(options[0] || null);
+    } catch (error) {
+      setCollocationsError(`Ошибка связок: ${error.message}`);
+    } finally {
+      setCollocationsLoading(false);
+    }
+  };
+
+  const handleConfirmSaveCollocation = async () => {
+    if (!selectedCollocation) {
+      setCollocationsError('Выберите вариант для сохранения.');
+      return;
+    }
     setDictionaryLoading(true);
     setDictionaryError('');
     setDictionarySaved('');
@@ -1235,14 +1302,10 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          word_ru: dictionaryDirection === 'ru-de'
-            ? (dictionaryResult.word_ru || dictionaryWord.trim())
-            : '',
-          word_de: dictionaryDirection === 'de-ru'
-            ? (dictionaryResult.word_de || dictionaryWord.trim())
-            : '',
-          translation_de: dictionaryResult.translation_de || '',
-          translation_ru: dictionaryResult.translation_ru || '',
+          word_ru: dictionaryDirection === 'ru-de' ? selectedCollocation.source : '',
+          word_de: dictionaryDirection === 'de-ru' ? selectedCollocation.source : '',
+          translation_de: dictionaryDirection === 'ru-de' ? selectedCollocation.target : '',
+          translation_ru: dictionaryDirection === 'de-ru' ? selectedCollocation.target : '',
           response_json: dictionaryResult,
           folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
         }),
@@ -1258,6 +1321,7 @@ function AppInner() {
         throw new Error(message);
       }
       setDictionarySaved('Добавлено в словарь ✅');
+      setCollocationsVisible(false);
     } catch (error) {
       setDictionaryError(`Ошибка сохранения: ${error.message}`);
     } finally {
@@ -1581,7 +1645,7 @@ function AppInner() {
             </section>
             )}
 
-            {flashcardsOnly && <div className="webapp-mode-banner">Режим повторения</div>}
+            
 
             {!telegramApp?.initData && (
               <label className="webapp-field">
@@ -1642,7 +1706,9 @@ function AppInner() {
                             <div className="webapp-error">{item.error}</div>
                           ) : (
                             <>
-                              <div className="webapp-result-text">{renderFeedback(item.feedback)}</div>
+                              <div className="webapp-result-text" onMouseUp={handleSelection}>
+                                {renderFeedback(item.feedback)}
+                              </div>
                               <button
                                 type="button"
                                 className="secondary-button explanation-button"
@@ -1913,6 +1979,7 @@ function AppInner() {
                       <label className="webapp-field">
                         <span>Слово или фраза (русский / немецкий)</span>
                         <input
+                          className="dictionary-input"
                           type="text"
                           value={dictionaryWord}
                           onChange={(event) => setDictionaryWord(event.target.value)}
@@ -2002,6 +2069,49 @@ function AppInner() {
                         )}
                       </div>
                     )}
+                    {collocationsVisible && (
+                      <div className="dictionary-collocations">
+                        <h4>Выберите связку для словаря</h4>
+                        {collocationsLoading && <div className="webapp-muted">Генерируем варианты...</div>}
+                        {collocationsError && <div className="webapp-error">{collocationsError}</div>}
+                        {!collocationsLoading && collocationOptions.length > 0 && (
+                          <div className="collocation-list">
+                            {collocationOptions.map((option, index) => (
+                              <label key={`${option.source}-${index}`} className="collocation-item">
+                                <input
+                                  type="radio"
+                                  name="collocation"
+                                  checked={selectedCollocation?.source === option.source && selectedCollocation?.target === option.target}
+                                  onChange={() => setSelectedCollocation(option)}
+                                />
+                                <div>
+                                  <div className="collocation-source">{option.source}</div>
+                                  <div className="collocation-target">{option.target}</div>
+                                  {option.isBase && <span className="collocation-tag">Исходное</span>}
+                                </div>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                        <div className="collocation-actions">
+                          <button
+                            type="button"
+                            className="primary-button"
+                            onClick={handleConfirmSaveCollocation}
+                            disabled={dictionaryLoading}
+                          >
+                            {dictionaryLoading ? 'Сохраняем...' : 'Добавить выбранное'}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => setCollocationsVisible(false)}
+                          >
+                            Отмена
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     <div className="dictionary-flashcards">
                       <button
                         type="button"
@@ -2031,18 +2141,6 @@ function AppInner() {
                 )}
                 {flashcardsVisible && (
                   <div className="flashcards-panel">
-                    {flashcardsOnly && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => {
-                          setFlashcardsOnly(false);
-                          setFlashcardsVisible(false);
-                        }}
-                      >
-                        Закончить повтор
-                      </button>
-                    )}
                     <div className="flashcards-filter">
                       <label className="webapp-field">
                         <span>Папка для тренировки</span>
@@ -2079,7 +2177,7 @@ function AppInner() {
                       <div className="webapp-muted">Словарь пуст. Сначала добавьте слова.</div>
                     )}
                     {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && (
-                      <>
+                      <div className="flashcard-stage">
                         {flashcardSetComplete ? (
                           <div className="flashcard-summary">
                             <h4>Сет завершён</h4>
@@ -2175,6 +2273,7 @@ function AppInner() {
                                         onClick={() => {
                                           if (flashcardSelection !== null) return;
                                           setFlashcardSelection(idx);
+                                          setFlashcardTimedOut(false);
                                           recordFlashcardAnswer(entry.id, option === correct);
                                           setFlashcardStats((prev) => ({
                                             ...prev,
@@ -2198,6 +2297,9 @@ function AppInner() {
                                     );
                                   })}
                                 </div>
+                                {flashcardTimedOut && (
+                                  <div className="flashcard-timeout">die Zeit ist um</div>
+                                )}
                                 {flashcardSelection !== null && (
                                   <div className="flashcard-hint">
                                     Следующая карточка через 3 секунды
@@ -2207,7 +2309,21 @@ function AppInner() {
                             );
                           })()
                         )}
-                      </>
+                      </div>
+                    )}
+                    {flashcardsOnly && (
+                      <div className="flashcard-end">
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => {
+                            setFlashcardsOnly(false);
+                            setFlashcardsVisible(false);
+                          }}
+                        >
+                          Закончить повтор
+                        </button>
+                      </div>
                     )}
                   </div>
                 )}

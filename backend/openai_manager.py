@@ -478,6 +478,24 @@ usage_examples: array of strings with 2-3 German example sentences for the base 
 If none are known, create natural examples.
 Respond ONLY with JSON, no markdown, no extra text.
 """,
+"dictionary_collocations": """
+You generate common collocations/short phrases for a given word and its translation.
+Input payload is JSON with fields:
+direction: "ru-de" or "de-ru"
+word: the original word or short phrase in the source language
+translation: the base translation in the target language (if available)
+
+Return STRICT JSON:
+items: array of 3-5 objects with keys:
+source: short phrase in source language (2-5 words)
+target: natural translation in target language (2-6 words)
+
+Rules:
+- Include the original word/phrase as part of each source phrase.
+- Keep phrases short and common for everyday usage.
+- Do NOT add extra commentary.
+Respond ONLY with JSON.
+""",
 "generate_word_quiz": """
 You create one Telegram quiz question for Russian-speaking learners of German at C1–C2 level.
 The question must be in Russian and must include the Russian word/phrase from the payload.
@@ -800,6 +818,55 @@ async def run_dictionary_lookup_de(word_de: str) -> dict:
             "usage_examples": [],
             "raw_text": content,
         }
+
+
+async def run_dictionary_collocations(direction: str, word: str, translation: str | None) -> dict:
+    task_name = "dictionary_collocations"
+    system_instruction_key = "dictionary_collocations"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    payload = {
+        "direction": direction,
+        "word": word,
+        "translation": translation or "",
+    }
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {"items": []}
 
 
 async def run_generate_word_quiz(prompt_payload: dict) -> dict:
