@@ -1180,6 +1180,10 @@ body {
   min-height: 100vh;
 }
 
+.flashcards-panel.is-session {
+  position: relative;
+}
+
 .flashcard-stage {
   flex: 1;
   position: relative;
@@ -1474,6 +1478,15 @@ body {
 .flashcard-end {
   display: flex;
   justify-content: center;
+}
+
+.flashcards-panel.is-session .flashcard-end {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 32px;
+  padding: 0 24px;
+  z-index: 2;
 }
 
 .flashcard-actions-row {

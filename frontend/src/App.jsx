@@ -360,12 +360,15 @@ function AppInner() {
     });
   };
 
+  const scrollToRef = (ref, block = 'start') => {
+    if (!ref?.current) return;
+    ref.current.scrollIntoView({ behavior: 'smooth', block });
+  };
+
   const openSectionAndScroll = (key, ref) => {
     ensureSectionVisible(key);
     setTimeout(() => {
-      if (ref?.current) {
-        ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
+      scrollToRef(ref, key === 'flashcards' ? 'center' : 'start');
     }, 80);
   };
 
@@ -377,7 +380,7 @@ function AppInner() {
     ensureSectionVisible('flashcards');
     if (ref?.current) {
       setTimeout(() => {
-        ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        scrollToRef(ref, 'center');
       }, 120);
     }
   };
@@ -414,7 +417,7 @@ function AppInner() {
     }
     if (ref?.current) {
       setTimeout(() => {
-        ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        scrollToRef(ref, key === 'flashcards' ? 'center' : 'start');
       }, 120);
     }
   };
