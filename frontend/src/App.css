@@ -1715,17 +1715,62 @@ body {
   font-size: 14px;
 }
 
+.translation-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.translation-dict-jump {
+  border: none;
+  background: rgba(255, 255, 255, 0.16);
+  color: #f8fafc;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.translation-dict-jump:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.3);
+}
+
+.translation-input-wrap {
+  position: relative;
+}
+
 .webapp-translation-item textarea {
   resize: vertical;
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.3);
-  padding: 10px 12px;
+  padding: 10px 36px 10px 12px;
   font-family: inherit;
   font-size: 14px;
   background: rgba(15, 23, 42, 0.65);
   color: #f8fafc;
   caret-color: #f8fafc;
   font-weight: 600;
+}
+
+.translation-clear {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.16);
+  color: #f8fafc;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
 }
 
 .webapp-sentences li {

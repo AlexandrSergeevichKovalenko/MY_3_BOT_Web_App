@@ -380,6 +380,14 @@ function AppInner() {
     }, 80);
   };
 
+  const jumpToDictionaryFromSentence = () => {
+    setLastLookupScrollY(window.scrollY);
+    ensureSectionVisible('dictionary');
+    setTimeout(() => {
+      scrollToRef(dictionaryRef, { block: 'start' });
+    }, 120);
+  };
+
   const openFlashcardsSetup = (ref) => {
     setFlashcardsVisible(true);
     setFlashcardsOnly(false);
@@ -2245,15 +2253,36 @@ function AppInner() {
                         const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
                         return (
                           <label key={item.id_for_mistake_table} className="webapp-translation-item">
-                            <span>
-                              {item.unique_id ?? index + 1}. {item.sentence}
-                            </span>
-                            <textarea
-                              rows={5}
-                              value={draft}
-                              onChange={(event) => handleDraftChange(item.id_for_mistake_table, event.target.value)}
-                              placeholder="Введите перевод..."
-                            />
+                            <div className="translation-header">
+                              <span>
+                                {item.unique_id ?? index + 1}. {item.sentence}
+                              </span>
+                              <button
+                                type="button"
+                                className="translation-dict-jump"
+                                onClick={jumpToDictionaryFromSentence}
+                              >
+                                ↗ словарь
+                              </button>
+                            </div>
+                            <div className="translation-input-wrap">
+                              <textarea
+                                rows={5}
+                                value={draft}
+                                onChange={(event) => handleDraftChange(item.id_for_mistake_table, event.target.value)}
+                                placeholder="Введите перевод..."
+                              />
+                              {draft.trim() && (
+                                <button
+                                  type="button"
+                                  className="translation-clear"
+                                  onClick={() => handleDraftChange(item.id_for_mistake_table, '')}
+                                  aria-label="Очистить перевод"
+                                >
+                                  ×
+                                </button>
+                              )}
+                            </div>
                           </label>
                         );
                       })
