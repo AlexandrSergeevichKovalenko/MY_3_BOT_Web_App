@@ -107,6 +107,10 @@ function AppInner() {
   const [flashcardIndex, setFlashcardIndex] = useState(0);
   const [flashcardSelection, setFlashcardSelection] = useState(null);
   const [flashcardOptions, setFlashcardOptions] = useState([]);
+  const [flashcardSetSize, setFlashcardSetSize] = useState(15);
+  const [flashcardDurationSec, setFlashcardDurationSec] = useState(10);
+  const [flashcardSessionActive, setFlashcardSessionActive] = useState(false);
+  const [flashcardTimerKey, setFlashcardTimerKey] = useState(0);
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
@@ -140,6 +144,7 @@ function AppInner() {
   const revealTimeoutRef = useRef(null);
   const flashcardIndexRef = useRef(0);
   const flashcardSelectionRef = useRef(null);
+  const audioContextRef = useRef(null);
   const avatarInputRef = useRef(null);
   const analyticsRef = useRef(null);
   const analyticsTrendRef = useRef(null);
@@ -168,6 +173,42 @@ function AppInner() {
     } catch (error) {
       console.warn('localStorage unavailable', error);
     }
+  };
+
+  const getAudioContext = () => {
+    if (!audioContextRef.current) {
+      const Context = window.AudioContext || window.webkitAudioContext;
+      if (!Context) return null;
+      audioContextRef.current = new Context();
+    }
+    if (audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume();
+    }
+    return audioContextRef.current;
+  };
+
+  const playFeedbackSound = (type) => {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.08, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+    gain.connect(ctx.destination);
+
+    const osc = ctx.createOscillator();
+    osc.type = type === 'positive' ? 'sine' : 'triangle';
+    if (type === 'positive') {
+      osc.frequency.setValueAtTime(660, now);
+      osc.frequency.exponentialRampToValueAtTime(980, now + 0.18);
+    } else {
+      osc.frequency.setValueAtTime(220, now);
+      osc.frequency.exponentialRampToValueAtTime(140, now + 0.2);
+    }
+    osc.connect(gain);
+    osc.start(now);
+    osc.stop(now + 0.36);
   };
 
   const coerceResponseJson = (value) => {
@@ -239,6 +280,19 @@ function AppInner() {
     }, 80);
   };
 
+  const openFlashcardsSetup = (ref) => {
+    setFlashcardsVisible(true);
+    setFlashcardsOnly(false);
+    setFlashcardSessionActive(false);
+    setFlashcardExitSummary(false);
+    ensureSectionVisible('flashcards');
+    if (ref?.current) {
+      setTimeout(() => {
+        ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 120);
+    }
+  };
+
   const showAllSections = () => {
     setSelectedSections(new Set(['translations', 'youtube', 'dictionary', 'flashcards', 'analytics']));
   };
@@ -262,6 +316,9 @@ function AppInner() {
     });
     if (key === 'flashcards') {
       setFlashcardsVisible(true);
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setFlashcardExitSummary(false);
     }
     if (!menuMultiSelect) {
       setMenuOpen(false);
@@ -402,15 +459,18 @@ function AppInner() {
     if (params.get('review') === '1') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
+      setFlashcardSessionActive(true);
     }
     const startParam = telegramApp?.initDataUnsafe?.start_param;
     if (startParam === 'review' || startParam === 'flashcards') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
+      setFlashcardSessionActive(true);
     }
     if (window.location.pathname === '/webapp/review') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
+      setFlashcardSessionActive(true);
     }
   }, []);
 
@@ -429,12 +489,12 @@ function AppInner() {
   }, [initData, isWebAppMode]);
 
   useEffect(() => {
-    if (!flashcardsVisible) {
+    if (!flashcardSessionActive) {
       return;
     }
     loadFlashcards();
     scrollToFlashcards();
-  }, [flashcardsVisible, initData, flashcardFolderMode, flashcardFolderId]);
+  }, [flashcardSessionActive, initData, flashcardFolderMode, flashcardFolderId, flashcardSetSize]);
 
   useEffect(() => {
     if (!flashcards.length) {
@@ -455,7 +515,14 @@ function AppInner() {
   }, [flashcardSelection]);
 
   useEffect(() => {
-    if (!flashcardsVisible || flashcardSetComplete || !flashcards.length) {
+    if (!flashcardSessionActive) {
+      return;
+    }
+    setFlashcardTimerKey((prev) => prev + 1);
+  }, [flashcardIndex, flashcardSessionActive]);
+
+  useEffect(() => {
+    if (!flashcardSessionActive || flashcardSetComplete || flashcardExitSummary || !flashcards.length) {
       return;
     }
     if (autoAdvanceTimeoutRef.current) {
@@ -481,7 +548,7 @@ function AppInner() {
       revealTimeoutRef.current = setTimeout(() => {
         advanceFlashcard();
       }, 3000);
-    }, 10000);
+    }, flashcardDurationSec * 1000);
 
     return () => {
       if (autoAdvanceTimeoutRef.current) {
@@ -489,18 +556,25 @@ function AppInner() {
         autoAdvanceTimeoutRef.current = null;
       }
     };
-  }, [flashcardsVisible, flashcardSetComplete, flashcards, flashcardIndex]);
+  }, [
+    flashcardSessionActive,
+    flashcardSetComplete,
+    flashcardExitSummary,
+    flashcards,
+    flashcardIndex,
+    flashcardDurationSec,
+  ]);
 
   useEffect(() => {
-    if (!flashcardsVisible && autoAdvanceTimeoutRef.current) {
+    if (!flashcardSessionActive && autoAdvanceTimeoutRef.current) {
       clearTimeout(autoAdvanceTimeoutRef.current);
       autoAdvanceTimeoutRef.current = null;
     }
-    if (!flashcardsVisible && revealTimeoutRef.current) {
+    if (!flashcardSessionActive && revealTimeoutRef.current) {
       clearTimeout(revealTimeoutRef.current);
       revealTimeoutRef.current = null;
     }
-  }, [flashcardsVisible]);
+  }, [flashcardSessionActive]);
 
   const loadSentences = async () => {
     if (!initData) {
@@ -847,7 +921,7 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          set_size: 15,
+          set_size: flashcardSetSize,
           wrong_size: 5,
           folder_mode: flashcardFolderMode,
           folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
@@ -1732,7 +1806,7 @@ function AppInner() {
 
   if (isWebAppMode) {
     return (
-      <div className="webapp-page">
+      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''}`}>
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
             <div className="webapp-brand">
@@ -1770,7 +1844,13 @@ function AppInner() {
               <button
                 type="button"
                 className={`menu-item ${selectedSections.has('flashcards') ? 'is-active' : ''}`}
-                onClick={() => toggleSection('flashcards')}
+                onClick={() => {
+                  toggleSection('flashcards');
+                  setFlashcardsVisible(true);
+                  setFlashcardsOnly(false);
+                  setFlashcardSessionActive(false);
+                  setFlashcardExitSummary(false);
+                }}
               >
                 Карточки
               </button>
@@ -2430,10 +2510,7 @@ function AppInner() {
                         type="button"
                         className="secondary-button"
                         onClick={() => {
-                          setFlashcardsVisible(true);
-                          setFlashcardsOnly(true);
-                          ensureSectionVisible('flashcards');
-                          scrollToFlashcards();
+                          openFlashcardsSetup(flashcardsRef);
                         }}
                       >
                         Повторить слова
@@ -2446,197 +2523,273 @@ function AppInner() {
 
             {isSectionVisible('flashcards') && (
               <section className="webapp-flashcards" ref={flashcardsRef}>
-                <h3>Карточки</h3>
                 {!flashcardsVisible && (
                   <div className="webapp-muted">
                     Нажмите «Повторить слова», чтобы начать тренировку.
                   </div>
                 )}
                 {flashcardsVisible && (
-                  <div className="flashcards-panel">
-                    <div className="flashcards-filter">
-                      <label className="webapp-field">
-                        <span>Папка для тренировки</span>
-                        <select
-                          value={flashcardFolderMode === 'folder' ? flashcardFolderId : flashcardFolderMode}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            if (value === 'all') {
-                              setFlashcardFolderMode('all');
-                              setFlashcardFolderId('');
-                            } else if (value === 'none') {
-                              setFlashcardFolderMode('none');
-                              setFlashcardFolderId('');
-                            } else {
-                              setFlashcardFolderMode('folder');
-                              setFlashcardFolderId(value);
-                            }
-                          }}
-                        >
-                          <option value="all">Все папки</option>
-                          <option value="none">Без папки</option>
-                          {folders.map((folder) => (
-                            <option key={folder.id} value={folder.id}>
-                              {resolveFolderIconLabel(folder.icon)} • {folder.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    {flashcardsLoading && <div className="webapp-muted">Загружаем карточки...</div>}
-                    {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
-                    {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && (
-                      <div className="webapp-muted">Словарь пуст. Сначала добавьте слова.</div>
-                    )}
-                    {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && (
-                      <div className="flashcard-stage">
-                        {(flashcardSetComplete || flashcardExitSummary) ? (
-                          <div className="flashcard-summary">
-                            <h4>{flashcardSetComplete ? 'Сет завершён' : 'Повтор завершён'}</h4>
-                            <div className="summary-grid">
-                              <div>
-                                <span>Итого слов</span>
-                                <strong>{flashcardStats.total}</strong>
-                              </div>
-                              <div>
-                                <span>Верно</span>
-                                <strong>{flashcardStats.correct}</strong>
-                              </div>
-                              <div>
-                                <span>Неверно</span>
-                                <strong>{flashcardStats.wrong}</strong>
+                  <div className={`flashcards-panel ${flashcardsOnly ? 'is-session' : 'is-setup'}`}>
+                    {!flashcardsOnly && (
+                      <div className="flashcard-stage is-setup">
+                        <div className="flashcards-setup">
+                          <div className="setup-hero">
+                            <div className="setup-ring">
+                              <img src="/mascot.svg" alt="DeutschFlow" className="setup-mascot" />
+                            </div>
+                            <div className="setup-title">Тренировка карточек</div>
+                            <div className="setup-subtitle">Выберите параметры и стартуйте сет.</div>
+                          </div>
+                          <div className="setup-grid">
+                            <div className="setup-group">
+                              <div className="setup-label">Размер сета</div>
+                              <div className="setup-options">
+                                {[5, 10, 15].map((size) => (
+                                  <button
+                                    key={`set-${size}`}
+                                    type="button"
+                                    className={`option-pill ${flashcardSetSize === size ? 'is-active' : ''}`}
+                                    onClick={() => setFlashcardSetSize(size)}
+                                  >
+                                    {size} карточек
+                                  </button>
+                                ))}
                               </div>
                             </div>
-                            <div className="summary-actions">
-                              <button
-                                type="button"
-                                className="primary-button"
-                                onClick={loadFlashcards}
-                              >
-                                Да, следующий сет
-                              </button>
-                              <button
-                                type="button"
-                                className="secondary-button"
-                                onClick={() => {
-                                  setFlashcardsVisible(false);
-                                  setFlashcardsOnly(false);
-                                  setFlashcardExitSummary(false);
-                                }}
-                              >
-                                Нет, завершить
-                              </button>
+                            <div className="setup-group">
+                              <div className="setup-label">Папка для тренировки</div>
+                              <label className="webapp-field">
+                                <select
+                                  value={flashcardFolderMode === 'folder' ? flashcardFolderId : flashcardFolderMode}
+                                  onChange={(event) => {
+                                    const value = event.target.value;
+                                    if (value === 'all') {
+                                      setFlashcardFolderMode('all');
+                                      setFlashcardFolderId('');
+                                    } else if (value === 'none') {
+                                      setFlashcardFolderMode('none');
+                                      setFlashcardFolderId('');
+                                    } else {
+                                      setFlashcardFolderMode('folder');
+                                      setFlashcardFolderId(value);
+                                    }
+                                  }}
+                                >
+                                  <option value="all">Все папки</option>
+                                  <option value="none">Без папки</option>
+                                  {folders.map((folder) => (
+                                    <option key={folder.id} value={folder.id}>
+                                      {resolveFolderIconLabel(folder.icon)} • {folder.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
+                            <div className="setup-group">
+                              <div className="setup-label">Скорость</div>
+                              <div className="setup-options">
+                                {[5, 10, 15].map((seconds) => (
+                                  <button
+                                    key={`speed-${seconds}`}
+                                    type="button"
+                                    className={`option-pill ${flashcardDurationSec === seconds ? 'is-active' : ''}`}
+                                    onClick={() => setFlashcardDurationSec(seconds)}
+                                  >
+                                    {seconds} сек
+                                  </button>
+                                ))}
+                              </div>
                             </div>
                           </div>
-                        ) : (
-                          (() => {
-                            const entry = flashcards[flashcardIndex] || {};
-                            const responseJson = entry.response_json || {};
-                            const correct = entry.translation_de
-                              || responseJson.translation_de
-                              || entry.translation_ru
-                              || responseJson.translation_ru
-                              || '—';
-                            const questionWord = entry.word_ru
-                              || responseJson.word_ru
-                              || entry.word_de
-                              || responseJson.word_de
-                              || '—';
-                            const context = Array.isArray(responseJson.usage_examples)
-                              ? responseJson.usage_examples[0]
-                              : '';
-
-                            return (
-                              <div className="flashcard">
-                                <div className="flashcard-header">
-                                  <span className="flashcard-counter">
-                                    {flashcardIndex + 1} / {flashcards.length}
-                                  </span>
-                                  <div className="flashcard-actions-row">
-                                    <button
-                                      type="button"
-                                      className="flashcard-refresh"
-                                      onClick={loadFlashcards}
-                                    >
-                                      Обновить
-                                    </button>
-                                  </div>
-                                </div>
-                                <div className="flashcard-word">{questionWord}</div>
-                                {flashcardSelection !== null && context && (
-                                  <div className="flashcard-context flashcard-context-visible">{context}</div>
-                                )}
-                                <div className="flashcard-options">
-                                  {flashcardOptions.map((option, idx) => {
-                                    const isSelected = flashcardSelection === idx;
-                                    const isCorrect = option === correct;
-                                    const showResult = flashcardSelection !== null;
-                                    const className = [
-                                      'flashcard-option',
-                                      showResult && isCorrect ? 'is-correct' : '',
-                                      showResult && isSelected && !isCorrect ? 'is-wrong' : '',
-                                    ]
-                                      .filter(Boolean)
-                                      .join(' ');
-                                    return (
-                                      <button
-                                        key={`${option}-${idx}`}
-                                        type="button"
-                                        className={className}
-                                        onClick={() => {
-                                          if (flashcardSelection !== null) return;
-                                          setFlashcardSelection(idx);
-                                          setFlashcardTimedOut(false);
-                                          recordFlashcardAnswer(entry.id, option === correct);
-                                          setFlashcardStats((prev) => ({
-                                            ...prev,
-                                            correct: prev.correct + (option === correct ? 1 : 0),
-                                            wrong: prev.wrong + (option === correct ? 0 : 1),
-                                          }));
-                                          if (autoAdvanceTimeoutRef.current) {
-                                            clearTimeout(autoAdvanceTimeoutRef.current);
-                                            autoAdvanceTimeoutRef.current = null;
-                                          }
-                                          if (revealTimeoutRef.current) {
-                                            clearTimeout(revealTimeoutRef.current);
-                                          }
-                                          revealTimeoutRef.current = setTimeout(() => {
-                                            advanceFlashcard();
-                                          }, 3000);
-                                        }}
-                                      >
-                                        {option}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                                {flashcardTimedOut && (
-                                  <div className="flashcard-timeout">die Zeit ist um</div>
-                                )}
-                                {flashcardSelection !== null && (
-                                  <div className="flashcard-hint">
-                                    Следующая карточка через 3 секунды
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })()
-                        )}
+                          <button
+                            type="button"
+                            className="primary-button flashcards-start"
+                            onClick={() => {
+                              setFlashcardSessionActive(true);
+                              setFlashcardsOnly(true);
+                              setFlashcardExitSummary(false);
+                            }}
+                          >
+                            Начать тренировку
+                          </button>
+                        </div>
                       </div>
                     )}
+
                     {flashcardsOnly && (
-                      <div className="flashcard-end">
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() => {
-                            setFlashcardExitSummary(true);
-                          }}
-                        >
-                          Закончить повтор
-                        </button>
-                      </div>
+                      <>
+                        {flashcardsLoading && <div className="webapp-muted">Загружаем карточки...</div>}
+                        {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
+                        {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && (
+                          <div className="webapp-muted">Словарь пуст. Сначала добавьте слова.</div>
+                        )}
+                        {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && (
+                          <div className="flashcard-stage is-session">
+                            {(flashcardSetComplete || flashcardExitSummary) ? (
+                              <div className="flashcard-summary">
+                                <h4>{flashcardSetComplete ? 'Сет завершён' : 'Повтор завершён'}</h4>
+                                <div className="summary-grid">
+                                  <div>
+                                    <span>Итого слов</span>
+                                    <strong>{flashcardStats.total}</strong>
+                                  </div>
+                                  <div>
+                                    <span>Верно</span>
+                                    <strong>{flashcardStats.correct}</strong>
+                                  </div>
+                                  <div>
+                                    <span>Неверно</span>
+                                    <strong>{flashcardStats.wrong}</strong>
+                                  </div>
+                                </div>
+                                <div className="summary-actions">
+                                  <button
+                                    type="button"
+                                    className="primary-button"
+                                    onClick={loadFlashcards}
+                                  >
+                                    Да, следующий сет
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="secondary-button"
+                                    onClick={() => {
+                                      setFlashcardsVisible(false);
+                                      setFlashcardsOnly(false);
+                                      setFlashcardSessionActive(false);
+                                      setFlashcardExitSummary(false);
+                                    }}
+                                  >
+                                    Нет, завершить
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              (() => {
+                                const entry = flashcards[flashcardIndex] || {};
+                                const responseJson = entry.response_json || {};
+                                const correct = entry.translation_de
+                                  || responseJson.translation_de
+                                  || entry.translation_ru
+                                  || responseJson.translation_ru
+                                  || '—';
+                                const questionWord = entry.word_ru
+                                  || responseJson.word_ru
+                                  || entry.word_de
+                                  || responseJson.word_de
+                                  || '—';
+                                const context = Array.isArray(responseJson.usage_examples)
+                                  ? responseJson.usage_examples[0]
+                                  : '';
+
+                                return (
+                                  <div className="flashcard">
+                                    <div className="flashcard-header">
+                                      <span className="flashcard-counter">
+                                        {flashcardIndex + 1} / {flashcards.length}
+                                      </span>
+                                      <div className="flashcard-actions-row">
+                                        <button
+                                          type="button"
+                                          className="flashcard-refresh"
+                                          onClick={loadFlashcards}
+                                        >
+                                          Обновить
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div className="flashcard-hero">
+                                      <div
+                                        key={`timer-${flashcardTimerKey}`}
+                                        className={`flashcard-timer ${flashcardSelection !== null ? 'is-paused' : ''}`}
+                                        style={{ '--duration': `${flashcardDurationSec}s` }}
+                                      >
+                                        <svg viewBox="0 0 120 120" aria-hidden="true">
+                                          <circle className="timer-track" cx="60" cy="60" r="54" />
+                                          <circle className="timer-progress" cx="60" cy="60" r="54" />
+                                        </svg>
+                                        <div className="flashcard-character">
+                                          <img src="/mascot.svg" alt="Mascot" />
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div className="flashcard-word">{questionWord}</div>
+                                    {flashcardSelection !== null && context && (
+                                      <div className="flashcard-context flashcard-context-visible">{context}</div>
+                                    )}
+                                    <div className="flashcard-options">
+                                      {flashcardOptions.map((option, idx) => {
+                                        const isSelected = flashcardSelection === idx;
+                                        const isCorrect = option === correct;
+                                        const showResult = flashcardSelection !== null;
+                                        const className = [
+                                          'flashcard-option',
+                                          showResult && isCorrect ? 'is-correct' : '',
+                                          showResult && isSelected && !isCorrect ? 'is-wrong' : '',
+                                        ]
+                                          .filter(Boolean)
+                                          .join(' ');
+                                        return (
+                                          <button
+                                            key={`${option}-${idx}`}
+                                            type="button"
+                                            className={className}
+                                            onClick={() => {
+                                              if (flashcardSelection !== null) return;
+                                              setFlashcardSelection(idx);
+                                              setFlashcardTimedOut(false);
+                                              playFeedbackSound(option === correct ? 'positive' : 'negative');
+                                              recordFlashcardAnswer(entry.id, option === correct);
+                                              setFlashcardStats((prev) => ({
+                                                ...prev,
+                                                correct: prev.correct + (option === correct ? 1 : 0),
+                                                wrong: prev.wrong + (option === correct ? 0 : 1),
+                                              }));
+                                              if (autoAdvanceTimeoutRef.current) {
+                                                clearTimeout(autoAdvanceTimeoutRef.current);
+                                                autoAdvanceTimeoutRef.current = null;
+                                              }
+                                              if (revealTimeoutRef.current) {
+                                                clearTimeout(revealTimeoutRef.current);
+                                              }
+                                              revealTimeoutRef.current = setTimeout(() => {
+                                                advanceFlashcard();
+                                              }, 3000);
+                                            }}
+                                          >
+                                            {option}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                    {flashcardTimedOut && (
+                                      <div className="flashcard-timeout">die Zeit ist um</div>
+                                    )}
+                                    {flashcardSelection !== null && (
+                                      <div className="flashcard-hint">
+                                        Следующая карточка через 3 секунды
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()
+                            )}
+                          </div>
+                        )}
+                        {!(flashcardSetComplete || flashcardExitSummary) && (
+                          <div className="flashcard-end">
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => {
+                                setFlashcardExitSummary(true);
+                              }}
+                            >
+                              Закончить повтор
+                            </button>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
