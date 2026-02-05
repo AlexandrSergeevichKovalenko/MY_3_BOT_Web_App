@@ -2253,36 +2253,25 @@ function AppInner() {
                         const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
                         return (
                           <label key={item.id_for_mistake_table} className="webapp-translation-item">
-                            <div className="translation-header">
-                              <span>
-                                {item.unique_id ?? index + 1}. {item.sentence}
-                              </span>
-                              <div className="translation-actions">
-                                <button
-                                  type="button"
-                                  className="translation-dict-jump"
-                                  onClick={jumpToDictionaryFromSentence}
-                                >
-                                  ↗ словарь
-                                </button>
-                                {draft.trim() && (
-                                  <button
-                                    type="button"
-                                    className="translation-clear"
-                                    onClick={() => handleDraftChange(item.id_for_mistake_table, '')}
-                                    aria-label="Очистить перевод"
-                                  >
-                                    ×
-                                  </button>
-                                )}
-                              </div>
-                            </div>
+                            <span className="translation-sentence">
+                              {item.unique_id ?? index + 1}. {item.sentence}
+                            </span>
                             <textarea
                               rows={5}
                               value={draft}
                               onChange={(event) => handleDraftChange(item.id_for_mistake_table, event.target.value)}
                               placeholder="Введите перевод..."
                             />
+                            <div className="translation-actions">
+                              <button
+                                type="button"
+                                className="translation-dict-jump"
+                                onClick={jumpToDictionaryFromSentence}
+                                aria-label="Перейти в словарь"
+                              >
+                                ↗
+                              </button>
+                            </div>
                           </label>
                         );
                       })
@@ -2494,18 +2483,39 @@ function AppInner() {
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
                         <span>Слово или фраза (русский / немецкий)</span>
-                        <input
-                          className="dictionary-input"
-                          type="text"
-                          value={dictionaryWord}
-                          onChange={(event) => setDictionaryWord(event.target.value)}
-                          placeholder="Например: отказаться, уважение, несмотря на / verzichten, Respekt"
-                        />
+                        <div className="dictionary-input-wrap">
+                          <input
+                            className="dictionary-input"
+                            type="text"
+                            value={dictionaryWord}
+                            onChange={(event) => setDictionaryWord(event.target.value)}
+                            placeholder="Например: отказаться, уважение, несмотря на / verzichten, Respekt"
+                          />
+                          {dictionaryWord.trim() && (
+                            <button
+                              type="button"
+                              className="dictionary-clear"
+                              onClick={() => setDictionaryWord('')}
+                              aria-label="Очистить слово"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
                       </label>
                       <div className="dictionary-actions">
                         <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
                           {dictionaryLoading ? 'Ищем...' : 'Перевести'}
                         </button>
+                        {lastLookupScrollY !== null && (
+                          <button
+                            type="button"
+                            className="secondary-button dictionary-back-icon"
+                            onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
+                          >
+                            ↙ к предложению
+                          </button>
+                        )}
                         <button
                           className="secondary-button dictionary-save-button"
                           type="button"

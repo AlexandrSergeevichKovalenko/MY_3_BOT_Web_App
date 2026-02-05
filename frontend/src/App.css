@@ -718,6 +718,7 @@ body {
   border: 2px solid rgba(93, 220, 255, 0.6);
   background: rgba(93, 220, 255, 0.12);
   box-shadow: 0 0 0 2px rgba(93, 220, 255, 0.1), 0 0 18px rgba(93, 220, 255, 0.25);
+  padding-right: 40px;
 }
 
 .dictionary-input::placeholder {
@@ -1715,29 +1716,26 @@ body {
   font-size: 14px;
 }
 
-.translation-header {
+.translation-actions {
   display: flex;
-  justify-content: space-between;
   gap: 8px;
   align-items: center;
-}
-
-.translation-actions {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
+  justify-content: flex-end;
 }
 
 .translation-dict-jump {
   border: none;
   background: rgba(255, 255, 255, 0.16);
   color: #f8fafc;
-  padding: 5px 8px;
-  border-radius: 999px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
+  display: grid;
+  place-items: center;
 }
 
 .translation-dict-jump:hover {
@@ -1770,6 +1768,33 @@ body {
   cursor: pointer;
   display: grid;
   place-items: center;
+}
+
+.dictionary-input-wrap {
+  position: relative;
+}
+
+.dictionary-clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.16);
+  color: #f8fafc;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.dictionary-back-icon {
+  padding: 8px 12px;
+  font-size: 12px;
 }
 
 .webapp-sentences li {
