@@ -334,14 +334,28 @@ async def entrypoint(ctx: JobContext):
 ]
 
     # 7) Создаем AgentSession с нашими компонентами
-    session = AgentSession(
-        stt=my_stt,
-        llm=my_llm,
-        tts=my_tts,
-        vad=my_vad,
-        tools=tools,
-        allow_interruptions=True,
-    )
+    # Старые версии SDK не поддерживают tools=..., поэтому делаем совместимый путь.
+    try:
+        session = AgentSession(
+            stt=my_stt,
+            llm=my_llm,
+            tts=my_tts,
+            vad=my_vad,
+            tools=tools,
+            allow_interruptions=True,
+        )
+    except TypeError:
+        try:
+            my_llm = my_llm.with_tools(tools)
+        except Exception as exc:
+            logging.warning(f"⚠️ LLM does not support tools(): {exc}")
+        session = AgentSession(
+            stt=my_stt,
+            llm=my_llm,
+            tts=my_tts,
+            vad=my_vad,
+            allow_interruptions=True,
+        )
 
     # HANDLERS (СНАЧАЛА def, ПОТОМ .on)
     def on_participant_connected(participant: rtc.RemoteParticipant):
