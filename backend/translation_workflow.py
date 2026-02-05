@@ -113,7 +113,12 @@ async def check_translation(
             subcategories = [subcat.strip() for subcat in subcategories if subcat.strip()]
 
             if score_str and correct_translation:
-                score = int(score_str) if score_str.isdigit() else None
+                if score_str.isdigit():
+                    score = int(score_str)
+                    if score == 0:
+                        score = await recheck_score_only(original_text, user_translation)
+                else:
+                    score = await recheck_score_only(original_text, user_translation)
                 score_display = score if score is not None else 0
                 sentence_label = sentence_number if sentence_number is not None else "—"
 
@@ -137,7 +142,72 @@ async def check_translation(
             )
             await asyncio.sleep(1)
 
-    return "Ошибка: не удалось проверить перевод.", [], [], 0, None
+    if score is None:
+        score = await recheck_score_only(original_text, user_translation)
+    if correct_translation is None:
+        correct_translation = "—"
+
+    sentence_label = sentence_number if sentence_number is not None else "—"
+    result_text = (
+        f"🟢 *Sentence number:* {sentence_label}\n"
+        f"✅ *Score:* {score}/100\n"
+        f"🔵 *Original Sentence:* {original_text}\n"
+        f"🟡 *User Translation:* {user_translation}\n"
+        f"🟣 *Correct Translation:* {correct_translation}\n"
+    )
+
+    return result_text, categories, subcategories, score, correct_translation
+
+
+async def recheck_score_only(original_text: str, user_translation: str) -> int:
+    task_name = "recheck_translation"
+    system_instruction_key = "recheck_translation"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    user_message = (
+        f'Original sentence (Russian): "{original_text}"\n'
+        f'User\'s translation (German): "{user_translation}"'
+    )
+
+    for attempt in range(3):
+        thread = await client.beta.threads.create()
+        thread_id = thread.id
+        try:
+            await client.beta.threads.messages.create(
+                thread_id=thread_id,
+                role="user",
+                content=user_message,
+            )
+            run = await client.beta.threads.runs.create(
+                thread_id=thread_id,
+                assistant_id=assistant_id,
+            )
+            while True:
+                run_status = await client.beta.threads.runs.retrieve(
+                    thread_id=thread_id,
+                    run_id=run.id,
+                )
+                if run_status.status == "completed":
+                    break
+                await asyncio.sleep(1)
+
+            messages = await client.beta.threads.messages.list(thread_id=thread_id)
+            last_message = messages.data[0]
+            collected_text = last_message.content[0].text.value
+
+            match = re.search(r"Score:\s*(\d+)", collected_text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+
+        except Exception as exc:
+            logging.warning("Recheck failed (attempt %s): %s", attempt + 1, exc)
+        finally:
+            try:
+                await client.beta.threads.delete(thread_id=thread_id)
+            except Exception as exc:
+                logging.warning("Не удалось удалить thread при recheck: %s", exc)
+
+    return 0
 
 
 def _extract_correct_translation(feedback: str | None) -> str | None:
@@ -365,7 +435,7 @@ async def check_user_translation_webapp(
                 )
                 continue
 
-            score_value = int(score) if score and str(score).isdigit() else 50
+            score_value = int(score) if score and str(score).isdigit() else 0
 
             cursor.execute(
                 """

@@ -334,16 +334,12 @@ async def entrypoint(ctx: JobContext):
 ]
 
     # 7) Создаем AgentSession с нашими компонентами
-    try:
-        my_llm = my_llm.with_tools(tools)
-    except Exception as exc:
-        logging.warning(f"⚠️ LLM does not support tools(): {exc}")
-
     session = AgentSession(
         stt=my_stt,
         llm=my_llm,
         tts=my_tts,
         vad=my_vad,
+        tools=tools,
         allow_interruptions=True,
     )
 
@@ -474,11 +470,27 @@ async def entrypoint(ctx: JobContext):
 
     ctx.room.on("participant_disconnected", on_participant_disconnected)
 
-    room_options = room_io.RoomOptions(close_on_disconnect=False)
-    
+    # RoomOptions existed in newer SDKs; older versions only expose RoomInputOptions.
+    # Build options in a version-tolerant way.
+    room_options = None
+    try:
+        if hasattr(room_io, "RoomOptions"):
+            room_options = room_io.RoomOptions(close_on_disconnect=False)
+        elif hasattr(room_io, "RoomInputOptions"):
+            room_options = room_io.RoomInputOptions(close_on_disconnect=False)
+    except TypeError:
+        # Some SDK versions don't accept close_on_disconnect in options.
+        if hasattr(room_io, "RoomOptions"):
+            room_options = room_io.RoomOptions()
+        elif hasattr(room_io, "RoomInputOptions"):
+            room_options = room_io.RoomInputOptions()
+
     # 10) Стартуем сессию
     logging.info("🚀 Starting AgentSession...")
-    await session.start(room=ctx.room, agent=teacher_logic, room_options=room_options)
+    if room_options is None:
+        await session.start(room=ctx.room, agent=teacher_logic)
+    else:
+        await session.start(room=ctx.room, agent=teacher_logic, room_options=room_options)
 
     # Пытаемся найти участника, который уже в комнате (это наш юзер с браузера)
     user_name_for_greeting = "Student"
