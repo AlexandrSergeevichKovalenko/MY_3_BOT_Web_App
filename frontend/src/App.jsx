@@ -360,15 +360,23 @@ function AppInner() {
     });
   };
 
-  const scrollToRef = (ref, block = 'start') => {
+  const scrollToRef = (ref, options = {}) => {
     if (!ref?.current) return;
+    const { center = false, block = 'start' } = options;
+    if (center) {
+      const rect = ref.current.getBoundingClientRect();
+      const absoluteTop = window.scrollY + rect.top;
+      const target = absoluteTop - (window.innerHeight - rect.height) / 2;
+      window.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+      return;
+    }
     ref.current.scrollIntoView({ behavior: 'smooth', block });
   };
 
   const openSectionAndScroll = (key, ref) => {
     ensureSectionVisible(key);
     setTimeout(() => {
-      scrollToRef(ref, key === 'flashcards' ? 'center' : 'start');
+      scrollToRef(ref, { center: key === 'flashcards', block: 'start' });
     }, 80);
   };
 
@@ -380,7 +388,7 @@ function AppInner() {
     ensureSectionVisible('flashcards');
     if (ref?.current) {
       setTimeout(() => {
-        scrollToRef(ref, 'center');
+        scrollToRef(ref, { center: true });
       }, 120);
     }
   };
@@ -417,7 +425,7 @@ function AppInner() {
     }
     if (ref?.current) {
       setTimeout(() => {
-        scrollToRef(ref, key === 'flashcards' ? 'center' : 'start');
+        scrollToRef(ref, { center: key === 'flashcards', block: 'start' });
       }, 120);
     }
   };
@@ -2955,13 +2963,26 @@ function AppInner() {
                                         Следующая карточка через 3 секунды
                                       </div>
                                     )}
+                                    {!(flashcardSetComplete || flashcardExitSummary) && (
+                                      <div className="flashcard-end flashcard-end-session">
+                                        <button
+                                          type="button"
+                                          className="secondary-button"
+                                          onClick={() => {
+                                            setFlashcardExitSummary(true);
+                                          }}
+                                        >
+                                          Закончить повтор
+                                        </button>
+                                      </div>
+                                    )}
                                   </div>
                                 );
                               })()
                             )}
                           </div>
                         )}
-                        {!(flashcardSetComplete || flashcardExitSummary) && (
+                        {!flashcardsOnly && !(flashcardSetComplete || flashcardExitSummary) && (
                           <div className="flashcard-end">
                             <button
                               type="button"

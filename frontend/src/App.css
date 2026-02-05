@@ -1184,6 +1184,12 @@ body {
   position: relative;
 }
 
+.flashcards-panel.is-setup {
+  min-height: calc(100vh - 120px);
+  justify-content: center;
+  padding: 12px 0 24px;
+}
+
 .flashcard-stage {
   flex: 1;
   position: relative;
@@ -1232,6 +1238,7 @@ body {
   border: none;
   box-shadow: none;
   padding: clamp(20px, 6vw, 40px);
+  padding-bottom: clamp(80px, 14vh, 140px);
 }
 
 .flashcards-setup {
@@ -1480,6 +1487,14 @@ body {
   justify-content: center;
 }
 
+.flashcard-end.flashcard-end-session {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: clamp(18px, 6vh, 42px);
+  padding: 0 20px;
+  z-index: 2;
+}
 .flashcards-panel.is-session .flashcard-end {
   position: absolute;
   left: 0;
