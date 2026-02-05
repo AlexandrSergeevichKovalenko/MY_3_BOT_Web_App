@@ -168,6 +168,7 @@ function AppInner() {
   const audioContextRef = useRef(null);
   const positiveAudioRef = useRef(null);
   const negativeAudioRef = useRef(null);
+  const timeoutAudioRef = useRef(null);
   const avatarInputRef = useRef(null);
   const analyticsRef = useRef(null);
   const analyticsTrendRef = useRef(null);
@@ -202,12 +203,15 @@ function AppInner() {
   useEffect(() => {
     const positiveUrl = `${assetBaseUrl}sounds/correct.wav`;
     const negativeUrl = `${assetBaseUrl}sounds/wrong.wav`;
+    const timeoutUrl = `${assetBaseUrl}sounds/timeout.wav`;
     positiveAudioRef.current = new Audio(positiveUrl);
     negativeAudioRef.current = new Audio(negativeUrl);
-    positiveAudioRef.current.volume = 0.8;
-    negativeAudioRef.current.volume = 0.8;
-    positiveAudioRef.current.preload = 'auto';
-    negativeAudioRef.current.preload = 'auto';
+    timeoutAudioRef.current = new Audio(timeoutUrl);
+    [positiveAudioRef.current, negativeAudioRef.current, timeoutAudioRef.current].forEach((audio) => {
+      if (!audio) return;
+      audio.volume = 0.8;
+      audio.preload = 'auto';
+    });
   }, [assetBaseUrl]);
 
 
@@ -235,20 +239,29 @@ function AppInner() {
     } catch (error) {
       // ignore playback errors
     }
-    if (positiveAudioRef.current) {
-      positiveAudioRef.current.play().catch(() => {});
-      positiveAudioRef.current.pause();
-      positiveAudioRef.current.currentTime = 0;
-    }
-    if (negativeAudioRef.current) {
-      negativeAudioRef.current.play().catch(() => {});
-      negativeAudioRef.current.pause();
-      negativeAudioRef.current.currentTime = 0;
-    }
+    [positiveAudioRef.current, negativeAudioRef.current, timeoutAudioRef.current].forEach((audio) => {
+      if (!audio) return;
+      const prevVolume = audio.volume;
+      audio.volume = 0;
+      audio.play().catch(() => {});
+      audio.pause();
+      audio.currentTime = 0;
+      audio.volume = prevVolume;
+    });
   };
 
   const playFeedbackSound = (type) => {
-    const audio = type === 'positive' ? positiveAudioRef.current : negativeAudioRef.current;
+    const audio = type === 'positive'
+      ? positiveAudioRef.current
+      : type === 'negative'
+        ? negativeAudioRef.current
+        : timeoutAudioRef.current;
+    [positiveAudioRef.current, negativeAudioRef.current, timeoutAudioRef.current].forEach((item) => {
+      if (item && item !== audio) {
+        item.pause();
+        item.currentTime = 0;
+      }
+    });
     if (audio) {
       try {
         audio.currentTime = 0;
@@ -267,21 +280,24 @@ function AppInner() {
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0, now);
     gain.gain.linearRampToValueAtTime(0.12, now + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
     gain.connect(ctx.destination);
 
     const osc = ctx.createOscillator();
     osc.type = type === 'positive' ? 'sine' : 'triangle';
     if (type === 'positive') {
       osc.frequency.setValueAtTime(660, now);
-      osc.frequency.exponentialRampToValueAtTime(980, now + 0.18);
-    } else {
+      osc.frequency.exponentialRampToValueAtTime(980, now + 0.35);
+    } else if (type === 'negative') {
       osc.frequency.setValueAtTime(220, now);
-      osc.frequency.exponentialRampToValueAtTime(140, now + 0.2);
+      osc.frequency.exponentialRampToValueAtTime(140, now + 0.3);
+    } else {
+      osc.frequency.setValueAtTime(330, now);
+      osc.frequency.exponentialRampToValueAtTime(220, now + 0.3);
     }
     osc.connect(gain);
     osc.start(now);
-    osc.stop(now + 0.36);
+    osc.stop(now + 0.92);
   };
 
   const coerceResponseJson = (value) => {
@@ -614,6 +630,7 @@ function AppInner() {
         wrong: prev.wrong + 1,
       }));
       setFlashcardTimedOut(true);
+      playFeedbackSound('timeout');
       setFlashcardSelection(-1);
       if (revealTimeoutRef.current) {
         clearTimeout(revealTimeoutRef.current);
