@@ -2257,32 +2257,32 @@ function AppInner() {
                               <span>
                                 {item.unique_id ?? index + 1}. {item.sentence}
                               </span>
-                              <button
-                                type="button"
-                                className="translation-dict-jump"
-                                onClick={jumpToDictionaryFromSentence}
-                              >
-                                ↗ словарь
-                              </button>
-                            </div>
-                            <div className="translation-input-wrap">
-                              <textarea
-                                rows={5}
-                                value={draft}
-                                onChange={(event) => handleDraftChange(item.id_for_mistake_table, event.target.value)}
-                                placeholder="Введите перевод..."
-                              />
-                              {draft.trim() && (
+                              <div className="translation-actions">
                                 <button
                                   type="button"
-                                  className="translation-clear"
-                                  onClick={() => handleDraftChange(item.id_for_mistake_table, '')}
-                                  aria-label="Очистить перевод"
+                                  className="translation-dict-jump"
+                                  onClick={jumpToDictionaryFromSentence}
                                 >
-                                  ×
+                                  ↗ словарь
                                 </button>
-                              )}
+                                {draft.trim() && (
+                                  <button
+                                    type="button"
+                                    className="translation-clear"
+                                    onClick={() => handleDraftChange(item.id_for_mistake_table, '')}
+                                    aria-label="Очистить перевод"
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </div>
                             </div>
+                            <textarea
+                              rows={5}
+                              value={draft}
+                              onChange={(event) => handleDraftChange(item.id_for_mistake_table, event.target.value)}
+                              placeholder="Введите перевод..."
+                            />
                           </label>
                         );
                       })

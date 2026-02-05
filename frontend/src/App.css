@@ -1722,11 +1722,17 @@ body {
   align-items: center;
 }
 
+.translation-actions {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .translation-dict-jump {
   border: none;
   background: rgba(255, 255, 255, 0.16);
   color: #f8fafc;
-  padding: 6px 10px;
+  padding: 5px 8px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
@@ -1739,15 +1745,11 @@ body {
   box-shadow: 0 8px 16px rgba(15, 23, 42, 0.3);
 }
 
-.translation-input-wrap {
-  position: relative;
-}
-
 .webapp-translation-item textarea {
   resize: vertical;
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.3);
-  padding: 10px 36px 10px 12px;
+  padding: 10px 12px;
   font-family: inherit;
   font-size: 14px;
   background: rgba(15, 23, 42, 0.65);
@@ -1757,11 +1759,8 @@ body {
 }
 
 .translation-clear {
-  position: absolute;
-  right: 8px;
-  top: 8px;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   border: none;
   background: rgba(255, 255, 255, 0.16);
