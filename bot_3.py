@@ -3800,6 +3800,112 @@ def _apply_quiz_freeform_option(quiz: dict) -> dict:
     return quiz
 
 
+def _extract_german_word(entry: dict) -> str | None:
+    response_json = _coerce_response_json(entry.get("response_json"))
+    candidate = (
+        (entry.get("translation_de") or "").strip()
+        or (response_json.get("word_de") or "").strip()
+        or (response_json.get("translation_de") or "").strip()
+    )
+    if not candidate:
+        return None
+    candidate = re.sub(r"\([^)]*\)", "", candidate)
+    candidate = candidate.split("/")[0].strip()
+    tokens = [t for t in re.split(r"\s+", candidate) if t]
+    if not tokens:
+        return None
+    articles = {"der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer"}
+    tokens = [t for t in tokens if t.lower() not in articles]
+    if not tokens:
+        return None
+    if tokens[0].lower() == "sich" and len(tokens) > 1:
+        return tokens[1]
+    return tokens[0]
+
+
+def _scramble_word(word: str) -> str | None:
+    letters = [ch for ch in word if re.match(r"[A-Za-zÄÖÜäöüß]", ch)]
+    if len(letters) < 4:
+        return None
+    original = "".join(letters).lower()
+    for _ in range(10):
+        random.shuffle(letters)
+        scrambled = "".join(letters)
+        if scrambled.lower() != original:
+            return scrambled
+    return None
+
+
+def _build_anagram_question(word_ru: str, correct_word: str, response_json: dict) -> str:
+    usage_examples = response_json.get("usage_examples") if response_json else []
+    if usage_examples:
+        example = next((ex for ex in usage_examples if isinstance(ex, str)), "")
+        if example:
+            pattern = re.compile(rf"\\b{re.escape(correct_word)}\\b", re.IGNORECASE)
+            scrambled = _scramble_word(correct_word) or correct_word
+            if pattern.search(example):
+                sentence = pattern.sub(scrambled, example)
+                return f"Какой глагол подходит по смыслу?\n{sentence}"
+    return f"Выберите правильный немецкий вариант для «{word_ru}». Буквы перемешаны."
+
+
+def _pick_anagram_distractors(correct_word: str, count: int = 3) -> list[str]:
+    distractors = []
+    attempts = 0
+    while len(distractors) < count and attempts < 12:
+        attempts += 1
+        entry = get_random_dictionary_entry(cooldown_days=0)
+        if not entry:
+            break
+        candidate = _extract_german_word(entry)
+        if not candidate:
+            continue
+        if candidate.lower() == correct_word.lower():
+            continue
+        scrambled = _scramble_word(candidate)
+        if not scrambled:
+            continue
+        if scrambled in distractors:
+            continue
+        distractors.append(scrambled)
+    return distractors
+
+
+async def generate_anagram_quiz(entry: dict) -> dict | None:
+    word_ru = (entry.get("word_ru") or "").strip()
+    if not word_ru:
+        return None
+
+    response_json = _coerce_response_json(entry.get("response_json"))
+    correct_word = _extract_german_word(entry)
+    if not correct_word:
+        return None
+
+    scrambled_correct = _scramble_word(correct_word)
+    if not scrambled_correct:
+        return None
+
+    options = [scrambled_correct]
+    options.extend(_pick_anagram_distractors(correct_word))
+    if len(options) < 2:
+        return None
+    random.shuffle(options)
+    if len(options) > 4:
+        options = [scrambled_correct] + [opt for opt in options if opt != scrambled_correct][:3]
+        random.shuffle(options)
+    correct_option_id = options.index(scrambled_correct)
+
+    question = _build_anagram_question(word_ru, correct_word, response_json)
+    return {
+        "question": question,
+        "options": options,
+        "correct_option_id": correct_option_id,
+        "quiz_type": "anagram",
+        "correct_text": correct_word,
+        "word_ru": word_ru,
+    }
+
+
 async def generate_word_quiz(entry: dict) -> dict | None:
     word_ru = (entry.get("word_ru") or "").strip()
     translation_de = (entry.get("translation_de") or "").strip()
@@ -3869,7 +3975,11 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
         logging.warning("⚠️ Нет слов в базе для генерации квиза.")
         return
 
-    quiz = await generate_word_quiz(entry)
+    quiz = None
+    if random.random() < 0.5:
+        quiz = await generate_anagram_quiz(entry)
+    if not quiz:
+        quiz = await generate_word_quiz(entry)
     if not quiz:
         logging.warning("⚠️ Не удалось сгенерировать квиз.")
         return
@@ -3893,6 +4003,8 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
         "options": quiz["options"],
         "freeform_option": QUIZ_FREEFORM_OPTION,
         "message_id": poll_message.message_id,
+        "quiz_type": quiz.get("quiz_type", "generated"),
+        "word_ru": quiz.get("word_ru"),
     }
 
     context.job_queue.run_once(
@@ -3933,17 +4045,31 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     is_correct = selected_index == quiz_data["correct_option_id"]
-    emoji = "🎉" if is_correct else "💩"
-    message = await context.bot.send_message(
-        chat_id=quiz_data["chat_id"],
-        text=emoji,
-        reply_to_message_id=quiz_data["message_id"],
-    )
-    context.job_queue.run_once(
-        delete_temporary_message,
-        when=QUIZ_FEEDBACK_TTL_SECONDS,
-        data={"chat_id": quiz_data["chat_id"], "message_id": message.message_id},
-    )
+    quiz_type = quiz_data.get("quiz_type")
+    if quiz_type == "anagram":
+        correct_text = quiz_data.get("correct_text") or ""
+        word_ru = quiz_data.get("word_ru") or ""
+        status = "✅ Верно!" if is_correct else "❌ Неверно."
+        suffix = f" Правильно: {correct_text}"
+        if word_ru:
+            suffix += f" — «{word_ru}»."
+        await context.bot.send_message(
+            chat_id=quiz_data["chat_id"],
+            text=f"{status}{suffix}",
+            reply_to_message_id=quiz_data["message_id"],
+        )
+    else:
+        emoji = "🎉" if is_correct else "💩"
+        message = await context.bot.send_message(
+            chat_id=quiz_data["chat_id"],
+            text=emoji,
+            reply_to_message_id=quiz_data["message_id"],
+        )
+        context.job_queue.run_once(
+            delete_temporary_message,
+            when=QUIZ_FEEDBACK_TTL_SECONDS,
+            data={"chat_id": quiz_data["chat_id"], "message_id": message.message_id},
+        )
 
 
 

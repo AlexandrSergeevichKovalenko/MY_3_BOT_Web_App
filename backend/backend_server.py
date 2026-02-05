@@ -103,6 +103,7 @@ from backend.analytics import (
     fetch_user_timeseries,
     fetch_comparison_leaderboard,
     get_period_bounds,
+    get_all_time_bounds,
     _normalize_granularity,
     _normalize_period,
 )
@@ -475,7 +476,10 @@ def get_webapp_analytics_summary():
 
     try:
         period = _normalize_period(period)
-        bounds = get_period_bounds(period)
+        if period == "all":
+            bounds = get_all_time_bounds(user_id)
+        else:
+            bounds = get_period_bounds(period)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -519,7 +523,10 @@ def get_webapp_analytics_timeseries():
     try:
         period = _normalize_period(period)
         if not start_date or not end_date:
-            bounds = get_period_bounds(period)
+            if period == "all":
+                bounds = get_all_time_bounds(user_id)
+            else:
+                bounds = get_period_bounds(period)
             start_date = bounds.start_date
             end_date = bounds.end_date
         granularity = _normalize_granularity(granularity)
@@ -567,7 +574,10 @@ def get_webapp_analytics_compare():
     try:
         period = _normalize_period(period)
         if not start_date or not end_date:
-            bounds = get_period_bounds(period)
+            if period == "all":
+                bounds = get_all_time_bounds(None)
+            else:
+                bounds = get_period_bounds(period)
             start_date = bounds.start_date
             end_date = bounds.end_date
     except ValueError as exc:

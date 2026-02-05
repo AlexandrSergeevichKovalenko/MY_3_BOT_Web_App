@@ -1669,12 +1669,13 @@ function AppInner() {
     switch (periodValue) {
       case 'day':
       case 'week':
-      case 'month':
         return 'day';
-      case 'quarter':
+      case 'month':
         return 'week';
+      case 'quarter':
       case 'half-year':
       case 'year':
+      case 'all':
         return 'month';
       default:
         return 'day';
@@ -1862,7 +1863,8 @@ function AppInner() {
             Успех: ${item.success_rate}%<br/>
             Ср. балл: ${item.avg_score}<br/>
             Переводы: ${item.total_translations}<br/>
-            Пропущено: ${item.missed_sentences}
+            Пропущено: ${item.missed_sentences}<br/>
+            Пропущено дней: ${item.missed_days ?? 0}
           `;
         },
       },
@@ -2932,6 +2934,7 @@ function AppInner() {
                       <option value="quarter">Квартал</option>
                       <option value="half-year">Полугодие</option>
                       <option value="year">Год</option>
+                      <option value="all">Все время</option>
                     </select>
                   </label>
                   <button
@@ -2966,6 +2969,10 @@ function AppInner() {
                     <div className="analytics-card">
                       <span>Среднее время</span>
                       <strong>{analyticsSummary.avg_time_min} мин</strong>
+                    </div>
+                    <div className="analytics-card">
+                      <span>Пропущено дней</span>
+                      <strong>{analyticsSummary.missed_days}</strong>
                     </div>
                     <div className="analytics-card">
                       <span>Пропущено</span>

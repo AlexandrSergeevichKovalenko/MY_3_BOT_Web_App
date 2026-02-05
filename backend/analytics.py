@@ -8,7 +8,7 @@ from typing import Any
 from backend.database import get_db_connection_context
 
 
-ALLOWED_PERIODS = {"day", "week", "month", "quarter", "half-year", "year"}
+ALLOWED_PERIODS = {"day", "week", "month", "quarter", "half-year", "year", "all"}
 ALLOWED_GRANULARITY = {"day", "week", "month", "quarter", "half-year", "year"}
 
 
@@ -69,10 +69,43 @@ def get_period_bounds(period: str, today: date | None = None) -> PeriodBounds:
     elif period == "year":
         start = date(today.year, 1, 1)
         end = date(today.year, 12, 31)
+    elif period == "all":
+        start = today
+        end = today
     else:
         raise ValueError(f"Unsupported period: {period}")
 
     return PeriodBounds(start, end)
+
+
+def get_all_time_bounds(user_id: int | None = None) -> PeriodBounds:
+    where_user = "WHERE user_id = %s" if user_id else ""
+    params = (user_id,) if user_id else ()
+    sql = f"""
+        WITH dates AS (
+            SELECT MIN(date) AS min_date, MAX(date) AS max_date
+            FROM bt_3_daily_sentences
+            {where_user}
+            UNION ALL
+            SELECT MIN(timestamp::date) AS min_date, MAX(timestamp::date) AS max_date
+            FROM bt_3_translations
+            {where_user}
+            UNION ALL
+            SELECT MIN(start_time::date) AS min_date, MAX(start_time::date) AS max_date
+            FROM bt_3_user_progress
+            {where_user}
+        )
+        SELECT MIN(min_date) AS min_date, MAX(max_date) AS max_date
+        FROM dates;
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params * 3)
+            row = cursor.fetchone()
+    min_date = row[0] if row else None
+    max_date = row[1] if row else None
+    today = date.today()
+    return PeriodBounds(start_date=min_date or today, end_date=max_date or today)
 
 
 def _period_start_expr(column: str, granularity: str) -> str:
@@ -97,6 +130,7 @@ def _post_process_row(row: dict[str, Any]) -> dict[str, Any]:
     avg_score = float(row.get("avg_score") or 0)
     avg_time = round(total_time / total, 2) if total > 0 else 0.0
     missed = max(0, assigned - total)
+    missed_days = int(row.get("missed_days") or 0)
     success_rate = round((success / total) * 100, 1) if total > 0 else 0.0
     return {
         **row,
@@ -107,6 +141,7 @@ def _post_process_row(row: dict[str, Any]) -> dict[str, Any]:
         "avg_time_min": avg_time,
         "assigned_sentences": assigned,
         "missed_sentences": missed,
+        "missed_days": missed_days,
         "success_rate": success_rate,
         "avg_score": round(avg_score, 2),
         "final_score": _calculate_final_score(avg_score, avg_time, missed),
@@ -283,6 +318,22 @@ def fetch_user_summary(
                 COUNT(DISTINCT id_for_mistake_table) AS assigned_sentences
             FROM bt_3_daily_sentences
             WHERE user_id = %s AND date BETWEEN %s AND %s
+        ),
+        assigned_days AS (
+            SELECT DISTINCT date
+            FROM bt_3_daily_sentences
+            WHERE user_id = %s AND date BETWEEN %s AND %s
+        ),
+        translated_days AS (
+            SELECT DISTINCT timestamp::date AS date
+            FROM bt_3_translations
+            WHERE user_id = %s AND timestamp::date BETWEEN %s AND %s
+        ),
+        missed_days AS (
+            SELECT COUNT(*) AS missed_days
+            FROM assigned_days a
+            LEFT JOIN translated_days t ON t.date = a.date
+            WHERE t.date IS NULL
         )
         SELECT
             COALESCE(translations_agg.total_translations, 0) AS total_translations,
@@ -290,8 +341,9 @@ def fetch_user_summary(
             COALESCE(translations_agg.avg_score, 0) AS avg_score,
             COALESCE(time_agg.total_time_min, 0) AS total_time_min,
             COALESCE(time_agg.avg_session_time_min, 0) AS avg_session_time_min,
-            COALESCE(assigned_agg.assigned_sentences, 0) AS assigned_sentences
-        FROM translations_agg, time_agg, assigned_agg;
+            COALESCE(assigned_agg.assigned_sentences, 0) AS assigned_sentences,
+            COALESCE(missed_days.missed_days, 0) AS missed_days
+        FROM translations_agg, time_agg, assigned_agg, missed_days;
     """
 
     with get_db_connection_context() as conn:
@@ -299,6 +351,12 @@ def fetch_user_summary(
             cursor.execute(
                 sql,
                 (
+                    user_id,
+                    start_date,
+                    end_date,
+                    user_id,
+                    start_date,
+                    end_date,
                     user_id,
                     start_date,
                     end_date,
@@ -375,6 +433,26 @@ def fetch_comparison_leaderboard(
             WHERE date BETWEEN %s AND %s
             GROUP BY user_id
         ),
+        assigned_days AS (
+            SELECT DISTINCT user_id, date
+            FROM bt_3_daily_sentences
+            WHERE date BETWEEN %s AND %s
+        ),
+        translated_days AS (
+            SELECT DISTINCT user_id, timestamp::date AS date
+            FROM bt_3_translations
+            WHERE timestamp::date BETWEEN %s AND %s
+        ),
+        missed_days AS (
+            SELECT
+                a.user_id,
+                COUNT(*) AS missed_days
+            FROM assigned_days a
+            LEFT JOIN translated_days t
+                ON t.user_id = a.user_id AND t.date = a.date
+            WHERE t.date IS NULL
+            GROUP BY a.user_id
+        ),
         latest_name AS (
             SELECT DISTINCT ON (user_id)
                 user_id,
@@ -389,10 +467,12 @@ def fetch_comparison_leaderboard(
             COALESCE(t.successful_translations, 0) AS successful_translations,
             COALESCE(t.avg_score, 0) AS avg_score,
             COALESCE(time_agg.total_time_min, 0) AS total_time_min,
-            COALESCE(assigned_agg.assigned_sentences, 0) AS assigned_sentences
+            COALESCE(assigned_agg.assigned_sentences, 0) AS assigned_sentences,
+            COALESCE(missed_days.missed_days, 0) AS missed_days
         FROM translations_agg t
         LEFT JOIN time_agg ON time_agg.user_id = t.user_id
         LEFT JOIN assigned_agg ON assigned_agg.user_id = t.user_id
+        LEFT JOIN missed_days ON missed_days.user_id = t.user_id
         LEFT JOIN latest_name ON latest_name.user_id = t.user_id
         ORDER BY t.user_id;
     """
@@ -401,7 +481,18 @@ def fetch_comparison_leaderboard(
         with conn.cursor() as cursor:
             cursor.execute(
                 sql,
-                (start_date, end_date, start_date, end_date, start_date, end_date),
+                (
+                    start_date,
+                    end_date,
+                    start_date,
+                    end_date,
+                    start_date,
+                    end_date,
+                    start_date,
+                    end_date,
+                    start_date,
+                    end_date,
+                ),
             )
             columns = [desc[0] for desc in cursor.description]
             rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
