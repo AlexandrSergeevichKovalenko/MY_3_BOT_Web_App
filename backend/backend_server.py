@@ -690,20 +690,37 @@ def export_webapp_dictionary_pdf():
 
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
+    # Use Unicode-capable font for Cyrillic/Umlauts
+    font_name = "DejaVuSans"
+    font_paths = [
+        os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans.ttf"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for fp in font_paths:
+        if os.path.exists(fp):
+            try:
+                pdfmetrics.registerFont(TTFont(font_name, fp))
+            except Exception:
+                font_name = "Helvetica"
+            break
+    else:
+        font_name = "Helvetica"
     width, height = A4
     x = 40
     y = height - 40
     line_height = 14
 
-    pdf.setFont("Helvetica-Bold", 14)
+    pdf.setFont(font_name, 14)
     title = "Словарь"
     pdf.drawString(x, y, title)
     y -= 2 * line_height
 
-    pdf.setFont("Helvetica", 11)
+    pdf.setFont(font_name, 11)
     for item in items:
         response_json = item.get("response_json") or {}
         word = item.get("word_ru") or response_json.get("word_ru") or item.get("word_de") or response_json.get("word_de") or "—"
