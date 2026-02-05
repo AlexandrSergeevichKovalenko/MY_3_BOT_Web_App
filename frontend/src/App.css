@@ -719,6 +719,7 @@ body {
   background: rgba(93, 220, 255, 0.12);
   box-shadow: 0 0 0 2px rgba(93, 220, 255, 0.1), 0 0 18px rgba(93, 220, 255, 0.25);
   padding-right: 40px;
+  width: 100%;
 }
 
 .dictionary-input::placeholder {
@@ -1772,6 +1773,7 @@ body {
 
 .dictionary-input-wrap {
   position: relative;
+  width: 100%;
 }
 
 .dictionary-clear {
