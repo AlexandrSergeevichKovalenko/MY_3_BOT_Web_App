@@ -1655,6 +1655,23 @@ body {
   gap: 8px;
 }
 
+.webapp-translation-start {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  margin-bottom: 16px;
+}
+
+.webapp-translation-start .webapp-field {
+  flex: 1;
+  min-width: 220px;
+}
+
 .webapp-translation-list {
   display: grid;
   gap: 12px;

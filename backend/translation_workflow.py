@@ -1,9 +1,12 @@
 import asyncio
+import hashlib
 import logging
 import os
 import re
+from datetime import datetime
 from typing import Any
 
+import openai
 import psycopg2
 
 from backend.config_mistakes_data import (
@@ -23,6 +26,231 @@ if not DATABASE_URL:
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
+
+
+def _get_active_session_id(cursor, user_id: int) -> str | None:
+    cursor.execute(
+        """
+        SELECT session_id
+        FROM bt_3_user_progress
+        WHERE user_id = %s AND completed = FALSE
+        ORDER BY start_time DESC
+        LIMIT 1;
+        """,
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def correct_numbering(sentences: list[str]) -> list[str]:
+    corrected_sentences = []
+    for sentence in sentences:
+        cleaned_sentence = re.sub(r"^(\d+)\.\s*\d+\.\s*", r"\1. ", sentence).strip()
+        corrected_sentences.append(cleaned_sentence)
+    return corrected_sentences
+
+
+async def generate_sentences_webapp(user_id: int, num_sentences: int, topic: str = "Random sentences") -> list[str]:
+    task_name = "generate_sentences"
+    system_instruction_key = "generate_sentences"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    user_message = f"""
+    Number of sentences: {num_sentences}. Topic: "{topic}".
+    """
+
+    for attempt in range(5):
+        try:
+            await client.beta.threads.messages.create(
+                thread_id=thread_id,
+                role="user",
+                content=user_message,
+            )
+
+            run = await client.beta.threads.runs.create(
+                thread_id=thread_id,
+                assistant_id=assistant_id,
+            )
+
+            while True:
+                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+                if run_status.status == "completed":
+                    break
+                await asyncio.sleep(1)
+
+            messages = await client.beta.threads.messages.list(thread_id=thread_id)
+            last_message = messages.data[0]
+            sentences = last_message.content[0].text.value
+
+            try:
+                await client.beta.threads.delete(thread_id=thread_id)
+            except Exception:
+                pass
+
+            filtered = [s.strip() for s in sentences.split("\n") if s.strip()]
+            if filtered:
+                return filtered
+        except openai.RateLimitError:
+            wait_time = (attempt + 1) * 2
+            await asyncio.sleep(wait_time)
+        except Exception:
+            break
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT sentence FROM bt_3_spare_sentences ORDER BY RANDOM() LIMIT 7;
+                """
+            )
+            spare_rows = cursor.fetchall()
+    if spare_rows:
+        return [row[0].strip() for row in spare_rows if row[0] and row[0].strip()]
+    return []
+
+
+async def get_original_sentences_webapp(user_id: int, topic: str = "Random sentences") -> list[str]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("SELECT sentence FROM bt_3_sentences ORDER BY RANDOM() LIMIT 1;")
+        rows = [row[0] for row in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT sentence, sentence_id
+            FROM bt_3_detailed_mistakes
+            WHERE user_id = %s
+            ORDER BY mistake_count DESC, last_seen ASC;
+            """,
+            (user_id,),
+        )
+
+        already_given_sentence_ids = set()
+        unique_sentences = set()
+        mistake_sentences = []
+
+        for sentence, sentence_id in cursor.fetchall():
+            if sentence_id and sentence_id not in already_given_sentence_ids:
+                if sentence_id not in unique_sentences:
+                    unique_sentences.add(sentence_id)
+                    mistake_sentences.append(sentence)
+                    already_given_sentence_ids.add(sentence_id)
+                    if len(mistake_sentences) == 5:
+                        break
+
+        num_sentences = 7 - len(rows) - len(mistake_sentences)
+        gpt_sentences = []
+        if num_sentences > 0:
+            gpt_sentences = await generate_sentences_webapp(user_id, num_sentences, topic)
+
+        def normalize_sentences(items: list[str]) -> list[str]:
+            normalized: list[str] = []
+            seen: set[str] = set()
+            for item in items:
+                if not item:
+                    continue
+                text = str(item).strip()
+                if not text:
+                    continue
+                for line in text.split("\n"):
+                    candidate = re.sub(r"^\s*\d+\.\s*", "", line).strip()
+                    if not candidate or candidate in seen:
+                        continue
+                    seen.add(candidate)
+                    normalized.append(candidate)
+            return normalized
+
+        final_sentences = normalize_sentences(rows + mistake_sentences + gpt_sentences)
+        attempts = 0
+        while len(final_sentences) < 7 and attempts < 3:
+            needed = 7 - len(final_sentences)
+            extra_sentences = await generate_sentences_webapp(user_id, needed, topic)
+            final_sentences = normalize_sentences(final_sentences + extra_sentences)
+            attempts += 1
+
+        return final_sentences
+    finally:
+        cursor.close()
+        conn.close()
+
+
+async def start_translation_session_webapp(
+    user_id: int,
+    username: str | None = None,
+    topic: str = "Random sentences",
+) -> dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        active_session_id = _get_active_session_id(cursor, user_id)
+        if active_session_id:
+            return {"session_id": active_session_id, "created": False}
+
+        cursor.execute(
+            """
+            UPDATE bt_3_user_progress
+            SET end_time = NOW(), completed = TRUE
+            WHERE user_id = %s AND start_time::date < CURRENT_DATE AND completed = FALSE;
+            """,
+            (user_id,),
+        )
+
+        session_id = int(hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest(), 16) % (10**12)
+        cursor.execute(
+            """
+            INSERT INTO bt_3_user_progress (session_id, user_id, username, start_time, completed)
+            VALUES (%s, %s, %s, NOW(), FALSE);
+            """,
+            (session_id, user_id, username),
+        )
+        conn.commit()
+
+        sentences = [s.strip() for s in await get_original_sentences_webapp(user_id, topic) if s.strip()]
+        sentences = correct_numbering(sentences)
+
+        if not sentences:
+            return {"session_id": session_id, "created": True, "count": 0}
+
+        for i, sentence in enumerate(sentences, start=1):
+            cursor.execute(
+                """
+                SELECT id_for_mistake_table
+                FROM bt_3_daily_sentences
+                WHERE sentence = %s
+                LIMIT 1;
+                """,
+                (sentence,),
+            )
+            result = cursor.fetchone()
+
+            if result:
+                id_for_mistake_table = result[0]
+            else:
+                cursor.execute("SELECT MAX(id_for_mistake_table) FROM bt_3_daily_sentences;")
+                result = cursor.fetchone()
+                max_id = result[0] if result and result[0] is not None else 0
+                id_for_mistake_table = max_id + 1
+
+            cursor.execute(
+                """
+                INSERT INTO bt_3_daily_sentences (date, sentence, unique_id, user_id, session_id, id_for_mistake_table)
+                VALUES (CURRENT_DATE, %s, %s, %s, %s, %s);
+                """,
+                (sentence, i, user_id, session_id, id_for_mistake_table),
+            )
+
+        conn.commit()
+        return {"session_id": session_id, "created": True, "count": len(sentences)}
+    finally:
+        cursor.close()
+        conn.close()
 
 
 async def check_translation(

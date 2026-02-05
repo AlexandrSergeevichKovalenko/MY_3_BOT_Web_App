@@ -109,8 +109,30 @@ function AppInner() {
   const [flashcardOptions, setFlashcardOptions] = useState([]);
   const [flashcardSetSize, setFlashcardSetSize] = useState(15);
   const [flashcardDurationSec, setFlashcardDurationSec] = useState(10);
+  const [flashcardTimerDurationSec, setFlashcardTimerDurationSec] = useState(10);
   const [flashcardSessionActive, setFlashcardSessionActive] = useState(false);
   const [flashcardTimerKey, setFlashcardTimerKey] = useState(0);
+  const [topics, setTopics] = useState([
+    '💼 Business',
+    '🏥 Medicine',
+    '🎨 Hobbies',
+    '✈️ Travel',
+    '🔬 Science',
+    '💻 Technology',
+    '🖼️ Art',
+    '🎓 Education',
+    '🍽️ Food',
+    '⚽ Sports',
+    '🌿 Nature',
+    '🎵 Music',
+    '📚 Literature',
+    '🧠 Psychology',
+    '🏛️ History',
+    '📰 News',
+  ]);
+  const [topicsLoading, setTopicsLoading] = useState(false);
+  const [topicsError, setTopicsError] = useState('');
+  const [selectedTopic, setSelectedTopic] = useState('💼 Business');
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
@@ -187,13 +209,27 @@ function AppInner() {
     return audioContextRef.current;
   };
 
+  const unlockAudio = () => {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const buffer = ctx.createBuffer(1, 1, 22050);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    try {
+      source.start(0);
+    } catch (error) {
+      // ignore playback errors
+    }
+  };
+
   const playFeedbackSound = (type) => {
     const ctx = getAudioContext();
     if (!ctx) return;
     const now = ctx.currentTime;
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.08, now + 0.02);
+    gain.gain.linearRampToValueAtTime(0.12, now + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
     gain.connect(ctx.destination);
 
@@ -515,11 +551,12 @@ function AppInner() {
   }, [flashcardSelection]);
 
   useEffect(() => {
-    if (!flashcardSessionActive) {
+    if (!flashcardSessionActive || flashcards.length === 0) {
       return;
     }
+    setFlashcardTimerDurationSec(flashcardDurationSec);
     setFlashcardTimerKey((prev) => prev + 1);
-  }, [flashcardIndex, flashcardSessionActive]);
+  }, [flashcardIndex, flashcardSessionActive, flashcards.length, flashcardDurationSec]);
 
   useEffect(() => {
     if (!flashcardSessionActive || flashcardSetComplete || flashcardExitSummary || !flashcards.length) {
@@ -548,7 +585,7 @@ function AppInner() {
       revealTimeoutRef.current = setTimeout(() => {
         advanceFlashcard();
       }, 3000);
-    }, flashcardDurationSec * 1000);
+    }, flashcardTimerDurationSec * 1000);
 
     return () => {
       if (autoAdvanceTimeoutRef.current) {
@@ -562,7 +599,7 @@ function AppInner() {
     flashcardExitSummary,
     flashcards,
     flashcardIndex,
-    flashcardDurationSec,
+    flashcardTimerDurationSec,
   ]);
 
   useEffect(() => {
@@ -596,6 +633,27 @@ function AppInner() {
       setFinishStatus('idle');
     } catch (error) {
       setWebappError(`Ошибка загрузки предложений: ${error.message}`);
+    }
+  };
+
+  const loadTopics = async () => {
+    setTopicsLoading(true);
+    setTopicsError('');
+    try {
+      const response = await fetch('/api/webapp/topics');
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      setTopics(items);
+      if (items.length > 0 && !items.includes(selectedTopic)) {
+        setSelectedTopic(items[0]);
+      }
+    } catch (error) {
+      setTopicsError(`Ошибка тем: ${error.message}`);
+    } finally {
+      setTopicsLoading(false);
     }
   };
 
@@ -633,6 +691,7 @@ function AppInner() {
 
   useEffect(() => {
     if (isWebAppMode && initData) {
+      loadTopics();
       loadSentences();
     }
   }, [initData, isWebAppMode]);
@@ -725,6 +784,36 @@ function AppInner() {
       }
     } catch (error) {
       setWebappError(`Ошибка проверки: ${error.message}`);
+    } finally {
+      setWebappLoading(false);
+    }
+  };
+
+  const handleStartTranslation = async () => {
+    if (!initData) {
+      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    setWebappLoading(true);
+    setWebappError('');
+    setFinishMessage('');
+    setFinishStatus('idle');
+    try {
+      const response = await fetch('/api/webapp/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          topic: selectedTopic,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      await response.json();
+      await loadSentences();
+    } catch (error) {
+      setWebappError(`Ошибка старта: ${error.message}`);
     } finally {
       setWebappLoading(false);
     }
@@ -2045,10 +2134,37 @@ function AppInner() {
                 <div className="webapp-section-title">
                   <h2>Ваши переводы</h2>
                 </div>
+                <div className="webapp-translation-start">
+                  <label className="webapp-field">
+                    <span>Тема</span>
+                    <select
+                      value={selectedTopic}
+                      onChange={(event) => setSelectedTopic(event.target.value)}
+                      disabled={topicsLoading || webappLoading}
+                    >
+                      {topics.map((topic) => (
+                        <option key={topic} value={topic}>
+                          {topic}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={handleStartTranslation}
+                    disabled={webappLoading || topicsLoading}
+                  >
+                    {webappLoading ? 'Запускаем...' : '🚀 Начать перевод'}
+                  </button>
+                </div>
+                {topicsError && <div className="webapp-error">{topicsError}</div>}
                 <form className="webapp-form" onSubmit={handleWebappSubmit}>
                   <section className="webapp-translation-list">
                     {sentences.length === 0 ? (
-                      <p className="webapp-muted">Все предложения текущей сессии переведены. Запросите новые.</p>
+                      <p className="webapp-muted">
+                        Нет активных предложений. Нажмите «🚀 Начать перевод», чтобы получить новые.
+                      </p>
                     ) : (
                       sentences.map((item, index) => {
                         const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
@@ -2605,6 +2721,7 @@ function AppInner() {
                             type="button"
                             className="primary-button flashcards-start"
                             onClick={() => {
+                              unlockAudio();
                               setFlashcardSessionActive(true);
                               setFlashcardsOnly(true);
                               setFlashcardExitSummary(false);
@@ -2702,7 +2819,7 @@ function AppInner() {
                                       <div
                                         key={`timer-${flashcardTimerKey}`}
                                         className={`flashcard-timer ${flashcardSelection !== null ? 'is-paused' : ''}`}
-                                        style={{ '--duration': `${flashcardDurationSec}s` }}
+                                        style={{ '--duration': `${flashcardTimerDurationSec}s` }}
                                       >
                                         <svg viewBox="0 0 120 120" aria-hidden="true">
                                           <circle className="timer-track" cx="60" cy="60" r="54" />
@@ -2738,6 +2855,7 @@ function AppInner() {
                                               if (flashcardSelection !== null) return;
                                               setFlashcardSelection(idx);
                                               setFlashcardTimedOut(false);
+                                              unlockAudio();
                                               playFeedbackSound(option === correct ? 'positive' : 'negative');
                                               recordFlashcardAnswer(entry.id, option === correct);
                                               setFlashcardStats((prev) => ({

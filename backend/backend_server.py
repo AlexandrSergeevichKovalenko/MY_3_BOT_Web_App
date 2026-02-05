@@ -96,6 +96,7 @@ from backend.translation_workflow import (
     check_user_translation_webapp,
     finish_translation_webapp,
     get_daily_translation_history,
+    start_translation_session_webapp,
 )
 from backend.analytics import (
     fetch_user_summary,
@@ -107,6 +108,25 @@ from backend.analytics import (
 )
 
 load_dotenv()
+
+WEBAPP_TOPICS = [
+    "💼 Business",
+    "🏥 Medicine",
+    "🎨 Hobbies",
+    "✈️ Travel",
+    "🔬 Science",
+    "💻 Technology",
+    "🖼️ Art",
+    "🎓 Education",
+    "🍽️ Food",
+    "⚽ Sports",
+    "🌿 Nature",
+    "🎵 Music",
+    "📚 Literature",
+    "🧠 Psychology",
+    "🏛️ History",
+    "📰 News",
+]
 
 app = Flask(__name__)
 CORS(app)
@@ -1058,6 +1078,45 @@ def get_webapp_sentences():
     sentences = get_pending_daily_sentences(user_id=user_id, limit=int(limit))
     deduped = _dedupe_sentences(sentences)
     return jsonify({"ok": True, "items": deduped})
+
+
+@app.route("/api/webapp/topics", methods=["GET"])
+def get_webapp_topics():
+    return jsonify({"ok": True, "items": WEBAPP_TOPICS})
+
+
+@app.route("/api/webapp/start", methods=["POST"])
+def start_webapp_translation():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    topic = (payload.get("topic") or "Random sentences").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    username = user_data.get("username")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        result = asyncio.run(
+            start_translation_session_webapp(
+                user_id=user_id,
+                username=username,
+                topic=topic if topic else "Random sentences",
+            )
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка запуска сессии: {exc}"}), 500
+
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/api/webapp/submit-group", methods=["POST"])
