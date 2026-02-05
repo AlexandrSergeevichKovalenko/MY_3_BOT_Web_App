@@ -501,10 +501,14 @@ async def entrypoint(ctx: JobContext):
 
     # 10) Стартуем сессию
     logging.info("🚀 Starting AgentSession...")
-    if room_options is None:
+    try:
+        if room_options is None:
+            await session.start(room=ctx.room, agent=teacher_logic)
+        else:
+            await session.start(room=ctx.room, agent=teacher_logic, room_options=room_options)
+    except TypeError:
+        # Older SDKs don't accept room_options in start().
         await session.start(room=ctx.room, agent=teacher_logic)
-    else:
-        await session.start(room=ctx.room, agent=teacher_logic, room_options=room_options)
 
     # Пытаемся найти участника, который уже в комнате (это наш юзер с браузера)
     user_name_for_greeting = "Student"
