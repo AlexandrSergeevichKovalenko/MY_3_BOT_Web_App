@@ -17,3 +17,4 @@ python-dotenv
 gunicorn
 youtube-transcript-api==0.6.2
 spacy==3.7.4
+reportlab==4.2.5
