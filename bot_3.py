@@ -540,7 +540,8 @@ async def send_main_menu(update: Update, context: CallbackContext):
         ["📌 Выбрать тему"],  # ❗ Убедись, что текст здесь правильный
         ["🚀 Начать перевод", "✅ Завершить перевод"],
         ["📜 Проверить перевод", "🟡 Посмотреть свою статистику"],
-        ["🎙 Начать урок", "👥 Групповой звонок"]
+        ["🎙 Начать урок", "👥 Групповой звонок"],
+        ["💬 Перейти в личку"]
     ]
     
     # создаем в словаре клю service_message_ids Список для хранения всех id Сообщений, Для того чтобы потом можно было их удалить после выполнения перевода
@@ -634,6 +635,19 @@ async def handle_button_click(update: Update, context: CallbackContext):
     elif text == "📜 Проверить перевод":
         logging.info(f"📌 Пользователь {update.message.from_user.id} нажал кнопку '📜 Проверить перевод'. Запускаем проверку.")
         await check_translation_from_text(update, context)  # ✅ Теперь сразу запускаем проверку переводов
+    elif text == "💬 Перейти в личку":
+        bot_username = context.bot.username
+        if not bot_username:
+            bot_info = await context.bot.get_me()
+            bot_username = bot_info.username
+        if bot_username:
+            private_url = f"https://t.me/{bot_username}?start=from_group"
+            await update.message.reply_text(
+                f"Перейдите в личку: {private_url}",
+                disable_web_page_preview=True,
+            )
+        else:
+            await update.message.reply_text("Не удалось получить имя бота.")
     
     elif text == "🎙 Начать урок":
         #frontend_url = "https://83df2cddf824.ngrok-free.app"
@@ -761,7 +775,23 @@ async def send_morning_reminder(context:CallbackContext):
         "/stats - Узнать свою статистику\n"
     )
 
-    await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text = message)
+    bot_username = context.bot.username
+    if not bot_username:
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+
+    reply_markup = None
+    if bot_username:
+        private_url = f"https://t.me/{bot_username}?start=from_group"
+        reply_markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("💬 Перейти в личку", url=private_url)]]
+        )
+
+    await context.bot.send_message(
+        chat_id=BOT_GROUP_CHAT_ID_Deutsch,
+        text=message,
+        reply_markup=reply_markup,
+    )
     #await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text= commands)
 
 async def send_flashcard_reminder(context: CallbackContext):
@@ -2974,9 +3004,16 @@ async def user_stats(update: Update, context: CallbackContext):
 
     today_bounds = get_period_bounds("day")
     week_bounds = get_period_bounds("week")
+    month_bounds = get_period_bounds("month")
+    quarter_bounds = get_period_bounds("quarter")
+    all_time_start = date(1970, 1, 1)
+    all_time_end = date.today()
 
     today_summary = fetch_user_summary(user_id, today_bounds.start_date, today_bounds.end_date)
     week_summary = fetch_user_summary(user_id, week_bounds.start_date, week_bounds.end_date)
+    month_summary = fetch_user_summary(user_id, month_bounds.start_date, month_bounds.end_date)
+    quarter_summary = fetch_user_summary(user_id, quarter_bounds.start_date, quarter_bounds.end_date)
+    all_time_summary = fetch_user_summary(user_id, all_time_start, all_time_end)
 
     if today_summary and today_summary.get("total_translations", 0) > 0:
         today_text = (
@@ -3001,9 +3038,50 @@ async def user_stats(update: Update, context: CallbackContext):
             f"🏆 Итоговый балл: {week_summary['final_score']:.1f}\n"
         )
     else:
-        weekly_text = "\n📆 **Статистика за неделю**\n❌ Нет данных."
+        weekly_text = "\n📆 Статистика за неделю\n❌ Нет данных."
 
-    await update.message.reply_text(today_text + weekly_text)
+    if month_summary and month_summary.get("total_translations", 0) > 0:
+        month_text = (
+            f"\n🗓 Статистика за месяц\n"
+            f"🔹 Переведено: {month_summary['total_translations']}\n"
+            f"🎯 Средняя оценка: {month_summary['avg_score']:.1f}/100\n"
+            f"⏱ Среднее время сессии: {month_summary.get('avg_session_time_min', 0):.1f} мин\n"
+            f"⏱ Общее время за месяц: {month_summary['total_time_min']:.1f} мин\n"
+            f"🚨 Пропущено за месяц: {month_summary['missed_sentences']}\n"
+            f"🏆 Итоговый балл: {month_summary['final_score']:.1f}\n"
+        )
+    else:
+        month_text = "\n🗓 Статистика за месяц\n❌ Нет данных."
+
+    if quarter_summary and quarter_summary.get("total_translations", 0) > 0:
+        quarter_text = (
+            f"\n📊 Статистика за квартал\n"
+            f"🔹 Переведено: {quarter_summary['total_translations']}\n"
+            f"🎯 Средняя оценка: {quarter_summary['avg_score']:.1f}/100\n"
+            f"⏱ Среднее время сессии: {quarter_summary.get('avg_session_time_min', 0):.1f} мин\n"
+            f"⏱ Общее время за квартал: {quarter_summary['total_time_min']:.1f} мин\n"
+            f"🚨 Пропущено за квартал: {quarter_summary['missed_sentences']}\n"
+            f"🏆 Итоговый балл: {quarter_summary['final_score']:.1f}\n"
+        )
+    else:
+        quarter_text = "\n📊 Статистика за квартал\n❌ Нет данных."
+
+    if all_time_summary and all_time_summary.get("total_translations", 0) > 0:
+        all_time_text = (
+            f"\n🏁 Статистика за весь период\n"
+            f"🔹 Переведено: {all_time_summary['total_translations']}\n"
+            f"🎯 Средняя оценка: {all_time_summary['avg_score']:.1f}/100\n"
+            f"⏱ Среднее время сессии: {all_time_summary.get('avg_session_time_min', 0):.1f} мин\n"
+            f"⏱ Общее время: {all_time_summary['total_time_min']:.1f} мин\n"
+            f"🚨 Пропущено: {all_time_summary['missed_sentences']}\n"
+            f"🏆 Итоговый балл: {all_time_summary['final_score']:.1f}\n"
+        )
+    else:
+        all_time_text = "\n🏁 Статистика за весь период\n❌ Нет данных."
+
+    await update.message.reply_text(
+        today_text + weekly_text + month_text + quarter_text + all_time_text
+    )
 
 
 
