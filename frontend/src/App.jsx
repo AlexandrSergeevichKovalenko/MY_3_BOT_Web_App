@@ -160,6 +160,7 @@ function AppInner() {
   const [dictionaryFolderId, setDictionaryFolderId] = useState('none');
   const [flashcardFolderMode, setFlashcardFolderMode] = useState('all');
   const [flashcardFolderId, setFlashcardFolderId] = useState('');
+  const [flashcardAutoAdvance, setFlashcardAutoAdvance] = useState(true);
   const [showNewFolderForm, setShowNewFolderForm] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [newFolderColor, setNewFolderColor] = useState('#5ddcff');
@@ -772,7 +773,11 @@ function AppInner() {
       setFlashcardSelection(-1);
       (async () => {
         await playTts(correct, 'de-DE');
-        advanceFlashcard();
+        if (flashcardAutoAdvance) {
+          revealTimeoutRef.current = setTimeout(() => {
+            advanceFlashcard();
+          }, 3000);
+        }
       })();
     }, flashcardDurationSec * 1000);
 
@@ -3226,6 +3231,25 @@ function AppInner() {
                                 ))}
                               </div>
                             </div>
+                            <div className="setup-group">
+                              <div className="setup-label">Переход</div>
+                              <div className="setup-options">
+                                <button
+                                  type="button"
+                                  className={`option-pill ${flashcardAutoAdvance ? 'is-active' : ''}`}
+                                  onClick={() => setFlashcardAutoAdvance(true)}
+                                >
+                                  Автоматически
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`option-pill ${!flashcardAutoAdvance ? 'is-active' : ''}`}
+                                  onClick={() => setFlashcardAutoAdvance(false)}
+                                >
+                                  Вручную
+                                </button>
+                              </div>
+                            </div>
                           </div>
                           <button
                             type="button"
@@ -3628,7 +3652,11 @@ function AppInner() {
                                                   clearTimeout(revealTimeoutRef.current);
                                                 }
                                                 await playTts(correct, 'de-DE');
-                                                advanceFlashcard();
+                                                if (flashcardAutoAdvance) {
+                                                  revealTimeoutRef.current = setTimeout(() => {
+                                                    advanceFlashcard();
+                                                  }, 3000);
+                                                }
                                               }}
                                             >
                                               {option}
@@ -3640,9 +3668,20 @@ function AppInner() {
                                     {flashcardTimedOut && (
                                       <div className="flashcard-timeout">die Zeit ist um</div>
                                     )}
-                                    {flashcardSelection !== null && (
+                                    {flashcardSelection !== null && flashcardAutoAdvance && (
                                       <div className="flashcard-hint">
-                                        Следующая карточка после озвучки
+                                        Следующая карточка через 3 секунды
+                                      </div>
+                                    )}
+                                    {flashcardSelection !== null && !flashcardAutoAdvance && (
+                                      <div className="flashcard-actions">
+                                        <button
+                                          type="button"
+                                          className="primary-button"
+                                          onClick={() => advanceFlashcard()}
+                                        >
+                                          Следующая карточка
+                                        </button>
                                       </div>
                                     )}
                                     {!(flashcardSetComplete || flashcardExitSummary) && (
