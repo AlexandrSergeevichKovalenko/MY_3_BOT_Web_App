@@ -712,6 +712,35 @@ body {
   color: #f8fafc;
 }
 
+.input-clear-wrap {
+  position: relative;
+  display: grid;
+}
+
+.input-clear-field {
+  padding-right: 40px;
+}
+
+.input-clear-btn {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(148, 163, 184, 0.2);
+  color: #f8fafc;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.input-clear-btn:hover {
+  background: rgba(248, 250, 252, 0.25);
+}
+
 .dictionary-input {
   font-size: 16px;
   font-weight: 700;

@@ -1591,6 +1591,15 @@ function AppInner() {
     reader.readAsDataURL(file);
   };
 
+  const normalizeSubtitleText = (text) => {
+    if (!text) return '';
+    return text
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
   const renderClickableText = (text) => {
     if (!text) return null;
     return text.split(/\s+/).map((word, index) => {
@@ -1609,6 +1618,8 @@ function AppInner() {
       );
     });
   };
+
+  const renderSubtitleText = (text) => renderClickableText(normalizeSubtitleText(text));
 
   const parseTranscriptInput = (value) => {
     const lines = value
@@ -2817,12 +2828,25 @@ function AppInner() {
                     <div className="webapp-video-form">
                       <label className="webapp-field">
                         <span>Ссылка или ID видео</span>
-                        <input
-                          type="text"
-                          value={youtubeInput}
-                          onChange={(event) => setYoutubeInput(event.target.value)}
-                          placeholder="https://youtu.be/VIDEO_ID"
-                        />
+                        <div className="input-clear-wrap">
+                          <input
+                            type="text"
+                            className="input-clear-field"
+                            value={youtubeInput}
+                            onChange={(event) => setYoutubeInput(event.target.value)}
+                            placeholder="https://youtu.be/VIDEO_ID"
+                          />
+                          {youtubeInput && (
+                            <button
+                              type="button"
+                              className="input-clear-btn"
+                              onClick={() => setYoutubeInput('')}
+                              aria-label="Очистить"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
                       </label>
                       <div className="webapp-video-actions">
                         <button
@@ -2869,7 +2893,7 @@ function AppInner() {
                         <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
                           {youtubeTranscript.map((item, index) => (
                             <p key={`${item.start}-${index}`}>
-                              {renderClickableText(item.text)}
+                              {renderSubtitleText(item.text)}
                             </p>
                           ))}
                         </div>
