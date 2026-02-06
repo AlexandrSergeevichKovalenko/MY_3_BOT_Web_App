@@ -2856,25 +2856,11 @@ function AppInner() {
                       Если видео не воспроизводится внутри Web App, используйте кнопку «Открыть в YouTube».
                     </p>
 
-                    <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
-                      <div className="webapp-subtitles-header">
-                        <h4>Субтитры</h4>
-                        <div className="webapp-subtitles-actions">
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            onClick={() => handleManualTranscript()}
-                            disabled={!manualTranscript.trim()}
-                          >
-                            Использовать вставленные
-                          </button>
+                    {youtubeTranscript.length > 0 && (
+                      <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
+                        <div className="webapp-subtitles-header">
+                          <h4>Субтитры</h4>
                         </div>
-                      </div>
-
-                      {youtubeTranscriptLoading && <div className="webapp-muted">Загружаем субтитры...</div>}
-                      {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
-
-                      {youtubeTranscript.length > 0 ? (
                         <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
                           {youtubeTranscript.map((item, index) => (
                             <p key={`${item.start}-${index}`}>
@@ -2882,20 +2868,8 @@ function AppInner() {
                             </p>
                           ))}
                         </div>
-                      ) : (
-                        <div className="webapp-subtitles-fallback">
-                          <p className="webapp-muted">
-                            Если авто-субтитры недоступны, вставьте текст субтитров ниже.
-                          </p>
-                          <textarea
-                            rows={5}
-                            value={manualTranscript}
-                            onChange={(event) => setManualTranscript(event.target.value)}
-                            placeholder="Вставьте .srt/.vtt или обычный текст субтитров"
-                          />
-                        </div>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </section>
                 )}
 
