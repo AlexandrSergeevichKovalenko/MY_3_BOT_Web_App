@@ -210,7 +210,7 @@ async def start_translation_session_webapp(
     try:
         active_session_id = _get_active_session_id(cursor, user_id)
         if active_session_id:
-            return {"session_id": active_session_id, "created": False}
+            return {"session_id": active_session_id, "created": False, "blocked": True}
 
         cursor.execute(
             """
@@ -237,7 +237,18 @@ async def start_translation_session_webapp(
         if not sentences:
             return {"session_id": session_id, "created": True, "count": 0}
 
-        for i, sentence in enumerate(sentences, start=1):
+        cursor.execute(
+            """
+            SELECT COALESCE(MAX(unique_id), 0)
+            FROM bt_3_daily_sentences
+            WHERE user_id = %s AND date = CURRENT_DATE;
+            """,
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        start_index = (row[0] or 0) + 1
+
+        for i, sentence in enumerate(sentences, start=start_index):
             cursor.execute(
                 """
                 SELECT id_for_mistake_table

@@ -884,7 +884,10 @@ function AppInner() {
       if (!response.ok) {
         throw new Error(await response.text());
       }
-      await response.json();
+      const data = await response.json();
+      if (data.blocked) {
+        setFinishMessage('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.');
+      }
       await loadSentences();
     } catch (error) {
       setWebappError(`Ошибка старта: ${error.message}`);
