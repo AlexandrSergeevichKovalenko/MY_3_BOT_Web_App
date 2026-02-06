@@ -1100,6 +1100,7 @@ def start_webapp_translation():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     topic = (payload.get("topic") or "Random sentences").strip()
+    level = (payload.get("level") or "c1").strip()
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -1121,6 +1122,7 @@ def start_webapp_translation():
                 user_id=user_id,
                 username=username,
                 topic=topic if topic else "Random sentences",
+                level=level,
             )
         )
     except Exception as exc:

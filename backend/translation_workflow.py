@@ -51,9 +51,23 @@ def correct_numbering(sentences: list[str]) -> list[str]:
     return corrected_sentences
 
 
-async def generate_sentences_webapp(user_id: int, num_sentences: int, topic: str = "Random sentences") -> list[str]:
+def _normalize_level(level: str | None) -> str:
+    normalized = (level or "c1").strip().lower().replace(" ", "")
+    if normalized in {"c1-c2", "c1c2", "c1/c2"}:
+        return "c2"
+    allowed = {"a2", "b1", "b2", "c1", "c2"}
+    return normalized if normalized in allowed else "c1"
+
+
+async def generate_sentences_webapp(
+    user_id: int,
+    num_sentences: int,
+    topic: str = "Random sentences",
+    level: str | None = None,
+) -> list[str]:
     task_name = "generate_sentences"
-    system_instruction_key = "generate_sentences"
+    level_key = _normalize_level(level)
+    system_instruction_key = f"generate_sentences_{level_key}"
     assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
 
     thread = await client.beta.threads.create()
@@ -113,7 +127,11 @@ async def generate_sentences_webapp(user_id: int, num_sentences: int, topic: str
     return []
 
 
-async def get_original_sentences_webapp(user_id: int, topic: str = "Random sentences") -> list[str]:
+async def get_original_sentences_webapp(
+    user_id: int,
+    topic: str = "Random sentences",
+    level: str | None = None,
+) -> list[str]:
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -147,7 +165,7 @@ async def get_original_sentences_webapp(user_id: int, topic: str = "Random sente
         num_sentences = 7 - len(rows) - len(mistake_sentences)
         gpt_sentences = []
         if num_sentences > 0:
-            gpt_sentences = await generate_sentences_webapp(user_id, num_sentences, topic)
+            gpt_sentences = await generate_sentences_webapp(user_id, num_sentences, topic, level)
 
         def normalize_sentences(items: list[str]) -> list[str]:
             normalized: list[str] = []
@@ -170,7 +188,7 @@ async def get_original_sentences_webapp(user_id: int, topic: str = "Random sente
         attempts = 0
         while len(final_sentences) < 7 and attempts < 3:
             needed = 7 - len(final_sentences)
-            extra_sentences = await generate_sentences_webapp(user_id, needed, topic)
+            extra_sentences = await generate_sentences_webapp(user_id, needed, topic, level)
             final_sentences = normalize_sentences(final_sentences + extra_sentences)
             attempts += 1
 
@@ -184,6 +202,7 @@ async def start_translation_session_webapp(
     user_id: int,
     username: str | None = None,
     topic: str = "Random sentences",
+    level: str | None = None,
 ) -> dict[str, Any]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -212,7 +231,7 @@ async def start_translation_session_webapp(
         )
         conn.commit()
 
-        sentences = [s.strip() for s in await get_original_sentences_webapp(user_id, topic) if s.strip()]
+        sentences = [s.strip() for s in await get_original_sentences_webapp(user_id, topic, level) if s.strip()]
         sentences = correct_numbering(sentences)
 
         if not sentences:

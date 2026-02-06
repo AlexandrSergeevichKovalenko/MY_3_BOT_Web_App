@@ -132,6 +132,7 @@ function AppInner() {
   const [topicsLoading, setTopicsLoading] = useState(false);
   const [topicsError, setTopicsError] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('💼 Business');
+  const [selectedLevel, setSelectedLevel] = useState('c1');
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
@@ -877,6 +878,7 @@ function AppInner() {
         body: JSON.stringify({
           initData,
           topic: selectedTopic,
+          level: selectedLevel,
         }),
       });
       if (!response.ok) {
@@ -2230,6 +2232,20 @@ function AppInner() {
                           {topic}
                         </option>
                       ))}
+                    </select>
+                  </label>
+                  <label className="webapp-field">
+                    <span>Уровень</span>
+                    <select
+                      value={selectedLevel}
+                      onChange={(event) => setSelectedLevel(event.target.value)}
+                      disabled={webappLoading}
+                    >
+                      <option value="a2">A2</option>
+                      <option value="b1">B1</option>
+                      <option value="b2">B2</option>
+                      <option value="c1">C1</option>
+                      <option value="c2">C2</option>
                     </select>
                   </label>
                   <button
