@@ -1454,6 +1454,115 @@ body {
   text-align: center;
 }
 
+.flashcard-details {
+  display: grid;
+  gap: 16px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.flashcard-section {
+  display: grid;
+  gap: 10px;
+}
+
+.flashcard-section-title {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(248, 250, 252, 0.6);
+}
+
+.flashcard-translation-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.flashcard-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(93, 220, 255, 0.18);
+  border: 1px solid rgba(93, 220, 255, 0.35);
+  font-size: 13px;
+  color: #e2f2ff;
+}
+
+.flashcard-meta-grid,
+.flashcard-forms-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.flashcard-meta-item,
+.flashcard-form-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(12, 74, 110, 0.25);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  font-size: 12px;
+  color: rgba(248, 250, 252, 0.85);
+}
+
+.flashcard-meta-item strong,
+.flashcard-form-item strong {
+  font-size: 14px;
+  color: #f8fafc;
+}
+
+.flashcard-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: rgba(248, 250, 252, 0.85);
+}
+
+.flashcard-prefixes {
+  display: grid;
+  gap: 8px;
+}
+
+.flashcard-prefix {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(168, 85, 247, 0.12);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+  font-size: 13px;
+  color: rgba(248, 250, 252, 0.85);
+}
+
+.flashcard-prefix strong {
+  font-size: 14px;
+  color: #f8fafc;
+}
+
+.flashcard-prefix em {
+  font-size: 12px;
+  color: rgba(248, 250, 252, 0.65);
+}
+
+.flashcard-feel {
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 221, 102, 0.12);
+  border: 1px solid rgba(255, 221, 102, 0.35);
+  color: rgba(248, 250, 252, 0.9);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.flashcard-feel p {
+  margin: 6px 0 0;
+}
+
 .flashcard-options {
   display: grid;
   gap: 8px;
@@ -1461,19 +1570,9 @@ body {
 
 .flashcard-option-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr;
   gap: 8px;
   align-items: center;
-}
-
-.flashcard-tts {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(15, 23, 42, 0.35);
-  color: #f8fafc;
-  cursor: pointer;
 }
 
 .flashcard-option {

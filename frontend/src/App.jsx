@@ -321,13 +321,17 @@ function AppInner() {
   };
 
   const playTts = async (text, language = 'de-DE') => {
-    if (!initData || !text) return;
+    if (!initData || !text) return Promise.resolve();
     const key = `${language}:${text}`;
+    const playAudio = (audio) => new Promise((resolve) => {
+      audio.currentTime = 0;
+      audio.onended = () => resolve();
+      audio.onerror = () => resolve();
+      audio.play().catch(() => resolve());
+    });
     if (ttsCacheRef.current.has(key)) {
       const audio = ttsCacheRef.current.get(key);
-      audio.currentTime = 0;
-      audio.play().catch(() => {});
-      return;
+      return playAudio(audio);
     }
     try {
       const response = await fetch('/api/webapp/tts', {
@@ -342,9 +346,10 @@ function AppInner() {
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       ttsCacheRef.current.set(key, audio);
-      audio.play().catch(() => {});
+      return playAudio(audio);
     } catch (error) {
       console.warn('TTS error', error);
+      return Promise.resolve();
     }
   };
 
@@ -371,6 +376,18 @@ function AppInner() {
     }
     if (typeof value === 'object') return value;
     return null;
+  };
+
+  const resolveFlashcardGerman = (entry) => {
+    if (!entry) return '';
+    const responseJson = entry.response_json || {};
+    return (
+      entry.word_de
+      || responseJson.word_de
+      || entry.translation_de
+      || responseJson.translation_de
+      || ''
+    );
   };
 
   const scrollToDictionary = () => {
@@ -661,9 +678,11 @@ function AppInner() {
     if (!flashcardSessionActive) {
       return;
     }
-    loadFlashcards();
+    if (flashcards.length === 0) {
+      loadFlashcards();
+    }
     scrollToFlashcards();
-  }, [flashcardSessionActive, initData, flashcardFolderMode, flashcardFolderId, flashcardSetSize]);
+  }, [flashcardSessionActive, initData, flashcardFolderMode, flashcardFolderId, flashcardSetSize, flashcards.length]);
 
   useEffect(() => {
     if (!flashcards.length) {
@@ -674,6 +693,20 @@ function AppInner() {
     setFlashcardOptions(buildFlashcardOptions(entry, flashcards));
     setFlashcardSelection(null);
   }, [flashcards, flashcardIndex]);
+
+  useEffect(() => {
+    if (!flashcardPreviewActive || !flashcardsOnly) {
+      return;
+    }
+    const entry = flashcards[flashcardPreviewIndex];
+    if (!entry) return;
+    const text = resolveFlashcardGerman(entry);
+    if (!text) return;
+    const handle = window.requestAnimationFrame(() => {
+      playTts(text, 'de-DE');
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [flashcardPreviewActive, flashcardsOnly, flashcards, flashcardPreviewIndex]);
 
   useEffect(() => {
     flashcardIndexRef.current = flashcardIndex;
@@ -704,6 +737,12 @@ function AppInner() {
       if (currentSelection !== null) return;
       const entry = flashcards[currentIndex];
       if (!entry) return;
+      const responseJson = entry.response_json || {};
+      const correct = entry.translation_de
+        || responseJson.translation_de
+        || entry.translation_ru
+        || responseJson.translation_ru
+        || '—';
       recordFlashcardAnswer(entry.id, false);
       setFlashcardStats((prev) => ({
         ...prev,
@@ -712,12 +751,10 @@ function AppInner() {
       setFlashcardTimedOut(true);
       playFeedbackSound('timeout');
       setFlashcardSelection(-1);
-      if (revealTimeoutRef.current) {
-        clearTimeout(revealTimeoutRef.current);
-      }
-      revealTimeoutRef.current = setTimeout(() => {
+      (async () => {
+        await playTts(correct, 'de-DE');
         advanceFlashcard();
-      }, 3000);
+      })();
     }, flashcardDurationSec * 1000);
 
     return () => {
@@ -1338,30 +1375,36 @@ function AppInner() {
         correct: 0,
         wrong: 0,
       });
-
-      const poolResponse = await fetch('/api/webapp/dictionary/cards', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          limit: 60,
-          folder_mode: flashcardFolderMode,
-          folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
-        }),
-      });
-      if (poolResponse.ok) {
-        const poolData = await poolResponse.json();
-        const poolItems = (poolData.items || []).map((item) => ({
-          ...item,
-          response_json: coerceResponseJson(item.response_json),
-        }));
-        setFlashcardPool(poolItems);
-      }
     } catch (error) {
       setFlashcardsError(`Ошибка карточек: ${error.message}`);
     } finally {
       setFlashcardsLoading(false);
     }
+
+    (async () => {
+      try {
+        const poolResponse = await fetch('/api/webapp/dictionary/cards', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            limit: 60,
+            folder_mode: flashcardFolderMode,
+            folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
+          }),
+        });
+        if (poolResponse.ok) {
+          const poolData = await poolResponse.json();
+          const poolItems = (poolData.items || []).map((item) => ({
+            ...item,
+            response_json: coerceResponseJson(item.response_json),
+          }));
+          setFlashcardPool(poolItems);
+        }
+      } catch (error) {
+        // ignore pool errors
+      }
+    })();
   };
 
   const loadFolders = async () => {
@@ -3270,34 +3313,79 @@ function AppInner() {
                                     </span>
                                   </div>
                                   <div className="flashcard-word">{entry.word_ru || entry.word_de || '—'}</div>
-                                  <div className="flashcard-context flashcard-context-visible">
+                                  <div className="flashcard-details">
                                     {translationList.length > 0 && (
-                                      <div>
-                                        <strong>Переводы:</strong> {translationList.join(', ')}
+                                      <div className="flashcard-section">
+                                        <div className="flashcard-section-title">Переводы</div>
+                                        <div className="flashcard-translation-list">
+                                          {translationList.map((item, idx) => (
+                                            <span key={`${item}-${idx}`} className="flashcard-chip">
+                                              {item}
+                                            </span>
+                                          ))}
+                                        </div>
                                       </div>
                                     )}
-                                    {responseJson.article && (
-                                      <div><strong>Артикль:</strong> {responseJson.article}</div>
-                                    )}
-                                    {responseJson.part_of_speech && (
-                                      <div><strong>Часть речи:</strong> {responseJson.part_of_speech}</div>
-                                    )}
-                                    {responseJson.is_separable !== undefined && (
-                                      <div><strong>Trennbar:</strong> {responseJson.is_separable ? 'да' : 'нет'}</div>
+                                    {(responseJson.article || responseJson.part_of_speech || responseJson.is_separable !== undefined) && (
+                                      <div className="flashcard-section">
+                                        <div className="flashcard-section-title">Грамматика</div>
+                                        <div className="flashcard-meta-grid">
+                                          {responseJson.article && (
+                                            <div className="flashcard-meta-item">
+                                              <span>Артикль</span>
+                                              <strong>{responseJson.article}</strong>
+                                            </div>
+                                          )}
+                                          {responseJson.part_of_speech && (
+                                            <div className="flashcard-meta-item">
+                                              <span>Часть речи</span>
+                                              <strong>{responseJson.part_of_speech}</strong>
+                                            </div>
+                                          )}
+                                          {responseJson.is_separable !== undefined && (
+                                            <div className="flashcard-meta-item">
+                                              <span>Trennbar</span>
+                                              <strong>{responseJson.is_separable ? 'да' : 'нет'}</strong>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
                                     )}
                                     {(forms.praeteritum || forms.perfekt || forms.konjunktiv1 || forms.konjunktiv2) && (
-                                      <div>
-                                        <strong>Формы:</strong>{' '}
-                                        {forms.praeteritum && `Präteritum: ${forms.praeteritum} `}
-                                        {forms.perfekt && `Perfekt: ${forms.perfekt} `}
-                                        {forms.konjunktiv1 && `Konj I: ${forms.konjunktiv1} `}
-                                        {forms.konjunktiv2 && `Konj II: ${forms.konjunktiv2}`}
+                                      <div className="flashcard-section">
+                                        <div className="flashcard-section-title">Формы</div>
+                                        <div className="flashcard-forms-grid">
+                                          {forms.praeteritum && (
+                                            <div className="flashcard-form-item">
+                                              <span>Präteritum</span>
+                                              <strong>{forms.praeteritum}</strong>
+                                            </div>
+                                          )}
+                                          {forms.perfekt && (
+                                            <div className="flashcard-form-item">
+                                              <span>Perfekt</span>
+                                              <strong>{forms.perfekt}</strong>
+                                            </div>
+                                          )}
+                                          {forms.konjunktiv1 && (
+                                            <div className="flashcard-form-item">
+                                              <span>Konj I</span>
+                                              <strong>{forms.konjunktiv1}</strong>
+                                            </div>
+                                          )}
+                                          {forms.konjunktiv2 && (
+                                            <div className="flashcard-form-item">
+                                              <span>Konj II</span>
+                                              <strong>{forms.konjunktiv2}</strong>
+                                            </div>
+                                          )}
+                                        </div>
                                       </div>
                                     )}
                                     {usageExamples.length > 0 && (
-                                      <div>
-                                        <strong>Примеры:</strong>
-                                        <ul>
+                                      <div className="flashcard-section">
+                                        <div className="flashcard-section-title">Примеры</div>
+                                        <ul className="flashcard-list">
                                           {usageExamples.map((ex, idx) => (
                                             <li key={`${ex}-${idx}`}>{ex}</li>
                                           ))}
@@ -3305,21 +3393,23 @@ function AppInner() {
                                       </div>
                                     )}
                                     {prefixes.length > 0 && (
-                                      <div>
-                                        <strong>Префиксы:</strong>
-                                        <ul>
+                                      <div className="flashcard-section">
+                                        <div className="flashcard-section-title">Префиксы</div>
+                                        <div className="flashcard-prefixes">
                                           {prefixes.map((pref, idx) => (
-                                            <li key={`${pref.variant || pref}-${idx}`}>
-                                              <strong>{pref.variant || pref}:</strong> {pref.translation_de || pref.translation_ru || ''}
-                                              {pref.example_de ? ` (${pref.example_de})` : ''}
-                                            </li>
+                                            <div key={`${pref.variant || pref}-${idx}`} className="flashcard-prefix">
+                                              <strong>{pref.variant || pref}</strong>
+                                              <span>{pref.translation_de || pref.translation_ru || ''}</span>
+                                              {pref.example_de && <em>{pref.example_de}</em>}
+                                            </div>
                                           ))}
-                                        </ul>
+                                        </div>
                                       </div>
                                     )}
                                     {feel && (
                                       <div className="flashcard-feel">
-                                        <strong>Почувствовать слово:</strong> {feel}
+                                        <strong>Почувствовать слово</strong>
+                                        <p>{feel}</p>
                                       </div>
                                     )}
                                   </div>
@@ -3356,13 +3446,6 @@ function AppInner() {
                                       }}
                                     >
                                       Почувствовать слово
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="secondary-button"
-                                      onClick={() => playTts(entry.word_de || entry.translation_de || '', 'de-DE')}
-                                    >
-                                      🔊
                                     </button>
                                   </div>
                                   <div className="flashcard-actions-row">
@@ -3514,7 +3597,7 @@ function AppInner() {
                                             <button
                                               type="button"
                                               className={className}
-                                              onClick={() => {
+                                              onClick={async () => {
                                                 if (flashcardSelection !== null) return;
                                                 setFlashcardSelection(idx);
                                                 setFlashcardTimedOut(false);
@@ -3533,20 +3616,11 @@ function AppInner() {
                                                 if (revealTimeoutRef.current) {
                                                   clearTimeout(revealTimeoutRef.current);
                                                 }
-                                                revealTimeoutRef.current = setTimeout(() => {
-                                                  advanceFlashcard();
-                                                }, 3000);
+                                                await playTts(correct, 'de-DE');
+                                                advanceFlashcard();
                                               }}
                                             >
                                               {option}
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className="flashcard-tts"
-                                              onClick={() => playTts(option, 'de-DE')}
-                                              aria-label="Озвучить вариант"
-                                            >
-                                              🔊
                                             </button>
                                           </div>
                                         );
@@ -3557,7 +3631,7 @@ function AppInner() {
                                     )}
                                     {flashcardSelection !== null && (
                                       <div className="flashcard-hint">
-                                        Следующая карточка через 3 секунды
+                                        Следующая карточка после озвучки
                                       </div>
                                     )}
                                     {!(flashcardSetComplete || flashcardExitSummary) && (
