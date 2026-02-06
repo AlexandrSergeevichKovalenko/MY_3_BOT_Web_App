@@ -155,7 +155,7 @@ def fetch_user_timeseries(
     granularity: str,
 ) -> list[dict[str, Any]]:
     granularity = _normalize_granularity(granularity)
-    period_expr_t = _period_start_expr("t.timestamp", granularity)
+    period_expr_t = _period_start_expr("ds.date", granularity)
     period_expr_p = _period_start_expr("p.start_time", granularity)
     period_expr_ds = _period_start_expr("ds.date", granularity)
 
@@ -177,7 +177,8 @@ def fetch_user_timeseries(
                     ORDER BY t.timestamp DESC
                 ) AS rn_period
             FROM bt_3_translations t
-            WHERE t.user_id = %s AND t.timestamp::date BETWEEN %s AND %s
+            JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+            WHERE t.user_id = %s AND ds.date BETWEEN %s AND %s
         ),
         filtered AS (
             SELECT *,
@@ -286,7 +287,8 @@ def fetch_user_summary(
                     ORDER BY t.timestamp
                 ) AS attempt_index
             FROM bt_3_translations t
-            WHERE t.user_id = %s AND t.timestamp::date BETWEEN %s AND %s
+            JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+            WHERE t.user_id = %s AND ds.date BETWEEN %s AND %s
         ),
         filtered AS (
             SELECT *,
@@ -325,9 +327,10 @@ def fetch_user_summary(
             WHERE user_id = %s AND date BETWEEN %s AND %s
         ),
         translated_days AS (
-            SELECT DISTINCT timestamp::date AS date
-            FROM bt_3_translations
-            WHERE user_id = %s AND timestamp::date BETWEEN %s AND %s
+            SELECT DISTINCT ds.date AS date
+            FROM bt_3_translations t
+            JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+            WHERE t.user_id = %s AND ds.date BETWEEN %s AND %s
         ),
         missed_days AS (
             SELECT COUNT(*) AS missed_days
@@ -396,7 +399,8 @@ def fetch_comparison_leaderboard(
                     ORDER BY t.timestamp
                 ) AS attempt_index
             FROM bt_3_translations t
-            WHERE t.timestamp::date BETWEEN %s AND %s
+            JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+            WHERE ds.date BETWEEN %s AND %s
         ),
         filtered AS (
             SELECT *,
@@ -439,9 +443,10 @@ def fetch_comparison_leaderboard(
             WHERE date BETWEEN %s AND %s
         ),
         translated_days AS (
-            SELECT DISTINCT user_id, timestamp::date AS date
-            FROM bt_3_translations
-            WHERE timestamp::date BETWEEN %s AND %s
+            SELECT DISTINCT t.user_id, ds.date AS date
+            FROM bt_3_translations t
+            JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+            WHERE ds.date BETWEEN %s AND %s
         ),
         missed_days AS (
             SELECT

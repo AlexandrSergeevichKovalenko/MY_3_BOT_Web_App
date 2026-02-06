@@ -3327,16 +3327,77 @@ async def mistakes_to_voice(username, sentence_pairs):
 
         return AudioSegment.from_file_using_temporary_files(io.BytesIO(response.audio_content))
 
+    async def split_german_sentence(sentence: str) -> list[str]:
+        if not sentence:
+            return []
+        system_instruction_key = "tts_chunk_de"
+        task_name = "tts_chunk_de"
+        assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+        thread = await client.beta.threads.create()
+        thread_id = thread.id
+
+        try:
+            await client.beta.threads.messages.create(
+                thread_id=thread_id,
+                role="user",
+                content=sentence,
+            )
+
+            run = await client.beta.threads.runs.create(
+                thread_id=thread_id,
+                assistant_id=assistant_id,
+            )
+
+            while True:
+                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+                if run_status.status == "completed":
+                    break
+                await asyncio.sleep(1)
+
+            messages = await client.beta.threads.messages.list(thread_id=thread_id)
+            last_message = messages.data[0]
+            text = last_message.content[0].text.value.strip()
+        finally:
+            try:
+                await client.beta.threads.delete(thread_id=thread_id)
+            except Exception:
+                pass
+
+        try:
+            chunks = json.loads(text)
+        except Exception:
+            chunks = []
+        chunks = [str(c).strip() for c in chunks if str(c).strip()]
+        if not chunks:
+            # fallback: split by commas / semicolons
+            chunks = [c.strip() for c in re.split(r"[;,]", sentence) if c.strip()]
+        return chunks or [sentence]
+
+    pause_short = AudioSegment.silent(duration=250)
+    pause_long = AudioSegment.silent(duration=500)
+
     for russian, german in sentence_pairs:
         print(f"🎤 Синтезируем: {russian} -> {german}")
         # Русский (один раз)
         ru_audio = synthesize(russian, "ru-RU", "ru-RU-Wavenet-C")
-        # Немецкий (дважды)
-        de_audio_1 = synthesize(german, "de-DE", "de-DE-Wavenet-B")
-        de_audio_2 = synthesize(german, "de-DE", "de-DE-Wavenet-B")
+        # Немецкий: строим по кускам
+        chunks = await split_german_sentence(german)
+        chunk_segments = []
+        for idx, chunk in enumerate(chunks):
+            # повторяем кусок
+            chunk_audio = synthesize(chunk, "de-DE", "de-DE-Wavenet-B")
+            chunk_segments.extend([chunk_audio, pause_short, chunk_audio, pause_short])
+
+            combined_text = " ".join(chunks[: idx + 1])
+            combined_audio = synthesize(combined_text, "de-DE", "de-DE-Wavenet-B")
+            chunk_segments.extend([combined_audio, pause_long])
+
+        # финальная фраза полностью
+        full_audio = synthesize(german, "de-DE", "de-DE-Wavenet-B")
 
         # Объединяем
-        combined = ru_audio + de_audio_1 + de_audio_2
+        combined = ru_audio + pause_long + sum(chunk_segments, AudioSegment.silent(duration=0)) + full_audio
         audio_segments.append(combined)
 
     final_audio = sum(audio_segments)
@@ -3869,7 +3930,7 @@ def _build_anagram_question(word_ru: str, correct_word: str, response_json: dict
             pattern = re.compile(rf"\\b{re.escape(correct_word)}\\b", re.IGNORECASE)
             scrambled = _scramble_word_preserve_ends(correct_word) or correct_word
             if pattern.search(example):
-                sentence = pattern.sub(_format_anagram_option(scrambled), example)
+                sentence = pattern.sub(scrambled, example)
                 return f"Какой глагол подходит по смыслу?\n{sentence}"
     return f"Выберите правильный немецкий вариант для «{word_ru}». Буквы перемешаны."
 
@@ -3993,6 +4054,59 @@ async def generate_word_order_quiz(entry: dict) -> dict | None:
     }
 
 
+def _extract_prefix_variants(response_json: dict) -> list[str]:
+    prefixes = response_json.get("prefixes") if response_json else []
+    variants = []
+    if isinstance(prefixes, list):
+        for item in prefixes:
+            if not isinstance(item, dict):
+                continue
+            variant = (item.get("variant") or "").strip()
+            if variant:
+                variants.append(variant)
+    return variants
+
+
+async def generate_prefix_quiz(entry: dict) -> dict | None:
+    word_ru = (entry.get("word_ru") or "").strip()
+    response_json = _coerce_response_json(entry.get("response_json"))
+    if not word_ru or not response_json:
+        return None
+
+    correct_word = (entry.get("word_de") or response_json.get("word_de") or "").strip()
+    if not correct_word:
+        return None
+
+    variants = _extract_prefix_variants(response_json)
+    if not variants:
+        return None
+
+    options = [correct_word]
+    for variant in variants:
+        if variant.lower() == correct_word.lower():
+            continue
+        options.append(variant)
+        if len(options) >= 4:
+            break
+
+    options = list(dict.fromkeys([opt for opt in options if opt]))
+    if len(options) < 2:
+        return None
+
+    random.shuffle(options)
+    correct_option_id = options.index(correct_word)
+    question = (
+        f"Выберите правильный немецкий глагол с приставкой для «{word_ru}»."
+    )
+    return {
+        "question": question,
+        "options": options,
+        "correct_option_id": correct_option_id,
+        "quiz_type": "prefix",
+        "word_ru": word_ru,
+    }
+
+
 async def generate_word_quiz(entry: dict) -> dict | None:
     word_ru = (entry.get("word_ru") or "").strip()
     translation_de = (entry.get("translation_de") or "").strip()
@@ -4066,13 +4180,17 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
     roll = random.random()
     if roll < 0.25:
         quiz = await generate_word_order_quiz(entry)
-    elif roll < 0.75:
+    elif roll < 0.50:
+        quiz = await generate_prefix_quiz(entry)
+    elif roll < 0.90:
         quiz = await generate_anagram_quiz(entry)
     else:
         quiz = await generate_word_quiz(entry)
     if not quiz and roll < 0.25:
-        quiz = await generate_anagram_quiz(entry)
-    if not quiz and roll < 0.75:
+        quiz = await generate_prefix_quiz(entry) or await generate_anagram_quiz(entry)
+    if not quiz and roll < 0.50:
+        quiz = await generate_anagram_quiz(entry) or await generate_word_quiz(entry)
+    if not quiz and roll < 0.90:
         quiz = await generate_word_quiz(entry)
     if not quiz:
         logging.warning("⚠️ Не удалось сгенерировать квиз.")

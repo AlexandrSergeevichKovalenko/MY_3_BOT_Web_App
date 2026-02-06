@@ -456,6 +456,18 @@ Subcategories: ... (comma separated if multiple)
 General Feedback: ...
 Error Details: ...
 """,
+"tts_chunk_de":"""
+You are a German language coach. Split a single German sentence into short, meaningful spoken chunks.
+
+Rules:
+- Preserve original word order.
+- Keep each chunk short enough to say in one breath.
+- Do NOT paraphrase or change words.
+- Return JSON only as a list of strings.
+
+Example output:
+["Er hat gestern", "mit seiner Schwester", "einen langen Spaziergang", "im Park gemacht"]
+""",
 "send_me_analytics_and_recommend_me": """
 You are an expert German grammar tutor specializing in error analysis and targeted learning recommendations. 
 Your role is to analyze user mistakes which you will receive in user_message in a variable:
