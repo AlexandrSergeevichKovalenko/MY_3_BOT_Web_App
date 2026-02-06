@@ -115,6 +115,7 @@ from backend.analytics import (
 load_dotenv()
 
 WEBAPP_TOPICS = [
+    "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
     "💼 Business",
     "🏥 Medicine",
     "🎨 Hobbies",
@@ -131,7 +132,6 @@ WEBAPP_TOPICS = [
     "🧠 Psychology",
     "🏛️ History",
     "📰 News",
-    "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
 ]
 
 app = Flask(__name__)

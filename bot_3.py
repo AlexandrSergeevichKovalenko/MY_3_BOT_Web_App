@@ -3836,15 +3836,40 @@ def _scramble_word(word: str) -> str | None:
     return None
 
 
+def _scramble_word_preserve_ends(word: str) -> str | None:
+    if not word:
+        return None
+    if len(word) < 4:
+        return None
+    first = word[0]
+    last = word[-1]
+    middle = list(word[1:-1])
+    original = "".join(middle).lower()
+    for _ in range(20):
+        random.shuffle(middle)
+        scrambled_middle = "".join(middle)
+        if scrambled_middle.lower() != original:
+            return f"{first}{scrambled_middle}{last}"
+    return None
+
+
+def _format_anagram_option(word: str) -> str:
+    if not word:
+        return word
+    base = word.lower()
+    formatted = base[0].upper() + base[1:]
+    return " ".join(list(formatted))
+
+
 def _build_anagram_question(word_ru: str, correct_word: str, response_json: dict) -> str:
     usage_examples = response_json.get("usage_examples") if response_json else []
     if usage_examples:
         example = next((ex for ex in usage_examples if isinstance(ex, str)), "")
         if example:
             pattern = re.compile(rf"\\b{re.escape(correct_word)}\\b", re.IGNORECASE)
-            scrambled = _scramble_word(correct_word) or correct_word
+            scrambled = _scramble_word_preserve_ends(correct_word) or correct_word
             if pattern.search(example):
-                sentence = pattern.sub(scrambled, example)
+                sentence = pattern.sub(_format_anagram_option(scrambled), example)
                 return f"Какой глагол подходит по смыслу?\n{sentence}"
     return f"Выберите правильный немецкий вариант для «{word_ru}». Буквы перемешаны."
 
@@ -3852,7 +3877,7 @@ def _build_anagram_question(word_ru: str, correct_word: str, response_json: dict
 def _pick_anagram_distractors(correct_word: str, count: int = 3) -> list[str]:
     distractors = []
     attempts = 0
-    while len(distractors) < count and attempts < 12:
+    while len(distractors) < count and attempts < 30:
         attempts += 1
         entry = get_random_dictionary_entry(cooldown_days=0)
         if not entry:
@@ -3860,10 +3885,15 @@ def _pick_anagram_distractors(correct_word: str, count: int = 3) -> list[str]:
         candidate = _extract_german_word(entry)
         if not candidate:
             continue
+        if len(candidate) != len(correct_word):
+            continue
         if candidate.lower() == correct_word.lower():
             continue
-        scrambled = _scramble_word(candidate)
-        if not scrambled:
+        middle = candidate[1:-1]
+        if not middle:
+            continue
+        scrambled = f"{correct_word[0]}{middle}{correct_word[-1]}"
+        if scrambled.lower() == correct_word.lower():
             continue
         if scrambled in distractors:
             continue
@@ -3881,7 +3911,7 @@ async def generate_anagram_quiz(entry: dict) -> dict | None:
     if not correct_word:
         return None
 
-    scrambled_correct = _scramble_word(correct_word)
+    scrambled_correct = _scramble_word_preserve_ends(correct_word)
     if not scrambled_correct:
         return None
 
@@ -3889,11 +3919,14 @@ async def generate_anagram_quiz(entry: dict) -> dict | None:
     options.extend(_pick_anagram_distractors(correct_word))
     if len(options) < 2:
         return None
+    options = list(dict.fromkeys(options))
     random.shuffle(options)
     if len(options) > 4:
         options = [scrambled_correct] + [opt for opt in options if opt != scrambled_correct][:3]
         random.shuffle(options)
     correct_option_id = options.index(scrambled_correct)
+    options = [_format_anagram_option(option) for option in options]
+    correct_option_id = options.index(_format_anagram_option(scrambled_correct))
 
     question = _build_anagram_question(word_ru, correct_word, response_json)
     return {
@@ -3902,6 +3935,60 @@ async def generate_anagram_quiz(entry: dict) -> dict | None:
         "correct_option_id": correct_option_id,
         "quiz_type": "anagram",
         "correct_text": correct_word,
+        "word_ru": word_ru,
+    }
+
+
+def _build_word_order_options(sentence: str) -> list[str]:
+    tokens = [t for t in sentence.split() if t]
+    if len(tokens) < 4:
+        return []
+    correct = " ".join(tokens)
+    options = [correct]
+    candidates = []
+
+    swapped = tokens[:]
+    swapped[0], swapped[1] = swapped[1], swapped[0]
+    candidates.append(" ".join(swapped))
+
+    moved = tokens[:]
+    moved.append(moved.pop(0))
+    candidates.append(" ".join(moved))
+
+    if len(tokens) > 4:
+        middle = tokens[1:-1]
+        middle = list(reversed(middle))
+        reversed_mid = [tokens[0]] + middle + [tokens[-1]]
+        candidates.append(" ".join(reversed_mid))
+
+    for cand in candidates:
+        if cand != correct and cand not in options:
+            options.append(cand)
+
+    return options
+
+
+async def generate_word_order_quiz(entry: dict) -> dict | None:
+    word_ru = (entry.get("word_ru") or "").strip()
+    response_json = _coerce_response_json(entry.get("response_json"))
+    usage_examples = response_json.get("usage_examples") if response_json else []
+    usage_examples = [ex for ex in usage_examples if isinstance(ex, str) and ex.strip()]
+    if not usage_examples:
+        return None
+
+    sentence = usage_examples[0].strip()
+    options = _build_word_order_options(sentence)
+    if len(options) < 2:
+        return None
+    if len(options) > 4:
+        options = options[:4]
+    correct_option_id = options.index(sentence)
+    question = f"Выберите правильный порядок слов в немецком предложении.\nПодсказка: «{word_ru}»."
+    return {
+        "question": question,
+        "options": options,
+        "correct_option_id": correct_option_id,
+        "quiz_type": "word_order",
         "word_ru": word_ru,
     }
 
@@ -3976,9 +4063,16 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
         return
 
     quiz = None
-    if random.random() < 0.5:
+    roll = random.random()
+    if roll < 0.25:
+        quiz = await generate_word_order_quiz(entry)
+    elif roll < 0.75:
         quiz = await generate_anagram_quiz(entry)
-    if not quiz:
+    else:
+        quiz = await generate_word_quiz(entry)
+    if not quiz and roll < 0.25:
+        quiz = await generate_anagram_quiz(entry)
+    if not quiz and roll < 0.75:
         quiz = await generate_word_quiz(entry)
     if not quiz:
         logging.warning("⚠️ Не удалось сгенерировать квиз.")

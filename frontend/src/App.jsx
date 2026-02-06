@@ -112,6 +112,7 @@ function AppInner() {
   const [flashcardSessionActive, setFlashcardSessionActive] = useState(false);
   const [flashcardTimerKey, setFlashcardTimerKey] = useState(0);
   const [topics, setTopics] = useState([
+    '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ',
     '💼 Business',
     '🏥 Medicine',
     '🎨 Hobbies',
@@ -128,7 +129,6 @@ function AppInner() {
     '🧠 Psychology',
     '🏛️ History',
     '📰 News',
-    '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ',
   ]);
   const [topicsLoading, setTopicsLoading] = useState(false);
   const [topicsError, setTopicsError] = useState('');
