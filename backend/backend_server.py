@@ -97,6 +97,9 @@ from backend.translation_workflow import (
     finish_translation_webapp,
     get_daily_translation_history,
     start_translation_session_webapp,
+    start_story_session_webapp,
+    submit_story_translation_webapp,
+    get_story_history_webapp,
 )
 from backend.analytics import (
     fetch_user_summary,
@@ -127,6 +130,7 @@ WEBAPP_TOPICS = [
     "🧠 Psychology",
     "🏛️ History",
     "📰 News",
+    "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
 ]
 
 app = Flask(__name__)
@@ -1127,6 +1131,115 @@ def start_webapp_translation():
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка запуска сессии: {exc}"}), 500
+
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/api/webapp/story/history", methods=["POST"])
+def get_webapp_story_history():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    limit = int(payload.get("limit", 10))
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    items = get_story_history_webapp(user_id=user_id, limit=limit)
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/webapp/story/start", methods=["POST"])
+def start_webapp_story():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    mode = (payload.get("mode") or "new").strip().lower()
+    story_type = (payload.get("story_type") or "знаменитая личность").strip()
+    difficulty = (payload.get("difficulty") or "средний").strip()
+    story_id = payload.get("story_id")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    username = user_data.get("username")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        result = asyncio.run(
+            start_story_session_webapp(
+                user_id=user_id,
+                username=username,
+                mode=mode,
+                story_type=story_type,
+                difficulty=difficulty,
+                story_id=int(story_id) if story_id else None,
+            )
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка запуска истории: {exc}"}), 500
+
+    if isinstance(result, dict) and result.get("error"):
+        return jsonify({"error": result["error"]}), 400
+
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/api/webapp/story/submit", methods=["POST"])
+def submit_webapp_story():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    translations = payload.get("translations") or []
+    guess = (payload.get("guess") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not translations:
+        return jsonify({"error": "translations обязательны"}), 400
+    if not guess:
+        return jsonify({"error": "guess обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    username = user_data.get("username")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        result = asyncio.run(
+            submit_story_translation_webapp(
+                user_id=user_id,
+                username=username,
+                translations=translations,
+                guess=guess,
+            )
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка истории: {exc}"}), 500
+
+    if isinstance(result, dict) and result.get("error"):
+        return jsonify({"error": result["error"]}), 400
 
     return jsonify({"ok": True, **result})
 

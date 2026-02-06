@@ -128,11 +128,22 @@ function AppInner() {
     '🧠 Psychology',
     '🏛️ History',
     '📰 News',
+    '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ',
   ]);
   const [topicsLoading, setTopicsLoading] = useState(false);
   const [topicsError, setTopicsError] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('💼 Business');
   const [selectedLevel, setSelectedLevel] = useState('c1');
+  const STORY_TOPIC = '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ';
+  const [storyMode, setStoryMode] = useState('new');
+  const [storyType, setStoryType] = useState('знаменитая личность');
+  const [storyDifficulty, setStoryDifficulty] = useState('средний');
+  const [storyHistory, setStoryHistory] = useState([]);
+  const [storyHistoryLoading, setStoryHistoryLoading] = useState(false);
+  const [storyHistoryError, setStoryHistoryError] = useState('');
+  const [selectedStoryId, setSelectedStoryId] = useState('');
+  const [storyGuess, setStoryGuess] = useState('');
+  const [storyResult, setStoryResult] = useState(null);
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
@@ -770,6 +781,19 @@ function AppInner() {
   }, [initData, isWebAppMode]);
 
   useEffect(() => {
+    if (selectedTopic === STORY_TOPIC && initData) {
+      loadStoryHistory();
+    }
+  }, [selectedTopic, initData]);
+
+  useEffect(() => {
+    if (selectedTopic !== STORY_TOPIC) {
+      setStoryResult(null);
+      setStoryGuess('');
+    }
+  }, [selectedTopic]);
+
+  useEffect(() => {
     const stored = safeStorageGet('webapp_youtube');
     if (!stored) return;
     try {
@@ -862,6 +886,15 @@ function AppInner() {
     }
   };
 
+  const handleTranslationSubmit = (event) => {
+    if (selectedTopic === STORY_TOPIC) {
+      event.preventDefault();
+      handleStorySubmit();
+      return;
+    }
+    handleWebappSubmit(event);
+  };
+
   const handleStartTranslation = async () => {
     if (!initData) {
       setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
@@ -891,6 +924,106 @@ function AppInner() {
       await loadSentences();
     } catch (error) {
       setWebappError(`Ошибка старта: ${error.message}`);
+    } finally {
+      setWebappLoading(false);
+    }
+  };
+
+  const loadStoryHistory = async () => {
+    if (!initData) return;
+    setStoryHistoryLoading(true);
+    setStoryHistoryError('');
+    try {
+      const response = await fetch('/api/webapp/story/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, limit: 10 }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      setStoryHistory(Array.isArray(data.items) ? data.items : []);
+    } catch (error) {
+      setStoryHistoryError(`Ошибка истории: ${error.message}`);
+    } finally {
+      setStoryHistoryLoading(false);
+    }
+  };
+
+  const handleStartStory = async () => {
+    if (!initData) {
+      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    setWebappLoading(true);
+    setWebappError('');
+    setFinishMessage('');
+    setFinishStatus('idle');
+    setStoryResult(null);
+    setResults([]);
+    setExplanations({});
+    try {
+      const response = await fetch('/api/webapp/story/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          mode: storyMode,
+          story_type: storyType,
+          difficulty: storyDifficulty,
+          story_id: storyMode === 'repeat' && selectedStoryId ? Number(selectedStoryId) : null,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      if (data.blocked) {
+        setFinishMessage('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.');
+      }
+      await loadSentences();
+    } catch (error) {
+      setWebappError(`Ошибка старта истории: ${error.message}`);
+    } finally {
+      setWebappLoading(false);
+    }
+  };
+
+  const handleStorySubmit = async () => {
+    if (!initData) {
+      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      return;
+    }
+    if (!storyGuess.trim()) {
+      setWebappError('Введите ваш ответ: о ком/чем была история.');
+      return;
+    }
+    setWebappLoading(true);
+    setWebappError('');
+    setFinishMessage('');
+    setResults([]);
+    setExplanations({});
+    try {
+      const response = await fetch('/api/webapp/story/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          translations: Object.entries(translationDrafts).map(([id, translation]) => ({
+            id_for_mistake_table: Number(id),
+            translation,
+          })),
+          guess: storyGuess,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      setStoryResult(data);
+    } catch (error) {
+      setWebappError(`Ошибка истории: ${error.message}`);
     } finally {
       setWebappLoading(false);
     }
@@ -2237,31 +2370,96 @@ function AppInner() {
                       ))}
                     </select>
                   </label>
-                  <label className="webapp-field">
-                    <span>Уровень</span>
-                    <select
-                      value={selectedLevel}
-                      onChange={(event) => setSelectedLevel(event.target.value)}
-                      disabled={webappLoading}
-                    >
-                      <option value="a2">A2</option>
-                      <option value="b1">B1</option>
-                      <option value="b2">B2</option>
-                      <option value="c1">C1</option>
-                      <option value="c2">C2</option>
-                    </select>
-                  </label>
+                  {selectedTopic !== STORY_TOPIC && (
+                    <label className="webapp-field">
+                      <span>Уровень</span>
+                      <select
+                        value={selectedLevel}
+                        onChange={(event) => setSelectedLevel(event.target.value)}
+                        disabled={webappLoading}
+                      >
+                        <option value="a2">A2</option>
+                        <option value="b1">B1</option>
+                        <option value="b2">B2</option>
+                        <option value="c1">C1</option>
+                        <option value="c2">C2</option>
+                      </select>
+                    </label>
+                  )}
+                  {selectedTopic === STORY_TOPIC && (
+                    <>
+                      <label className="webapp-field">
+                        <span>История</span>
+                        <select
+                          value={storyMode}
+                          onChange={(event) => setStoryMode(event.target.value)}
+                          disabled={webappLoading}
+                        >
+                          <option value="new">Новая</option>
+                          <option value="repeat">Повторить старую</option>
+                        </select>
+                      </label>
+                      {storyMode === 'repeat' && (
+                        <label className="webapp-field">
+                          <span>Выберите историю</span>
+                          <select
+                            value={selectedStoryId}
+                            onChange={(event) => setSelectedStoryId(event.target.value)}
+                            disabled={webappLoading || storyHistoryLoading}
+                          >
+                            <option value="">Последняя</option>
+                            {storyHistory.map((item) => (
+                              <option key={item.story_id} value={item.story_id}>
+                                {item.title || `История #${item.story_id}`}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      <label className="webapp-field">
+                        <span>Тип истории</span>
+                        <select
+                          value={storyType}
+                          onChange={(event) => setStoryType(event.target.value)}
+                          disabled={webappLoading}
+                        >
+                          <option value="знаменитая личность">Знаменитая личность</option>
+                          <option value="историческое событие">Историческое событие</option>
+                          <option value="выдающееся открытие">Выдающееся открытие</option>
+                          <option value="выдающееся изобретение">Выдающееся изобретение</option>
+                          <option value="география">География</option>
+                          <option value="космос">Космос</option>
+                          <option value="культура">Культура</option>
+                          <option value="спорт">Спорт</option>
+                          <option value="политика">Политика</option>
+                        </select>
+                      </label>
+                      <label className="webapp-field">
+                        <span>Сложность</span>
+                        <select
+                          value={storyDifficulty}
+                          onChange={(event) => setStoryDifficulty(event.target.value)}
+                          disabled={webappLoading}
+                        >
+                          <option value="начальный">Начальный</option>
+                          <option value="средний">Средний</option>
+                          <option value="продвинутый">Продвинутый</option>
+                        </select>
+                      </label>
+                    </>
+                  )}
                   <button
                     type="button"
                     className="primary-button"
-                    onClick={handleStartTranslation}
+                    onClick={selectedTopic === STORY_TOPIC ? handleStartStory : handleStartTranslation}
                     disabled={webappLoading || topicsLoading}
                   >
                     {webappLoading ? 'Запускаем...' : '🚀 Начать перевод'}
                   </button>
                 </div>
                 {topicsError && <div className="webapp-error">{topicsError}</div>}
-                <form className="webapp-form" onSubmit={handleWebappSubmit}>
+                {storyHistoryError && <div className="webapp-error">{storyHistoryError}</div>}
+                <form className="webapp-form" onSubmit={handleTranslationSubmit}>
                   <section className="webapp-translation-list">
                     {sentences.length === 0 ? (
                       <p className="webapp-muted">
@@ -2297,13 +2495,52 @@ function AppInner() {
                     )}
                   </section>
 
+                  {selectedTopic === STORY_TOPIC && (
+                    <label className="webapp-field">
+                      <span>А теперь угадай, о ком / чем шла речь</span>
+                      <input
+                        type="text"
+                        value={storyGuess}
+                        onChange={(event) => setStoryGuess(event.target.value)}
+                        placeholder="Ваш ответ..."
+                      />
+                    </label>
+                  )}
+
                   <button className="primary-button" type="submit" disabled={webappLoading}>
-                    {webappLoading ? 'Проверяем...' : 'Проверить перевод'}
+                    {webappLoading
+                      ? 'Проверяем...'
+                      : selectedTopic === STORY_TOPIC
+                        ? 'Проверить историю'
+                        : 'Проверить перевод'}
                   </button>
                 </form>
 
                 {webappError && <div className="webapp-error">{webappError}</div>}
                 {finishMessage && <div className="webapp-success">{finishMessage}</div>}
+
+                {storyResult && selectedTopic === STORY_TOPIC && (
+                  <section className="webapp-result">
+                    <h3>Результат истории</h3>
+                    <div className="webapp-result-card">
+                      <div className="webapp-result-text">
+                        <strong>Оценка:</strong> {storyResult.score ?? '—'} / 100
+                      </div>
+                      {storyResult.feedback && (
+                        <div className="webapp-result-text">{storyResult.feedback}</div>
+                      )}
+                      <div className="webapp-result-text">
+                        <strong>Ответ:</strong> {storyResult.answer || '—'} —{' '}
+                        {storyResult.guess_correct ? 'верно' : 'неверно'}
+                      </div>
+                      {storyResult.extra_de && (
+                        <div className="webapp-result-text">
+                          <strong>Дополнительно (DE):</strong> {storyResult.extra_de}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                )}
 
                 {results.length > 0 && (
                   <section className="webapp-result">

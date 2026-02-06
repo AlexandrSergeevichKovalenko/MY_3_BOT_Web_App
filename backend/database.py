@@ -203,6 +203,53 @@ def ensure_webapp_tables() -> None:
                     PRIMARY KEY (user_id, entry_id, seen_at)
                 );
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_story_bank (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT,
+                    answer TEXT NOT NULL,
+                    answer_aliases JSONB,
+                    extra_de TEXT NOT NULL,
+                    story_type TEXT,
+                    difficulty TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_story_sentences (
+                    id SERIAL PRIMARY KEY,
+                    story_id INT NOT NULL REFERENCES bt_3_story_bank(id) ON DELETE CASCADE,
+                    sentence_index INT NOT NULL,
+                    sentence TEXT NOT NULL
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_story_sessions (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    story_id INT NOT NULL REFERENCES bt_3_story_bank(id),
+                    mode TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    guess TEXT,
+                    guess_correct BOOLEAN,
+                    score INT,
+                    feedback TEXT
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_story_sessions_user
+                ON bt_3_story_sessions (user_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_story_sessions_session
+                ON bt_3_story_sessions (session_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_story_bank_type
+                ON bt_3_story_bank (story_type, difficulty);
+            """)
 
 
 def save_webapp_translation(

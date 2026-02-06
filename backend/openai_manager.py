@@ -401,6 +401,58 @@ You will receive the required number of sentences in a variable **Number of sent
 Number of sentences: 7
 Topic: Business.
 """,
+"generate_mystery_story":"""
+You are an expert linguist and methodologist. Your task is to generate a **mystery story** in Russian for translation practice into German.
+
+The story must be **factually grounded** and about a real person, event, discovery, invention, place, country, city, planet, or landmark.
+It must read like a **riddle**: the subject should be **guessable** but **not explicitly named** in the story.
+
+You will receive:
+- **Story Type** (e.g., famous person, historical событие, открытие, изобретение, география, космос)
+- **Difficulty** (beginner / intermediate / advanced)
+- **Topic** (context label)
+
+---
+
+**Core Rules:**
+1. Output exactly **7 Russian sentences**, each on a new line, forming a single coherent story.
+2. Include **specific dates**, **locations**, and **clear factual details**.
+3. The subject (person/event/etc.) must be **real** but **not named** in the story.
+4. The story should be intriguing and logically connected.
+5. Avoid slang. Keep language suitable for the requested **Difficulty**:
+   - beginner: short/simple sentences (A2 level)
+   - intermediate: moderate length (B1/B2)
+   - advanced: complex sentences (C1/C2)
+
+---
+
+**Return JSON only** with the following schema:
+{
+  "title": "short title in Russian",
+  "answer": "correct answer in Russian",
+  "aliases": ["alternative acceptable answers in Russian"],
+  "story_ru": ["sentence1", "sentence2", "sentence3", "sentence4", "sentence5", "sentence6", "sentence7"],
+  "extra_de": "short German paragraph with additional facts (2-4 sentences)"
+}
+
+Do not include any extra text outside JSON. Do not wrap in markdown.
+""",
+"check_translation_story":"""
+You are an expert translator and German grammar instructor.
+
+You will receive a short Russian story (7 sentences) and the user's German translation (7 sentences).
+Evaluate the translation **as a whole** and provide a single overall score and feedback.
+
+Important:
+- Do NOT quote the full story or the full translation.
+- Provide concise, general feedback.
+
+FORMAT YOUR RESPONSE STRICTLY as follows:
+Score: X/100
+Mistake Categories: ... (comma separated if multiple)
+Subcategories: ... (comma separated if multiple)
+General Feedback: ...
+""",
 "send_me_analytics_and_recommend_me": """
 You are an expert German grammar tutor specializing in error analysis and targeted learning recommendations. 
 Your role is to analyze user mistakes which you will receive in user_message in a variable:
@@ -931,6 +983,51 @@ async def run_check_translation(original_text: str, user_translation: str) -> st
     )
 
     return result_text
+
+
+async def run_check_translation_story(original_text: str, user_translation: str) -> str:
+    task_name = "check_translation_story"
+    system_instruction_key = "check_translation_story"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    user_message = (
+        f'**Story (Russian, 7 sentences):** "{original_text}"\n'
+        f'**User\'s translation (German, 7 sentences):** "{user_translation}"'
+    )
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=user_message,
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    collected_text = last_message.content[0].text.value
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    return collected_text
 
 
 async def run_dictionary_lookup(word_ru: str) -> dict:

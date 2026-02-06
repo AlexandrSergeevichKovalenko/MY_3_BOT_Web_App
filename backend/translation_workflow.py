@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 import re
+import json
 from datetime import datetime
 from typing import Any
 
@@ -15,7 +16,12 @@ from backend.config_mistakes_data import (
     VALID_SUBCATEGORIES,
     VALID_SUBCATEGORIES_lower,
 )
-from backend.openai_manager import client, get_or_create_openai_resources
+from backend.openai_manager import (
+    client,
+    get_or_create_openai_resources,
+    run_check_translation_story,
+)
+from backend.database import get_db_connection_context
 
 
 DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY")
@@ -57,6 +63,522 @@ def _normalize_level(level: str | None) -> str:
         return "c2"
     allowed = {"a2", "b1", "b2", "c1", "c2"}
     return normalized if normalized in allowed else "c1"
+
+
+def _extract_json_payload(text: str) -> dict[str, Any] | None:
+    if not text:
+        return None
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
+        stripped = stripped.rstrip("`").strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", stripped, re.DOTALL)
+        if not match:
+            return None
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+
+
+def _normalize_guess(text: str) -> str:
+    cleaned = re.sub(r"[^\w\s\-]", " ", text.lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _normalize_story_difficulty(value: str | None) -> str:
+    if not value:
+        return "intermediate"
+    normalized = value.strip().lower()
+    if normalized in {"начальный", "beginner", "a2"}:
+        return "beginner"
+    if normalized in {"средний", "intermediate", "b1", "b2"}:
+        return "intermediate"
+    if normalized in {"продвинутый", "advanced", "c1", "c2"}:
+        return "advanced"
+    return "intermediate"
+
+
+async def generate_mystery_story(
+    story_type: str,
+    difficulty: str,
+    topic: str = "ЗАГАДОЧНАЯ ИСТОРИЯ",
+) -> dict[str, Any]:
+    task_name = "generate_mystery_story"
+    system_instruction_key = "generate_mystery_story"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    user_message = f"""
+    Story Type: "{story_type}"
+    Difficulty: "{difficulty}"
+    Topic: "{topic}"
+    """
+
+    for attempt in range(4):
+        try:
+            await client.beta.threads.messages.create(
+                thread_id=thread_id,
+                role="user",
+                content=user_message,
+            )
+
+            run = await client.beta.threads.runs.create(
+                thread_id=thread_id,
+                assistant_id=assistant_id,
+            )
+
+            while True:
+                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+                if run_status.status == "completed":
+                    break
+                await asyncio.sleep(1)
+
+            messages = await client.beta.threads.messages.list(thread_id=thread_id)
+            last_message = messages.data[0]
+            content = last_message.content[0].text.value
+
+            try:
+                await client.beta.threads.delete(thread_id=thread_id)
+            except Exception:
+                pass
+
+            payload = _extract_json_payload(content)
+            if payload:
+                return payload
+        except openai.RateLimitError:
+            await asyncio.sleep((attempt + 1) * 2)
+        except Exception:
+            break
+
+    return {}
+
+
+def _parse_story_feedback(text: str) -> dict[str, Any]:
+    score = None
+    categories: list[str] = []
+    subcategories: list[str] = []
+    feedback = ""
+
+    if "Score:" in text:
+        score_candidate = text.split("Score:")[-1].split("/")[0].strip()
+        if score_candidate.isdigit():
+            score = int(score_candidate)
+
+    match = re.search(r"Mistake Categories:\s*(.+)", text)
+    if match:
+        raw = match.group(1).strip()
+        if raw:
+            categories = [item.strip() for item in raw.split(",") if item.strip()]
+
+    match = re.search(r"Subcategories:\s*(.+)", text)
+    if match:
+        raw = match.group(1).strip()
+        if raw:
+            subcategories = [item.strip() for item in raw.split(",") if item.strip()]
+
+    match = re.search(r"General Feedback:\s*(.+)", text)
+    if match:
+        feedback = match.group(1).strip()
+
+    return {
+        "score": score if score is not None else 0,
+        "categories": categories,
+        "subcategories": subcategories,
+        "feedback": feedback,
+    }
+
+
+def _insert_story_session_sentences(
+    cursor,
+    user_id: int,
+    session_id: str,
+    sentences: list[str],
+) -> None:
+    cursor.execute(
+        """
+        SELECT COALESCE(MAX(unique_id), 0)
+        FROM bt_3_daily_sentences
+        WHERE user_id = %s AND date = CURRENT_DATE;
+        """,
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    start_index = (row[0] or 0) + 1
+
+    for i, sentence in enumerate(sentences, start=start_index):
+        cursor.execute(
+            """
+            SELECT id_for_mistake_table
+            FROM bt_3_daily_sentences
+            WHERE sentence = %s
+            LIMIT 1;
+            """,
+            (sentence,),
+        )
+        result = cursor.fetchone()
+
+        if result:
+            id_for_mistake_table = result[0]
+        else:
+            cursor.execute("SELECT MAX(id_for_mistake_table) FROM bt_3_daily_sentences;")
+            result = cursor.fetchone()
+            max_id = result[0] if result and result[0] is not None else 0
+            id_for_mistake_table = max_id + 1
+
+        cursor.execute(
+            """
+            INSERT INTO bt_3_daily_sentences (date, sentence, unique_id, user_id, session_id, id_for_mistake_table)
+            VALUES (CURRENT_DATE, %s, %s, %s, %s, %s);
+            """,
+            (sentence, i, user_id, session_id, id_for_mistake_table),
+        )
+
+
+def _save_story_bank(
+    cursor,
+    title: str | None,
+    answer: str,
+    aliases: list[str],
+    extra_de: str,
+    story_type: str,
+    difficulty: str,
+    sentences: list[str],
+) -> int:
+    cursor.execute(
+        """
+        INSERT INTO bt_3_story_bank (title, answer, answer_aliases, extra_de, story_type, difficulty)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """,
+        (title or None, answer, json.dumps(aliases, ensure_ascii=False), extra_de, story_type, difficulty),
+    )
+    story_id = cursor.fetchone()[0]
+
+    for idx, sentence in enumerate(sentences, start=1):
+        cursor.execute(
+            """
+            INSERT INTO bt_3_story_sentences (story_id, sentence_index, sentence)
+            VALUES (%s, %s, %s);
+            """,
+            (story_id, idx, sentence),
+        )
+    return story_id
+
+
+def get_story_history_webapp(user_id: int, limit: int = 10) -> list[dict[str, Any]]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT s.story_id, b.title, b.story_type, b.difficulty, s.created_at
+                FROM bt_3_story_sessions s
+                JOIN bt_3_story_bank b ON b.id = s.story_id
+                WHERE s.user_id = %s
+                ORDER BY s.created_at DESC
+                LIMIT %s;
+                """,
+                (user_id, limit),
+            )
+            rows = cursor.fetchall()
+    return [
+        {
+            "story_id": row[0],
+            "title": row[1],
+            "story_type": row[2],
+            "difficulty": row[3],
+            "created_at": row[4].isoformat() if row[4] else None,
+        }
+        for row in rows
+    ]
+
+
+async def start_story_session_webapp(
+    user_id: int,
+    username: str | None,
+    mode: str,
+    story_type: str,
+    difficulty: str,
+    story_id: int | None = None,
+) -> dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        active_session_id = _get_active_session_id(cursor, user_id)
+        if active_session_id:
+            return {"session_id": active_session_id, "created": False, "blocked": True}
+
+        cursor.execute(
+            """
+            UPDATE bt_3_user_progress
+            SET end_time = NOW(), completed = TRUE
+            WHERE user_id = %s AND start_time::date < CURRENT_DATE AND completed = FALSE;
+            """,
+            (user_id,),
+        )
+
+        session_id = int(hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest(), 16) % (10**12)
+        cursor.execute(
+            """
+            INSERT INTO bt_3_user_progress (session_id, user_id, username, start_time, completed)
+            VALUES (%s, %s, %s, NOW(), FALSE);
+            """,
+            (session_id, user_id, username),
+        )
+
+        story_payload: dict[str, Any] | None = None
+        story_sentences: list[str] = []
+        story_title = None
+        story_answer = None
+        story_aliases: list[str] = []
+        story_extra_de = None
+
+        if mode == "repeat":
+            if not story_id:
+                cursor.execute(
+                    """
+                    SELECT story_id
+                    FROM bt_3_story_sessions
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1;
+                    """,
+                    (user_id,),
+                )
+                row = cursor.fetchone()
+                story_id = row[0] if row else None
+            if not story_id:
+                return {"error": "Нет сохранённых историй для повтора.", "created": False}
+
+            cursor.execute(
+                """
+                SELECT title, answer, answer_aliases, extra_de, story_type, difficulty
+                FROM bt_3_story_bank
+                WHERE id = %s;
+                """,
+                (story_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {"error": "История не найдена.", "created": False}
+            story_title, story_answer, aliases_json, story_extra_de, story_type, difficulty = row
+            if isinstance(aliases_json, str):
+                try:
+                    story_aliases = json.loads(aliases_json)
+                except json.JSONDecodeError:
+                    story_aliases = []
+            else:
+                story_aliases = aliases_json or []
+            cursor.execute(
+                """
+                SELECT sentence
+                FROM bt_3_story_sentences
+                WHERE story_id = %s
+                ORDER BY sentence_index ASC;
+                """,
+                (story_id,),
+            )
+            story_sentences = [row[0] for row in cursor.fetchall()]
+        else:
+            normalized_difficulty = _normalize_story_difficulty(difficulty)
+            story_payload = await generate_mystery_story(story_type, normalized_difficulty)
+            story_title = story_payload.get("title")
+            story_answer = story_payload.get("answer")
+            story_aliases = story_payload.get("aliases") or []
+            story_extra_de = story_payload.get("extra_de")
+            story_sentences = story_payload.get("story_ru") or []
+
+            if not story_answer or not story_extra_de or len(story_sentences) != 7:
+                return {"error": "Не удалось сформировать историю.", "created": False}
+
+            story_id = _save_story_bank(
+                cursor,
+                story_title,
+                story_answer,
+                story_aliases,
+                story_extra_de,
+                story_type,
+                normalized_difficulty,
+                story_sentences,
+            )
+
+        cursor.execute(
+            """
+            INSERT INTO bt_3_story_sessions (user_id, session_id, story_id, mode)
+            VALUES (%s, %s, %s, %s);
+            """,
+            (user_id, session_id, story_id, mode),
+        )
+
+        _insert_story_session_sentences(cursor, user_id, session_id, story_sentences)
+        conn.commit()
+
+        return {
+            "session_id": session_id,
+            "created": True,
+            "count": len(story_sentences),
+            "story_id": story_id,
+            "title": story_title,
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+async def submit_story_translation_webapp(
+    user_id: int,
+    username: str | None,
+    translations: list[dict[str, Any]],
+    guess: str,
+) -> dict[str, Any]:
+    if not translations:
+        return {"error": "translations обязательны"}
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            SELECT session_id
+            FROM bt_3_user_progress
+            WHERE user_id = %s AND completed = FALSE
+            ORDER BY start_time DESC
+            LIMIT 1;
+            """,
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {"error": "Активная сессия не найдена."}
+        session_id = row[0]
+
+        cursor.execute(
+            """
+            SELECT s.story_id, b.answer, b.answer_aliases, b.extra_de
+            FROM bt_3_story_sessions s
+            JOIN bt_3_story_bank b ON b.id = s.story_id
+            WHERE s.user_id = %s AND s.session_id = %s
+            ORDER BY s.created_at DESC
+            LIMIT 1;
+            """,
+            (user_id, session_id),
+        )
+        story_row = cursor.fetchone()
+        if not story_row:
+            return {"error": "История для этой сессии не найдена."}
+
+        story_id, answer, aliases_json, extra_de = story_row
+        if isinstance(aliases_json, str):
+            try:
+                aliases = json.loads(aliases_json)
+            except json.JSONDecodeError:
+                aliases = []
+        else:
+            aliases = aliases_json or []
+
+        cursor.execute(
+            """
+            SELECT id, id_for_mistake_table, sentence, unique_id
+            FROM bt_3_daily_sentences
+            WHERE user_id = %s AND session_id = %s
+            ORDER BY unique_id ASC;
+            """,
+            (user_id, session_id),
+        )
+        daily_rows = cursor.fetchall()
+        if not daily_rows:
+            return {"error": "Предложения истории не найдены."}
+
+        if len(daily_rows) != 7:
+            logging.warning("Story session has %s sentences, expected 7", len(daily_rows))
+
+        translations_by_id = {
+            int(item.get("id_for_mistake_table")): (item.get("translation") or "").strip()
+            for item in translations
+            if item.get("id_for_mistake_table")
+        }
+
+        original_sentences = [row[2] for row in daily_rows]
+        user_sentences = [translations_by_id.get(row[1], "") for row in daily_rows]
+
+        if any(not text for text in user_sentences):
+            return {"error": "Нужно заполнить все 7 предложений истории."}
+
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM bt_3_translations
+            WHERE user_id = %s AND session_id = %s;
+            """,
+            (user_id, session_id),
+        )
+        if (cursor.fetchone()[0] or 0) > 0:
+            return {"error": "История уже была отправлена."}
+
+        original_text = "\n".join(original_sentences)
+        user_text = "\n".join(user_sentences)
+        raw_feedback = await run_check_translation_story(original_text, user_text)
+        parsed = _parse_story_feedback(raw_feedback)
+        score_value = parsed["score"]
+        feedback = parsed["feedback"] or raw_feedback
+
+        for row, user_sentence in zip(daily_rows, user_sentences):
+            sentence_pk_id = row[0]
+            sentence_id_for_mistake = row[1]
+            cursor.execute(
+                """
+                INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
+                user_translation, score, feedback)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                """,
+                (
+                    user_id,
+                    sentence_id_for_mistake,
+                    session_id,
+                    username,
+                    sentence_pk_id,
+                    user_sentence,
+                    score_value,
+                    feedback,
+                ),
+            )
+
+        normalized_guess = _normalize_guess(guess)
+        normalized_answer = _normalize_guess(answer or "")
+        alias_matches = {_normalize_guess(item) for item in aliases if item}
+        is_correct = normalized_guess and (
+            normalized_guess == normalized_answer or normalized_guess in alias_matches
+        )
+
+        cursor.execute(
+            """
+            UPDATE bt_3_story_sessions
+            SET completed_at = NOW(), guess = %s, guess_correct = %s, score = %s, feedback = %s
+            WHERE user_id = %s AND session_id = %s AND story_id = %s;
+            """,
+            (guess, is_correct, score_value, feedback, user_id, session_id, story_id),
+        )
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "score": score_value,
+            "feedback": feedback,
+            "guess_correct": is_correct,
+            "answer": answer,
+            "extra_de": extra_de,
+        }
+    finally:
+        cursor.close()
+        conn.close()
 
 
 async def generate_sentences_webapp(
