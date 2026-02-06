@@ -468,6 +468,41 @@ Rules:
 Example output:
 ["Er hat gestern", "mit seiner Schwester", "einen langen Spaziergang", "im Park gemacht"]
 """,
+"feel_word":"""
+You are a German language coach. Provide a short, vivid explanation to help a learner **feel** and remember the word or phrase.
+
+Requirements:
+- 2–4 short sentences in Russian.
+- Explain meaning, imagery, and usage.
+- Avoid long grammar lectures.
+- Keep it friendly and concrete.
+""",
+"enrich_word":"""
+You are a German lexicography assistant. Given a Russian word/phrase and its German equivalent, return full structured data for learning.
+
+Return JSON only with this schema:
+{
+  "article": "der/die/das or null",
+  "part_of_speech": "noun/verb/adjective/other",
+  "is_separable": true/false/null,
+  "forms": {
+    "plural": "",
+    "praeteritum": "",
+    "perfekt": "",
+    "konjunktiv1": "",
+    "konjunktiv2": ""
+  },
+  "prefixes": [
+    {"variant": "", "translation_de": "", "translation_ru": "", "example_de": ""}
+  ],
+  "usage_examples": ["", ""]
+}
+
+Rules:
+- Always include 2-3 usage_examples in German.
+- Include 2-3 prefix variants if they exist for the base verb.
+- Do not include extra fields or text outside JSON.
+""",
 "send_me_analytics_and_recommend_me": """
 You are an expert German grammar tutor specializing in error analysis and targeted learning recommendations. 
 Your role is to analyze user mistakes which you will receive in user_message in a variable:
@@ -1043,6 +1078,99 @@ async def run_check_translation_story(original_text: str, user_translation: str)
         logging.warning(f"Не удалось удалить thread: {exc}")
 
     return collected_text
+
+
+async def run_feel_word(word_ru: str, word_de: str | None = None) -> str:
+    task_name = "feel_word"
+    system_instruction_key = "feel_word"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    payload = {
+        "word_ru": word_ru,
+        "word_de": word_de or "",
+    }
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value.strip()
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    return content
+
+
+async def run_enrich_word(word_ru: str, word_de: str | None = None) -> dict:
+    task_name = "enrich_word"
+    system_instruction_key = "enrich_word"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    payload = {
+        "word_ru": word_ru,
+        "word_de": word_de or "",
+    }
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value.strip()
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {}
 
 
 async def run_dictionary_lookup(word_ru: str) -> dict:

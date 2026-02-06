@@ -74,8 +74,18 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import spacy
+from google.cloud import texttospeech
+from backend.utils import prepare_google_creds_for_tts
 
-from backend.openai_manager import run_check_translation, run_dictionary_lookup, run_dictionary_lookup_de, run_dictionary_collocations, run_translation_explanation
+from backend.openai_manager import (
+    run_check_translation,
+    run_dictionary_lookup,
+    run_dictionary_lookup_de,
+    run_dictionary_collocations,
+    run_translation_explanation,
+    run_feel_word,
+    run_enrich_word,
+)
 from backend.database import (
     ensure_webapp_tables,
     get_pending_daily_sentences,
@@ -90,6 +100,8 @@ from backend.database import (
     get_flashcard_set,
     create_dictionary_folder,
     get_dictionary_folders,
+    update_webapp_dictionary_entry,
+    get_dictionary_entry_by_id,
 )
 from backend.translation_workflow import (
     build_user_daily_summary,
@@ -1004,6 +1016,145 @@ def record_webapp_flashcard_answer():
         return jsonify({"error": f"Ошибка сохранения ответа: {exc}"}), 500
 
     return jsonify({"ok": True})
+
+
+@app.route("/api/webapp/flashcards/feel", methods=["POST"])
+def get_flashcard_feel():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    entry_id = payload.get("entry_id")
+    word_ru = (payload.get("word_ru") or "").strip()
+    word_de = (payload.get("word_de") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not entry_id:
+        return jsonify({"error": "entry_id обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    response_json = None
+    try:
+        entry = get_dictionary_entry_by_id(int(entry_id))
+        if entry:
+            response_json = entry.get("response_json")
+            if isinstance(response_json, str):
+                try:
+                    response_json = json.loads(response_json)
+                except Exception:
+                    response_json = None
+    except Exception:
+        response_json = None
+
+    if response_json and response_json.get("feel_explanation"):
+        return jsonify({"ok": True, "feel_explanation": response_json.get("feel_explanation")})
+
+    if not word_ru:
+        return jsonify({"error": "word_ru обязателен"}), 400
+
+    try:
+        feel_text = asyncio.run(run_feel_word(word_ru, word_de))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка feel: {exc}"}), 500
+
+    if not response_json:
+        response_json = {}
+    response_json["feel_explanation"] = feel_text
+    try:
+        update_webapp_dictionary_entry(int(entry_id), response_json)
+    except Exception:
+        pass
+
+    return jsonify({"ok": True, "feel_explanation": feel_text})
+
+
+@app.route("/api/webapp/tts", methods=["POST"])
+def webapp_tts():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    text = (payload.get("text") or "").strip()
+    language = (payload.get("language") or "de-DE").strip()
+    voice = (payload.get("voice") or "de-DE-Wavenet-B").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not text:
+        return jsonify({"error": "text обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    try:
+        key_path = prepare_google_creds_for_tts()
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+        tts_client = texttospeech.TextToSpeechClient()
+        input_data = texttospeech.SynthesisInput(text=text)
+        voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice)
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=0.95,
+        )
+        response = tts_client.synthesize_speech(
+            input=input_data,
+            voice=voice_params,
+            audio_config=audio_config,
+        )
+        return send_file(
+            BytesIO(response.audio_content),
+            mimetype="audio/mpeg",
+            as_attachment=False,
+            download_name="tts.mp3",
+        )
+    except Exception as exc:
+        return jsonify({"error": f"TTS error: {exc}"}), 500
+
+
+@app.route("/api/webapp/flashcards/enrich", methods=["POST"])
+def enrich_flashcard_entry():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    entry_id = payload.get("entry_id")
+    word_ru = (payload.get("word_ru") or "").strip()
+    word_de = (payload.get("word_de") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not entry_id:
+        return jsonify({"error": "entry_id обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    entry = get_dictionary_entry_by_id(int(entry_id))
+    response_json = entry.get("response_json") if entry else None
+    if isinstance(response_json, str):
+        try:
+            response_json = json.loads(response_json)
+        except Exception:
+            response_json = None
+
+    if not word_ru and entry:
+        word_ru = (entry.get("word_ru") or "").strip()
+    if not word_de and entry:
+        word_de = (entry.get("word_de") or "").strip()
+
+    try:
+        enrich = asyncio.run(run_enrich_word(word_ru, word_de))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка enrich: {exc}"}), 500
+
+    if not response_json:
+        response_json = {}
+    if isinstance(enrich, dict):
+        response_json.update(enrich)
+
+    try:
+        update_webapp_dictionary_entry(int(entry_id), response_json)
+    except Exception:
+        pass
+
+    return jsonify({"ok": True, "response_json": response_json})
 
 
 @app.route("/api/webapp/youtube/transcript", methods=["POST"])

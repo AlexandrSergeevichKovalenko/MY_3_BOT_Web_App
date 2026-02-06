@@ -110,6 +110,10 @@ function AppInner() {
   const [flashcardSetSize, setFlashcardSetSize] = useState(15);
   const [flashcardDurationSec, setFlashcardDurationSec] = useState(10);
   const [flashcardSessionActive, setFlashcardSessionActive] = useState(false);
+  const [flashcardPreviewActive, setFlashcardPreviewActive] = useState(false);
+  const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
+  const [flashcardFeelMap, setFlashcardFeelMap] = useState({});
+  const [flashcardEnrichMap, setFlashcardEnrichMap] = useState({});
   const [flashcardTimerKey, setFlashcardTimerKey] = useState(0);
   const [topics, setTopics] = useState([
     '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ',
@@ -179,6 +183,8 @@ function AppInner() {
   const revealTimeoutRef = useRef(null);
   const flashcardIndexRef = useRef(0);
   const flashcardSelectionRef = useRef(null);
+  const ttsCacheRef = useRef(new Map());
+  const flashcardEnrichRef = useRef(new Set());
   const audioContextRef = useRef(null);
   const positiveAudioRef = useRef(null);
   const negativeAudioRef = useRef(null);
@@ -314,6 +320,46 @@ function AppInner() {
     osc.stop(now + 0.92);
   };
 
+  const playTts = async (text, language = 'de-DE') => {
+    if (!initData || !text) return;
+    const key = `${language}:${text}`;
+    if (ttsCacheRef.current.has(key)) {
+      const audio = ttsCacheRef.current.get(key);
+      audio.currentTime = 0;
+      audio.play().catch(() => {});
+      return;
+    }
+    try {
+      const response = await fetch('/api/webapp/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, text, language }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      ttsCacheRef.current.set(key, audio);
+      audio.play().catch(() => {});
+    } catch (error) {
+      console.warn('TTS error', error);
+    }
+  };
+
+  const needsEnrichment = (responseJson) => {
+    if (!responseJson) return true;
+    const hasExamples = Array.isArray(responseJson.usage_examples) && responseJson.usage_examples.length >= 2;
+    const hasForms = responseJson.forms && (
+      responseJson.forms.praeteritum || responseJson.forms.perfekt
+      || responseJson.forms.konjunktiv1 || responseJson.forms.konjunktiv2
+    );
+    const hasPrefixes = Array.isArray(responseJson.prefixes) && responseJson.prefixes.length >= 2;
+    const hasArticle = !!responseJson.article || responseJson.part_of_speech !== 'noun';
+    return !(hasExamples && hasForms && hasPrefixes && hasArticle);
+  };
+
   const coerceResponseJson = (value) => {
     if (!value) return null;
     if (typeof value === 'string') {
@@ -406,6 +452,7 @@ function AppInner() {
     setFlashcardsVisible(true);
     setFlashcardsOnly(false);
     setFlashcardSessionActive(false);
+    setFlashcardPreviewActive(false);
     setFlashcardExitSummary(false);
     ensureSectionVisible('flashcards');
     if (ref?.current) {
@@ -1285,6 +1332,7 @@ function AppInner() {
       setFlashcardTimedOut(false);
       setFlashcardExitSummary(false);
       setFlashcardTimerKey((prev) => prev + 1);
+      setFlashcardPreviewIndex(0);
       setFlashcardStats({
         total: items.length,
         correct: 0,
@@ -3144,7 +3192,8 @@ function AppInner() {
                             className="primary-button flashcards-start"
                             onClick={() => {
                               unlockAudio();
-                              setFlashcardSessionActive(true);
+                              loadFlashcards();
+                              setFlashcardPreviewActive(true);
                               setFlashcardsOnly(true);
                               setFlashcardExitSummary(false);
                             }}
@@ -3162,7 +3211,199 @@ function AppInner() {
                         {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && (
                           <div className="webapp-muted">Словарь пуст. Сначала добавьте слова.</div>
                         )}
-                        {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && (
+                        {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && flashcardPreviewActive && (
+                          <div className="flashcard-stage is-session">
+                            {(() => {
+                              const entry = flashcards[flashcardPreviewIndex] || {};
+                              const responseJson = entry.response_json || {};
+                              const translations = responseJson.translations
+                                || responseJson.translation_de
+                                || entry.translation_de
+                                || responseJson.translation_ru
+                                || entry.translation_ru
+                                || '';
+                              const translationList = Array.isArray(translations)
+                                ? translations
+                                : String(translations).split(/[,;/]/).map((t) => t.trim()).filter(Boolean);
+                              const usageExamples = Array.isArray(responseJson.usage_examples)
+                                ? responseJson.usage_examples.slice(0, 3)
+                                : [];
+                              const prefixes = Array.isArray(responseJson.prefixes)
+                                ? responseJson.prefixes.slice(0, 3)
+                                : [];
+                              const forms = responseJson.forms || {};
+                              const feel = flashcardFeelMap[entry.id]
+                                || responseJson.feel_explanation
+                                || '';
+
+                              if (entry.id && needsEnrichment(responseJson) && !flashcardEnrichRef.current.has(entry.id)) {
+                                flashcardEnrichRef.current.add(entry.id);
+                                fetch('/api/webapp/flashcards/enrich', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    initData,
+                                    entry_id: entry.id,
+                                    word_ru: entry.word_ru,
+                                    word_de: entry.word_de,
+                                  }),
+                                })
+                                  .then((res) => res.ok ? res.json() : Promise.reject(res))
+                                  .then((data) => {
+                                    if (data.response_json) {
+                                      setFlashcards((prev) => prev.map((item) => (
+                                        item.id === entry.id
+                                          ? { ...item, response_json: data.response_json }
+                                          : item
+                                      )));
+                                      setFlashcardEnrichMap((prev) => ({ ...prev, [entry.id]: true }));
+                                    }
+                                  })
+                                  .catch(() => {});
+                              }
+
+                              return (
+                                <div className="flashcard">
+                                  <div className="flashcard-header">
+                                    <span className="flashcard-counter">
+                                      {flashcardPreviewIndex + 1} / {flashcards.length}
+                                    </span>
+                                  </div>
+                                  <div className="flashcard-word">{entry.word_ru || entry.word_de || '—'}</div>
+                                  <div className="flashcard-context flashcard-context-visible">
+                                    {translationList.length > 0 && (
+                                      <div>
+                                        <strong>Переводы:</strong> {translationList.join(', ')}
+                                      </div>
+                                    )}
+                                    {responseJson.article && (
+                                      <div><strong>Артикль:</strong> {responseJson.article}</div>
+                                    )}
+                                    {responseJson.part_of_speech && (
+                                      <div><strong>Часть речи:</strong> {responseJson.part_of_speech}</div>
+                                    )}
+                                    {responseJson.is_separable !== undefined && (
+                                      <div><strong>Trennbar:</strong> {responseJson.is_separable ? 'да' : 'нет'}</div>
+                                    )}
+                                    {(forms.praeteritum || forms.perfekt || forms.konjunktiv1 || forms.konjunktiv2) && (
+                                      <div>
+                                        <strong>Формы:</strong>{' '}
+                                        {forms.praeteritum && `Präteritum: ${forms.praeteritum} `}
+                                        {forms.perfekt && `Perfekt: ${forms.perfekt} `}
+                                        {forms.konjunktiv1 && `Konj I: ${forms.konjunktiv1} `}
+                                        {forms.konjunktiv2 && `Konj II: ${forms.konjunktiv2}`}
+                                      </div>
+                                    )}
+                                    {usageExamples.length > 0 && (
+                                      <div>
+                                        <strong>Примеры:</strong>
+                                        <ul>
+                                          {usageExamples.map((ex, idx) => (
+                                            <li key={`${ex}-${idx}`}>{ex}</li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+                                    {prefixes.length > 0 && (
+                                      <div>
+                                        <strong>Префиксы:</strong>
+                                        <ul>
+                                          {prefixes.map((pref, idx) => (
+                                            <li key={`${pref.variant || pref}-${idx}`}>
+                                              <strong>{pref.variant || pref}:</strong> {pref.translation_de || pref.translation_ru || ''}
+                                              {pref.example_de ? ` (${pref.example_de})` : ''}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+                                    {feel && (
+                                      <div className="flashcard-feel">
+                                        <strong>Почувствовать слово:</strong> {feel}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flashcard-actions-row">
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={async () => {
+                                        if (!entry.id) return;
+                                        try {
+                                          const response = await fetch('/api/webapp/flashcards/feel', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({
+                                              initData,
+                                              entry_id: entry.id,
+                                              word_ru: entry.word_ru,
+                                              word_de: entry.word_de,
+                                            }),
+                                          });
+                                          if (!response.ok) {
+                                            throw new Error(await response.text());
+                                          }
+                                          const data = await response.json();
+                                          if (data.feel_explanation) {
+                                            setFlashcardFeelMap((prev) => ({
+                                              ...prev,
+                                              [entry.id]: data.feel_explanation,
+                                            }));
+                                          }
+                                        } catch (error) {
+                                          setWebappError(`Ошибка feel: ${error.message}`);
+                                        }
+                                      }}
+                                    >
+                                      Почувствовать слово
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={() => playTts(entry.word_de || entry.translation_de || '', 'de-DE')}
+                                    >
+                                      🔊
+                                    </button>
+                                  </div>
+                                  <div className="flashcard-actions-row">
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={() => setFlashcardPreviewIndex((prev) => Math.max(prev - 1, 0))}
+                                      disabled={flashcardPreviewIndex === 0}
+                                    >
+                                      Назад
+                                    </button>
+                                    {flashcardPreviewIndex < flashcards.length - 1 ? (
+                                      <button
+                                        type="button"
+                                        className="primary-button"
+                                        onClick={() => setFlashcardPreviewIndex((prev) => Math.min(prev + 1, flashcards.length - 1))}
+                                      >
+                                        Далее
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className="primary-button"
+                                        onClick={() => {
+                                          setFlashcardPreviewActive(false);
+                                          setFlashcardSessionActive(true);
+                                          setFlashcardIndex(0);
+                                          setFlashcardSelection(null);
+                                          setFlashcardTimerKey((prev) => prev + 1);
+                                        }}
+                                      >
+                                        Начать тренировку
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+                        {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && !flashcardPreviewActive && (
                           <div className="flashcard-stage is-session">
                             {(flashcardSetComplete || flashcardExitSummary) ? (
                               <div className="flashcard-summary">
@@ -3269,36 +3510,45 @@ function AppInner() {
                                           .filter(Boolean)
                                           .join(' ');
                                         return (
-                                          <button
-                                            key={`${option}-${idx}`}
-                                            type="button"
-                                            className={className}
-                                            onClick={() => {
-                                              if (flashcardSelection !== null) return;
-                                              setFlashcardSelection(idx);
-                                              setFlashcardTimedOut(false);
-                                              unlockAudio();
-                                              playFeedbackSound(option === correct ? 'positive' : 'negative');
-                                              recordFlashcardAnswer(entry.id, option === correct);
-                                              setFlashcardStats((prev) => ({
-                                                ...prev,
-                                                correct: prev.correct + (option === correct ? 1 : 0),
-                                                wrong: prev.wrong + (option === correct ? 0 : 1),
-                                              }));
-                                              if (autoAdvanceTimeoutRef.current) {
-                                                clearTimeout(autoAdvanceTimeoutRef.current);
-                                                autoAdvanceTimeoutRef.current = null;
-                                              }
-                                              if (revealTimeoutRef.current) {
-                                                clearTimeout(revealTimeoutRef.current);
-                                              }
-                                              revealTimeoutRef.current = setTimeout(() => {
-                                                advanceFlashcard();
-                                              }, 3000);
-                                            }}
-                                          >
-                                            {option}
-                                          </button>
+                                          <div key={`${option}-${idx}`} className="flashcard-option-row">
+                                            <button
+                                              type="button"
+                                              className={className}
+                                              onClick={() => {
+                                                if (flashcardSelection !== null) return;
+                                                setFlashcardSelection(idx);
+                                                setFlashcardTimedOut(false);
+                                                unlockAudio();
+                                                playFeedbackSound(option === correct ? 'positive' : 'negative');
+                                                recordFlashcardAnswer(entry.id, option === correct);
+                                                setFlashcardStats((prev) => ({
+                                                  ...prev,
+                                                  correct: prev.correct + (option === correct ? 1 : 0),
+                                                  wrong: prev.wrong + (option === correct ? 0 : 1),
+                                                }));
+                                                if (autoAdvanceTimeoutRef.current) {
+                                                  clearTimeout(autoAdvanceTimeoutRef.current);
+                                                  autoAdvanceTimeoutRef.current = null;
+                                                }
+                                                if (revealTimeoutRef.current) {
+                                                  clearTimeout(revealTimeoutRef.current);
+                                                }
+                                                revealTimeoutRef.current = setTimeout(() => {
+                                                  advanceFlashcard();
+                                                }, 3000);
+                                              }}
+                                            >
+                                              {option}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="flashcard-tts"
+                                              onClick={() => playTts(option, 'de-DE')}
+                                              aria-label="Озвучить вариант"
+                                            >
+                                              🔊
+                                            </button>
+                                          </div>
                                         );
                                       })}
                                     </div>

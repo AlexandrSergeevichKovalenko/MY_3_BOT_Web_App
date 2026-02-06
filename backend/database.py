@@ -385,6 +385,32 @@ def get_webapp_dictionary_entries(
     return items
 
 
+def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
+    if not entry_id:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, word_ru, translation_de, word_de, translation_ru, response_json, folder_id, created_at
+                FROM bt_3_webapp_dictionary_queries
+                WHERE id = %s
+                LIMIT 1;
+            """, (entry_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "word_ru": row[1],
+                "translation_de": row[2],
+                "word_de": row[3],
+                "translation_ru": row[4],
+                "response_json": row[5],
+                "folder_id": row[6],
+                "created_at": row[7].isoformat() if row[7] else None,
+            }
+
+
 def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

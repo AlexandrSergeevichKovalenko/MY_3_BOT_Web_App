@@ -1459,6 +1459,23 @@ body {
   gap: 8px;
 }
 
+.flashcard-option-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.flashcard-tts {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(15, 23, 42, 0.35);
+  color: #f8fafc;
+  cursor: pointer;
+}
+
 .flashcard-option {
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.35);
