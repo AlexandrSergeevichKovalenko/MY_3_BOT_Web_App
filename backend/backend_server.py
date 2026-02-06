@@ -100,6 +100,7 @@ from backend.translation_workflow import (
     start_story_session_webapp,
     submit_story_translation_webapp,
     get_story_history_webapp,
+    get_active_session_type,
 )
 from backend.analytics import (
     fetch_user_summary,
@@ -1242,6 +1243,28 @@ def submit_webapp_story():
         return jsonify({"error": result["error"]}), 400
 
     return jsonify({"ok": True, **result})
+
+
+@app.route("/api/webapp/session", methods=["POST"])
+def get_webapp_session():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    info = get_active_session_type(user_id=user_id)
+    return jsonify({"ok": True, **info})
 
 
 @app.route("/api/webapp/submit-group", methods=["POST"])

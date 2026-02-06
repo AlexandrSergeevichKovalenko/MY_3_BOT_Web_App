@@ -145,6 +145,7 @@ function AppInner() {
   const [selectedStoryId, setSelectedStoryId] = useState('');
   const [storyGuess, setStoryGuess] = useState('');
   const [storyResult, setStoryResult] = useState(null);
+  const [sessionType, setSessionType] = useState('none');
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
@@ -778,6 +779,7 @@ function AppInner() {
     if (isWebAppMode && initData) {
       loadTopics();
       loadSentences();
+      loadSessionInfo();
     }
   }, [initData, isWebAppMode]);
 
@@ -888,7 +890,7 @@ function AppInner() {
   };
 
   const handleTranslationSubmit = (event) => {
-    if (isStoryTopic(selectedTopic)) {
+    if (sessionType === 'story' || isStoryTopic(selectedTopic)) {
       event.preventDefault();
       handleStorySubmit();
       return;
@@ -922,6 +924,7 @@ function AppInner() {
       if (data.blocked) {
         setFinishMessage('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.');
       }
+      await loadSessionInfo();
       await loadSentences();
     } catch (error) {
       setWebappError(`Ошибка старта: ${error.message}`);
@@ -949,6 +952,28 @@ function AppInner() {
       setStoryHistoryError(`Ошибка истории: ${error.message}`);
     } finally {
       setStoryHistoryLoading(false);
+    }
+  };
+
+  const loadSessionInfo = async () => {
+    if (!initData) return;
+    try {
+      const response = await fetch('/api/webapp/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      const type = data.type || 'none';
+      setSessionType(type);
+      if (type === 'story') {
+        setSelectedTopic(STORY_TOPIC);
+      }
+    } catch (error) {
+      // silent
     }
   };
 
@@ -983,6 +1008,7 @@ function AppInner() {
       if (data.blocked) {
         setFinishMessage('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.');
       }
+      await loadSessionInfo();
       await loadSentences();
     } catch (error) {
       setWebappError(`Ошибка старта истории: ${error.message}`);
@@ -1031,6 +1057,7 @@ function AppInner() {
       }
       const data = await response.json();
       setStoryResult(data);
+      await loadSessionInfo();
     } catch (error) {
       setWebappError(`Ошибка истории: ${error.message}`);
     } finally {
@@ -1522,6 +1549,7 @@ function AppInner() {
       const storageKey = `webappDrafts_${webappUser?.id || 'unknown'}_${sessionId || 'nosession'}`;
       safeStorageRemove(storageKey);
       setTranslationDrafts({});
+      setSessionType('none');
       await loadSentences();
     } catch (error) {
       setWebappError(`Ошибка завершения: ${error.message}`);
@@ -2504,7 +2532,7 @@ function AppInner() {
                     )}
                   </section>
 
-                  {isStoryTopic(selectedTopic) && (
+                  {(sessionType === 'story' || isStoryTopic(selectedTopic)) && (
                     <label className="webapp-field">
                       <span>А теперь угадай, о ком / чем шла речь</span>
                       <input
@@ -2519,7 +2547,7 @@ function AppInner() {
                   <button className="primary-button" type="submit" disabled={webappLoading}>
                     {webappLoading
                       ? 'Проверяем...'
-                      : isStoryTopic(selectedTopic)
+                      : (sessionType === 'story' || isStoryTopic(selectedTopic))
                         ? 'Проверить историю'
                         : 'Проверить перевод'}
                   </button>
@@ -2528,7 +2556,7 @@ function AppInner() {
                 {webappError && <div className="webapp-error">{webappError}</div>}
                 {finishMessage && <div className="webapp-success">{finishMessage}</div>}
 
-                {storyResult && isStoryTopic(selectedTopic) && (
+                {storyResult && (sessionType === 'story' || isStoryTopic(selectedTopic)) && (
                   <section className="webapp-result">
                     <h3>Результат истории</h3>
                     <div className="webapp-result-card">

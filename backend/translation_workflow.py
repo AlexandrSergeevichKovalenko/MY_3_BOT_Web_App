@@ -305,6 +305,41 @@ def get_story_history_webapp(user_id: int, limit: int = 10) -> list[dict[str, An
     ]
 
 
+def get_active_session_type(user_id: int) -> dict[str, Any]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT session_id
+                FROM bt_3_user_progress
+                WHERE user_id = %s AND completed = FALSE
+                ORDER BY start_time DESC
+                LIMIT 1;
+                """,
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {"type": "none"}
+            session_id = row[0]
+
+            cursor.execute(
+                """
+                SELECT story_id
+                FROM bt_3_story_sessions
+                WHERE user_id = %s AND session_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (user_id, str(session_id)),
+            )
+            story_row = cursor.fetchone()
+            if story_row:
+                return {"type": "story", "story_id": story_row[0]}
+
+            return {"type": "regular"}
+
+
 async def start_story_session_webapp(
     user_id: int,
     username: str | None,
