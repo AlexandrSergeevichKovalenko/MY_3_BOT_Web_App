@@ -135,6 +135,7 @@ function AppInner() {
   const [selectedTopic, setSelectedTopic] = useState('💼 Business');
   const [selectedLevel, setSelectedLevel] = useState('c1');
   const STORY_TOPIC = '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ';
+  const isStoryTopic = (value) => (value || '').includes('ЗАГАДОЧНАЯ ИСТОРИЯ');
   const [storyMode, setStoryMode] = useState('new');
   const [storyType, setStoryType] = useState('знаменитая личность');
   const [storyDifficulty, setStoryDifficulty] = useState('средний');
@@ -781,13 +782,13 @@ function AppInner() {
   }, [initData, isWebAppMode]);
 
   useEffect(() => {
-    if (selectedTopic === STORY_TOPIC && initData) {
+    if (isStoryTopic(selectedTopic) && initData) {
       loadStoryHistory();
     }
   }, [selectedTopic, initData]);
 
   useEffect(() => {
-    if (selectedTopic !== STORY_TOPIC) {
+    if (!isStoryTopic(selectedTopic)) {
       setStoryResult(null);
       setStoryGuess('');
     }
@@ -887,7 +888,7 @@ function AppInner() {
   };
 
   const handleTranslationSubmit = (event) => {
-    if (selectedTopic === STORY_TOPIC) {
+    if (isStoryTopic(selectedTopic)) {
       event.preventDefault();
       handleStorySubmit();
       return;
@@ -2378,7 +2379,7 @@ function AppInner() {
                       ))}
                     </select>
                   </label>
-                  {selectedTopic !== STORY_TOPIC && (
+                  {!isStoryTopic(selectedTopic) && (
                     <label className="webapp-field">
                       <span>Уровень</span>
                       <select
@@ -2394,7 +2395,7 @@ function AppInner() {
                       </select>
                     </label>
                   )}
-                  {selectedTopic === STORY_TOPIC && (
+                  {isStoryTopic(selectedTopic) && (
                     <>
                       <label className="webapp-field">
                         <span>История</span>
@@ -2459,7 +2460,7 @@ function AppInner() {
                   <button
                     type="button"
                     className="primary-button"
-                    onClick={selectedTopic === STORY_TOPIC ? handleStartStory : handleStartTranslation}
+                    onClick={isStoryTopic(selectedTopic) ? handleStartStory : handleStartTranslation}
                     disabled={webappLoading || topicsLoading}
                   >
                     {webappLoading ? 'Запускаем...' : '🚀 Начать перевод'}
@@ -2503,7 +2504,7 @@ function AppInner() {
                     )}
                   </section>
 
-                  {selectedTopic === STORY_TOPIC && (
+                  {isStoryTopic(selectedTopic) && (
                     <label className="webapp-field">
                       <span>А теперь угадай, о ком / чем шла речь</span>
                       <input
@@ -2518,7 +2519,7 @@ function AppInner() {
                   <button className="primary-button" type="submit" disabled={webappLoading}>
                     {webappLoading
                       ? 'Проверяем...'
-                      : selectedTopic === STORY_TOPIC
+                      : isStoryTopic(selectedTopic)
                         ? 'Проверить историю'
                         : 'Проверить перевод'}
                   </button>
@@ -2527,7 +2528,7 @@ function AppInner() {
                 {webappError && <div className="webapp-error">{webappError}</div>}
                 {finishMessage && <div className="webapp-success">{finishMessage}</div>}
 
-                {storyResult && selectedTopic === STORY_TOPIC && (
+                {storyResult && isStoryTopic(selectedTopic) && (
                   <section className="webapp-result">
                     <h3>Результат истории</h3>
                     <div className="webapp-result-card">
