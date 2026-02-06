@@ -62,6 +62,7 @@ import json
 import asyncio
 import logging
 import requests
+import tempfile
 from datetime import datetime
 from io import BytesIO
 from uuid import uuid4
@@ -317,6 +318,45 @@ def _normalize_german_text(text: str) -> str:
 
 
 def _fetch_youtube_transcript(video_id: str) -> dict:
+    def _parse_vtt(path: Path) -> list[dict]:
+        items = []
+        if not path.exists():
+            return items
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        lines = [line.strip() for line in text.splitlines()]
+        buffer = []
+        start = None
+        for line in lines:
+            if "-->" in line:
+                if buffer and start is not None:
+                    items.append({"start": start, "text": " ".join(buffer).strip()})
+                    buffer = []
+                try:
+                    ts = line.split("-->")[0].strip()
+                    parts = ts.split(":")
+                    seconds = float(parts[-1].replace(",", "."))
+                    minutes = int(parts[-2]) if len(parts) >= 2 else 0
+                    hours = int(parts[-3]) if len(parts) >= 3 else 0
+                    start = hours * 3600 + minutes * 60 + seconds
+                except Exception:
+                    start = None
+                continue
+            if not line:
+                if buffer and start is not None:
+                    items.append({"start": start, "text": " ".join(buffer).strip()})
+                buffer = []
+                start = None
+                continue
+            if line.lower() == "webvtt":
+                continue
+            if line.isdigit():
+                continue
+            buffer.append(line)
+        if buffer and start is not None:
+            items.append({"start": start, "text": " ".join(buffer).strip()})
+        return items
+
+    api_error = None
     try:
         try:
             from youtube_transcript_api import (
@@ -344,9 +384,57 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
             "is_generated": preferred.is_generated,
         }
     except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as exc:
-        raise RuntimeError(f"Субтитры недоступны: {exc}") from exc
+        api_error = f"Субтитры недоступны: {exc}"
     except Exception as exc:
-        raise RuntimeError(f"Не удалось загрузить субтитры: {exc}") from exc
+        api_error = f"Не удалось загрузить субтитры: {exc}"
+
+    try:
+        try:
+            from yt_dlp import YoutubeDL
+        except Exception as exc:
+            raise RuntimeError("yt-dlp не установлен") from exc
+        with tempfile.TemporaryDirectory() as tmpdir:
+            template = str(Path(tmpdir) / "%(id)s.%(ext)s")
+            ydl_opts = {
+                "skip_download": True,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "subtitleslangs": ["de", "en", "ru"],
+                "subtitlesformat": "vtt",
+                "outtmpl": template,
+                "quiet": True,
+                "no_warnings": True,
+            }
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                subtitles = info.get("requested_subtitles") or {}
+                language_order = ["de", "en", "ru"]
+                candidate = None
+                for lang in language_order:
+                    if lang in subtitles and subtitles[lang].get("ext") == "vtt":
+                        candidate = lang
+                        break
+                if candidate is None and subtitles:
+                    candidate = next(iter(subtitles.keys()))
+                vtt_files = list(Path(tmpdir).glob("*.vtt"))
+                if not vtt_files and candidate:
+                    vtt_files = list(Path(tmpdir).glob(f"*{candidate}*.vtt"))
+                if not vtt_files:
+                    raise RuntimeError("yt-dlp не вернул .vtt файл")
+                vtt_files.sort(key=lambda p: p.stat().st_size, reverse=True)
+                items = _parse_vtt(vtt_files[0])
+                if not items:
+                    raise RuntimeError("yt-dlp вернул пустые субтитры")
+                return {
+                    "items": items,
+                    "language": candidate,
+                    "is_generated": True,
+                }
+    except Exception as exc:
+        fallback_error = f"Fallback yt-dlp: {exc}"
+        if api_error:
+            raise RuntimeError(f"{api_error}; {fallback_error}") from exc
+        raise RuntimeError(fallback_error) from exc
 
 
 @app.errorhandler(Exception)

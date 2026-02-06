@@ -16,5 +16,6 @@ python-dotenv
 
 gunicorn
 youtube-transcript-api==0.6.2
+yt-dlp==2024.12.23
 spacy==3.7.4
 reportlab==4.2.5
