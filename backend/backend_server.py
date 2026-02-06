@@ -72,8 +72,10 @@ from dotenv import load_dotenv
 from livekit.api import AccessToken, VideoGrants
 from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
-import spacy
+try:
+    import spacy
+except Exception:  # pragma: no cover - optional dependency
+    spacy = None
 from backend.utils import prepare_google_creds_for_tts
 
 from backend.openai_manager import (
@@ -283,6 +285,8 @@ _de_nlp = None
 def _get_de_nlp():
     global _de_nlp
     if _de_nlp is None:
+        if spacy is None:
+            raise RuntimeError("spaCy не установлен")
         _de_nlp = spacy.load("de_core_news_sm")
     return _de_nlp
 
@@ -291,8 +295,12 @@ def _normalize_german_text(text: str) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
         return ""
-    nlp = _get_de_nlp()
-    doc = nlp(cleaned)
+    try:
+        nlp = _get_de_nlp()
+        doc = nlp(cleaned)
+    except Exception as exc:
+        logging.warning("German normalization skipped: %s", exc)
+        return cleaned
     lemmas = []
     for token in doc:
         if token.is_space:
@@ -310,6 +318,15 @@ def _normalize_german_text(text: str) -> str:
 
 def _fetch_youtube_transcript(video_id: str) -> dict:
     try:
+        try:
+            from youtube_transcript_api import (
+                YouTubeTranscriptApi,
+                TranscriptsDisabled,
+                NoTranscriptFound,
+                VideoUnavailable,
+            )
+        except Exception as exc:
+            raise RuntimeError("youtube_transcript_api не установлен") from exc
         transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
         preferred = None
         for lang in ("de", "en", "ru"):
@@ -327,9 +344,9 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
             "is_generated": preferred.is_generated,
         }
     except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as exc:
-        raise RuntimeError(str(exc)) from exc
+        raise RuntimeError(f"Субтитры недоступны: {exc}") from exc
     except Exception as exc:
-        raise RuntimeError("Не удалось загрузить субтитры") from exc
+        raise RuntimeError(f"Не удалось загрузить субтитры: {exc}") from exc
 
 
 @app.errorhandler(Exception)
@@ -1184,6 +1201,7 @@ def get_youtube_transcript():
     try:
         data = _fetch_youtube_transcript(video_id)
     except Exception as exc:
+        logging.warning("YouTube transcript error for %s: %s", video_id, exc)
         return jsonify({"error": f"Не удалось получить субтитры: {exc}"}), 404
 
     return jsonify(
