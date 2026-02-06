@@ -414,7 +414,7 @@ async def start_story_session_webapp(
             INSERT INTO bt_3_story_sessions (user_id, session_id, story_id, mode)
             VALUES (%s, %s, %s, %s);
             """,
-            (user_id, session_id, story_id, mode),
+            (user_id, str(session_id), story_id, mode),
         )
 
         _insert_story_session_sentences(cursor, user_id, session_id, story_sentences)
@@ -469,7 +469,7 @@ async def submit_story_translation_webapp(
             ORDER BY s.created_at DESC
             LIMIT 1;
             """,
-            (user_id, session_id),
+            (user_id, str(session_id)),
         )
         story_row = cursor.fetchone()
         if not story_row:
@@ -563,7 +563,7 @@ async def submit_story_translation_webapp(
             SET completed_at = NOW(), guess = %s, guess_correct = %s, score = %s, feedback = %s
             WHERE user_id = %s AND session_id = %s AND story_id = %s;
             """,
-            (guess, is_correct, score_value, feedback, user_id, session_id, story_id),
+            (guess, is_correct, score_value, feedback, user_id, str(session_id), story_id),
         )
 
         conn.commit()
