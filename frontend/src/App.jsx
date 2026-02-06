@@ -2607,11 +2607,16 @@ function AppInner() {
                 )}
 
                 <div className="webapp-actions webapp-actions-footer">
+                  {sentences.length === 0 && !webappLoading && (
+                    <div className="webapp-muted">
+                      Если сессия зависла, можно завершить её вручную.
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={handleFinishTranslation}
                     className={`primary-button finish-button ${finishStatus === 'done' ? 'status-done' : ''}`}
-                    disabled={webappLoading || (results.length === 0 && !storyResult)}
+                    disabled={webappLoading || ((results.length === 0 && !storyResult) && sentences.length > 0)}
                   >
                     {finishStatus === 'done' ? 'Завершено' : 'Завершить перевод'}
                   </button>
