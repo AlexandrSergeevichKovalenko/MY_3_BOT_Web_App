@@ -329,6 +329,24 @@ function AppInner() {
       audio.onerror = () => resolve();
       audio.play().catch(() => resolve());
     });
+    const playWebSpeech = () => new Promise((resolve) => {
+      if (!('speechSynthesis' in window)) {
+        resolve();
+        return;
+      }
+      try {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = language;
+        utterance.rate = 0.95;
+        utterance.onend = () => resolve();
+        utterance.onerror = () => resolve();
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+      } catch (error) {
+        resolve();
+      }
+    });
+
     if (ttsCacheRef.current.has(key)) {
       const audio = ttsCacheRef.current.get(key);
       return playAudio(audio);
@@ -349,7 +367,7 @@ function AppInner() {
       return playAudio(audio);
     } catch (error) {
       console.warn('TTS error', error);
-      return Promise.resolve();
+      return playWebSpeech();
     }
   };
 
@@ -3452,7 +3470,14 @@ function AppInner() {
                                     <button
                                       type="button"
                                       className="secondary-button"
-                                      onClick={() => setFlashcardPreviewIndex((prev) => Math.max(prev - 1, 0))}
+                                      onClick={() => {
+                                        const nextIndex = Math.max(flashcardPreviewIndex - 1, 0);
+                                        const nextEntry = flashcards[nextIndex];
+                                        if (nextEntry) {
+                                          playTts(resolveFlashcardGerman(nextEntry), 'de-DE');
+                                        }
+                                        setFlashcardPreviewIndex(nextIndex);
+                                      }}
                                       disabled={flashcardPreviewIndex === 0}
                                     >
                                       Назад
@@ -3461,7 +3486,14 @@ function AppInner() {
                                       <button
                                         type="button"
                                         className="primary-button"
-                                        onClick={() => setFlashcardPreviewIndex((prev) => Math.min(prev + 1, flashcards.length - 1))}
+                                        onClick={() => {
+                                          const nextIndex = Math.min(flashcardPreviewIndex + 1, flashcards.length - 1);
+                                          const nextEntry = flashcards[nextIndex];
+                                          if (nextEntry) {
+                                            playTts(resolveFlashcardGerman(nextEntry), 'de-DE');
+                                          }
+                                          setFlashcardPreviewIndex(nextIndex);
+                                        }}
                                       >
                                         Далее
                                       </button>
