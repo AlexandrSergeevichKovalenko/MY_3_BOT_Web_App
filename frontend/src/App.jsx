@@ -179,6 +179,7 @@ function AppInner() {
   const flashcardsRef = useRef(null);
   const translationsRef = useRef(null);
   const youtubeRef = useRef(null);
+  const youtubeSubtitlesRef = useRef(null);
   const autoAdvanceTimeoutRef = useRef(null);
   const revealTimeoutRef = useRef(null);
   const flashcardIndexRef = useRef(0);
@@ -1997,6 +1998,12 @@ function AppInner() {
     fetchTranscript();
   }, [youtubeId, initData]);
 
+  useEffect(() => {
+    if (youtubeTranscript.length > 0 && youtubeSubtitlesRef.current) {
+      youtubeSubtitlesRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [youtubeTranscript.length]);
+
   const handleLoadDailyHistory = async () => {
     if (!initData) {
       setHistoryError('initData не найдено. Откройте Web App внутри Telegram.');
@@ -2849,8 +2856,7 @@ function AppInner() {
                       Если видео не воспроизводится внутри Web App, используйте кнопку «Открыть в YouTube».
                     </p>
 
-                    {/*
-                    <div className="webapp-subtitles">
+                    <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
                       <div className="webapp-subtitles-header">
                         <h4>Субтитры</h4>
                         <div className="webapp-subtitles-actions">
@@ -2890,7 +2896,6 @@ function AppInner() {
                         </div>
                       )}
                     </div>
-                    */}
                   </section>
                 )}
 
