@@ -74,7 +74,6 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import spacy
-from google.cloud import texttospeech
 from backend.utils import prepare_google_creds_for_tts
 
 from backend.openai_manager import (
@@ -1086,6 +1085,10 @@ def webapp_tts():
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
     try:
+        try:
+            from google.cloud import texttospeech
+        except Exception:
+            return jsonify({"error": "Google TTS не установлен на сервере"}), 500
         key_path = prepare_google_creds_for_tts()
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
         tts_client = texttospeech.TextToSpeechClient()
