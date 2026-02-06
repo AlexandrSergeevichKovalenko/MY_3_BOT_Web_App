@@ -995,6 +995,14 @@ function AppInner() {
       setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
       return;
     }
+    const missing = sentences.filter((item) => {
+      const value = (translationDrafts[String(item.id_for_mistake_table)] || '').trim();
+      return !value;
+    });
+    if (missing.length > 0) {
+      setWebappError('Для истории нужно перевести все 7 предложений.');
+      return;
+    }
     if (!storyGuess.trim()) {
       setWebappError('Введите ваш ответ: о ком/чем была история.');
       return;
