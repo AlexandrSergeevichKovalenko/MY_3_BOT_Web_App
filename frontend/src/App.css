@@ -887,10 +887,26 @@ body {
   border: 0;
 }
 
+.youtube-player-host {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
 .webapp-subtitles {
   display: grid;
   gap: 12px;
   padding-top: 6px;
+}
+
+.webapp-subtitles-list p.is-active {
+  background: rgba(93, 220, 255, 0.18);
+  border-radius: 10px;
+  padding: 6px 8px;
+  color: #e9f8ff;
 }
 
 .webapp-subtitles-header {

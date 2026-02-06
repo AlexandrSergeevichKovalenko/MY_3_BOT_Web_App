@@ -87,6 +87,8 @@ function AppInner() {
   const [youtubeTranscript, setYoutubeTranscript] = useState([]);
   const [youtubeTranscriptError, setYoutubeTranscriptError] = useState('');
   const [youtubeTranscriptLoading, setYoutubeTranscriptLoading] = useState(false);
+  const [youtubePlayerReady, setYoutubePlayerReady] = useState(false);
+  const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
   const [manualTranscript, setManualTranscript] = useState('');
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
@@ -181,6 +183,8 @@ function AppInner() {
   const translationsRef = useRef(null);
   const youtubeRef = useRef(null);
   const youtubeSubtitlesRef = useRef(null);
+  const youtubePlayerRef = useRef(null);
+  const youtubeTimeIntervalRef = useRef(null);
   const autoAdvanceTimeoutRef = useRef(null);
   const revealTimeoutRef = useRef(null);
   const flashcardIndexRef = useRef(0);
@@ -1621,6 +1625,21 @@ function AppInner() {
 
   const renderSubtitleText = (text) => renderClickableText(normalizeSubtitleText(text));
 
+  const getActiveSubtitleIndex = () => {
+    if (!youtubeTranscript.length) return -1;
+    const time = youtubeCurrentTime || 0;
+    let activeIndex = -1;
+    for (let i = 0; i < youtubeTranscript.length; i += 1) {
+      const start = Number(youtubeTranscript[i]?.start ?? 0);
+      const nextStart = Number(youtubeTranscript[i + 1]?.start ?? Number.POSITIVE_INFINITY);
+      if (time >= start && time < nextStart) {
+        activeIndex = i;
+        break;
+      }
+    }
+    return activeIndex;
+  };
+
   const parseTranscriptInput = (value) => {
     const lines = value
       .split(/\r?\n/)
@@ -2015,10 +2034,94 @@ function AppInner() {
   }, [youtubeId, initData]);
 
   useEffect(() => {
+    if (!youtubeId) {
+      setYoutubePlayerReady(false);
+      setYoutubeCurrentTime(0);
+      if (youtubeTimeIntervalRef.current) {
+        clearInterval(youtubeTimeIntervalRef.current);
+        youtubeTimeIntervalRef.current = null;
+      }
+      if (youtubePlayerRef.current && youtubePlayerRef.current.destroy) {
+        youtubePlayerRef.current.destroy();
+        youtubePlayerRef.current = null;
+      }
+      return;
+    }
+
+    const ensureApiReady = () => new Promise((resolve) => {
+      if (window.YT && window.YT.Player) {
+        resolve();
+        return;
+      }
+      const existing = document.querySelector('script[data-youtube-iframe]');
+      if (existing) {
+        const handler = () => resolve();
+        window.onYouTubeIframeAPIReady = handler;
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      script.async = true;
+      script.dataset.youtubeIframe = '1';
+      window.onYouTubeIframeAPIReady = () => resolve();
+      document.body.appendChild(script);
+    });
+
+    ensureApiReady().then(() => {
+      if (!window.YT || !window.YT.Player) return;
+      const hostNode = document.getElementById('youtube-player');
+      if (!hostNode) return;
+      if (youtubePlayerRef.current && youtubePlayerRef.current.destroy) {
+        youtubePlayerRef.current.destroy();
+      }
+      youtubePlayerRef.current = new window.YT.Player(hostNode, {
+        videoId: youtubeId,
+        playerVars: {
+          rel: 0,
+          modestbranding: 1,
+        },
+        events: {
+          onReady: () => {
+            setYoutubePlayerReady(true);
+            if (youtubeTimeIntervalRef.current) {
+              clearInterval(youtubeTimeIntervalRef.current);
+            }
+            youtubeTimeIntervalRef.current = setInterval(() => {
+              try {
+                const time = youtubePlayerRef.current?.getCurrentTime?.();
+                if (typeof time === 'number' && !Number.isNaN(time)) {
+                  setYoutubeCurrentTime(time);
+                }
+              } catch (error) {
+                // ignore
+              }
+            }, 400);
+          },
+        },
+      });
+    });
+
+    return () => {
+      if (youtubeTimeIntervalRef.current) {
+        clearInterval(youtubeTimeIntervalRef.current);
+        youtubeTimeIntervalRef.current = null;
+      }
+    };
+  }, [youtubeId]);
+
+  useEffect(() => {
     if (youtubeTranscript.length > 0 && youtubeSubtitlesRef.current) {
       youtubeSubtitlesRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }, [youtubeTranscript.length]);
+
+  useEffect(() => {
+    if (!youtubeSubtitlesRef.current) return;
+    const activeEl = youtubeSubtitlesRef.current.querySelector('.webapp-subtitles-list .is-active');
+    if (activeEl) {
+      activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [youtubeCurrentTime, youtubeTranscript.length]);
 
   const handleLoadDailyHistory = async () => {
     if (!initData) {
@@ -2871,12 +2974,19 @@ function AppInner() {
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
                     {youtubeId ? (
                       <div className={`webapp-video-frame ${videoExpanded ? 'is-expanded' : ''}`}>
-                        <iframe
-                          title="YouTube player"
-                          src={`https://www.youtube.com/embed/${youtubeId}`}
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                          allowFullScreen
+                        <div
+                          id="youtube-player"
+                          className="youtube-player-host"
+                          data-video-id={youtubeId}
                         />
+                        {!youtubePlayerReady && (
+                          <iframe
+                            title="YouTube player"
+                            src={`https://www.youtube.com/embed/${youtubeId}`}
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            allowFullScreen
+                          />
+                        )}
                       </div>
                     ) : (
                       <p className="webapp-muted">Вставьте ссылку на видео, чтобы смотреть прямо здесь.</p>
@@ -2891,11 +3001,17 @@ function AppInner() {
                           <h4>Субтитры</h4>
                         </div>
                         <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
-                          {youtubeTranscript.map((item, index) => (
-                            <p key={`${item.start}-${index}`}>
-                              {renderSubtitleText(item.text)}
-                            </p>
-                          ))}
+                          {(() => {
+                            const activeIndex = getActiveSubtitleIndex();
+                            return youtubeTranscript.map((item, index) => (
+                              <p
+                                key={`${item.start}-${index}`}
+                                className={index === activeIndex ? 'is-active' : ''}
+                              >
+                                {renderSubtitleText(item.text)}
+                              </p>
+                            ));
+                          })()}
                         </div>
                       </div>
                     )}
