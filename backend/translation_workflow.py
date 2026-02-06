@@ -187,6 +187,12 @@ def _parse_story_feedback(text: str) -> dict[str, Any]:
     if match:
         feedback = match.group(1).strip()
 
+    match = re.search(r"Error Details:\s*(.+)", text)
+    if match:
+        details = match.group(1).strip()
+        if details:
+            feedback = f"{feedback}\n\n{details}" if feedback else details
+
     return {
         "score": score if score is not None else 0,
         "categories": categories,
@@ -528,6 +534,8 @@ async def submit_story_translation_webapp(
         parsed = _parse_story_feedback(raw_feedback)
         score_value = parsed["score"]
         feedback = parsed["feedback"] or raw_feedback
+        categories = parsed.get("categories") or []
+        subcategories = parsed.get("subcategories") or []
 
         for row, user_sentence in zip(daily_rows, user_sentences):
             sentence_pk_id = row[0]
@@ -572,6 +580,8 @@ async def submit_story_translation_webapp(
             "ok": True,
             "score": score_value,
             "feedback": feedback,
+            "categories": categories,
+            "subcategories": subcategories,
             "guess_correct": is_correct,
             "answer": answer,
             "extra_de": extra_de,

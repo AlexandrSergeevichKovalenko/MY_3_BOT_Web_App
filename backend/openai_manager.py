@@ -446,12 +446,15 @@ Evaluate the translation **as a whole** and provide a single overall score and f
 Important:
 - Do NOT quote the full story or the full translation.
 - Provide concise, general feedback.
+- If there are grammar/lexical/word order errors, list them clearly in a short bullet list.
+- If the translation does not reflect the meaning at all, state that explicitly.
 
 FORMAT YOUR RESPONSE STRICTLY as follows:
 Score: X/100
 Mistake Categories: ... (comma separated if multiple)
 Subcategories: ... (comma separated if multiple)
 General Feedback: ...
+Error Details: ...
 """,
 "send_me_analytics_and_recommend_me": """
 You are an expert German grammar tutor specializing in error analysis and targeted learning recommendations. 

@@ -2534,6 +2534,16 @@ function AppInner() {
                       <div className="webapp-result-text">
                         <strong>Оценка:</strong> {storyResult.score ?? '—'} / 100
                       </div>
+                      {(storyResult.categories || storyResult.subcategories) && (
+                        <div className="webapp-result-text">
+                          {storyResult.categories && storyResult.categories.length > 0 && (
+                            <div><strong>Категории:</strong> {storyResult.categories.join(', ')}</div>
+                          )}
+                          {storyResult.subcategories && storyResult.subcategories.length > 0 && (
+                            <div><strong>Подкатегории:</strong> {storyResult.subcategories.join(', ')}</div>
+                          )}
+                        </div>
+                      )}
                       {storyResult.feedback && (
                         <div className="webapp-result-text">{storyResult.feedback}</div>
                       )}
@@ -2600,7 +2610,7 @@ function AppInner() {
                     type="button"
                     onClick={handleFinishTranslation}
                     className={`primary-button finish-button ${finishStatus === 'done' ? 'status-done' : ''}`}
-                    disabled={webappLoading || results.length === 0}
+                    disabled={webappLoading || (results.length === 0 && !storyResult)}
                   >
                     {finishStatus === 'done' ? 'Завершено' : 'Завершить перевод'}
                   </button>
@@ -2612,7 +2622,7 @@ function AppInner() {
                   >
                     {historyLoading ? 'Загружаем...' : 'История за сегодня'}
                   </button>
-                  {results.length === 0 && !webappLoading && (
+                  {results.length === 0 && !storyResult && !webappLoading && (
                     <div className="webapp-muted">Сначала проверьте перевод, чтобы завершить.</div>
                   )}
                 </div>
