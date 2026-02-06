@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ставим python deps
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 -r /app/backend/requirements.txt
 
 # копируем backend код
 COPY backend/ /app/backend/
