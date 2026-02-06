@@ -156,6 +156,7 @@ function AppInner() {
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
   const [flashcardTimedOut, setFlashcardTimedOut] = useState(false);
+  const [flashcardOutcome, setFlashcardOutcome] = useState(null);
   const [folders, setFolders] = useState([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [foldersError, setFoldersError] = useState('');
@@ -716,6 +717,7 @@ function AppInner() {
     const entry = flashcards[flashcardIndex];
     setFlashcardOptions(buildFlashcardOptions(entry, flashcards));
     setFlashcardSelection(null);
+    setFlashcardOutcome(null);
   }, [flashcards, flashcardIndex]);
 
   useEffect(() => {
@@ -775,6 +777,7 @@ function AppInner() {
       setFlashcardTimedOut(true);
       playFeedbackSound('timeout');
       setFlashcardSelection(-1);
+      setFlashcardOutcome('timeout');
       (async () => {
         await playTts(correct, 'de-DE');
         if (flashcardAutoAdvance) {
@@ -3746,8 +3749,18 @@ function AppInner() {
                                           <circle className="timer-track" cx="60" cy="60" r="54" />
                                           <circle className="timer-progress" cx="60" cy="60" r="54" />
                                         </svg>
+                                        {flashcardOutcome === 'correct' && (
+                                          <div className="flashcard-confetti" aria-hidden="true">
+                                            {Array.from({ length: 18 }).map((_, i) => (
+                                              <span key={`conf-${flashcardTimerKey}-${i}`} />
+                                            ))}
+                                          </div>
+                                        )}
                                         <div className="flashcard-character">
                                           <img src={`${assetBaseUrl}mascot.svg`} alt="Mascot" />
+                                          {(flashcardOutcome === 'wrong' || flashcardOutcome === 'timeout') && (
+                                            <div className="flashcard-emoji" aria-hidden="true">💩</div>
+                                          )}
                                         </div>
                                       </div>
                                     </div>
@@ -3776,6 +3789,7 @@ function AppInner() {
                                                 if (flashcardSelection !== null) return;
                                                 setFlashcardSelection(idx);
                                                 setFlashcardTimedOut(false);
+                                                setFlashcardOutcome(option === correct ? 'correct' : 'wrong');
                                                 unlockAudio();
                                                 playFeedbackSound(option === correct ? 'positive' : 'negative');
                                                 recordFlashcardAnswer(entry.id, option === correct);
