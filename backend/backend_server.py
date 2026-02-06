@@ -318,11 +318,8 @@ def _normalize_german_text(text: str) -> str:
 
 
 def _fetch_youtube_transcript(video_id: str) -> dict:
-    def _parse_vtt(path: Path) -> list[dict]:
+    def _parse_vtt_text(text: str) -> list[dict]:
         items = []
-        if not path.exists():
-            return items
-        text = path.read_text(encoding="utf-8", errors="ignore")
         lines = [line.strip() for line in text.splitlines()]
         buffer = []
         start = None
@@ -393,43 +390,39 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
             from yt_dlp import YoutubeDL
         except Exception as exc:
             raise RuntimeError("yt-dlp не установлен") from exc
-        with tempfile.TemporaryDirectory() as tmpdir:
-            template = str(Path(tmpdir) / "%(id)s.%(ext)s")
-            ydl_opts = {
-                "skip_download": True,
-                "writesubtitles": True,
-                "writeautomaticsub": True,
-                "subtitleslangs": ["de", "en", "ru"],
-                "subtitlesformat": "vtt",
-                "outtmpl": template,
-                "quiet": True,
-                "no_warnings": True,
-            }
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                subtitles = info.get("requested_subtitles") or {}
-                language_order = ["de", "en", "ru"]
-                candidate = None
-                for lang in language_order:
-                    if lang in subtitles and subtitles[lang].get("ext") == "vtt":
-                        candidate = lang
-                        break
-                if candidate is None and subtitles:
-                    candidate = next(iter(subtitles.keys()))
-                vtt_files = list(Path(tmpdir).glob("*.vtt"))
-                if not vtt_files and candidate:
-                    vtt_files = list(Path(tmpdir).glob(f"*{candidate}*.vtt"))
-                if not vtt_files:
-                    raise RuntimeError("yt-dlp не вернул .vtt файл")
-                vtt_files.sort(key=lambda p: p.stat().st_size, reverse=True)
-                items = _parse_vtt(vtt_files[0])
+        ydl_opts = {
+            "skip_download": True,
+            "quiet": True,
+            "no_warnings": True,
+        }
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+        language_order = ["de", "en", "ru"]
+        sources = [
+            ("subtitles", info.get("subtitles") or {}, False),
+            ("automatic_captions", info.get("automatic_captions") or {}, True),
+        ]
+        for source_name, source_map, is_generated in sources:
+            for lang in language_order:
+                formats = source_map.get(lang) or []
+                vtt_item = next((item for item in formats if item.get("ext") == "vtt"), None)
+                if not vtt_item:
+                    continue
+                url = vtt_item.get("url")
+                if not url:
+                    continue
+                response = requests.get(url, timeout=20)
+                if response.status_code >= 400:
+                    continue
+                items = _parse_vtt_text(response.text)
                 if not items:
-                    raise RuntimeError("yt-dlp вернул пустые субтитры")
+                    continue
                 return {
                     "items": items,
-                    "language": candidate,
-                    "is_generated": True,
+                    "language": lang,
+                    "is_generated": is_generated,
                 }
+        raise RuntimeError("yt-dlp не нашёл .vtt в subtitles/automatic_captions")
     except Exception as exc:
         fallback_error = f"Fallback yt-dlp: {exc}"
         if api_error:
