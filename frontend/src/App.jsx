@@ -2125,9 +2125,13 @@ function AppInner() {
 
   useEffect(() => {
     if (!youtubeSubtitlesRef.current) return;
+    const listEl = youtubeSubtitlesRef.current.querySelector('.webapp-subtitles-list');
     const activeEl = youtubeSubtitlesRef.current.querySelector('.webapp-subtitles-list .is-active');
-    if (activeEl) {
-      activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (listEl && activeEl) {
+      const listRect = listEl.getBoundingClientRect();
+      const activeRect = activeEl.getBoundingClientRect();
+      const offset = activeRect.top - listRect.top - listRect.height / 2 + activeRect.height / 2;
+      listEl.scrollTop += offset;
     }
   }, [youtubeCurrentTime, youtubeTranscript.length]);
 

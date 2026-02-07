@@ -902,6 +902,12 @@ body {
   padding-top: 6px;
 }
 
+.webapp-subtitles-list {
+  max-height: 42vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
 .webapp-subtitles-list p.is-active {
   background: rgba(93, 220, 255, 0.18);
   border-radius: 10px;
@@ -992,6 +998,12 @@ body {
 @media (max-width: 900px) {
   .webapp-video-dictionary.is-split {
     grid-template-columns: 1fr;
+  }
+
+  .webapp-video-dictionary.is-split .webapp-dictionary {
+    position: static;
+    max-height: none;
+    overflow: visible;
   }
 }
 
