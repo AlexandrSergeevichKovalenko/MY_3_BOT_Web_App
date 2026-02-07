@@ -1601,7 +1601,12 @@ function AppInner() {
   const normalizeSubtitleText = (text) => {
     if (!text) return '';
     return text
+      .replace(/&gt;/g, '>')
+      .replace(/&lt;/g, '<')
+      .replace(/&amp;/g, '&')
       .replace(/<[^>]+>/g, ' ')
+      .replace(/\b\d{2}:\d{2}:\d{2}\.\d{3}\b/g, ' ')
+      .replace(/\b\d{2}:\d{2}\.\d{3}\b/g, ' ')
       .replace(/\u00a0/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
