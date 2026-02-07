@@ -2023,7 +2023,14 @@ function AppInner() {
           throw new Error(message);
         }
         const data = await response.json();
-        setYoutubeTranscript(data.items || []);
+        const items = data.items || [];
+        if (items.length === 0) {
+          setYoutubeTranscript([]);
+          setYoutubeTranscriptError('Субтитры недоступны для этого видео.');
+        } else {
+          setYoutubeTranscript(items);
+          setYoutubeTranscriptError('');
+        }
         setManualTranscript('');
       } catch (error) {
         setYoutubeTranscript([]);
@@ -2997,6 +3004,8 @@ function AppInner() {
                     <p className="webapp-muted">
                       Если видео не воспроизводится внутри Web App, используйте кнопку «Открыть в YouTube».
                     </p>
+                    {youtubeTranscriptLoading && <div className="webapp-muted">Загружаем субтитры...</div>}
+                    {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
 
                     {youtubeTranscript.length > 0 && (
                       <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
