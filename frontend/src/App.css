@@ -902,6 +902,15 @@ body {
   padding-top: 6px;
 }
 
+.webapp-subtitles.is-translation .webapp-subtitles-list p {
+  color: rgba(248, 250, 252, 0.75);
+}
+
+.webapp-subtitles.is-translation .webapp-subtitles-list p.is-active {
+  background: rgba(253, 224, 71, 0.2);
+  color: #111827;
+}
+
 .webapp-subtitles-list {
   max-height: 42vh;
   overflow: auto;

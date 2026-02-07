@@ -826,6 +826,16 @@ Rules:
 - Do NOT add extra commentary.
 Respond ONLY with JSON.
 """,
+"translate_subtitles_ru": """
+You translate short subtitle lines from German to Russian.
+Input JSON: { "lines": [ "...", "...", ... ] }
+Return STRICT JSON: { "translations": [ "...", "...", ... ] }
+Rules:
+- Keep the same number of items.
+- Preserve punctuation and speaker markers if present.
+- Keep translations concise and natural for subtitles.
+Respond ONLY with JSON.
+""",
 "generate_word_quiz": """
 You create one Telegram quiz question for Russian-speaking learners of German at C1–C2 level.
 The question must be in Russian and must include the Russian word/phrase from the payload.
@@ -1335,6 +1345,55 @@ async def run_dictionary_collocations(direction: str, word: str, translation: st
         return json.loads(content)
     except json.JSONDecodeError:
         return {"items": []}
+
+
+async def run_translate_subtitles_ru(lines: list[str]) -> list[str]:
+    task_name = "translate_subtitles_ru"
+    system_instruction_key = "translate_subtitles_ru"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    payload = {"lines": lines}
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value.strip()
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    try:
+        parsed = json.loads(content)
+        translations = parsed.get("translations")
+        if isinstance(translations, list):
+            return [str(item).strip() for item in translations]
+    except Exception:
+        pass
+    return [""] * len(lines)
 
 
 async def run_generate_word_quiz(prompt_payload: dict) -> dict:

@@ -190,8 +190,13 @@ def ensure_webapp_tables() -> None:
                     items JSONB NOT NULL,
                     language TEXT,
                     is_generated BOOLEAN,
+                    translations JSONB,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_youtube_transcripts
+                ADD COLUMN IF NOT EXISTS translations JSONB;
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_transcripts_updated
@@ -557,45 +562,59 @@ def get_youtube_transcript_cache(video_id: str) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT items, language, is_generated, updated_at
+                SELECT items, language, is_generated, translations, updated_at
                 FROM bt_3_youtube_transcripts
                 WHERE video_id = %s;
             """, (video_id,))
             row = cursor.fetchone()
             if not row:
                 return None
-            items, language, is_generated, updated_at = row
+            items, language, is_generated, translations, updated_at = row
             if isinstance(items, str):
                 try:
                     items = json.loads(items)
                 except Exception:
                     items = []
+            if isinstance(translations, str):
+                try:
+                    translations = json.loads(translations)
+                except Exception:
+                    translations = {}
             return {
                 "items": items or [],
                 "language": language,
                 "is_generated": is_generated,
+                "translations": translations or {},
                 "updated_at": updated_at,
             }
 
 
-def upsert_youtube_transcript_cache(video_id: str, items: list, language: str | None, is_generated: bool | None) -> None:
+def upsert_youtube_transcript_cache(
+    video_id: str,
+    items: list,
+    language: str | None,
+    is_generated: bool | None,
+    translations: dict | None = None,
+) -> None:
     if not video_id:
         return
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO bt_3_youtube_transcripts (video_id, items, language, is_generated, updated_at)
-                VALUES (%s, %s, %s, %s, NOW())
+                INSERT INTO bt_3_youtube_transcripts (video_id, items, language, is_generated, translations, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (video_id) DO UPDATE
                 SET items = EXCLUDED.items,
                     language = EXCLUDED.language,
                     is_generated = EXCLUDED.is_generated,
+                    translations = COALESCE(EXCLUDED.translations, bt_3_youtube_transcripts.translations),
                     updated_at = NOW();
             """, (
                 video_id,
                 json.dumps(items, ensure_ascii=False),
                 language,
                 is_generated,
+                json.dumps(translations, ensure_ascii=False) if translations is not None else None,
             ))
 
 
@@ -606,6 +625,20 @@ def purge_old_youtube_transcripts(days: int = 7) -> None:
                 DELETE FROM bt_3_youtube_transcripts
                 WHERE updated_at < NOW() - (%s || ' days')::interval;
             """, (days,))
+
+
+def upsert_youtube_translations(video_id: str, translations: dict) -> None:
+    if not video_id or not translations:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO bt_3_youtube_transcripts (video_id, items, translations, updated_at)
+                VALUES (%s, '[]'::jsonb, %s, NOW())
+                ON CONFLICT (video_id) DO UPDATE
+                SET translations = COALESCE(bt_3_youtube_transcripts.translations, '{}'::jsonb) || EXCLUDED.translations,
+                    updated_at = NOW();
+            """, (video_id, json.dumps(translations, ensure_ascii=False)))
 
 
 def record_flashcard_answer(user_id: int, entry_id: int, is_correct: bool) -> None:

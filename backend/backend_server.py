@@ -86,6 +86,7 @@ from backend.openai_manager import (
     run_dictionary_lookup,
     run_dictionary_lookup_de,
     run_dictionary_collocations,
+    run_translate_subtitles_ru,
     run_translation_explanation,
     run_feel_word,
     run_enrich_word,
@@ -103,6 +104,7 @@ from backend.database import (
     get_youtube_transcript_cache,
     upsert_youtube_transcript_cache,
     purge_old_youtube_transcripts,
+    upsert_youtube_translations,
     record_flashcard_answer,
     get_flashcard_set,
     create_dictionary_folder,
@@ -1341,6 +1343,7 @@ def get_youtube_transcript():
                 "items": data.get("items", []),
                 "language": data.get("language"),
                 "is_generated": data.get("is_generated"),
+                "translations": data.get("translations") or {},
                 "cached": True,
             }
         )
@@ -1354,6 +1357,7 @@ def get_youtube_transcript():
             "items": cached_db.get("items", []),
             "language": cached_db.get("language"),
             "is_generated": cached_db.get("is_generated"),
+            "translations": cached_db.get("translations") or {},
         }
         _yt_transcript_cache[video_id] = {"ts": now, "data": data}
         return jsonify(
@@ -1362,6 +1366,7 @@ def get_youtube_transcript():
                 "items": data.get("items", []),
                 "language": data.get("language"),
                 "is_generated": data.get("is_generated"),
+                "translations": data.get("translations") or {},
                 "cached_db": True,
             }
         )
@@ -1383,6 +1388,7 @@ def get_youtube_transcript():
             data.get("items", []),
             data.get("language"),
             data.get("is_generated"),
+            data.get("translations"),
         )
     except Exception:
         pass
@@ -1394,8 +1400,82 @@ def get_youtube_transcript():
             "items": data.get("items", []),
             "language": data.get("language"),
             "is_generated": data.get("is_generated"),
+            "translations": data.get("translations") or {},
         }
     )
+
+
+@app.route("/api/webapp/youtube/translate", methods=["POST"])
+def translate_youtube_subtitles():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    video_id = (payload.get("videoId") or "").strip()
+    start_index = payload.get("start_index")
+    lines = payload.get("lines") or []
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not video_id:
+        return jsonify({"error": "videoId обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    if not isinstance(lines, list):
+        return jsonify({"error": "lines должен быть массивом"}), 400
+
+    try:
+        start_index = int(start_index) if start_index is not None else 0
+    except Exception:
+        start_index = 0
+
+    lines = [str(line) for line in lines][:7]
+    if not lines:
+        return jsonify({"ok": True, "translations": []})
+
+    translations_map = {}
+    try:
+        cached_db = get_youtube_transcript_cache(video_id) or {}
+        translations_map = cached_db.get("translations") or {}
+    except Exception:
+        translations_map = {}
+
+    results = []
+    missing_lines = []
+    missing_indices = []
+    for offset, line in enumerate(lines):
+        line_clean = str(line).strip()
+        idx = str(start_index + offset)
+        cached = translations_map.get(idx)
+        if cached:
+            results.append(cached)
+        elif not line_clean:
+            results.append("")
+        else:
+            results.append("")
+            missing_lines.append(line_clean)
+            missing_indices.append(idx)
+
+    if missing_lines:
+        try:
+            translated = asyncio.run(run_translate_subtitles_ru(missing_lines))
+        except Exception as exc:
+            return jsonify({"error": f"translation error: {exc}"}), 500
+        update_map = {}
+        for idx, text in zip(missing_indices, translated):
+            update_map[idx] = text
+        translations_map.update(update_map)
+        try:
+            upsert_youtube_translations(video_id, update_map)
+        except Exception:
+            pass
+        for i, idx in enumerate(missing_indices):
+            pos = int(idx) - start_index
+            if 0 <= pos < len(results):
+                results[pos] = update_map.get(idx, "")
+        cached = _yt_transcript_cache.get(video_id)
+        if cached and cached.get("data"):
+            cached["data"]["translations"] = translations_map
+
+    return jsonify({"ok": True, "translations": results})
 
 
 @app.route("/api/webapp/normalize/de", methods=["POST"])

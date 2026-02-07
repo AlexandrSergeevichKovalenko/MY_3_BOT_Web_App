@@ -89,6 +89,7 @@ function AppInner() {
   const [youtubeTranscriptLoading, setYoutubeTranscriptLoading] = useState(false);
   const [youtubePlayerReady, setYoutubePlayerReady] = useState(false);
   const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
+  const [youtubeTranslations, setYoutubeTranslations] = useState({});
   const [manualTranscript, setManualTranscript] = useState('');
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
@@ -186,6 +187,8 @@ function AppInner() {
   const youtubeSubtitlesRef = useRef(null);
   const youtubePlayerRef = useRef(null);
   const youtubeTimeIntervalRef = useRef(null);
+  const youtubeTranslateInFlightRef = useRef(false);
+  const youtubeTranslateIndexRef = useRef(-1);
   const autoAdvanceTimeoutRef = useRef(null);
   const revealTimeoutRef = useRef(null);
   const flashcardIndexRef = useRef(0);
@@ -2007,6 +2010,7 @@ function AppInner() {
       if (!youtubeId || !initData) {
         setYoutubeTranscript([]);
         setYoutubeTranscriptError('');
+        setYoutubeTranslations({});
         return;
       }
       setYoutubeTranscriptLoading(true);
@@ -2029,6 +2033,7 @@ function AppInner() {
         }
         const data = await response.json();
         setYoutubeTranscript(data.items || []);
+        setYoutubeTranslations(data.translations || {});
         setManualTranscript('');
       } catch (error) {
         setYoutubeTranscript([]);
@@ -2134,6 +2139,61 @@ function AppInner() {
       listEl.scrollTop += offset;
     }
   }, [youtubeCurrentTime, youtubeTranscript.length]);
+
+  useEffect(() => {
+    if (!youtubeTranscript.length || !youtubeId || !initData) return;
+    const activeIndex = getActiveSubtitleIndex();
+    if (activeIndex < 0) return;
+    if (youtubeTranslateInFlightRef.current) return;
+    if (youtubeTranslateIndexRef.current === activeIndex) return;
+
+    const batch = youtubeTranscript.slice(activeIndex, activeIndex + 7);
+    const missing = [];
+    const lines = [];
+    batch.forEach((item, offset) => {
+      const idx = String(activeIndex + offset);
+      const cached = youtubeTranslations[idx];
+      const lineText = normalizeSubtitleText(item.text || '');
+      lines.push(lineText);
+      if (!cached && lineText) {
+        missing.push(idx);
+      }
+    });
+    if (!missing.length) return;
+
+    youtubeTranslateInFlightRef.current = true;
+    youtubeTranslateIndexRef.current = activeIndex;
+
+    fetch('/api/webapp/youtube/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        initData,
+        videoId: youtubeId,
+        start_index: activeIndex,
+        lines,
+      }),
+    })
+      .then((res) => res.ok ? res.json() : Promise.reject(res))
+      .then((data) => {
+        const translations = data.translations || [];
+        if (!translations.length) return;
+        setYoutubeTranslations((prev) => {
+          const next = { ...prev };
+          translations.forEach((text, offset) => {
+            const idx = String(activeIndex + offset);
+            if (text) {
+              next[idx] = text;
+            }
+          });
+          return next;
+        });
+      })
+      .catch(() => {})
+      .finally(() => {
+        youtubeTranslateInFlightRef.current = false;
+      });
+  }, [youtubeCurrentTime, youtubeTranscript.length, youtubeId, initData, youtubeTranslations]);
 
   const handleLoadDailyHistory = async () => {
     if (!initData) {
@@ -3023,6 +3083,29 @@ function AppInner() {
                                 {renderSubtitleText(item.text)}
                               </p>
                             ));
+                          })()}
+                        </div>
+                      </div>
+                    )}
+                    {youtubeTranscript.length > 0 && (
+                      <div className="webapp-subtitles is-translation">
+                        <div className="webapp-subtitles-header">
+                          <h4>Перевод (RU)</h4>
+                        </div>
+                        <div className="webapp-subtitles-list">
+                          {(() => {
+                            const activeIndex = getActiveSubtitleIndex();
+                            return youtubeTranscript.map((item, index) => {
+                              const translation = youtubeTranslations[String(index)] || '…';
+                              return (
+                                <p
+                                  key={`ru-${item.start}-${index}`}
+                                  className={index === activeIndex ? 'is-active' : ''}
+                                >
+                                  {translation}
+                                </p>
+                              );
+                            });
                           })()}
                         </div>
                       </div>
