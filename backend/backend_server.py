@@ -400,6 +400,10 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
             "quiet": True,
             "no_warnings": True,
             "geo_bypass": True,
+            "noplaylist": True,
+            "format": "best",
+            "ignore_no_formats_error": True,
+            "allow_unplayable_formats": True,
             "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
             "http_headers": {
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
