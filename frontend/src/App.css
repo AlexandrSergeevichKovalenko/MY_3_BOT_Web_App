@@ -903,10 +903,10 @@ body {
 }
 
 .webapp-subtitles-list p.is-active {
-  background: rgba(255, 239, 150, 0.35);
+  background: rgba(93, 220, 255, 0.18);
   border-radius: 10px;
   padding: 6px 8px;
-  color: #111827;
+  color: #e9f8ff;
 }
 
 .webapp-subtitles-header {
