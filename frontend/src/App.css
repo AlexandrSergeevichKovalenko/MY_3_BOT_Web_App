@@ -903,7 +903,7 @@ body {
 }
 
 .webapp-subtitles-list {
-  max-height: 42vh;
+  max-height: 34vh;
   overflow: auto;
   padding-right: 4px;
 }
@@ -1004,6 +1004,12 @@ body {
     position: static;
     max-height: none;
     overflow: visible;
+    margin-top: 18px;
+  }
+
+  .webapp-video-dictionary.is-split .webapp-video {
+    min-height: 100vh;
+    align-content: start;
   }
 }
 
