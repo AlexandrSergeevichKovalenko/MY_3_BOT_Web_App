@@ -3919,7 +3919,7 @@ def _format_anagram_option(word: str) -> str:
         return word
     base = word.lower()
     formatted = base[0].upper() + base[1:]
-    return " ".join(list(formatted))
+    return " ".join(f"[{ch}]" for ch in formatted)
 
 
 def _short_ru_prompt(word_ru: str) -> str | None:
