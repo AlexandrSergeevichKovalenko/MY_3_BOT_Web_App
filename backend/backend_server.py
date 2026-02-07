@@ -399,6 +399,12 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
             "skip_download": True,
             "quiet": True,
             "no_warnings": True,
+            "geo_bypass": True,
+            "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9,ru;q=0.8,de;q=0.7",
+            },
         }
         cookies_path = os.getenv("YOUTUBE_COOKIES_PATH") or ""
         cookies_b64 = os.getenv("YOUTUBE_COOKIES_BASE64") or ""
