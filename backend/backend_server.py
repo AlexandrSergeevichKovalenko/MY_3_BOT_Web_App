@@ -133,6 +133,12 @@ if os.getenv("YOUTUBE_COOKIES_BASE64") or os.getenv("YOUTUBE_COOKIES_PATH"):
 else:
     logging.info("⚠️ YouTube cookies not configured")
 
+# YouTube transcript cache/throttle (in-memory)
+_yt_transcript_cache = {}
+_yt_transcript_errors = {}
+_YT_CACHE_TTL = 60 * 60  # 1 hour
+_YT_ERROR_TTL = 10 * 60  # 10 minutes
+
 WEBAPP_TOPICS = [
     "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
     "💼 Business",
@@ -1312,11 +1318,31 @@ def get_youtube_transcript():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
+    now = time.time()
+    cached = _yt_transcript_cache.get(video_id)
+    if cached and now - cached.get("ts", 0) < _YT_CACHE_TTL:
+        data = cached.get("data") or {}
+        return jsonify(
+            {
+                "ok": True,
+                "items": data.get("items", []),
+                "language": data.get("language"),
+                "is_generated": data.get("is_generated"),
+                "cached": True,
+            }
+        )
+    err = _yt_transcript_errors.get(video_id)
+    if err and now - err.get("ts", 0) < _YT_ERROR_TTL:
+        return jsonify({"error": err.get("error", "Субтитры временно недоступны")}), 429
+
     try:
         data = _fetch_youtube_transcript(video_id)
     except Exception as exc:
         logging.warning("YouTube transcript error for %s: %s", video_id, exc)
+        _yt_transcript_errors[video_id] = {"ts": now, "error": str(exc)}
         return jsonify({"error": f"Не удалось получить субтитры: {exc}"}), 404
+
+    _yt_transcript_cache[video_id] = {"ts": now, "data": data}
 
     return jsonify(
         {
