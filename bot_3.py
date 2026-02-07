@@ -3922,6 +3922,18 @@ def _format_anagram_option(word: str) -> str:
     return " ".join(list(formatted))
 
 
+def _short_ru_prompt(word_ru: str) -> str | None:
+    cleaned = (word_ru or "").strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > 50:
+        return None
+    tokens = [t for t in cleaned.split() if t]
+    if len(tokens) > 3:
+        return None
+    return cleaned
+
+
 def _build_anagram_question(word_ru: str, correct_word: str, response_json: dict) -> str:
     usage_examples = response_json.get("usage_examples") if response_json else []
     if usage_examples:
@@ -3932,7 +3944,10 @@ def _build_anagram_question(word_ru: str, correct_word: str, response_json: dict
             if pattern.search(example):
                 sentence = pattern.sub(scrambled, example)
                 return f"Какой глагол подходит по смыслу?\n{sentence}"
-    return f"Выберите правильный немецкий вариант для «{word_ru}». Буквы перемешаны."
+    short_ru = _short_ru_prompt(word_ru)
+    if short_ru:
+        return f"Выберите правильный немецкий вариант для «{short_ru}». Буквы перемешаны."
+    return "Выберите правильный немецкий вариант. Буквы перемешаны."
 
 
 def _pick_anagram_distractors(correct_word: str, count: int = 3) -> list[str]:
@@ -3972,6 +3987,15 @@ async def generate_anagram_quiz(entry: dict) -> dict | None:
     if not correct_word:
         return None
 
+    template_sentence = None
+    usage_examples = response_json.get("usage_examples") if response_json else []
+    if usage_examples:
+        example = next((ex for ex in usage_examples if isinstance(ex, str) and ex.strip()), "")
+        if example and len(example) <= 100:
+            pattern = re.compile(rf"\\b{re.escape(correct_word)}\\b", re.IGNORECASE)
+            if pattern.search(example):
+                template_sentence = pattern.sub("{option}", example)
+
     scrambled_correct = _scramble_word_preserve_ends(correct_word)
     if not scrambled_correct:
         return None
@@ -3986,8 +4010,14 @@ async def generate_anagram_quiz(entry: dict) -> dict | None:
         options = [scrambled_correct] + [opt for opt in options if opt != scrambled_correct][:3]
         random.shuffle(options)
     correct_option_id = options.index(scrambled_correct)
-    options = [_format_anagram_option(option) for option in options]
-    correct_option_id = options.index(_format_anagram_option(scrambled_correct))
+    formatted_options = [_format_anagram_option(option) for option in options]
+    if template_sentence:
+        formatted_options = [template_sentence.format(option=opt) for opt in formatted_options]
+    options = formatted_options
+    correct_option_id = options.index(
+        template_sentence.format(option=_format_anagram_option(scrambled_correct))
+        if template_sentence else _format_anagram_option(scrambled_correct)
+    )
 
     question = _build_anagram_question(word_ru, correct_word, response_json)
     return {
