@@ -64,6 +64,7 @@ import logging
 import requests
 import tempfile
 import base64
+import time
 from datetime import datetime
 from io import BytesIO
 from uuid import uuid4
@@ -99,6 +100,9 @@ from backend.database import (
     save_webapp_translation,
     get_dictionary_cache,
     upsert_dictionary_cache,
+    get_youtube_transcript_cache,
+    upsert_youtube_transcript_cache,
+    purge_old_youtube_transcripts,
     record_flashcard_answer,
     get_flashcard_set,
     create_dictionary_folder,
@@ -138,6 +142,7 @@ _yt_transcript_cache = {}
 _yt_transcript_errors = {}
 _YT_CACHE_TTL = 60 * 60  # 1 hour
 _YT_ERROR_TTL = 10 * 60  # 10 minutes
+_YT_DB_PURGE_TS = 0.0
 
 WEBAPP_TOPICS = [
     "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
@@ -1319,6 +1324,14 @@ def get_youtube_transcript():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     now = time.time()
+    global _YT_DB_PURGE_TS
+    if now - _YT_DB_PURGE_TS > 3600:
+        try:
+            purge_old_youtube_transcripts(7)
+        except Exception:
+            pass
+        _YT_DB_PURGE_TS = now
+
     cached = _yt_transcript_cache.get(video_id)
     if cached and now - cached.get("ts", 0) < _YT_CACHE_TTL:
         data = cached.get("data") or {}
@@ -1331,6 +1344,28 @@ def get_youtube_transcript():
                 "cached": True,
             }
         )
+    cached_db = None
+    try:
+        cached_db = get_youtube_transcript_cache(video_id)
+    except Exception:
+        cached_db = None
+    if cached_db and cached_db.get("items"):
+        data = {
+            "items": cached_db.get("items", []),
+            "language": cached_db.get("language"),
+            "is_generated": cached_db.get("is_generated"),
+        }
+        _yt_transcript_cache[video_id] = {"ts": now, "data": data}
+        return jsonify(
+            {
+                "ok": True,
+                "items": data.get("items", []),
+                "language": data.get("language"),
+                "is_generated": data.get("is_generated"),
+                "cached_db": True,
+            }
+        )
+
     err = _yt_transcript_errors.get(video_id)
     if err and now - err.get("ts", 0) < _YT_ERROR_TTL:
         return jsonify({"error": err.get("error", "Субтитры временно недоступны")}), 429
@@ -1342,6 +1377,15 @@ def get_youtube_transcript():
         _yt_transcript_errors[video_id] = {"ts": now, "error": str(exc)}
         return jsonify({"error": f"Не удалось получить субтитры: {exc}"}), 404
 
+    try:
+        upsert_youtube_transcript_cache(
+            video_id,
+            data.get("items", []),
+            data.get("language"),
+            data.get("is_generated"),
+        )
+    except Exception:
+        pass
     _yt_transcript_cache[video_id] = {"ts": now, "data": data}
 
     return jsonify(
