@@ -185,6 +185,19 @@ def ensure_webapp_tables() -> None:
                 );
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_youtube_transcripts (
+                    video_id TEXT PRIMARY KEY,
+                    items JSONB NOT NULL,
+                    language TEXT,
+                    is_generated BOOLEAN,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_transcripts_updated
+                ON bt_3_youtube_transcripts (updated_at);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_flashcard_stats (
                     user_id BIGINT NOT NULL,
                     entry_id BIGINT NOT NULL,
@@ -536,6 +549,63 @@ def upsert_dictionary_cache(word_ru: str, response_json: dict) -> None:
                 word_ru,
                 json.dumps(response_json, ensure_ascii=False),
             ))
+
+
+def get_youtube_transcript_cache(video_id: str) -> dict | None:
+    if not video_id:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT items, language, is_generated, updated_at
+                FROM bt_3_youtube_transcripts
+                WHERE video_id = %s;
+            """, (video_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            items, language, is_generated, updated_at = row
+            if isinstance(items, str):
+                try:
+                    items = json.loads(items)
+                except Exception:
+                    items = []
+            return {
+                "items": items or [],
+                "language": language,
+                "is_generated": is_generated,
+                "updated_at": updated_at,
+            }
+
+
+def upsert_youtube_transcript_cache(video_id: str, items: list, language: str | None, is_generated: bool | None) -> None:
+    if not video_id:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO bt_3_youtube_transcripts (video_id, items, language, is_generated, updated_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (video_id) DO UPDATE
+                SET items = EXCLUDED.items,
+                    language = EXCLUDED.language,
+                    is_generated = EXCLUDED.is_generated,
+                    updated_at = NOW();
+            """, (
+                video_id,
+                json.dumps(items, ensure_ascii=False),
+                language,
+                is_generated,
+            ))
+
+
+def purge_old_youtube_transcripts(days: int = 7) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                DELETE FROM bt_3_youtube_transcripts
+                WHERE updated_at < NOW() - (%s || ' days')::interval;
+            """, (days,))
 
 
 def record_flashcard_answer(user_id: int, entry_id: int, is_correct: bool) -> None:
