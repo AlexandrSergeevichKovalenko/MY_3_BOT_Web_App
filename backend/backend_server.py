@@ -127,6 +127,10 @@ from backend.analytics import (
 )
 
 load_dotenv()
+if os.getenv("YOUTUBE_COOKIES_BASE64") or os.getenv("YOUTUBE_COOKIES_PATH"):
+    logging.info("✅ YouTube cookies configured for yt-dlp")
+else:
+    logging.info("⚠️ YouTube cookies not configured")
 
 WEBAPP_TOPICS = [
     "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
@@ -395,8 +399,26 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
             "quiet": True,
             "no_warnings": True,
         }
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+        cookies_path = os.getenv("YOUTUBE_COOKIES_PATH") or ""
+        cookies_b64 = os.getenv("YOUTUBE_COOKIES_BASE64") or ""
+        tmp_cookie_file = None
+        try:
+            if cookies_b64 and not cookies_path:
+                tmp_cookie_file = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+                tmp_cookie_file.write(base64.b64decode(cookies_b64))
+                tmp_cookie_file.flush()
+                cookies_path = tmp_cookie_file.name
+            if cookies_path:
+                ydl_opts["cookiefile"] = cookies_path
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+        finally:
+            if tmp_cookie_file is not None:
+                try:
+                    tmp_cookie_file.close()
+                    os.unlink(tmp_cookie_file.name)
+                except Exception:
+                    pass
         language_order = ["de", "en", "ru"]
         sources = [
             ("subtitles", info.get("subtitles") or {}, False),
