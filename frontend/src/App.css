@@ -902,6 +902,18 @@ body {
   padding-top: 6px;
 }
 
+.webapp-video .webapp-subtitles:first-of-type .webapp-subtitles-list {
+  max-height: 36vh;
+}
+
+.webapp-video .webapp-subtitles.is-translation .webapp-subtitles-list {
+  max-height: 24vh;
+}
+
+.webapp-video .webapp-subtitles:not(.is-translation) .webapp-subtitles-list {
+  line-height: 1.4;
+}
+
 .webapp-subtitles.is-translation .webapp-subtitles-list p {
   color: rgba(248, 250, 252, 0.75);
 }
@@ -912,7 +924,6 @@ body {
 }
 
 .webapp-subtitles-list {
-  max-height: 42vh;
   overflow: auto;
   padding-right: 4px;
 }

@@ -90,6 +90,7 @@ function AppInner() {
   const [youtubePlayerReady, setYoutubePlayerReady] = useState(false);
   const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
+  const [youtubeRuEnabled, setYoutubeRuEnabled] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
@@ -2011,6 +2012,7 @@ function AppInner() {
         setYoutubeTranscript([]);
         setYoutubeTranscriptError('');
         setYoutubeTranslations({});
+        setYoutubeRuEnabled(false);
         return;
       }
       setYoutubeTranscriptLoading(true);
@@ -2141,28 +2143,30 @@ function AppInner() {
   }, [youtubeCurrentTime, youtubeTranscript.length]);
 
   useEffect(() => {
+    if (!youtubeRuEnabled) return;
     if (!youtubeTranscript.length || !youtubeId || !initData) return;
     const activeIndex = getActiveSubtitleIndex();
     if (activeIndex < 0) return;
     if (youtubeTranslateInFlightRef.current) return;
-    if (youtubeTranslateIndexRef.current === activeIndex) return;
+    const aheadLimit = 50;
+    const minBuffer = 25;
+    let available = 0;
+    for (let i = activeIndex; i < youtubeTranscript.length; i += 1) {
+      const idx = String(i);
+      if (!youtubeTranslations[idx]) break;
+      available += 1;
+    }
+    if (available >= minBuffer) return;
+    const startIndex = activeIndex + available;
+    if (youtubeTranslateIndexRef.current === startIndex) return;
 
-    const batch = youtubeTranscript.slice(activeIndex, activeIndex + 7);
-    const missing = [];
-    const lines = [];
-    batch.forEach((item, offset) => {
-      const idx = String(activeIndex + offset);
-      const cached = youtubeTranslations[idx];
-      const lineText = normalizeSubtitleText(item.text || '');
-      lines.push(lineText);
-      if (!cached && lineText) {
-        missing.push(idx);
-      }
-    });
-    if (!missing.length) return;
+    const batch = youtubeTranscript.slice(startIndex, startIndex + aheadLimit);
+    const lines = batch.map((item) => normalizeSubtitleText(item.text || ''));
+    const hasText = lines.some((line) => line);
+    if (!hasText) return;
 
     youtubeTranslateInFlightRef.current = true;
-    youtubeTranslateIndexRef.current = activeIndex;
+    youtubeTranslateIndexRef.current = startIndex;
 
     fetch('/api/webapp/youtube/translate', {
       method: 'POST',
@@ -2170,7 +2174,7 @@ function AppInner() {
       body: JSON.stringify({
         initData,
         videoId: youtubeId,
-        start_index: activeIndex,
+        start_index: startIndex,
         lines,
       }),
     })
@@ -2181,7 +2185,7 @@ function AppInner() {
         setYoutubeTranslations((prev) => {
           const next = { ...prev };
           translations.forEach((text, offset) => {
-            const idx = String(activeIndex + offset);
+            const idx = String(startIndex + offset);
             if (text) {
               next[idx] = text;
             }
@@ -2193,7 +2197,7 @@ function AppInner() {
       .finally(() => {
         youtubeTranslateInFlightRef.current = false;
       });
-  }, [youtubeCurrentTime, youtubeTranscript.length, youtubeId, initData, youtubeTranslations]);
+  }, [youtubeCurrentTime, youtubeTranscript.length, youtubeId, initData, youtubeTranslations, youtubeRuEnabled]);
 
   const handleLoadDailyHistory = async () => {
     if (!initData) {
@@ -3031,16 +3035,6 @@ function AppInner() {
                         >
                           {videoExpanded ? 'Обычный режим' : 'Словарь рядом'}
                         </button>
-                        {youtubeId && (
-                          <a
-                            className="secondary-button"
-                            href={`https://www.youtube.com/watch?v=${youtubeId}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            Открыть в YouTube
-                          </a>
-                        )}
                       </div>
                     </div>
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
@@ -3063,10 +3057,16 @@ function AppInner() {
                     ) : (
                       <p className="webapp-muted">Вставьте ссылку на видео, чтобы смотреть прямо здесь.</p>
                     )}
-                    <p className="webapp-muted">
-                      Если видео не воспроизводится внутри Web App, используйте кнопку «Открыть в YouTube».
-                    </p>
-
+                    <div className="webapp-video-actions">
+                      <button
+                        type="button"
+                        className={`secondary-button ${youtubeRuEnabled ? 'is-active' : ''}`}
+                        onClick={() => setYoutubeRuEnabled((prev) => !prev)}
+                        disabled={!youtubeTranscript.length}
+                      >
+                        {youtubeRuEnabled ? 'Скрыть RU субтитры' : 'Показать RU субтитры'}
+                      </button>
+                    </div>
                     {youtubeTranscript.length > 0 && (
                       <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
                         <div className="webapp-subtitles-header">
@@ -3087,7 +3087,7 @@ function AppInner() {
                         </div>
                       </div>
                     )}
-                    {youtubeTranscript.length > 0 && (
+                    {youtubeTranscript.length > 0 && youtubeRuEnabled && (
                       <div className="webapp-subtitles is-translation">
                         <div className="webapp-subtitles-header">
                           <h4>Перевод (RU)</h4>

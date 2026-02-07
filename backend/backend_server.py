@@ -1427,7 +1427,7 @@ def translate_youtube_subtitles():
     except Exception:
         start_index = 0
 
-    lines = [str(line) for line in lines][:7]
+    lines = [str(line) for line in lines][:50]
     if not lines:
         return jsonify({"ok": True, "translations": []})
 
