@@ -2143,6 +2143,18 @@ function AppInner() {
   }, [youtubeCurrentTime, youtubeTranscript.length]);
 
   useEffect(() => {
+    const ruRef = document.querySelector('.webapp-subtitles.is-translation .webapp-subtitles-list');
+    if (!ruRef) return;
+    const activeEl = ruRef.querySelector('.is-active');
+    if (activeEl) {
+      const listRect = ruRef.getBoundingClientRect();
+      const activeRect = activeEl.getBoundingClientRect();
+      const offset = activeRect.top - listRect.top - listRect.height / 2 + activeRect.height / 2;
+      ruRef.scrollTop += offset;
+    }
+  }, [youtubeCurrentTime, youtubeTranscript.length, youtubeRuEnabled]);
+
+  useEffect(() => {
     if (!youtubeRuEnabled) return;
     if (!youtubeTranscript.length || !youtubeId || !initData) return;
     const activeIndex = getActiveSubtitleIndex();
@@ -3032,6 +3044,7 @@ function AppInner() {
                           type="button"
                           className="secondary-button"
                           onClick={() => setVideoExpanded((prev) => !prev)}
+                          style={{ display: 'none' }}
                         >
                           {videoExpanded ? 'Обычный режим' : 'Словарь рядом'}
                         </button>

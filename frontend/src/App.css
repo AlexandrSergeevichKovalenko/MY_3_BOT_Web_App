@@ -839,10 +839,10 @@ body {
 .webapp-video {
   background: rgba(16, 23, 44, 0.92);
   border-radius: 18px;
-  padding: 20px;
+  padding: 14px;
   box-shadow: 0 16px 32px rgba(8, 11, 26, 0.35);
   display: grid;
-  gap: 14px;
+  gap: 10px;
 }
 
 .webapp-video-dictionary {
@@ -857,7 +857,7 @@ body {
 
 .webapp-video-form {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .webapp-video-actions {
@@ -873,6 +873,10 @@ body {
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.35);
   background: #000;
+}
+
+.webapp-video h3 {
+  margin: 0;
 }
 
 .webapp-video-frame.is-expanded {
@@ -898,16 +902,16 @@ body {
 
 .webapp-subtitles {
   display: grid;
-  gap: 12px;
-  padding-top: 6px;
+  gap: 8px;
+  padding-top: 2px;
 }
 
 .webapp-video .webapp-subtitles:first-of-type .webapp-subtitles-list {
-  max-height: 36vh;
+  max-height: 32vh;
 }
 
 .webapp-video .webapp-subtitles.is-translation .webapp-subtitles-list {
-  max-height: 24vh;
+  max-height: 22vh;
 }
 
 .webapp-video .webapp-subtitles:not(.is-translation) .webapp-subtitles-list {
