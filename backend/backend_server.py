@@ -63,6 +63,7 @@ import asyncio
 import logging
 import requests
 import tempfile
+import base64
 from datetime import datetime
 from io import BytesIO
 from uuid import uuid4
