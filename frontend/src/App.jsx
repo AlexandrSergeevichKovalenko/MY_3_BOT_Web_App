@@ -1641,7 +1641,8 @@ function AppInner() {
   const renderSubtitleText = (text) => renderClickableText(normalizeSubtitleText(text));
 
   const getActiveSubtitleIndex = () => {
-    if (!youtubeTranscriptHasTiming) return -1;
+    const hasTiming = youtubeTranscriptHasTiming || youtubeTranscript.some((item) => Number(item?.start) > 0);
+    if (!hasTiming) return -1;
     if (!youtubeTranscript.length) return -1;
     const time = youtubeCurrentTime || 0;
     let activeIndex = -1;
@@ -2145,9 +2146,11 @@ function AppInner() {
           throw new Error(message);
         }
         const data = await response.json();
-        setYoutubeTranscript(data.items || []);
+        const items = data.items || [];
+        setYoutubeTranscript(items);
         setYoutubeTranslations(data.translations || {});
-        setYoutubeTranscriptHasTiming(true);
+        const hasTiming = items.some((item) => Number(item?.start) > 0);
+        setYoutubeTranscriptHasTiming(hasTiming);
         setManualTranscript('');
       } catch (error) {
         setYoutubeTranscript([]);
