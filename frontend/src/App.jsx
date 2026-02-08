@@ -1725,6 +1725,28 @@ function AppInner() {
     return { items, hasTiming };
   };
 
+  const parseSimpleTimestampTranscript = (value) => {
+    const lines = value.split(/\r?\n/).map((line) => line.trim());
+    const items = [];
+    let hasTiming = false;
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (!line) continue;
+      if (/^\d{1,2}:\d{2}$/.test(line)) {
+        const parts = line.split(':').map(Number);
+        if (parts.length === 2 && !parts.some((p) => Number.isNaN(p))) {
+          const start = parts[0] * 60 + parts[1];
+          const text = (lines[i + 1] || '').trim();
+          if (text) {
+            items.push({ start, text });
+            hasTiming = true;
+          }
+        }
+      }
+    }
+    return { items, hasTiming };
+  };
+
   const handleManualTranscript = () => {
     const raw = manualTranscript.trim();
     if (!raw) {
@@ -1737,6 +1759,15 @@ function AppInner() {
     if (parsed.items.length) {
       setYoutubeTranscript(parsed.items);
       setYoutubeTranscriptHasTiming(parsed.hasTiming);
+      setYoutubeManualOverride(true);
+      setYoutubeTranscriptError('');
+      setShowManualTranscript(false);
+      return;
+    }
+    const simple = parseSimpleTimestampTranscript(raw);
+    if (simple.items.length) {
+      setYoutubeTranscript(simple.items);
+      setYoutubeTranscriptHasTiming(simple.hasTiming);
       setYoutubeManualOverride(true);
       setYoutubeTranscriptError('');
       setShowManualTranscript(false);
