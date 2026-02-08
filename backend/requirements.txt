@@ -15,7 +15,7 @@ psycopg2-binary
 python-dotenv
 
 gunicorn
-youtube-transcript-api==0.6.2
+youtube-transcript-api>=0.6.3
 yt-dlp==2024.12.23
 spacy==3.7.4
 reportlab==4.2.5

@@ -372,6 +372,7 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
         return items
 
     api_error = None
+    instance_error = None
     try:
         try:
             from youtube_transcript_api import (
@@ -402,6 +403,37 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
         api_error = f"Субтитры недоступны: {exc}"
     except Exception as exc:
         api_error = f"Не удалось загрузить субтитры: {exc}"
+
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+
+        yta = YouTubeTranscriptApi()
+        fetch_fn = getattr(yta, "fetch", None)
+        if not callable(fetch_fn):
+            raise RuntimeError("YouTubeTranscriptApi.fetch не поддерживается этой версией")
+
+        for lang in ("de", "en", "ru"):
+            try:
+                items = yta.fetch(video_id=video_id, languages=[lang])
+                if items:
+                    return {
+                        "items": items,
+                        "language": lang,
+                        "is_generated": None,
+                    }
+            except Exception:
+                continue
+
+        items = yta.fetch(video_id=video_id)
+        if not items:
+            raise RuntimeError("Пустой ответ от YouTubeTranscriptApi.fetch")
+        return {
+            "items": items,
+            "language": None,
+            "is_generated": None,
+        }
+    except Exception as exc:
+        instance_error = f"Instance API: {exc}"
 
     try:
         try:
@@ -471,8 +503,9 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
         raise RuntimeError("yt-dlp не нашёл .vtt в subtitles/automatic_captions")
     except Exception as exc:
         fallback_error = f"Fallback yt-dlp: {exc}"
-        if api_error:
-            raise RuntimeError(f"{api_error}; {fallback_error}") from exc
+        if api_error or instance_error:
+            errors = "; ".join([e for e in (api_error, instance_error, fallback_error) if e])
+            raise RuntimeError(errors) from exc
         raise RuntimeError(fallback_error) from exc
 
 
