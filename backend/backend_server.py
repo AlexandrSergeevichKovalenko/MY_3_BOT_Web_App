@@ -65,6 +65,7 @@ import requests
 import tempfile
 import base64
 import time
+import importlib.metadata as importlib_metadata
 import youtube_transcript_api as yta
 from datetime import datetime
 from io import BytesIO
@@ -135,7 +136,11 @@ from backend.analytics import (
 )
 
 load_dotenv()
-logging.info("✅ youtube_transcript_api version: %s", getattr(yta, "__version__", "unknown"))
+try:
+    yta_version = importlib_metadata.version("youtube-transcript-api")
+except Exception:
+    yta_version = getattr(yta, "__version__", "unknown")
+logging.info("✅ youtube_transcript_api version: %s", yta_version)
 if os.getenv("YOUTUBE_COOKIES_BASE64") or os.getenv("YOUTUBE_COOKIES_PATH"):
     logging.info("✅ YouTube cookies configured for yt-dlp")
 else:
