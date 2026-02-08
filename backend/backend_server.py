@@ -141,6 +141,10 @@ try:
 except Exception:
     yta_version = getattr(yta, "__version__", "unknown")
 logging.info("✅ youtube_transcript_api version: %s", yta_version)
+if os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or os.getenv("YOUTUBE_TRANSCRIPT_PROXIES_JSON"):
+    logging.info("✅ YouTube transcript proxy configured")
+else:
+    logging.info("⚠️ YouTube transcript proxy not configured")
 if os.getenv("YOUTUBE_COOKIES_BASE64") or os.getenv("YOUTUBE_COOKIES_PATH"):
     logging.info("✅ YouTube cookies configured for yt-dlp")
 else:
