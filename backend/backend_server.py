@@ -335,7 +335,7 @@ def _normalize_german_text(text: str) -> str:
     return " ".join(lemmas).strip()
 
 
-def _fetch_youtube_transcript(video_id: str) -> dict:
+def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
     def _parse_vtt_text(text: str) -> list[dict]:
         items = []
         lines = [line.strip() for line in text.splitlines()]
@@ -385,9 +385,12 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
             raise RuntimeError("youtube_transcript_api не установлен") from exc
         transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
         preferred = None
-        for lang in ("de", "en", "ru"):
+        lang_order = ["de", "en", "ru"]
+        if lang:
+            lang_order = [lang] + [code for code in lang_order if code != lang]
+        for code in lang_order:
             try:
-                preferred = transcripts.find_transcript([lang])
+                preferred = transcripts.find_transcript([code])
                 break
             except Exception:
                 continue
@@ -398,6 +401,7 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
             "items": transcript,
             "language": preferred.language_code,
             "is_generated": preferred.is_generated,
+            "source": "list_api",
         }
     except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as exc:
         api_error = f"Субтитры недоступны: {exc}"
@@ -412,14 +416,18 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
         if not callable(fetch_fn):
             raise RuntimeError("YouTubeTranscriptApi.fetch не поддерживается этой версией")
 
-        for lang in ("de", "en", "ru"):
+        lang_order = ["de", "en", "ru"]
+        if lang:
+            lang_order = [lang] + [code for code in lang_order if code != lang]
+        for code in lang_order:
             try:
-                items = yta.fetch(video_id=video_id, languages=[lang])
+                items = yta.fetch(video_id=video_id, languages=[code])
                 if items:
                     return {
                         "items": items,
-                        "language": lang,
+                        "language": code,
                         "is_generated": None,
+                        "source": "instance_api",
                     }
             except Exception:
                 continue
@@ -431,6 +439,7 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
             "items": items,
             "language": None,
             "is_generated": None,
+            "source": "instance_api",
         }
     except Exception as exc:
         instance_error = f"Instance API: {exc}"
@@ -499,6 +508,7 @@ def _fetch_youtube_transcript(video_id: str) -> dict:
                     "items": items,
                     "language": lang,
                     "is_generated": is_generated,
+                    "source": "yt_dlp",
                 }
         raise RuntimeError("yt-dlp не нашёл .vtt в subtitles/automatic_captions")
     except Exception as exc:
@@ -1342,6 +1352,7 @@ def get_youtube_transcript():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     video_id = (payload.get("videoId") or "").strip()
+    lang = (payload.get("lang") or "").strip() or None
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -1377,6 +1388,7 @@ def get_youtube_transcript():
                 "language": data.get("language"),
                 "is_generated": data.get("is_generated"),
                 "translations": data.get("translations") or {},
+                "source": data.get("source"),
                 "cached": True,
             }
         )
@@ -1400,6 +1412,7 @@ def get_youtube_transcript():
                 "language": data.get("language"),
                 "is_generated": data.get("is_generated"),
                 "translations": data.get("translations") or {},
+                "source": data.get("source"),
                 "cached_db": True,
             }
         )
@@ -1409,7 +1422,7 @@ def get_youtube_transcript():
         return jsonify({"error": err.get("error", "Субтитры временно недоступны")}), 429
 
     try:
-        data = _fetch_youtube_transcript(video_id)
+        data = _fetch_youtube_transcript(video_id, lang=lang)
     except Exception as exc:
         logging.warning("YouTube transcript error for %s: %s", video_id, exc)
         _yt_transcript_errors[video_id] = {"ts": now, "error": str(exc)}
@@ -1434,6 +1447,7 @@ def get_youtube_transcript():
             "language": data.get("language"),
             "is_generated": data.get("is_generated"),
             "translations": data.get("translations") or {},
+            "source": data.get("source"),
         }
     )
 
