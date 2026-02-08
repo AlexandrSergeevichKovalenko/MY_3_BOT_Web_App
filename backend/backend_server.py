@@ -65,6 +65,7 @@ import requests
 import tempfile
 import base64
 import time
+import youtube_transcript_api as yta
 from datetime import datetime
 from io import BytesIO
 from uuid import uuid4
@@ -134,6 +135,7 @@ from backend.analytics import (
 )
 
 load_dotenv()
+logging.info("✅ youtube_transcript_api version: %s", getattr(yta, "__version__", "unknown"))
 if os.getenv("YOUTUBE_COOKIES_BASE64") or os.getenv("YOUTUBE_COOKIES_PATH"):
     logging.info("✅ YouTube cookies configured for yt-dlp")
 else:
@@ -336,6 +338,23 @@ def _normalize_german_text(text: str) -> str:
 
 
 def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
+    def _normalize_items(raw) -> list[dict]:
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, dict):
+            snippets = raw.get("snippets")
+            if isinstance(snippets, list):
+                return [
+                    {
+                        "start": item.get("start"),
+                        "duration": item.get("duration"),
+                        "text": item.get("text"),
+                    }
+                    for item in snippets
+                    if isinstance(item, dict)
+                ]
+        return []
+
     def _build_yta_kwargs() -> tuple[dict, list[str]]:
         kwargs: dict = {}
         cleanup_paths: list[str] = []
@@ -469,9 +488,10 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
         for code in lang_order:
             try:
                 try:
-                    items = yta.fetch(video_id=video_id, languages=[code], **yta_kwargs)
+                    raw_items = yta.fetch(video_id=video_id, languages=[code], **yta_kwargs)
                 except TypeError:
-                    items = yta.fetch(video_id=video_id, languages=[code])
+                    raw_items = yta.fetch(video_id=video_id, languages=[code])
+                items = _normalize_items(raw_items)
                 if items:
                     return {
                         "items": items,
@@ -483,9 +503,10 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 continue
 
         try:
-            items = yta.fetch(video_id=video_id, **yta_kwargs)
+            raw_items = yta.fetch(video_id=video_id, **yta_kwargs)
         except TypeError:
-            items = yta.fetch(video_id=video_id)
+            raw_items = yta.fetch(video_id=video_id)
+        items = _normalize_items(raw_items)
         if not items:
             raise RuntimeError("Пустой ответ от YouTubeTranscriptApi.fetch")
         return {

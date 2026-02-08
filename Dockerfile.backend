@@ -22,6 +22,10 @@ FROM python:3.10-slim AS backend
 
 WORKDIR /app
 
+# Change this value to force rebuild without relying on cache
+ARG CACHE_BUST=1
+RUN echo "CACHE_BUST=${CACHE_BUST}"
+
 # (Опционально) системные зависимости — обычно не нужны для токен-сервиса,
 # но если вдруг какие-то пакеты требуют компиляции — оставим build-essential.
 RUN apt-get update && apt-get install -y --no-install-recommends \
