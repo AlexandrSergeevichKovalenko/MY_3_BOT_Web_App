@@ -91,6 +91,9 @@ function AppInner() {
   const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
   const [youtubeRuEnabled, setYoutubeRuEnabled] = useState(false);
+  const [youtubeManualOverride, setYoutubeManualOverride] = useState(false);
+  const [youtubeTranscriptHasTiming, setYoutubeTranscriptHasTiming] = useState(true);
+  const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
@@ -1638,6 +1641,7 @@ function AppInner() {
   const renderSubtitleText = (text) => renderClickableText(normalizeSubtitleText(text));
 
   const getActiveSubtitleIndex = () => {
+    if (!youtubeTranscriptHasTiming) return -1;
     if (!youtubeTranscript.length) return -1;
     const time = youtubeCurrentTime || 0;
     let activeIndex = -1;
@@ -1669,10 +1673,81 @@ function AppInner() {
     }));
   };
 
+  const parseTimedTranscript = (value) => {
+    const lines = value.split(/\r?\n/);
+    const items = [];
+    let currentStart = null;
+    let buffer = [];
+    const flush = () => {
+      if (currentStart !== null && buffer.length) {
+        items.push({ start: currentStart, text: buffer.join(' ').trim() });
+      }
+      buffer = [];
+    };
+    const timeToSeconds = (stamp) => {
+      const clean = stamp.replace(',', '.');
+      const parts = clean.split(':').map(Number);
+      if (parts.some((p) => Number.isNaN(p))) return null;
+      if (parts.length === 3) {
+        return parts[0] * 3600 + parts[1] * 60 + parts[2];
+      }
+      if (parts.length === 2) {
+        return parts[0] * 60 + parts[1];
+      }
+      return null;
+    };
+    let hasTiming = false;
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        flush();
+        currentStart = null;
+        continue;
+      }
+      if (/^WEBVTT/i.test(line) || /^\d+$/.test(line)) {
+        continue;
+      }
+      if (line.includes('-->')) {
+        flush();
+        const startPart = line.split('-->')[0].trim();
+        const seconds = timeToSeconds(startPart);
+        if (seconds !== null) {
+          currentStart = seconds;
+          hasTiming = true;
+        } else {
+          currentStart = null;
+        }
+        continue;
+      }
+      buffer.push(line);
+    }
+    flush();
+    return { items, hasTiming };
+  };
+
   const handleManualTranscript = () => {
-    const parsed = parseTranscriptInput(manualTranscript);
-    setYoutubeTranscript(parsed);
+    const raw = manualTranscript.trim();
+    if (!raw) {
+      setYoutubeManualOverride(false);
+      setYoutubeTranscript([]);
+      setYoutubeTranscriptHasTiming(true);
+      return;
+    }
+    const parsed = parseTimedTranscript(raw);
+    if (parsed.items.length) {
+      setYoutubeTranscript(parsed.items);
+      setYoutubeTranscriptHasTiming(parsed.hasTiming);
+      setYoutubeManualOverride(true);
+      setYoutubeTranscriptError('');
+      setShowManualTranscript(false);
+      return;
+    }
+    const fallback = parseTranscriptInput(raw);
+    setYoutubeTranscript(fallback);
+    setYoutubeTranscriptHasTiming(false);
+    setYoutubeManualOverride(true);
     setYoutubeTranscriptError('');
+    setShowManualTranscript(false);
   };
 
   const handleFinishTranslation = async () => {
@@ -2013,6 +2088,11 @@ function AppInner() {
         setYoutubeTranscriptError('');
         setYoutubeTranslations({});
         setYoutubeRuEnabled(false);
+        setYoutubeManualOverride(false);
+        setYoutubeTranscriptHasTiming(true);
+        return;
+      }
+      if (youtubeManualOverride) {
         return;
       }
       setYoutubeTranscriptLoading(true);
@@ -2036,6 +2116,7 @@ function AppInner() {
         const data = await response.json();
         setYoutubeTranscript(data.items || []);
         setYoutubeTranslations(data.translations || {});
+        setYoutubeTranscriptHasTiming(true);
         setManualTranscript('');
       } catch (error) {
         setYoutubeTranscript([]);
@@ -2046,7 +2127,7 @@ function AppInner() {
     };
 
     fetchTranscript();
-  }, [youtubeId, initData]);
+  }, [youtubeId, initData, youtubeManualOverride]);
 
   useEffect(() => {
     if (!youtubeId) {
@@ -3039,12 +3120,12 @@ function AppInner() {
                           )}
                         </div>
                       </label>
-                      <div className="webapp-video-actions">
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() => setVideoExpanded((prev) => !prev)}
-                          style={{ display: 'none' }}
+                    <div className="webapp-video-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setVideoExpanded((prev) => !prev)}
+                        style={{ display: 'none' }}
                         >
                           {videoExpanded ? 'Обычный режим' : 'Словарь рядом'}
                         </button>
@@ -3079,7 +3160,47 @@ function AppInner() {
                       >
                         {youtubeRuEnabled ? 'Скрыть RU субтитры' : 'Показать RU субтитры'}
                       </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setShowManualTranscript((prev) => !prev)}
+                      >
+                        {showManualTranscript ? 'Скрыть транскрипцию' : 'Вставить транскрипцию'}
+                      </button>
                     </div>
+                    {showManualTranscript && (
+                      <div className="webapp-subtitles-manual">
+                        <textarea
+                          rows={6}
+                          value={manualTranscript}
+                          onChange={(event) => setManualTranscript(event.target.value)}
+                          placeholder="Вставьте .srt/.vtt с таймкодами. Если таймкодов нет — покажем статично."
+                        />
+                        <div className="webapp-video-actions">
+                          <button
+                            type="button"
+                            className="primary-button"
+                            onClick={() => handleManualTranscript()}
+                          >
+                            Использовать транскрипцию
+                          </button>
+                          {youtubeManualOverride && (
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => {
+                                setYoutubeManualOverride(false);
+                                setManualTranscript('');
+                                setYoutubeTranscriptHasTiming(true);
+                                setShowManualTranscript(false);
+                              }}
+                            >
+                              Вернуться к авто
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     {youtubeTranscript.length > 0 && (
                       <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
                         <div className="webapp-subtitles-header">

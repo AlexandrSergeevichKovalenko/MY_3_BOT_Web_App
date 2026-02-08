@@ -866,6 +866,22 @@ body {
   gap: 10px;
 }
 
+.webapp-subtitles-manual {
+  display: grid;
+  gap: 8px;
+}
+
+.webapp-subtitles-manual textarea {
+  resize: vertical;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  background: rgba(15, 23, 42, 0.6);
+  color: #f8fafc;
+}
+
 .webapp-video-frame {
   position: relative;
   padding-top: 56.25%;
