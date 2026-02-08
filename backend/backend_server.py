@@ -336,6 +336,41 @@ def _normalize_german_text(text: str) -> str:
 
 
 def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
+    def _build_yta_kwargs() -> tuple[dict, list[str]]:
+        kwargs: dict = {}
+        cleanup_paths: list[str] = []
+
+        proxy = (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
+        proxies_json = (os.getenv("YOUTUBE_TRANSCRIPT_PROXIES_JSON") or "").strip()
+        if proxies_json:
+            try:
+                kwargs["proxies"] = json.loads(proxies_json)
+            except Exception:
+                logging.warning("Invalid YOUTUBE_TRANSCRIPT_PROXIES_JSON")
+        elif proxy:
+            kwargs["proxies"] = {"http": proxy, "https": proxy}
+
+        cookies_path = os.getenv("YOUTUBE_COOKIES_PATH") or ""
+        cookies_b64 = os.getenv("YOUTUBE_COOKIES_BASE64") or ""
+        if cookies_b64 and not cookies_path:
+            try:
+                tmp_cookie_file = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+                tmp_cookie_file.write(base64.b64decode(cookies_b64))
+                tmp_cookie_file.flush()
+                cookies_path = tmp_cookie_file.name
+                cleanup_paths.append(cookies_path)
+            except Exception:
+                pass
+        if cookies_path:
+            try:
+                jar = http.cookiejar.MozillaCookieJar()
+                jar.load(cookies_path, ignore_discard=True, ignore_expires=True)
+                kwargs["cookies"] = jar
+            except Exception:
+                logging.warning("Failed to load cookies for youtube_transcript_api")
+
+        return kwargs, cleanup_paths
+
     def _parse_vtt_text(text: str) -> list[dict]:
         items = []
         lines = [line.strip() for line in text.splitlines()]
@@ -373,6 +408,12 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
 
     api_error = None
     instance_error = None
+    yta_kwargs = {}
+    cleanup_paths: list[str] = []
+    try:
+        yta_kwargs, cleanup_paths = _build_yta_kwargs()
+    except Exception:
+        yta_kwargs = {}
     try:
         try:
             from youtube_transcript_api import (
@@ -383,7 +424,10 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
             )
         except Exception as exc:
             raise RuntimeError("youtube_transcript_api не установлен") from exc
-        transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
+        try:
+            transcripts = YouTubeTranscriptApi.list_transcripts(video_id, **yta_kwargs)
+        except TypeError:
+            transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
         preferred = None
         lang_order = ["de", "en", "ru"]
         if lang:
@@ -411,7 +455,10 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
 
-        yta = YouTubeTranscriptApi()
+        try:
+            yta = YouTubeTranscriptApi(**yta_kwargs)
+        except TypeError:
+            yta = YouTubeTranscriptApi()
         fetch_fn = getattr(yta, "fetch", None)
         if not callable(fetch_fn):
             raise RuntimeError("YouTubeTranscriptApi.fetch не поддерживается этой версией")
@@ -421,7 +468,10 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
             lang_order = [lang] + [code for code in lang_order if code != lang]
         for code in lang_order:
             try:
-                items = yta.fetch(video_id=video_id, languages=[code])
+                try:
+                    items = yta.fetch(video_id=video_id, languages=[code], **yta_kwargs)
+                except TypeError:
+                    items = yta.fetch(video_id=video_id, languages=[code])
                 if items:
                     return {
                         "items": items,
@@ -432,7 +482,10 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
             except Exception:
                 continue
 
-        items = yta.fetch(video_id=video_id)
+        try:
+            items = yta.fetch(video_id=video_id, **yta_kwargs)
+        except TypeError:
+            items = yta.fetch(video_id=video_id)
         if not items:
             raise RuntimeError("Пустой ответ от YouTubeTranscriptApi.fetch")
         return {
@@ -443,6 +496,12 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
         }
     except Exception as exc:
         instance_error = f"Instance API: {exc}"
+    finally:
+        for path in cleanup_paths:
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
 
     try:
         try:
