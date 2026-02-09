@@ -69,6 +69,7 @@ import re
 from datetime import timedelta, date
 import importlib.metadata as importlib_metadata
 import youtube_transcript_api as yta
+from youtube_transcript_api.proxies import GenericProxyConfig
 from datetime import datetime
 from io import BytesIO
 from uuid import uuid4
@@ -469,9 +470,20 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
         cleanup_paths: list[str] = []
         requests_proxies: dict | None = None
         single_proxy: str | None = None
+        proxy_config = None
 
+        http_proxy_url = (os.getenv("HTTP_PROXY_URL") or "").strip()
+        https_proxy_url = (os.getenv("HTTPS_PROXY_URL") or "").strip()
         proxy = (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
+        if proxy and not http_proxy_url and not https_proxy_url:
+            http_proxy_url = proxy
+            https_proxy_url = proxy
         proxies_json = (os.getenv("YOUTUBE_TRANSCRIPT_PROXIES_JSON") or "").strip()
+        if http_proxy_url or https_proxy_url:
+            proxy_config = GenericProxyConfig(
+                http_url=http_proxy_url or None,
+                https_url=https_proxy_url or None,
+            )
         if proxies_json:
             try:
                 requests_proxies = json.loads(proxies_json)
@@ -502,6 +514,8 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
             except Exception:
                 logging.warning("Failed to load cookies for youtube_transcript_api")
 
+        if proxy_config:
+            kwargs["proxy_config"] = proxy_config
         return kwargs, cleanup_paths, requests_proxies, single_proxy
 
     def _parse_vtt_text(text: str) -> list[dict]:
@@ -619,7 +633,10 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
 
         # Exact fallback matching user's local script (instance list + fetch)
         try:
-            yta_plain = YouTubeTranscriptApi()
+            if "proxy_config" in yta_kwargs:
+                yta_plain = YouTubeTranscriptApi(proxy_config=yta_kwargs["proxy_config"])
+            else:
+                yta_plain = YouTubeTranscriptApi()
             try:
                 _ = yta_plain.list(video_id=video_id)
             except Exception:
@@ -2210,6 +2227,64 @@ def send_daily_audio_to_group():
             "errors": errors,
         }
     )
+
+
+@app.route("/api/admin/youtube-debug", methods=["POST"])
+def youtube_debug():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    video_id = (payload.get("video_id") or "").strip()
+    lang = (payload.get("lang") or "").strip() or None
+    if not video_id:
+        return jsonify({"error": "video_id обязателен"}), 400
+
+    results: dict[str, str] = {}
+    proxy = (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
+    if proxy:
+        try:
+            resp = requests.get(
+                f"https://www.youtube.com/watch?v={video_id}",
+                timeout=15,
+                proxies={"http": proxy, "https": proxy},
+            )
+            results["proxy_http_status"] = str(resp.status_code)
+        except Exception as exc:
+            results["proxy_http_error"] = str(exc)
+    else:
+        results["proxy_http_status"] = "proxy_not_set"
+
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        yta = YouTubeTranscriptApi()
+        try:
+            _ = yta.list(video_id=video_id)
+            results["legacy_list"] = "ok"
+        except Exception as exc:
+            results["legacy_list"] = str(exc)
+        try:
+            if lang:
+                items = yta.fetch(video_id=video_id, languages=[lang])
+            else:
+                items = yta.fetch(video_id=video_id)
+            results["legacy_fetch"] = f"ok:{len(_normalize_items(items))}"
+        except Exception as exc:
+            results["legacy_fetch"] = str(exc)
+    except Exception as exc:
+        results["legacy_init"] = str(exc)
+
+    try:
+        data = _fetch_youtube_transcript(video_id, lang=lang)
+        results["pipeline"] = f"ok:{data.get('source')}"
+    except Exception as exc:
+        results["pipeline"] = str(exc)
+
+    return jsonify({"ok": True, "results": results})
 
 
 @app.route("/api/webapp/explain", methods=["POST"])
