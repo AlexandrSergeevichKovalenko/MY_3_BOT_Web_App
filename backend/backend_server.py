@@ -656,7 +656,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
 
                 if list_obj is not None:
                     lang_order = ["de", "en", "ru"]
-                    if lang:
+                    if lang and lang == "de":
                         lang_order = [lang] + [code for code in lang_order if code != lang]
                     for code in lang_order:
                         try:
@@ -733,7 +733,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 raise RuntimeError("YouTubeTranscriptApi.fetch не поддерживается этой версией")
 
             lang_order = ["de", "en", "ru"]
-            if lang:
+            if lang and lang == "de":
                 lang_order = [lang] + [code for code in lang_order if code != lang]
             for code in lang_order:
                 try:
