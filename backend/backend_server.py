@@ -541,6 +541,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
 
     api_error = None
     instance_error = None
+    legacy_error = None
     yta_kwargs = {}
     cleanup_paths: list[str] = []
     requests_proxies: dict | None = None
@@ -643,8 +644,9 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                     "is_generated": None,
                     "source": "legacy_instance",
                 }
-        except Exception:
-            pass
+            legacy_error = "Legacy instance API: empty response"
+        except Exception as exc:
+            legacy_error = f"Legacy instance API: {exc}"
 
         try:
             yta = YouTubeTranscriptApi(**yta_kwargs)
@@ -767,8 +769,8 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
         raise RuntimeError("yt-dlp не нашёл .vtt в subtitles/automatic_captions")
     except Exception as exc:
         fallback_error = f"Fallback yt-dlp: {exc}"
-        if api_error or instance_error:
-            errors = "; ".join([e for e in (api_error, instance_error, fallback_error) if e])
+        if api_error or legacy_error or instance_error:
+            errors = "; ".join([e for e in (api_error, legacy_error, instance_error, fallback_error) if e])
             raise RuntimeError(errors) from exc
         raise RuntimeError(fallback_error) from exc
 
