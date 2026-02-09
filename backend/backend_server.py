@@ -154,6 +154,19 @@ if os.getenv("YOUTUBE_COOKIES_BASE64") or os.getenv("YOUTUBE_COOKIES_PATH"):
 else:
     logging.info("⚠️ YouTube cookies not configured")
 
+# Force global proxy env for libraries that rely on requests environment variables
+_proxy_env = (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
+if _proxy_env:
+    os.environ.setdefault("HTTP_PROXY", _proxy_env)
+    os.environ.setdefault("HTTPS_PROXY", _proxy_env)
+    os.environ.setdefault("ALL_PROXY", _proxy_env)
+    try:
+        resp = requests.get("https://ipinfo.io/country", timeout=10, proxies={"http": _proxy_env, "https": _proxy_env})
+        if resp.ok:
+            logging.info("✅ Proxy country: %s", resp.text.strip())
+    except Exception as exc:
+        logging.warning("Proxy check failed: %s", exc)
+
 # YouTube transcript cache/throttle (in-memory)
 _yt_transcript_cache = {}
 _yt_transcript_errors = {}
@@ -579,6 +592,29 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
 
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
+
+        # Static API (some versions expose get_transcript with proxy/cookies support)
+        get_transcript_fn = getattr(YouTubeTranscriptApi, "get_transcript", None)
+        if callable(get_transcript_fn):
+            lang_order = ["de", "en", "ru"]
+            if lang:
+                lang_order = [lang] + [code for code in lang_order if code != lang]
+            for code in lang_order:
+                try:
+                    try:
+                        raw_items = get_transcript_fn(video_id, languages=[code], **yta_kwargs)
+                    except TypeError:
+                        raw_items = get_transcript_fn(video_id, languages=[code])
+                    items = _normalize_items(raw_items)
+                    if items:
+                        return {
+                            "items": items,
+                            "language": code,
+                            "is_generated": None,
+                            "source": "static_api",
+                        }
+                except Exception:
+                    continue
 
         try:
             yta = YouTubeTranscriptApi(**yta_kwargs)

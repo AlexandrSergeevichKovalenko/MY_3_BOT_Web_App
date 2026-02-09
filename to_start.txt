@@ -30,3 +30,5 @@ ngrok http 5173
 🚀 Шаг 6:
 /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE
 python bot_3.py
+
+bash scripts/send_daily_audio.sh https://backendwebbackendserverpy-production.up.railway.app Qn7t2jQx9s4mW1ZbH6vGk9Yp3 2026-02-08
