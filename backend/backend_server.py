@@ -616,6 +616,36 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 except Exception:
                     continue
 
+        # Exact fallback matching user's local script (instance list + fetch)
+        try:
+            yta_plain = YouTubeTranscriptApi()
+            try:
+                _ = yta_plain.list(video_id=video_id)
+            except Exception:
+                _ = None
+
+            if lang:
+                raw_items = yta_plain.fetch(video_id=video_id, languages=[lang])
+                items = _normalize_items(raw_items)
+                if items:
+                    return {
+                        "items": items,
+                        "language": lang,
+                        "is_generated": None,
+                        "source": "legacy_instance",
+                    }
+            raw_items = yta_plain.fetch(video_id=video_id)
+            items = _normalize_items(raw_items)
+            if items:
+                return {
+                    "items": items,
+                    "language": None,
+                    "is_generated": None,
+                    "source": "legacy_instance",
+                }
+        except Exception:
+            pass
+
         try:
             yta = YouTubeTranscriptApi(**yta_kwargs)
         except TypeError:
