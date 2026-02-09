@@ -65,6 +65,8 @@ import requests
 import tempfile
 import base64
 import time
+import re
+from datetime import timedelta, date
 import importlib.metadata as importlib_metadata
 import youtube_transcript_api as yta
 from datetime import datetime
@@ -74,6 +76,8 @@ from urllib.parse import parse_qsl
 from flask import Flask, request, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
+from backend.database import get_db_connection_context
+from backend.translation_workflow import _extract_correct_translation
 from livekit.api import AccessToken, VideoGrants
 from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -321,6 +325,77 @@ def _send_group_message(text: str) -> None:
         raise RuntimeError(f"Telegram API error: {response.text}")
 
 
+def _send_group_audio(audio_bytes: bytes, filename: str, caption: str | None = None) -> None:
+    if not TELEGRAM_GROUP_CHAT_ID:
+        raise RuntimeError("TELEGRAM_GROUP_CHAT_ID должен быть установлен")
+    url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendAudio"
+    data = {"chat_id": TELEGRAM_GROUP_CHAT_ID}
+    if caption:
+        data["caption"] = caption
+    files = {"audio": (filename, audio_bytes, "audio/mpeg")}
+    response = requests.post(url, data=data, files=files, timeout=60)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Telegram API error: {response.text}")
+
+
+def _chunk_sentence_simple(sentence: str, max_len: int = 60) -> list[str]:
+    if not sentence:
+        return []
+    parts = [part.strip() for part in re.split(r"[;,]", sentence) if part.strip()]
+    chunks: list[str] = []
+    for part in parts:
+        if len(part) <= max_len:
+            chunks.append(part)
+            continue
+        words = part.split()
+        buf: list[str] = []
+        size = 0
+        for word in words:
+            extra = len(word) + (1 if buf else 0)
+            if size + extra > max_len and buf:
+                chunks.append(" ".join(buf))
+                buf = [word]
+                size = len(word)
+            else:
+                buf.append(word)
+                size += extra
+        if buf:
+            chunks.append(" ".join(buf))
+    return chunks or [sentence.strip()]
+
+
+def _build_practice_text(sentences: list[str]) -> str:
+    parts: list[str] = []
+    for sentence in sentences:
+        cleaned = (sentence or "").strip()
+        if not cleaned:
+            continue
+        chunks = _chunk_sentence_simple(cleaned)
+        for chunk in chunks:
+            parts.append(chunk)
+        parts.append(cleaned)
+    return ". ".join(part.strip().rstrip(".") for part in parts if part).strip()
+
+
+def _synthesize_mp3(text: str, language: str = "de-DE", voice: str = "de-DE-Wavenet-B") -> bytes:
+    try:
+        from google.cloud import texttospeech
+    except Exception as exc:
+        raise RuntimeError(f"Google TTS не установлен: {exc}") from exc
+    key_path = prepare_google_creds_for_tts()
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+    tts_client = texttospeech.TextToSpeechClient()
+    input_text = texttospeech.SynthesisInput(text=text)
+    voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice)
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+    response = tts_client.synthesize_speech(
+        input=input_text,
+        voice=voice_params,
+        audio_config=audio_config,
+    )
+    return response.audio_content
+
+
 _de_nlp = None
 
 
@@ -376,19 +451,24 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 ]
         return []
 
-    def _build_yta_kwargs() -> tuple[dict, list[str]]:
+    def _build_yta_kwargs() -> tuple[dict, list[str], dict | None, str | None]:
         kwargs: dict = {}
         cleanup_paths: list[str] = []
+        requests_proxies: dict | None = None
+        single_proxy: str | None = None
 
         proxy = (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
         proxies_json = (os.getenv("YOUTUBE_TRANSCRIPT_PROXIES_JSON") or "").strip()
         if proxies_json:
             try:
-                kwargs["proxies"] = json.loads(proxies_json)
+                requests_proxies = json.loads(proxies_json)
+                kwargs["proxies"] = requests_proxies
             except Exception:
                 logging.warning("Invalid YOUTUBE_TRANSCRIPT_PROXIES_JSON")
         elif proxy:
-            kwargs["proxies"] = {"http": proxy, "https": proxy}
+            requests_proxies = {"http": proxy, "https": proxy}
+            kwargs["proxies"] = requests_proxies
+            single_proxy = proxy
 
         cookies_path = os.getenv("YOUTUBE_COOKIES_PATH") or ""
         cookies_b64 = os.getenv("YOUTUBE_COOKIES_BASE64") or ""
@@ -409,7 +489,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
             except Exception:
                 logging.warning("Failed to load cookies for youtube_transcript_api")
 
-        return kwargs, cleanup_paths
+        return kwargs, cleanup_paths, requests_proxies, single_proxy
 
     def _parse_vtt_text(text: str) -> list[dict]:
         items = []
@@ -450,8 +530,10 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
     instance_error = None
     yta_kwargs = {}
     cleanup_paths: list[str] = []
+    requests_proxies: dict | None = None
+    single_proxy: str | None = None
     try:
-        yta_kwargs, cleanup_paths = _build_yta_kwargs()
+        yta_kwargs, cleanup_paths, requests_proxies, single_proxy = _build_yta_kwargs()
     except Exception:
         yta_kwargs = {}
     try:
@@ -464,29 +546,32 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
             )
         except Exception as exc:
             raise RuntimeError("youtube_transcript_api не установлен") from exc
-        try:
-            transcripts = YouTubeTranscriptApi.list_transcripts(video_id, **yta_kwargs)
-        except TypeError:
-            transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcripts = None
+        if hasattr(YouTubeTranscriptApi, "list_transcripts"):
+            try:
+                transcripts = YouTubeTranscriptApi.list_transcripts(video_id, **yta_kwargs)
+            except TypeError:
+                transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
         preferred = None
         lang_order = ["de", "en", "ru"]
         if lang:
             lang_order = [lang] + [code for code in lang_order if code != lang]
-        for code in lang_order:
-            try:
-                preferred = transcripts.find_transcript([code])
-                break
-            except Exception:
-                continue
-        if preferred is None:
-            preferred = transcripts.find_transcript([t.language_code for t in transcripts])
-        transcript = preferred.fetch()
-        return {
-            "items": transcript,
-            "language": preferred.language_code,
-            "is_generated": preferred.is_generated,
-            "source": "list_api",
-        }
+        if transcripts is not None:
+            for code in lang_order:
+                try:
+                    preferred = transcripts.find_transcript([code])
+                    break
+                except Exception:
+                    continue
+            if preferred is None:
+                preferred = transcripts.find_transcript([t.language_code for t in transcripts])
+            transcript = preferred.fetch()
+            return {
+                "items": transcript,
+                "language": preferred.language_code,
+                "is_generated": preferred.is_generated,
+                "source": "list_api",
+            }
     except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as exc:
         api_error = f"Субтитры недоступны: {exc}"
     except Exception as exc:
@@ -565,6 +650,8 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 "Accept-Language": "en-US,en;q=0.9,ru;q=0.8,de;q=0.7",
             },
         }
+        if single_proxy:
+            ydl_opts["proxy"] = single_proxy
         cookies_path = os.getenv("YOUTUBE_COOKIES_PATH") or ""
         cookies_b64 = os.getenv("YOUTUBE_COOKIES_BASE64") or ""
         tmp_cookie_file = None
@@ -599,7 +686,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 url = vtt_item.get("url")
                 if not url:
                     continue
-                response = requests.get(url, timeout=20)
+                response = requests.get(url, timeout=20, proxies=requests_proxies)
                 if response.status_code >= 400:
                     continue
                 items = _parse_vtt_text(response.text)
@@ -1904,6 +1991,157 @@ def submit_webapp_group_message():
         return jsonify({"error": f"Ошибка отправки в группу: {exc}"}), 500
 
     return jsonify({"ok": True})
+
+
+@app.route("/api/admin/send-daily-audio", methods=["POST"])
+def send_daily_audio_to_group():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    date_str = (payload.get("date") or "").strip()
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
+    else:
+        target_date = (datetime.utcnow().date() - timedelta(days=1))
+
+    story_sessions: dict[int, set[str]] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, session_id
+                FROM bt_3_story_sessions
+                WHERE created_at::date = %s;
+                """,
+                (target_date,),
+            )
+            for user_id, session_id in cursor.fetchall():
+                story_sessions.setdefault(int(user_id), set()).add(str(session_id))
+
+    story_session_ids = {sid for sids in story_sessions.values() for sid in sids}
+
+    daily_rows = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if story_session_ids:
+                cursor.execute(
+                    """
+                    SELECT t.user_id, t.username, t.feedback, t.user_translation, ds.sentence, ds.unique_id, t.session_id
+                    FROM bt_3_translations t
+                    JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                    WHERE ds.date = %s
+                      AND t.score < 85
+                      AND t.session_id NOT IN %s
+                    ORDER BY t.user_id, ds.unique_id;
+                    """,
+                    (target_date, tuple(story_session_ids)),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT t.user_id, t.username, t.feedback, t.user_translation, ds.sentence, ds.unique_id, t.session_id
+                    FROM bt_3_translations t
+                    JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                    WHERE ds.date = %s
+                      AND t.score < 85
+                    ORDER BY t.user_id, ds.unique_id;
+                    """,
+                    (target_date,),
+                )
+            daily_rows = cursor.fetchall()
+
+    daily_by_user: dict[int, list[str]] = {}
+    daily_names: dict[int, str] = {}
+    for user_id, username, feedback, user_translation, sentence, _unique_id, _session_id in daily_rows:
+        user_id = int(user_id)
+        display = (username or "").strip()
+        if display:
+            daily_names[user_id] = display
+        correct = _extract_correct_translation(feedback)
+        text = (correct or user_translation or "").strip()
+        if not text:
+            continue
+        daily_by_user.setdefault(user_id, []).append(text)
+
+    story_by_user: dict[int, list[str]] = {}
+    story_names: dict[int, str] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for user_id, session_ids in story_sessions.items():
+                for session_id in session_ids:
+                    cursor.execute(
+                        """
+                        SELECT t.user_id, t.username, t.feedback, t.user_translation, ds.sentence, ds.unique_id
+                        FROM bt_3_translations t
+                        JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                        WHERE t.user_id = %s
+                          AND t.session_id = %s
+                          AND t.timestamp::date = %s
+                        ORDER BY ds.unique_id;
+                        """,
+                        (user_id, session_id, target_date),
+                    )
+                    rows = cursor.fetchall()
+                    for uid, username, feedback, user_translation, _sentence, _unique_id in rows:
+                        uid = int(uid)
+                        display = (username or "").strip()
+                        if display:
+                            story_names[uid] = display
+                        correct = _extract_correct_translation(feedback)
+                        text = (correct or user_translation or "").strip()
+                        if not text:
+                            continue
+                        story_by_user.setdefault(uid, []).append(text)
+
+    sent_daily = 0
+    sent_story = 0
+    errors: list[str] = []
+
+    for user_id, sentences in daily_by_user.items():
+        if not sentences:
+            continue
+        try:
+            text = _build_practice_text(sentences)
+            audio = _synthesize_mp3(text)
+            name = daily_names.get(user_id) or f"user_{user_id}"
+            filename = f"errors_{user_id}_{target_date.isoformat()}.mp3"
+            caption = f"Ошибки за {target_date.isoformat()} — {name}"
+            _send_group_audio(audio, filename, caption)
+            sent_daily += 1
+        except Exception as exc:
+            errors.append(f"daily user {user_id}: {exc}")
+
+    for user_id, sentences in story_by_user.items():
+        if not sentences:
+            continue
+        try:
+            text = _build_practice_text(sentences)
+            audio = _synthesize_mp3(text)
+            name = story_names.get(user_id) or f"user_{user_id}"
+            filename = f"story_{user_id}_{target_date.isoformat()}.mp3"
+            caption = f"История за {target_date.isoformat()} — {name}"
+            _send_group_audio(audio, filename, caption)
+            sent_story += 1
+        except Exception as exc:
+            errors.append(f"story user {user_id}: {exc}")
+
+    return jsonify(
+        {
+            "ok": True,
+            "date": target_date.isoformat(),
+            "sent_daily": sent_daily,
+            "sent_story": sent_story,
+            "errors": errors,
+        }
+    )
 
 
 @app.route("/api/webapp/explain", methods=["POST"])
