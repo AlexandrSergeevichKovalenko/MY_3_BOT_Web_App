@@ -665,6 +665,19 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                             }
                     except Exception:
                         pass
+                    if lang != "de":
+                        try:
+                            raw_items = yta_plain.fetch(video_id=video_id, languages=["de"])
+                            items = _normalize_items(raw_items)
+                            if items:
+                                return {
+                                    "items": items,
+                                    "language": "de",
+                                    "is_generated": None,
+                                    "source": "legacy_instance",
+                                }
+                        except Exception:
+                            pass
                 raw_items = yta_plain.fetch(video_id=video_id)
                 items = _normalize_items(raw_items)
                 if items:
@@ -705,6 +718,22 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                         }
                 except Exception:
                     continue
+            if lang and lang != "de":
+                try:
+                    try:
+                        raw_items = yta.fetch(video_id=video_id, languages=["de"], **yta_kwargs)
+                    except TypeError:
+                        raw_items = yta.fetch(video_id=video_id, languages=["de"])
+                    items = _normalize_items(raw_items)
+                    if items:
+                        return {
+                            "items": items,
+                            "language": "de",
+                            "is_generated": None,
+                            "source": "instance_api",
+                        }
+                except Exception:
+                    pass
 
             try:
                 raw_items = yta.fetch(video_id=video_id, **yta_kwargs)
