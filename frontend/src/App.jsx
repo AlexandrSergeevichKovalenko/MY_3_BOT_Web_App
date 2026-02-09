@@ -665,7 +665,8 @@ function AppInner() {
         const data = await response.json();
         setSessionId(data.session_id);
         setWebappUser(data.user);
-        setWebappChatType(data.chat_type || '');
+        const unsafeChatType = telegramApp?.initDataUnsafe?.chat?.type || telegramApp?.initDataUnsafe?.chat_type;
+        setWebappChatType(data.chat_type || unsafeChatType || '');
       } catch (error) {
         setWebappError(`Ошибка инициализации: ${error.message}`);
       }
