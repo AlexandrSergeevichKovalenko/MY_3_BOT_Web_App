@@ -647,10 +647,43 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                     yta_plain = YouTubeTranscriptApi(proxy_config=yta_kwargs["proxy_config"])
                 else:
                     yta_plain = YouTubeTranscriptApi()
+
+                list_obj = None
                 try:
-                    _ = yta_plain.list(video_id=video_id)
+                    list_obj = yta_plain.list(video_id=video_id)
                 except Exception:
-                    _ = None
+                    list_obj = None
+
+                if list_obj is not None:
+                    lang_order = ["de", "en", "ru"]
+                    if lang:
+                        lang_order = [lang] + [code for code in lang_order if code != lang]
+                    for code in lang_order:
+                        try:
+                            preferred = list_obj.find_transcript([code])
+                            items = _normalize_items(preferred.fetch())
+                            if items:
+                                return {
+                                    "items": items,
+                                    "language": preferred.language_code,
+                                    "is_generated": preferred.is_generated,
+                                    "source": "legacy_list",
+                                }
+                        except Exception:
+                            pass
+                    for code in lang_order:
+                        try:
+                            preferred = list_obj.find_generated_transcript([code])
+                            items = _normalize_items(preferred.fetch())
+                            if items:
+                                return {
+                                    "items": items,
+                                    "language": preferred.language_code,
+                                    "is_generated": preferred.is_generated,
+                                    "source": "legacy_list_generated",
+                                }
+                        except Exception:
+                            pass
 
                 if lang:
                     try:
