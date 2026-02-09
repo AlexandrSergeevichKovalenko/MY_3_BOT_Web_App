@@ -70,7 +70,7 @@ import re
 from datetime import timedelta, date
 import importlib.metadata as importlib_metadata
 import youtube_transcript_api as yta
-from youtube_transcript_api.proxies import GenericProxyConfig
+from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConfig
 from datetime import datetime
 from io import BytesIO
 from uuid import uuid4
@@ -476,10 +476,23 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
         requests_proxies: dict | None = None
         single_proxy: str | None = None
 
-        if proxy:
+        webshare_user = (os.getenv("WEBSHARE_PROXY_USERNAME") or "").strip()
+        webshare_pass = (os.getenv("WEBSHARE_PROXY_PASSWORD") or "").strip()
+        webshare_countries = (os.getenv("WEBSHARE_PROXY_COUNTRIES") or "").strip()
+        if webshare_user and webshare_pass:
+            filter_locations = [c.strip().lower() for c in webshare_countries.split(",") if c.strip()]
+            kwargs["proxy_config"] = WebshareProxyConfig(
+                proxy_username=webshare_user,
+                proxy_password=webshare_pass,
+                filter_ip_locations=filter_locations or None,
+            )
+        elif proxy:
             kwargs["proxy_config"] = GenericProxyConfig(http_url=proxy, https_url=proxy)
             requests_proxies = {"http": proxy, "https": proxy}
             kwargs["proxies"] = requests_proxies
+            single_proxy = proxy
+
+        if proxy:
             single_proxy = proxy
 
         cookies_path = os.getenv("YOUTUBE_COOKIES_PATH") or ""
@@ -640,15 +653,18 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                     _ = None
 
                 if lang:
-                    raw_items = yta_plain.fetch(video_id=video_id, languages=[lang])
-                    items = _normalize_items(raw_items)
-                    if items:
-                        return {
-                            "items": items,
-                            "language": lang,
-                            "is_generated": None,
-                            "source": "legacy_instance",
-                        }
+                    try:
+                        raw_items = yta_plain.fetch(video_id=video_id, languages=[lang])
+                        items = _normalize_items(raw_items)
+                        if items:
+                            return {
+                                "items": items,
+                                "language": lang,
+                                "is_generated": None,
+                                "source": "legacy_instance",
+                            }
+                    except Exception:
+                        pass
                 raw_items = yta_plain.fetch(video_id=video_id)
                 items = _normalize_items(raw_items)
                 if items:
