@@ -65,6 +65,7 @@ import requests
 import tempfile
 import base64
 import time
+import http.cookiejar
 import re
 from datetime import timedelta, date
 import importlib.metadata as importlib_metadata
@@ -146,7 +147,7 @@ try:
 except Exception:
     yta_version = getattr(yta, "__version__", "unknown")
 logging.info("✅ youtube_transcript_api version: %s", yta_version)
-if os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or os.getenv("YOUTUBE_TRANSCRIPT_PROXIES_JSON"):
+if os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or os.getenv("YOUTUBE_TRANSCRIPT_PROXY_AU") or os.getenv("YOUTUBE_TRANSCRIPT_PROXY_DE"):
     logging.info("✅ YouTube transcript proxy configured")
 else:
     logging.info("⚠️ YouTube transcript proxy not configured")
@@ -156,7 +157,11 @@ else:
     logging.info("⚠️ YouTube cookies not configured")
 
 # Force global proxy env for libraries that rely on requests environment variables
-_proxy_env = (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
+_proxy_env = (
+    (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
+    or (os.getenv("YOUTUBE_TRANSCRIPT_PROXY_DE") or "").strip()
+    or (os.getenv("YOUTUBE_TRANSCRIPT_PROXY_AU") or "").strip()
+)
 if _proxy_env:
     os.environ.setdefault("HTTP_PROXY", _proxy_env)
     os.environ.setdefault("HTTPS_PROXY", _proxy_env)
@@ -465,32 +470,14 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 ]
         return []
 
-    def _build_yta_kwargs() -> tuple[dict, list[str], dict | None, str | None]:
+    def _build_yta_kwargs(proxy: str | None) -> tuple[dict, list[str], dict | None, str | None]:
         kwargs: dict = {}
         cleanup_paths: list[str] = []
         requests_proxies: dict | None = None
         single_proxy: str | None = None
-        proxy_config = None
 
-        http_proxy_url = (os.getenv("HTTP_PROXY_URL") or "").strip()
-        https_proxy_url = (os.getenv("HTTPS_PROXY_URL") or "").strip()
-        proxy = (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
-        if proxy and not http_proxy_url and not https_proxy_url:
-            http_proxy_url = proxy
-            https_proxy_url = proxy
-        proxies_json = (os.getenv("YOUTUBE_TRANSCRIPT_PROXIES_JSON") or "").strip()
-        if http_proxy_url or https_proxy_url:
-            proxy_config = GenericProxyConfig(
-                http_url=http_proxy_url or None,
-                https_url=https_proxy_url or None,
-            )
-        if proxies_json:
-            try:
-                requests_proxies = json.loads(proxies_json)
-                kwargs["proxies"] = requests_proxies
-            except Exception:
-                logging.warning("Invalid YOUTUBE_TRANSCRIPT_PROXIES_JSON")
-        elif proxy:
+        if proxy:
+            kwargs["proxy_config"] = GenericProxyConfig(http_url=proxy, https_url=proxy)
             requests_proxies = {"http": proxy, "https": proxy}
             kwargs["proxies"] = requests_proxies
             single_proxy = proxy
@@ -514,9 +501,16 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
             except Exception:
                 logging.warning("Failed to load cookies for youtube_transcript_api")
 
-        if proxy_config:
-            kwargs["proxy_config"] = proxy_config
         return kwargs, cleanup_paths, requests_proxies, single_proxy
+
+    def _build_proxy_candidates() -> list[tuple[str, str]]:
+        candidates = []
+        for key in ("YOUTUBE_TRANSCRIPT_PROXY_AU", "YOUTUBE_TRANSCRIPT_PROXY_DE", "YOUTUBE_TRANSCRIPT_PROXY"):
+            value = (os.getenv(key) or "").strip()
+            if value and all(value != v for _, v in candidates):
+                label = key.split("_")[-1]
+                candidates.append((label, value))
+        return candidates
 
     def _parse_vtt_text(text: str) -> list[dict]:
         items = []
@@ -560,160 +554,163 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
     cleanup_paths: list[str] = []
     requests_proxies: dict | None = None
     single_proxy: str | None = None
-    try:
-        yta_kwargs, cleanup_paths, requests_proxies, single_proxy = _build_yta_kwargs()
-    except Exception:
-        yta_kwargs = {}
-    try:
+    proxy_candidates = _build_proxy_candidates()
+    proxy_candidates = proxy_candidates or [("NONE", "")]
+    for candidate_label, candidate_proxy in proxy_candidates:
         try:
-            from youtube_transcript_api import (
-                YouTubeTranscriptApi,
-                TranscriptsDisabled,
-                NoTranscriptFound,
-                VideoUnavailable,
-            )
-        except Exception as exc:
-            raise RuntimeError("youtube_transcript_api не установлен") from exc
-        transcripts = None
-        if hasattr(YouTubeTranscriptApi, "list_transcripts"):
+            os.environ["YOUTUBE_TRANSCRIPT_PROXY"] = candidate_proxy
+            yta_kwargs, cleanup_paths, requests_proxies, single_proxy = _build_yta_kwargs(candidate_proxy)
+            logging.info("YouTube transcript proxy attempt: %s", candidate_label)
+
             try:
-                transcripts = YouTubeTranscriptApi.list_transcripts(video_id, **yta_kwargs)
-            except TypeError:
-                transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
-        preferred = None
-        lang_order = ["de", "en", "ru"]
-        if lang:
-            lang_order = [lang] + [code for code in lang_order if code != lang]
-        if transcripts is not None:
-            for code in lang_order:
+                from youtube_transcript_api import (
+                    YouTubeTranscriptApi,
+                    TranscriptsDisabled,
+                    NoTranscriptFound,
+                    VideoUnavailable,
+                )
+            except Exception as exc:
+                raise RuntimeError("youtube_transcript_api не установлен") from exc
+            transcripts = None
+            if hasattr(YouTubeTranscriptApi, "list_transcripts"):
                 try:
-                    preferred = transcripts.find_transcript([code])
-                    break
+                    transcripts = YouTubeTranscriptApi.list_transcripts(video_id, **yta_kwargs)
+                except TypeError:
+                    transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
+            preferred = None
+            lang_order = ["de", "en", "ru"]
+            if lang:
+                lang_order = [lang] + [code for code in lang_order if code != lang]
+            if transcripts is not None:
+                for code in lang_order:
+                    try:
+                        preferred = transcripts.find_transcript([code])
+                        break
+                    except Exception:
+                        continue
+                if preferred is None:
+                    preferred = transcripts.find_transcript([t.language_code for t in transcripts])
+                transcript = preferred.fetch()
+                return {
+                    "items": transcript,
+                    "language": preferred.language_code,
+                    "is_generated": preferred.is_generated,
+                    "source": "list_api",
+                }
+        except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as exc:
+            api_error = f"Субтитры недоступны: {exc}"
+        except Exception as exc:
+            api_error = f"Не удалось загрузить субтитры: {exc}"
+
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+
+            # Static API (some versions expose get_transcript with proxy/cookies support)
+            get_transcript_fn = getattr(YouTubeTranscriptApi, "get_transcript", None)
+            if callable(get_transcript_fn):
+                lang_order = ["de", "en", "ru"]
+                if lang:
+                    lang_order = [lang] + [code for code in lang_order if code != lang]
+                for code in lang_order:
+                    try:
+                        try:
+                            raw_items = get_transcript_fn(video_id, languages=[code], **yta_kwargs)
+                        except TypeError:
+                            raw_items = get_transcript_fn(video_id, languages=[code])
+                        items = _normalize_items(raw_items)
+                        if items:
+                            return {
+                                "items": items,
+                                "language": code,
+                                "is_generated": None,
+                                "source": "static_api",
+                            }
+                    except Exception:
+                        continue
+
+            # Exact fallback matching user's local script (instance list + fetch)
+            try:
+                if "proxy_config" in yta_kwargs:
+                    yta_plain = YouTubeTranscriptApi(proxy_config=yta_kwargs["proxy_config"])
+                else:
+                    yta_plain = YouTubeTranscriptApi()
+                try:
+                    _ = yta_plain.list(video_id=video_id)
                 except Exception:
-                    continue
-            if preferred is None:
-                preferred = transcripts.find_transcript([t.language_code for t in transcripts])
-            transcript = preferred.fetch()
-            return {
-                "items": transcript,
-                "language": preferred.language_code,
-                "is_generated": preferred.is_generated,
-                "source": "list_api",
-            }
-    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as exc:
-        api_error = f"Субтитры недоступны: {exc}"
-    except Exception as exc:
-        api_error = f"Не удалось загрузить субтитры: {exc}"
+                    _ = None
 
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi
+                if lang:
+                    raw_items = yta_plain.fetch(video_id=video_id, languages=[lang])
+                    items = _normalize_items(raw_items)
+                    if items:
+                        return {
+                            "items": items,
+                            "language": lang,
+                            "is_generated": None,
+                            "source": "legacy_instance",
+                        }
+                raw_items = yta_plain.fetch(video_id=video_id)
+                items = _normalize_items(raw_items)
+                if items:
+                    return {
+                        "items": items,
+                        "language": None,
+                        "is_generated": None,
+                        "source": "legacy_instance",
+                    }
+                legacy_error = "Legacy instance API: empty response"
+            except Exception as exc:
+                legacy_error = f"Legacy instance API: {exc}"
 
-        # Static API (some versions expose get_transcript with proxy/cookies support)
-        get_transcript_fn = getattr(YouTubeTranscriptApi, "get_transcript", None)
-        if callable(get_transcript_fn):
+            try:
+                yta = YouTubeTranscriptApi(**yta_kwargs)
+            except TypeError:
+                yta = YouTubeTranscriptApi()
+            fetch_fn = getattr(yta, "fetch", None)
+            if not callable(fetch_fn):
+                raise RuntimeError("YouTubeTranscriptApi.fetch не поддерживается этой версией")
+
             lang_order = ["de", "en", "ru"]
             if lang:
                 lang_order = [lang] + [code for code in lang_order if code != lang]
             for code in lang_order:
                 try:
                     try:
-                        raw_items = get_transcript_fn(video_id, languages=[code], **yta_kwargs)
+                        raw_items = yta.fetch(video_id=video_id, languages=[code], **yta_kwargs)
                     except TypeError:
-                        raw_items = get_transcript_fn(video_id, languages=[code])
+                        raw_items = yta.fetch(video_id=video_id, languages=[code])
                     items = _normalize_items(raw_items)
                     if items:
                         return {
                             "items": items,
                             "language": code,
                             "is_generated": None,
-                            "source": "static_api",
+                            "source": "instance_api",
                         }
                 except Exception:
                     continue
 
-        # Exact fallback matching user's local script (instance list + fetch)
-        try:
-            if "proxy_config" in yta_kwargs:
-                yta_plain = YouTubeTranscriptApi(proxy_config=yta_kwargs["proxy_config"])
-            else:
-                yta_plain = YouTubeTranscriptApi()
             try:
-                _ = yta_plain.list(video_id=video_id)
-            except Exception:
-                _ = None
-
-            if lang:
-                raw_items = yta_plain.fetch(video_id=video_id, languages=[lang])
-                items = _normalize_items(raw_items)
-                if items:
-                    return {
-                        "items": items,
-                        "language": lang,
-                        "is_generated": None,
-                        "source": "legacy_instance",
-                    }
-            raw_items = yta_plain.fetch(video_id=video_id)
+                raw_items = yta.fetch(video_id=video_id, **yta_kwargs)
+            except TypeError:
+                raw_items = yta.fetch(video_id=video_id)
             items = _normalize_items(raw_items)
-            if items:
-                return {
-                    "items": items,
-                    "language": None,
-                    "is_generated": None,
-                    "source": "legacy_instance",
-                }
-            legacy_error = "Legacy instance API: empty response"
+            if not items:
+                raise RuntimeError("Пустой ответ от YouTubeTranscriptApi.fetch")
+            return {
+                "items": items,
+                "language": None,
+                "is_generated": None,
+                "source": "instance_api",
+            }
         except Exception as exc:
-            legacy_error = f"Legacy instance API: {exc}"
-
-        try:
-            yta = YouTubeTranscriptApi(**yta_kwargs)
-        except TypeError:
-            yta = YouTubeTranscriptApi()
-        fetch_fn = getattr(yta, "fetch", None)
-        if not callable(fetch_fn):
-            raise RuntimeError("YouTubeTranscriptApi.fetch не поддерживается этой версией")
-
-        lang_order = ["de", "en", "ru"]
-        if lang:
-            lang_order = [lang] + [code for code in lang_order if code != lang]
-        for code in lang_order:
-            try:
+            instance_error = f"Instance API: {exc}"
+        finally:
+            for path in cleanup_paths:
                 try:
-                    raw_items = yta.fetch(video_id=video_id, languages=[code], **yta_kwargs)
-                except TypeError:
-                    raw_items = yta.fetch(video_id=video_id, languages=[code])
-                items = _normalize_items(raw_items)
-                if items:
-                    return {
-                        "items": items,
-                        "language": code,
-                        "is_generated": None,
-                        "source": "instance_api",
-                    }
-            except Exception:
-                continue
-
-        try:
-            raw_items = yta.fetch(video_id=video_id, **yta_kwargs)
-        except TypeError:
-            raw_items = yta.fetch(video_id=video_id)
-        items = _normalize_items(raw_items)
-        if not items:
-            raise RuntimeError("Пустой ответ от YouTubeTranscriptApi.fetch")
-        return {
-            "items": items,
-            "language": None,
-            "is_generated": None,
-            "source": "instance_api",
-        }
-    except Exception as exc:
-        instance_error = f"Instance API: {exc}"
-    finally:
-        for path in cleanup_paths:
-            try:
-                os.unlink(path)
-            except Exception:
-                pass
+                    os.unlink(path)
+                except Exception:
+                    pass
 
     try:
         try:
