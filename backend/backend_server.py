@@ -271,6 +271,18 @@ def _parse_telegram_init_data(init_data: str) -> dict:
     }
 
 
+def _extract_display_name(user_data: dict | None) -> str | None:
+    if not isinstance(user_data, dict):
+        return None
+    username = (user_data.get("username") or "").strip()
+    if username:
+        return username
+    first_name = (user_data.get("first_name") or "").strip()
+    last_name = (user_data.get("last_name") or "").strip()
+    full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+    return full_name or None
+
+
 def _normalize_sentence_text(text: str) -> str:
     cleaned = text.strip()
     if not cleaned:
@@ -664,7 +676,7 @@ def process_webapp_message():
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
-    username = user_data.get("username")
+    username = _extract_display_name(user_data)
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
@@ -1688,7 +1700,7 @@ def start_webapp_translation():
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
-    username = user_data.get("username")
+    username = _extract_display_name(user_data)
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
@@ -1749,7 +1761,7 @@ def start_webapp_story():
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
-    username = user_data.get("username")
+    username = _extract_display_name(user_data)
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
@@ -1794,7 +1806,7 @@ def submit_webapp_story():
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
-    username = user_data.get("username")
+    username = _extract_display_name(user_data)
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
@@ -1857,7 +1869,7 @@ def submit_webapp_group_message():
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
     user_name = user_data.get("first_name") or "User"
-    username = user_data.get("username")
+    username = _extract_display_name(user_data)
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
@@ -1939,7 +1951,7 @@ def finish_webapp_translation():
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
     user_name = user_data.get("first_name") or "User"
-    username = user_data.get("username")
+    username = _extract_display_name(user_data)
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400

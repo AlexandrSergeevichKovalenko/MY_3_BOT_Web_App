@@ -61,6 +61,7 @@ function AppInner() {
   const [initData, setInitData] = useState(telegramApp?.initData || '');
   const [sessionId, setSessionId] = useState(null);
   const [webappUser, setWebappUser] = useState(null);
+  const [webappChatType, setWebappChatType] = useState('');
   const [results, setResults] = useState([]);
   const [sentences, setSentences] = useState([]);
   const [webappError, setWebappError] = useState('');
@@ -664,6 +665,7 @@ function AppInner() {
         const data = await response.json();
         setSessionId(data.session_id);
         setWebappUser(data.user);
+        setWebappChatType(data.chat_type || '');
       } catch (error) {
         setWebappError(`Ошибка инициализации: ${error.message}`);
       }
@@ -2784,6 +2786,8 @@ function AppInner() {
                   {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
                 </button>
                 <div className="user-name">{webappUser?.first_name || 'Гость'}</div>
+                <div className="user-meta">ID: {webappUser?.id || '—'}</div>
+                <div className="user-meta">Chat: {webappChatType || '—'}</div>
               </div>
             </header>
             )}
