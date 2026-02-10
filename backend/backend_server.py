@@ -65,6 +65,7 @@ import requests
 import tempfile
 import base64
 import time
+import random
 import http.cookiejar
 import re
 from datetime import timedelta, date
@@ -156,22 +157,9 @@ if os.getenv("YOUTUBE_COOKIES_BASE64") or os.getenv("YOUTUBE_COOKIES_PATH"):
 else:
     logging.info("⚠️ YouTube cookies not configured")
 
-# Force global proxy env for libraries that rely on requests environment variables
-_proxy_env = (
-    (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
-    or (os.getenv("YOUTUBE_TRANSCRIPT_PROXY_DE") or "").strip()
-    or (os.getenv("YOUTUBE_TRANSCRIPT_PROXY_AU") or "").strip()
-)
-if _proxy_env:
-    os.environ.setdefault("HTTP_PROXY", _proxy_env)
-    os.environ.setdefault("HTTPS_PROXY", _proxy_env)
-    os.environ.setdefault("ALL_PROXY", _proxy_env)
-    try:
-        resp = requests.get("https://ipinfo.io/country", timeout=10, proxies={"http": _proxy_env, "https": _proxy_env})
-        if resp.ok:
-            logging.info("✅ Proxy country: %s", resp.text.strip())
-    except Exception as exc:
-        logging.warning("Proxy check failed: %s", exc)
+# Do NOT set global proxy env vars: it can affect Telegram API traffic.
+# Proxy usage is scoped to YouTube transcript requests only.
+os.environ.setdefault("NO_PROXY", "api.telegram.org,telegram.org")
 
 # YouTube transcript cache/throttle (in-memory)
 _yt_transcript_cache = {}
@@ -179,6 +167,12 @@ _yt_transcript_errors = {}
 _YT_CACHE_TTL = 60 * 60  # 1 hour
 _YT_ERROR_TTL = 10 * 60  # 10 minutes
 _YT_DB_PURGE_TS = 0.0
+_YT_MAX_RETRIES_PER_VIDEO = 5
+_YT_MAX_PROXY_ATTEMPTS = 5
+_YT_RETRY_SLEEP_MIN = 2.0
+_YT_RETRY_SLEEP_MAX = 3.0
+_YT_REQUEST_JITTER_MIN = 1.9
+_YT_REQUEST_JITTER_MAX = 1.9
 
 WEBAPP_TOPICS = [
     "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
@@ -453,6 +447,10 @@ def _normalize_german_text(text: str) -> str:
 
 
 def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
+    def _sleep_jitter(min_s: float, max_s: float) -> None:
+        delay = random.uniform(min_s, max_s)
+        time.sleep(delay)
+
     def _normalize_items(raw) -> list[dict]:
         if isinstance(raw, list):
             return raw
@@ -470,7 +468,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 ]
         return []
 
-    def _build_yta_kwargs(proxy: str | None) -> tuple[dict, list[str], dict | None, str | None]:
+    def _build_yta_kwargs(proxy: str | None, use_webshare: bool) -> tuple[dict, list[str], dict | None, str | None, str]:
         kwargs: dict = {}
         cleanup_paths: list[str] = []
         requests_proxies: dict | None = None
@@ -479,18 +477,21 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
         webshare_user = (os.getenv("WEBSHARE_PROXY_USERNAME") or "").strip()
         webshare_pass = (os.getenv("WEBSHARE_PROXY_PASSWORD") or "").strip()
         webshare_countries = (os.getenv("WEBSHARE_PROXY_COUNTRIES") or "").strip()
-        if webshare_user and webshare_pass:
+        mode = "direct"
+        if use_webshare and webshare_user and webshare_pass:
             filter_locations = [c.strip().lower() for c in webshare_countries.split(",") if c.strip()]
             kwargs["proxy_config"] = WebshareProxyConfig(
                 proxy_username=webshare_user,
                 proxy_password=webshare_pass,
                 filter_ip_locations=filter_locations or None,
             )
+            mode = "webshare"
         elif proxy:
             kwargs["proxy_config"] = GenericProxyConfig(http_url=proxy, https_url=proxy)
             requests_proxies = {"http": proxy, "https": proxy}
             kwargs["proxies"] = requests_proxies
             single_proxy = proxy
+            mode = "proxy_url"
 
         if proxy:
             single_proxy = proxy
@@ -514,15 +515,19 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
             except Exception:
                 logging.warning("Failed to load cookies for youtube_transcript_api")
 
-        return kwargs, cleanup_paths, requests_proxies, single_proxy
+        return kwargs, cleanup_paths, requests_proxies, single_proxy, mode
 
-    def _build_proxy_candidates() -> list[tuple[str, str]]:
+    def _build_proxy_candidates() -> list[tuple[str, str, bool]]:
         candidates = []
+        webshare_user = (os.getenv("WEBSHARE_PROXY_USERNAME") or "").strip()
+        webshare_pass = (os.getenv("WEBSHARE_PROXY_PASSWORD") or "").strip()
+        if webshare_user and webshare_pass:
+            candidates.append(("WEBSHARE", "", True))
         for key in ("YOUTUBE_TRANSCRIPT_PROXY_AU", "YOUTUBE_TRANSCRIPT_PROXY_DE", "YOUTUBE_TRANSCRIPT_PROXY"):
             value = (os.getenv(key) or "").strip()
-            if value and all(value != v for _, v in candidates):
+            if value and all(value != existing_value for _, existing_value, _ in candidates):
                 label = key.split("_")[-1]
-                candidates.append((label, value))
+                candidates.append((label, value, False))
         return candidates
 
     def _parse_vtt_text(text: str) -> list[dict]:
@@ -568,12 +573,23 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
     requests_proxies: dict | None = None
     single_proxy: str | None = None
     proxy_candidates = _build_proxy_candidates()
-    proxy_candidates = proxy_candidates or [("NONE", "")]
-    for candidate_label, candidate_proxy in proxy_candidates:
+    proxy_candidates = proxy_candidates or [("DIRECT", "", False)]
+    proxy_candidates = proxy_candidates[:_YT_MAX_PROXY_ATTEMPTS]
+
+    for attempt_index in range(_YT_MAX_RETRIES_PER_VIDEO):
+        candidate_label, candidate_proxy, use_webshare = proxy_candidates[attempt_index % len(proxy_candidates)]
         try:
-            os.environ["YOUTUBE_TRANSCRIPT_PROXY"] = candidate_proxy
-            yta_kwargs, cleanup_paths, requests_proxies, single_proxy = _build_yta_kwargs(candidate_proxy)
-            logging.info("YouTube transcript proxy attempt: %s", candidate_label)
+            yta_kwargs, cleanup_paths, requests_proxies, single_proxy, mode = _build_yta_kwargs(
+                candidate_proxy,
+                use_webshare,
+            )
+            logging.info(
+                "YouTube transcript attempt %s/%s: mode=%s proxy=%s",
+                attempt_index + 1,
+                _YT_MAX_RETRIES_PER_VIDEO,
+                mode,
+                candidate_label,
+            )
 
             try:
                 from youtube_transcript_api import (
@@ -604,6 +620,11 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 if preferred is None:
                     preferred = transcripts.find_transcript([t.language_code for t in transcripts])
                 transcript = preferred.fetch()
+                logging.info(
+                    "YouTube transcript success: mode=%s proxy=%s source=list_api",
+                    mode,
+                    candidate_label,
+                )
                 return {
                     "items": transcript,
                     "language": preferred.language_code,
@@ -617,6 +638,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
 
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
+            _sleep_jitter(_YT_REQUEST_JITTER_MIN, _YT_REQUEST_JITTER_MAX)
 
             # Static API (some versions expose get_transcript with proxy/cookies support)
             get_transcript_fn = getattr(YouTubeTranscriptApi, "get_transcript", None)
@@ -632,6 +654,11 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                             raw_items = get_transcript_fn(video_id, languages=[code])
                         items = _normalize_items(raw_items)
                         if items:
+                            logging.info(
+                                "YouTube transcript success: mode=%s proxy=%s source=static_api",
+                                mode,
+                                candidate_label,
+                            )
                             return {
                                 "items": items,
                                 "language": code,
@@ -643,6 +670,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
 
             # Exact fallback matching user's local script (instance list + fetch)
             try:
+                _sleep_jitter(_YT_REQUEST_JITTER_MIN, _YT_REQUEST_JITTER_MAX)
                 if "proxy_config" in yta_kwargs:
                     yta_plain = YouTubeTranscriptApi(proxy_config=yta_kwargs["proxy_config"])
                 else:
@@ -663,6 +691,11 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                             preferred = list_obj.find_transcript([code])
                             items = _normalize_items(preferred.fetch())
                             if items:
+                                logging.info(
+                                    "YouTube transcript success: mode=%s proxy=%s source=legacy_list",
+                                    mode,
+                                    candidate_label,
+                                )
                                 return {
                                     "items": items,
                                     "language": preferred.language_code,
@@ -676,6 +709,11 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                             preferred = list_obj.find_generated_transcript([code])
                             items = _normalize_items(preferred.fetch())
                             if items:
+                                logging.info(
+                                    "YouTube transcript success: mode=%s proxy=%s source=legacy_list_generated",
+                                    mode,
+                                    candidate_label,
+                                )
                                 return {
                                     "items": items,
                                     "language": preferred.language_code,
@@ -690,6 +728,11 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                         raw_items = yta_plain.fetch(video_id=video_id, languages=[lang])
                         items = _normalize_items(raw_items)
                         if items:
+                            logging.info(
+                                "YouTube transcript success: mode=%s proxy=%s source=legacy_instance",
+                                mode,
+                                candidate_label,
+                            )
                             return {
                                 "items": items,
                                 "language": lang,
@@ -703,6 +746,11 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                             raw_items = yta_plain.fetch(video_id=video_id, languages=["de"])
                             items = _normalize_items(raw_items)
                             if items:
+                                logging.info(
+                                    "YouTube transcript success: mode=%s proxy=%s source=legacy_instance",
+                                    mode,
+                                    candidate_label,
+                                )
                                 return {
                                     "items": items,
                                     "language": "de",
@@ -714,6 +762,11 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 raw_items = yta_plain.fetch(video_id=video_id)
                 items = _normalize_items(raw_items)
                 if items:
+                    logging.info(
+                        "YouTube transcript success: mode=%s proxy=%s source=legacy_instance",
+                        mode,
+                        candidate_label,
+                    )
                     return {
                         "items": items,
                         "language": None,
@@ -725,6 +778,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 legacy_error = f"Legacy instance API: {exc}"
 
             try:
+                _sleep_jitter(_YT_REQUEST_JITTER_MIN, _YT_REQUEST_JITTER_MAX)
                 yta = YouTubeTranscriptApi(**yta_kwargs)
             except TypeError:
                 yta = YouTubeTranscriptApi()
@@ -743,6 +797,11 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                         raw_items = yta.fetch(video_id=video_id, languages=[code])
                     items = _normalize_items(raw_items)
                     if items:
+                        logging.info(
+                            "YouTube transcript success: mode=%s proxy=%s source=instance_api",
+                            mode,
+                            candidate_label,
+                        )
                         return {
                             "items": items,
                             "language": code,
@@ -759,6 +818,11 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                         raw_items = yta.fetch(video_id=video_id, languages=["de"])
                     items = _normalize_items(raw_items)
                     if items:
+                        logging.info(
+                            "YouTube transcript success: mode=%s proxy=%s source=instance_api",
+                            mode,
+                            candidate_label,
+                        )
                         return {
                             "items": items,
                             "language": "de",
@@ -775,6 +839,11 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
             items = _normalize_items(raw_items)
             if not items:
                 raise RuntimeError("Пустой ответ от YouTubeTranscriptApi.fetch")
+            logging.info(
+                "YouTube transcript success: mode=%s proxy=%s source=instance_api",
+                mode,
+                candidate_label,
+            )
             return {
                 "items": items,
                 "language": None,
@@ -789,12 +858,15 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                     os.unlink(path)
                 except Exception:
                     pass
+        if attempt_index < _YT_MAX_RETRIES_PER_VIDEO - 1:
+            _sleep_jitter(_YT_RETRY_SLEEP_MIN, _YT_RETRY_SLEEP_MAX)
 
     try:
         try:
             from yt_dlp import YoutubeDL
         except Exception as exc:
             raise RuntimeError("yt-dlp не установлен") from exc
+        _sleep_jitter(_YT_REQUEST_JITTER_MIN, _YT_REQUEST_JITTER_MAX)
         ydl_opts = {
             "skip_download": True,
             "quiet": True,
@@ -846,12 +918,18 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
                 url = vtt_item.get("url")
                 if not url:
                     continue
+                _sleep_jitter(_YT_REQUEST_JITTER_MIN, _YT_REQUEST_JITTER_MAX)
                 response = requests.get(url, timeout=20, proxies=requests_proxies)
                 if response.status_code >= 400:
                     continue
                 items = _parse_vtt_text(response.text)
                 if not items:
                     continue
+                logging.info(
+                    "YouTube transcript success: mode=%s proxy=%s source=yt_dlp",
+                    mode,
+                    candidate_label,
+                )
                 return {
                     "items": items,
                     "language": lang,

@@ -93,6 +93,9 @@ load_dotenv(dotenv_path=Path(__file__).parent/".env") # Загружаем пе�
 
 success=load_dotenv(dotenv_path=Path(__file__).parent/".env")
 
+# Никогда не используем прокси для Telegram API
+os.environ.setdefault("NO_PROXY", "api.telegram.org,telegram.org")
+
 
 # Buttons in Telegramm
 TOPICS = [
