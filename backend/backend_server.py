@@ -2972,7 +2972,7 @@ def _run_transcript_storage_report_job() -> None:
                 cursor.execute(
                     """
                     SELECT pg_total_relation_size('bt_3_youtube_transcripts') AS bytes,
-                           pg_size_pretty(pg_total_relation_size('bt_3_youtube_transcripts')) AS pretty,
+                           pg_size_pretty(pg_total_relation_size('bt_3_youtube_transcripts')::bigint) AS pretty,
                            COUNT(*) AS rows
                     FROM bt_3_youtube_transcripts;
                     """
@@ -2989,7 +2989,7 @@ def _run_transcript_storage_report_job() -> None:
                            is_generated,
                            updated_at,
                            pg_column_size(t.*) AS row_bytes,
-                           pg_size_pretty(pg_column_size(t.*)) AS row_pretty,
+                           pg_size_pretty(pg_column_size(t.*)::bigint) AS row_pretty,
                            pg_column_size(items) AS items_bytes,
                            pg_column_size(translations) AS translations_bytes
                     FROM bt_3_youtube_transcripts t
