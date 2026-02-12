@@ -1775,14 +1775,20 @@ def export_webapp_dictionary_pdf():
     from reportlab.pdfgen import canvas
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.lib import colors
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     # Use Unicode-capable font for Cyrillic/Umlauts
     font_name = "DejaVuSans"
+    font_bold = "DejaVuSans-Bold"
     font_paths = [
         os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans.ttf"),
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    font_bold_paths = [
+        os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans-Bold.ttf"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     ]
     for fp in font_paths:
         if os.path.exists(fp):
@@ -1793,17 +1799,29 @@ def export_webapp_dictionary_pdf():
             break
     else:
         font_name = "Helvetica"
+    for fp in font_bold_paths:
+        if os.path.exists(fp):
+            try:
+                pdfmetrics.registerFont(TTFont(font_bold, fp))
+            except Exception:
+                font_bold = "Helvetica-Bold"
+            break
+    else:
+        font_bold = "Helvetica-Bold"
     width, height = A4
     x = 40
     y = height - 40
     line_height = 14
+    title_size = 16
+    word_size = 16
+    normal_size = 11
 
-    pdf.setFont(font_name, 14)
+    pdf.setFont(font_name, title_size)
     title = "Словарь"
     pdf.drawString(x, y, title)
     y -= 2 * line_height
 
-    pdf.setFont(font_name, 11)
+    pdf.setFont(font_name, normal_size)
     for item in items:
         response_json = item.get("response_json") or {}
         word = item.get("word_ru") or response_json.get("word_ru") or item.get("word_de") or response_json.get("word_de") or "—"
@@ -1820,7 +1838,6 @@ def export_webapp_dictionary_pdf():
             examples = [examples]
 
         lines = [
-            f"Слово: {word}",
             f"Перевод: {translation}",
             f"Дата: {created_at}",
         ]
@@ -1829,11 +1846,25 @@ def export_webapp_dictionary_pdf():
             for example in examples[:3]:
                 lines.extend([f"- {line}" for line in _wrap_text(example, 90)])
 
+        # Word line: larger, bold, colored
+        if y < 80:
+            pdf.showPage()
+            pdf.setFont(font_name, normal_size)
+            pdf.setFillColor(colors.black)
+            y = height - 40
+        pdf.setFont(font_bold, word_size)
+        pdf.setFillColorRGB(0.12, 0.25, 0.65)
+        pdf.drawString(x, y, word)
+        pdf.setFillColor(colors.black)
+        y -= line_height * 1.4
+
         for line in lines:
             if y < 60:
                 pdf.showPage()
-                pdf.setFont("Helvetica", 11)
+                pdf.setFont(font_name, normal_size)
+                pdf.setFillColor(colors.black)
                 y = height - 40
+            pdf.setFont(font_name, normal_size)
             pdf.drawString(x, y, line)
             y -= line_height
 
