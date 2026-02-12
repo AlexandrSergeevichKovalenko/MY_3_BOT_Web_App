@@ -97,6 +97,7 @@ function AppInner() {
   const [movies, setMovies] = useState([]);
   const [moviesLoading, setMoviesLoading] = useState(false);
   const [moviesError, setMoviesError] = useState('');
+  const [moviesCollapsed, setMoviesCollapsed] = useState(false);
   const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
   const [selectionText, setSelectionText] = useState('');
@@ -518,10 +519,12 @@ function AppInner() {
 
   const showAllSections = () => {
     setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'flashcards', 'analytics']));
+    setMoviesCollapsed(false);
   };
 
   const hideAllSections = () => {
     setSelectedSections(new Set());
+    setMoviesCollapsed(false);
   };
 
   const handleMenuSelection = (key, ref) => {
@@ -542,6 +545,9 @@ function AppInner() {
       setFlashcardsOnly(false);
       setFlashcardSessionActive(false);
       setFlashcardExitSummary(false);
+    }
+    if (key === 'movies') {
+      setMoviesCollapsed(false);
     }
     if (!menuMultiSelect) {
       setMenuOpen(false);
@@ -2643,39 +2649,67 @@ function AppInner() {
             <div className="webapp-menu">
               <button
                 type="button"
-                className={`menu-item ${selectedSections.has('translations') ? 'is-active' : ''}`}
+                className={`menu-item menu-item-translations ${selectedSections.has('translations') ? 'is-active' : ''}`}
                 onClick={() => toggleSection('translations')}
                 disabled={flashcardsOnly}
               >
-                Переводы
+                <span className="menu-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7 4h7l3 3v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" fill="#1d4ed8" opacity="0.9" />
+                    <path d="M14 4v4h4" fill="#60a5fa" />
+                    <path d="M8 10h8M8 13h8M8 16h6" stroke="#ffffff" strokeWidth="1.7" strokeLinecap="round" />
+                    <path d="M4.5 12.5h2.2l1-1.6 1 3 1.1-2h2.2" stroke="#fbbf24" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                  </svg>
+                </span>
+                <span>Переводы</span>
               </button>
               <button
                 type="button"
-                className={`menu-item ${selectedSections.has('youtube') ? 'is-active' : ''}`}
+                className={`menu-item menu-item-youtube ${selectedSections.has('youtube') ? 'is-active' : ''}`}
                 onClick={() => toggleSection('youtube')}
                 disabled={flashcardsOnly}
               >
-                YouTube
+                <span className="menu-icon">
+                  <svg viewBox="0 0 28 20" aria-hidden="true">
+                    <rect x="0" y="0" width="28" height="20" rx="4" fill="#ff0000" />
+                    <path d="M11 5l8 5-8 5V5z" fill="#ffffff" />
+                  </svg>
+                </span>
+                <span>YouTube</span>
               </button>
               <button
                 type="button"
-                className={`menu-item ${selectedSections.has('movies') ? 'is-active' : ''}`}
+                className={`menu-item menu-item-movies ${selectedSections.has('movies') ? 'is-active' : ''}`}
                 onClick={() => toggleSection('movies')}
                 disabled={flashcardsOnly}
               >
-                Фильмы
+                <span className="menu-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="3" y="6" width="18" height="12" rx="2" fill="#111827" />
+                    <path d="M6 6l2-3m4 3l2-3m4 3l2-3" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                    <path d="M9 10l6 4-6 4v-8z" fill="#f59e0b" />
+                  </svg>
+                </span>
+                <span>Фильмы</span>
               </button>
               <button
                 type="button"
-                className={`menu-item ${selectedSections.has('dictionary') ? 'is-active' : ''}`}
+                className={`menu-item menu-item-dictionary ${selectedSections.has('dictionary') ? 'is-active' : ''}`}
                 onClick={() => toggleSection('dictionary')}
                 disabled={flashcardsOnly}
               >
-                Словарь
+                <span className="menu-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 6a2 2 0 0 1 2-2h11a3 3 0 0 1 3 3v11a2 2 0 0 1-2 2H7a3 3 0 0 0-3 3V6z" fill="#0ea5e9" />
+                    <path d="M7 8h9M7 12h9M7 16h6" stroke="#ffffff" strokeWidth="1.7" strokeLinecap="round" />
+                    <path d="M6 6h10a2 2 0 0 1 2 2v10" stroke="#0284c7" strokeWidth="2" fill="none" />
+                  </svg>
+                </span>
+                <span>Словарь</span>
               </button>
               <button
                 type="button"
-                className={`menu-item ${selectedSections.has('flashcards') ? 'is-active' : ''}`}
+                className={`menu-item menu-item-flashcards ${selectedSections.has('flashcards') ? 'is-active' : ''}`}
                 onClick={() => {
                   toggleSection('flashcards');
                   setFlashcardsVisible(true);
@@ -2684,15 +2718,31 @@ function AppInner() {
                   setFlashcardExitSummary(false);
                 }}
               >
-                Карточки
+                <span className="menu-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 6a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z" fill="#8b5cf6" />
+                    <path d="M9 8h6M9 12h4" stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
+                    <path d="M13 7l7 2v9l-7-2V7z" fill="#c4b5fd" />
+                    <circle cx="16" cy="12" r="1.2" fill="#7c3aed" />
+                  </svg>
+                </span>
+                <span>Карточки</span>
               </button>
               <button
                 type="button"
-                className={`menu-item ${selectedSections.has('analytics') ? 'is-active' : ''}`}
+                className={`menu-item menu-item-analytics ${selectedSections.has('analytics') ? 'is-active' : ''}`}
                 onClick={() => toggleSection('analytics')}
                 disabled={flashcardsOnly}
               >
-                Аналитика
+                <span className="menu-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="3" y="11" width="4" height="8" rx="1.2" fill="#22c55e" />
+                    <rect x="10" y="7" width="4" height="12" rx="1.2" fill="#16a34a" />
+                    <rect x="17" y="4" width="4" height="15" rx="1.2" fill="#15803d" />
+                    <path d="M3 19h18" stroke="#064e3b" strokeWidth="1.2" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <span>Аналитика</span>
               </button>
             </div>
             <div className="webapp-menu-actions">
@@ -2755,50 +2805,94 @@ function AppInner() {
                     </label>
                     <button
                       type="button"
-                      className={`menu-item ${selectedSections.has('translations') ? 'is-active' : ''}`}
+                      className={`menu-item menu-item-translations ${selectedSections.has('translations') ? 'is-active' : ''}`}
                       onClick={() => handleMenuSelection('translations', translationsRef)}
                       disabled={flashcardsOnly}
                     >
-                      Переводы
-                    </button>
+                    <span className="menu-icon">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M7 4h7l3 3v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" fill="#1d4ed8" opacity="0.9" />
+                        <path d="M14 4v4h4" fill="#60a5fa" />
+                        <path d="M8 10h8M8 13h8M8 16h6" stroke="#ffffff" strokeWidth="1.7" strokeLinecap="round" />
+                        <path d="M4.5 12.5h2.2l1-1.6 1 3 1.1-2h2.2" stroke="#fbbf24" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                      </svg>
+                    </span>
+                    <span>Переводы</span>
+                  </button>
                 <button
                   type="button"
-                  className={`menu-item ${selectedSections.has('youtube') ? 'is-active' : ''}`}
+                  className={`menu-item menu-item-youtube ${selectedSections.has('youtube') ? 'is-active' : ''}`}
                   onClick={() => handleMenuSelection('youtube', youtubeRef)}
                   disabled={flashcardsOnly}
                 >
-                  YouTube
+                  <span className="menu-icon">
+                    <svg viewBox="0 0 28 20" aria-hidden="true">
+                      <rect x="0" y="0" width="28" height="20" rx="4" fill="#ff0000" />
+                      <path d="M11 5l8 5-8 5V5z" fill="#ffffff" />
+                    </svg>
+                  </span>
+                  <span>YouTube</span>
                 </button>
                 <button
                   type="button"
-                  className={`menu-item ${selectedSections.has('movies') ? 'is-active' : ''}`}
+                  className={`menu-item menu-item-movies ${selectedSections.has('movies') ? 'is-active' : ''}`}
                   onClick={() => handleMenuSelection('movies', moviesRef)}
                   disabled={flashcardsOnly}
                 >
-                  Фильмы
+                  <span className="menu-icon">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="3" y="6" width="18" height="12" rx="2" fill="#111827" />
+                      <path d="M6 6l2-3m4 3l2-3m4 3l2-3" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                      <path d="M9 10l6 4-6 4v-8z" fill="#f59e0b" />
+                    </svg>
+                  </span>
+                  <span>Фильмы</span>
                 </button>
                 <button
                   type="button"
-                  className={`menu-item ${selectedSections.has('dictionary') ? 'is-active' : ''}`}
+                  className={`menu-item menu-item-dictionary ${selectedSections.has('dictionary') ? 'is-active' : ''}`}
                   onClick={() => handleMenuSelection('dictionary', dictionaryRef)}
                   disabled={flashcardsOnly}
                 >
-                      Словарь
+                  <span className="menu-icon">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 6a2 2 0 0 1 2-2h11a3 3 0 0 1 3 3v11a2 2 0 0 1-2 2H7a3 3 0 0 0-3 3V6z" fill="#0ea5e9" />
+                      <path d="M7 8h9M7 12h9M7 16h6" stroke="#ffffff" strokeWidth="1.7" strokeLinecap="round" />
+                      <path d="M6 6h10a2 2 0 0 1 2 2v10" stroke="#0284c7" strokeWidth="2" fill="none" />
+                    </svg>
+                  </span>
+                      <span>Словарь</span>
                     </button>
                     <button
                       type="button"
-                      className={`menu-item ${selectedSections.has('flashcards') ? 'is-active' : ''}`}
+                      className={`menu-item menu-item-flashcards ${selectedSections.has('flashcards') ? 'is-active' : ''}`}
                       onClick={() => handleMenuSelection('flashcards', flashcardsRef)}
                     >
-                      Карточки
+                      <span className="menu-icon">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M4 6a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z" fill="#8b5cf6" />
+                          <path d="M9 8h6M9 12h4" stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
+                          <path d="M13 7l7 2v9l-7-2V7z" fill="#c4b5fd" />
+                          <circle cx="16" cy="12" r="1.2" fill="#7c3aed" />
+                        </svg>
+                      </span>
+                      <span>Карточки</span>
                     </button>
                     <button
                       type="button"
-                      className={`menu-item ${selectedSections.has('analytics') ? 'is-active' : ''}`}
+                      className={`menu-item menu-item-analytics ${selectedSections.has('analytics') ? 'is-active' : ''}`}
                       onClick={() => handleMenuSelection('analytics', analyticsRef)}
                       disabled={flashcardsOnly}
                     >
-                      Аналитика
+                      <span className="menu-icon">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <rect x="3" y="11" width="4" height="8" rx="1.2" fill="#22c55e" />
+                          <rect x="10" y="7" width="4" height="12" rx="1.2" fill="#16a34a" />
+                          <rect x="17" y="4" width="4" height="15" rx="1.2" fill="#15803d" />
+                          <path d="M3 19h18" stroke="#064e3b" strokeWidth="1.2" strokeLinecap="round" />
+                        </svg>
+                      </span>
+                      <span>Аналитика</span>
                     </button>
                   </div>
                   <div className="overlay-actions">
@@ -3612,7 +3706,7 @@ function AppInner() {
               </div>
             )}
 
-            {!flashcardsOnly && isSectionVisible('movies') && (
+            {!flashcardsOnly && isSectionVisible('movies') && !moviesCollapsed && (
               <section className="webapp-movies" ref={moviesRef}>
                 <div className="webapp-section-title">
                   <h2>Фильмы</h2>
@@ -3632,6 +3726,7 @@ function AppInner() {
                         className="movie-card"
                         onClick={() => {
                           setYoutubeInput(`https://youtu.be/${item.video_id}`);
+                          setMoviesCollapsed(true);
                           ensureSectionVisible('youtube');
                           setTimeout(() => scrollToRef(youtubeRef, { block: 'start' }), 120);
                         }}
