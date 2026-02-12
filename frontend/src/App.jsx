@@ -204,6 +204,8 @@ function AppInner() {
   const flashcardIndexRef = useRef(0);
   const flashcardSelectionRef = useRef(null);
   const ttsCacheRef = useRef(new Map());
+  const ttsLastRef = useRef({ key: '', ts: 0 });
+  const ttsCurrentAudioRef = useRef(null);
   const flashcardEnrichRef = useRef(new Set());
   const audioContextRef = useRef(null);
   const positiveAudioRef = useRef(null);
@@ -343,7 +345,18 @@ function AppInner() {
   const playTts = async (text, language = 'de-DE') => {
     if (!initData || !text) return Promise.resolve();
     const key = `${language}:${text}`;
+    const now = Date.now();
+    if (ttsLastRef.current.key === key && now - ttsLastRef.current.ts < 1200) {
+      return Promise.resolve();
+    }
+    ttsLastRef.current = { key, ts: now };
+    if (ttsCurrentAudioRef.current) {
+      ttsCurrentAudioRef.current.pause();
+      ttsCurrentAudioRef.current.currentTime = 0;
+      ttsCurrentAudioRef.current = null;
+    }
     const playAudio = (audio) => new Promise((resolve) => {
+      ttsCurrentAudioRef.current = audio;
       audio.currentTime = 0;
       audio.onended = () => resolve();
       audio.onerror = () => resolve();
@@ -799,7 +812,10 @@ function AppInner() {
       setFlashcardSelection(-1);
       setFlashcardOutcome('timeout');
       (async () => {
-        await playTts(correct, 'de-DE');
+        const german = resolveFlashcardGerman(entry);
+        if (german) {
+          await playTts(german, 'de-DE');
+        }
         if (flashcardAutoAdvance) {
           revealTimeoutRef.current = setTimeout(() => {
             advanceFlashcard();
@@ -4292,7 +4308,10 @@ function AppInner() {
                                                 if (revealTimeoutRef.current) {
                                                   clearTimeout(revealTimeoutRef.current);
                                                 }
-                                                await playTts(correct, 'de-DE');
+                                                const german = resolveFlashcardGerman(entry);
+                                                if (german) {
+                                                  await playTts(german, 'de-DE');
+                                                }
                                                 if (flashcardAutoAdvance) {
                                                   revealTimeoutRef.current = setTimeout(() => {
                                                     advanceFlashcard();
