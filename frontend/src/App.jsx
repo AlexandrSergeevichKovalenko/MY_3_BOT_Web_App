@@ -2174,55 +2174,52 @@ function AppInner() {
     }
   }, [youtubeInput]);
 
-  useEffect(() => {
-    const fetchTranscript = async () => {
-      if (!youtubeId || !initData) {
-        setYoutubeTranscript([]);
-        setYoutubeTranscriptError('');
-        setYoutubeTranslations({});
-        setYoutubeRuEnabled(false);
-        setYoutubeManualOverride(false);
-        setYoutubeTranscriptHasTiming(true);
-        return;
-      }
-      if (youtubeManualOverride) {
-        return;
-      }
-      setYoutubeTranscriptLoading(true);
-      setYoutubeTranscriptError('');
-      try {
-        const response = await fetch('/api/webapp/youtube/transcript', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData, videoId: youtubeId }),
-        });
-        if (!response.ok) {
-          let message = await response.text();
-          try {
-            const data = JSON.parse(message);
-            message = data.error || message;
-          } catch (error) {
-            // ignore parsing errors
-          }
-          throw new Error(message);
+  const fetchTranscript = async () => {
+    if (!youtubeId || !initData) return;
+    if (youtubeManualOverride) return;
+    setYoutubeTranscriptLoading(true);
+    setYoutubeTranscriptError('');
+    try {
+      const response = await fetch('/api/webapp/youtube/transcript', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, videoId: youtubeId }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parsing errors
         }
-        const data = await response.json();
-        const items = data.items || [];
-        setYoutubeTranscript(items);
-        setYoutubeTranslations(data.translations || {});
-        const hasTiming = items.some((item) => Number(item?.start) > 0);
-        setYoutubeTranscriptHasTiming(hasTiming);
-        setManualTranscript('');
-      } catch (error) {
-        setYoutubeTranscript([]);
-        setYoutubeTranscriptError(`Авто-субтитры недоступны: ${error.message}`);
-      } finally {
-        setYoutubeTranscriptLoading(false);
+        throw new Error(message);
       }
-    };
+      const data = await response.json();
+      const items = data.items || [];
+      setYoutubeTranscript(items);
+      setYoutubeTranslations(data.translations || {});
+      const hasTiming = items.some((item) => Number(item?.start) > 0);
+      setYoutubeTranscriptHasTiming(hasTiming);
+      setManualTranscript('');
+    } catch (error) {
+      setYoutubeTranscript([]);
+      setYoutubeTranscriptError(`Авто-субтитры недоступны: ${error.message}`);
+    } finally {
+      setYoutubeTranscriptLoading(false);
+    }
+  };
 
-    fetchTranscript();
-  }, [youtubeId, initData, youtubeManualOverride]);
+  useEffect(() => {
+    if (!youtubeId || !initData) {
+      setYoutubeTranscript([]);
+      setYoutubeTranscriptError('');
+      setYoutubeTranslations({});
+      setYoutubeRuEnabled(false);
+      setYoutubeManualOverride(false);
+      setYoutubeTranscriptHasTiming(true);
+    }
+  }, [youtubeId, initData]);
 
   useEffect(() => {
     if (!isWebAppMode || flashcardsOnly || !initData) return;
@@ -3392,6 +3389,14 @@ function AppInner() {
                         disabled={!youtubeTranscript.length}
                       >
                         {youtubeRuEnabled ? 'Скрыть RU субтитры' : 'Показать RU субтитры'}
+                      </button>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => fetchTranscript()}
+                        disabled={!youtubeId || youtubeTranscriptLoading || youtubeManualOverride}
+                      >
+                        {youtubeTranscriptLoading ? 'Загружаем...' : 'Загрузить субтитры'}
                       </button>
                       <button
                         type="button"
