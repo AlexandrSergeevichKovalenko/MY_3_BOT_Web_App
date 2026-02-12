@@ -93,7 +93,10 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     spacy = None
 from backend.utils import prepare_google_creds_for_tts
-from apscheduler.schedulers.background import BackgroundScheduler
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+except Exception:  # pragma: no cover - optional in some deploys
+    BackgroundScheduler = None
 
 from backend.openai_manager import (
     run_check_translation,
@@ -2857,6 +2860,9 @@ def _run_audio_scheduler_job() -> None:
 
 def _start_audio_scheduler() -> None:
     global _audio_scheduler
+    if BackgroundScheduler is None:
+        logging.warning("⚠️ APScheduler not installed; audio scheduler disabled")
+        return
     enabled = (os.getenv("AUDIO_SCHEDULER_ENABLED") or "1").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
         logging.info("ℹ️ Audio scheduler disabled by AUDIO_SCHEDULER_ENABLED")

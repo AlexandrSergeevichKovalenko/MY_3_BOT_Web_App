@@ -19,4 +19,5 @@ youtube-transcript-api>=0.6.3
 yt-dlp==2024.12.23
 spacy==3.7.4
 reportlab==4.2.5
+APScheduler==3.11.0
 google-cloud-texttospeech==2.25.1
