@@ -125,6 +125,7 @@ from backend.database import (
     get_flashcard_set,
     create_dictionary_folder,
     get_dictionary_folders,
+    get_or_create_dictionary_folder,
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
 )
@@ -1958,6 +1959,18 @@ def save_webapp_dictionary_entry():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    if folder_id is None:
+        try:
+            default_folder = get_or_create_dictionary_folder(
+                user_id=user_id,
+                name="GENERAL",
+                color="#7d8590",
+                icon="📁",
+            )
+            folder_id = default_folder.get("id")
+        except Exception:
+            folder_id = None
 
     try:
         resolved_word_ru = word_ru or response_json.get("word_ru")

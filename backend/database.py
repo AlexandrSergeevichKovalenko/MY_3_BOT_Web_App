@@ -835,6 +835,50 @@ def get_dictionary_folders(user_id: int) -> list[dict]:
             ]
 
 
+def get_or_create_dictionary_folder(
+    user_id: int,
+    name: str,
+    color: str,
+    icon: str,
+) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, name, color, icon, created_at
+                FROM bt_3_dictionary_folders
+                WHERE user_id = %s AND name = %s
+                LIMIT 1;
+                """,
+                (user_id, name),
+            )
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "id": row[0],
+                    "name": row[1],
+                    "color": row[2],
+                    "icon": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None,
+                }
+            cursor.execute(
+                """
+                INSERT INTO bt_3_dictionary_folders (user_id, name, color, icon)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, name, color, icon, created_at;
+                """,
+                (user_id, name, color, icon),
+            )
+            row = cursor.fetchone()
+            return {
+                "id": row[0],
+                "name": row[1],
+                "color": row[2],
+                "icon": row[3],
+                "created_at": row[4].isoformat() if row[4] else None,
+            }
+
+
 def _get_latest_session_id(cursor, user_id: int) -> str | None:
     cursor.execute(
         """
