@@ -2446,6 +2446,64 @@ def get_youtube_catalog():
     return jsonify({"ok": True, "items": items})
 
 
+@app.route("/api/webapp/youtube/manual", methods=["POST"])
+def save_manual_youtube_transcript():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    video_id = (payload.get("videoId") or "").strip()
+    items = payload.get("items") or []
+    language = (payload.get("language") or "").strip() or None
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not video_id:
+        return jsonify({"error": "videoId обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    if not isinstance(items, list) or not items:
+        return jsonify({"error": "items обязателен"}), 400
+
+    normalized = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        text = (item.get("text") or "").strip()
+        if not text:
+            continue
+        start = item.get("start")
+        duration = item.get("duration")
+        normalized.append(
+            {
+                "text": text,
+                "start": float(start) if start is not None else None,
+                "duration": float(duration) if duration is not None else None,
+            }
+        )
+    if not normalized:
+        return jsonify({"error": "items пустой"}), 400
+
+    try:
+        upsert_youtube_transcript_cache(
+            video_id,
+            normalized,
+            language,
+            False,
+            {},
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения: {exc}"}), 500
+
+    _yt_transcript_cache[video_id] = {"ts": time.time(), "data": {
+        "items": normalized,
+        "language": language,
+        "is_generated": False,
+        "translations": {},
+        "source": "manual",
+    }}
+
+    return jsonify({"ok": True})
+
+
 @app.route("/api/webapp/youtube/translate", methods=["POST"])
 def translate_youtube_subtitles():
     payload = request.get_json(silent=True) or {}

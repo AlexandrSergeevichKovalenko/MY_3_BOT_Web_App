@@ -1761,7 +1761,36 @@ function AppInner() {
     return { items, hasTiming };
   };
 
-  const handleManualTranscript = () => {
+  const detectTranscriptLanguage = (items) => {
+    const sample = items.map((item) => String(item?.text || '')).join(' ');
+    if (!sample) return null;
+    const hasCyrillic = /[А-Яа-яЁё]/.test(sample);
+    const hasLatin = /[A-Za-z]/.test(sample);
+    if (hasCyrillic && !hasLatin) return 'ru';
+    if (hasLatin && !hasCyrillic) return 'de';
+    if (hasCyrillic && hasLatin) return 'en';
+    return null;
+  };
+
+  const saveManualTranscriptToDb = async (items) => {
+    if (!initData || !youtubeId || !items?.length) return;
+    try {
+      const language = detectTranscriptLanguage(items);
+      const response = await fetch('/api/webapp/youtube/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, videoId: youtubeId, items, language }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      setMovies([]);
+    } catch (error) {
+      setYoutubeTranscriptError(`Ошибка сохранения субтитров: ${error.message}`);
+    }
+  };
+
+  const handleManualTranscript = async () => {
     const raw = manualTranscript.trim();
     if (!raw) {
       setYoutubeManualOverride(false);
@@ -1776,6 +1805,7 @@ function AppInner() {
       setYoutubeManualOverride(true);
       setYoutubeTranscriptError('');
       setShowManualTranscript(false);
+      await saveManualTranscriptToDb(parsed.items);
       return;
     }
     const simple = parseSimpleTimestampTranscript(raw);
@@ -1785,6 +1815,7 @@ function AppInner() {
       setYoutubeManualOverride(true);
       setYoutubeTranscriptError('');
       setShowManualTranscript(false);
+      await saveManualTranscriptToDb(simple.items);
       return;
     }
     const fallback = parseTranscriptInput(raw);
@@ -1793,6 +1824,7 @@ function AppInner() {
     setYoutubeManualOverride(true);
     setYoutubeTranscriptError('');
     setShowManualTranscript(false);
+    await saveManualTranscriptToDb(fallback);
   };
 
   const handleFinishTranslation = async () => {
