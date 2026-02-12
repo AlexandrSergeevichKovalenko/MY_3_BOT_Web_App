@@ -94,6 +94,9 @@ function AppInner() {
   const [youtubeRuEnabled, setYoutubeRuEnabled] = useState(false);
   const [youtubeManualOverride, setYoutubeManualOverride] = useState(false);
   const [youtubeTranscriptHasTiming, setYoutubeTranscriptHasTiming] = useState(true);
+  const [movies, setMovies] = useState([]);
+  const [moviesLoading, setMoviesLoading] = useState(false);
+  const [moviesError, setMoviesError] = useState('');
   const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
   const [selectionText, setSelectionText] = useState('');
@@ -189,6 +192,7 @@ function AppInner() {
   const flashcardsRef = useRef(null);
   const translationsRef = useRef(null);
   const youtubeRef = useRef(null);
+  const moviesRef = useRef(null);
   const youtubeSubtitlesRef = useRef(null);
   const youtubePlayerRef = useRef(null);
   const youtubeTimeIntervalRef = useRef(null);
@@ -513,7 +517,7 @@ function AppInner() {
   };
 
   const showAllSections = () => {
-    setSelectedSections(new Set(['translations', 'youtube', 'dictionary', 'flashcards', 'analytics']));
+    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'flashcards', 'analytics']));
   };
 
   const hideAllSections = () => {
@@ -2167,6 +2171,38 @@ function AppInner() {
   }, [youtubeId, initData, youtubeManualOverride]);
 
   useEffect(() => {
+    if (!isWebAppMode || flashcardsOnly || !initData) return;
+    if (!isSectionVisible('movies')) return;
+    if (movies.length > 0) return;
+    let cancelled = false;
+    setMoviesLoading(true);
+    setMoviesError('');
+    fetch('/api/webapp/youtube/catalog', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData, limit: 60 }),
+    })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setMovies(Array.isArray(data.items) ? data.items : []);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setMoviesError(`Ошибка каталога: ${err.message}`);
+      })
+      .finally(() => {
+        if (!cancelled) setMoviesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isWebAppMode, flashcardsOnly, initData, selectedSections, movies.length]);
+
+  useEffect(() => {
     if (!youtubeId) {
       setYoutubePlayerReady(false);
       setYoutubeCurrentTime(0);
@@ -2623,6 +2659,14 @@ function AppInner() {
               </button>
               <button
                 type="button"
+                className={`menu-item ${selectedSections.has('movies') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('movies')}
+                disabled={flashcardsOnly}
+              >
+                Фильмы
+              </button>
+              <button
+                type="button"
                 className={`menu-item ${selectedSections.has('dictionary') ? 'is-active' : ''}`}
                 onClick={() => toggleSection('dictionary')}
                 disabled={flashcardsOnly}
@@ -2717,20 +2761,28 @@ function AppInner() {
                     >
                       Переводы
                     </button>
-                    <button
-                      type="button"
-                      className={`menu-item ${selectedSections.has('youtube') ? 'is-active' : ''}`}
-                      onClick={() => handleMenuSelection('youtube', youtubeRef)}
-                      disabled={flashcardsOnly}
-                    >
-                      YouTube
-                    </button>
-                    <button
-                      type="button"
-                      className={`menu-item ${selectedSections.has('dictionary') ? 'is-active' : ''}`}
-                      onClick={() => handleMenuSelection('dictionary', dictionaryRef)}
-                      disabled={flashcardsOnly}
-                    >
+                <button
+                  type="button"
+                  className={`menu-item ${selectedSections.has('youtube') ? 'is-active' : ''}`}
+                  onClick={() => handleMenuSelection('youtube', youtubeRef)}
+                  disabled={flashcardsOnly}
+                >
+                  YouTube
+                </button>
+                <button
+                  type="button"
+                  className={`menu-item ${selectedSections.has('movies') ? 'is-active' : ''}`}
+                  onClick={() => handleMenuSelection('movies', moviesRef)}
+                  disabled={flashcardsOnly}
+                >
+                  Фильмы
+                </button>
+                <button
+                  type="button"
+                  className={`menu-item ${selectedSections.has('dictionary') ? 'is-active' : ''}`}
+                  onClick={() => handleMenuSelection('dictionary', dictionaryRef)}
+                  disabled={flashcardsOnly}
+                >
                       Словарь
                     </button>
                     <button
@@ -3558,6 +3610,47 @@ function AppInner() {
                   </section>
                 )}
               </div>
+            )}
+
+            {!flashcardsOnly && isSectionVisible('movies') && (
+              <section className="webapp-movies" ref={moviesRef}>
+                <div className="webapp-section-title">
+                  <h2>Фильмы</h2>
+                  <p>Видео с доступными субтитрами, сохранённые в каталоге.</p>
+                </div>
+                {moviesLoading && <div className="webapp-muted">Загружаем каталог...</div>}
+                {moviesError && <div className="webapp-error">{moviesError}</div>}
+                {!moviesLoading && !moviesError && movies.length === 0 && (
+                  <div className="webapp-muted">Пока нет сохранённых видео.</div>
+                )}
+                {!moviesLoading && movies.length > 0 && (
+                  <div className="movies-grid">
+                    {movies.map((item) => (
+                      <button
+                        type="button"
+                        key={item.video_id}
+                        className="movie-card"
+                        onClick={() => {
+                          setYoutubeInput(`https://youtu.be/${item.video_id}`);
+                          ensureSectionVisible('youtube');
+                          setTimeout(() => scrollToRef(youtubeRef, { block: 'start' }), 120);
+                        }}
+                      >
+                        <div className="movie-thumb">
+                          <img src={item.thumbnail} alt={item.title} loading="lazy" />
+                        </div>
+                        <div className="movie-meta">
+                          <div className="movie-title">{item.title}</div>
+                          <div className="movie-subtitle">
+                            {item.author ? `${item.author} • ` : ''}
+                            {item.items_count ? `${item.items_count} строк` : 'Субтитры'}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
             )}
 
             {isSectionVisible('flashcards') && (

@@ -180,6 +180,7 @@ _YT_RETRY_SLEEP_MIN = 2.0
 _YT_RETRY_SLEEP_MAX = 3.0
 _YT_REQUEST_JITTER_MIN = 1.9
 _YT_REQUEST_JITTER_MAX = 1.9
+_YT_OEMBED_CACHE: dict[str, dict] = {}
 
 _audio_scheduler = None
 _audio_scheduler_lock = None
@@ -2392,6 +2393,59 @@ def get_youtube_transcript():
     )
 
 
+@app.route("/api/webapp/youtube/catalog", methods=["POST"])
+def get_youtube_catalog():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    limit = int(payload.get("limit", 60))
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT video_id,
+                           language,
+                           is_generated,
+                           updated_at,
+                           jsonb_array_length(items) AS items_count
+                    FROM bt_3_youtube_transcripts
+                    ORDER BY updated_at DESC
+                    LIMIT %s;
+                    """,
+                    (limit,),
+                )
+                rows = cursor.fetchall()
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка каталога: {exc}"}), 500
+
+    items = []
+    for video_id, language, is_generated, updated_at, items_count in rows:
+        oembed = _get_youtube_oembed(video_id)
+        title = oembed.get("title") or video_id
+        author = oembed.get("author_name") or ""
+        thumbnail = oembed.get("thumbnail_url") or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+        items.append(
+            {
+                "video_id": video_id,
+                "title": title,
+                "author": author,
+                "thumbnail": thumbnail,
+                "language": language,
+                "is_generated": is_generated,
+                "items_count": items_count,
+                "updated_at": updated_at.isoformat() if updated_at else None,
+            }
+        )
+
+    return jsonify({"ok": True, "items": items})
+
+
 @app.route("/api/webapp/youtube/translate", methods=["POST"])
 def translate_youtube_subtitles():
     payload = request.get_json(silent=True) or {}
@@ -2891,6 +2945,23 @@ def _run_audio_scheduler_job() -> None:
         logging.info("✅ Audio scheduler finished: %s", result)
     except Exception:
         logging.exception("❌ Audio scheduler failed")
+
+
+def _get_youtube_oembed(video_id: str) -> dict:
+    now = time.time()
+    cached = _YT_OEMBED_CACHE.get(video_id)
+    if cached and now - cached.get("ts", 0) < 7 * 24 * 60 * 60:
+        return cached.get("data") or {}
+    url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+    data = {}
+    try:
+        resp = requests.get(url, timeout=8)
+        if resp.status_code < 400:
+            data = resp.json() or {}
+    except Exception:
+        data = {}
+    _YT_OEMBED_CACHE[video_id] = {"ts": now, "data": data}
+    return data
 
 
 def _run_transcript_storage_report_job() -> None:

@@ -856,6 +856,74 @@ body {
   gap: 16px;
 }
 
+.webapp-movies {
+  margin-top: 24px;
+  padding: 18px;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 16px 32px rgba(8, 11, 26, 0.08);
+  display: grid;
+  gap: 14px;
+}
+
+.webapp-movies .webapp-section-title {
+  margin-bottom: 4px;
+}
+
+.movies-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.movie-card {
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 16px;
+  padding: 0;
+  overflow: hidden;
+  background: #f8fafc;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.movie-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+}
+
+.movie-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #0f172a;
+  overflow: hidden;
+}
+
+.movie-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.movie-meta {
+  padding: 12px 14px 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.movie-title {
+  font-weight: 700;
+  color: #0f172a;
+  font-size: 0.98rem;
+  line-height: 1.2;
+}
+
+.movie-subtitle {
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
 .webapp-video-dictionary.is-split {
   grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr);
   align-items: start;
