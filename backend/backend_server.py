@@ -120,7 +120,6 @@ from backend.database import (
     upsert_dictionary_cache,
     get_youtube_transcript_cache,
     upsert_youtube_transcript_cache,
-    purge_old_youtube_transcripts,
     upsert_youtube_translations,
     record_flashcard_answer,
     get_flashcard_set,
@@ -172,9 +171,8 @@ os.environ.setdefault("NO_PROXY", "api.telegram.org,telegram.org")
 # YouTube transcript cache/throttle (in-memory)
 _yt_transcript_cache = {}
 _yt_transcript_errors = {}
-_YT_CACHE_TTL = 60 * 60  # 1 hour
+_YT_CACHE_TTL = 24 * 60 * 60  # 24 hours
 _YT_ERROR_TTL = 10 * 60  # 10 minutes
-_YT_DB_PURGE_TS = 0.0
 _YT_MAX_RETRIES_PER_VIDEO = 5
 _YT_MAX_PROXY_ATTEMPTS = 5
 _YT_RETRY_SLEEP_MIN = 2.0
@@ -347,6 +345,37 @@ def _send_group_message(text: str) -> None:
     )
     if response.status_code >= 400:
         raise RuntimeError(f"Telegram API error: {response.text}")
+
+
+def _send_private_message(user_id: int, text: str) -> None:
+    url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendMessage"
+    response = requests.post(
+        url,
+        json={
+            "chat_id": int(user_id),
+            "text": text,
+        },
+        timeout=15,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Telegram API error: {response.text}")
+
+
+def _send_private_message_chunks(user_id: int, text: str, limit: int = 3800) -> None:
+    parts: list[str] = []
+    buf = ""
+    for line in text.splitlines():
+        chunk = (buf + "\n" + line) if buf else line
+        if len(chunk) > limit:
+            if buf:
+                parts.append(buf)
+            buf = line
+        else:
+            buf = chunk
+    if buf:
+        parts.append(buf)
+    for part in parts:
+        _send_private_message(user_id, part)
 
 
 def _send_group_audio(audio_bytes: bytes, filename: str, caption: str | None = None) -> None:
@@ -2275,13 +2304,6 @@ def get_youtube_transcript():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     now = time.time()
-    global _YT_DB_PURGE_TS
-    if now - _YT_DB_PURGE_TS > 3600:
-        try:
-            purge_old_youtube_transcripts(7)
-        except Exception:
-            pass
-        _YT_DB_PURGE_TS = now
 
     cached = _yt_transcript_cache.get(video_id)
     if cached and now - cached.get("ts", 0) < _YT_CACHE_TTL:
@@ -2858,6 +2880,65 @@ def _run_audio_scheduler_job() -> None:
         logging.exception("❌ Audio scheduler failed")
 
 
+def _run_transcript_storage_report_job() -> None:
+    user_id = int((os.getenv("TRANSCRIPT_REPORT_USER_ID") or "117649764").strip())
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT pg_total_relation_size('bt_3_youtube_transcripts') AS bytes,
+                           pg_size_pretty(pg_total_relation_size('bt_3_youtube_transcripts')) AS pretty,
+                           COUNT(*) AS rows
+                    FROM bt_3_youtube_transcripts;
+                    """
+                )
+                row = cursor.fetchone() or (0, "0 bytes", 0)
+        size_bytes, size_pretty, rows = row
+
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT video_id,
+                           language,
+                           is_generated,
+                           updated_at,
+                           pg_column_size(t.*) AS row_bytes,
+                           pg_size_pretty(pg_column_size(t.*)) AS row_pretty,
+                           pg_column_size(items) AS items_bytes,
+                           pg_column_size(translations) AS translations_bytes
+                    FROM bt_3_youtube_transcripts t
+                    ORDER BY pg_column_size(t.*) DESC
+                    LIMIT 20;
+                    """
+                )
+                top_rows = cursor.fetchall()
+
+        header = (
+            "📊 Отчёт по кэшу субтитров\n"
+            "Таблица: bt_3_youtube_transcripts\n"
+            "Поля: video_id, items, language, is_generated, translations, updated_at\n"
+            f"Записей всего: {rows}\n"
+            f"Общий объём: {size_pretty} ({size_bytes} bytes)\n"
+            "\n"
+            "Топ-20 самых тяжёлых записей:"
+        )
+
+        lines = [header]
+        for video_id, language, is_generated, updated_at, row_bytes, row_pretty, items_bytes, translations_bytes in top_rows:
+            lines.append(
+                f"- {video_id} | https://youtu.be/{video_id} | lang={language or '—'} | gen={is_generated} | "
+                f"updated={updated_at:%Y-%m-%d} | row={row_pretty} ({row_bytes}) | "
+                f"items={items_bytes}B | translations={translations_bytes}B"
+            )
+
+        _send_private_message_chunks(user_id, "\n".join(lines))
+        logging.info("✅ Transcript storage report sent to %s", user_id)
+    except Exception:
+        logging.exception("❌ Transcript storage report failed")
+
+
 def _start_audio_scheduler() -> None:
     global _audio_scheduler
     if BackgroundScheduler is None:
@@ -2882,6 +2963,19 @@ def _start_audio_scheduler() -> None:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=300,
+    )
+    now = datetime.now(ZoneInfo(tz_name))
+    first_report = now.replace(hour=17, minute=0, second=0, microsecond=0)
+    if first_report <= now:
+        first_report = now + timedelta(minutes=1)
+    _audio_scheduler.add_job(
+        _run_transcript_storage_report_job,
+        "interval",
+        days=14,
+        start_date=first_report,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
     )
     _audio_scheduler.start()
     logging.info("✅ Audio scheduler started: %02d:%02d %s", hour, minute, tz_name)
