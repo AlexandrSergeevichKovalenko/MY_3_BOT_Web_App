@@ -56,6 +56,8 @@
 
 
 import subprocess
+import hashlib
+import io
 from urllib.parse import urlparse
 from youtube_transcript_api import YouTubeTranscriptApi
 import os
@@ -93,6 +95,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     spacy = None
 from backend.utils import prepare_google_creds_for_tts
+from pydub import AudioSegment
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
 except Exception:  # pragma: no cover - optional in some deploys
@@ -107,6 +110,7 @@ from backend.openai_manager import (
     run_translation_explanation,
     run_feel_word,
     run_enrich_word,
+    run_tts_chunk_de,
 )
 from backend.database import (
     ensure_webapp_tables,
@@ -448,7 +452,244 @@ def _build_practice_text(sentences: list[str]) -> str:
     return ". ".join(part.strip().rstrip(".") for part in parts if part).strip()
 
 
-def _synthesize_mp3(text: str, language: str = "de-DE", voice: str = "de-DE-Wavenet-B") -> bytes:
+_TTS_CACHE: dict[str, AudioSegment] = {}
+_CHAIN_CACHE: dict[str, AudioSegment] = {}
+_SILENCE_CACHE: dict[int, AudioSegment] = {}
+
+_TTS_VOICES = {
+    "de": "de-DE-Wavenet-B",
+    "ru": "ru-RU-Wavenet-B",
+    "en": "en-US-Wavenet-D",
+}
+
+_TTS_SPEED_DEFAULT = 0.9
+_PAUSE_BETWEEN_REPEATS_MS = 300
+_PAUSE_BETWEEN_STEPS_MS = 600
+_PAUSE_BETWEEN_MISTAKES_MS = 1200
+_CHAIN_INTER_CHUNK_MS = 120
+_MAX_CHUNKS = 10
+
+
+def safe_filename(username: str | None, user_id: int, date_str: str) -> str:
+    base = (username or "").strip() or str(user_id)
+    base = re.sub(r"[^a-zA-Z0-9_-]", "_", base)
+    base = base[:50] if len(base) > 50 else base
+    return f"{base}_mistakes_{date_str}.mp3"
+
+
+def _normalize_utterance_text(text: str) -> str:
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+def _tts_cache_key(lang: str, voice: str, speed: float, text: str) -> str:
+    normalized = _normalize_utterance_text(text)
+    raw = f"{lang}|{voice}|{speed}|{normalized}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _get_silence(ms: int) -> AudioSegment:
+    if ms <= 0:
+        return AudioSegment.silent(duration=0)
+    cached = _SILENCE_CACHE.get(ms)
+    if cached is not None:
+        return cached
+    segment = AudioSegment.silent(duration=ms)
+    _SILENCE_CACHE[ms] = segment
+    return segment
+
+
+def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAULT) -> AudioSegment:
+    voice = _TTS_VOICES.get(lang, _TTS_VOICES["de"])
+    key = _tts_cache_key(lang, voice, speed, text)
+    if key in _TTS_CACHE:
+        return _TTS_CACHE[key]
+    cache_dir = "/tmp/tts_cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{key}.mp3")
+    if os.path.exists(cache_path):
+        audio = AudioSegment.from_file(cache_path, format="mp3")
+        _TTS_CACHE[key] = audio
+        return audio
+    language = "de-DE" if lang == "de" else "ru-RU" if lang == "ru" else "en-US"
+    audio_bytes = _synthesize_mp3(text, language=language, voice=voice, speed=speed)
+    audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+    audio.export(cache_path, format="mp3", bitrate="192k")
+    _TTS_CACHE[key] = audio
+    return audio
+
+
+def _chain_cache_key(chunks: list[str], lang: str, speed: float) -> str:
+    normalized = "|".join(_normalize_utterance_text(c) for c in chunks)
+    raw = f"{lang}|{speed}|{normalized}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def get_or_create_chain_clip(chunks: list[str], lang: str, speed: float = _TTS_SPEED_DEFAULT) -> AudioSegment:
+    key = _chain_cache_key(chunks, lang, speed)
+    if key in _CHAIN_CACHE:
+        return _CHAIN_CACHE[key]
+    clip = AudioSegment.silent(duration=0)
+    for idx, chunk in enumerate(chunks):
+        clip += get_or_create_tts_clip(lang, chunk, speed)
+        if idx < len(chunks) - 1:
+            clip += _get_silence(_CHAIN_INTER_CHUNK_MS)
+    _CHAIN_CACHE[key] = clip
+    return clip
+
+
+def _merge_smallest_chunks(chunks: list[str], max_chunks: int) -> list[str]:
+    items = chunks[:]
+    while len(items) > max_chunks:
+        sizes = [len(x) for x in items]
+        idx = sizes.index(min(sizes))
+        if idx == 0:
+            items[0:2] = [f"{items[0]} {items[1]}".strip()]
+        elif idx == len(items) - 1:
+            items[-2:] = [f"{items[-2]} {items[-1]}".strip()]
+        else:
+            left = len(items[idx - 1])
+            right = len(items[idx + 1])
+            if left <= right:
+                items[idx - 1: idx + 1] = [f"{items[idx - 1]} {items[idx]}".strip()]
+            else:
+                items[idx: idx + 2] = [f"{items[idx]} {items[idx + 1]}".strip()]
+    return items
+
+
+def chunk_sentence_llm(de_sentence: str) -> list[str]:
+    cleaned = (de_sentence or "").strip()
+    if not cleaned:
+        return []
+    try:
+        result = asyncio.run(run_tts_chunk_de(cleaned))
+    except Exception as exc:
+        logging.warning("Chunking failed: %s", exc)
+        return _chunk_sentence_simple(cleaned)
+    chunks = []
+    try:
+        for item in result.get("chunks", []):
+            text = (item.get("text") or "").strip()
+            if text:
+                chunks.append(text)
+    except Exception:
+        chunks = []
+    if not chunks:
+        return _chunk_sentence_simple(cleaned)
+    if len(chunks) > _MAX_CHUNKS:
+        chunks = _merge_smallest_chunks(chunks, _MAX_CHUNKS)
+    return chunks
+
+
+def build_de_script(chunks: list[str]) -> list[dict]:
+    if not chunks:
+        return []
+    script = []
+    for i in range(len(chunks)):
+        chunk = chunks[i]
+        for _ in range(2):
+            script.append(
+                {
+                    "kind": "utterance",
+                    "lang": "de",
+                    "text": chunk,
+                    "speed": _TTS_SPEED_DEFAULT,
+                    "pause_ms_after": _PAUSE_BETWEEN_REPEATS_MS,
+                }
+            )
+        chain = chunks[: i + 1]
+        for _ in range(2):
+            script.append(
+                {
+                    "kind": "chain",
+                    "lang": "de",
+                    "chunks": chain,
+                    "speed": _TTS_SPEED_DEFAULT,
+                    "pause_ms_after": _PAUSE_BETWEEN_REPEATS_MS,
+                }
+            )
+        script[-1]["pause_ms_after"] = _PAUSE_BETWEEN_STEPS_MS
+    return script
+
+
+def build_ru_script(ru_text: str) -> list[dict]:
+    cleaned = (ru_text or "").strip()
+    if not cleaned:
+        return []
+    return [
+        {
+            "kind": "utterance",
+            "lang": "ru",
+            "text": cleaned,
+            "speed": _TTS_SPEED_DEFAULT,
+            "pause_ms_after": 600,
+        }
+    ]
+
+
+def build_full_script(mistakes: list[dict]) -> list[dict]:
+    script = []
+    for item in mistakes:
+        ru = item.get("ru_original") or ""
+        de = item.get("de_correct") or ""
+        script.extend(build_ru_script(ru))
+        chunks = chunk_sentence_llm(de)
+        if not chunks:
+            chunks = [de.strip()] if de.strip() else []
+        script.extend(build_de_script(chunks))
+        if script:
+            script[-1]["pause_ms_after"] = _PAUSE_BETWEEN_MISTAKES_MS
+    return script
+
+
+def render_script_to_audio(script: list[dict]) -> bytes:
+    combined = AudioSegment.silent(duration=0)
+    for step in script:
+        kind = step.get("kind")
+        lang = step.get("lang", "de")
+        speed = float(step.get("speed", _TTS_SPEED_DEFAULT))
+        pause_ms = int(step.get("pause_ms_after", 0))
+        if kind == "chain":
+            chunks = step.get("chunks") or []
+            if not chunks:
+                continue
+            clip = get_or_create_chain_clip(chunks, lang, speed)
+        else:
+            text = step.get("text") or ""
+            if not text:
+                continue
+            clip = get_or_create_tts_clip(lang, text, speed)
+        combined += clip
+        if pause_ms:
+            combined += _get_silence(pause_ms)
+    buf = io.BytesIO()
+    combined.export(buf, format="mp3", bitrate="192k")
+    return buf.getvalue()
+
+
+def _test_build_de_script() -> None:
+    chunks = [
+        "Gestern wurde der Geschäftsführung vorgeschlagen,",
+        "eine wichtige Besprechung abzuhalten,",
+        "um neue Strategien zur Entwicklung zu besprechen.",
+    ]
+    script = build_de_script(chunks)
+    assert script[0]["text"] == chunks[0]
+    assert script[1]["text"] == chunks[0]
+    assert script[2]["chunks"] == chunks[:1]
+    assert script[3]["chunks"] == chunks[:1]
+    assert script[4]["text"] == chunks[1]
+    assert script[6]["chunks"] == chunks[:2]
+    assert script[-1]["chunks"] == chunks[:3]
+
+
+def _synthesize_mp3(
+    text: str,
+    language: str = "de-DE",
+    voice: str = "de-DE-Wavenet-B",
+    speed: float = 0.9,
+) -> bytes:
     try:
         from google.cloud import texttospeech
     except Exception as exc:
@@ -458,7 +699,10 @@ def _synthesize_mp3(text: str, language: str = "de-DE", voice: str = "de-DE-Wave
     tts_client = texttospeech.TextToSpeechClient()
     input_text = texttospeech.SynthesisInput(text=text)
     voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice)
-    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3,
+        speaking_rate=speed,
+    )
     response = tts_client.synthesize_speech(
         input=input_text,
         voice=voice_params,
@@ -2904,7 +3148,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 )
             daily_rows = cursor.fetchall()
 
-    daily_by_user: dict[int, list[str]] = {}
+    daily_by_user: dict[int, list[dict]] = {}
     daily_names: dict[int, str] = {}
     for user_id, username, feedback, user_translation, _sentence, _unique_id, _session_id in daily_rows:
         user_id = int(user_id)
@@ -2912,12 +3156,15 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         if display:
             daily_names[user_id] = display
         correct = _extract_correct_translation(feedback)
-        text = (correct or user_translation or "").strip()
-        if not text:
+        ru_original = (_sentence or "").strip()
+        de_correct = (correct or user_translation or "").strip()
+        if not de_correct:
             continue
-        daily_by_user.setdefault(user_id, []).append(text)
+        daily_by_user.setdefault(user_id, []).append(
+            {"ru_original": ru_original, "de_correct": de_correct}
+        )
 
-    story_by_user: dict[int, list[str]] = {}
+    story_by_user: dict[int, list[dict]] = {}
     story_names: dict[int, str] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -2942,37 +3189,40 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                         if display:
                             story_names[uid] = display
                         correct = _extract_correct_translation(feedback)
-                        text = (correct or user_translation or "").strip()
-                        if not text:
+                        ru_original = (_sentence or "").strip()
+                        de_correct = (correct or user_translation or "").strip()
+                        if not de_correct:
                             continue
-                        story_by_user.setdefault(uid, []).append(text)
+                        story_by_user.setdefault(uid, []).append(
+                            {"ru_original": ru_original, "de_correct": de_correct}
+                        )
 
     sent_daily = 0
     sent_story = 0
     errors: list[str] = []
 
-    for user_id, sentences in daily_by_user.items():
-        if not sentences:
+    for user_id, mistakes in daily_by_user.items():
+        if not mistakes:
             continue
         try:
-            text = _build_practice_text(sentences)
-            audio = _synthesize_mp3(text)
+            script = build_full_script(mistakes)
+            audio = render_script_to_audio(script)
             name = daily_names.get(user_id) or f"user_{user_id}"
-            filename = f"errors_{user_id}_{target_date.isoformat()}.mp3"
+            filename = safe_filename(name, user_id, target_date.isoformat())
             caption = f"Ошибки за {target_date.isoformat()} — {name}"
             _send_group_audio(audio, filename, caption)
             sent_daily += 1
         except Exception as exc:
             errors.append(f"daily user {user_id}: {exc}")
 
-    for user_id, sentences in story_by_user.items():
-        if not sentences:
+    for user_id, mistakes in story_by_user.items():
+        if not mistakes:
             continue
         try:
-            text = _build_practice_text(sentences)
-            audio = _synthesize_mp3(text)
+            script = build_full_script(mistakes)
+            audio = render_script_to_audio(script)
             name = story_names.get(user_id) or f"user_{user_id}"
-            filename = f"story_{user_id}_{target_date.isoformat()}.mp3"
+            filename = safe_filename(name, user_id, target_date.isoformat())
             caption = f"История за {target_date.isoformat()} — {name}"
             _send_group_audio(audio, filename, caption)
             sent_story += 1

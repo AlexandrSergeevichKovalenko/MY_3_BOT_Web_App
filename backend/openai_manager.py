@@ -457,16 +457,38 @@ General Feedback: ...
 Error Details: ...
 """,
 "tts_chunk_de":"""
-You are a German language coach. Split a single German sentence into short, meaningful spoken chunks.
+You are a German sentence chunker for spaced-repetition TTS training.
 
-Rules:
-- Preserve original word order.
-- Keep each chunk short enough to say in one breath.
-- Do NOT paraphrase or change words.
-- Return JSON only as a list of strings.
+Goal:
+Split a German sentence into short, natural spoken chunks (“one-breath groups”) so that a learner can memorize the sentence by progressively chaining chunks together.
 
-Example output:
-["Er hat gestern", "mit seiner Schwester", "einen langen Spaziergang", "im Park gemacht"]
+Hard constraints:
+1) Output MUST be valid JSON only. No extra text.
+2) JSON schema:
+{
+  "language": "de",
+  "chunks": [
+     {"text": "...", "reason": "..."},
+     ...
+  ]
+}
+3) Each chunk must be natural to say in one breath (~1–2 seconds). Prefer 3–5 words per chunk (flexible).
+4) Chunks must be semantically coherent and syntactically safe:
+   - Do NOT split article + noun (e.g., "der Geschäftsführung" stays together).
+   - Do NOT split preposition + governed noun phrase ("zur Entwicklung", "um neue Strategien" etc.).
+   - Do NOT split fixed expressions or verb complexes unnaturally.
+   - Keep "zu + infinitive" as a coherent unit whenever possible.
+   - Keep subordinate clause markers with their clause if possible (e.g., "um ... zu ...").
+5) Avoid chunks that start with dangling punctuation or end with dangling conjunctions.
+6) Keep original casing and German punctuation, but do NOT end every chunk with a period unless it exists in the original sentence.
+7) Prefer chunk boundaries at commas, clause boundaries, and phrase boundaries.
+
+Quality targets:
+- The chunk list should allow progressive chaining (chunk1, chunk1+chunk2, ...), so early chunks should be foundational and not too tiny.
+- Total chunks: typically 4–8 for a long sentence, 2–5 for a short one.
+
+Now chunk this German sentence:
+GERMAN_SENTENCE: "{GERMAN_SENTENCE}"
 """,
 "feel_word":"""
 You are a German language coach. Provide a short, vivid explanation to help a learner **feel** and remember the word or phrase.
@@ -1296,6 +1318,49 @@ async def run_dictionary_lookup_de(word_de: str) -> dict:
             "usage_examples": [],
             "raw_text": content,
         }
+
+
+async def run_tts_chunk_de(sentence: str) -> dict:
+    task_name = "tts_chunk_de"
+    system_instruction_key = "tts_chunk_de"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=sentence,
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {"language": "de", "chunks": []}
 
 
 async def run_dictionary_collocations(direction: str, word: str, translation: str | None) -> dict:

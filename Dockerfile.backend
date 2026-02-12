@@ -30,6 +30,7 @@ RUN echo "CACHE_BUST=${CACHE_BUST}"
 # но если вдруг какие-то пакеты требуют компиляции — оставим build-essential.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
 # 1) Ставим зависимости backend
