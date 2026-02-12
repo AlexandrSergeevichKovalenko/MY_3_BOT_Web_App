@@ -71,6 +71,7 @@ import time
 import random
 import http.cookiejar
 import re
+from zoneinfo import ZoneInfo
 from datetime import timedelta, date
 import importlib.metadata as importlib_metadata
 import youtube_transcript_api as yta
@@ -92,6 +93,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     spacy = None
 from backend.utils import prepare_google_creds_for_tts
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from backend.openai_manager import (
     run_check_translation,
@@ -176,6 +178,9 @@ _YT_RETRY_SLEEP_MIN = 2.0
 _YT_RETRY_SLEEP_MAX = 3.0
 _YT_REQUEST_JITTER_MIN = 1.9
 _YT_REQUEST_JITTER_MAX = 1.9
+
+_audio_scheduler = None
+_audio_scheduler_lock = None
 
 WEBAPP_TOPICS = [
     "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
@@ -352,6 +357,22 @@ def _send_group_audio(audio_bytes: bytes, filename: str, caption: str | None = N
     response = requests.post(url, data=data, files=files, timeout=60)
     if response.status_code >= 400:
         raise RuntimeError(f"Telegram API error: {response.text}")
+
+
+def _acquire_audio_scheduler_lock() -> bool:
+    """
+    Ensure only one worker starts the scheduler (gunicorn may spawn multiple).
+    """
+    global _audio_scheduler_lock
+    try:
+        import fcntl
+        lock_path = "/tmp/audio_scheduler.lock"
+        lock_file = open(lock_path, "w")
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _audio_scheduler_lock = lock_file
+        return True
+    except Exception:
+        return False
 
 
 def _chunk_sentence_simple(sentence: str, max_len: int = 60) -> list[str]:
@@ -2686,25 +2707,7 @@ def submit_webapp_group_message():
     return jsonify({"ok": True})
 
 
-@app.route("/api/admin/send-daily-audio", methods=["POST"])
-def send_daily_audio_to_group():
-    payload = request.get_json(silent=True) or {}
-    token = payload.get("token") or request.headers.get("X-Admin-Token")
-    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
-    if not required_token:
-        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
-    if token != required_token:
-        return jsonify({"error": "Неверный токен"}), 401
-
-    date_str = (payload.get("date") or "").strip()
-    if date_str:
-        try:
-            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-        except ValueError:
-            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
-    else:
-        target_date = (datetime.utcnow().date() - timedelta(days=1))
-
+def _dispatch_daily_audio(target_date: date) -> dict:
     story_sessions: dict[int, set[str]] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -2753,7 +2756,7 @@ def send_daily_audio_to_group():
 
     daily_by_user: dict[int, list[str]] = {}
     daily_names: dict[int, str] = {}
-    for user_id, username, feedback, user_translation, sentence, _unique_id, _session_id in daily_rows:
+    for user_id, username, feedback, user_translation, _sentence, _unique_id, _session_id in daily_rows:
         user_id = int(user_id)
         display = (username or "").strip()
         if display:
@@ -2826,15 +2829,79 @@ def send_daily_audio_to_group():
         except Exception as exc:
             errors.append(f"story user {user_id}: {exc}")
 
-    return jsonify(
-        {
-            "ok": True,
-            "date": target_date.isoformat(),
-            "sent_daily": sent_daily,
-            "sent_story": sent_story,
-            "errors": errors,
-        }
+    return {
+        "ok": True,
+        "date": target_date.isoformat(),
+        "sent_daily": sent_daily,
+        "sent_story": sent_story,
+        "errors": errors,
+    }
+
+
+def _run_audio_scheduler_job() -> None:
+    mode = (os.getenv("AUDIO_SCHEDULER_DATE_MODE") or "today").strip().lower()
+    tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
+    try:
+        now = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        now = datetime.utcnow()
+    target_date = now.date()
+    if mode == "yesterday":
+        target_date = target_date - timedelta(days=1)
+    try:
+        result = _dispatch_daily_audio(target_date)
+        logging.info("✅ Audio scheduler finished: %s", result)
+    except Exception:
+        logging.exception("❌ Audio scheduler failed")
+
+
+def _start_audio_scheduler() -> None:
+    global _audio_scheduler
+    enabled = (os.getenv("AUDIO_SCHEDULER_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        logging.info("ℹ️ Audio scheduler disabled by AUDIO_SCHEDULER_ENABLED")
+        return
+    if not _acquire_audio_scheduler_lock():
+        logging.info("ℹ️ Audio scheduler lock not acquired (another worker)")
+        return
+    tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
+    hour = int((os.getenv("AUDIO_SCHEDULER_HOUR") or "13").strip())
+    minute = int((os.getenv("AUDIO_SCHEDULER_MINUTE") or "0").strip())
+    _audio_scheduler = BackgroundScheduler(timezone=tz_name)
+    _audio_scheduler.add_job(
+        _run_audio_scheduler_job,
+        "cron",
+        hour=hour,
+        minute=minute,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
     )
+    _audio_scheduler.start()
+    logging.info("✅ Audio scheduler started: %02d:%02d %s", hour, minute, tz_name)
+
+
+@app.route("/api/admin/send-daily-audio", methods=["POST"])
+def send_daily_audio_to_group():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    date_str = (payload.get("date") or "").strip()
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
+    else:
+        target_date = (datetime.utcnow().date() - timedelta(days=1))
+
+    result = _dispatch_daily_audio(target_date)
+    return jsonify(result)
 
 
 @app.route("/api/admin/youtube-debug", methods=["POST"])
@@ -2953,6 +3020,9 @@ def finish_webapp_translation():
         except Exception as exc:
             return jsonify({"error": f"Ошибка отправки в группу: {exc}"}), 500
     return jsonify({"ok": True, **result})
+
+
+_start_audio_scheduler()
 
 
 if __name__ == "__main__":
