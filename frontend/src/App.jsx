@@ -3594,10 +3594,12 @@ function AppInner() {
                           </button>
                         )}
                         <div className="dictionary-row">
-                          <strong>Перевод:</strong>{' '}
-                          {dictionaryDirection === 'ru-de'
-                            ? (dictionaryResult.translation_de || '—')
-                            : (dictionaryResult.translation_ru || '—')}
+                          <span className="dictionary-label">Перевод:</span>
+                          <span className="dictionary-translation">
+                            {dictionaryDirection === 'ru-de'
+                              ? (dictionaryResult.translation_de || '—')
+                              : (dictionaryResult.translation_ru || '—')}
+                          </span>
                           <span className="dictionary-direction">
                             {dictionaryDirection === 'ru-de' ? 'RU → DE' : 'DE → RU'}
                           </span>
