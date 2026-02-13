@@ -1,6 +1,4 @@
 import React, { useEffect, useRef, useState } from 'react';
-import WebGLMascot from './WebGLMascot';
-
 const THREE_CDN = 'https://unpkg.com/three@0.160.0/build/three.min.js';
 const BASE_URL = import.meta.env.BASE_URL || '/';
 const THREE_LOCAL_SCRIPT = `${BASE_URL}vendor/three.min.js`;
@@ -91,9 +89,9 @@ export default function ThreeMascot({ className = '', mood = 'idle', expression 
       }
 
       const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100);
-      camera.position.set(0, 0.35, 3.2);
-      camera.lookAt(0, 0.5, 0);
+      const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
+      camera.position.set(0, 0.35, 6.2);
+      camera.lookAt(0, 0.35, 0);
 
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -109,7 +107,8 @@ export default function ThreeMascot({ className = '', mood = 'idle', expression 
       scene.add(new THREE.AmbientLight(0xffffff, 0.72));
 
       const mascot = new THREE.Group();
-      mascot.scale.set(1.22, 1.22, 1.22);
+      mascot.scale.set(0.92, 0.92, 0.92);
+      mascot.position.set(0, -0.32, 0);
       scene.add(mascot);
 
       const skinMat = new THREE.MeshStandardMaterial({ color: 0x1f7de6, roughness: 0.35, metalness: 0.05 });
@@ -257,10 +256,10 @@ export default function ThreeMascot({ className = '', mood = 'idle', expression 
         if (disposed) return;
         const t = (now - start) / 1000;
 
-        mascot.position.y = Math.sin(t * 2.4) * 0.06;
-        mascot.position.x = Math.sin(t * 1.1) * 0.03;
+        mascot.position.y = -0.32 + Math.sin(t * 2.4) * 0.055;
+        mascot.position.x = 0;
         mascot.rotation.x = Math.sin(t * 1.4) * 0.03;
-        mascot.rotation.y = Math.sin(t * 0.95) * 0.07;
+        mascot.rotation.y = Math.sin(t * 0.95) * 0.045;
 
         if (mood === 'correct') {
           mascot.position.y += Math.abs(Math.sin(t * 10.0)) * 0.08;
@@ -322,14 +321,7 @@ export default function ThreeMascot({ className = '', mood = 'idle', expression 
       className={`mascot-three ${ready ? 'is-ready' : 'is-fallback'} ${className}`.trim()}
       aria-hidden="true"
     >
-      {!ready && (
-        <WebGLMascot
-          className="mascot-three-fallback"
-          mood={mood}
-          expression={expression}
-          fallbackSrc={fallbackSrc}
-        />
-      )}
+      {!ready && fallbackSrc && <img src={fallbackSrc} alt="Mascot" className="mascot-static-fallback" />}
     </div>
   );
 }

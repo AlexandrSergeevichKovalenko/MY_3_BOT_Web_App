@@ -1855,6 +1855,8 @@ body {
 
 .mascot-webgl canvas,
 .mascot-three canvas {
+  width: 100%;
+  height: 100%;
   display: block;
 }
 
@@ -1863,6 +1865,14 @@ body {
   height: 100%;
   object-fit: contain;
   display: block;
+}
+
+.mascot-static-fallback {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  animation: mascot-bob 3.4s ease-in-out infinite;
 }
 
 .flashcard-poop-throw {
