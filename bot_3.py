@@ -3309,6 +3309,7 @@ async def mistakes_to_voice(username, sentence_pairs):
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
 
     client = texttospeech.TextToSpeechClient()
+    german_voice = "de-DE-Neural2-C"
 
     audio_segments = []
 
@@ -3377,8 +3378,9 @@ async def mistakes_to_voice(username, sentence_pairs):
             chunks = [c.strip() for c in re.split(r"[;,]", sentence) if c.strip()]
         return chunks or [sentence]
 
-    pause_short = AudioSegment.silent(duration=250)
-    pause_long = AudioSegment.silent(duration=500)
+    pause_short = AudioSegment.silent(duration=500)
+    pause_long = AudioSegment.silent(duration=900)
+    pause_between_sentences = AudioSegment.silent(duration=1700)
 
     for russian, german in sentence_pairs:
         print(f"🎤 Синтезируем: {russian} -> {german}")
@@ -3389,19 +3391,19 @@ async def mistakes_to_voice(username, sentence_pairs):
         chunk_segments = []
         for idx, chunk in enumerate(chunks):
             # повторяем кусок
-            chunk_audio = synthesize(chunk, "de-DE", "de-DE-Wavenet-B")
+            chunk_audio = synthesize(chunk, "de-DE", german_voice)
             chunk_segments.extend([chunk_audio, pause_short, chunk_audio, pause_short])
 
             if idx > 0:
                 combined_text = " ".join(chunks[: idx + 1])
-                combined_audio = synthesize(combined_text, "de-DE", "de-DE-Wavenet-B")
+                combined_audio = synthesize(combined_text, "de-DE", german_voice)
                 chunk_segments.extend([combined_audio, pause_long])
 
         # финальная фраза полностью
-        full_audio = synthesize(german, "de-DE", "de-DE-Wavenet-B")
+        full_audio = synthesize(german, "de-DE", german_voice)
 
         # Объединяем
-        combined = ru_audio + pause_long + sum(chunk_segments, AudioSegment.silent(duration=0)) + full_audio
+        combined = ru_audio + pause_long + sum(chunk_segments, AudioSegment.silent(duration=0)) + full_audio + pause_between_sentences
         audio_segments.append(combined)
 
     final_audio = sum(audio_segments)

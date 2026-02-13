@@ -479,6 +479,8 @@ Hard constraints:
    - Do NOT split fixed expressions or verb complexes unnaturally.
    - Keep "zu + infinitive" as a coherent unit whenever possible.
    - Keep subordinate clause markers with their clause if possible (e.g., "um ... zu ...").
+   - DO NOT SPLIT MEANINGFUL GRAMMAR CONSTRUCTIONS (a part of a sentence like: etwas wäre erreicht worden and other gramatical constructions of a sentences 
+   MUST NOT BE DEVIDED into chanks)
 5) Avoid chunks that start with dangling punctuation or end with dangling conjunctions.
 6) Keep original casing and German punctuation, but do NOT end every chunk with a period unless it exists in the original sentence.
 7) Prefer chunk boundaries at commas, clause boundaries, and phrase boundaries.

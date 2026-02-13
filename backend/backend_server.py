@@ -457,16 +457,16 @@ _CHAIN_CACHE: dict[str, AudioSegment] = {}
 _SILENCE_CACHE: dict[int, AudioSegment] = {}
 
 _TTS_VOICES = {
-    "de": "de-DE-Wavenet-B",
+    "de": "de-DE-Neural2-C",
     "ru": "ru-RU-Wavenet-B",
     "en": "en-US-Wavenet-D",
 }
 
 _TTS_SPEED_DEFAULT = 0.9
-_PAUSE_BETWEEN_REPEATS_MS = 300
-_PAUSE_BETWEEN_STEPS_MS = 600
-_PAUSE_BETWEEN_MISTAKES_MS = 1200
-_CHAIN_INTER_CHUNK_MS = 120
+_PAUSE_BETWEEN_REPEATS_MS = 500
+_PAUSE_BETWEEN_STEPS_MS = 900
+_PAUSE_BETWEEN_MISTAKES_MS = 1700
+_CHAIN_INTER_CHUNK_MS = 240
 _MAX_CHUNKS = 10
 
 
@@ -688,7 +688,7 @@ def _test_build_de_script() -> None:
 def _synthesize_mp3(
     text: str,
     language: str = "de-DE",
-    voice: str = "de-DE-Wavenet-B",
+    voice: str = "de-DE-Neural2-C",
     speed: float = 0.9,
 ) -> bytes:
     try:
@@ -2454,7 +2454,7 @@ def webapp_tts():
     init_data = payload.get("initData")
     text = (payload.get("text") or "").strip()
     language = (payload.get("language") or "de-DE").strip()
-    voice = (payload.get("voice") or "de-DE-Wavenet-B").strip()
+    voice = (payload.get("voice") or "de-DE-Neural2-C").strip()
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
