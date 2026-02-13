@@ -603,6 +603,30 @@ body {
   box-shadow: 0 18px 40px rgba(8, 11, 26, 0.35);
 }
 
+.webapp-hero-mascot {
+  width: clamp(120px, 16vw, 190px);
+  aspect-ratio: 1 / 1;
+  border-radius: 28px;
+  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.24), rgba(93, 220, 255, 0.08));
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 20px rgba(255, 255, 255, 0.16), 0 14px 26px rgba(8, 11, 26, 0.32);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.webapp-hero-mascot .mascot-webgl {
+  width: 100%;
+  height: 100%;
+}
+
+.webapp-hero-mascot .mascot-webgl canvas {
+  width: 122%;
+  height: 122%;
+  transform-origin: center 72%;
+  animation: mascot-bob 3.2s ease-in-out infinite;
+}
+
 .webapp-hero h1 {
   margin: 12px 0 8px;
   font-family: 'Playfair Display', 'Times New Roman', serif;
@@ -1219,6 +1243,20 @@ body {
   .webapp-topbar {
     display: flex;
   }
+
+  .webapp-hero {
+    flex-wrap: wrap;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .webapp-hero-copy p {
+    margin: 0 auto;
+  }
+
+  .webapp-user-badge {
+    width: 100%;
+  }
 }
 
 .webapp-dictionary-form {
@@ -1546,9 +1584,15 @@ body {
 }
 
 .setup-mascot {
-  width: 110px;
-  height: 110px;
-  animation: mascot-float 3.6s ease-in-out infinite;
+  width: 128px;
+  height: 128px;
+  transform-origin: center 74%;
+}
+
+.setup-mascot canvas {
+  width: 100%;
+  height: 100%;
+  animation: mascot-bob 3.1s ease-in-out infinite;
 }
 
 .setup-title {
@@ -1712,12 +1756,45 @@ body {
 .flashcard-confetti span:nth-child(17) { left: 90%; top: 25%; animation-delay: 480ms; }
 .flashcard-confetti span:nth-child(18) { left: 40%; top: 20%; animation-delay: 510ms; }
 
-.flashcard-emoji {
+.flashcard-party {
   position: absolute;
-  bottom: -6px;
-  right: -6px;
-  font-size: 28px;
-  filter: drop-shadow(0 4px 8px rgba(15, 23, 42, 0.45));
+  inset: -10px;
+  pointer-events: none;
+}
+
+.flashcard-sparkler {
+  position: absolute;
+  inset: 4px;
+}
+
+.flashcard-sparkler span {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 34px;
+  border-radius: 999px;
+  transform-origin: center -16px;
+  background: linear-gradient(180deg, #fffdf2, #ffd166);
+  opacity: 0;
+  animation: sparkler-pop 850ms ease-out forwards;
+}
+
+.flashcard-sparkler span:nth-child(1) { transform: rotate(0deg); animation-delay: 0ms; }
+.flashcard-sparkler span:nth-child(2) { transform: rotate(36deg); animation-delay: 40ms; }
+.flashcard-sparkler span:nth-child(3) { transform: rotate(72deg); animation-delay: 80ms; }
+.flashcard-sparkler span:nth-child(4) { transform: rotate(108deg); animation-delay: 120ms; }
+.flashcard-sparkler span:nth-child(5) { transform: rotate(144deg); animation-delay: 160ms; }
+.flashcard-sparkler span:nth-child(6) { transform: rotate(180deg); animation-delay: 200ms; }
+.flashcard-sparkler span:nth-child(7) { transform: rotate(216deg); animation-delay: 240ms; }
+.flashcard-sparkler span:nth-child(8) { transform: rotate(252deg); animation-delay: 280ms; }
+.flashcard-sparkler span:nth-child(9) { transform: rotate(288deg); animation-delay: 320ms; }
+.flashcard-sparkler span:nth-child(10) { transform: rotate(324deg); animation-delay: 360ms; }
+
+.flashcard-poop-shot {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 .flashcard-character {
@@ -1728,12 +1805,54 @@ body {
   display: grid;
   place-items: center;
   box-shadow: inset 0 0 18px rgba(255, 255, 255, 0.3);
+  overflow: visible;
 }
 
-.flashcard-character img {
-  width: 110px;
-  height: 110px;
-  animation: mascot-float 3.6s ease-in-out infinite;
+.flashcard-mascot {
+  width: 122px;
+  height: 122px;
+  transform-origin: center 76%;
+}
+
+.flashcard-mascot canvas {
+  width: 122px;
+  height: 122px;
+  animation: mascot-bob 3.1s ease-in-out infinite;
+}
+
+.flashcard-character.is-correct .flashcard-mascot canvas {
+  animation-duration: 2.2s;
+}
+
+.flashcard-character.is-wrong .flashcard-mascot canvas,
+.flashcard-character.is-timeout .flashcard-mascot canvas {
+  animation: mascot-shake 320ms ease-in-out 2;
+}
+
+.mascot-webgl {
+  position: relative;
+  display: block;
+}
+
+.mascot-webgl canvas {
+  display: block;
+}
+
+.mascot-fallback {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.flashcard-poop-throw {
+  position: absolute;
+  right: 8px;
+  top: 64%;
+  font-size: 30px;
+  transform: translate3d(0, 0, 0) scale(0.8) rotate(-12deg);
+  filter: drop-shadow(0 6px 14px rgba(8, 11, 26, 0.45));
+  animation: poop-throw 860ms cubic-bezier(0.25, 0.68, 0.18, 1) forwards;
 }
 
 .flashcard-header {
@@ -2458,6 +2577,70 @@ body {
   }
   100% {
     transform: translateY(0);
+  }
+}
+
+@keyframes mascot-bob {
+  0% {
+    transform: translateY(0) rotate(-2deg) scale(1);
+  }
+  25% {
+    transform: translateY(-6px) rotate(1deg) scale(1.02);
+  }
+  50% {
+    transform: translateY(-10px) rotate(0deg) scale(1.03);
+  }
+  75% {
+    transform: translateY(-4px) rotate(2deg) scale(1.01);
+  }
+  100% {
+    transform: translateY(0) rotate(-2deg) scale(1);
+  }
+}
+
+@keyframes mascot-shake {
+  0% {
+    transform: translateX(0) rotate(0deg);
+  }
+  25% {
+    transform: translateX(-6px) rotate(-4deg);
+  }
+  50% {
+    transform: translateX(5px) rotate(4deg);
+  }
+  75% {
+    transform: translateX(-3px) rotate(-2deg);
+  }
+  100% {
+    transform: translateX(0) rotate(0deg);
+  }
+}
+
+@keyframes poop-throw {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) scale(0.75) rotate(-18deg);
+  }
+  16% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(86px, -108px, 260px) scale(1.8) rotate(28deg);
+  }
+}
+
+@keyframes sparkler-pop {
+  0% {
+    opacity: 0;
+    transform: scaleY(0.2);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scaleY(1.2);
   }
 }
 

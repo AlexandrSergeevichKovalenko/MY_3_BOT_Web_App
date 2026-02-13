@@ -8,6 +8,7 @@ import {
 import '@livekit/components-styles';
 import './App.css';
 import * as echarts from 'echarts';
+import WebGLMascot from './components/WebGLMascot';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
@@ -216,6 +217,7 @@ function AppInner() {
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
+  const mascot3dSrc = `${assetBaseUrl}mascot-3d.svg`;
 
   const safeStorageGet = (key) => {
     try {
@@ -2962,6 +2964,9 @@ function AppInner() {
                   быстрые проверки и понятный прогресс без перегруза.
                 </p>
               </div>
+              <div className="webapp-hero-mascot" aria-hidden="true">
+                <WebGLMascot mood="idle" expression="neutral" fallbackSrc={mascot3dSrc} />
+              </div>
               <div className="webapp-user-badge">
                 <input
                   ref={avatarInputRef}
@@ -3817,7 +3822,7 @@ function AppInner() {
                         <div className="flashcards-setup">
                           <div className="setup-hero">
                             <div className="setup-ring">
-                              <img src="/mascot.svg" alt="DeutschFlow" className="setup-mascot" />
+                              <WebGLMascot className="setup-mascot" mood="idle" expression="blink" fallbackSrc={mascot3dSrc} />
                             </div>
                             <div className="setup-title">Тренировка карточек</div>
                             <div className="setup-subtitle">Выберите параметры и стартуйте сет.</div>
@@ -4258,16 +4263,36 @@ function AppInner() {
                                           <circle className="timer-progress" cx="60" cy="60" r="54" />
                                         </svg>
                                         {flashcardOutcome === 'correct' && (
-                                          <div className="flashcard-confetti" aria-hidden="true">
-                                            {Array.from({ length: 18 }).map((_, i) => (
-                                              <span key={`conf-${flashcardTimerKey}-${i}`} />
-                                            ))}
+                                          <div className="flashcard-party" aria-hidden="true">
+                                            <div className="flashcard-confetti">
+                                              {Array.from({ length: 18 }).map((_, i) => (
+                                                <span key={`conf-${flashcardTimerKey}-${i}`} />
+                                              ))}
+                                            </div>
+                                            <div className="flashcard-sparkler">
+                                              {Array.from({ length: 10 }).map((_, i) => (
+                                                <span key={`spark-${flashcardTimerKey}-${i}`} />
+                                              ))}
+                                            </div>
                                           </div>
                                         )}
-                                        <div className="flashcard-character">
-                                          <img src={`${assetBaseUrl}mascot.svg`} alt="Mascot" />
+                                        <div className={`flashcard-character ${flashcardOutcome ? `is-${flashcardOutcome}` : ''}`}>
+                                          <WebGLMascot
+                                            className="flashcard-mascot"
+                                            mood={flashcardOutcome || 'idle'}
+                                            expression={
+                                              flashcardOutcome === 'correct'
+                                                ? 'smile'
+                                                : (flashcardOutcome === 'wrong' || flashcardOutcome === 'timeout')
+                                                  ? 'frown'
+                                                  : 'neutral'
+                                            }
+                                            fallbackSrc={mascot3dSrc}
+                                          />
                                           {(flashcardOutcome === 'wrong' || flashcardOutcome === 'timeout') && (
-                                            <div className="flashcard-emoji" aria-hidden="true">💩</div>
+                                            <div className="flashcard-poop-shot" aria-hidden="true">
+                                              <span className="flashcard-poop-throw">💩</span>
+                                            </div>
                                           )}
                                         </div>
                                       </div>
