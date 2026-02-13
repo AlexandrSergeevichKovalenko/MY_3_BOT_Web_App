@@ -604,27 +604,32 @@ body {
 }
 
 .webapp-hero-mascot {
-  width: clamp(120px, 16vw, 190px);
+  width: clamp(150px, 20vw, 230px);
   aspect-ratio: 1 / 1;
   border-radius: 28px;
-  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.24), rgba(93, 220, 255, 0.08));
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  box-shadow: inset 0 1px 20px rgba(255, 255, 255, 0.16), 0 14px 26px rgba(8, 11, 26, 0.32);
+  background:
+    radial-gradient(circle at 24% 18%, rgba(111, 224, 255, 0.22), rgba(93, 220, 255, 0.05) 45%, transparent 70%),
+    radial-gradient(circle at 75% 85%, rgba(255, 255, 255, 0.1), transparent 62%),
+    linear-gradient(165deg, rgba(8, 18, 38, 0.95), rgba(9, 24, 52, 0.88));
+  border: 1px solid rgba(93, 220, 255, 0.24);
+  box-shadow: inset 0 1px 18px rgba(120, 220, 255, 0.14), 0 16px 28px rgba(8, 11, 26, 0.36);
   display: grid;
   place-items: center;
   overflow: hidden;
 }
 
-.webapp-hero-mascot .mascot-webgl {
+.webapp-hero-mascot .mascot-webgl,
+.webapp-hero-mascot .mascot-three {
   width: 100%;
   height: 100%;
 }
 
-.webapp-hero-mascot .mascot-webgl canvas {
-  width: 122%;
-  height: 122%;
+.webapp-hero-mascot .mascot-webgl canvas,
+.webapp-hero-mascot .mascot-three canvas {
+  width: 100%;
+  height: 100%;
   transform-origin: center 72%;
-  animation: mascot-bob 3.2s ease-in-out infinite;
+  animation: mascot-bob 3.6s ease-in-out infinite;
 }
 
 .webapp-hero h1 {
@@ -1573,8 +1578,8 @@ body {
 }
 
 .setup-ring {
-  width: 140px;
-  height: 140px;
+  width: 172px;
+  height: 172px;
   border-radius: 50%;
   display: grid;
   place-items: center;
@@ -1584,8 +1589,8 @@ body {
 }
 
 .setup-mascot {
-  width: 128px;
-  height: 128px;
+  width: 160px;
+  height: 160px;
   transform-origin: center 74%;
 }
 
@@ -1679,8 +1684,8 @@ body {
 
 .flashcard-timer {
   --ring-length: 339;
-  width: 170px;
-  height: 170px;
+  width: 220px;
+  height: 220px;
   position: relative;
 }
 
@@ -1799,24 +1804,24 @@ body {
 
 .flashcard-character {
   position: absolute;
-  inset: 18px;
+  inset: 8px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.25);
+  background: radial-gradient(circle at 30% 20%, rgba(110, 193, 255, 0.2), rgba(10, 22, 44, 0.15));
   display: grid;
   place-items: center;
-  box-shadow: inset 0 0 18px rgba(255, 255, 255, 0.3);
+  box-shadow: inset 0 0 16px rgba(114, 207, 255, 0.26), 0 8px 18px rgba(6, 12, 26, 0.34);
   overflow: visible;
 }
 
 .flashcard-mascot {
-  width: 122px;
-  height: 122px;
+  width: 176px;
+  height: 176px;
   transform-origin: center 76%;
 }
 
 .flashcard-mascot canvas {
-  width: 122px;
-  height: 122px;
+  width: 176px;
+  height: 176px;
   animation: mascot-bob 3.1s ease-in-out infinite;
 }
 
@@ -1832,9 +1837,24 @@ body {
 .mascot-webgl {
   position: relative;
   display: block;
+  width: 100%;
+  height: 100%;
 }
 
-.mascot-webgl canvas {
+.mascot-three {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.mascot-three.is-fallback .mascot-three-fallback {
+  width: 100%;
+  height: 100%;
+}
+
+.mascot-webgl canvas,
+.mascot-three canvas {
   display: block;
 }
 

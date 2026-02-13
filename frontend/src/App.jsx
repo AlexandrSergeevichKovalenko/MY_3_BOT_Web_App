@@ -8,7 +8,7 @@ import {
 import '@livekit/components-styles';
 import './App.css';
 import * as echarts from 'echarts';
-import WebGLMascot from './components/WebGLMascot';
+import ThreeMascot from './components/ThreeMascot';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
@@ -2965,7 +2965,7 @@ function AppInner() {
                 </p>
               </div>
               <div className="webapp-hero-mascot" aria-hidden="true">
-                <WebGLMascot mood="idle" expression="neutral" fallbackSrc={mascot3dSrc} />
+                <ThreeMascot mood="idle" expression="neutral" fallbackSrc={mascot3dSrc} />
               </div>
               <div className="webapp-user-badge">
                 <input
@@ -3822,7 +3822,7 @@ function AppInner() {
                         <div className="flashcards-setup">
                           <div className="setup-hero">
                             <div className="setup-ring">
-                              <WebGLMascot className="setup-mascot" mood="idle" expression="blink" fallbackSrc={mascot3dSrc} />
+                              <ThreeMascot className="setup-mascot" mood="idle" expression="blink" fallbackSrc={mascot3dSrc} />
                             </div>
                             <div className="setup-title">Тренировка карточек</div>
                             <div className="setup-subtitle">Выберите параметры и стартуйте сет.</div>
@@ -4277,7 +4277,7 @@ function AppInner() {
                                           </div>
                                         )}
                                         <div className={`flashcard-character ${flashcardOutcome ? `is-${flashcardOutcome}` : ''}`}>
-                                          <WebGLMascot
+                                          <ThreeMascot
                                             className="flashcard-mascot"
                                             mood={flashcardOutcome || 'idle'}
                                             expression={
