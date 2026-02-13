@@ -8,7 +8,6 @@ import {
 import '@livekit/components-styles';
 import './App.css';
 import * as echarts from 'echarts';
-import ThreeMascot from './components/ThreeMascot';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
@@ -217,7 +216,6 @@ function AppInner() {
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
-  const mascot3dSrc = `${assetBaseUrl}mascot-original.svg`;
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
 
   const safeStorageGet = (key) => {
@@ -3025,8 +3023,9 @@ function AppInner() {
 
             {!flashcardsOnly && isSectionVisible('translations') && (
               <section className="webapp-section" ref={translationsRef}>
-                <div className="webapp-section-title">
+                <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>Ваши переводы</h2>
+                  <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="webapp-translation-start">
                   <label className="webapp-field">
@@ -3328,7 +3327,10 @@ function AppInner() {
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
                 {isSectionVisible('youtube') && (
                   <section className="webapp-video" ref={youtubeRef}>
-                    <h3>Видео YouTube</h3>
+                    <div className="webapp-local-section-head">
+                      <h3>Видео YouTube</h3>
+                      <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                    </div>
                     <div className="webapp-video-form">
                       <label className="webapp-field">
                         <span>Ссылка или ID видео</span>
@@ -3489,7 +3491,10 @@ function AppInner() {
 
                 {isSectionVisible('dictionary') && (
                   <section className="webapp-dictionary" ref={dictionaryRef}>
-                    <h3>Словарь</h3>
+                    <div className="webapp-local-section-head">
+                      <h3>Словарь</h3>
+                      <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                    </div>
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
                         <span>Слово или фраза (русский / немецкий)</span>
@@ -3765,9 +3770,10 @@ function AppInner() {
 
             {!flashcardsOnly && isSectionVisible('movies') && !moviesCollapsed && (
               <section className="webapp-movies" ref={moviesRef}>
-                <div className="webapp-section-title">
+                <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>Фильмы</h2>
                   <p>Видео с доступными субтитрами, сохранённые в каталоге.</p>
+                  <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 {moviesLoading && <div className="webapp-muted">Загружаем каталог...</div>}
                 {moviesError && <div className="webapp-error">{moviesError}</div>}
@@ -3807,6 +3813,7 @@ function AppInner() {
 
             {isSectionVisible('flashcards') && (
               <section className="webapp-flashcards" ref={flashcardsRef}>
+                <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo section-corner-logo-flashcards" />
                 {!flashcardsVisible && (
                   <div className="webapp-muted">
                     Нажмите «Повторить слова», чтобы начать тренировку.
@@ -3819,7 +3826,7 @@ function AppInner() {
                         <div className="flashcards-setup">
                           <div className="setup-hero">
                             <div className="setup-ring">
-                              <ThreeMascot className="setup-mascot" mood="idle" expression="blink" variant="setup" fallbackSrc={mascot3dSrc} />
+                              <img src={heroMascotSrc} alt="Deutsch mascot" className="setup-mascot-flat" />
                             </div>
                             <div className="setup-title">Тренировка карточек</div>
                             <div className="setup-subtitle">Выберите параметры и стартуйте сет.</div>
@@ -4274,19 +4281,7 @@ function AppInner() {
                                           </div>
                                         )}
                                         <div className={`flashcard-character ${flashcardOutcome ? `is-${flashcardOutcome}` : ''}`}>
-                                          <ThreeMascot
-                                            className="flashcard-mascot"
-                                            mood={flashcardOutcome || 'idle'}
-                                            variant="card"
-                                            expression={
-                                              flashcardOutcome === 'correct'
-                                                ? 'smile'
-                                                : (flashcardOutcome === 'wrong' || flashcardOutcome === 'timeout')
-                                                  ? 'frown'
-                                                  : 'neutral'
-                                            }
-                                            fallbackSrc={mascot3dSrc}
-                                          />
+                                          <img src={heroMascotSrc} alt="Deutsch mascot" className="flashcard-mascot-flat" />
                                           {(flashcardOutcome === 'wrong' || flashcardOutcome === 'timeout') && (
                                             <div className="flashcard-poop-shot" aria-hidden="true">
                                               <span className="flashcard-poop-throw">💩</span>
@@ -4413,8 +4408,9 @@ function AppInner() {
 
             {!flashcardsOnly && isSectionVisible('analytics') && (
               <section className="webapp-section webapp-analytics" ref={analyticsRef}>
-                <div className="webapp-section-title">
+                <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>Аналитика</h2>
+                  <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="analytics-controls">
                   <label className="webapp-field">
@@ -4607,20 +4603,7 @@ if (!token) {
         <main className="lesson-main">
           <section className="lesson-hero">
             <div className="lesson-illustration" aria-hidden="true">
-              <svg viewBox="0 0 320 320" role="img">
-                <defs>
-                  <linearGradient id="bookGlow" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0%" stopColor="#ffb347" />
-                    <stop offset="100%" stopColor="#ff7e5f" />
-                  </linearGradient>
-                </defs>
-                <circle cx="160" cy="160" r="120" fill="#fff1d6" />
-                <path d="M95 110c0-12 10-22 22-22h58c12 0 22 10 22 22v100c0 8-6 15-14 16-20 2-44 2-66 0-12-1-22-10-22-22z" fill="url(#bookGlow)" />
-                <path d="M185 88h32c12 0 22 10 22 22v100c0 12-10 22-22 22h-32" fill="#ffd7aa" />
-                <path d="M120 135h60M120 165h60M120 195h50" stroke="#6b3a1a" strokeWidth="6" strokeLinecap="round" />
-                <circle cx="210" cy="90" r="26" fill="#6b3a1a" />
-                <path d="M198 86h24v8h-24zM210 72v32" fill="#fff1d6" />
-              </svg>
+              <img src={heroMascotSrc} alt="" aria-hidden="true" className="lesson-hero-image" />
             </div>
             <div className="lesson-copy">
               <h2>Сфокусируйтесь на голосе</h2>
