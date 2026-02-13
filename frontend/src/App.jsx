@@ -217,7 +217,7 @@ function AppInner() {
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
-  const mascot3dSrc = `${assetBaseUrl}mascot-3d.svg`;
+  const mascot3dSrc = `${assetBaseUrl}mascot-original.svg`;
 
   const safeStorageGet = (key) => {
     try {
@@ -2957,7 +2957,28 @@ function AppInner() {
             {showHero && (
             <header className="webapp-hero">
               <div className="webapp-hero-copy">
-                <span className="pill">Telegram Web App</span>
+                <div className="webapp-hero-head">
+                  <span className="pill">Telegram Web App</span>
+                  <div className="webapp-user-badge">
+                    <input
+                      ref={avatarInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="avatar-input"
+                      onChange={handleAvatarUpload}
+                    />
+                    <button
+                      type="button"
+                      className="avatar-button"
+                      onClick={() => avatarInputRef.current?.click()}
+                    >
+                      {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                    </button>
+                    <div className="user-name">{webappUser?.first_name || 'Гость'}</div>
+                    <div className="user-meta">ID: {webappUser?.id || '—'}</div>
+                    <div className="user-meta">Chat: {webappChatType || '—'}</div>
+                  </div>
+                </div>
                 <h1>Учите немецкий в потоке</h1>
                 <p>
                   Переводы, словарь, видео и карточки — всё в одном месте. Короткие шаги,
@@ -2966,25 +2987,6 @@ function AppInner() {
               </div>
               <div className="webapp-hero-mascot" aria-hidden="true">
                 <ThreeMascot mood="idle" expression="neutral" variant="hero" fallbackSrc={mascot3dSrc} />
-              </div>
-              <div className="webapp-user-badge">
-                <input
-                  ref={avatarInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="avatar-input"
-                  onChange={handleAvatarUpload}
-                />
-                <button
-                  type="button"
-                  className="avatar-button"
-                  onClick={() => avatarInputRef.current?.click()}
-                >
-                  {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
-                </button>
-                <div className="user-name">{webappUser?.first_name || 'Гость'}</div>
-                <div className="user-meta">ID: {webappUser?.id || '—'}</div>
-                <div className="user-meta">Chat: {webappChatType || '—'}</div>
               </div>
             </header>
             )}
@@ -3002,6 +3004,10 @@ function AppInner() {
               <div className="hero-card">
                 <h3>Тренируйтесь</h3>
                 <p>Повторяйте слова сетами по 15 карточек с прогрессом.</p>
+              </div>
+              <div className="hero-card">
+                <h3>Смотрите и слушайте</h3>
+                <p>Смотрите фильмы и слушайте песни с двойными субтитрами, сохраняйте новые слова для дальнейшего повторения и изучения.</p>
               </div>
             </section>
             )}

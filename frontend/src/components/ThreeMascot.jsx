@@ -87,11 +87,18 @@ export default function ThreeMascot({
   expression = 'neutral',
   variant = 'hero',
   fallbackSrc = '',
+  renderMode = 'static',
 }) {
   const rootRef = useRef(null);
   const [ready, setReady] = useState(false);
+  const isStaticMode = renderMode === 'static';
 
   useEffect(() => {
+    if (isStaticMode) {
+      setReady(false);
+      return () => {};
+    }
+
     let disposed = false;
     let renderer;
     let rafId = 0;
@@ -330,7 +337,18 @@ export default function ThreeMascot({
         }
       }
     };
-  }, [mood, expression, variant]);
+  }, [mood, expression, variant, isStaticMode]);
+
+  if (isStaticMode) {
+    return (
+      <div
+        className={`mascot-three is-fallback ${className}`.trim()}
+        aria-hidden="true"
+      >
+        {fallbackSrc && <img src={fallbackSrc} alt="Mascot" className="mascot-static-fallback" />}
+      </div>
+    );
+  }
 
   return (
     <div

@@ -603,6 +603,18 @@ body {
   box-shadow: 0 18px 40px rgba(8, 11, 26, 0.35);
 }
 
+.webapp-hero-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.webapp-hero-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .webapp-hero-mascot {
   width: clamp(150px, 20vw, 230px);
   aspect-ratio: 1 / 1;
@@ -647,8 +659,10 @@ body {
 
 .webapp-user-badge {
   display: grid;
+  align-items: start;
+  justify-items: end;
+  text-align: right;
   gap: 8px;
-  justify-items: center;
   font-size: 13px;
 }
 
@@ -1255,12 +1269,18 @@ body {
     text-align: center;
   }
 
+  .webapp-hero-head {
+    align-items: flex-start;
+  }
+
   .webapp-hero-copy p {
     margin: 0 auto;
   }
 
   .webapp-user-badge {
-    width: 100%;
+    width: auto;
+    justify-items: end;
+    text-align: right;
   }
 }
 
@@ -1578,22 +1598,22 @@ body {
 }
 
 .setup-ring {
-  width: 172px;
-  height: 172px;
-  border-radius: 50%;
+  width: 196px;
+  height: 228px;
+  border-radius: 28px;
   display: grid;
   place-items: center;
-  padding: 8px;
+  padding: 10px;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.22);
-  border: 2px dashed rgba(255, 255, 255, 0.55);
+  border: 2px dashed rgba(255, 255, 255, 0.5);
   animation: ring-pulse 4s ease-in-out infinite;
 }
 
 .setup-mascot {
   width: 100%;
   height: 100%;
-  transform-origin: center 74%;
+  transform-origin: center 82%;
 }
 
 .setup-mascot canvas {
@@ -1806,7 +1826,7 @@ body {
 
 .flashcard-character {
   position: absolute;
-  inset: 8px;
+  inset: 10px;
   border-radius: 50%;
   background: radial-gradient(circle at 30% 20%, rgba(110, 193, 255, 0.2), rgba(10, 22, 44, 0.15));
   display: grid;
@@ -1816,15 +1836,22 @@ body {
 }
 
 .flashcard-mascot {
-  width: 176px;
-  height: 176px;
-  transform-origin: center 76%;
+  width: 158px;
+  height: 188px;
+  transform-origin: center 84%;
 }
 
 .flashcard-mascot canvas {
-  width: 176px;
-  height: 176px;
+  width: 158px;
+  height: 188px;
   animation: mascot-bob 3.1s ease-in-out infinite;
+}
+
+.flashcard-mascot .mascot-static-fallback,
+.setup-mascot .mascot-static-fallback,
+.webapp-hero-mascot .mascot-static-fallback {
+  object-fit: contain;
+  object-position: center bottom;
 }
 
 .flashcard-character.is-correct .flashcard-mascot canvas {
