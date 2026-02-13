@@ -479,8 +479,15 @@ Hard constraints:
    - Do NOT split fixed expressions or verb complexes unnaturally.
    - Keep "zu + infinitive" as a coherent unit whenever possible.
    - Keep subordinate clause markers with their clause if possible (e.g., "um ... zu ...").
-   - DO NOT SPLIT MEANINGFUL GRAMMAR CONSTRUCTIONS (a part of a sentence like: etwas wäre erreicht worden and other gramatical constructions of a sentences 
-   MUST NOT BE DEVIDED into chanks)
+   - NEVER split a full predicate (finite verb + all its dependent verbs and complements). The entire verbal construction must stay in ONE chunk.  - Treat the entire verb group as indivisible.
+   - Do NOT split auxiliary + Partizip II (Perfekt, Plusquamperfekt).
+   - Do NOT split auxiliary + Partizip II + "worden" (Passiv Perfekt).
+   - Do NOT split Konjunktiv II constructions with "wäre / hätte / würde".
+   - Do NOT split modal verb + infinitive.
+   - Do NOT split passive constructions (werden + Partizip II).
+   - If multiple verbs belong to one predicate, they MUST remain in the same chunk.
+   - Example: "wäre der Erfolg schneller erreicht worden" MUST remain one chunk.  
+   - Before chunking, internally identify the full predicate and ensure it is not divided.
 5) Avoid chunks that start with dangling punctuation or end with dangling conjunctions.
 6) Keep original casing and German punctuation, but do NOT end every chunk with a period unless it exists in the original sentence.
 7) Prefer chunk boundaries at commas, clause boundaries, and phrase boundaries.
