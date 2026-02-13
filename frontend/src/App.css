@@ -491,14 +491,14 @@ body {
 
 .webapp-main {
   display: grid;
-  gap: 24px;
+  gap: 14px;
 }
 
 .webapp-topbar {
   display: none;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 10px 12px;
   border-radius: 16px;
   background: rgba(15, 20, 40, 0.92);
   box-shadow: 0 12px 24px rgba(8, 11, 26, 0.35);
@@ -524,6 +524,41 @@ body {
 
 .topbar-title {
   font-weight: 700;
+}
+
+.topbar-profile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-avatar {
+  width: 40px;
+  height: 40px;
+  border-width: 1px;
+}
+
+.topbar-user-meta {
+  display: grid;
+  gap: 1px;
+  text-align: right;
+}
+
+.topbar-user-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #f8fafc;
+  line-height: 1.1;
+  max-width: 92px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-user-line {
+  font-size: 10px;
+  color: rgba(248, 250, 252, 0.68);
+  line-height: 1.15;
 }
 
 .webapp-overlay {
@@ -585,69 +620,61 @@ body {
   width: min(960px, 100%);
   background: rgba(17, 23, 43, 0.92);
   border-radius: 24px;
-  padding: 28px;
+  padding: 20px;
   box-shadow: 0 24px 50px rgba(8, 11, 26, 0.35);
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 14px;
 }
 
 .webapp-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
+  display: grid;
+  justify-items: center;
+  align-items: start;
+  gap: 10px;
   background: rgba(16, 23, 44, 0.9);
   border-radius: 24px;
-  padding: 24px;
+  padding: 14px 14px 10px;
   box-shadow: 0 18px 40px rgba(8, 11, 26, 0.35);
 }
 
 .webapp-hero-copy {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
 }
 
-.webapp-hero-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.webapp-hero-mascot {
-  width: clamp(150px, 20vw, 230px);
-  aspect-ratio: 1 / 1;
-  border-radius: 28px;
-  background:
-    radial-gradient(circle at 24% 18%, rgba(111, 224, 255, 0.22), rgba(93, 220, 255, 0.05) 45%, transparent 70%),
-    radial-gradient(circle at 75% 85%, rgba(255, 255, 255, 0.1), transparent 62%),
-    linear-gradient(165deg, rgba(8, 18, 38, 0.95), rgba(9, 24, 52, 0.88));
-  border: 1px solid rgba(93, 220, 255, 0.24);
-  box-shadow: inset 0 1px 18px rgba(120, 220, 255, 0.14), 0 16px 28px rgba(8, 11, 26, 0.36);
+.webapp-hero-copy-landing {
   display: grid;
-  place-items: center;
+  justify-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.webapp-hero-mascot-flat {
+  width: clamp(168px, 42vw, 238px);
+  min-height: clamp(220px, 40vh, 320px);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 8px rgba(255, 255, 255, 0.12), 0 12px 26px rgba(8, 11, 26, 0.32);
+  display: grid;
+  align-items: end;
+  justify-items: center;
+  padding: 10px 8px 0;
   overflow: hidden;
 }
 
-.webapp-hero-mascot .mascot-webgl,
-.webapp-hero-mascot .mascot-three {
+.hero-flat-image {
   width: 100%;
   height: 100%;
-}
-
-.webapp-hero-mascot .mascot-webgl canvas,
-.webapp-hero-mascot .mascot-three canvas {
-  width: 100%;
-  height: 100%;
-  transform-origin: center 72%;
-  animation: mascot-bob 3.6s ease-in-out infinite;
+  object-fit: contain;
+  object-position: center bottom;
 }
 
 .webapp-hero h1 {
-  margin: 12px 0 8px;
+  margin: 0;
   font-family: 'Playfair Display', 'Times New Roman', serif;
-  font-size: clamp(28px, 3vw, 40px);
+  font-size: clamp(22px, 5.6vw, 34px);
+  line-height: 1.15;
   color: #f8fafc;
 }
 
@@ -708,26 +735,52 @@ body {
 
 .webapp-hero-cards {
   display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .hero-card {
   background: rgba(16, 23, 44, 0.9);
-  border-radius: 18px;
-  padding: 16px;
+  border-radius: 14px;
+  padding: 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 16px 32px rgba(8, 11, 26, 0.3);
+  box-shadow: 0 10px 20px rgba(8, 11, 26, 0.28);
+  min-height: 120px;
+  display: grid;
+  align-content: start;
+  gap: 7px;
 }
 
-.hero-card h3 {
-  margin: 0 0 6px;
-  font-size: 16px;
+.hero-card-head {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: #f8fafc;
+  border-radius: 10px;
+  padding: 7px 9px;
+}
+
+.hero-card-head.is-translate {
+  background: linear-gradient(135deg, rgba(30, 144, 255, 0.34), rgba(96, 165, 250, 0.24));
+}
+
+.hero-card-head.is-save {
+  background: linear-gradient(135deg, rgba(22, 197, 94, 0.34), rgba(74, 222, 128, 0.22));
+}
+
+.hero-card-head.is-train {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.34), rgba(251, 191, 36, 0.24));
+}
+
+.hero-card-head.is-watch {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.36), rgba(236, 72, 153, 0.24));
 }
 
 .hero-card p {
   margin: 0;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.35;
   color: rgba(248, 250, 252, 0.7);
 }
 
@@ -1263,24 +1316,42 @@ body {
     display: flex;
   }
 
+  .webapp-card {
+    padding: 12px;
+    gap: 10px;
+  }
+
   .webapp-hero {
-    flex-wrap: wrap;
-    justify-content: center;
-    text-align: center;
+    padding: 10px 10px 8px;
+    gap: 8px;
   }
 
-  .webapp-hero-head {
-    align-items: flex-start;
+  .webapp-hero-mascot-flat {
+    width: min(56vw, 214px);
+    min-height: clamp(170px, 28vh, 240px);
   }
 
-  .webapp-hero-copy p {
-    margin: 0 auto;
+  .webapp-hero-cards {
+    gap: 8px;
   }
 
-  .webapp-user-badge {
-    width: auto;
-    justify-items: end;
-    text-align: right;
+  .hero-card {
+    min-height: 100px;
+    padding: 8px;
+  }
+
+  .hero-card-head {
+    font-size: 12px;
+    padding: 6px 8px;
+  }
+
+  .hero-card p {
+    font-size: 11px;
+    line-height: 1.28;
+  }
+
+  .topbar-profile {
+    gap: 6px;
   }
 }
 

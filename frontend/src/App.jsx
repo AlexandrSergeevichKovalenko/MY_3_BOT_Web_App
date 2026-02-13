@@ -218,6 +218,7 @@ function AppInner() {
   const analyticsCompareRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const mascot3dSrc = `${assetBaseUrl}mascot-original.svg`;
+  const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
 
   const safeStorageGet = (key) => {
     try {
@@ -2825,6 +2826,27 @@ function AppInner() {
                 <span />
               </button>
               <div className="topbar-title">DeutschFlow</div>
+              <div className="topbar-profile">
+                <input
+                  ref={avatarInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="avatar-input"
+                  onChange={handleAvatarUpload}
+                />
+                <button
+                  type="button"
+                  className="avatar-button topbar-avatar"
+                  onClick={() => avatarInputRef.current?.click()}
+                >
+                  {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                </button>
+                <div className="topbar-user-meta">
+                  <div className="topbar-user-name">{webappUser?.first_name || 'Гость'}</div>
+                  <div className="topbar-user-line">ID: {webappUser?.id || '—'}</div>
+                  <div className="topbar-user-line">Chat: {webappChatType || '—'}</div>
+                </div>
+              </div>
             </div>
 
             {menuOpen && (
@@ -2956,37 +2978,12 @@ function AppInner() {
 
             {showHero && (
             <header className="webapp-hero">
-              <div className="webapp-hero-copy">
-                <div className="webapp-hero-head">
-                  <span className="pill">Telegram Web App</span>
-                  <div className="webapp-user-badge">
-                    <input
-                      ref={avatarInputRef}
-                      type="file"
-                      accept="image/*"
-                      className="avatar-input"
-                      onChange={handleAvatarUpload}
-                    />
-                    <button
-                      type="button"
-                      className="avatar-button"
-                      onClick={() => avatarInputRef.current?.click()}
-                    >
-                      {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
-                    </button>
-                    <div className="user-name">{webappUser?.first_name || 'Гость'}</div>
-                    <div className="user-meta">ID: {webappUser?.id || '—'}</div>
-                    <div className="user-meta">Chat: {webappChatType || '—'}</div>
-                  </div>
-                </div>
-                <h1>Учите немецкий в потоке</h1>
-                <p>
-                  Переводы, словарь, видео и карточки — всё в одном месте. Короткие шаги,
-                  быстрые проверки и понятный прогресс без перегруза.
-                </p>
+              <div className="webapp-hero-copy webapp-hero-copy-landing">
+                <span className="pill">Telegram Web App</span>
+                <h1>Осваивайте немецкий легко и уверенно</h1>
               </div>
-              <div className="webapp-hero-mascot" aria-hidden="true">
-                <ThreeMascot mood="idle" expression="neutral" variant="hero" fallbackSrc={mascot3dSrc} />
+              <div className="webapp-hero-mascot-flat" aria-hidden="true">
+                <img src={heroMascotSrc} alt="Deutsch mascot" className="hero-flat-image" />
               </div>
             </header>
             )}
@@ -2994,27 +2991,21 @@ function AppInner() {
             {showHero && (
             <section className="webapp-hero-cards">
               <div className="hero-card">
-                <h3>Переводите</h3>
+                <div className="hero-card-head is-translate">Переводите</div>
                 <p>Напишите перевод, получите оценку и объяснения ошибок.</p>
               </div>
               <div className="hero-card">
-                <h3>Сохраняйте</h3>
+                <div className="hero-card-head is-save">Сохраняйте</div>
                 <p>Добавляйте слова в словарь и группируйте по папкам.</p>
               </div>
               <div className="hero-card">
-                <h3>Тренируйтесь</h3>
+                <div className="hero-card-head is-train">Тренируйтесь</div>
                 <p>Повторяйте слова сетами по 15 карточек с прогрессом.</p>
               </div>
               <div className="hero-card">
-                <h3>Смотрите и слушайте</h3>
+                <div className="hero-card-head is-watch">Смотрите и слушайте</div>
                 <p>Смотрите фильмы и слушайте песни с двойными субтитрами, сохраняйте новые слова для дальнейшего повторения и изучения.</p>
               </div>
-            </section>
-            )}
-
-            {showHero && (
-            <section className="webapp-quickstart">
-              <div className="webapp-muted">Выберите раздел в меню, чтобы начать.</div>
             </section>
             )}
 
