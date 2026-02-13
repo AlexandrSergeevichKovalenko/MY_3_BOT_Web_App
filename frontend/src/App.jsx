@@ -2982,7 +2982,7 @@ function AppInner() {
                 <h1>Осваивайте немецкий легко и уверенно</h1>
               </div>
               <div className="webapp-hero-mascot-flat" aria-hidden="true">
-                <img src={heroMascotSrc} alt="Deutsch mascot" className="hero-flat-image" />
+                <img src={heroStickerSrc} alt="Deutsch mascot" className="hero-flat-image" />
               </div>
             </header>
             )}
@@ -3826,7 +3826,7 @@ function AppInner() {
                         <div className="flashcards-setup">
                           <div className="setup-hero">
                             <div className="setup-ring">
-                              <img src={heroMascotSrc} alt="Deutsch mascot" className="setup-mascot-flat" />
+                              <img src={heroStickerSrc} alt="Deutsch mascot" className="setup-mascot-flat" />
                             </div>
                             <div className="setup-title">Тренировка карточек</div>
                             <div className="setup-subtitle">Выберите параметры и стартуйте сет.</div>
@@ -4281,7 +4281,7 @@ function AppInner() {
                                           </div>
                                         )}
                                         <div className={`flashcard-character ${flashcardOutcome ? `is-${flashcardOutcome}` : ''}`}>
-                                          <img src={heroMascotSrc} alt="Deutsch mascot" className="flashcard-mascot-flat" />
+                                          <img src={heroStickerSrc} alt="Deutsch mascot" className="flashcard-mascot-flat" />
                                           {(flashcardOutcome === 'wrong' || flashcardOutcome === 'timeout') && (
                                             <div className="flashcard-poop-shot" aria-hidden="true">
                                               <span className="flashcard-poop-throw">💩</span>
