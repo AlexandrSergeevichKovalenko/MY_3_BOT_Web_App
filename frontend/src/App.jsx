@@ -217,6 +217,7 @@ function AppInner() {
   const analyticsCompareRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
+  const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
 
   const safeStorageGet = (key) => {
     try {
@@ -3025,7 +3026,7 @@ function AppInner() {
               <section className="webapp-section" ref={translationsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>Ваши переводы</h2>
-                  <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="webapp-translation-start">
                   <label className="webapp-field">
@@ -3329,7 +3330,7 @@ function AppInner() {
                   <section className="webapp-video" ref={youtubeRef}>
                     <div className="webapp-local-section-head">
                       <h3>Видео YouTube</h3>
-                      <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                      <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
                     <div className="webapp-video-form">
                       <label className="webapp-field">
@@ -3493,7 +3494,7 @@ function AppInner() {
                   <section className="webapp-dictionary" ref={dictionaryRef}>
                     <div className="webapp-local-section-head">
                       <h3>Словарь</h3>
-                      <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                      <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
@@ -3773,7 +3774,7 @@ function AppInner() {
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>Фильмы</h2>
                   <p>Видео с доступными субтитрами, сохранённые в каталоге.</p>
-                  <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 {moviesLoading && <div className="webapp-muted">Загружаем каталог...</div>}
                 {moviesError && <div className="webapp-error">{moviesError}</div>}
@@ -3813,7 +3814,6 @@ function AppInner() {
 
             {isSectionVisible('flashcards') && (
               <section className="webapp-flashcards" ref={flashcardsRef}>
-                <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo section-corner-logo-flashcards" />
                 {!flashcardsVisible && (
                   <div className="webapp-muted">
                     Нажмите «Повторить слова», чтобы начать тренировку.
@@ -4410,7 +4410,7 @@ function AppInner() {
               <section className="webapp-section webapp-analytics" ref={analyticsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>Аналитика</h2>
-                  <img src={heroMascotSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="analytics-controls">
                   <label className="webapp-field">
