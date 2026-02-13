@@ -132,6 +132,10 @@ from backend.database import (
     get_or_create_dictionary_folder,
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
+    get_tts_chunk_cache,
+    upsert_tts_chunk_cache,
+    get_tts_audio_cache,
+    upsert_tts_audio_cache,
 )
 from backend.translation_workflow import (
     build_user_daily_summary,
@@ -505,17 +509,47 @@ def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAU
     key = _tts_cache_key(lang, voice, speed, text)
     if key in _TTS_CACHE:
         return _TTS_CACHE[key]
+
+    cached_db = get_tts_audio_cache(key)
+    if cached_db:
+        audio = AudioSegment.from_file(io.BytesIO(cached_db), format="mp3")
+        _TTS_CACHE[key] = audio
+        return audio
+
     cache_dir = "/tmp/tts_cache"
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f"{key}.mp3")
     if os.path.exists(cache_path):
         audio = AudioSegment.from_file(cache_path, format="mp3")
         _TTS_CACHE[key] = audio
+        try:
+            with open(cache_path, "rb") as cached_file:
+                upsert_tts_audio_cache(
+                    cache_key=key,
+                    language=lang,
+                    voice=voice,
+                    speed=speed,
+                    source_text=_normalize_utterance_text(text),
+                    audio_mp3=cached_file.read(),
+                )
+        except Exception as exc:
+            logging.warning("Failed to sync /tmp TTS cache to DB: %s", exc)
         return audio
     language = "de-DE" if lang == "de" else "ru-RU" if lang == "ru" else "en-US"
     audio_bytes = _synthesize_mp3(text, language=language, voice=voice, speed=speed)
     audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
     audio.export(cache_path, format="mp3", bitrate="192k")
+    try:
+        upsert_tts_audio_cache(
+            cache_key=key,
+            language=lang,
+            voice=voice,
+            speed=speed,
+            source_text=_normalize_utterance_text(text),
+            audio_mp3=audio_bytes,
+        )
+    except Exception as exc:
+        logging.warning("Failed to persist TTS audio cache: %s", exc)
     _TTS_CACHE[key] = audio
     return audio
 
@@ -562,6 +596,13 @@ def chunk_sentence_llm(de_sentence: str) -> list[str]:
     cleaned = (de_sentence or "").strip()
     if not cleaned:
         return []
+
+    normalized = _normalize_utterance_text(cleaned)
+    cache_key = hashlib.sha256(f"de|{normalized}".encode("utf-8")).hexdigest()
+    cached_chunks = get_tts_chunk_cache(cache_key)
+    if cached_chunks:
+        return cached_chunks
+
     try:
         result = asyncio.run(run_tts_chunk_de(cleaned))
     except Exception as exc:
@@ -579,6 +620,15 @@ def chunk_sentence_llm(de_sentence: str) -> list[str]:
         return _chunk_sentence_simple(cleaned)
     if len(chunks) > _MAX_CHUNKS:
         chunks = _merge_smallest_chunks(chunks, _MAX_CHUNKS)
+    try:
+        upsert_tts_chunk_cache(
+            cache_key=cache_key,
+            language="de",
+            source_text=normalized,
+            chunks=chunks,
+        )
+    except Exception as exc:
+        logging.warning("Failed to persist chunk cache: %s", exc)
     return chunks
 
 
@@ -2464,7 +2514,20 @@ def webapp_tts():
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
+    speaking_rate = 0.95
+    normalized = _normalize_utterance_text(text)
+    cache_key = _tts_cache_key(language, voice, speaking_rate, normalized)
+
     try:
+        cached_audio = get_tts_audio_cache(cache_key)
+        if cached_audio:
+            return send_file(
+                BytesIO(cached_audio),
+                mimetype="audio/mpeg",
+                as_attachment=False,
+                download_name="tts.mp3",
+            )
+
         try:
             from google.cloud import texttospeech
         except Exception:
@@ -2472,17 +2535,28 @@ def webapp_tts():
         key_path = prepare_google_creds_for_tts()
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
         tts_client = texttospeech.TextToSpeechClient()
-        input_data = texttospeech.SynthesisInput(text=text)
+        input_data = texttospeech.SynthesisInput(text=normalized)
         voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice)
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=0.95,
+            speaking_rate=speaking_rate,
         )
         response = tts_client.synthesize_speech(
             input=input_data,
             voice=voice_params,
             audio_config=audio_config,
         )
+        try:
+            upsert_tts_audio_cache(
+                cache_key=cache_key,
+                language=language,
+                voice=voice,
+                speed=speaking_rate,
+                source_text=normalized,
+                audio_mp3=response.audio_content,
+            )
+        except Exception as exc:
+            logging.warning("Failed to persist webapp TTS cache: %s", exc)
         return send_file(
             BytesIO(response.audio_content),
             mimetype="audio/mpeg",

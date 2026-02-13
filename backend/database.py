@@ -1,4 +1,5 @@
 import psycopg2
+from psycopg2 import Binary
 import os
 from contextlib import contextmanager
 import json
@@ -149,6 +150,10 @@ def ensure_webapp_tables() -> None:
                 ADD COLUMN IF NOT EXISTS translation_ru TEXT;
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS is_learned BOOLEAN NOT NULL DEFAULT FALSE;
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_folders (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -220,6 +225,38 @@ def ensure_webapp_tables() -> None:
                     seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (user_id, entry_id, seen_at)
                 );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_tts_chunk_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    language TEXT NOT NULL,
+                    source_text TEXT NOT NULL,
+                    chunks JSONB NOT NULL,
+                    hit_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tts_chunk_cache_updated
+                ON bt_3_tts_chunk_cache (updated_at);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_tts_audio_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    language TEXT NOT NULL,
+                    voice TEXT NOT NULL,
+                    speed DOUBLE PRECISION NOT NULL,
+                    source_text TEXT NOT NULL,
+                    audio_mp3 BYTEA NOT NULL,
+                    hit_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tts_audio_cache_updated
+                ON bt_3_tts_audio_cache (updated_at);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_story_bank (
@@ -639,6 +676,162 @@ def upsert_youtube_translations(video_id: str, translations: dict) -> None:
                 SET translations = COALESCE(bt_3_youtube_transcripts.translations, '{}'::jsonb) || EXCLUDED.translations,
                     updated_at = NOW();
             """, (video_id, json.dumps(translations, ensure_ascii=False)))
+
+
+def get_tts_chunk_cache(cache_key: str) -> list[str] | None:
+    if not cache_key:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT chunks
+                FROM bt_3_tts_chunk_cache
+                WHERE cache_key = %s;
+                """,
+                (cache_key,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cursor.execute(
+                """
+                UPDATE bt_3_tts_chunk_cache
+                SET hit_count = hit_count + 1,
+                    updated_at = NOW()
+                WHERE cache_key = %s;
+                """,
+                (cache_key,),
+            )
+            chunks = row[0]
+            if isinstance(chunks, str):
+                try:
+                    chunks = json.loads(chunks)
+                except Exception:
+                    chunks = []
+            if not isinstance(chunks, list):
+                return None
+            return [str(item).strip() for item in chunks if str(item).strip()]
+
+
+def upsert_tts_chunk_cache(
+    cache_key: str,
+    language: str,
+    source_text: str,
+    chunks: list[str],
+) -> None:
+    if not cache_key or not source_text or not chunks:
+        return
+    normalized_chunks = [str(item).strip() for item in chunks if str(item).strip()]
+    if not normalized_chunks:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_tts_chunk_cache (
+                    cache_key,
+                    language,
+                    source_text,
+                    chunks,
+                    hit_count,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, 1, NOW(), NOW())
+                ON CONFLICT (cache_key) DO UPDATE
+                SET language = EXCLUDED.language,
+                    source_text = EXCLUDED.source_text,
+                    chunks = EXCLUDED.chunks,
+                    hit_count = bt_3_tts_chunk_cache.hit_count + 1,
+                    updated_at = NOW();
+                """,
+                (
+                    cache_key,
+                    language,
+                    source_text,
+                    json.dumps(normalized_chunks, ensure_ascii=False),
+                ),
+            )
+
+
+def get_tts_audio_cache(cache_key: str) -> bytes | None:
+    if not cache_key:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT audio_mp3
+                FROM bt_3_tts_audio_cache
+                WHERE cache_key = %s;
+                """,
+                (cache_key,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cursor.execute(
+                """
+                UPDATE bt_3_tts_audio_cache
+                SET hit_count = hit_count + 1,
+                    updated_at = NOW()
+                WHERE cache_key = %s;
+                """,
+                (cache_key,),
+            )
+            payload = row[0]
+            if payload is None:
+                return None
+            if isinstance(payload, memoryview):
+                return payload.tobytes()
+            return bytes(payload)
+
+
+def upsert_tts_audio_cache(
+    cache_key: str,
+    language: str,
+    voice: str,
+    speed: float,
+    source_text: str,
+    audio_mp3: bytes,
+) -> None:
+    if not cache_key or not source_text or not audio_mp3:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_tts_audio_cache (
+                    cache_key,
+                    language,
+                    voice,
+                    speed,
+                    source_text,
+                    audio_mp3,
+                    hit_count,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 1, NOW(), NOW())
+                ON CONFLICT (cache_key) DO UPDATE
+                SET language = EXCLUDED.language,
+                    voice = EXCLUDED.voice,
+                    speed = EXCLUDED.speed,
+                    source_text = EXCLUDED.source_text,
+                    audio_mp3 = EXCLUDED.audio_mp3,
+                    hit_count = bt_3_tts_audio_cache.hit_count + 1,
+                    updated_at = NOW();
+                """,
+                (
+                    cache_key,
+                    language,
+                    voice,
+                    speed,
+                    source_text,
+                    Binary(audio_mp3),
+                ),
+            )
 
 
 def record_flashcard_answer(user_id: int, entry_id: int, is_correct: bool) -> None:
