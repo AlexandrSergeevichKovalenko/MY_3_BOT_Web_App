@@ -2965,7 +2965,7 @@ function AppInner() {
                 </p>
               </div>
               <div className="webapp-hero-mascot" aria-hidden="true">
-                <ThreeMascot mood="idle" expression="neutral" fallbackSrc={mascot3dSrc} />
+                <ThreeMascot mood="idle" expression="neutral" variant="hero" fallbackSrc={mascot3dSrc} />
               </div>
               <div className="webapp-user-badge">
                 <input
@@ -3822,7 +3822,7 @@ function AppInner() {
                         <div className="flashcards-setup">
                           <div className="setup-hero">
                             <div className="setup-ring">
-                              <ThreeMascot className="setup-mascot" mood="idle" expression="blink" fallbackSrc={mascot3dSrc} />
+                              <ThreeMascot className="setup-mascot" mood="idle" expression="blink" variant="setup" fallbackSrc={mascot3dSrc} />
                             </div>
                             <div className="setup-title">Тренировка карточек</div>
                             <div className="setup-subtitle">Выберите параметры и стартуйте сет.</div>
@@ -4280,6 +4280,7 @@ function AppInner() {
                                           <ThreeMascot
                                             className="flashcard-mascot"
                                             mood={flashcardOutcome || 'idle'}
+                                            variant="card"
                                             expression={
                                               flashcardOutcome === 'correct'
                                                 ? 'smile'

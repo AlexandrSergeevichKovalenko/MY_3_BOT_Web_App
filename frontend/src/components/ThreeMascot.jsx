@@ -71,7 +71,23 @@ function applyExpression(eyes, mouth, expression) {
   mouth.position.y = isFrown ? -0.02 : -0.11;
 }
 
-export default function ThreeMascot({ className = '', mood = 'idle', expression = 'neutral', fallbackSrc = '' }) {
+function getViewConfig(variant) {
+  if (variant === 'setup') {
+    return { fov: 28, camY: 0.38, camZ: 7.2, lookY: 0.35, scale: 0.72, baseY: -0.56 };
+  }
+  if (variant === 'card') {
+    return { fov: 33, camY: 0.34, camZ: 5.8, lookY: 0.36, scale: 0.96, baseY: -0.3 };
+  }
+  return { fov: 30, camY: 0.35, camZ: 6.2, lookY: 0.35, scale: 0.92, baseY: -0.32 };
+}
+
+export default function ThreeMascot({
+  className = '',
+  mood = 'idle',
+  expression = 'neutral',
+  variant = 'hero',
+  fallbackSrc = '',
+}) {
   const rootRef = useRef(null);
   const [ready, setReady] = useState(false);
 
@@ -89,9 +105,10 @@ export default function ThreeMascot({ className = '', mood = 'idle', expression 
       }
 
       const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
-      camera.position.set(0, 0.35, 6.2);
-      camera.lookAt(0, 0.35, 0);
+      const view = getViewConfig(variant);
+      const camera = new THREE.PerspectiveCamera(view.fov, 1, 0.1, 100);
+      camera.position.set(0, view.camY, view.camZ);
+      camera.lookAt(0, view.lookY, 0);
 
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -107,8 +124,8 @@ export default function ThreeMascot({ className = '', mood = 'idle', expression 
       scene.add(new THREE.AmbientLight(0xffffff, 0.72));
 
       const mascot = new THREE.Group();
-      mascot.scale.set(0.92, 0.92, 0.92);
-      mascot.position.set(0, -0.32, 0);
+      mascot.scale.set(view.scale, view.scale, view.scale);
+      mascot.position.set(0, view.baseY, 0);
       scene.add(mascot);
 
       const skinMat = new THREE.MeshStandardMaterial({ color: 0x1f7de6, roughness: 0.35, metalness: 0.05 });
@@ -256,7 +273,7 @@ export default function ThreeMascot({ className = '', mood = 'idle', expression 
         if (disposed) return;
         const t = (now - start) / 1000;
 
-        mascot.position.y = -0.32 + Math.sin(t * 2.4) * 0.055;
+        mascot.position.y = view.baseY + Math.sin(t * 2.4) * 0.055;
         mascot.position.x = 0;
         mascot.rotation.x = Math.sin(t * 1.4) * 0.03;
         mascot.rotation.y = Math.sin(t * 0.95) * 0.045;
@@ -313,7 +330,7 @@ export default function ThreeMascot({ className = '', mood = 'idle', expression 
         }
       }
     };
-  }, [mood, expression]);
+  }, [mood, expression, variant]);
 
   return (
     <div

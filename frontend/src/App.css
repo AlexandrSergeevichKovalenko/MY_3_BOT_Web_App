@@ -1583,14 +1583,16 @@ body {
   border-radius: 50%;
   display: grid;
   place-items: center;
+  padding: 8px;
+  overflow: hidden;
   background: rgba(255, 255, 255, 0.22);
   border: 2px dashed rgba(255, 255, 255, 0.55);
   animation: ring-pulse 4s ease-in-out infinite;
 }
 
 .setup-mascot {
-  width: 160px;
-  height: 160px;
+  width: 100%;
+  height: 100%;
   transform-origin: center 74%;
 }
 
@@ -1810,7 +1812,7 @@ body {
   display: grid;
   place-items: center;
   box-shadow: inset 0 0 16px rgba(114, 207, 255, 0.26), 0 8px 18px rgba(6, 12, 26, 0.34);
-  overflow: visible;
+  overflow: hidden;
 }
 
 .flashcard-mascot {
@@ -1857,6 +1859,7 @@ body {
 .mascot-three canvas {
   width: 100%;
   height: 100%;
+  pointer-events: none;
   display: block;
 }
 
