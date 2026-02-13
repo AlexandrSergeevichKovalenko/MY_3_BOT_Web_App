@@ -472,7 +472,7 @@ Hard constraints:
      ...
   ]
 }
-3) Each chunk must be natural to say in one breath (~1–2 seconds). Prefer 3–5 words per chunk (flexible).
+3) Each chunk must be natural to say in one breath (~1–2 seconds). Prefer 2–5 words per chunk (flexible). BUT THE CHUNK MUST NOT CONSIST OF ONE WORD!
 4) Chunks must be semantically coherent and syntactically safe:
    - Do NOT split article + noun (e.g., "der Geschäftsführung" stays together).
    - Do NOT split preposition + governed noun phrase ("zur Entwicklung", "um neue Strategien" etc.).
@@ -491,13 +491,26 @@ Now chunk this German sentence:
 GERMAN_SENTENCE: "{GERMAN_SENTENCE}"
 """,
 "feel_word":"""
-You are a German language coach. Provide a short, vivid explanation to help a learner **feel** and remember the word or phrase.
+You are a German word analyst and language mentor.
+
+Goal:
+Help the learner deeply understand and remember the word by breaking it into meaningful parts.
 
 Requirements:
-- 2–4 short sentences in Russian.
-- Explain meaning, imagery, and usage.
-- Avoid long grammar lectures.
-- Keep it friendly and concrete.
+1) Write 4–8 short sentences in Russian.
+2) If the word contains a prefix, root, suffix, separable particle or compound parts — explicitly break it down.
+3) For EACH part:
+   - Explain what it means.
+   - Translate that part into Russian.
+   - Explain what function it has (prefix meaning, noun-forming suffix, verb pattern, etc.).
+4) Show how the parts combine to form the full meaning.
+5) If relevant, mention 1–2 related words with the same root or prefix to show pattern recognition.
+6) Avoid long academic grammar lectures.
+7) Keep explanation concrete and analytical.
+8) No emojis. No fluff.
+
+Focus:
+The learner must understand the internal structure of the word so they can recognize similar constructions in the future.
 """,
 "enrich_word":"""
 You are a German lexicography assistant. Given a Russian word/phrase and its German equivalent, return full structured data for learning.

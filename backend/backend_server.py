@@ -598,17 +598,18 @@ def build_de_script(chunks: list[str]) -> list[dict]:
                     "pause_ms_after": _PAUSE_BETWEEN_REPEATS_MS,
                 }
             )
-        chain = chunks[: i + 1]
-        for _ in range(2):
-            script.append(
-                {
-                    "kind": "chain",
-                    "lang": "de",
-                    "chunks": chain,
-                    "speed": _TTS_SPEED_DEFAULT,
-                    "pause_ms_after": _PAUSE_BETWEEN_REPEATS_MS,
-                }
-            )
+        if i > 0:
+            chain = chunks[: i + 1]
+            for _ in range(2):
+                script.append(
+                    {
+                        "kind": "chain",
+                        "lang": "de",
+                        "chunks": chain,
+                        "speed": _TTS_SPEED_DEFAULT,
+                        "pause_ms_after": _PAUSE_BETWEEN_REPEATS_MS,
+                    }
+                )
         script[-1]["pause_ms_after"] = _PAUSE_BETWEEN_STEPS_MS
     return script
 

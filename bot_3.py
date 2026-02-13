@@ -3392,9 +3392,10 @@ async def mistakes_to_voice(username, sentence_pairs):
             chunk_audio = synthesize(chunk, "de-DE", "de-DE-Wavenet-B")
             chunk_segments.extend([chunk_audio, pause_short, chunk_audio, pause_short])
 
-            combined_text = " ".join(chunks[: idx + 1])
-            combined_audio = synthesize(combined_text, "de-DE", "de-DE-Wavenet-B")
-            chunk_segments.extend([combined_audio, pause_long])
+            if idx > 0:
+                combined_text = " ".join(chunks[: idx + 1])
+                combined_audio = synthesize(combined_text, "de-DE", "de-DE-Wavenet-B")
+                chunk_segments.extend([combined_audio, pause_long])
 
         # финальная фраза полностью
         full_audio = synthesize(german, "de-DE", "de-DE-Wavenet-B")
