@@ -44,6 +44,7 @@ from backend.openai_manager import (
     system_message,
     run_dictionary_lookup,
     run_generate_word_quiz,
+    run_translate_subtitles_ru,
 )
 from backend.database import (
     init_db,
@@ -82,6 +83,7 @@ QUIZ_HIDE_CORRECT_PROBABILITY = 0.3
 FLASHCARD_REMINDER_TIMES = [(7, 0), (16, 30)]
 active_quizzes = {}
 pending_quiz_freeform = {}
+quiz_ru_translation_cache = {}
 
 
 # === Логирование ===
@@ -1407,22 +1409,22 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
     pending = pending_quiz_freeform.get(user_id)
     if pending:
+        if update.effective_chat and update.effective_chat.type != "private":
+            await update.message.reply_text("Ответ на этот квиз отправьте в личку с ботом.")
+            return
+
         correct_text = pending.get("correct_text") or ""
         is_correct = False
         if correct_text:
             is_correct = _normalize_quiz_text(text) == _normalize_quiz_text(correct_text)
-        result_text = "✅ Правильно!" if is_correct else f"❌ Неправильно. Правильный ответ: {correct_text or '—'}"
-        message = await context.bot.send_message(
-            chat_id=pending.get("chat_id") or update.message.chat_id,
-            text=result_text,
-            reply_to_message_id=pending.get("message_id"),
+        await _send_quiz_result_private(
+            context=context,
+            user_id=user_id,
+            quiz_data=pending.get("quiz_data") or {},
+            is_correct=is_correct,
+            selected_text=text,
         )
         pending_quiz_freeform.pop(user_id, None)
-        context.job_queue.run_once(
-            delete_temporary_message,
-            when=QUIZ_FEEDBACK_TTL_SECONDS,
-            data={"chat_id": message.chat_id, "message_id": message.message_id},
-        )
         return
 
     # Проверяем, является ли сообщение переводом (поддержка многострочных сообщений)
@@ -4212,6 +4214,93 @@ def _normalize_quiz_text(value: str) -> str:
     return cleaned
 
 
+def _normalize_quiz_option_for_private_message(option: str) -> str:
+    text = (option or "").strip()
+    if not text:
+        return ""
+    text = text.replace("[", "").replace("]", "")
+
+    # Collapse sequences like "B e i s p i e l" -> "Beispiel" without touching normal words.
+    def _collapse(match: re.Match) -> str:
+        return match.group(0).replace(" ", "")
+
+    text = re.sub(r"\b(?:[A-Za-zÄÖÜäöüß]\s+){2,}[A-Za-zÄÖÜäöüß]\b", _collapse, text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+async def _translate_quiz_text_to_ru(de_text: str, fallback_ru: str | None = None) -> str:
+    normalized = (de_text or "").strip()
+    if not normalized:
+        return (fallback_ru or "—").strip()
+
+    cached = quiz_ru_translation_cache.get(normalized)
+    if cached:
+        return cached
+
+    translated = ""
+    try:
+        items = await run_translate_subtitles_ru([normalized])
+        if items and isinstance(items, list):
+            translated = (items[0] or "").strip()
+    except Exception as exc:
+        logging.warning(f"⚠️ Не удалось перевести квиз-текст на русский: {exc}")
+
+    if not translated:
+        translated = (fallback_ru or "").strip()
+    if translated:
+        quiz_ru_translation_cache[normalized] = translated
+    return translated or "—"
+
+
+async def _send_quiz_result_private(
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    quiz_data: dict,
+    is_correct: bool,
+    selected_text: str | None = None,
+) -> bool:
+    options = quiz_data.get("options") or []
+    correct_option_id = quiz_data.get("correct_option_id")
+    correct_text = (quiz_data.get("correct_text") or "").strip()
+
+    correct_option_text = correct_text
+    if isinstance(correct_option_id, int) and 0 <= correct_option_id < len(options):
+        indexed_text = str(options[correct_option_id]).strip()
+        if indexed_text and indexed_text != QUIZ_FREEFORM_OPTION and not correct_option_text:
+            correct_option_text = indexed_text
+
+    de_text = _normalize_quiz_option_for_private_message(correct_option_text)
+    if not de_text:
+        de_text = _normalize_quiz_option_for_private_message(correct_text)
+
+    fallback_ru = quiz_data.get("word_ru") or ""
+    ru_text = await _translate_quiz_text_to_ru(de_text, fallback_ru=fallback_ru)
+
+    selected_display = _normalize_quiz_option_for_private_message(selected_text or "")
+    status_line = "✅ Верно" if is_correct else "❌ Неверно"
+    lines = [
+        "🧠 Результат квиза",
+        f"Статус: {status_line}",
+    ]
+    if selected_display:
+        lines.append(f"Ваш ответ (DE): {selected_display}")
+    lines.extend([
+        f"Правильный вариант (DE): {de_text or '—'}",
+        f"Перевод (RU): {ru_text or '—'}",
+    ])
+
+    try:
+        await context.bot.send_message(
+            chat_id=int(user_id),
+            text="\n".join(lines),
+        )
+        return True
+    except Exception as exc:
+        logging.warning(f"⚠️ Не удалось отправить результат квиза в личку user_id={user_id}: {exc}")
+        return False
+
+
 def _apply_quiz_freeform_option(quiz: dict) -> dict:
     options = [str(option).strip() for option in quiz.get("options", []) if str(option).strip()]
     if not options:
@@ -4256,6 +4345,26 @@ def _apply_quiz_freeform_option(quiz: dict) -> dict:
     quiz["correct_text"] = correct_text
     quiz["hide_correct"] = hide_correct
     return quiz
+
+
+def _shuffle_quiz_options(quiz: dict) -> dict | None:
+    options = [str(option).strip() for option in quiz.get("options", []) if str(option).strip()]
+    correct_option_id = quiz.get("correct_option_id")
+    if not options or not isinstance(correct_option_id, int):
+        return None
+    if not (0 <= correct_option_id < len(options)):
+        return None
+
+    correct_text = options[correct_option_id]
+    indexed = list(enumerate(options))
+    random.shuffle(indexed)
+    shuffled_options = [item[1] for item in indexed]
+    new_correct_id = shuffled_options.index(correct_text)
+
+    shuffled = dict(quiz)
+    shuffled["options"] = shuffled_options
+    shuffled["correct_option_id"] = new_correct_id
+    return shuffled
 
 
 def _extract_german_word(entry: dict) -> str | None:
@@ -4358,14 +4467,11 @@ def _pick_anagram_distractors(correct_word: str, count: int = 3) -> list[str]:
         candidate = _extract_german_word(entry)
         if not candidate:
             continue
-        if len(candidate) != len(correct_word):
-            continue
         if candidate.lower() == correct_word.lower():
             continue
-        middle = candidate[1:-1]
-        if not middle:
+        scrambled = _scramble_word_preserve_ends(candidate)
+        if not scrambled:
             continue
-        scrambled = f"{correct_word[0]}{middle}{correct_word[-1]}"
         if scrambled.lower() == correct_word.lower():
             continue
         if scrambled in distractors:
@@ -4464,7 +4570,7 @@ async def generate_word_order_quiz(entry: dict) -> dict | None:
     if not usage_examples:
         return None
 
-    sentence = usage_examples[0].strip()
+    sentence = random.choice(usage_examples).strip()
     options = _build_word_order_options(sentence)
     if len(options) < 2:
         return None
@@ -4494,17 +4600,47 @@ def _extract_prefix_variants(response_json: dict) -> list[str]:
     return variants
 
 
+def _build_prefix_distractors(correct_word: str, count: int = 3) -> list[str]:
+    prefixes = ["ab", "an", "auf", "aus", "bei", "ein", "mit", "nach", "vor", "zu", "um", "ver", "be", "ent"]
+    lower = (correct_word or "").lower()
+    if not lower:
+        return []
+
+    base = lower
+    for pref in sorted(prefixes, key=len, reverse=True):
+        if lower.startswith(pref) and len(lower) > len(pref) + 2:
+            base = lower[len(pref):]
+            break
+
+    variants: list[str] = []
+    for pref in prefixes:
+        candidate = f"{pref}{base}"
+        if candidate == lower:
+            continue
+        if candidate not in variants and len(candidate) >= 4:
+            variants.append(candidate)
+        if len(variants) >= count:
+            break
+    return variants
+
+
 async def generate_prefix_quiz(entry: dict) -> dict | None:
     word_ru = (entry.get("word_ru") or "").strip()
     response_json = _coerce_response_json(entry.get("response_json"))
     if not word_ru or not response_json:
         return None
 
-    correct_word = (entry.get("word_de") or response_json.get("word_de") or "").strip()
+    correct_word = _extract_german_word({
+        "translation_de": entry.get("translation_de"),
+        "word_de": entry.get("word_de"),
+        "response_json": response_json,
+    })
     if not correct_word:
         return None
 
     variants = _extract_prefix_variants(response_json)
+    if not variants:
+        variants = _build_prefix_distractors(correct_word)
     if not variants:
         return None
 
@@ -4603,25 +4739,36 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
         logging.warning("⚠️ Нет слов в базе для генерации квиза.")
         return
 
+    generator_order = [
+        ("word_order", generate_word_order_quiz),
+        ("prefix", generate_prefix_quiz),
+        ("anagram", generate_anagram_quiz),
+        ("word", generate_word_quiz),
+    ]
+    rotation_idx = int(context.application.bot_data.get("quiz_rotation_idx", 0)) % len(generator_order)
+    context.application.bot_data["quiz_rotation_idx"] = rotation_idx + 1
+
+    ordered = generator_order[rotation_idx:] + generator_order[:rotation_idx]
     quiz = None
-    roll = random.random()
-    if roll < 0.25:
-        quiz = await generate_word_order_quiz(entry)
-    elif roll < 0.50:
-        quiz = await generate_prefix_quiz(entry)
-    elif roll < 0.90:
-        quiz = await generate_anagram_quiz(entry)
-    else:
-        quiz = await generate_word_quiz(entry)
-    if not quiz and roll < 0.25:
-        quiz = await generate_prefix_quiz(entry) or await generate_anagram_quiz(entry)
-    if not quiz and roll < 0.50:
-        quiz = await generate_anagram_quiz(entry) or await generate_word_quiz(entry)
-    if not quiz and roll < 0.90:
-        quiz = await generate_word_quiz(entry)
+    for quiz_type, generator in ordered:
+        try:
+            quiz = await generator(entry)
+        except Exception as exc:
+            logging.warning(f"⚠️ Генератор квиза '{quiz_type}' упал: {exc}")
+            quiz = None
+        if quiz:
+            if not quiz.get("quiz_type"):
+                quiz["quiz_type"] = quiz_type
+            break
+        logging.info(f"ℹ️ Генератор квиза '{quiz_type}' вернул пустой результат, пробуем следующий.")
+
     if not quiz:
         logging.warning("⚠️ Не удалось сгенерировать квиз.")
         return
+
+    shuffled_quiz = _shuffle_quiz_options(quiz)
+    if shuffled_quiz:
+        quiz = shuffled_quiz
 
     poll_message = await context.bot.send_poll(
         chat_id=BOT_GROUP_CHAT_ID_Deutsch,
@@ -4631,6 +4778,13 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
         correct_option_id=quiz["correct_option_id"],
         is_anonymous=False,
         allows_multiple_answers=False,
+    )
+    logging.info(
+        "✅ Quiz sent: type=%s options=%s correct_option_id=%s word_ru=%s",
+        quiz.get("quiz_type", "generated"),
+        len(quiz.get("options", [])),
+        quiz.get("correct_option_id"),
+        entry.get("word_ru"),
     )
 
     record_quiz_word(entry.get("word_ru"))
@@ -4667,47 +4821,36 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if freeform_option and selected_text == freeform_option:
         pending_quiz_freeform[poll_answer.user.id] = {
             "poll_id": poll_answer.poll_id,
-            "chat_id": quiz_data["chat_id"],
-            "message_id": quiz_data["message_id"],
             "correct_text": quiz_data.get("correct_text") or "",
+            "quiz_data": dict(quiz_data),
         }
-        prompt_message = await context.bot.send_message(
-            chat_id=quiz_data["chat_id"],
-            text=f"✍️ {poll_answer.user.first_name}, введите ваш вариант ответа одним сообщением.",
-            reply_to_message_id=quiz_data["message_id"],
-        )
-        context.job_queue.run_once(
-            delete_temporary_message,
-            when=QUIZ_FEEDBACK_TTL_SECONDS,
-            data={"chat_id": quiz_data["chat_id"], "message_id": prompt_message.message_id},
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=poll_answer.user.id,
+                text="✍️ Вы выбрали вариант без готового ответа. Напишите ваш вариант одним сообщением здесь, в личке.",
+            )
+        except Exception as exc:
+            logging.warning(f"⚠️ Не удалось отправить freeform-инструкцию в личку user_id={poll_answer.user.id}: {exc}")
+            await context.bot.send_message(
+                chat_id=quiz_data["chat_id"],
+                text=f"{poll_answer.user.first_name}, откройте личку с ботом (/start), чтобы получить результат квиза.",
+                reply_to_message_id=quiz_data["message_id"],
+            )
         return
 
     is_correct = selected_index == quiz_data["correct_option_id"]
-    quiz_type = quiz_data.get("quiz_type")
-    if quiz_type == "anagram":
-        correct_text = quiz_data.get("correct_text") or ""
-        word_ru = quiz_data.get("word_ru") or ""
-        status = "✅ Верно!" if is_correct else "❌ Неверно."
-        suffix = f" Правильно: {correct_text}"
-        if word_ru:
-            suffix += f" — «{word_ru}»."
+    sent_private = await _send_quiz_result_private(
+        context=context,
+        user_id=poll_answer.user.id,
+        quiz_data=quiz_data,
+        is_correct=is_correct,
+        selected_text=selected_text,
+    )
+    if not sent_private:
         await context.bot.send_message(
             chat_id=quiz_data["chat_id"],
-            text=f"{status}{suffix}",
+            text=f"{poll_answer.user.first_name}, откройте личку с ботом (/start), чтобы получать результаты квизов приватно.",
             reply_to_message_id=quiz_data["message_id"],
-        )
-    else:
-        emoji = "🎉" if is_correct else "💩"
-        message = await context.bot.send_message(
-            chat_id=quiz_data["chat_id"],
-            text=emoji,
-            reply_to_message_id=quiz_data["message_id"],
-        )
-        context.job_queue.run_once(
-            delete_temporary_message,
-            when=QUIZ_FEEDBACK_TTL_SECONDS,
-            data={"chat_id": quiz_data["chat_id"], "message_id": message.message_id},
         )
 
 
