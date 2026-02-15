@@ -736,6 +736,11 @@ async def enforce_user_access(update: Update, context: CallbackContext):
     user = update.effective_user
     if not user:
         return
+
+    # Poll answers must be processed to deliver private quiz feedback.
+    if getattr(update, "poll_answer", None):
+        return
+
     if is_telegram_user_allowed(int(user.id)):
         return
 
@@ -4240,9 +4245,11 @@ async def _translate_quiz_text_to_ru(de_text: str, fallback_ru: str | None = Non
 
     translated = ""
     try:
-        items = await run_translate_subtitles_ru([normalized])
+        items = await asyncio.wait_for(run_translate_subtitles_ru([normalized]), timeout=8)
         if items and isinstance(items, list):
             translated = (items[0] or "").strip()
+    except asyncio.TimeoutError:
+        logging.warning("⚠️ Таймаут перевода квиз-текста на русский, используем fallback.")
     except Exception as exc:
         logging.warning(f"⚠️ Не удалось перевести квиз-текст на русский: {exc}")
 
@@ -4264,11 +4271,13 @@ async def _send_quiz_result_private(
     correct_option_id = quiz_data.get("correct_option_id")
     correct_text = (quiz_data.get("correct_text") or "").strip()
 
-    correct_option_text = correct_text
+    correct_option_text = ""
     if isinstance(correct_option_id, int) and 0 <= correct_option_id < len(options):
         indexed_text = str(options[correct_option_id]).strip()
-        if indexed_text and indexed_text != QUIZ_FREEFORM_OPTION and not correct_option_text:
+        if indexed_text and indexed_text != QUIZ_FREEFORM_OPTION:
             correct_option_text = indexed_text
+    if not correct_option_text:
+        correct_option_text = correct_text
 
     de_text = _normalize_quiz_option_for_private_message(correct_option_text)
     if not de_text:
@@ -4867,7 +4876,7 @@ def main():
     application.bot.request.timeout = 60
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)
-    application.add_handler(TypeHandler(Update, enforce_user_access, block=False), group=-2)
+    application.add_handler(TypeHandler(Update, enforce_user_access, block=True), group=-2)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("request_access", request_access))
     application.add_handler(CommandHandler("allow", allow_user_command))
