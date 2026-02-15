@@ -102,6 +102,20 @@ def ensure_webapp_tables() -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_allowed_users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    added_by BIGINT,
+                    note TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_allowed_users_updated
+                ON bt_3_allowed_users (updated_at);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_checks (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -305,6 +319,293 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_story_bank_type
                 ON bt_3_story_bank (story_type, difficulty);
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_access_requests (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    username TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    requested_via TEXT NOT NULL DEFAULT 'bot',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    reviewed_at TIMESTAMP,
+                    reviewed_by BIGINT,
+                    review_note TEXT
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_access_requests_user_time
+                ON bt_3_access_requests (user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_access_requests_status
+                ON bt_3_access_requests (status, created_at DESC);
+            """)
+
+
+def get_admin_telegram_ids() -> set[int]:
+    raw_values = [
+        os.getenv("BOT_ADMIN_TELEGRAM_IDS"),
+        os.getenv("TELEGRAM_ADMIN_IDS"),
+        os.getenv("BOT_ADMIN_TELEGRAM_ID"),
+        os.getenv("TELEGRAM_ADMIN_ID"),
+    ]
+    merged = ",".join(v for v in raw_values if v)
+    if not merged:
+        return set()
+
+    result: set[int] = set()
+    for token in merged.replace(";", ",").split(","):
+        value = token.strip()
+        if not value:
+            continue
+        try:
+            result.add(int(value))
+        except ValueError:
+            continue
+    return result
+
+
+def is_telegram_user_allowed(user_id: int) -> bool:
+    if not user_id:
+        return False
+    if int(user_id) in get_admin_telegram_ids():
+        return True
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM bt_3_allowed_users WHERE user_id = %s LIMIT 1;",
+                (int(user_id),),
+            )
+            return cursor.fetchone() is not None
+
+
+def allow_telegram_user(
+    user_id: int,
+    username: str | None = None,
+    added_by: int | None = None,
+    note: str | None = None,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_allowed_users (user_id, username, added_by, note)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    username = COALESCE(EXCLUDED.username, bt_3_allowed_users.username),
+                    added_by = EXCLUDED.added_by,
+                    note = COALESCE(EXCLUDED.note, bt_3_allowed_users.note),
+                    updated_at = CURRENT_TIMESTAMP;
+                """,
+                (int(user_id), username, added_by, note),
+            )
+
+
+def revoke_telegram_user(user_id: int) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM bt_3_allowed_users WHERE user_id = %s;",
+                (int(user_id),),
+            )
+            return cursor.rowcount > 0
+
+
+def list_allowed_telegram_users(limit: int = 100) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, username, added_by, note, created_at, updated_at
+                FROM bt_3_allowed_users
+                ORDER BY updated_at DESC
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit), 500)),),
+            )
+            rows = cursor.fetchall()
+
+    return [
+        {
+            "user_id": row[0],
+            "username": row[1],
+            "added_by": row[2],
+            "note": row[3],
+            "created_at": row[4].isoformat() if row[4] else None,
+            "updated_at": row[5].isoformat() if row[5] else None,
+        }
+        for row in rows
+    ]
+
+
+def create_access_request(
+    user_id: int,
+    username: str | None = None,
+    requested_via: str = "bot",
+) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_access_requests (user_id, username, status, requested_via)
+                VALUES (%s, %s, 'pending', %s)
+                RETURNING id;
+                """,
+                (int(user_id), username, requested_via),
+            )
+            row = cursor.fetchone()
+    return int(row[0])
+
+
+def get_access_request_by_id(request_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, username, status, requested_via, created_at, reviewed_at, reviewed_by, review_note
+                FROM bt_3_access_requests
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(request_id),),
+            )
+            row = cursor.fetchone()
+
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "username": row[2],
+        "status": row[3],
+        "requested_via": row[4],
+        "created_at": row[5].isoformat() if row[5] else None,
+        "reviewed_at": row[6].isoformat() if row[6] else None,
+        "reviewed_by": row[7],
+        "review_note": row[8],
+    }
+
+
+def resolve_access_request(
+    request_id: int,
+    status: str,
+    reviewed_by: int,
+    review_note: str | None = None,
+) -> dict | None:
+    final_status = (status or "").strip().lower()
+    if final_status not in {"approved", "rejected"}:
+        raise ValueError("status must be approved or rejected")
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_access_requests
+                SET
+                    status = %s,
+                    reviewed_at = CURRENT_TIMESTAMP,
+                    reviewed_by = %s,
+                    review_note = %s
+                WHERE id = %s AND status = 'pending'
+                RETURNING id, user_id, username, status, requested_via, created_at, reviewed_at, reviewed_by, review_note;
+                """,
+                (final_status, int(reviewed_by), review_note, int(request_id)),
+            )
+            row = cursor.fetchone()
+
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "username": row[2],
+        "status": row[3],
+        "requested_via": row[4],
+        "created_at": row[5].isoformat() if row[5] else None,
+        "reviewed_at": row[6].isoformat() if row[6] else None,
+        "reviewed_by": row[7],
+        "review_note": row[8],
+    }
+
+
+def resolve_latest_pending_access_request_for_user(
+    user_id: int,
+    status: str,
+    reviewed_by: int,
+    review_note: str | None = None,
+) -> dict | None:
+    final_status = (status or "").strip().lower()
+    if final_status not in {"approved", "rejected"}:
+        raise ValueError("status must be approved or rejected")
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH target AS (
+                    SELECT id
+                    FROM bt_3_access_requests
+                    WHERE user_id = %s AND status = 'pending'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                UPDATE bt_3_access_requests req
+                SET
+                    status = %s,
+                    reviewed_at = CURRENT_TIMESTAMP,
+                    reviewed_by = %s,
+                    review_note = %s
+                FROM target
+                WHERE req.id = target.id
+                RETURNING req.id, req.user_id, req.username, req.status, req.requested_via, req.created_at, req.reviewed_at, req.reviewed_by, req.review_note;
+                """,
+                (int(user_id), final_status, int(reviewed_by), review_note),
+            )
+            row = cursor.fetchone()
+
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "username": row[2],
+        "status": row[3],
+        "requested_via": row[4],
+        "created_at": row[5].isoformat() if row[5] else None,
+        "reviewed_at": row[6].isoformat() if row[6] else None,
+        "reviewed_by": row[7],
+        "review_note": row[8],
+    }
+
+
+def list_pending_access_requests(limit: int = 20) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, username, status, requested_via, created_at
+                FROM bt_3_access_requests
+                WHERE status = 'pending'
+                ORDER BY created_at DESC
+                LIMIT %s;
+                """,
+                (max(1, min(int(limit), 100)),),
+            )
+            rows = cursor.fetchall()
+
+    return [
+        {
+            "id": row[0],
+            "user_id": row[1],
+            "username": row[2],
+            "status": row[3],
+            "requested_via": row[4],
+            "created_at": row[5].isoformat() if row[5] else None,
+        }
+        for row in rows
+    ]
 
 
 def save_webapp_translation(

@@ -82,7 +82,7 @@ from datetime import datetime
 from io import BytesIO
 from uuid import uuid4
 from urllib.parse import parse_qsl, urlparse
-from flask import Flask, request, jsonify, send_from_directory, send_file
+from flask import Flask, request, jsonify, send_from_directory, send_file, g
 from flask_cors import CORS
 from dotenv import load_dotenv
 from backend.database import get_db_connection_context
@@ -113,6 +113,7 @@ from backend.openai_manager import (
     run_tts_chunk_de,
 )
 from backend.database import (
+    is_telegram_user_allowed,
     ensure_webapp_tables,
     get_pending_daily_sentences,
     get_webapp_dictionary_entries,
@@ -232,6 +233,39 @@ ensure_webapp_tables()
 
 # === Путь к собранному фронту (frontend/dist) ===
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
+
+_ACCESS_PUBLIC_WEBAPP_PATHS = {"/api/webapp/topics"}
+_ACCESS_PROTECTED_EXACT_PATHS = {"/api/message"}
+
+
+@app.before_request
+def enforce_webapp_access():
+    path = request.path or ""
+    is_protected = path.startswith("/api/webapp/") or path in _ACCESS_PROTECTED_EXACT_PATHS
+    if not is_protected or path in _ACCESS_PUBLIC_WEBAPP_PATHS:
+        return None
+
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    if not is_telegram_user_allowed(int(user_id)):
+        return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
+
+    g.telegram_user_id = int(user_id)
+    g.telegram_user = user_data
+    g.telegram_init_data = parsed
+    return None
 
 
 # === Раздача фронта ===

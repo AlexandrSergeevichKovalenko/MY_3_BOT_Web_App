@@ -8,7 +8,7 @@ import datetime
 import calendar
 from datetime import datetime, time, date, timedelta
 from telegram import Update, Poll
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes, ApplicationHandlerStop
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
@@ -50,6 +50,16 @@ from backend.database import (
     get_random_dictionary_entry,
     record_quiz_word,
     ensure_webapp_tables,
+    get_admin_telegram_ids,
+    is_telegram_user_allowed,
+    allow_telegram_user,
+    revoke_telegram_user,
+    list_allowed_telegram_users,
+    create_access_request,
+    resolve_access_request,
+    resolve_latest_pending_access_request_for_user,
+    get_access_request_by_id,
+    list_pending_access_requests,
     update_webapp_dictionary_entry,
     get_dictionary_cache,
     upsert_dictionary_cache,
@@ -611,6 +621,376 @@ def get_webapp_deeplink(path: str = "review", bot_username: str | None = None) -
         return f"https://t.me/{resolved_username}?startapp={path}"
     return f"{get_webapp_url()}/{path}"
 
+
+def _is_admin_user(user_id: int | None) -> bool:
+    if not user_id:
+        return False
+    return int(user_id) in get_admin_telegram_ids()
+
+
+def _display_user_name(user) -> str:
+    username = (getattr(user, "username", None) or "").strip()
+    if username:
+        return f"@{username}"
+    first = (getattr(user, "first_name", None) or "").strip()
+    last = (getattr(user, "last_name", None) or "").strip()
+    full = " ".join(part for part in (first, last) if part).strip()
+    return full or "unknown"
+
+
+async def _notify_admins_access_request(context: CallbackContext, user) -> None:
+    admin_ids = get_admin_telegram_ids()
+    if not admin_ids:
+        logging.warning("⚠️ Нет admin ID в окружении, некуда отправить запрос доступа.")
+        return
+
+    user_id = int(user.id)
+    username = _display_user_name(user)
+    request_id = create_access_request(
+        user_id=user_id,
+        username=username,
+        requested_via="bot",
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Одобрить", callback_data=f"access:approve:{request_id}:{user_id}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"access:reject:{request_id}:{user_id}"),
+            InlineKeyboardButton("⏸ Отложить", callback_data=f"access:defer:{request_id}:{user_id}"),
+        ],
+        [InlineKeyboardButton("📋 Pending заявки", callback_data="access:pending:list")],
+    ])
+    text = (
+        "🔐 Новый запрос доступа к боту\n"
+        f"Request ID: {request_id}\n"
+        f"User ID: {user_id}\n"
+        f"User: {username}\n\n"
+        f"Одобрить: /allow {user_id}\n"
+        f"Отклонить: /deny {user_id}"
+    )
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, reply_markup=keyboard)
+        except Exception as exc:
+            logging.warning(f"Не удалось отправить запрос администратору {admin_id}: {exc}")
+
+
+def _request_access_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📨 Запросить доступ", callback_data="access:request")]]
+    )
+
+
+async def _send_pending_requests_to_admin(context: CallbackContext, chat_id: int, limit: int = 20) -> None:
+    items = list_pending_access_requests(limit=limit)
+    if not items:
+        await context.bot.send_message(chat_id=chat_id, text="✅ Pending-заявок сейчас нет.")
+        return
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"📋 Pending заявки: {len(items)} шт. (показаны последние {min(limit, len(items))})",
+    )
+
+    for item in items:
+        request_id = int(item["id"])
+        user_id = int(item["user_id"])
+        username = item.get("username") or "unknown"
+        created_at = item.get("created_at") or "-"
+        text = (
+            f"Request #{request_id}\n"
+            f"User ID: {user_id}\n"
+            f"User: {username}\n"
+            f"Создана: {created_at}"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Одобрить", callback_data=f"access:approve:{request_id}:{user_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"access:reject:{request_id}:{user_id}"),
+                InlineKeyboardButton("⏸ Отложить", callback_data=f"access:defer:{request_id}:{user_id}"),
+            ]
+        ])
+        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+
+
+async def handle_pending_access_list(update: Update, context: CallbackContext):
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+
+    await query.answer("Загружаю pending-заявки…", show_alert=False)
+    await _send_pending_requests_to_admin(context, chat_id=query.message.chat_id if query.message else admin.id)
+
+
+def _command_name_from_text(text: str) -> str:
+    command = text.split()[0].split("@")[0]
+    return command.lower()
+
+
+async def enforce_user_access(update: Update, context: CallbackContext):
+    user = update.effective_user
+    if not user:
+        return
+    if is_telegram_user_allowed(int(user.id)):
+        return
+
+    message = update.effective_message
+    text = (message.text or "").strip() if message and getattr(message, "text", None) else ""
+    allowed_commands_for_new_user = {"/start", "/request_access"}
+    if text.startswith("/"):
+        if _command_name_from_text(text) in allowed_commands_for_new_user:
+            return
+
+    if update.callback_query and (update.callback_query.data or "") == "access:request":
+        return
+
+    if update.callback_query:
+        try:
+            await update.callback_query.answer("Доступ закрыт. Ожидайте одобрения администратора.", show_alert=True)
+        except Exception:
+            pass
+    elif message:
+        await message.reply_text(
+            "⛔️ Доступ к боту закрыт.\n"
+            "Нажмите кнопку ниже для отправки запроса администратору.",
+            reply_markup=_request_access_keyboard(),
+        )
+
+    raise ApplicationHandlerStop
+
+
+async def request_access(update: Update, context: CallbackContext):
+    user = update.effective_user
+    if not user or not update.effective_message:
+        return
+
+    if is_telegram_user_allowed(int(user.id)):
+        await update.effective_message.reply_text("✅ У вас уже есть доступ.")
+        return
+
+    now_ts = int(datetime.now().timestamp())
+    last_sent = int(context.user_data.get("last_access_request_at", 0))
+    if now_ts - last_sent < 60:
+        await update.effective_message.reply_text("⏳ Запрос уже отправлен недавно. Подождите минуту.")
+        return
+
+    context.user_data["last_access_request_at"] = now_ts
+    await _notify_admins_access_request(context, user)
+    await update.effective_message.reply_text(
+        f"📨 Запрос отправлен администратору.\nВаш ID: {user.id}\nОжидайте подтверждения."
+    )
+
+
+async def request_access_from_button(update: Update, context: CallbackContext):
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+
+    if is_telegram_user_allowed(int(user.id)):
+        await query.answer("У вас уже есть доступ.", show_alert=True)
+        return
+
+    now_ts = int(datetime.now().timestamp())
+    last_sent = int(context.user_data.get("last_access_request_at", 0))
+    if now_ts - last_sent < 60:
+        await query.answer("Запрос уже отправлен недавно. Подождите минуту.", show_alert=True)
+        return
+
+    context.user_data["last_access_request_at"] = now_ts
+    await _notify_admins_access_request(context, user)
+    await query.answer("Запрос отправлен администратору.", show_alert=True)
+    if query.message:
+        await query.message.reply_text(
+            "📨 Запрос отправлен администратору. Ожидайте подтверждения."
+        )
+
+
+async def allow_user_command(update: Update, context: CallbackContext):
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    if not context.args:
+        await update.effective_message.reply_text("Использование: /allow <telegram_user_id> [username]")
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.effective_message.reply_text("❌ user_id должен быть числом.")
+        return
+
+    username_hint = " ".join(context.args[1:]).strip() or None
+    allow_telegram_user(
+        user_id=target_id,
+        username=username_hint,
+        added_by=int(sender.id),
+        note="approved via bot command",
+    )
+    resolve_latest_pending_access_request_for_user(
+        user_id=target_id,
+        status="approved",
+        reviewed_by=int(sender.id),
+        review_note="approved via /allow",
+    )
+    await update.effective_message.reply_text(f"✅ Доступ выдан пользователю {target_id}.")
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text="✅ Ваша заявка одобрена. Доступ к боту и WebApp открыт.",
+        )
+    except Exception as exc:
+        logging.info(f"Не удалось отправить уведомление пользователю {target_id}: {exc}")
+
+
+async def deny_user_command(update: Update, context: CallbackContext):
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    if not context.args:
+        await update.effective_message.reply_text("Использование: /deny <telegram_user_id>")
+        return
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.effective_message.reply_text("❌ user_id должен быть числом.")
+        return
+
+    resolved = resolve_latest_pending_access_request_for_user(
+        user_id=target_id,
+        status="rejected",
+        reviewed_by=int(sender.id),
+        review_note="rejected via /deny",
+    )
+    removed = revoke_telegram_user(target_id)
+    if resolved:
+        await update.effective_message.reply_text(f"🚫 Заявка отклонена для пользователя {target_id}.")
+    elif removed:
+        await update.effective_message.reply_text(f"🚫 Доступ отозван у пользователя {target_id}.")
+    else:
+        await update.effective_message.reply_text(f"ℹ️ Нет pending-заявки и пользователя {target_id} нет в whitelist.")
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text="❌ Заявка отклонена администратором.",
+        )
+    except Exception as exc:
+        logging.info(f"Не удалось отправить уведомление пользователю {target_id}: {exc}")
+
+
+async def handle_access_request_action(update: Update, context: CallbackContext):
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+
+    match = re.match(r"^access:(approve|reject|defer):(\d+):(\d+)$", query.data or "")
+    if not match:
+        await query.answer("Некорректные данные кнопки.", show_alert=True)
+        return
+
+    action, request_id_raw, user_id_raw = match.groups()
+    request_id = int(request_id_raw)
+    target_id = int(user_id_raw)
+    if action == "defer":
+        await query.answer("Заявка отложена.", show_alert=False)
+        if query.message:
+            await query.message.reply_text(f"⏸ Заявка #{request_id} отложена. Пользователь {target_id}.")
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="⏸ Ваша заявка пока отложена. Ожидайте решения администратора.",
+            )
+        except Exception as exc:
+            logging.info(f"Не удалось отправить уведомление пользователю {target_id}: {exc}")
+        return
+
+    decision = "approved" if action == "approve" else "rejected"
+
+    request_row = resolve_access_request(
+        request_id=request_id,
+        status=decision,
+        reviewed_by=int(admin.id),
+        review_note=f"{decision} via inline button",
+    )
+    if not request_row:
+        existing = get_access_request_by_id(request_id)
+        existing_status = existing["status"] if existing else "unknown"
+        await query.answer(f"Заявка уже обработана ({existing_status}).", show_alert=True)
+        return
+
+    username = request_row.get("username")
+    if decision == "approved":
+        allow_telegram_user(
+            user_id=target_id,
+            username=username,
+            added_by=int(admin.id),
+            note="approved via inline button",
+        )
+        admin_text = f"✅ Заявка #{request_id} одобрена. Пользователь {target_id} получил доступ."
+        user_text = "✅ Ваша заявка одобрена. Доступ к боту и WebApp открыт."
+    else:
+        revoke_telegram_user(target_id)
+        admin_text = f"❌ Заявка #{request_id} отклонена. Пользователь {target_id}."
+        user_text = "❌ Ваша заявка отклонена администратором."
+
+    await query.answer("Готово.")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    if query.message:
+        await query.message.reply_text(admin_text)
+
+    try:
+        await context.bot.send_message(chat_id=target_id, text=user_text)
+    except Exception as exc:
+        logging.info(f"Не удалось отправить уведомление пользователю {target_id}: {exc}")
+
+
+async def allowed_users_command(update: Update, context: CallbackContext):
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+
+    items = list_allowed_telegram_users(limit=50)
+    if not items:
+        await update.effective_message.reply_text("Список разрешённых пользователей пуст.")
+        return
+
+    lines = ["✅ Разрешённые пользователи:"]
+    for item in items:
+        row = f"- {item['user_id']}"
+        if item.get("username"):
+            row += f" ({item['username']})"
+        lines.append(row)
+    await update.effective_message.reply_text("\n".join(lines))
+
+
+async def pending_requests_command(update: Update, context: CallbackContext):
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    await _send_pending_requests_to_admin(context, chat_id=update.effective_message.chat_id)
+
 async def handle_button_click(update: Update, context: CallbackContext):
     """Обрабатывает нажатия на кнопки главного меню."""
     
@@ -715,6 +1095,17 @@ async def check_translation_from_text(update: Update, context: CallbackContext):
 
 async def start(update: Update, context: CallbackContext):
     """Запуск бота и отправка главного меню."""
+    user = update.effective_user
+    if user and not is_telegram_user_allowed(int(user.id)):
+        await _notify_admins_access_request(context, user)
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                "⛔️ Доступ к боту пока не выдан.\n"
+                "Нажмите кнопку ниже или дождитесь подтверждения администратора.",
+                reply_markup=_request_access_keyboard(),
+            )
+        return
+
     context.user_data.setdefault("service_message_ids", [])  # Инициализируем список
     await send_main_menu(update, context)
 
@@ -4333,13 +4724,22 @@ def main():
     application.bot.request.timeout = 60
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)
+    application.add_handler(TypeHandler(Update, enforce_user_access, block=False), group=-2)
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("request_access", request_access))
+    application.add_handler(CommandHandler("allow", allow_user_command))
+    application.add_handler(CommandHandler("deny", deny_user_command))
+    application.add_handler(CommandHandler("allowed", allowed_users_command))
+    application.add_handler(CommandHandler("pending", pending_requests_command))
+    application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_message, block=False), group=1)  # ✅ Сохраняем переводы
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_click, block=False), group=1)  # ✅ Обрабатываем кнопки 
     application.add_handler(CallbackQueryHandler(handle_explain_request, pattern=r"^explain:"))
+    application.add_handler(CallbackQueryHandler(handle_pending_access_list, pattern=r"^access:pending:list$"))
+    application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_translation_from_text, block=False), group=1)  # ✅ Проверяем переводы
