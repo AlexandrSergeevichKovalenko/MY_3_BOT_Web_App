@@ -218,6 +218,7 @@ function AppInner() {
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
+  const heroCrySrc = `${assetBaseUrl}hero_cry.webp`;
 
   const safeStorageGet = (key) => {
     try {
@@ -4281,7 +4282,11 @@ function AppInner() {
                                           </div>
                                         )}
                                         <div className={`flashcard-character ${flashcardOutcome ? `is-${flashcardOutcome}` : ''}`}>
-                                          <img src={heroStickerSrc} alt="Deutsch mascot" className="flashcard-mascot-flat" />
+                                          <img
+                                            src={flashcardOutcome === 'wrong' ? heroCrySrc : heroStickerSrc}
+                                            alt="Deutsch mascot"
+                                            className="flashcard-mascot-flat"
+                                          />
                                           {(flashcardOutcome === 'wrong' || flashcardOutcome === 'timeout') && (
                                             <div className="flashcard-poop-shot" aria-hidden="true">
                                               <span className="flashcard-poop-throw">💩</span>
