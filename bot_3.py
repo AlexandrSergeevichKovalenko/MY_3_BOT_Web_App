@@ -4320,13 +4320,15 @@ def _apply_quiz_freeform_option(quiz: dict) -> dict:
     if not isinstance(correct_option_id, int) or not (0 <= correct_option_id < len(options)):
         return quiz
 
-    correct_text = options[correct_option_id]
+    correct_option_text = options[correct_option_id]
+    # Keep semantic correct_text (e.g. unscrumbled anagram word) if generator provided it.
+    correct_text = str(quiz.get("correct_text") or "").strip() or correct_option_text
     if QUIZ_FREEFORM_OPTION not in options:
         options.append(QUIZ_FREEFORM_OPTION)
 
     hide_correct = random.random() < QUIZ_HIDE_CORRECT_PROBABILITY
     if hide_correct:
-        options = [option for option in options if option != correct_text]
+        options = [option for option in options if option != correct_option_text]
         if QUIZ_FREEFORM_OPTION not in options:
             options.append(QUIZ_FREEFORM_OPTION)
 
@@ -4345,9 +4347,9 @@ def _apply_quiz_freeform_option(quiz: dict) -> dict:
     if hide_correct:
         correct_option_id = options.index(QUIZ_FREEFORM_OPTION)
     else:
-        if correct_text not in options:
+        if correct_option_text not in options:
             return quiz
-        correct_option_id = options.index(correct_text)
+        correct_option_id = options.index(correct_option_text)
 
     quiz = dict(quiz)
     quiz["options"] = options
@@ -4430,6 +4432,38 @@ def _scramble_word_preserve_ends(word: str) -> str | None:
     return None
 
 
+def _to_letters_only_word(word: str) -> str:
+    return "".join(ch for ch in (word or "") if re.match(r"[A-Za-zÄÖÜäöüß]", ch))
+
+
+def _build_same_word_anagram_distractors(correct_word: str, count: int = 3) -> list[str]:
+    base = _to_letters_only_word(correct_word)
+    if len(base) < 4:
+        return []
+
+    first = base[0]
+    last = base[-1]
+    middle = list(base[1:-1])
+    original = base.lower()
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    # Repeated letters can drastically reduce unique permutations, so use bounded retries.
+    for _ in range(120):
+        shuffled = middle[:]
+        random.shuffle(shuffled)
+        candidate = f"{first}{''.join(shuffled)}{last}"
+        lower_candidate = candidate.lower()
+        if lower_candidate == original or lower_candidate in seen:
+            continue
+        seen.add(lower_candidate)
+        variants.append(candidate)
+        if len(variants) >= count:
+            break
+
+    return variants
+
+
 def _format_anagram_option(word: str) -> str:
     if not word:
         return word
@@ -4495,44 +4529,29 @@ async def generate_anagram_quiz(entry: dict) -> dict | None:
     if not word_ru:
         return None
 
-    response_json = _coerce_response_json(entry.get("response_json"))
     correct_word = _extract_german_word(entry)
     if not correct_word:
         return None
 
-    template_sentence = None
-    usage_examples = response_json.get("usage_examples") if response_json else []
-    if usage_examples:
-        example = next((ex for ex in usage_examples if isinstance(ex, str) and ex.strip()), "")
-        if example and len(example) <= 100:
-            pattern = re.compile(rf"\\b{re.escape(correct_word)}\\b", re.IGNORECASE)
-            if pattern.search(example):
-                template_sentence = pattern.sub("{option}", example)
-
-    scrambled_correct = _scramble_word_preserve_ends(correct_word)
-    if not scrambled_correct:
+    correct_word = _to_letters_only_word(correct_word)
+    if len(correct_word) < 4:
         return None
 
-    options = [scrambled_correct]
-    options.extend(_pick_anagram_distractors(correct_word))
+    distractors = _build_same_word_anagram_distractors(correct_word, count=3)
+    if not distractors:
+        return None
+
+    options = [correct_word] + distractors
+    options = list(dict.fromkeys(options))[:4]
     if len(options) < 2:
         return None
-    options = list(dict.fromkeys(options))
     random.shuffle(options)
-    if len(options) > 4:
-        options = [scrambled_correct] + [opt for opt in options if opt != scrambled_correct][:3]
-        random.shuffle(options)
-    correct_option_id = options.index(scrambled_correct)
-    formatted_options = [_format_anagram_option(option) for option in options]
-    if template_sentence:
-        formatted_options = [template_sentence.format(option=opt) for opt in formatted_options]
-    options = formatted_options
-    correct_option_id = options.index(
-        template_sentence.format(option=_format_anagram_option(scrambled_correct))
-        if template_sentence else _format_anagram_option(scrambled_correct)
-    )
+    correct_option_id = options.index(correct_word)
 
-    question = _build_anagram_question(word_ru, correct_word, response_json)
+    question = (
+        f"Выберите правильное немецкое слово для «{word_ru}».\n"
+        "Во всех вариантах первая и последняя буквы совпадают."
+    )
     return {
         "question": question,
         "options": options,
