@@ -49,6 +49,7 @@ from backend.openai_manager import (
 from backend.database import (
     init_db,
     get_random_dictionary_entry,
+    get_random_dictionary_entry_for_quiz_type,
     record_quiz_word,
     ensure_webapp_tables,
     get_admin_telegram_ids,
@@ -4743,11 +4744,6 @@ async def delete_temporary_message(context: CallbackContext) -> None:
 
 
 async def send_scheduled_quiz(context: CallbackContext) -> None:
-    entry = get_random_dictionary_entry(cooldown_days=5)
-    if not entry:
-        logging.warning("⚠️ Нет слов в базе для генерации квиза.")
-        return
-
     generator_order = [
         ("word_order", generate_word_order_quiz),
         ("prefix", generate_prefix_quiz),
@@ -4759,15 +4755,28 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
 
     ordered = generator_order[rotation_idx:] + generator_order[:rotation_idx]
     quiz = None
+    chosen_entry = None
+    max_entries_per_generator = 4
     for quiz_type, generator in ordered:
-        try:
-            quiz = await generator(entry)
-        except Exception as exc:
-            logging.warning(f"⚠️ Генератор квиза '{quiz_type}' упал: {exc}")
-            quiz = None
+        for _ in range(max_entries_per_generator):
+            entry = get_random_dictionary_entry_for_quiz_type(quiz_type, cooldown_days=5)
+            if not entry:
+                entry = get_random_dictionary_entry(cooldown_days=5)
+            if not entry:
+                break
+            try:
+                quiz = await generator(entry)
+            except Exception as exc:
+                logging.warning(f"⚠️ Генератор квиза '{quiz_type}' упал: {exc}")
+                quiz = None
+            if quiz:
+                if not quiz.get("quiz_type"):
+                    quiz["quiz_type"] = quiz_type
+                if not quiz.get("word_ru"):
+                    quiz["word_ru"] = entry.get("word_ru")
+                chosen_entry = entry
+                break
         if quiz:
-            if not quiz.get("quiz_type"):
-                quiz["quiz_type"] = quiz_type
             break
         logging.info(f"ℹ️ Генератор квиза '{quiz_type}' вернул пустой результат, пробуем следующий.")
 
@@ -4793,10 +4802,10 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
         quiz.get("quiz_type", "generated"),
         len(quiz.get("options", [])),
         quiz.get("correct_option_id"),
-        entry.get("word_ru"),
+        (chosen_entry or {}).get("word_ru"),
     )
 
-    record_quiz_word(entry.get("word_ru"))
+    record_quiz_word((chosen_entry or {}).get("word_ru"))
 
     active_quizzes[poll_message.poll.id] = {
         "chat_id": BOT_GROUP_CHAT_ID_Deutsch,

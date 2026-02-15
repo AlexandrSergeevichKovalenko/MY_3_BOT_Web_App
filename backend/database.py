@@ -814,6 +814,87 @@ def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
             }
 
 
+def get_random_dictionary_entry_for_quiz_type(quiz_type: str, cooldown_days: int = 5) -> dict | None:
+    quiz_type = (quiz_type or "").strip().lower()
+
+    usage_examples_count_expr = (
+        "CASE WHEN jsonb_typeof(response_json->'usage_examples') = 'array' "
+        "THEN jsonb_array_length(response_json->'usage_examples') ELSE 0 END"
+    )
+    prefixes_count_expr = (
+        "CASE WHEN jsonb_typeof(response_json->'prefixes') = 'array' "
+        "THEN jsonb_array_length(response_json->'prefixes') ELSE 0 END"
+    )
+    base_word_expr = (
+        "COALESCE(NULLIF(word_de, ''), NULLIF(response_json->>'word_de', ''), "
+        "NULLIF(translation_de, ''), NULLIF(response_json->>'translation_de', ''))"
+    )
+    letters_only_len_expr = (
+        f"LENGTH(REGEXP_REPLACE({base_word_expr}, '[^A-Za-zÄÖÜäöüß]', '', 'g'))"
+    )
+
+    where_by_type = {
+        "word_order": f"{usage_examples_count_expr} > 0",
+        "prefix": f"({prefixes_count_expr} > 0 OR {base_word_expr} IS NOT NULL)",
+        "anagram": f"{letters_only_len_expr} >= 4",
+        "word": "COALESCE(NULLIF(translation_de, ''), NULLIF(response_json->>'translation_de', '')) IS NOT NULL",
+    }
+    extra_where = where_by_type.get(quiz_type, "TRUE")
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    id,
+                    user_id,
+                    word_ru,
+                    translation_de,
+                    response_json
+                FROM bt_3_webapp_dictionary_queries
+                WHERE response_json IS NOT NULL
+                  AND {extra_where}
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM bt_3_quiz_history h
+                      WHERE h.word_ru = bt_3_webapp_dictionary_queries.word_ru
+                        AND h.asked_at >= NOW() - INTERVAL %s
+                  )
+                ORDER BY RANDOM()
+                LIMIT 1;
+                """,
+                (f"{cooldown_days} days",),
+            )
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    f"""
+                    SELECT
+                        id,
+                        user_id,
+                        word_ru,
+                        translation_de,
+                        response_json
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE response_json IS NOT NULL
+                      AND {extra_where}
+                    ORDER BY RANDOM()
+                    LIMIT 1;
+                    """
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "word_ru": row[2],
+        "translation_de": row[3],
+        "response_json": row[4],
+    }
+
+
 def record_quiz_word(word_ru: str) -> None:
     if not word_ru:
         return
