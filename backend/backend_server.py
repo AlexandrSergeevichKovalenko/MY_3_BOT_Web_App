@@ -193,6 +193,8 @@ _YT_OEMBED_CACHE: dict[str, dict] = {}
 
 _audio_scheduler = None
 _audio_scheduler_lock = None
+MOBILE_AUTH_SECRET = (os.getenv("MOBILE_AUTH_SECRET") or TELEGRAM_Deutsch_BOT_TOKEN or "").strip()
+MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
 
 WEBAPP_TOPICS = [
     "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
@@ -305,6 +307,42 @@ def get_token_api():
     return jsonify({"token": access_token.to_jwt()})
 
 
+@app.route("/api/mobile/auth/exchange", methods=["POST"])
+def exchange_mobile_access_token():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    user_id = int(user_id)
+    if not is_telegram_user_allowed(user_id):
+        return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
+
+    username = _extract_display_name(user_data)
+    try:
+        token = _issue_mobile_access_token(user_id=user_id, username=username)
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка выпуска mobile token: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "access_token": token,
+            "expires_in": MOBILE_AUTH_TTL_SECONDS,
+            "user": {"id": user_id, "username": username},
+        }
+    )
+
+
 def _build_telegram_data_check_string(init_data: str) -> str:
     pairs = parse_qsl(init_data, keep_blank_values=True)
     data = {key: value for key, value in pairs if key != "hash"}
@@ -339,6 +377,80 @@ def _parse_telegram_init_data(init_data: str) -> dict:
         "chat_type": data.get("chat_type"),
         "chat_instance": data.get("chat_instance"),
     }
+
+
+def _mobile_b64encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
+
+
+def _mobile_b64decode(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(data + padding)
+
+
+def _issue_mobile_access_token(user_id: int, username: str | None = None, ttl_seconds: int | None = None) -> str:
+    ttl = int(ttl_seconds if ttl_seconds is not None else MOBILE_AUTH_TTL_SECONDS)
+    payload = {
+        "uid": int(user_id),
+        "usr": (username or "").strip(),
+        "exp": int(time.time()) + max(60, ttl),
+    }
+    payload_raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if not MOBILE_AUTH_SECRET:
+        raise RuntimeError("MOBILE_AUTH_SECRET не задан")
+    sig = hmac.new(MOBILE_AUTH_SECRET.encode("utf-8"), payload_raw, hashlib.sha256).hexdigest()
+    return f"{_mobile_b64encode(payload_raw)}.{sig}"
+
+
+def _verify_mobile_access_token(token: str) -> dict | None:
+    token = (token or "").strip()
+    if not token or "." not in token:
+        return None
+    if not MOBILE_AUTH_SECRET:
+        return None
+
+    payload_part, sig_part = token.rsplit(".", 1)
+    try:
+        payload_raw = _mobile_b64decode(payload_part)
+    except Exception:
+        return None
+
+    expected = hmac.new(MOBILE_AUTH_SECRET.encode("utf-8"), payload_raw, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig_part):
+        return None
+
+    try:
+        payload = json.loads(payload_raw.decode("utf-8"))
+    except Exception:
+        return None
+
+    uid = payload.get("uid")
+    exp = payload.get("exp")
+    if not isinstance(uid, int):
+        return None
+    if not isinstance(exp, int) or exp <= int(time.time()):
+        return None
+    return payload
+
+
+def _extract_mobile_token() -> str:
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    payload = request.get_json(silent=True) or {}
+    return (payload.get("access_token") or "").strip()
+
+
+def _get_mobile_authenticated_user() -> tuple[int | None, str | None, object | None]:
+    token = _extract_mobile_token()
+    data = _verify_mobile_access_token(token)
+    if not data:
+        return None, None, (jsonify({"error": "Неверный или просроченный access token"}), 401)
+    user_id = int(data.get("uid"))
+    username = (data.get("usr") or "").strip() or None
+    if not is_telegram_user_allowed(user_id):
+        return None, None, (jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403)
+    return user_id, username, None
 
 
 def _extract_display_name(user_data: dict | None) -> str | None:
@@ -2079,6 +2191,42 @@ def lookup_webapp_dictionary():
     return jsonify({"ok": True, "item": result, "direction": "ru-de" if is_ru else "de-ru"})
 
 
+@app.route("/api/mobile/dictionary/lookup", methods=["POST"])
+def lookup_mobile_dictionary():
+    user_id, _username, error = _get_mobile_authenticated_user()
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    word = (payload.get("word") or "").strip()
+    if not word:
+        return jsonify({"error": "word обязателен"}), 400
+
+    try:
+        is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word)
+        if is_ru:
+            cached = get_dictionary_cache(word)
+            if cached:
+                return jsonify({"ok": True, "item": cached, "direction": "ru-de", "user_id": user_id})
+            result = asyncio.run(run_dictionary_lookup(word))
+        else:
+            result = asyncio.run(run_dictionary_lookup_de(word))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
+
+    if result and is_ru:
+        upsert_dictionary_cache(word, result)
+
+    return jsonify(
+        {
+            "ok": True,
+            "item": result,
+            "direction": "ru-de" if is_ru else "de-ru",
+            "user_id": user_id,
+        }
+    )
+
+
 @app.route("/api/webapp/dictionary/collocations", methods=["POST"])
 def get_webapp_dictionary_collocations():
     payload = request.get_json(silent=True) or {}
@@ -2318,6 +2466,56 @@ def save_webapp_dictionary_entry():
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
 
     return jsonify({"ok": True})
+
+
+@app.route("/api/mobile/dictionary/save", methods=["POST"])
+def save_mobile_dictionary_entry():
+    user_id, _username, error = _get_mobile_authenticated_user()
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    word_ru = (payload.get("word_ru") or "").strip()
+    word_de = (payload.get("word_de") or "").strip()
+    translation_de = (payload.get("translation_de") or "").strip()
+    translation_ru = (payload.get("translation_ru") or "").strip()
+    response_json = payload.get("response_json") or {}
+    folder_id = payload.get("folder_id")
+
+    if not word_ru and not word_de and not isinstance(response_json, dict):
+        return jsonify({"error": "word_ru/word_de или response_json обязателен"}), 400
+
+    if folder_id is None:
+        try:
+            default_folder = get_or_create_dictionary_folder(
+                user_id=user_id,
+                name="GENERAL",
+                color="#7d8590",
+                icon="📁",
+            )
+            folder_id = default_folder.get("id")
+        except Exception:
+            folder_id = None
+
+    try:
+        resolved_word_ru = word_ru or (response_json.get("word_ru") if isinstance(response_json, dict) else None)
+        resolved_word_de = word_de or (response_json.get("word_de") if isinstance(response_json, dict) else None)
+        resolved_translation_de = translation_de or (response_json.get("translation_de") if isinstance(response_json, dict) else None)
+        resolved_translation_ru = translation_ru or (response_json.get("translation_ru") if isinstance(response_json, dict) else None)
+
+        save_webapp_dictionary_query(
+            user_id=user_id,
+            word_ru=resolved_word_ru if resolved_word_ru else None,
+            translation_de=resolved_translation_de,
+            word_de=resolved_word_de if resolved_word_de else None,
+            translation_ru=resolved_translation_ru,
+            response_json=response_json if isinstance(response_json, dict) else {},
+            folder_id=int(folder_id) if folder_id is not None else None,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
+
+    return jsonify({"ok": True, "user_id": user_id})
 
 
 @app.route("/api/webapp/dictionary/cards", methods=["POST"])

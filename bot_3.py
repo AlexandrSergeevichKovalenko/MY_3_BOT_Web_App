@@ -15,6 +15,8 @@ import asyncio
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import CallbackQueryHandler
 import hashlib
+import hmac
+import base64
 import re
 import html
 import random
@@ -44,6 +46,7 @@ from backend.openai_manager import (
     system_message,
     run_dictionary_lookup,
     run_dictionary_lookup_de,
+    run_dictionary_collocations,
     run_generate_word_quiz,
     run_translate_subtitles_ru,
 )
@@ -89,6 +92,8 @@ active_quizzes = {}
 pending_quiz_freeform = {}
 quiz_ru_translation_cache = {}
 pending_dictionary_cards = {}
+pending_dictionary_save_options = {}
+MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
 
 
 # === Логирование ===
@@ -629,6 +634,24 @@ def get_webapp_deeplink(path: str = "review", bot_username: str | None = None) -
     return f"{get_webapp_url()}/{path}"
 
 
+def _mobile_b64encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
+
+
+def _issue_mobile_access_token(user_id: int, username: str | None = None) -> str:
+    payload = {
+        "uid": int(user_id),
+        "usr": (username or "").strip(),
+        "exp": int(datetime.utcnow().timestamp()) + max(60, MOBILE_AUTH_TTL_SECONDS),
+    }
+    payload_raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    secret = (os.getenv("MOBILE_AUTH_SECRET") or TELEGRAM_Deutsch_BOT_TOKEN or "").strip()
+    if not secret:
+        raise RuntimeError("MOBILE_AUTH_SECRET/TELEGRAM_Deutsch_BOT_TOKEN не задан")
+    sig = hmac.new(secret.encode("utf-8"), payload_raw, hashlib.sha256).hexdigest()
+    return f"{_mobile_b64encode(payload_raw)}.{sig}"
+
+
 def _is_admin_user(user_id: int | None) -> bool:
     if not user_id:
         return False
@@ -1002,6 +1025,36 @@ async def pending_requests_command(update: Update, context: CallbackContext):
         await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
         return
     await _send_pending_requests_to_admin(context, chat_id=update.effective_message.chat_id)
+
+
+async def mobile_token_command(update: Update, context: CallbackContext):
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+
+    if not is_telegram_user_allowed(int(user.id)):
+        await message.reply_text("⛔️ Доступ закрыт. Сначала получите доступ к боту.")
+        return
+
+    username = (user.username or f"{user.first_name or ''} {user.last_name or ''}".strip() or str(user.id))
+    try:
+        token = _issue_mobile_access_token(user_id=int(user.id), username=username)
+    except Exception as exc:
+        logging.exception(f"❌ Не удалось выдать mobile token: {exc}")
+        await message.reply_text("❌ Не удалось выдать mobile token. Проверьте настройки сервера.")
+        return
+
+    base_url = get_public_web_url()
+    ttl_days = max(1, MOBILE_AUTH_TTL_SECONDS // 86400)
+    text = (
+        "📱 Mobile access token для iOS Share Extension\n\n"
+        f"base_url:\n`{base_url}`\n\n"
+        f"access_token:\n`{token}`\n\n"
+        f"Срок действия: ~{ttl_days} дн.\n"
+        "Вставьте эти значения в экран настройки iOS-приложения."
+    )
+    await message.reply_text(text, parse_mode="Markdown")
 
 async def handle_button_click(update: Update, context: CallbackContext):
     """Обрабатывает нажатия на кнопки главного меню."""
@@ -1480,19 +1533,21 @@ def _is_menu_button_text(text: str) -> bool:
 
 
 def _is_dictionary_lookup_candidate(text: str) -> bool:
-    if not text or text.startswith("/") or len(text) > 64:
+    if not text or text.startswith("/") or len(text) > 120:
         return False
     if any(ch.isdigit() for ch in text):
         return False
-    if re.search(r"[^A-Za-zА-Яа-яЁёÄÖÜäöüßẞ'\-\s]", text):
+    if re.search(r"[^A-Za-zА-Яа-яЁёÄÖÜäöüßẞ'\-\s.,!?;:()\"]", text):
         return False
-    words = [part for part in re.split(r"\s+", text.strip()) if part]
-    return 1 <= len(words) <= 3
+    normalized = re.sub(r"[.,!?;:()\"]", " ", text)
+    words = [part for part in re.split(r"\s+", normalized.strip()) if part]
+    return 1 <= len(words) <= 8
 
 
 def _detect_dictionary_direction(text: str) -> str | None:
-    has_cyr = bool(re.search(r"[А-Яа-яЁё]", text))
-    has_lat = bool(re.search(r"[A-Za-zÄÖÜäöüßẞ]", text))
+    normalized = re.sub(r"[.,!?;:()\"]", " ", text)
+    has_cyr = bool(re.search(r"[А-Яа-яЁё]", normalized))
+    has_lat = bool(re.search(r"[A-Za-zÄÖÜäöüßẞ]", normalized))
     if has_cyr and not has_lat:
         return "ru-de"
     if has_lat and not has_cyr:
@@ -1601,6 +1656,53 @@ def _store_pending_dictionary_card(user_id: int, direction: str, source_text: st
     return key
 
 
+def _store_pending_dictionary_save_options(user_id: int, card_key: str, options: list[dict], lookup: dict, direction: str) -> str:
+    key = hashlib.sha1(
+        f"{user_id}:{card_key}:{datetime.utcnow().isoformat()}".encode("utf-8")
+    ).hexdigest()[:20]
+    pending_dictionary_save_options[key] = {
+        "user_id": user_id,
+        "card_key": card_key,
+        "direction": direction,
+        "lookup": lookup,
+        "options": options[:3],
+    }
+    if len(pending_dictionary_save_options) > 500:
+        oldest_key = next(iter(pending_dictionary_save_options))
+        pending_dictionary_save_options.pop(oldest_key, None)
+    return key
+
+
+def _resolve_default_dictionary_option(payload: dict) -> dict:
+    lookup = payload.get("lookup") or {}
+    direction = payload.get("direction")
+    source_text = (payload.get("source_text") or "").strip()
+    if direction == "ru-de":
+        source = (lookup.get("word_ru") or source_text).strip()
+        target = (lookup.get("translation_de") or "").strip()
+    else:
+        source = (lookup.get("word_de") or source_text).strip()
+        target = (lookup.get("translation_ru") or "").strip()
+    return {"source": source, "target": target}
+
+
+def _build_save_variant_keyboard(option_key: str, options: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for idx, _opt in enumerate(options[:3], start=1):
+        rows.append([InlineKeyboardButton(f"💾 Сохранить вариант {idx}", callback_data=f"dictsaveopt:{option_key}:{idx-1}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_save_variants_text(direction: str, options: list[dict]) -> str:
+    title = "Выберите вариант для сохранения в словарь:"
+    lines = [title, f"Направление: {'RU -> DE' if direction == 'ru-de' else 'DE -> RU'}", ""]
+    for idx, opt in enumerate(options[:3], start=1):
+        source = (opt.get("source") or "").strip() or "—"
+        target = (opt.get("target") or "").strip() or "—"
+        lines.append(f"{idx}. {source} -> {target}")
+    return "\n".join(lines)
+
+
 async def _handle_private_dictionary_lookup(update: Update, context: CallbackContext, text: str) -> None:
     direction = _detect_dictionary_direction(text)
     if not direction:
@@ -1657,11 +1759,109 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
         await query.answer("Не удалось сохранить: данные карточки повреждены.", show_alert=True)
         return
 
+    try:
+        direction = (payload.get("direction") or "").strip()
+        source_text = (payload.get("source_text") or "").strip()
+        default_option = _resolve_default_dictionary_option(payload)
+        base_translation = (default_option.get("target") or "").strip()
+        generated = await run_dictionary_collocations(direction, source_text, base_translation)
+        items = generated.get("items") if isinstance(generated, dict) else []
+        options = []
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                source = (item.get("source") or "").strip()
+                target = (item.get("target") or "").strip()
+                if source and target:
+                    options.append({"source": source, "target": target})
+                if len(options) >= 3:
+                    break
+        if not options:
+            options = [default_option]
+        if default_option not in options:
+            options = [default_option] + options
+        options = options[:3]
+    except Exception as exc:
+        logging.exception(f"❌ Ошибка генерации вариантов сохранения: {exc}")
+        await query.answer("Ошибка подготовки вариантов. Попробуйте позже.", show_alert=True)
+        return
+
+    option_key = _store_pending_dictionary_save_options(
+        user_id=int(user.id),
+        card_key=key,
+        options=options,
+        lookup=lookup,
+        direction=payload.get("direction") or "",
+    )
+    variants_text = _build_save_variants_text(payload.get("direction") or "", options)
+    keyboard = _build_save_variant_keyboard(option_key, options)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await query.answer("Выберите вариант")
+    await query.message.reply_text(variants_text, reply_markup=keyboard)
+
+
+async def handle_dictionary_save_option_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) != 3:
+        await query.answer("Неверный формат выбора.", show_alert=True)
+        return
+    option_key = parts[1].strip()
+    try:
+        option_idx = int(parts[2].strip())
+    except ValueError:
+        await query.answer("Неверный индекс варианта.", show_alert=True)
+        return
+
+    payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        await query.answer("Варианты устарели. Нажмите сохранить ещё раз.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Сохранение доступно только автору карточки.", show_alert=True)
+        return
+
+    options = payload.get("options") or []
+    if option_idx < 0 or option_idx >= len(options):
+        await query.answer("Выбранный вариант не найден.", show_alert=True)
+        return
+
+    chosen = options[option_idx]
+    source = (chosen.get("source") or "").strip()
+    target = (chosen.get("target") or "").strip()
+    direction = (payload.get("direction") or "").strip()
+    lookup = payload.get("lookup") or {}
     user_id = int(user.id)
-    word_ru = (lookup.get("word_ru") or "").strip() or None
-    word_de = (lookup.get("word_de") or "").strip() or None
-    translation_de = (lookup.get("translation_de") or "").strip() or None
-    translation_ru = (lookup.get("translation_ru") or "").strip() or None
+
+    if not source or not target:
+        await query.answer("Вариант неполный, выберите другой.", show_alert=True)
+        return
+
+    response_json = dict(lookup) if isinstance(lookup, dict) else {}
+    if direction == "ru-de":
+        response_json["word_ru"] = source
+        response_json["translation_de"] = target
+        word_ru = source
+        word_de = (response_json.get("word_de") or "").strip() or None
+        translation_de = target
+        translation_ru = (response_json.get("translation_ru") or "").strip() or None
+    else:
+        response_json["word_de"] = source
+        response_json["translation_ru"] = target
+        word_ru = (response_json.get("word_ru") or "").strip() or None
+        word_de = source
+        translation_de = (response_json.get("translation_de") or "").strip() or None
+        translation_ru = target
 
     try:
         try:
@@ -1681,22 +1881,27 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
             translation_de=translation_de,
             word_de=word_de,
             translation_ru=translation_ru,
-            response_json=lookup,
+            response_json=response_json,
             folder_id=int(folder_id) if folder_id is not None else None,
         )
     except Exception as exc:
-        logging.exception(f"❌ Ошибка сохранения словаря user_id={user_id}: {exc}")
+        logging.exception(f"❌ Ошибка сохранения выбранного варианта user_id={user_id}: {exc}")
         await query.answer("Ошибка сохранения. Попробуйте позже.", show_alert=True)
         return
 
-    payload["saved"] = True
-    pending_dictionary_cards[key] = payload
+    card_key = payload.get("card_key")
+    card_payload = pending_dictionary_cards.get(card_key or "")
+    if isinstance(card_payload, dict):
+        card_payload["saved"] = True
+        pending_dictionary_cards[card_key] = card_payload
+
+    pending_dictionary_save_options.pop(option_key, None)
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
         pass
     await query.answer("✅ Сохранено")
-    await query.message.reply_text("✅ Слово сохранено в словарь.")
+    await query.message.reply_text(f"✅ Сохранён вариант: {source} -> {target}")
 
 
 async def delete_message_with_retry(bot, chat_id, message_id, retries=3, delay=2):
@@ -5153,6 +5358,7 @@ def main():
     application.add_handler(CommandHandler("deny", deny_user_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))
+    application.add_handler(CommandHandler("mobile_token", mobile_token_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
@@ -5162,6 +5368,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_explain_request, pattern=r"^explain:"))
     application.add_handler(CallbackQueryHandler(handle_pending_access_list, pattern=r"^access:pending:list$"))
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_save_option_callback, pattern=r"^dictsaveopt:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
