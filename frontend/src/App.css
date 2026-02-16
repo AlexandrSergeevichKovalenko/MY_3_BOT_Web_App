@@ -2328,6 +2328,13 @@ body {
   margin: 6px 0 0;
 }
 
+.flashcard-feel-feedback {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .flashcard-options {
   display: grid;
   gap: 8px;

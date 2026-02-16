@@ -125,6 +125,7 @@ function AppInner() {
   const [flashcardPreviewActive, setFlashcardPreviewActive] = useState(false);
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
   const [flashcardFeelMap, setFlashcardFeelMap] = useState({});
+  const [flashcardFeelFeedbackLoading, setFlashcardFeelFeedbackLoading] = useState({});
   const [previewAudioReady, setPreviewAudioReady] = useState(false);
   const [previewAudioPlaying, setPreviewAudioPlaying] = useState(false);
   const [flashcardTimerKey, setFlashcardTimerKey] = useState(0);
@@ -4123,6 +4124,78 @@ function AppInner() {
                                       <div className="flashcard-feel">
                                         <strong>Почувствовать слово</strong>
                                         <p>{feel}</p>
+                                        {entry.id && (
+                                          <div className="flashcard-feel-feedback">
+                                            <button
+                                              type="button"
+                                              className="secondary-button"
+                                              disabled={!!flashcardFeelFeedbackLoading[entry.id]}
+                                              onClick={async () => {
+                                                try {
+                                                  setFlashcardFeelFeedbackLoading((prev) => ({ ...prev, [entry.id]: true }));
+                                                  const response = await fetch('/api/webapp/flashcards/feel/feedback', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({
+                                                      initData,
+                                                      entry_id: entry.id,
+                                                      liked: true,
+                                                    }),
+                                                  });
+                                                  if (!response.ok) {
+                                                    throw new Error(await response.text());
+                                                  }
+                                                } catch (error) {
+                                                  setWebappError(`Ошибка feedback: ${error.message}`);
+                                                } finally {
+                                                  setFlashcardFeelFeedbackLoading((prev) => ({ ...prev, [entry.id]: false }));
+                                                }
+                                              }}
+                                            >
+                                              👍 Нравится
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="secondary-button"
+                                              disabled={!!flashcardFeelFeedbackLoading[entry.id]}
+                                              onClick={async () => {
+                                                try {
+                                                  setFlashcardFeelFeedbackLoading((prev) => ({ ...prev, [entry.id]: true }));
+                                                  const response = await fetch('/api/webapp/flashcards/feel/feedback', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({
+                                                      initData,
+                                                      entry_id: entry.id,
+                                                      liked: false,
+                                                    }),
+                                                  });
+                                                  if (!response.ok) {
+                                                    throw new Error(await response.text());
+                                                  }
+                                                  setFlashcardFeelMap((prev) => {
+                                                    const next = { ...prev };
+                                                    delete next[entry.id];
+                                                    return next;
+                                                  });
+                                                  setFlashcards((prev) => prev.map((item) => {
+                                                    if (item.id !== entry.id) return item;
+                                                    const nextResponse = { ...(item.response_json || {}) };
+                                                    delete nextResponse.feel_explanation;
+                                                    nextResponse.feel_feedback = 'dislike';
+                                                    return { ...item, response_json: nextResponse };
+                                                  }));
+                                                } catch (error) {
+                                                  setWebappError(`Ошибка feedback: ${error.message}`);
+                                                } finally {
+                                                  setFlashcardFeelFeedbackLoading((prev) => ({ ...prev, [entry.id]: false }));
+                                                }
+                                              }}
+                                            >
+                                              👎 Не нравится
+                                            </button>
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                   </div>

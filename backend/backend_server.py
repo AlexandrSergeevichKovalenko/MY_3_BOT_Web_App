@@ -2750,6 +2750,60 @@ def get_flashcard_feel():
     return jsonify({"ok": True, "feel_explanation": feel_text})
 
 
+@app.route("/api/webapp/flashcards/feel/feedback", methods=["POST"])
+def set_flashcard_feel_feedback():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    entry_id = payload.get("entry_id")
+    liked = payload.get("liked")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not entry_id:
+        return jsonify({"error": "entry_id обязателен"}), 400
+    if liked is None:
+        return jsonify({"error": "liked обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    try:
+        entry = get_dictionary_entry_by_id(int(entry_id))
+    except Exception:
+        entry = None
+
+    if not entry:
+        return jsonify({"error": "entry не найден"}), 404
+
+    response_json = entry.get("response_json")
+    if isinstance(response_json, str):
+        try:
+            response_json = json.loads(response_json)
+        except Exception:
+            response_json = {}
+    if not isinstance(response_json, dict):
+        response_json = {}
+
+    if bool(liked):
+        response_json["feel_feedback"] = "like"
+    else:
+        response_json.pop("feel_explanation", None)
+        response_json["feel_feedback"] = "dislike"
+
+    try:
+        update_webapp_dictionary_entry(int(entry_id), response_json)
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения feedback: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "liked": bool(liked),
+            "kept": bool(liked),
+        }
+    )
+
+
 @app.route("/api/webapp/tts", methods=["POST"])
 def webapp_tts():
     payload = request.get_json(silent=True) or {}
