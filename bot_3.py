@@ -1694,13 +1694,57 @@ def _build_save_variant_keyboard(option_key: str, options: list[dict]) -> Inline
 
 
 def _build_save_variants_text(direction: str, options: list[dict]) -> str:
-    title = "Выберите вариант для сохранения в словарь:"
-    lines = [title, f"Направление: {'RU -> DE' if direction == 'ru-de' else 'DE -> RU'}", ""]
+    lines = ["Варианты для сохранения (с переводом):", ""]
     for idx, opt in enumerate(options[:3], start=1):
         source = (opt.get("source") or "").strip() or "—"
         target = (opt.get("target") or "").strip() or "—"
-        lines.append(f"{idx}. {source} -> {target}")
+        if direction == "ru-de":
+            de_text = target
+            ru_text = source
+        else:
+            de_text = source
+            ru_text = target
+        lines.append(f"{idx}. DE: {de_text}")
+        lines.append(f"   RU: {ru_text}")
+        lines.append("")
     return "\n".join(lines)
+
+
+async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
+    lookup = payload.get("lookup") or {}
+    direction = (payload.get("direction") or "").strip()
+    source_text = (payload.get("source_text") or "").strip()
+    default_option = _resolve_default_dictionary_option(payload)
+    base_translation = (default_option.get("target") or "").strip()
+
+    generated = await run_dictionary_collocations(direction, source_text, base_translation)
+    items = generated.get("items") if isinstance(generated, dict) else []
+
+    unique: set[tuple[str, str]] = set()
+    options: list[dict] = []
+
+    def _add_option(source_value: str, target_value: str) -> None:
+        s = source_value.strip()
+        t = target_value.strip()
+        if not s or not t:
+            return
+        key = (s.lower(), t.lower())
+        if key in unique:
+            return
+        unique.add(key)
+        options.append({"source": s, "target": t})
+
+    _add_option(default_option.get("source") or "", default_option.get("target") or "")
+
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            _add_option(item.get("source") or "", item.get("target") or "")
+            if len(options) >= 3:
+                break
+
+    return options[:3]
 
 
 async def _handle_private_dictionary_lookup(update: Update, context: CallbackContext, text: str) -> None:
@@ -1724,12 +1768,36 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
         return
 
     source_text = (lookup.get("word_ru") or lookup.get("word_de") or lookup_input).strip()
-    card_text = _build_dictionary_card_text(direction, source_text, lookup)
     card_key = _store_pending_dictionary_card(update.message.from_user.id, direction, source_text, lookup)
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("💾 Сохранить в словарь", callback_data=f"dictsave:{card_key}")]]
+
+    try:
+        options = await _generate_dictionary_save_options(
+            {
+                "direction": direction,
+                "source_text": source_text,
+                "lookup": lookup,
+            }
+        )
+    except Exception as exc:
+        logging.exception(f"❌ Ошибка генерации вариантов сохранения: {exc}")
+        options = []
+
+    if not options:
+        options = [_resolve_default_dictionary_option({"direction": direction, "source_text": source_text, "lookup": lookup})]
+
+    option_key = _store_pending_dictionary_save_options(
+        user_id=int(update.message.from_user.id),
+        card_key=card_key,
+        options=options,
+        lookup=lookup,
+        direction=direction,
     )
-    msg = await update.message.reply_text(card_text, reply_markup=keyboard)
+
+    card_text = _build_dictionary_card_text(direction, source_text, lookup)
+    variants_text = _build_save_variants_text(direction, options)
+    full_text = f"{card_text}\n\n{variants_text}"
+    keyboard = _build_save_variant_keyboard(option_key, options)
+    msg = await update.message.reply_text(full_text, reply_markup=keyboard)
     add_service_msg_id(context, msg.message_id)
 
 
@@ -1760,28 +1828,9 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
         return
 
     try:
-        direction = (payload.get("direction") or "").strip()
-        source_text = (payload.get("source_text") or "").strip()
-        default_option = _resolve_default_dictionary_option(payload)
-        base_translation = (default_option.get("target") or "").strip()
-        generated = await run_dictionary_collocations(direction, source_text, base_translation)
-        items = generated.get("items") if isinstance(generated, dict) else []
-        options = []
-        if isinstance(items, list):
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                source = (item.get("source") or "").strip()
-                target = (item.get("target") or "").strip()
-                if source and target:
-                    options.append({"source": source, "target": target})
-                if len(options) >= 3:
-                    break
+        options = await _generate_dictionary_save_options(payload)
         if not options:
-            options = [default_option]
-        if default_option not in options:
-            options = [default_option] + options
-        options = options[:3]
+            options = [_resolve_default_dictionary_option(payload)]
     except Exception as exc:
         logging.exception(f"❌ Ошибка генерации вариантов сохранения: {exc}")
         await query.answer("Ошибка подготовки вариантов. Попробуйте позже.", show_alert=True)

@@ -102,6 +102,26 @@ def ensure_webapp_tables() -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS assistants (
+                    task_name TEXT PRIMARY KEY,
+                    assistant_id TEXT NOT NULL
+                );
+            """)
+            # Backward compatibility: if legacy table "assistant" exists,
+            # migrate rows into "assistants".
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF to_regclass('public.assistant') IS NOT NULL THEN
+                        INSERT INTO assistants (task_name, assistant_id)
+                        SELECT task_name, assistant_id
+                        FROM assistant
+                        ON CONFLICT (task_name) DO UPDATE
+                        SET assistant_id = EXCLUDED.assistant_id;
+                    END IF;
+                END $$;
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_allowed_users (
                     user_id BIGINT PRIMARY KEY,
                     username TEXT,

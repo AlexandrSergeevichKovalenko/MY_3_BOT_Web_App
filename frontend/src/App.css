@@ -464,6 +464,13 @@ body {
     0 0 42px rgba(216, 180, 254, 0.35);
 }
 
+.menu-item-assistant.is-active .menu-icon {
+  box-shadow:
+    0 0 10px rgba(217, 119, 6, 0.62),
+    0 0 24px rgba(245, 158, 11, 0.54),
+    0 0 42px rgba(253, 186, 116, 0.4);
+}
+
 .menu-item-analytics.is-active .menu-icon {
   box-shadow:
     0 0 10px rgba(34, 197, 94, 0.6),
@@ -909,6 +916,67 @@ body {
 
 .analytics-chart.analytics-compare {
   height: 280px;
+}
+
+.voice-assistant-section {
+  display: grid;
+  gap: 16px;
+}
+
+.voice-assistant-join {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.62);
+}
+
+.voice-assistant-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  color: rgba(248, 250, 252, 0.84);
+  font-size: 13px;
+}
+
+.voice-assistant-room-wrap {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: radial-gradient(circle at 20% 20%, rgba(56, 189, 248, 0.15), transparent 50%),
+    radial-gradient(circle at 80% 20%, rgba(234, 179, 8, 0.15), transparent 45%),
+    rgba(15, 23, 42, 0.78);
+}
+
+.voice-assistant-room {
+  padding: 18px;
+  min-height: 240px;
+  display: grid;
+  gap: 12px;
+}
+
+.voice-assistant-room-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.voice-assistant-room-head h3 {
+  margin: 8px 0 0;
+}
+
+.voice-assistant-hint {
+  margin: 0;
+  color: rgba(248, 250, 252, 0.8);
+}
+
+.voice-assistant-controls {
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(2, 6, 23, 0.45);
+  padding: 10px;
 }
 
 .webapp-form {

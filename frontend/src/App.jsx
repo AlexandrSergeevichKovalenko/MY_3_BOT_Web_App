@@ -213,6 +213,7 @@ function AppInner() {
   const timeoutAudioRef = useRef(null);
   const avatarInputRef = useRef(null);
   const analyticsRef = useRef(null);
+  const assistantRef = useRef(null);
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
@@ -534,7 +535,7 @@ function AppInner() {
   };
 
   const showAllSections = () => {
-    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'flashcards', 'analytics']));
+    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'flashcards', 'assistant', 'analytics']));
     setMoviesCollapsed(false);
   };
 
@@ -642,10 +643,23 @@ function AppInner() {
   // Аналогично: const [username, setUsername] = useState(''); — создали память для имени пользователя, изначально пустая строка.
   // Итог: useState — это способ "создать память" внутри функционального компонента React.
   const [token, setToken] = useState(null);
+  const [assistantToken, setAssistantToken] = useState(null);
+  const [assistantConnecting, setAssistantConnecting] = useState(false);
+  const [assistantError, setAssistantError] = useState('');
 
   // LiveKit login state
   const [telegramID, setTelegramID] = useState('');
   const [username, setUsername] = useState('');
+
+  const assistantIdentity = useMemo(() => {
+    const userId = webappUser?.id ? String(webappUser.id) : '';
+    const fullName = [webappUser?.first_name, webappUser?.last_name]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    const displayName = fullName || webappUser?.username || (userId ? `user_${userId}` : '');
+    return { userId, displayName };
+  }, [webappUser]);
 
   const handleConnect = async (e) => {
     e.preventDefault();
@@ -670,6 +684,36 @@ function AppInner() {
       console.error(error);
       alert(error.message);
     }
+  };
+
+  const connectAssistant = async () => {
+    const userId = assistantIdentity.userId;
+    const displayName = assistantIdentity.displayName;
+    if (!userId || !displayName) {
+      setAssistantError('Не удалось определить пользователя Telegram. Обновите страницу.');
+      return;
+    }
+    try {
+      setAssistantConnecting(true);
+      setAssistantError('');
+      const response = await fetch(
+        `/api/token?user_id=${encodeURIComponent(userId)}&username=${encodeURIComponent(displayName)}`
+      );
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      setAssistantToken(data.token);
+    } catch (error) {
+      setAssistantError(`Ошибка подключения ассистента: ${error.message}`);
+    } finally {
+      setAssistantConnecting(false);
+    }
+  };
+
+  const disconnectAssistant = () => {
+    setAssistantToken(null);
+    setAssistantError('');
   };
 
   useEffect(() => {
@@ -700,6 +744,12 @@ function AppInner() {
 
     bootstrap();
   }, [initData, isWebAppMode]);
+
+  useEffect(() => {
+    if (flashcardsOnly || !selectedSections.has('assistant')) {
+      setAssistantToken(null);
+    }
+  }, [flashcardsOnly, selectedSections]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -2778,6 +2828,23 @@ function AppInner() {
               </button>
               <button
                 type="button"
+                className={`menu-item menu-item-assistant ${selectedSections.has('assistant') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('assistant')}
+                disabled={flashcardsOnly}
+              >
+                <span className="menu-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="16" rx="4" fill="#d97706" />
+                    <circle cx="9" cy="11" r="1.5" fill="#fff7ed" />
+                    <circle cx="15" cy="11" r="1.5" fill="#fff7ed" />
+                    <path d="M8 15h8" stroke="#fff7ed" strokeWidth="1.7" strokeLinecap="round" />
+                    <path d="M12 2v3" stroke="#fef3c7" strokeWidth="1.8" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <span>Ассистент</span>
+              </button>
+              <button
+                type="button"
                 className={`menu-item menu-item-analytics ${selectedSections.has('analytics') ? 'is-active' : ''}`}
                 onClick={() => toggleSection('analytics')}
                 disabled={flashcardsOnly}
@@ -2946,6 +3013,23 @@ function AppInner() {
                         </svg>
                       </span>
                       <span>Карточки</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item menu-item-assistant ${selectedSections.has('assistant') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('assistant', assistantRef)}
+                      disabled={flashcardsOnly}
+                    >
+                      <span className="menu-icon">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <rect x="3" y="4" width="18" height="16" rx="4" fill="#d97706" />
+                          <circle cx="9" cy="11" r="1.5" fill="#fff7ed" />
+                          <circle cx="15" cy="11" r="1.5" fill="#fff7ed" />
+                          <path d="M8 15h8" stroke="#fff7ed" strokeWidth="1.7" strokeLinecap="round" />
+                          <path d="M12 2v3" stroke="#fef3c7" strokeWidth="1.8" strokeLinecap="round" />
+                        </svg>
+                      </span>
+                      <span>Ассистент</span>
                     </button>
                     <button
                       type="button"
@@ -4406,6 +4490,69 @@ function AppInner() {
                         )}
                       </>
                     )}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {!flashcardsOnly && isSectionVisible('assistant') && (
+              <section className="webapp-section voice-assistant-section" ref={assistantRef}>
+                <div className="webapp-section-title webapp-section-title-with-logo">
+                  <h2>Голосовой ассистент</h2>
+                  <p>Практика разговорного немецкого в реальном времени.</p>
+                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                </div>
+
+                {!assistantToken ? (
+                  <div className="voice-assistant-join">
+                    <div className="voice-assistant-meta">
+                      <span>Пользователь: {assistantIdentity.displayName || '—'}</span>
+                      <span>ID: {assistantIdentity.userId || '—'}</span>
+                    </div>
+                    {assistantError && <div className="webapp-error">{assistantError}</div>}
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={connectAssistant}
+                      disabled={assistantConnecting || !webappUser?.id}
+                    >
+                      {assistantConnecting ? 'Подключаем...' : 'Подключить ассистента'}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="voice-assistant-room-wrap" data-lk-theme="default">
+                    <LiveKitRoom
+                      serverUrl={livekitUrl}
+                      token={assistantToken}
+                      connect={true}
+                      audio={true}
+                      video={false}
+                      onDisconnected={() => setAssistantToken(null)}
+                      onError={(e) => setAssistantError(`LiveKit error: ${e?.message || e}`)}
+                      className="voice-assistant-room"
+                    >
+                      <div className="voice-assistant-room-head">
+                        <div>
+                          <span className="pill">Учитель онлайн</span>
+                          <h3>Живая практика немецкого</h3>
+                        </div>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={disconnectAssistant}
+                        >
+                          Отключить
+                        </button>
+                      </div>
+                      <p className="voice-assistant-hint">
+                        Нажмите на микрофон в панели управления и начинайте диалог.
+                      </p>
+                      <div className="voice-assistant-controls">
+                        <ControlBar />
+                      </div>
+                      <RoomAudioRenderer />
+                      <ConnectionStateToast />
+                    </LiveKitRoom>
                   </div>
                 )}
               </section>
