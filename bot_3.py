@@ -43,6 +43,7 @@ from backend.openai_manager import (
     get_or_create_openai_resources,
     system_message,
     run_dictionary_lookup,
+    run_dictionary_lookup_de,
     run_generate_word_quiz,
     run_translate_subtitles_ru,
 )
@@ -65,6 +66,8 @@ from backend.database import (
     update_webapp_dictionary_entry,
     get_dictionary_cache,
     upsert_dictionary_cache,
+    save_webapp_dictionary_query,
+    get_or_create_dictionary_folder,
 )
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
 from load_data_from_db import load_data_for_analytics 
@@ -85,6 +88,7 @@ FLASHCARD_REMINDER_TIMES = [(7, 0), (16, 30)]
 active_quizzes = {}
 pending_quiz_freeform = {}
 quiz_ru_translation_cache = {}
+pending_dictionary_cards = {}
 
 
 # === Логирование ===
@@ -1454,7 +1458,245 @@ async def handle_user_message(update: Update, context: CallbackContext):
             )
         add_service_msg_id(context, msg.message_id)
     else:
+        if _is_menu_button_text(text):
+            await handle_button_click(update, context)
+            return
+        if update.effective_chat and update.effective_chat.type == "private" and _is_dictionary_lookup_candidate(text):
+            await _handle_private_dictionary_lookup(update, context, text)
+            return
         await handle_button_click(update, context)
+
+
+def _is_menu_button_text(text: str) -> bool:
+    return text in {
+        "📌 Выбрать тему",
+        "🚀 Начать перевод",
+        "✅ Завершить перевод",
+        "🟡 Посмотреть свою статистику",
+        "📜 Проверить перевод",
+        "💬 Перейти в личку",
+        "🎙 Начать урок",
+    }
+
+
+def _is_dictionary_lookup_candidate(text: str) -> bool:
+    if not text or text.startswith("/") or len(text) > 64:
+        return False
+    if any(ch.isdigit() for ch in text):
+        return False
+    if re.search(r"[^A-Za-zА-Яа-яЁёÄÖÜäöüßẞ'\-\s]", text):
+        return False
+    words = [part for part in re.split(r"\s+", text.strip()) if part]
+    return 1 <= len(words) <= 3
+
+
+def _detect_dictionary_direction(text: str) -> str | None:
+    has_cyr = bool(re.search(r"[А-Яа-яЁё]", text))
+    has_lat = bool(re.search(r"[A-Za-zÄÖÜäöüßẞ]", text))
+    if has_cyr and not has_lat:
+        return "ru-de"
+    if has_lat and not has_cyr:
+        return "de-ru"
+    return None
+
+
+def _format_forms_block(forms: dict | None) -> list[str]:
+    if not isinstance(forms, dict):
+        return []
+    items = [
+        ("Plural", forms.get("plural")),
+        ("Prateritum", forms.get("praeteritum")),
+        ("Perfekt", forms.get("perfekt")),
+        ("Konjunktiv I", forms.get("konjunktiv1")),
+        ("Konjunktiv II", forms.get("konjunktiv2")),
+    ]
+    lines = []
+    for label, value in items:
+        value_text = str(value).strip() if value is not None else ""
+        if value_text:
+            lines.append(f"- {label}: {value_text}")
+    return lines
+
+
+def _format_prefixes_block(prefixes: list | None) -> list[str]:
+    if not isinstance(prefixes, list):
+        return []
+    lines = []
+    for item in prefixes[:3]:
+        if not isinstance(item, dict):
+            continue
+        variant = (item.get("variant") or "").strip()
+        target = (item.get("translation_de") or item.get("translation_ru") or "").strip()
+        if not variant and not target:
+            continue
+        head = variant if variant else "Вариант"
+        body = f": {target}" if target else ""
+        lines.append(f"- {head}{body}")
+    return lines
+
+
+def _format_examples_block(examples: list | None) -> list[str]:
+    if not isinstance(examples, list):
+        return []
+    result = []
+    for idx, ex in enumerate(examples[:3], start=1):
+        if not isinstance(ex, str):
+            continue
+        cleaned = ex.strip()
+        if cleaned:
+            result.append(f"{idx}. {cleaned}")
+    return result
+
+
+def _build_dictionary_card_text(direction: str, source_text: str, lookup: dict) -> str:
+    source_text = source_text.strip()
+    translation = (
+        (lookup.get("translation_de") or "").strip()
+        if direction == "ru-de"
+        else (lookup.get("translation_ru") or "").strip()
+    )
+    part_of_speech = (lookup.get("part_of_speech") or "").strip()
+    article = (lookup.get("article") or "").strip()
+    forms = _format_forms_block(lookup.get("forms"))
+    prefixes = _format_prefixes_block(lookup.get("prefixes"))
+    examples = _format_examples_block(lookup.get("usage_examples"))
+
+    lines = [
+        f"Слово: {source_text}",
+        f"Направление: {'RU -> DE' if direction == 'ru-de' else 'DE -> RU'}",
+        f"Перевод: {translation or '—'}",
+        f"Часть речи: {part_of_speech or '—'}",
+    ]
+    if article:
+        lines.append(f"Артикль: {article}")
+    if forms:
+        lines.append("")
+        lines.append("Формы:")
+        lines.extend(forms)
+    if prefixes:
+        lines.append("")
+        lines.append("Префиксы/варианты:")
+        lines.extend(prefixes)
+    if examples:
+        lines.append("")
+        lines.append("Примеры:")
+        lines.extend(examples)
+    return "\n".join(lines)
+
+
+def _store_pending_dictionary_card(user_id: int, direction: str, source_text: str, lookup: dict) -> str:
+    key = hashlib.sha1(
+        f"{user_id}:{direction}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
+    ).hexdigest()[:20]
+    pending_dictionary_cards[key] = {
+        "user_id": user_id,
+        "direction": direction,
+        "source_text": source_text,
+        "lookup": lookup,
+        "saved": False,
+    }
+    if len(pending_dictionary_cards) > 500:
+        oldest_key = next(iter(pending_dictionary_cards))
+        pending_dictionary_cards.pop(oldest_key, None)
+    return key
+
+
+async def _handle_private_dictionary_lookup(update: Update, context: CallbackContext, text: str) -> None:
+    direction = _detect_dictionary_direction(text)
+    if not direction:
+        await update.message.reply_text(
+            "Не удалось определить язык. Отправьте слово только на русском или только на немецком."
+        )
+        return
+
+    lookup_input = text.strip()
+    try:
+        lookup = await run_dictionary_lookup(lookup_input) if direction == "ru-de" else await run_dictionary_lookup_de(lookup_input)
+    except Exception as exc:
+        logging.exception(f"❌ Ошибка словарного поиска для '{lookup_input}': {exc}")
+        await update.message.reply_text("Не удалось получить перевод. Попробуйте снова через несколько секунд.")
+        return
+
+    if not isinstance(lookup, dict):
+        await update.message.reply_text("Не удалось разобрать ответ словаря. Попробуйте ещё раз.")
+        return
+
+    source_text = (lookup.get("word_ru") or lookup.get("word_de") or lookup_input).strip()
+    card_text = _build_dictionary_card_text(direction, source_text, lookup)
+    card_key = _store_pending_dictionary_card(update.message.from_user.id, direction, source_text, lookup)
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("💾 Сохранить в словарь", callback_data=f"dictsave:{card_key}")]]
+    )
+    msg = await update.message.reply_text(card_text, reply_markup=keyboard)
+    add_service_msg_id(context, msg.message_id)
+
+
+async def handle_dictionary_save_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = query.data or ""
+    key = data.replace("dictsave:", "", 1).strip()
+    payload = pending_dictionary_cards.get(key)
+    if not payload:
+        await query.answer("Эта карточка уже недоступна. Запросите перевод ещё раз.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Сохранение доступно только автору карточки.", show_alert=True)
+        return
+
+    if payload.get("saved"):
+        await query.answer("Слово уже сохранено.")
+        return
+
+    lookup = payload.get("lookup") or {}
+    if not isinstance(lookup, dict):
+        await query.answer("Не удалось сохранить: данные карточки повреждены.", show_alert=True)
+        return
+
+    user_id = int(user.id)
+    word_ru = (lookup.get("word_ru") or "").strip() or None
+    word_de = (lookup.get("word_de") or "").strip() or None
+    translation_de = (lookup.get("translation_de") or "").strip() or None
+    translation_ru = (lookup.get("translation_ru") or "").strip() or None
+
+    try:
+        try:
+            default_folder = get_or_create_dictionary_folder(
+                user_id=user_id,
+                name="GENERAL",
+                color="#7d8590",
+                icon="📁",
+            )
+            folder_id = default_folder.get("id")
+        except Exception:
+            folder_id = None
+
+        save_webapp_dictionary_query(
+            user_id=user_id,
+            word_ru=word_ru,
+            translation_de=translation_de,
+            word_de=word_de,
+            translation_ru=translation_ru,
+            response_json=lookup,
+            folder_id=int(folder_id) if folder_id is not None else None,
+        )
+    except Exception as exc:
+        logging.exception(f"❌ Ошибка сохранения словаря user_id={user_id}: {exc}")
+        await query.answer("Ошибка сохранения. Попробуйте позже.", show_alert=True)
+        return
+
+    payload["saved"] = True
+    pending_dictionary_cards[key] = payload
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await query.answer("✅ Сохранено")
+    await query.message.reply_text("✅ Слово сохранено в словарь.")
 
 
 async def delete_message_with_retry(bot, chat_id, message_id, retries=3, delay=2):
@@ -4920,6 +5162,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_explain_request, pattern=r"^explain:"))
     application.add_handler(CallbackQueryHandler(handle_pending_access_list, pattern=r"^access:pending:list$"))
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_translation_from_text, block=False), group=1)  # ✅ Проверяем переводы
