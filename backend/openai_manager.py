@@ -525,6 +525,7 @@ Instructions:
 - If relevant, briefly mention origin or historical meaning of the root.
 - Avoid long academic explanations.
 - If the word cannot be meaningfully decomposed, clearly say so.
+- If you provide any German example, include immediate Russian translation in the same line.
 
 Gut Feeling:
 End with 1–2 sentences that summarize the internal logic of the word or construction.

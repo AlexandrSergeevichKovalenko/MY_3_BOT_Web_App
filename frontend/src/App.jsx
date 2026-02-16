@@ -125,7 +125,8 @@ function AppInner() {
   const [flashcardPreviewActive, setFlashcardPreviewActive] = useState(false);
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
   const [flashcardFeelMap, setFlashcardFeelMap] = useState({});
-  const [flashcardEnrichMap, setFlashcardEnrichMap] = useState({});
+  const [previewAudioReady, setPreviewAudioReady] = useState(false);
+  const [previewAudioPlaying, setPreviewAudioPlaying] = useState(false);
   const [flashcardTimerKey, setFlashcardTimerKey] = useState(0);
   const [topics, setTopics] = useState([
     '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ',
@@ -206,7 +207,6 @@ function AppInner() {
   const ttsCacheRef = useRef(new Map());
   const ttsLastRef = useRef({ key: '', ts: 0 });
   const ttsCurrentAudioRef = useRef(null);
-  const flashcardEnrichRef = useRef(new Set());
   const audioContextRef = useRef(null);
   const positiveAudioRef = useRef(null);
   const negativeAudioRef = useRef(null);
@@ -406,18 +406,6 @@ function AppInner() {
       console.warn('TTS error', error);
       return playWebSpeech();
     }
-  };
-
-  const needsEnrichment = (responseJson) => {
-    if (!responseJson) return true;
-    const hasExamples = Array.isArray(responseJson.usage_examples) && responseJson.usage_examples.length >= 2;
-    const hasForms = responseJson.forms && (
-      responseJson.forms.praeteritum || responseJson.forms.perfekt
-      || responseJson.forms.konjunktiv1 || responseJson.forms.konjunktiv2
-    );
-    const hasPrefixes = Array.isArray(responseJson.prefixes) && responseJson.prefixes.length >= 2;
-    const hasArticle = !!responseJson.article || responseJson.part_of_speech !== 'noun';
-    return !(hasExamples && hasForms && hasPrefixes && hasArticle);
   };
 
   const coerceResponseJson = (value) => {
@@ -808,16 +796,40 @@ function AppInner() {
 
   useEffect(() => {
     if (!flashcardPreviewActive || !flashcardsOnly) {
+      if (ttsCurrentAudioRef.current) {
+        ttsCurrentAudioRef.current.pause();
+        ttsCurrentAudioRef.current.currentTime = 0;
+        ttsCurrentAudioRef.current = null;
+      }
+      setPreviewAudioReady(false);
+      setPreviewAudioPlaying(false);
       return;
     }
     const entry = flashcards[flashcardPreviewIndex];
-    if (!entry) return;
+    if (!entry) {
+      setPreviewAudioReady(false);
+      setPreviewAudioPlaying(false);
+      return;
+    }
     const text = resolveFlashcardGerman(entry);
-    if (!text) return;
-    const handle = window.requestAnimationFrame(() => {
-      playTts(text, 'de-DE');
-    });
-    return () => window.cancelAnimationFrame(handle);
+    let cancelled = false;
+    const run = async () => {
+      if (!text) {
+        setPreviewAudioReady(true);
+        setPreviewAudioPlaying(false);
+        return;
+      }
+      setPreviewAudioReady(false);
+      setPreviewAudioPlaying(true);
+      await playTts(text, 'de-DE');
+      if (cancelled) return;
+      setPreviewAudioPlaying(false);
+      setPreviewAudioReady(true);
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
   }, [flashcardPreviewActive, flashcardsOnly, flashcards, flashcardPreviewIndex]);
 
   useEffect(() => {
@@ -4021,7 +4033,7 @@ function AppInner() {
                           <div className="webapp-muted">Словарь пуст. Сначала добавьте слова.</div>
                         )}
                         {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && flashcardPreviewActive && (
-                          <div className="flashcard-stage is-session">
+                          <div className="flashcard-stage is-session is-preview">
                             {(() => {
                               const entry = flashcards[flashcardPreviewIndex] || {};
                               const responseJson = entry.response_json || {};
@@ -4034,51 +4046,41 @@ function AppInner() {
                               const translationList = Array.isArray(translations)
                                 ? translations
                                 : String(translations).split(/[,;/]/).map((t) => t.trim()).filter(Boolean);
-                              const usageExamples = Array.isArray(responseJson.usage_examples)
-                                ? responseJson.usage_examples.slice(0, 3)
-                                : [];
-                              const prefixes = Array.isArray(responseJson.prefixes)
-                                ? responseJson.prefixes.slice(0, 3)
-                                : [];
-                              const forms = responseJson.forms || {};
                               const feel = flashcardFeelMap[entry.id]
                                 || responseJson.feel_explanation
                                 || '';
-
-                              if (entry.id && needsEnrichment(responseJson) && !flashcardEnrichRef.current.has(entry.id)) {
-                                flashcardEnrichRef.current.add(entry.id);
-                                fetch('/api/webapp/flashcards/enrich', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({
-                                    initData,
-                                    entry_id: entry.id,
-                                    word_ru: entry.word_ru,
-                                    word_de: entry.word_de,
-                                  }),
-                                })
-                                  .then((res) => res.ok ? res.json() : Promise.reject(res))
-                                  .then((data) => {
-                                    if (data.response_json) {
-                                      setFlashcards((prev) => prev.map((item) => (
-                                        item.id === entry.id
-                                          ? { ...item, response_json: data.response_json }
-                                          : item
-                                      )));
-                                      setFlashcardEnrichMap((prev) => ({ ...prev, [entry.id]: true }));
-                                    }
-                                  })
-                                  .catch(() => {});
-                              }
+                              const previewNavLocked = previewAudioPlaying || !previewAudioReady;
 
                               return (
-                                <div className="flashcard">
+                                <div className="flashcard flashcard-preview">
                                   <div className="flashcard-header">
                                     <span className="flashcard-counter">
                                       {flashcardPreviewIndex + 1} / {flashcards.length}
                                     </span>
                                   </div>
-                                  <div className="flashcard-word">{entry.word_ru || entry.word_de || '—'}</div>
+                                  <div className="flashcard-word-row">
+                                    <div className="flashcard-word">{entry.word_ru || entry.word_de || '—'}</div>
+                                    <button
+                                      type="button"
+                                      className="flashcard-audio-replay"
+                                      onClick={async () => {
+                                        const text = resolveFlashcardGerman(entry);
+                                        if (!text || previewAudioPlaying) return;
+                                        try {
+                                          setPreviewAudioPlaying(true);
+                                          await playTts(text, 'de-DE');
+                                        } finally {
+                                          setPreviewAudioPlaying(false);
+                                          setPreviewAudioReady(true);
+                                        }
+                                      }}
+                                      aria-label="Повторить аудио"
+                                      title="Повторить аудио"
+                                      disabled={previewAudioPlaying}
+                                    >
+                                      🔊
+                                    </button>
+                                  </div>
                                   <div className="flashcard-details">
                                     {translationList.length > 0 && (
                                       <div className="flashcard-section">
@@ -4114,61 +4116,6 @@ function AppInner() {
                                               <strong>{responseJson.is_separable ? 'да' : 'нет'}</strong>
                                             </div>
                                           )}
-                                        </div>
-                                      </div>
-                                    )}
-                                    {(forms.praeteritum || forms.perfekt || forms.konjunktiv1 || forms.konjunktiv2) && (
-                                      <div className="flashcard-section">
-                                        <div className="flashcard-section-title">Формы</div>
-                                        <div className="flashcard-forms-grid">
-                                          {forms.praeteritum && (
-                                            <div className="flashcard-form-item">
-                                              <span>Präteritum</span>
-                                              <strong>{forms.praeteritum}</strong>
-                                            </div>
-                                          )}
-                                          {forms.perfekt && (
-                                            <div className="flashcard-form-item">
-                                              <span>Perfekt</span>
-                                              <strong>{forms.perfekt}</strong>
-                                            </div>
-                                          )}
-                                          {forms.konjunktiv1 && (
-                                            <div className="flashcard-form-item">
-                                              <span>Konj I</span>
-                                              <strong>{forms.konjunktiv1}</strong>
-                                            </div>
-                                          )}
-                                          {forms.konjunktiv2 && (
-                                            <div className="flashcard-form-item">
-                                              <span>Konj II</span>
-                                              <strong>{forms.konjunktiv2}</strong>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    )}
-                                    {usageExamples.length > 0 && (
-                                      <div className="flashcard-section">
-                                        <div className="flashcard-section-title">Примеры</div>
-                                        <ul className="flashcard-list">
-                                          {usageExamples.map((ex, idx) => (
-                                            <li key={`${ex}-${idx}`}>{ex}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    )}
-                                    {prefixes.length > 0 && (
-                                      <div className="flashcard-section">
-                                        <div className="flashcard-section-title">Префиксы</div>
-                                        <div className="flashcard-prefixes">
-                                          {prefixes.map((pref, idx) => (
-                                            <div key={`${pref.variant || pref}-${idx}`} className="flashcard-prefix">
-                                              <strong>{pref.variant || pref}</strong>
-                                              <span>{pref.translation_de || pref.translation_ru || ''}</span>
-                                              {pref.example_de && <em>{pref.example_de}</em>}
-                                            </div>
-                                          ))}
                                         </div>
                                       </div>
                                     )}
@@ -4219,14 +4166,12 @@ function AppInner() {
                                       type="button"
                                       className="secondary-button"
                                       onClick={() => {
+                                        setPreviewAudioReady(false);
+                                        setPreviewAudioPlaying(true);
                                         const nextIndex = Math.max(flashcardPreviewIndex - 1, 0);
-                                        const nextEntry = flashcards[nextIndex];
-                                        if (nextEntry) {
-                                          playTts(resolveFlashcardGerman(nextEntry), 'de-DE');
-                                        }
                                         setFlashcardPreviewIndex(nextIndex);
                                       }}
-                                      disabled={flashcardPreviewIndex === 0}
+                                      disabled={flashcardPreviewIndex === 0 || previewAudioPlaying}
                                     >
                                       Назад
                                     </button>
@@ -4235,15 +4180,14 @@ function AppInner() {
                                         type="button"
                                         className="primary-button"
                                         onClick={() => {
+                                          setPreviewAudioReady(false);
+                                          setPreviewAudioPlaying(true);
                                           const nextIndex = Math.min(flashcardPreviewIndex + 1, flashcards.length - 1);
-                                          const nextEntry = flashcards[nextIndex];
-                                          if (nextEntry) {
-                                            playTts(resolveFlashcardGerman(nextEntry), 'de-DE');
-                                          }
                                           setFlashcardPreviewIndex(nextIndex);
                                         }}
+                                        disabled={previewNavLocked}
                                       >
-                                        Далее
+                                        {previewAudioPlaying ? 'Слушаем...' : 'Далее'}
                                       </button>
                                     ) : (
                                       <button
@@ -4256,8 +4200,9 @@ function AppInner() {
                                           setFlashcardSelection(null);
                                           setFlashcardTimerKey((prev) => prev + 1);
                                         }}
+                                        disabled={previewNavLocked}
                                       >
-                                        Начать тренировку
+                                        {previewAudioPlaying ? 'Слушаем...' : 'Начать тренировку'}
                                       </button>
                                     )}
                                   </div>
