@@ -2696,6 +2696,7 @@ def get_flashcard_feel():
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
     response_json = None
+    entry = None
     try:
         entry = get_dictionary_entry_by_id(int(entry_id))
         if entry:
@@ -2712,10 +2713,29 @@ def get_flashcard_feel():
         return jsonify({"ok": True, "feel_explanation": response_json.get("feel_explanation")})
 
     if not word_ru:
-        return jsonify({"error": "word_ru обязателен"}), 400
+        word_ru = (
+            (response_json or {}).get("word_ru")
+            or (entry or {}).get("word_ru")
+            or ""
+        ).strip()
+
+    if not word_de:
+        word_de = (
+            (response_json or {}).get("word_de")
+            or (entry or {}).get("word_de")
+            or (response_json or {}).get("translation_de")
+            or (entry or {}).get("translation_de")
+            or ""
+        ).strip()
+
+    # Allow feel generation for cards where Russian field is empty.
+    # In this case we pass German source as primary text.
+    source_text = word_ru or word_de
+    if not source_text:
+        return jsonify({"error": "Нужно передать word_ru или word_de"}), 400
 
     try:
-        feel_text = asyncio.run(run_feel_word(word_ru, word_de))
+        feel_text = asyncio.run(run_feel_word(source_text, word_de))
     except Exception as exc:
         return jsonify({"error": f"Ошибка feel: {exc}"}), 500
 

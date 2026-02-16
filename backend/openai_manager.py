@@ -958,6 +958,27 @@ global_assistants_cache = {}
 
 
 # === Функции для управления OpenAI Assistants ===
+def ensure_assistants_table() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS assistants (
+                    task_name TEXT PRIMARY KEY,
+                    assistant_id TEXT NOT NULL
+                );
+            """)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF to_regclass('public.assistant') IS NOT NULL THEN
+                        INSERT INTO assistants (task_name, assistant_id)
+                        SELECT task_name, assistant_id
+                        FROM assistant
+                        ON CONFLICT (task_name) DO UPDATE
+                        SET assistant_id = EXCLUDED.assistant_id;
+                    END IF;
+                END $$;
+            """)
 
 def get_assistant_id_from_db(task_name: str) -> str | None:
     """
@@ -965,6 +986,7 @@ def get_assistant_id_from_db(task_name: str) -> str | None:
     :param task_name: Уникальное имя задачи (например, 'sales_assistant').
     :return: ID ассистента или None, если не найден.
     """
+    ensure_assistants_table()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -980,6 +1002,7 @@ def save_assistant_id_to_db(task_name: str, assistant_id: str) -> None:
     :param task_name: Уникальное имя задачи.
     :param assistant_id: ID ассистента.
     """
+    ensure_assistants_table()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
