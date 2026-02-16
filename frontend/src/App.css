@@ -2324,8 +2324,23 @@ body {
   line-height: 1.4;
 }
 
-.flashcard-feel p {
-  margin: 6px 0 0;
+.flashcard-feel-content {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+  color: #f9fafb;
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: 0.01em;
+}
+
+.flashcard-feel-content p {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  white-space: pre-line;
 }
 
 .flashcard-feel-feedback {

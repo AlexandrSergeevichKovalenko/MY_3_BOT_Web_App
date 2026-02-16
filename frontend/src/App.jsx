@@ -125,6 +125,8 @@ function AppInner() {
   const [flashcardPreviewActive, setFlashcardPreviewActive] = useState(false);
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
   const [flashcardFeelMap, setFlashcardFeelMap] = useState({});
+  const [flashcardFeelVisibleMap, setFlashcardFeelVisibleMap] = useState({});
+  const [flashcardFeelLoadingMap, setFlashcardFeelLoadingMap] = useState({});
   const [flashcardFeelFeedbackLoading, setFlashcardFeelFeedbackLoading] = useState({});
   const [previewAudioReady, setPreviewAudioReady] = useState(false);
   const [previewAudioPlaying, setPreviewAudioPlaying] = useState(false);
@@ -420,6 +422,20 @@ function AppInner() {
     }
     if (typeof value === 'object') return value;
     return null;
+  };
+
+  const formatFeelLines = (text) => {
+    const raw = String(text || '').trim();
+    if (!raw) return [];
+    const byNewline = raw
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (byNewline.length > 1) return byNewline;
+    return raw
+      .split(/(?<=[.!?])\s+(?=[A-ZА-ЯЁ])/)
+      .map((line) => line.trim())
+      .filter(Boolean);
   };
 
   const resolveFlashcardGerman = (entry) => {
@@ -831,6 +847,16 @@ function AppInner() {
     return () => {
       cancelled = true;
     };
+  }, [flashcardPreviewActive, flashcardsOnly, flashcards, flashcardPreviewIndex]);
+
+  useEffect(() => {
+    if (!flashcardPreviewActive || !flashcardsOnly) return;
+    const entry = flashcards[flashcardPreviewIndex];
+    if (!entry?.id) return;
+    setFlashcardFeelVisibleMap((prev) => ({
+      ...prev,
+      [entry.id]: false,
+    }));
   }, [flashcardPreviewActive, flashcardsOnly, flashcards, flashcardPreviewIndex]);
 
   useEffect(() => {
@@ -4050,6 +4076,8 @@ function AppInner() {
                               const feel = flashcardFeelMap[entry.id]
                                 || responseJson.feel_explanation
                                 || '';
+                              const feelVisible = !!flashcardFeelVisibleMap[entry.id];
+                              const feelLines = formatFeelLines(feel);
                               const previewNavLocked = previewAudioPlaying || !previewAudioReady;
 
                               return (
@@ -4120,10 +4148,14 @@ function AppInner() {
                                         </div>
                                       </div>
                                     )}
-                                    {feel && (
+                                    {feelVisible && feel && (
                                       <div className="flashcard-feel">
                                         <strong>Почувствовать слово</strong>
-                                        <p>{feel}</p>
+                                        <div className="flashcard-feel-content">
+                                          {feelLines.map((line, idx) => (
+                                            <p key={`${entry.id}-feel-${idx}`}>{line}</p>
+                                          ))}
+                                        </div>
                                         {entry.id && (
                                           <div className="flashcard-feel-feedback">
                                             <button
@@ -4178,6 +4210,10 @@ function AppInner() {
                                                     delete next[entry.id];
                                                     return next;
                                                   });
+                                                  setFlashcardFeelVisibleMap((prev) => ({
+                                                    ...prev,
+                                                    [entry.id]: false,
+                                                  }));
                                                   setFlashcards((prev) => prev.map((item) => {
                                                     if (item.id !== entry.id) return item;
                                                     const nextResponse = { ...(item.response_json || {}) };
@@ -4203,9 +4239,14 @@ function AppInner() {
                                     <button
                                       type="button"
                                       className="secondary-button"
+                                      disabled={!!flashcardFeelLoadingMap[entry.id]}
                                       onClick={async () => {
                                         if (!entry.id) return;
                                         try {
+                                          setFlashcardFeelLoadingMap((prev) => ({
+                                            ...prev,
+                                            [entry.id]: true,
+                                          }));
                                           const response = await fetch('/api/webapp/flashcards/feel', {
                                             method: 'POST',
                                             headers: { 'Content-Type': 'application/json' },
@@ -4225,13 +4266,22 @@ function AppInner() {
                                               ...prev,
                                               [entry.id]: data.feel_explanation,
                                             }));
+                                            setFlashcardFeelVisibleMap((prev) => ({
+                                              ...prev,
+                                              [entry.id]: true,
+                                            }));
                                           }
                                         } catch (error) {
                                           setWebappError(`Ошибка feel: ${error.message}`);
+                                        } finally {
+                                          setFlashcardFeelLoadingMap((prev) => ({
+                                            ...prev,
+                                            [entry.id]: false,
+                                          }));
                                         }
                                       }}
                                     >
-                                      Почувствовать слово
+                                      {flashcardFeelLoadingMap[entry.id] ? 'Загружаем...' : 'Почувствовать слово'}
                                     </button>
                                   </div>
                                   <div className="flashcard-actions-row">
