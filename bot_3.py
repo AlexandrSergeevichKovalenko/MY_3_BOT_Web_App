@@ -1046,13 +1046,43 @@ async def mobile_token_command(update: Update, context: CallbackContext):
         return
 
     base_url = get_public_web_url()
+    backend_check_ok = False
+    backend_check_note = ""
+    try:
+        test_url = f"{base_url.rstrip('/')}/api/mobile/dictionary/lookup"
+        resp = requests.post(
+            test_url,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            json={"word": "Haus"},
+            timeout=12,
+        )
+        if resp.status_code == 200:
+            backend_check_ok = True
+            backend_check_note = "✅ backend проверил токен: OK"
+        else:
+            try:
+                payload = resp.json()
+                err_text = payload.get("error") or str(payload)
+            except Exception:
+                err_text = resp.text[:200]
+            backend_check_note = (
+                f"❌ backend проверил токен: FAIL (HTTP {resp.status_code})\n"
+                f"Причина: {err_text}"
+            )
+    except Exception as exc:
+        backend_check_note = f"❌ backend-проверка недоступна: {exc}"
+
     ttl_days = max(1, MOBILE_AUTH_TTL_SECONDS // 86400)
     text = (
         "📱 Mobile access token для iOS Share Extension\n\n"
         f"base_url:\n`{base_url}`\n\n"
         f"access_token:\n`{token}`\n\n"
         f"Срок действия: ~{ttl_days} дн.\n"
-        "Вставьте эти значения в экран настройки iOS-приложения."
+        "Вставьте эти значения в экран настройки iOS-приложения.\n\n"
+        f"{backend_check_note}"
     )
     await message.reply_text(text, parse_mode="Markdown")
 
