@@ -8,6 +8,7 @@ import {
 import '@livekit/components-styles';
 import './App.css';
 import * as echarts from 'echarts';
+import BlocksTrainer from './components/BlocksTrainer';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
@@ -121,6 +122,8 @@ function AppInner() {
   const [flashcardOptions, setFlashcardOptions] = useState([]);
   const [flashcardSetSize, setFlashcardSetSize] = useState(15);
   const [flashcardDurationSec, setFlashcardDurationSec] = useState(10);
+  const [flashcardTrainingMode, setFlashcardTrainingMode] = useState('quiz');
+  const [blocksTimerMode, setBlocksTimerMode] = useState('adaptive');
   const [flashcardSessionActive, setFlashcardSessionActive] = useState(false);
   const [flashcardPreviewActive, setFlashcardPreviewActive] = useState(false);
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
@@ -213,6 +216,7 @@ function AppInner() {
   const revealTimeoutRef = useRef(null);
   const flashcardIndexRef = useRef(0);
   const flashcardSelectionRef = useRef(null);
+  const flashcardRoundStartRef = useRef(Date.now());
   const srsShownAtRef = useRef(null);
   const ttsCacheRef = useRef(new Map());
   const ttsLastRef = useRef({ key: '', ts: 0 });
@@ -871,6 +875,7 @@ function AppInner() {
     setFlashcardOptions(buildFlashcardOptions(entry, flashcards));
     setFlashcardSelection(null);
     setFlashcardOutcome(null);
+    flashcardRoundStartRef.current = Date.now();
   }, [flashcards, flashcardIndex]);
 
   useEffect(() => {
@@ -933,11 +938,17 @@ function AppInner() {
     if (!flashcardSessionActive || flashcards.length === 0) {
       return;
     }
+    if (flashcardTrainingMode !== 'quiz') {
+      return;
+    }
     setFlashcardTimerKey((prev) => prev + 1);
-  }, [flashcardIndex, flashcardSessionActive, flashcards.length, flashcardDurationSec]);
+  }, [flashcardIndex, flashcardSessionActive, flashcards.length, flashcardDurationSec, flashcardTrainingMode]);
 
   useEffect(() => {
     if (!flashcardSessionActive || flashcardSetComplete || flashcardExitSummary || !flashcards.length) {
+      return;
+    }
+    if (flashcardTrainingMode !== 'quiz') {
       return;
     }
     if (autoAdvanceTimeoutRef.current) {
@@ -956,7 +967,12 @@ function AppInner() {
         || entry.translation_ru
         || responseJson.translation_ru
         || '—';
-      recordFlashcardAnswer(entry.id, false);
+      const timeSpentMs = Math.max(0, Date.now() - flashcardRoundStartRef.current);
+      recordFlashcardAnswer(entry.id, false, {
+        mode: 'quiz',
+        timeSpentMs,
+        hintsUsed: 0,
+      });
       setFlashcardStats((prev) => ({
         ...prev,
         wrong: prev.wrong + 1,
@@ -991,6 +1007,7 @@ function AppInner() {
     flashcards,
     flashcardIndex,
     flashcardDurationSec,
+    flashcardTrainingMode,
   ]);
 
   useEffect(() => {
@@ -1746,7 +1763,34 @@ function AppInner() {
     return shuffleArray(options).slice(0, 4);
   };
 
-  const recordFlashcardAnswer = async (entryId, isCorrect) => {
+  const resolveBlocksAnswer = (entry) => {
+    const responseJson = entry?.response_json || {};
+    const raw = entry?.translation_de
+      || responseJson.translation_de
+      || entry?.word_de
+      || responseJson.word_de
+      || '';
+    if (!raw) return '';
+    return String(raw).split(/[,;/]/)[0]?.trim() || '';
+  };
+
+  const resolveBlocksPrompt = (entry) => {
+    const responseJson = entry?.response_json || {};
+    return entry?.word_ru
+      || responseJson.word_ru
+      || entry?.translation_ru
+      || responseJson.translation_ru
+      || 'Соберите ответ';
+  };
+
+  const resolveBlocksType = (entry, answer) => {
+    const responseJson = entry?.response_json || {};
+    const explicit = String(entry?.type || responseJson.type || '').toUpperCase();
+    if (explicit === 'WORD' || explicit === 'PHRASE') return explicit;
+    return /\s+/.test(String(answer || '').trim()) ? 'PHRASE' : 'WORD';
+  };
+
+  const recordFlashcardAnswer = async (entryId, isCorrect, meta = {}) => {
     if (!initData || !entryId) {
       return;
     }
@@ -1754,7 +1798,14 @@ function AppInner() {
       await fetch('/api/webapp/flashcards/answer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, entry_id: entryId, is_correct: isCorrect }),
+        body: JSON.stringify({
+          initData,
+          entry_id: entryId,
+          is_correct: isCorrect,
+          mode: meta.mode || flashcardTrainingMode || 'quiz',
+          time_spent_ms: typeof meta.timeSpentMs === 'number' ? Math.max(0, Math.round(meta.timeSpentMs)) : null,
+          hints_used: typeof meta.hintsUsed === 'number' ? Math.max(0, Math.round(meta.hintsUsed)) : 0,
+        }),
       });
     } catch (error) {
       // ignore answer tracking errors
@@ -4076,6 +4127,25 @@ function AppInner() {
                           </div>
                           <div className="setup-grid">
                             <div className="setup-group">
+                              <div className="setup-label">Режим тренировки</div>
+                              <div className="setup-options">
+                                <button
+                                  type="button"
+                                  className={`option-pill ${flashcardTrainingMode === 'quiz' ? 'is-active' : ''}`}
+                                  onClick={() => setFlashcardTrainingMode('quiz')}
+                                >
+                                  Quiz (4 варианта)
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`option-pill ${flashcardTrainingMode === 'blocks' ? 'is-active' : ''}`}
+                                  onClick={() => setFlashcardTrainingMode('blocks')}
+                                >
+                                  Blocks (сборка)
+                                </button>
+                              </div>
+                            </div>
+                            <div className="setup-group">
                               <div className="setup-label">Размер сета</div>
                               <div className="setup-options">
                                 {[5, 10, 15].map((size) => (
@@ -4119,21 +4189,50 @@ function AppInner() {
                                 </select>
                               </label>
                             </div>
-                            <div className="setup-group">
-                              <div className="setup-label">Скорость</div>
-                              <div className="setup-options">
-                                {[5, 10, 15].map((seconds) => (
-                                  <button
-                                    key={`speed-${seconds}`}
-                                    type="button"
-                                    className={`option-pill ${flashcardDurationSec === seconds ? 'is-active' : ''}`}
-                                    onClick={() => setFlashcardDurationSec(seconds)}
-                                  >
-                                    {seconds} сек
-                                  </button>
-                                ))}
+                            {flashcardTrainingMode === 'quiz' ? (
+                              <div className="setup-group">
+                                <div className="setup-label">Скорость</div>
+                                <div className="setup-options">
+                                  {[5, 10, 15].map((seconds) => (
+                                    <button
+                                      key={`speed-${seconds}`}
+                                      type="button"
+                                      className={`option-pill ${flashcardDurationSec === seconds ? 'is-active' : ''}`}
+                                      onClick={() => setFlashcardDurationSec(seconds)}
+                                    >
+                                      {seconds} сек
+                                    </button>
+                                  ))}
+                                </div>
                               </div>
-                            </div>
+                            ) : (
+                              <div className="setup-group">
+                                <div className="setup-label">Таймер Blocks</div>
+                                <div className="setup-options">
+                                  <button
+                                    type="button"
+                                    className={`option-pill ${blocksTimerMode === 'adaptive' ? 'is-active' : ''}`}
+                                    onClick={() => setBlocksTimerMode('adaptive')}
+                                  >
+                                    Адаптивный
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`option-pill ${blocksTimerMode === 'fixed' ? 'is-active' : ''}`}
+                                    onClick={() => setBlocksTimerMode('fixed')}
+                                  >
+                                    10 сек
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`option-pill ${blocksTimerMode === 'none' ? 'is-active' : ''}`}
+                                    onClick={() => setBlocksTimerMode('none')}
+                                  >
+                                    Без таймера
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                             <div className="setup-group">
                               <div className="setup-label">Переход</div>
                               <div className="setup-options">
@@ -4511,6 +4610,72 @@ function AppInner() {
                                 const context = Array.isArray(responseJson.usage_examples)
                                   ? responseJson.usage_examples[0]
                                   : '';
+                                const blocksAnswer = resolveBlocksAnswer(entry);
+                                const blocksPrompt = resolveBlocksPrompt(entry);
+                                const blocksType = resolveBlocksType(entry, blocksAnswer);
+
+                                if (flashcardTrainingMode === 'blocks') {
+                                  return (
+                                    <div className="flashcard flashcard-blocks">
+                                      <div className="flashcard-header">
+                                        <span className="flashcard-counter">
+                                          {flashcardIndex + 1} / {flashcards.length}
+                                        </span>
+                                        <div className="flashcard-actions-row">
+                                          <button
+                                            type="button"
+                                            className="flashcard-refresh"
+                                            onClick={loadFlashcards}
+                                          >
+                                            Обновить
+                                          </button>
+                                        </div>
+                                      </div>
+                                      <BlocksTrainer
+                                        card={entry}
+                                        prompt={blocksPrompt}
+                                        answer={blocksAnswer}
+                                        cardType={blocksType}
+                                        timerMode={blocksTimerMode}
+                                        autoAdvance={flashcardAutoAdvance}
+                                        onRoundResult={({ isCorrect, timeSpentMs, hintsUsed, status }) => {
+                                          setFlashcardTimedOut(status === 'timeout');
+                                          setFlashcardOutcome(isCorrect ? 'correct' : (status === 'timeout' ? 'timeout' : 'wrong'));
+                                          unlockAudio();
+                                          playFeedbackSound(status === 'timeout' ? 'timeout' : (isCorrect ? 'positive' : 'negative'));
+                                          setFlashcardStats((prev) => ({
+                                            ...prev,
+                                            correct: prev.correct + (isCorrect ? 1 : 0),
+                                            wrong: prev.wrong + (isCorrect ? 0 : 1),
+                                          }));
+                                          recordFlashcardAnswer(entry.id, isCorrect, {
+                                            mode: 'blocks',
+                                            timeSpentMs,
+                                            hintsUsed,
+                                          });
+                                          const german = resolveFlashcardGerman(entry) || blocksAnswer;
+                                          if (german) {
+                                            void playTts(german, 'de-DE');
+                                          }
+                                        }}
+                                        onNext={() => advanceFlashcard()}
+                                      />
+                                      {!(flashcardSetComplete || flashcardExitSummary) && (
+                                        <div className="flashcard-end flashcard-end-session">
+                                          <button
+                                            type="button"
+                                            className="secondary-button"
+                                            onClick={() => {
+                                              setFlashcardExitSummary(true);
+                                            }}
+                                          >
+                                            Закончить повтор
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                }
 
                                 return (
                                   <div className="flashcard">
@@ -4594,7 +4759,12 @@ function AppInner() {
                                                 setFlashcardOutcome(option === correct ? 'correct' : 'wrong');
                                                 unlockAudio();
                                                 playFeedbackSound(option === correct ? 'positive' : 'negative');
-                                                recordFlashcardAnswer(entry.id, option === correct);
+                                                const timeSpentMs = Math.max(0, Date.now() - flashcardRoundStartRef.current);
+                                                recordFlashcardAnswer(entry.id, option === correct, {
+                                                  mode: 'quiz',
+                                                  timeSpentMs,
+                                                  hintsUsed: 0,
+                                                });
                                                 setFlashcardStats((prev) => ({
                                                   ...prev,
                                                   correct: prev.correct + (option === correct ? 1 : 0),
