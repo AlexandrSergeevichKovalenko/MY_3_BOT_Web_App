@@ -73,9 +73,12 @@ export default function BlocksTrainer({
     tileId: null,
     offsetX: 0,
     offsetY: 0,
+    startX: 0,
+    startY: 0,
     latestX: 0,
     latestY: 0,
     moving: false,
+    dragged: false,
   });
   const finishedRef = useRef(false);
   const startAtRef = useRef(Date.now());
@@ -120,7 +123,7 @@ export default function BlocksTrainer({
 
     const leftPad = 16;
     const rightPad = 16;
-    const topBase = rowRect ? rowRect.bottom - containerRect.top + 24 : 160;
+    const topBase = rowRect ? Math.max(10, rowRect.bottom - containerRect.top + 8) : 14;
     const usableWidth = Math.max(containerRect.width - leftPad - rightPad, 220);
     const cols = Math.max(2, Math.min(4, Math.floor(usableWidth / 110)));
     const gapX = Math.max(10, Math.floor((usableWidth - cols * 90) / Math.max(cols - 1, 1)));
@@ -307,8 +310,15 @@ export default function BlocksTrainer({
     if (state.pointerId !== event.pointerId || !state.tileId) return;
     const containerRect = containerRef.current?.getBoundingClientRect();
     if (!containerRect) return;
-    state.latestX = event.clientX - containerRect.left - state.offsetX;
-    state.latestY = event.clientY - containerRect.top - state.offsetY;
+    const pointerX = event.clientX - containerRect.left;
+    const pointerY = event.clientY - containerRect.top;
+    const deltaX = pointerX - state.startX;
+    const deltaY = pointerY - state.startY;
+    if (!state.dragged && Math.hypot(deltaX, deltaY) > 4) {
+      state.dragged = true;
+    }
+    state.latestX = pointerX - state.offsetX;
+    state.latestY = pointerY - state.offsetY;
     if (state.moving) return;
     state.moving = true;
     rafRef.current = requestAnimationFrame(() => {
@@ -322,19 +332,49 @@ export default function BlocksTrainer({
     });
   };
 
+  const placeTileByTap = (tileId) => {
+    const tile = tiles.find((item) => item.id === tileId);
+    if (!tile) return;
+    if (tile.slotIndex !== null) {
+      returnTileToHome(tileId);
+      return;
+    }
+    const firstEmpty = slots.findIndex((slotId) => slotId === null);
+    if (firstEmpty >= 0) {
+      moveTileToSlot(tileId, firstEmpty);
+      return;
+    }
+    const firstWrong = slots.findIndex((slotId, idx) => {
+      if (!slotId) return false;
+      const placed = tiles.find((item) => item.id === slotId);
+      return placed?.targetIndex !== idx;
+    });
+    if (firstWrong >= 0) {
+      moveTileToSlot(tileId, firstWrong);
+    }
+  };
+
   const onPointerUp = (event) => {
     const state = pointerRef.current;
     if (state.pointerId !== event.pointerId || !state.tileId) return;
     const tileId = state.tileId;
+    const dragged = state.dragged;
     pointerRef.current = {
       pointerId: null,
       tileId: null,
       offsetX: 0,
       offsetY: 0,
+      startX: 0,
+      startY: 0,
       latestX: 0,
       latestY: 0,
       moving: false,
+      dragged: false,
     };
+    if (!dragged) {
+      placeTileByTap(tileId);
+      return;
+    }
     const containerRect = containerRef.current?.getBoundingClientRect();
     if (!containerRect) {
       returnTileToHome(tileId);
@@ -363,11 +403,21 @@ export default function BlocksTrainer({
       tileId: tile.id,
       offsetX,
       offsetY,
+      startX: event.clientX - containerRect.left,
+      startY: event.clientY - containerRect.top,
       latestX: tile.x,
       latestY: tile.y,
       moving: false,
+      dragged: false,
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const onSlotClick = (slotIndex) => {
+    if (isFinished) return;
+    const tileId = slots[slotIndex];
+    if (!tileId) return;
+    returnTileToHome(tileId);
   };
 
   const applyHint = () => {
@@ -418,6 +468,15 @@ export default function BlocksTrainer({
               key={`slot-${idx}`}
               ref={(el) => { slotRefs.current[idx] = el; }}
               className={`blocks-slot ${placed ? 'is-filled' : ''}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => onSlotClick(idx)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onSlotClick(idx);
+                }
+              }}
             >
               {placed ? placed.text : (type === 'WORD' ? '•' : '...')}
             </div>
@@ -432,7 +491,7 @@ export default function BlocksTrainer({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        {tiles.map((tile) => (
+        {tiles.filter((tile) => tile.slotIndex === null).map((tile) => (
           <button
             key={tile.id}
             type="button"
@@ -477,4 +536,3 @@ export default function BlocksTrainer({
     </div>
   );
 }
-

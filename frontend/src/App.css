@@ -3184,6 +3184,7 @@ body {
   font-size: 14px;
   font-weight: 700;
   backdrop-filter: blur(2px);
+  cursor: pointer;
 }
 
 .blocks-slot.is-filled {
