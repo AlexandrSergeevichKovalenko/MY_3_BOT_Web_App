@@ -71,6 +71,7 @@ export default function BlocksTrainer({
   prompt,
   answer,
   cardType,
+  resetSignal = 0,
   timerMode = 'adaptive',
   autoAdvance = true,
   onNext,
@@ -108,6 +109,8 @@ export default function BlocksTrainer({
   const [timeLeftMs, setTimeLeftMs] = useState(timerMs);
   const [playgroundHeight, setPlaygroundHeight] = useState(270);
   const [selectedSlotIndex, setSelectedSlotIndex] = useState(null);
+  const [dragTileId, setDragTileId] = useState(null);
+  const [hoverSlotIndex, setHoverSlotIndex] = useState(null);
 
   const allSlotsFilled = slots.length > 0 && slots.every((item) => item !== null);
   const isFinished = status !== 'idle';
@@ -197,13 +200,15 @@ export default function BlocksTrainer({
     setTimeLeftMs(timerMs);
     setPlaygroundHeight(270);
     setSelectedSlotIndex(null);
+    setDragTileId(null);
+    setHoverSlotIndex(null);
     finishedRef.current = false;
     startAtRef.current = Date.now();
     if (autoNextRef.current) {
       clearTimeout(autoNextRef.current);
       autoNextRef.current = null;
     }
-  }, [card?.id, answer, timerMs, targetTokens.length]);
+  }, [card?.id, answer, timerMs, targetTokens.length, resetSignal]);
 
   useEffect(() => {
     const onResize = () => {
@@ -340,6 +345,8 @@ export default function BlocksTrainer({
     if (!state.dragged && Math.hypot(deltaX, deltaY) > 4) {
       state.dragged = true;
     }
+    const slotIndex = findSlotByPoint(pointerX, pointerY);
+    setHoverSlotIndex(slotIndex >= 0 ? slotIndex : null);
     state.latestX = pointerX - state.offsetX;
     state.latestY = pointerY - state.offsetY;
     if (state.moving) return;
@@ -399,6 +406,8 @@ export default function BlocksTrainer({
       moving: false,
       dragged: false,
     };
+    setDragTileId(null);
+    setHoverSlotIndex(null);
     if (!dragged) {
       placeTileByTap(tileId);
       return;
@@ -438,6 +447,7 @@ export default function BlocksTrainer({
       moving: false,
       dragged: false,
     };
+    setDragTileId(tile.id);
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
 
@@ -533,14 +543,19 @@ export default function BlocksTrainer({
       </div>
 
       <div className="blocks-target" ref={slotsRowRef}>
-        {targetTokens.map((token, idx) => {
+        {targetTokens.map((_token, idx) => {
           const tileId = slots[idx];
           const placed = tiles.find((item) => item.id === tileId);
           return (
             <div
               key={`slot-${idx}`}
               ref={(el) => { slotRefs.current[idx] = el; }}
-              className={`blocks-slot ${placed ? 'is-filled' : ''} ${selectedSlotIndex === idx ? 'is-selected' : ''}`}
+              className={[
+                'blocks-slot',
+                placed ? 'is-filled' : '',
+                selectedSlotIndex === idx ? 'is-selected' : '',
+                hoverSlotIndex === idx ? 'is-hovered' : '',
+              ].filter(Boolean).join(' ')}
               role="button"
               tabIndex={0}
               onClick={() => onSlotClick(idx)}
@@ -558,7 +573,7 @@ export default function BlocksTrainer({
       </div>
 
       <div
-        className="blocks-playground"
+        className={`blocks-playground ${dragTileId ? 'is-dragging' : ''}`}
         ref={containerRef}
         style={{ height: `${playgroundHeight}px` }}
         onPointerMove={onPointerMove}
@@ -569,7 +584,7 @@ export default function BlocksTrainer({
           <button
             key={tile.id}
             type="button"
-            className={`blocks-tile color-${tile.targetIndex % 6}`}
+            className={`blocks-tile color-${tile.targetIndex % 6} ${dragTileId === tile.id ? 'is-dragging' : ''}`}
             style={{ transform: `translate3d(${tile.x}px, ${tile.y}px, 0)` }}
             onPointerDown={(event) => onTilePointerDown(event, tile)}
             disabled={isFinished}

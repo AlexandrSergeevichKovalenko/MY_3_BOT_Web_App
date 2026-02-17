@@ -180,6 +180,10 @@ function AppInner() {
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
   const [flashcardTimedOut, setFlashcardTimedOut] = useState(false);
   const [flashcardOutcome, setFlashcardOutcome] = useState(null);
+  const [blocksResetNonce, setBlocksResetNonce] = useState(0);
+  const [blocksMenuOpen, setBlocksMenuOpen] = useState(false);
+  const [blocksMenuSettingsOpen, setBlocksMenuSettingsOpen] = useState(false);
+  const [blocksFinishConfirmOpen, setBlocksFinishConfirmOpen] = useState(false);
   const [folders, setFolders] = useState([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [foldersError, setFoldersError] = useState('');
@@ -217,6 +221,7 @@ function AppInner() {
   const flashcardIndexRef = useRef(0);
   const flashcardSelectionRef = useRef(null);
   const flashcardRoundStartRef = useRef(Date.now());
+  const blocksMenuRef = useRef(null);
   const srsShownAtRef = useRef(null);
   const ttsCacheRef = useRef(new Map());
   const ttsLastRef = useRef({ key: '', ts: 0 });
@@ -1020,6 +1025,45 @@ function AppInner() {
       revealTimeoutRef.current = null;
     }
   }, [flashcardSessionActive]);
+
+  useEffect(() => {
+    if (!blocksMenuOpen) return;
+    const onPointerDown = (event) => {
+      if (!blocksMenuRef.current?.contains(event.target)) {
+        setBlocksMenuOpen(false);
+        setBlocksMenuSettingsOpen(false);
+      }
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setBlocksMenuOpen(false);
+        setBlocksMenuSettingsOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [blocksMenuOpen]);
+
+  useEffect(() => {
+    setBlocksMenuOpen(false);
+    setBlocksMenuSettingsOpen(false);
+    setBlocksFinishConfirmOpen(false);
+  }, [flashcardIndex, flashcardPreviewActive, flashcardTrainingMode]);
+
+  useEffect(() => {
+    if (!blocksFinishConfirmOpen) return;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setBlocksFinishConfirmOpen(false);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [blocksFinishConfirmOpen]);
 
   const loadSentences = async () => {
     if (!initData) {
@@ -1837,6 +1881,39 @@ function AppInner() {
     }
     setFlashcardIndex(nextIndex);
     setFlashcardSelection(null);
+  };
+
+  const resetCurrentBlocksCard = () => {
+    setBlocksResetNonce((prev) => prev + 1);
+    setFlashcardTimedOut(false);
+    setFlashcardOutcome(null);
+  };
+
+  const requestFinishFlashcardSession = () => {
+    const tg = window.Telegram?.WebApp;
+    if (tg?.showPopup) {
+      try {
+        tg.showPopup(
+          {
+            title: 'Завершить повтор?',
+            message: 'Текущий прогресс будет завершён.',
+            buttons: [
+              { id: 'continue', type: 'default', text: 'Продолжить' },
+              { id: 'finish', type: 'destructive', text: 'Завершить' },
+            ],
+          },
+          (buttonId) => {
+            if (buttonId === 'finish') {
+              setFlashcardExitSummary(true);
+            }
+          }
+        );
+        return;
+      } catch (error) {
+        // fallback to custom dialog below
+      }
+    }
+    setBlocksFinishConfirmOpen(true);
   };
 
   const handleAvatarUpload = (event) => {
@@ -4634,14 +4711,97 @@ function AppInner() {
                                         <span className="flashcard-counter">
                                           {flashcardIndex + 1} / {flashcards.length}
                                         </span>
-                                        <div className="flashcard-actions-row">
+                                        <div className="flashcard-actions-row blocks-header-actions" ref={blocksMenuRef}>
                                           <button
                                             type="button"
-                                            className="flashcard-refresh"
-                                            onClick={loadFlashcards}
+                                            className="blocks-overflow-trigger"
+                                            aria-haspopup="menu"
+                                            aria-expanded={blocksMenuOpen}
+                                            aria-label="Открыть меню"
+                                            onClick={() => {
+                                              setBlocksMenuOpen((prev) => !prev);
+                                              if (blocksMenuOpen) {
+                                                setBlocksMenuSettingsOpen(false);
+                                              }
+                                            }}
                                           >
-                                            Обновить
+                                            ⋯
                                           </button>
+                                          {blocksMenuOpen && (
+                                            <div className="blocks-overflow-menu" role="menu">
+                                              <button
+                                                type="button"
+                                                className="blocks-overflow-item"
+                                                onClick={() => {
+                                                  resetCurrentBlocksCard();
+                                                  setBlocksMenuOpen(false);
+                                                  setBlocksMenuSettingsOpen(false);
+                                                }}
+                                              >
+                                                Сбросить текущую карточку
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="blocks-overflow-item"
+                                                onClick={() => {
+                                                  setBlocksMenuSettingsOpen((prev) => !prev);
+                                                }}
+                                              >
+                                                Настройки скорости / таймера
+                                              </button>
+                                              {blocksMenuSettingsOpen && (
+                                                <div className="blocks-overflow-settings">
+                                                  <div className="blocks-overflow-settings-label">Таймер</div>
+                                                  <div className="blocks-overflow-pills">
+                                                    <button
+                                                      type="button"
+                                                      className={`blocks-overflow-pill ${blocksTimerMode === 'adaptive' ? 'is-active' : ''}`}
+                                                      onClick={() => {
+                                                        setBlocksTimerMode('adaptive');
+                                                        setBlocksMenuOpen(false);
+                                                        setBlocksMenuSettingsOpen(false);
+                                                      }}
+                                                    >
+                                                      Адаптивный
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      className={`blocks-overflow-pill ${blocksTimerMode === 'fixed' ? 'is-active' : ''}`}
+                                                      onClick={() => {
+                                                        setBlocksTimerMode('fixed');
+                                                        setBlocksMenuOpen(false);
+                                                        setBlocksMenuSettingsOpen(false);
+                                                      }}
+                                                    >
+                                                      10 сек
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      className={`blocks-overflow-pill ${blocksTimerMode === 'none' ? 'is-active' : ''}`}
+                                                      onClick={() => {
+                                                        setBlocksTimerMode('none');
+                                                        setBlocksMenuOpen(false);
+                                                        setBlocksMenuSettingsOpen(false);
+                                                      }}
+                                                    >
+                                                      Без таймера
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              )}
+                                              <button
+                                                type="button"
+                                                className="blocks-overflow-item is-danger"
+                                                onClick={() => {
+                                                  setBlocksMenuOpen(false);
+                                                  setBlocksMenuSettingsOpen(false);
+                                                  requestFinishFlashcardSession();
+                                                }}
+                                              >
+                                                ⚠️ Закончить повтор
+                                              </button>
+                                            </div>
+                                          )}
                                         </div>
                                       </div>
                                       <BlocksTrainer
@@ -4649,6 +4809,7 @@ function AppInner() {
                                         prompt={blocksPrompt}
                                         answer={blocksAnswer}
                                         cardType={blocksType}
+                                        resetSignal={blocksResetNonce}
                                         timerMode={blocksTimerMode}
                                         autoAdvance={flashcardAutoAdvance}
                                         onRoundResult={({ isCorrect, timeSpentMs, hintsUsed, status }) => {
@@ -4673,17 +4834,31 @@ function AppInner() {
                                         }}
                                         onNext={() => advanceFlashcard()}
                                       />
-                                      {!(flashcardSetComplete || flashcardExitSummary) && (
-                                        <div className="flashcard-end flashcard-end-session">
-                                          <button
-                                            type="button"
-                                            className="secondary-button"
-                                            onClick={() => {
-                                              setFlashcardExitSummary(true);
-                                            }}
-                                          >
-                                            Закончить повтор
-                                          </button>
+                                      {blocksFinishConfirmOpen && (
+                                        <div className="blocks-confirm-backdrop" onClick={() => setBlocksFinishConfirmOpen(false)}>
+                                          <div className="blocks-confirm" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+                                            <h4>Завершить повтор?</h4>
+                                            <p>Текущий прогресс будет завершён.</p>
+                                            <div className="blocks-confirm-actions">
+                                              <button
+                                                type="button"
+                                                className="secondary-button"
+                                                onClick={() => setBlocksFinishConfirmOpen(false)}
+                                              >
+                                                Продолжить
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="danger-button"
+                                                onClick={() => {
+                                                  setBlocksFinishConfirmOpen(false);
+                                                  setFlashcardExitSummary(true);
+                                                }}
+                                              >
+                                                Завершить
+                                              </button>
+                                            </div>
+                                          </div>
                                         </div>
                                       )}
                                     </div>
