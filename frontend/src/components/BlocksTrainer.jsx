@@ -29,10 +29,20 @@ const BASE_SECONDS_MAX = 10;
 const ADAPTIVE_SECONDS_PER_CHAR = 2;
 const ADAPTIVE_SECONDS_MAX = 30;
 const AUTO_NEXT_DELAY_MS = 2000;
+const TILE_WIDTH = 92;
+const TILE_HEIGHT = 56;
+
+const GERMAN_ARTICLES = new Set([
+  'der', 'die', 'das', 'den', 'dem', 'des',
+  'ein', 'eine', 'einen', 'einem', 'einer', 'eines',
+]);
 
 const detectCardType = (answer, explicitType) => {
   if (explicitType === 'WORD' || explicitType === 'PHRASE') return explicitType;
-  return /\s+/.test(String(answer || '').trim()) ? 'PHRASE' : 'WORD';
+  const tokens = String(answer || '').trim().split(/\s+/).filter(Boolean);
+  if (tokens.length <= 1) return 'WORD';
+  if (tokens.length === 2 && GERMAN_ARTICLES.has(tokens[0].toLowerCase())) return 'WORD';
+  return 'PHRASE';
 };
 
 const tokenize = (answer, cardType) => {
@@ -94,6 +104,7 @@ export default function BlocksTrainer({
   const [status, setStatus] = useState('idle'); // idle|correct|wrong|timeout
   const [hintsUsed, setHintsUsed] = useState(0);
   const [timeLeftMs, setTimeLeftMs] = useState(timerMs);
+  const [playgroundHeight, setPlaygroundHeight] = useState(270);
 
   const allSlotsFilled = slots.length > 0 && slots.every((item) => item !== null);
   const isFinished = status !== 'idle';
@@ -118,16 +129,21 @@ export default function BlocksTrainer({
 
   const scatterTiles = (tileItems, currentSlots = []) => {
     const containerRect = containerRef.current?.getBoundingClientRect();
-    const rowRect = slotsRowRef.current?.getBoundingClientRect();
     if (!containerRect) return tileItems;
 
     const leftPad = 16;
     const rightPad = 16;
-    const topBase = rowRect ? Math.max(10, rowRect.bottom - containerRect.top + 8) : 14;
+    const topBase = 12;
     const usableWidth = Math.max(containerRect.width - leftPad - rightPad, 220);
-    const cols = Math.max(2, Math.min(4, Math.floor(usableWidth / 110)));
-    const gapX = Math.max(10, Math.floor((usableWidth - cols * 90) / Math.max(cols - 1, 1)));
-    const gapY = 16;
+    const cols = Math.max(2, Math.min(5, Math.floor(usableWidth / (TILE_WIDTH + 16))));
+    const gapX = Math.max(8, Math.floor((usableWidth - cols * TILE_WIDTH) / Math.max(cols - 1, 1)));
+    const gapY = 14;
+    const occupiedSet = new Set(currentSlots.filter(Boolean));
+    const visibleCount = tileItems.filter((item) => !occupiedSet.has(item.id)).length;
+    const rows = Math.max(1, Math.ceil(visibleCount / cols));
+    const targetHeight = Math.max(220, topBase + rows * (TILE_HEIGHT + gapY) + 16);
+    setPlaygroundHeight(targetHeight);
+    let visibleIndex = 0;
 
     return tileItems.map((tile, index) => {
       const placedSlot = currentSlots.findIndex((slotId) => slotId === tile.id);
@@ -136,16 +152,17 @@ export default function BlocksTrainer({
         return {
           ...tile,
           slotIndex: placedSlot,
-          x: rect.centerX - 45,
-          y: rect.centerY - 26,
+          x: rect.centerX - TILE_WIDTH / 2,
+          y: rect.centerY - TILE_HEIGHT / 2,
         };
       }
-      const row = Math.floor(index / cols);
-      const col = index % cols;
-      const jitterX = (Math.random() - 0.5) * 14;
-      const jitterY = (Math.random() - 0.5) * 10;
-      const x = leftPad + col * (90 + gapX) + jitterX;
-      const y = topBase + row * (52 + gapY) + jitterY;
+      const row = Math.floor(visibleIndex / cols);
+      const col = visibleIndex % cols;
+      visibleIndex += 1;
+      const jitterX = (Math.random() - 0.5) * 10;
+      const jitterY = (Math.random() - 0.5) * 8;
+      const x = leftPad + col * (TILE_WIDTH + gapX) + jitterX;
+      const y = topBase + row * (TILE_HEIGHT + gapY) + jitterY;
       return {
         ...tile,
         slotIndex: null,
@@ -175,6 +192,7 @@ export default function BlocksTrainer({
     setStatus('idle');
     setHintsUsed(0);
     setTimeLeftMs(timerMs);
+    setPlaygroundHeight(270);
     finishedRef.current = false;
     startAtRef.current = Date.now();
     if (autoNextRef.current) {
@@ -282,8 +300,8 @@ export default function BlocksTrainer({
         const slotRect = slotRects[slotIndex];
         tile.slotIndex = slotIndex;
         if (slotRect) {
-          tile.x = slotRect.centerX - 45;
-          tile.y = slotRect.centerY - 26;
+          tile.x = slotRect.centerX - TILE_WIDTH / 2;
+          tile.y = slotRect.centerY - TILE_HEIGHT / 2;
         }
         nextSlots[slotIndex] = tile.id;
         return nextSlots;
@@ -487,6 +505,7 @@ export default function BlocksTrainer({
       <div
         className="blocks-playground"
         ref={containerRef}
+        style={{ height: `${playgroundHeight}px` }}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
