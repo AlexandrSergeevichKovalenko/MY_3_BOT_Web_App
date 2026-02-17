@@ -3,6 +3,7 @@ from psycopg2 import Binary
 import os
 from contextlib import contextmanager
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -259,6 +260,60 @@ def ensure_webapp_tables() -> None:
                     seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (user_id, entry_id, seen_at)
                 );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_card_srs_state (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    card_id BIGINT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'new',
+                    due_at TIMESTAMPTZ NOT NULL,
+                    last_review_at TIMESTAMPTZ,
+                    interval_days INTEGER NOT NULL DEFAULT 0,
+                    reps INTEGER NOT NULL DEFAULT 0,
+                    lapses INTEGER NOT NULL DEFAULT 0,
+                    stability DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    difficulty DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_card_srs_state_user_card
+                ON bt_3_card_srs_state (user_id, card_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_card_srs_state_user_due
+                ON bt_3_card_srs_state (user_id, due_at);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_card_srs_state_user_status
+                ON bt_3_card_srs_state (user_id, status);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_card_review_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    card_id BIGINT NOT NULL,
+                    reviewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    rating SMALLINT NOT NULL,
+                    response_ms INTEGER,
+                    scheduled_due_before TIMESTAMPTZ,
+                    scheduled_due_after TIMESTAMPTZ,
+                    stability_before DOUBLE PRECISION,
+                    difficulty_before DOUBLE PRECISION,
+                    stability_after DOUBLE PRECISION,
+                    difficulty_after DOUBLE PRECISION,
+                    interval_days_after INTEGER
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_card_review_log_user_reviewed_desc
+                ON bt_3_card_review_log (user_id, reviewed_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_card_review_log_user_card_reviewed_desc
+                ON bt_3_card_review_log (user_id, card_id, reviewed_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_tts_chunk_cache (
@@ -1383,6 +1438,384 @@ def get_flashcard_set(
             "response_json": row[5],
         })
     return items
+
+
+def get_card_srs_state(user_id: int, card_id: int, cursor=None) -> dict | None:
+    owns_cursor = cursor is None
+    if owns_cursor:
+        conn = get_db_connection_context()
+        conn.__enter__()
+        cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                user_id,
+                card_id,
+                status,
+                due_at,
+                last_review_at,
+                interval_days,
+                reps,
+                lapses,
+                stability,
+                difficulty,
+                created_at,
+                updated_at
+            FROM bt_3_card_srs_state
+            WHERE user_id = %s AND card_id = %s
+            LIMIT 1;
+            """,
+            (int(user_id), int(card_id)),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "user_id": row[1],
+            "card_id": row[2],
+            "status": row[3],
+            "due_at": row[4],
+            "last_review_at": row[5],
+            "interval_days": row[6],
+            "reps": row[7],
+            "lapses": row[8],
+            "stability": float(row[9] or 0.0),
+            "difficulty": float(row[10] or 0.0),
+            "created_at": row[11],
+            "updated_at": row[12],
+        }
+    finally:
+        if owns_cursor:
+            cursor.close()
+            conn.__exit__(None, None, None)
+
+
+def upsert_card_srs_state(
+    user_id: int,
+    card_id: int,
+    status: str,
+    due_at: datetime,
+    last_review_at: datetime | None,
+    interval_days: int,
+    reps: int,
+    lapses: int,
+    stability: float,
+    difficulty: float,
+    cursor=None,
+) -> dict:
+    owns_cursor = cursor is None
+    if owns_cursor:
+        conn = get_db_connection_context()
+        conn.__enter__()
+        cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO bt_3_card_srs_state (
+                user_id,
+                card_id,
+                status,
+                due_at,
+                last_review_at,
+                interval_days,
+                reps,
+                lapses,
+                stability,
+                difficulty,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            ON CONFLICT (user_id, card_id) DO UPDATE
+            SET status = EXCLUDED.status,
+                due_at = EXCLUDED.due_at,
+                last_review_at = EXCLUDED.last_review_at,
+                interval_days = EXCLUDED.interval_days,
+                reps = EXCLUDED.reps,
+                lapses = EXCLUDED.lapses,
+                stability = EXCLUDED.stability,
+                difficulty = EXCLUDED.difficulty,
+                updated_at = NOW()
+            RETURNING
+                id,
+                user_id,
+                card_id,
+                status,
+                due_at,
+                last_review_at,
+                interval_days,
+                reps,
+                lapses,
+                stability,
+                difficulty,
+                created_at,
+                updated_at;
+            """,
+            (
+                int(user_id),
+                int(card_id),
+                status,
+                due_at,
+                last_review_at,
+                int(interval_days),
+                int(reps),
+                int(lapses),
+                float(stability),
+                float(difficulty),
+            ),
+        )
+        row = cursor.fetchone()
+        return {
+            "id": row[0],
+            "user_id": row[1],
+            "card_id": row[2],
+            "status": row[3],
+            "due_at": row[4],
+            "last_review_at": row[5],
+            "interval_days": row[6],
+            "reps": row[7],
+            "lapses": row[8],
+            "stability": float(row[9] or 0.0),
+            "difficulty": float(row[10] or 0.0),
+            "created_at": row[11],
+            "updated_at": row[12],
+        }
+    finally:
+        if owns_cursor:
+            cursor.close()
+            conn.__exit__(None, None, None)
+
+
+def count_due_srs_cards(user_id: int, now_utc: datetime | None = None) -> int:
+    now_utc = now_utc or datetime.now(timezone.utc)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_card_srs_state
+                WHERE user_id = %s
+                  AND status <> 'suspended'
+                  AND due_at <= %s;
+                """,
+                (int(user_id), now_utc),
+            )
+            row = cursor.fetchone()
+            return int(row[0] if row else 0)
+
+
+def count_new_cards_introduced_today(user_id: int, now_utc: datetime | None = None) -> int:
+    now_utc = now_utc or datetime.now(timezone.utc)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_card_srs_state
+                WHERE user_id = %s
+                  AND DATE(created_at AT TIME ZONE 'UTC') = DATE(%s AT TIME ZONE 'UTC');
+                """,
+                (int(user_id), now_utc),
+            )
+            row = cursor.fetchone()
+            return int(row[0] if row else 0)
+
+
+def get_next_due_srs_card(user_id: int, now_utc: datetime | None = None) -> dict | None:
+    now_utc = now_utc or datetime.now(timezone.utc)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    s.card_id,
+                    s.status,
+                    s.due_at,
+                    s.interval_days,
+                    s.stability,
+                    s.difficulty,
+                    q.word_ru,
+                    q.translation_de,
+                    q.word_de,
+                    q.translation_ru,
+                    q.response_json
+                FROM bt_3_card_srs_state s
+                JOIN bt_3_webapp_dictionary_queries q
+                  ON q.id = s.card_id
+                 AND q.user_id = s.user_id
+                WHERE s.user_id = %s
+                  AND s.status <> 'suspended'
+                  AND s.due_at <= %s
+                ORDER BY s.due_at ASC
+                LIMIT 1;
+                """,
+                (int(user_id), now_utc),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "card": {
+                    "id": row[0],
+                    "word_ru": row[6],
+                    "translation_de": row[7],
+                    "word_de": row[8],
+                    "translation_ru": row[9],
+                    "response_json": row[10],
+                },
+                "srs": {
+                    "status": row[1],
+                    "due_at": row[2],
+                    "interval_days": int(row[3] or 0),
+                    "stability": float(row[4] or 0.0),
+                    "difficulty": float(row[5] or 0.0),
+                },
+            }
+
+
+def get_next_new_srs_candidate(user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT q.id, q.word_ru, q.translation_de, q.word_de, q.translation_ru, q.response_json
+                FROM bt_3_webapp_dictionary_queries q
+                LEFT JOIN bt_3_card_srs_state s
+                  ON s.user_id = q.user_id AND s.card_id = q.id
+                WHERE q.user_id = %s
+                  AND s.id IS NULL
+                ORDER BY q.created_at ASC
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "word_ru": row[1],
+                "translation_de": row[2],
+                "word_de": row[3],
+                "translation_ru": row[4],
+                "response_json": row[5],
+            }
+
+
+def ensure_new_srs_state(user_id: int, card_id: int, now_utc: datetime | None = None) -> dict:
+    now_utc = now_utc or datetime.now(timezone.utc)
+    state = get_card_srs_state(user_id=user_id, card_id=card_id)
+    if state:
+        return state
+    return upsert_card_srs_state(
+        user_id=user_id,
+        card_id=card_id,
+        status="new",
+        due_at=now_utc,
+        last_review_at=None,
+        interval_days=0,
+        reps=0,
+        lapses=0,
+        stability=0.0,
+        difficulty=0.0,
+    )
+
+
+def get_dictionary_entry_for_user(user_id: int, card_id: int, cursor=None) -> dict | None:
+    owns_cursor = cursor is None
+    if owns_cursor:
+        conn = get_db_connection_context()
+        conn.__enter__()
+        cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
+            FROM bt_3_webapp_dictionary_queries
+            WHERE user_id = %s AND id = %s
+            LIMIT 1;
+            """,
+            (int(user_id), int(card_id)),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "word_ru": row[1],
+            "translation_de": row[2],
+            "word_de": row[3],
+            "translation_ru": row[4],
+            "response_json": row[5],
+        }
+    finally:
+        if owns_cursor:
+            cursor.close()
+            conn.__exit__(None, None, None)
+
+
+def insert_card_review_log(
+    *,
+    user_id: int,
+    card_id: int,
+    reviewed_at: datetime,
+    rating: int,
+    response_ms: int | None,
+    scheduled_due_before: datetime | None,
+    scheduled_due_after: datetime | None,
+    stability_before: float | None,
+    difficulty_before: float | None,
+    stability_after: float | None,
+    difficulty_after: float | None,
+    interval_days_after: int | None,
+    cursor=None,
+) -> None:
+    owns_cursor = cursor is None
+    if owns_cursor:
+        conn = get_db_connection_context()
+        conn.__enter__()
+        cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO bt_3_card_review_log (
+                user_id,
+                card_id,
+                reviewed_at,
+                rating,
+                response_ms,
+                scheduled_due_before,
+                scheduled_due_after,
+                stability_before,
+                difficulty_before,
+                stability_after,
+                difficulty_after,
+                interval_days_after
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            """,
+            (
+                int(user_id),
+                int(card_id),
+                reviewed_at,
+                int(rating),
+                int(response_ms) if response_ms is not None else None,
+                scheduled_due_before,
+                scheduled_due_after,
+                float(stability_before) if stability_before is not None else None,
+                float(difficulty_before) if difficulty_before is not None else None,
+                float(stability_after) if stability_after is not None else None,
+                float(difficulty_after) if difficulty_after is not None else None,
+                int(interval_days_after) if interval_days_after is not None else None,
+            ),
+        )
+    finally:
+        if owns_cursor:
+            cursor.close()
+            conn.__exit__(None, None, None)
 
 
 def create_dictionary_folder(

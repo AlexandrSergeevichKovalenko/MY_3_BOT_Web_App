@@ -124,6 +124,12 @@ function AppInner() {
   const [flashcardSessionActive, setFlashcardSessionActive] = useState(false);
   const [flashcardPreviewActive, setFlashcardPreviewActive] = useState(false);
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
+  const [srsCard, setSrsCard] = useState(null);
+  const [srsState, setSrsState] = useState(null);
+  const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0 });
+  const [srsLoading, setSrsLoading] = useState(false);
+  const [srsSubmitting, setSrsSubmitting] = useState(false);
+  const [srsRevealAnswer, setSrsRevealAnswer] = useState(false);
   const [flashcardFeelMap, setFlashcardFeelMap] = useState({});
   const [flashcardFeelVisibleMap, setFlashcardFeelVisibleMap] = useState({});
   const [flashcardFeelLoadingMap, setFlashcardFeelLoadingMap] = useState({});
@@ -207,6 +213,7 @@ function AppInner() {
   const revealTimeoutRef = useRef(null);
   const flashcardIndexRef = useRef(0);
   const flashcardSelectionRef = useRef(null);
+  const srsShownAtRef = useRef(null);
   const ttsCacheRef = useRef(new Map());
   const ttsLastRef = useRef({ key: '', ts: 0 });
   const ttsCurrentAudioRef = useRef(null);
@@ -448,6 +455,54 @@ function AppInner() {
       || responseJson.translation_de
       || ''
     );
+  };
+
+  const loadSrsNextCard = async () => {
+    if (!initData) return;
+    try {
+      setSrsLoading(true);
+      const response = await fetch(`/api/cards/next?initData=${encodeURIComponent(initData)}`);
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      setSrsCard(data.card || null);
+      setSrsState(data.srs || null);
+      setSrsQueueInfo(data.queue_info || { due_count: 0, new_remaining_today: 0 });
+      setSrsRevealAnswer(false);
+      srsShownAtRef.current = Date.now();
+    } catch (error) {
+      setWebappError(`Ошибка загрузки SRS карточки: ${error.message}`);
+    } finally {
+      setSrsLoading(false);
+    }
+  };
+
+  const submitSrsReview = async (ratingValue) => {
+    if (!initData || !srsCard?.id) return;
+    const startedAt = srsShownAtRef.current || Date.now();
+    const responseMs = Math.max(0, Date.now() - startedAt);
+    try {
+      setSrsSubmitting(true);
+      const response = await fetch('/api/cards/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          card_id: srsCard.id,
+          rating: ratingValue,
+          response_ms: responseMs,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      await loadSrsNextCard();
+    } catch (error) {
+      setWebappError(`Ошибка SRS review: ${error.message}`);
+    } finally {
+      setSrsSubmitting(false);
+    }
   };
 
   const scrollToDictionary = () => {
@@ -789,6 +844,13 @@ function AppInner() {
     }
     loadFolders();
   }, [initData, isWebAppMode]);
+
+  useEffect(() => {
+    if (!initData || flashcardsOnly || !isSectionVisible('flashcards')) {
+      return;
+    }
+    loadSrsNextCard();
+  }, [initData, flashcardsOnly, selectedSections]);
 
   useEffect(() => {
     if (!flashcardSessionActive) {
@@ -3938,6 +4000,63 @@ function AppInner() {
 
             {isSectionVisible('flashcards') && (
               <section className="webapp-flashcards" ref={flashcardsRef}>
+                {!flashcardsOnly && (
+                  <div className="srs-panel">
+                    <div className="srs-panel-head">
+                      <h3>Интервальное повторение (FSRS)</h3>
+                      <div className="srs-queue">
+                        <span>Due: {srsQueueInfo?.due_count ?? 0}</span>
+                        <span>New today: {srsQueueInfo?.new_remaining_today ?? 0}</span>
+                      </div>
+                    </div>
+                    {srsLoading && <div className="webapp-muted">Загружаем следующую карточку…</div>}
+                    {!srsLoading && !srsCard && (
+                      <div className="webapp-muted">На сейчас нет карточек для повторения.</div>
+                    )}
+                    {!srsLoading && srsCard && (
+                      <div className="srs-card">
+                        <div className="srs-card-front">{srsCard.word_ru || srsCard.word_de || '—'}</div>
+                        {srsRevealAnswer && (
+                          <div className="srs-card-back">
+                            {srsCard.translation_de || srsCard.translation_ru || srsCard.word_de || '—'}
+                          </div>
+                        )}
+                        <div className="srs-state-line">
+                          <span>Status: {srsState?.status || 'new'}</span>
+                          <span>Interval: {srsState?.interval_days ?? 0} дн</span>
+                          {srsState?.is_mature && <span className="srs-mature">Освоено</span>}
+                        </div>
+                        {!srsRevealAnswer ? (
+                          <div className="srs-actions">
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => setSrsRevealAnswer(true)}
+                              disabled={srsSubmitting}
+                            >
+                              Показать ответ
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="srs-rating-grid">
+                            <button type="button" className="srs-rate again" onClick={() => submitSrsReview('AGAIN')} disabled={srsSubmitting}>
+                              AGAIN
+                            </button>
+                            <button type="button" className="srs-rate hard" onClick={() => submitSrsReview('HARD')} disabled={srsSubmitting}>
+                              HARD
+                            </button>
+                            <button type="button" className="srs-rate good" onClick={() => submitSrsReview('GOOD')} disabled={srsSubmitting}>
+                              GOOD
+                            </button>
+                            <button type="button" className="srs-rate easy" onClick={() => submitSrsReview('EASY')} disabled={srsSubmitting}>
+                              EASY
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {!flashcardsVisible && (
                   <div className="webapp-muted">
                     Нажмите «Повторить слова», чтобы начать тренировку.

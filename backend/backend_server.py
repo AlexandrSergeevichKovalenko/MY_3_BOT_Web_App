@@ -78,7 +78,7 @@ from datetime import timedelta, date
 import importlib.metadata as importlib_metadata
 import youtube_transcript_api as yta
 from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConfig
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from uuid import uuid4
 from urllib.parse import parse_qsl, urlparse
@@ -137,7 +137,17 @@ from backend.database import (
     upsert_tts_chunk_cache,
     get_tts_audio_cache,
     upsert_tts_audio_cache,
+    get_next_due_srs_card,
+    get_next_new_srs_candidate,
+    count_due_srs_cards,
+    count_new_cards_introduced_today,
+    ensure_new_srs_state,
+    get_card_srs_state,
+    upsert_card_srs_state,
+    get_dictionary_entry_for_user,
+    insert_card_review_log,
 )
+from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
 from backend.translation_workflow import (
     build_user_daily_summary,
     check_user_translation_webapp,
@@ -196,6 +206,7 @@ _audio_scheduler_lock = None
 TELEGRAM_Deutsch_BOT_TOKEN = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
 MOBILE_AUTH_SECRET = (os.getenv("MOBILE_AUTH_SECRET") or TELEGRAM_Deutsch_BOT_TOKEN or "").strip()
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
+NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
 
 WEBAPP_TOPICS = [
     "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
@@ -377,6 +388,17 @@ def _parse_telegram_init_data(init_data: str) -> dict:
         "chat_type": data.get("chat_type"),
         "chat_instance": data.get("chat_instance"),
     }
+
+
+def _extract_webapp_user_from_init_data(init_data: str) -> tuple[int | None, str | None]:
+    if not init_data or not _telegram_hash_is_valid(init_data):
+        return None, None
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return None, None
+    return int(user_id), _extract_display_name(user_data)
 
 
 def _mobile_b64encode(data: bytes) -> str:
@@ -2677,6 +2699,189 @@ def record_webapp_flashcard_answer():
         return jsonify({"error": f"Ошибка сохранения ответа: {exc}"}), 500
 
     return jsonify({"ok": True})
+
+
+@app.route("/api/cards/next", methods=["GET"])
+def get_next_srs_card():
+    init_data = request.args.get("initData") or request.headers.get("X-Telegram-Init-Data")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    user_id, _username = _extract_webapp_user_from_init_data(init_data)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку или user_id отсутствует"}), 401
+    if not is_telegram_user_allowed(int(user_id)):
+        return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
+
+    now_utc = datetime.now(timezone.utc)
+
+    due_payload = get_next_due_srs_card(user_id=user_id, now_utc=now_utc)
+    card_payload = None
+    srs_payload = None
+
+    if due_payload:
+        card_payload = due_payload.get("card")
+        srs_payload = due_payload.get("srs")
+    else:
+        introduced_today = count_new_cards_introduced_today(user_id=user_id, now_utc=now_utc)
+        new_remaining = max(NEW_PER_DAY - introduced_today, 0)
+        if new_remaining > 0:
+            candidate = get_next_new_srs_candidate(user_id=user_id)
+            if candidate:
+                state = ensure_new_srs_state(user_id=user_id, card_id=int(candidate["id"]), now_utc=now_utc)
+                card_payload = candidate
+                srs_payload = {
+                    "status": state.get("status") or "new",
+                    "due_at": state.get("due_at"),
+                    "interval_days": int(state.get("interval_days") or 0),
+                    "stability": float(state.get("stability") or 0.0),
+                    "difficulty": float(state.get("difficulty") or 0.0),
+                }
+
+    due_count = count_due_srs_cards(user_id=user_id, now_utc=now_utc)
+    introduced_today = count_new_cards_introduced_today(user_id=user_id, now_utc=now_utc)
+    new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
+
+    if not card_payload:
+        return jsonify(
+            {
+                "ok": True,
+                "card": None,
+                "srs": None,
+                "queue_info": {
+                    "due_count": due_count,
+                    "new_remaining_today": new_remaining_today,
+                },
+            }
+        )
+
+    due_at = srs_payload.get("due_at")
+    due_iso = due_at.isoformat() if hasattr(due_at, "isoformat") else None
+    interval_days = int(srs_payload.get("interval_days") or 0)
+    srs_response = {
+        "status": srs_payload.get("status") or "new",
+        "due_at": due_iso,
+        "interval_days": interval_days,
+        "stability": float(srs_payload.get("stability") or 0.0),
+        "difficulty": float(srs_payload.get("difficulty") or 0.0),
+        "is_mature": interval_days >= MATURE_INTERVAL_DAYS,
+    }
+
+    return jsonify(
+        {
+            "ok": True,
+            "card": card_payload,
+            "srs": srs_response,
+            "queue_info": {
+                "due_count": due_count,
+                "new_remaining_today": new_remaining_today,
+            },
+        }
+    )
+
+
+@app.route("/api/cards/review", methods=["POST"])
+def review_srs_card():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    card_id = payload.get("card_id")
+    rating_raw = payload.get("rating")
+    response_ms = payload.get("response_ms")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not card_id:
+        return jsonify({"error": "card_id обязателен"}), 400
+    if rating_raw is None:
+        return jsonify({"error": "rating обязателен"}), 400
+
+    user_id, _username = _extract_webapp_user_from_init_data(init_data)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку или user_id отсутствует"}), 401
+    if not is_telegram_user_allowed(int(user_id)):
+        return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
+
+    reviewed_at = datetime.now(timezone.utc)
+    card_id = int(card_id)
+
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                card = get_dictionary_entry_for_user(user_id=user_id, card_id=card_id, cursor=cursor)
+                if not card:
+                    return jsonify({"error": "Карточка не найдена"}), 404
+
+                current_state = get_card_srs_state(user_id=user_id, card_id=card_id, cursor=cursor)
+                if not current_state:
+                    current_state = {
+                        "status": "new",
+                        "due_at": reviewed_at,
+                        "last_review_at": None,
+                        "interval_days": 0,
+                        "reps": 0,
+                        "lapses": 0,
+                        "stability": 0.0,
+                        "difficulty": 0.0,
+                    }
+
+                before_due = current_state.get("due_at")
+                before_stability = float(current_state.get("stability") or 0.0)
+                before_difficulty = float(current_state.get("difficulty") or 0.0)
+
+                scheduled, canonical_rating = schedule_review(
+                    current_state=current_state,
+                    rating=rating_raw,
+                    reviewed_at=reviewed_at,
+                )
+
+                persisted = upsert_card_srs_state(
+                    user_id=user_id,
+                    card_id=card_id,
+                    status=scheduled.status,
+                    due_at=scheduled.due_at,
+                    last_review_at=scheduled.last_review_at,
+                    interval_days=scheduled.interval_days,
+                    reps=scheduled.reps,
+                    lapses=scheduled.lapses,
+                    stability=scheduled.stability,
+                    difficulty=scheduled.difficulty,
+                    cursor=cursor,
+                )
+
+                insert_card_review_log(
+                    user_id=user_id,
+                    card_id=card_id,
+                    reviewed_at=reviewed_at,
+                    rating=canonical_rating,
+                    response_ms=int(response_ms) if response_ms is not None else None,
+                    scheduled_due_before=before_due,
+                    scheduled_due_after=scheduled.due_at,
+                    stability_before=before_stability,
+                    difficulty_before=before_difficulty,
+                    stability_after=scheduled.stability,
+                    difficulty_after=scheduled.difficulty,
+                    interval_days_after=scheduled.interval_days,
+                    cursor=cursor,
+                )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка review: {exc}"}), 500
+
+    interval_days = int(persisted.get("interval_days") or 0)
+    due_at = persisted.get("due_at")
+    return jsonify(
+        {
+            "ok": True,
+            "next_due_at": due_at.isoformat() if hasattr(due_at, "isoformat") else None,
+            "interval_days": interval_days,
+            "status": persisted.get("status") or "new",
+            "stability": float(persisted.get("stability") or 0.0),
+            "difficulty": float(persisted.get("difficulty") or 0.0),
+            "is_mature": interval_days >= MATURE_INTERVAL_DAYS,
+            "message": "Review saved",
+        }
+    )
 
 
 @app.route("/api/webapp/flashcards/feel", methods=["POST"])

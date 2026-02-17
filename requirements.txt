@@ -229,3 +229,5 @@ youtube-transcript-api==1.2.4
 spacy==3.7.4
 
 gunicorn
+
+fsrs>=6.1.1

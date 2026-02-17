@@ -1698,6 +1698,91 @@ body {
   padding-top: 10px;
 }
 
+.srs-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.68);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+.srs-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.srs-panel-head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.srs-queue {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: rgba(226, 232, 240, 0.82);
+}
+
+.srs-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.46);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.srs-card-front {
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.srs-card-back {
+  font-size: 18px;
+  color: #dbeafe;
+}
+
+.srs-state-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: rgba(226, 232, 240, 0.8);
+}
+
+.srs-mature {
+  color: #fde68a;
+  font-weight: 700;
+}
+
+.srs-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.srs-rating-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.srs-rate {
+  border: none;
+  border-radius: 12px;
+  padding: 10px 8px;
+  color: #0b1020;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.srs-rate.again { background: #fca5a5; }
+.srs-rate.hard { background: #fdba74; }
+.srs-rate.good { background: #86efac; }
+.srs-rate.easy { background: #67e8f9; }
+
 .flashcards-panel {
   display: flex;
   flex-direction: column;
