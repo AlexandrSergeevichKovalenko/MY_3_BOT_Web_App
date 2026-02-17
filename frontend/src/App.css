@@ -3209,6 +3209,12 @@ body {
   box-shadow: 0 5px 10px rgba(19, 56, 95, 0.12);
 }
 
+.blocks-slot.is-selected {
+  border-style: solid;
+  border-color: rgba(30, 86, 148, 0.55);
+  box-shadow: 0 0 0 3px rgba(93, 172, 255, 0.24);
+}
+
 .blocks-playground {
   position: relative;
   min-height: 220px;

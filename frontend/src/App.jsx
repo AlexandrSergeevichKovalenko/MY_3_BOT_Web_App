@@ -123,7 +123,7 @@ function AppInner() {
   const [flashcardSetSize, setFlashcardSetSize] = useState(15);
   const [flashcardDurationSec, setFlashcardDurationSec] = useState(10);
   const [flashcardTrainingMode, setFlashcardTrainingMode] = useState('quiz');
-  const [blocksTimerMode, setBlocksTimerMode] = useState('adaptive');
+  const [blocksTimerMode, setBlocksTimerMode] = useState('fixed');
   const [flashcardSessionActive, setFlashcardSessionActive] = useState(false);
   const [flashcardPreviewActive, setFlashcardPreviewActive] = useState(false);
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
@@ -1765,13 +1765,22 @@ function AppInner() {
 
   const resolveBlocksAnswer = (entry) => {
     const responseJson = entry?.response_json || {};
-    const raw = entry?.translation_de
-      || responseJson.translation_de
+    const translationDe = entry?.translation_de || responseJson.translation_de || '';
+    const translationArray = Array.isArray(responseJson.translations)
+      ? responseJson.translations.filter(Boolean)
+      : [];
+    const raw = translationArray[0]
+      || translationDe
       || entry?.word_de
       || responseJson.word_de
       || '';
     if (!raw) return '';
-    return String(raw).split(/[,;/]/)[0]?.trim() || '';
+    const normalized = String(raw).replace(/\s+/g, ' ').trim();
+    // Keep commas inside phrases. Split by semicolon/slash as alternative list separators.
+    if (normalized.includes(';') || normalized.includes('/')) {
+      return normalized.split(/[;/]/)[0]?.trim() || normalized;
+    }
+    return normalized;
   };
 
   const resolveBlocksPrompt = (entry) => {
@@ -1786,6 +1795,10 @@ function AppInner() {
   const resolveBlocksType = (entry, answer) => {
     const responseJson = entry?.response_json || {};
     const explicit = String(entry?.type || responseJson.type || '').toUpperCase();
+    const tokens = String(answer || '').trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 2 && ['DER', 'DIE', 'DAS', 'DEN', 'DEM', 'DES', 'EIN', 'EINE', 'EINEN', 'EINEM', 'EINER', 'EINES'].includes(tokens[0].toUpperCase())) {
+      return 'WORD';
+    }
     if (explicit === 'WORD' || explicit === 'PHRASE') return explicit;
     return /\s+/.test(String(answer || '').trim()) ? 'PHRASE' : 'WORD';
   };

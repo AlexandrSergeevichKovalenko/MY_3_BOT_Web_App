@@ -28,7 +28,8 @@ const BASE_SECONDS_MIN = 7;
 const BASE_SECONDS_MAX = 10;
 const ADAPTIVE_SECONDS_PER_CHAR = 2;
 const ADAPTIVE_SECONDS_MAX = 30;
-const AUTO_NEXT_DELAY_MS = 2000;
+const AUTO_NEXT_DELAY_OK_MS = 900;
+const AUTO_NEXT_DELAY_FAIL_MS = 4500;
 const TILE_WIDTH = 92;
 const TILE_HEIGHT = 56;
 
@@ -38,10 +39,11 @@ const GERMAN_ARTICLES = new Set([
 ]);
 
 const detectCardType = (answer, explicitType) => {
-  if (explicitType === 'WORD' || explicitType === 'PHRASE') return explicitType;
   const tokens = String(answer || '').trim().split(/\s+/).filter(Boolean);
+  // Special case: article + noun behaves as one lexical item for this mode.
   if (tokens.length <= 1) return 'WORD';
   if (tokens.length === 2 && GERMAN_ARTICLES.has(tokens[0].toLowerCase())) return 'WORD';
+  if (explicitType === 'WORD' || explicitType === 'PHRASE') return explicitType;
   return 'PHRASE';
 };
 
@@ -105,6 +107,7 @@ export default function BlocksTrainer({
   const [hintsUsed, setHintsUsed] = useState(0);
   const [timeLeftMs, setTimeLeftMs] = useState(timerMs);
   const [playgroundHeight, setPlaygroundHeight] = useState(270);
+  const [selectedSlotIndex, setSelectedSlotIndex] = useState(null);
 
   const allSlotsFilled = slots.length > 0 && slots.every((item) => item !== null);
   const isFinished = status !== 'idle';
@@ -193,6 +196,7 @@ export default function BlocksTrainer({
     setHintsUsed(0);
     setTimeLeftMs(timerMs);
     setPlaygroundHeight(270);
+    setSelectedSlotIndex(null);
     finishedRef.current = false;
     startAtRef.current = Date.now();
     if (autoNextRef.current) {
@@ -236,9 +240,10 @@ export default function BlocksTrainer({
       status,
     });
     if (autoAdvance) {
+      const delayMs = isCorrect ? AUTO_NEXT_DELAY_OK_MS : AUTO_NEXT_DELAY_FAIL_MS;
       autoNextRef.current = setTimeout(() => {
         onNext?.();
-      }, AUTO_NEXT_DELAY_MS);
+      }, delayMs);
     }
   }, [status, hintsUsed, onRoundResult, autoAdvance, onNext]);
 
@@ -353,8 +358,13 @@ export default function BlocksTrainer({
   const placeTileByTap = (tileId) => {
     const tile = tiles.find((item) => item.id === tileId);
     if (!tile) return;
+    if (selectedSlotIndex !== null) {
+      moveTileToSlot(tileId, selectedSlotIndex);
+      setSelectedSlotIndex(null);
+      return;
+    }
     if (tile.slotIndex !== null) {
-      returnTileToHome(tileId);
+      setSelectedSlotIndex(tile.slotIndex);
       return;
     }
     const firstEmpty = slots.findIndex((slotId) => slotId === null);
@@ -434,8 +444,53 @@ export default function BlocksTrainer({
   const onSlotClick = (slotIndex) => {
     if (isFinished) return;
     const tileId = slots[slotIndex];
-    if (!tileId) return;
-    returnTileToHome(tileId);
+    if (selectedSlotIndex === null) {
+      if (tileId) {
+        setSelectedSlotIndex(slotIndex);
+      }
+      return;
+    }
+    if (selectedSlotIndex === slotIndex) {
+      setSelectedSlotIndex(null);
+      return;
+    }
+    const selectedTileId = slots[selectedSlotIndex];
+    if (!selectedTileId) {
+      setSelectedSlotIndex(null);
+      return;
+    }
+    if (!tileId) {
+      moveTileToSlot(selectedTileId, slotIndex);
+      setSelectedSlotIndex(null);
+      return;
+    }
+    // Swap two filled slots.
+    setTiles((prevTiles) => {
+      const nextTiles = prevTiles.map((item) => ({ ...item }));
+      setSlots((prevSlots) => {
+        const nextSlots = [...prevSlots];
+        const firstTile = nextTiles.find((item) => item.id === selectedTileId);
+        const secondTile = nextTiles.find((item) => item.id === tileId);
+        if (!firstTile || !secondTile) return prevSlots;
+        nextSlots[selectedSlotIndex] = secondTile.id;
+        nextSlots[slotIndex] = firstTile.id;
+        firstTile.slotIndex = slotIndex;
+        secondTile.slotIndex = selectedSlotIndex;
+        const firstRect = slotRects[slotIndex];
+        const secondRect = slotRects[selectedSlotIndex];
+        if (firstRect) {
+          firstTile.x = firstRect.centerX - TILE_WIDTH / 2;
+          firstTile.y = firstRect.centerY - TILE_HEIGHT / 2;
+        }
+        if (secondRect) {
+          secondTile.x = secondRect.centerX - TILE_WIDTH / 2;
+          secondTile.y = secondRect.centerY - TILE_HEIGHT / 2;
+        }
+        return nextSlots;
+      });
+      return nextTiles;
+    });
+    setSelectedSlotIndex(null);
   };
 
   const applyHint = () => {
@@ -485,7 +540,7 @@ export default function BlocksTrainer({
             <div
               key={`slot-${idx}`}
               ref={(el) => { slotRefs.current[idx] = el; }}
-              className={`blocks-slot ${placed ? 'is-filled' : ''}`}
+              className={`blocks-slot ${placed ? 'is-filled' : ''} ${selectedSlotIndex === idx ? 'is-selected' : ''}`}
               role="button"
               tabIndex={0}
               onClick={() => onSlotClick(idx)}
