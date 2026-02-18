@@ -1178,10 +1178,10 @@ body {
 .webapp-video {
   background: rgba(16, 23, 44, 0.92);
   border-radius: 18px;
-  padding: 14px;
+  padding: 12px;
   box-shadow: 0 16px 32px rgba(8, 11, 26, 0.35);
   display: grid;
-  gap: 10px;
+  gap: 6px;
 }
 
 .webapp-video-dictionary {
@@ -1273,6 +1273,22 @@ body {
   gap: 10px;
 }
 
+.webapp-video-actions.is-subtitle-toolbar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.webapp-video-actions.is-subtitle-toolbar .primary-button,
+.webapp-video-actions.is-subtitle-toolbar .secondary-button {
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
 .webapp-subtitles-manual {
   display: grid;
   gap: 8px;
@@ -1314,6 +1330,38 @@ body {
   border: 0;
 }
 
+.youtube-subtitles-overlay {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 10px;
+  z-index: 6;
+  pointer-events: none;
+  display: grid;
+  gap: 4px;
+}
+
+.youtube-subtitles-overlay-line {
+  margin: 0;
+  text-align: center;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0 8px rgba(0, 0, 0, 0.7);
+}
+
+.youtube-subtitles-overlay-line.is-de {
+  color: #f8fafc;
+  font-size: 16px;
+}
+
+.youtube-subtitles-overlay-line.is-ru {
+  color: #fde68a;
+  font-size: 14px;
+}
+
 .youtube-player-host {
   position: absolute;
   inset: 0;
@@ -1325,16 +1373,16 @@ body {
 
 .webapp-subtitles {
   display: grid;
-  gap: 8px;
-  padding-top: 2px;
+  gap: 6px;
+  padding-top: 0;
 }
 
 .webapp-video .webapp-subtitles:first-of-type .webapp-subtitles-list {
-  max-height: 32vh;
+  max-height: min(15vh, 130px);
 }
 
 .webapp-video .webapp-subtitles.is-translation .webapp-subtitles-list {
-  max-height: 22vh;
+  max-height: min(15vh, 130px);
 }
 
 .webapp-video .webapp-subtitles:not(.is-translation) .webapp-subtitles-list {
@@ -1362,32 +1410,19 @@ body {
   color: #e9f8ff;
 }
 
-.webapp-subtitles-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.webapp-subtitles-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
 .webapp-subtitles-list {
-  max-height: 220px;
+  max-height: 150px;
   overflow: auto;
   background: rgba(15, 23, 42, 0.9);
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.3);
-  padding: 10px 12px;
-  font-size: 13px;
-  line-height: 1.5;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .webapp-subtitles-list p {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
 }
 
 .webapp-subtitles-fallback textarea {
@@ -3213,6 +3248,18 @@ body {
 
   .lesson-header h1 {
     font-size: 26px;
+  }
+
+  .webapp-video-actions.is-subtitle-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .youtube-subtitles-overlay-line.is-de {
+    font-size: 14px;
+  }
+
+  .youtube-subtitles-overlay-line.is-ru {
+    font-size: 12px;
   }
 }
 

@@ -93,6 +93,7 @@ function AppInner() {
   const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
   const [youtubeRuEnabled, setYoutubeRuEnabled] = useState(false);
+  const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
   const [youtubeManualOverride, setYoutubeManualOverride] = useState(false);
   const [youtubeTranscriptHasTiming, setYoutubeTranscriptHasTiming] = useState(true);
   const [movies, setMovies] = useState([]);
@@ -3720,9 +3721,42 @@ function AppInner() {
                         </button>
                       </div>
                     </div>
+                    <div className="webapp-video-actions is-subtitle-toolbar">
+                      <button
+                        type="button"
+                        className={`secondary-button ${youtubeRuEnabled ? 'is-active' : ''}`}
+                        onClick={() => setYoutubeRuEnabled((prev) => !prev)}
+                        disabled={!youtubeTranscript.length}
+                      >
+                        {youtubeRuEnabled ? 'Скрыть RU' : 'Показать RU'}
+                      </button>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => fetchTranscript()}
+                        disabled={!youtubeId || youtubeTranscriptLoading || youtubeManualOverride}
+                      >
+                        {youtubeTranscriptLoading ? 'Загружаем...' : 'Загрузить'}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setShowManualTranscript((prev) => !prev)}
+                      >
+                        {showManualTranscript ? 'Скрыть вставку' : 'Вставить транскрипцию'}
+                      </button>
+                      <button
+                        type="button"
+                        className={`secondary-button ${youtubeOverlayEnabled ? 'is-active' : ''}`}
+                        onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
+                        disabled={!youtubeTranscript.length}
+                      >
+                        {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
+                      </button>
+                    </div>
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
                     {youtubeId ? (
-                      <div className={`webapp-video-frame ${videoExpanded ? 'is-expanded' : ''}`}>
+                      <div className={`webapp-video-frame ${videoExpanded ? 'is-expanded' : ''} ${youtubeOverlayEnabled ? 'has-overlay' : ''}`}>
                         <div
                           id="youtube-player"
                           className="youtube-player-host"
@@ -3736,35 +3770,27 @@ function AppInner() {
                             allowFullScreen
                           />
                         )}
+                        {youtubeOverlayEnabled && youtubeTranscript.length > 0 && (() => {
+                          const activeIndex = getActiveSubtitleIndex();
+                          const resolvedIndex = activeIndex >= 0 ? activeIndex : 0;
+                          const activeItem = youtubeTranscript[resolvedIndex];
+                          const overlayDeText = normalizeSubtitleText(activeItem?.text || '');
+                          const overlayRuText = (youtubeTranslations[String(resolvedIndex)] || '').trim();
+                          return (
+                            <div className="youtube-subtitles-overlay" aria-hidden="true">
+                              {overlayDeText && (
+                                <p className="youtube-subtitles-overlay-line is-de">{overlayDeText}</p>
+                              )}
+                              {youtubeRuEnabled && overlayRuText && (
+                                <p className="youtube-subtitles-overlay-line is-ru">{overlayRuText}</p>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     ) : (
                       <p className="webapp-muted">Вставьте ссылку на видео, чтобы смотреть прямо здесь.</p>
                     )}
-                    <div className="webapp-video-actions">
-                      <button
-                        type="button"
-                        className={`secondary-button ${youtubeRuEnabled ? 'is-active' : ''}`}
-                        onClick={() => setYoutubeRuEnabled((prev) => !prev)}
-                        disabled={!youtubeTranscript.length}
-                      >
-                        {youtubeRuEnabled ? 'Скрыть RU субтитры' : 'Показать RU субтитры'}
-                      </button>
-                      <button
-                        type="button"
-                        className="primary-button"
-                        onClick={() => fetchTranscript()}
-                        disabled={!youtubeId || youtubeTranscriptLoading || youtubeManualOverride}
-                      >
-                        {youtubeTranscriptLoading ? 'Загружаем...' : 'Загрузить субтитры'}
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => setShowManualTranscript((prev) => !prev)}
-                      >
-                        {showManualTranscript ? 'Скрыть транскрипцию' : 'Вставить транскрипцию'}
-                      </button>
-                    </div>
                     {showManualTranscript && (
                       <div className="webapp-subtitles-manual">
                         <textarea
@@ -3798,11 +3824,8 @@ function AppInner() {
                         </div>
                       </div>
                     )}
-                    {youtubeTranscript.length > 0 && (
+                    {youtubeTranscript.length > 0 && !youtubeOverlayEnabled && (
                       <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
-                        <div className="webapp-subtitles-header">
-                          <h4>Субтитры</h4>
-                        </div>
                         <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
                           {(() => {
                             const activeIndex = getActiveSubtitleIndex();
@@ -3818,11 +3841,8 @@ function AppInner() {
                         </div>
                       </div>
                     )}
-                    {youtubeTranscript.length > 0 && youtubeRuEnabled && (
+                    {youtubeTranscript.length > 0 && youtubeRuEnabled && !youtubeOverlayEnabled && (
                       <div className="webapp-subtitles is-translation">
-                        <div className="webapp-subtitles-header">
-                          <h4>Перевод (RU)</h4>
-                        </div>
                         <div className="webapp-subtitles-list">
                           {(() => {
                             const activeIndex = getActiveSubtitleIndex();
