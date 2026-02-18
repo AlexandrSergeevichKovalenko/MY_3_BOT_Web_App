@@ -102,6 +102,7 @@ SYSTEM_MESSAGE_CLEANUP_TZ = (os.getenv("SYSTEM_MESSAGE_CLEANUP_TZ") or os.getenv
 SYSTEM_MESSAGE_CLEANUP_HOUR = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "23").strip())
 SYSTEM_MESSAGE_CLEANUP_MINUTE = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MINUTE") or "59").strip())
 SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK") or "2").strip())
+ENABLE_LEGACY_REPLY_KEYBOARD = (os.getenv("ENABLE_LEGACY_REPLY_KEYBOARD") or "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # === Логирование ===
@@ -648,6 +649,20 @@ async def simulate_typing(context, chat_id, duration=3):
 # Buttons in Telegram
 async def send_main_menu(update: Update, context: CallbackContext):
     """Принудительно обновляет главное меню с кнопками."""
+    if not ENABLE_LEGACY_REPLY_KEYBOARD:
+        # Legacy reply-keyboard flow is disabled: users should use WebApp.
+        bot_username = context.bot.username
+        if not bot_username:
+            bot_info = await context.bot.get_me()
+            bot_username = bot_info.username
+        webapp_url = get_webapp_deeplink(bot_username=bot_username)
+        await update.message.reply_text(
+            "✅ Используйте mini app для переводов, аналитики, словаря и карточек.\n"
+            f"Открыть: {webapp_url}",
+            disable_web_page_preview=True,
+        )
+        return
+
     keyboard = [
         ["📌 Выбрать тему"],  # ❗ Убедись, что текст здесь правильный
         ["🚀 Начать перевод", "✅ Завершить перевод"],
@@ -1175,6 +1190,8 @@ async def mobile_token_command(update: Update, context: CallbackContext):
 
 async def handle_button_click(update: Update, context: CallbackContext):
     """Обрабатывает нажатия на кнопки главного меню."""
+    if not ENABLE_LEGACY_REPLY_KEYBOARD:
+        return
     
     print("🛠 handle_button_click() вызван!")  # Логируем сам вызов функции
 
@@ -1638,6 +1655,8 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
 
 def _is_menu_button_text(text: str) -> bool:
+    if not ENABLE_LEGACY_REPLY_KEYBOARD:
+        return False
     return text in {
         "📌 Выбрать тему",
         "🚀 Начать перевод",
@@ -5549,7 +5568,9 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_message, block=False), group=1)  # ✅ Сохраняем переводы
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_click, block=False), group=1)  # ✅ Обрабатываем кнопки 
+    # Legacy ReplyKeyboard-based flow is disabled by default; keep handler for rollback via env.
+    if ENABLE_LEGACY_REPLY_KEYBOARD:
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_click, block=False), group=1)  # ✅ Обрабатываем кнопки 
     application.add_handler(CallbackQueryHandler(handle_explain_request, pattern=r"^explain:"))
     application.add_handler(CallbackQueryHandler(handle_pending_access_list, pattern=r"^access:pending:list$"))
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
