@@ -6,6 +6,7 @@ import re
 import json
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 import openai
 import psycopg2
@@ -20,6 +21,7 @@ from backend.openai_manager import (
     client,
     get_or_create_openai_resources,
     run_check_translation_story,
+    run_check_story_guess_semantic,
 )
 from backend.database import get_db_connection_context
 
@@ -162,43 +164,36 @@ async def generate_mystery_story(
 
 def _parse_story_feedback(text: str) -> dict[str, Any]:
     score = None
-    categories: list[str] = []
-    subcategories: list[str] = []
     feedback = ""
 
-    if "Score:" in text:
-        score_candidate = text.split("Score:")[-1].split("/")[0].strip()
-        if score_candidate.isdigit():
-            score = int(score_candidate)
+    match_score = re.search(r"Score:\s*(\d{1,3})\s*/\s*100", text, flags=re.IGNORECASE)
+    if match_score:
+        score = int(match_score.group(1))
 
-    match = re.search(r"Mistake Categories:\s*(.+)", text)
-    if match:
-        raw = match.group(1).strip()
-        if raw:
-            categories = [item.strip() for item in raw.split(",") if item.strip()]
-
-    match = re.search(r"Subcategories:\s*(.+)", text)
-    if match:
-        raw = match.group(1).strip()
-        if raw:
-            subcategories = [item.strip() for item in raw.split(",") if item.strip()]
-
-    match = re.search(r"General Feedback:\s*(.+)", text)
-    if match:
-        feedback = match.group(1).strip()
-
-    match = re.search(r"Error Details:\s*(.+)", text)
-    if match:
-        details = match.group(1).strip()
-        if details:
-            feedback = f"{feedback}\n\n{details}" if feedback else details
+    # Preferred format starts with "Feedback:" and then structured blocks.
+    match_feedback = re.search(r"Feedback:\s*(.+)$", text, flags=re.IGNORECASE | re.DOTALL)
+    if match_feedback:
+        feedback = match_feedback.group(1).strip()
+    else:
+        # Fallback: keep full text except first score line.
+        feedback = re.sub(r"^Score:\s*\d{1,3}\s*/\s*100\s*$", "", text.strip(), flags=re.IGNORECASE | re.MULTILINE).strip()
 
     return {
         "score": score if score is not None else 0,
-        "categories": categories,
-        "subcategories": subcategories,
         "feedback": feedback,
     }
+
+
+def _build_story_source_links(answer: str) -> list[dict[str, str]]:
+    normalized = (answer or "").strip()
+    if not normalized:
+        return []
+    slug = quote(normalized.replace(" ", "_"))
+    return [
+        {"lang": "DE", "url": f"https://de.wikipedia.org/wiki/{slug}"},
+        {"lang": "EN", "url": f"https://en.wikipedia.org/wiki/{slug}"},
+        {"lang": "RU", "url": f"https://ru.wikipedia.org/wiki/{slug}"},
+    ]
 
 
 def _insert_story_session_sentences(
@@ -569,8 +564,6 @@ async def submit_story_translation_webapp(
         parsed = _parse_story_feedback(raw_feedback)
         score_value = parsed["score"]
         feedback = parsed["feedback"] or raw_feedback
-        categories = parsed.get("categories") or []
-        subcategories = parsed.get("subcategories") or []
 
         for row, user_sentence in zip(daily_rows, user_sentences):
             sentence_pk_id = row[0]
@@ -596,9 +589,28 @@ async def submit_story_translation_webapp(
         normalized_guess = _normalize_guess(guess)
         normalized_answer = _normalize_guess(answer or "")
         alias_matches = {_normalize_guess(item) for item in aliases if item}
-        is_correct = normalized_guess and (
-            normalized_guess == normalized_answer or normalized_guess in alias_matches
+        heuristic_match = bool(
+            normalized_guess and (
+                normalized_guess == normalized_answer
+                or normalized_guess in alias_matches
+                or normalized_answer in normalized_guess
+                or any(alias and alias in normalized_guess for alias in alias_matches)
+            )
         )
+
+        semantic_result = {"is_correct": False, "reason": ""}
+        try:
+            semantic_result = await run_check_story_guess_semantic(
+                canonical_answer=answer or "",
+                aliases=[item for item in aliases if item],
+                user_guess=guess,
+            )
+        except Exception as exc:
+            logging.warning("Semantic guess check failed: %s", exc)
+
+        is_correct = bool(heuristic_match or semantic_result.get("is_correct"))
+        guess_reason = (semantic_result.get("reason") or "").strip()
+        source_links = _build_story_source_links(answer or "")
 
         cursor.execute(
             """
@@ -615,11 +627,11 @@ async def submit_story_translation_webapp(
             "ok": True,
             "score": score_value,
             "feedback": feedback,
-            "categories": categories,
-            "subcategories": subcategories,
             "guess_correct": is_correct,
+            "guess_reason": guess_reason,
             "answer": answer,
             "extra_de": extra_de,
+            "source_links": source_links,
         }
     finally:
         cursor.close()

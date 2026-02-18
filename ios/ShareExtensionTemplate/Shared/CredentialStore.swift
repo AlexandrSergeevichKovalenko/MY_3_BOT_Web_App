@@ -2,7 +2,7 @@ import Foundation
 
 enum CredentialStore {
     // Replace with your real App Group ID in both Main App and Share Extension targets.
-    static let appGroupId = "group.com.example.telegramdeutsch"
+    static let appGroupId = "group.com.oleksandrkovalenko.bot3weba"
 
     private static let baseURLKey = "mobile_api_base_url"
     private static let tokenKey = "mobile_access_token"

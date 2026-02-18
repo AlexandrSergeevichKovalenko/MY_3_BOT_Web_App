@@ -8,6 +8,15 @@
 
 /* Begin PBXBuildFile section */
 		A88263D02F43B3280044D5BE /* DictionaryShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A88263C62F43B3270044D5BE /* DictionaryShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A88264072F43D0AE0044D5BE /* AppEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A88264062F43D0AE0044D5BE /* AppEntry.swift */; };
+		A8BBD6D32F44FCB700AF0F5B /* MobileSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BBD6D02F44FCB700AF0F5B /* MobileSetupView.swift */; };
+		A8BBD6D52F44FCB700AF0F5B /* MobileAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BBD6CF2F44FCB700AF0F5B /* MobileAuthService.swift */; };
+		A8BBD6E32F44FFF100AF0F5B /* DictionaryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BBD6E02F44FFF100AF0F5B /* DictionaryModels.swift */; };
+		A8BBD6E42F44FFF100AF0F5B /* MobileDictionaryAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BBD6E12F44FFF100AF0F5B /* MobileDictionaryAPI.swift */; };
+		A8BBD6E52F44FFF100AF0F5B /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BBD6DF2F44FFF100AF0F5B /* CredentialStore.swift */; };
+		A8BBD6E62F44FFF100AF0F5B /* DictionaryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BBD6E02F44FFF100AF0F5B /* DictionaryModels.swift */; };
+		A8BBD6E72F44FFF100AF0F5B /* MobileDictionaryAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BBD6E12F44FFF100AF0F5B /* MobileDictionaryAPI.swift */; };
+		A8BBD6E82F44FFF100AF0F5B /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BBD6DF2F44FFF100AF0F5B /* CredentialStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -37,7 +46,34 @@
 /* Begin PBXFileReference section */
 		A88263B42F43B2240044D5BE /* Bot3_Webapp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Bot3_Webapp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A88263C62F43B3270044D5BE /* DictionaryShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DictionaryShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A88264062F43D0AE0044D5BE /* AppEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEntry.swift; sourceTree = "<group>"; };
+		A8BBD6CF2F44FCB700AF0F5B /* MobileAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileAuthService.swift; sourceTree = "<group>"; };
+		A8BBD6D02F44FCB700AF0F5B /* MobileSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSetupView.swift; sourceTree = "<group>"; };
+		A8BBD6DF2F44FFF100AF0F5B /* CredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStore.swift; sourceTree = "<group>"; };
+		A8BBD6E02F44FFF100AF0F5B /* DictionaryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictionaryModels.swift; sourceTree = "<group>"; };
+		A8BBD6E12F44FFF100AF0F5B /* MobileDictionaryAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileDictionaryAPI.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A88263D12F43B3280044D5BE /* Exceptions for "DictionaryShare" folder in "DictionaryShare" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A88263C52F43B3270044D5BE /* DictionaryShare */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		A88263C72F43B3270044D5BE /* DictionaryShare */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A88263D12F43B3280044D5BE /* Exceptions for "DictionaryShare" folder in "DictionaryShare" target */,
+			);
+			path = DictionaryShare;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A88263B12F43B2240044D5BE /* Frameworks */ = {
@@ -60,6 +96,10 @@
 		A88263AB2F43B2240044D5BE = {
 			isa = PBXGroup;
 			children = (
+				A8BBD6E22F44FFF100AF0F5B /* Shared */,
+				A8BBD6D22F44FCB700AF0F5B /* MainApp */,
+				A88264062F43D0AE0044D5BE /* AppEntry.swift */,
+				A88263C72F43B3270044D5BE /* DictionaryShare */,
 				A88263B52F43B2240044D5BE /* Products */,
 			);
 			sourceTree = "<group>";
@@ -71,6 +111,25 @@
 				A88263C62F43B3270044D5BE /* DictionaryShare.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A8BBD6D22F44FCB700AF0F5B /* MainApp */ = {
+			isa = PBXGroup;
+			children = (
+				A8BBD6CF2F44FCB700AF0F5B /* MobileAuthService.swift */,
+				A8BBD6D02F44FCB700AF0F5B /* MobileSetupView.swift */,
+			);
+			path = MainApp;
+			sourceTree = "<group>";
+		};
+		A8BBD6E22F44FFF100AF0F5B /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				A8BBD6DF2F44FFF100AF0F5B /* CredentialStore.swift */,
+				A8BBD6E02F44FFF100AF0F5B /* DictionaryModels.swift */,
+				A8BBD6E12F44FFF100AF0F5B /* MobileDictionaryAPI.swift */,
+			);
+			path = Shared;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -108,6 +167,9 @@
 			buildRules = (
 			);
 			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A88263C72F43B3270044D5BE /* DictionaryShare */,
 			);
 			name = DictionaryShare;
 			packageProductDependencies = (
@@ -176,6 +238,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A8BBD6E32F44FFF100AF0F5B /* DictionaryModels.swift in Sources */,
+				A8BBD6E42F44FFF100AF0F5B /* MobileDictionaryAPI.swift in Sources */,
+				A8BBD6E52F44FFF100AF0F5B /* CredentialStore.swift in Sources */,
+				A8BBD6D32F44FCB700AF0F5B /* MobileSetupView.swift in Sources */,
+				A8BBD6D52F44FCB700AF0F5B /* MobileAuthService.swift in Sources */,
+				A88264072F43D0AE0044D5BE /* AppEntry.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -183,6 +251,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A8BBD6E62F44FFF100AF0F5B /* DictionaryModels.swift in Sources */,
+				A8BBD6E72F44FFF100AF0F5B /* MobileDictionaryAPI.swift in Sources */,
+				A8BBD6E82F44FFF100AF0F5B /* CredentialStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

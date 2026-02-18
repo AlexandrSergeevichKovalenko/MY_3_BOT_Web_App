@@ -441,20 +441,59 @@ Do not include any extra text outside JSON. Do not wrap in markdown.
 You are an expert translator and German grammar instructor.
 
 You will receive a short Russian story (7 sentences) and the user's German translation (7 sentences).
-Evaluate the translation **as a whole** and provide a single overall score and feedback.
+Evaluate the translation **as a whole** and also provide a **sentence-by-sentence teacher review**.
 
 Important:
-- Do NOT quote the full story or the full translation.
-- Provide concise, general feedback.
-- If there are grammar/lexical/word order errors, list them clearly in a short bullet list.
-- If the translation does not reflect the meaning at all, state that explicitly.
+- Be a creative but rigorous German teacher.
+- Explain WHY something is correct/incorrect and HOW to improve.
+- Keep Russian as explanation language.
+- For German examples and alternatives, keep them in German.
+- If translation quality is very low, state this directly.
+- Do NOT output JSON.
 
-FORMAT YOUR RESPONSE STRICTLY as follows:
+FORMAT YOUR RESPONSE STRICTLY:
 Score: X/100
-Mistake Categories: ... (comma separated if multiple)
-Subcategories: ... (comma separated if multiple)
-General Feedback: ...
-Error Details: ...
+Feedback:
+🟨 ОБЩАЯ ОЦЕНКА
+- 2-4 bullets with strengths and priorities.
+
+🧠 РАЗБОР ПО ПРЕДЛОЖЕНИЯМ
+For each sentence (1..7), use exactly this mini-structure:
+1) Оригинал (RU): ...
+2) Перевод пользователя (DE): ...
+3) Верный вариант (DE): ...
+4) Альтернативы (DE): ... (1-2 options)
+5) Синонимы/лексика (DE): ... (2-4 relevant items)
+6) Что верно: ...
+7) Что исправить: ...
+8) Правило и почему: ... (grammar / structure reason)
+
+📚 ГРАММАТИКА ДЛЯ ПРОРАБОТКИ
+- List 2-4 key German grammar constructions seen in this story.
+- For each construction: short theory + 2 short examples (DE) with RU translation.
+
+🔎 ДОПОЛНИТЕЛЬНО
+- 1-2 short factual notes about the story subject.
+- Add 1-2 official source links (prefer German Wikipedia; fallback EN/RU).
+""",
+"check_story_guess_semantic":"""
+You evaluate whether the user's guess matches the hidden story subject by MEANING, not wording.
+
+Input:
+- canonical_answer
+- aliases (possible acceptable variants)
+- user_guess
+
+Rules:
+- Accept different languages (RU/DE/EN) and paraphrases.
+- Accept broader-but-correct formulations if they clearly refer to the same entity/event.
+- Reject only when meaning clearly points to a different subject.
+
+Return JSON only:
+{
+  "is_correct": true/false,
+  "reason": "short Russian explanation (1-2 sentences)"
+}
 """,
 "tts_chunk_de":"""
 You are a German sentence chunker for spaced-repetition TTS training.
@@ -1167,6 +1206,68 @@ async def run_check_translation_story(original_text: str, user_translation: str)
         logging.warning(f"Не удалось удалить thread: {exc}")
 
     return collected_text
+
+
+async def run_check_story_guess_semantic(
+    canonical_answer: str,
+    aliases: list[str] | None,
+    user_guess: str,
+) -> dict:
+    task_name = "check_story_guess_semantic"
+    system_instruction_key = "check_story_guess_semantic"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    payload = {
+        "canonical_answer": canonical_answer or "",
+        "aliases": aliases or [],
+        "user_guess": user_guess or "",
+    }
+    user_message = json.dumps(payload, ensure_ascii=False)
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=user_message,
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    collected_text = last_message.content[0].text.value
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    try:
+        cleaned = collected_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+        parsed = json.loads(cleaned)
+        return {
+            "is_correct": bool(parsed.get("is_correct")),
+            "reason": str(parsed.get("reason") or "").strip(),
+        }
+    except Exception:
+        # Fallback: conservative rejection with explicit reason.
+        return {"is_correct": False, "reason": "Не удалось надёжно оценить ответ по смыслу."}
 
 
 async def run_feel_word(word_ru: str, word_de: str | None = None) -> str:

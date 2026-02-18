@@ -205,6 +205,8 @@ function AppInner() {
   const [analyticsPoints, setAnalyticsPoints] = useState([]);
   const [analyticsCompare, setAnalyticsCompare] = useState([]);
   const [analyticsRank, setAnalyticsRank] = useState(null);
+  const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
+  const isStoryResultMode = Boolean(storyResult && isStorySession);
 
   const dictionaryRef = useRef(null);
   const flashcardsRef = useRef(null);
@@ -1423,6 +1425,7 @@ function AppInner() {
       }
       const data = await response.json();
       setStoryResult(data);
+      setSentences([]);
       await loadSessionInfo();
     } catch (error) {
       setWebappError(`Ошибка истории: ${error.message}`);
@@ -2170,6 +2173,10 @@ function AppInner() {
       safeStorageRemove(storageKey);
       setTranslationDrafts({});
       setSessionType('none');
+      setStoryGuess('');
+      setStoryResult(null);
+      setResults([]);
+      setSelectedTopic('💼 Business');
       await loadSentences();
     } catch (error) {
       setWebappError(`Ошибка завершения: ${error.message}`);
@@ -3459,6 +3466,7 @@ function AppInner() {
                 </div>
                 {topicsError && <div className="webapp-error">{topicsError}</div>}
                 {storyHistoryError && <div className="webapp-error">{storyHistoryError}</div>}
+                {!isStoryResultMode && (
                 <form className="webapp-form" onSubmit={handleTranslationSubmit}>
                   <section className="webapp-translation-list">
                     {sentences.length === 0 ? (
@@ -3495,7 +3503,7 @@ function AppInner() {
                     )}
                   </section>
 
-                  {(sessionType === 'story' || isStoryTopic(selectedTopic)) && (
+                  {isStorySession && (
                     <label className="webapp-field">
                       <span>А теперь угадай, о ком / чем шла речь</span>
                       <input
@@ -3510,42 +3518,54 @@ function AppInner() {
                   <button className="primary-button" type="submit" disabled={webappLoading}>
                     {webappLoading
                       ? 'Проверяем...'
-                      : (sessionType === 'story' || isStoryTopic(selectedTopic))
+                      : isStorySession
                         ? 'Проверить историю'
                         : 'Проверить перевод'}
                   </button>
                 </form>
+                )}
 
                 {webappError && <div className="webapp-error">{webappError}</div>}
                 {finishMessage && <div className="webapp-success">{finishMessage}</div>}
 
-                {storyResult && (sessionType === 'story' || isStoryTopic(selectedTopic)) && (
+                {isStoryResultMode && (
                   <section className="webapp-result">
                     <h3>Результат истории</h3>
-                    <div className="webapp-result-card">
-                      <div className="webapp-result-text">
-                        <strong>Оценка:</strong> {storyResult.score ?? '—'} / 100
+                    <div className="webapp-result-card story-result">
+                      <div className="story-result-head">
+                        <strong>⭐ Итоговый балл:</strong> {storyResult.score ?? '—'} / 100
                       </div>
-                      {(storyResult.categories || storyResult.subcategories) && (
-                        <div className="webapp-result-text">
-                          {storyResult.categories && storyResult.categories.length > 0 && (
-                            <div><strong>Категории:</strong> {storyResult.categories.join(', ')}</div>
-                          )}
-                          {storyResult.subcategories && storyResult.subcategories.length > 0 && (
-                            <div><strong>Подкатегории:</strong> {storyResult.subcategories.join(', ')}</div>
-                          )}
+
+                      {storyResult.feedback && (
+                        <div
+                          className="webapp-result-text story-result-feedback"
+                          dangerouslySetInnerHTML={{ __html: renderRichText(storyResult.feedback) }}
+                        />
+                      )}
+
+                      <div className="webapp-result-text story-result-answer">
+                        <div><strong>🎯 Ответ пользователя:</strong> {storyResult.guess_correct ? 'верно по смыслу' : 'неверно по смыслу'}</div>
+                        <div><strong>✅ Эталон:</strong> {storyResult.answer || '—'}</div>
+                        {storyResult.guess_reason && (
+                          <div><strong>📝 Пояснение:</strong> {storyResult.guess_reason}</div>
+                        )}
+                      </div>
+
+                      {storyResult.extra_de && (
+                        <div className="webapp-result-text story-result-extra">
+                          <strong>📌 Дополнительно (DE):</strong> {storyResult.extra_de}
                         </div>
                       )}
-                      {storyResult.feedback && (
-                        <div className="webapp-result-text">{storyResult.feedback}</div>
-                      )}
-                      <div className="webapp-result-text">
-                        <strong>Ответ:</strong> {storyResult.answer || '—'} —{' '}
-                        {storyResult.guess_correct ? 'верно' : 'неверно'}
-                      </div>
-                      {storyResult.extra_de && (
-                        <div className="webapp-result-text">
-                          <strong>Дополнительно (DE):</strong> {storyResult.extra_de}
+                      {Array.isArray(storyResult.source_links) && storyResult.source_links.length > 0 && (
+                        <div className="webapp-result-text story-result-links">
+                          <strong>🔗 Официальные источники:</strong>
+                          <ul>
+                            {storyResult.source_links.map((item, idx) => (
+                              <li key={`${item.url}-${idx}`}>
+                                <a href={item.url} target="_blank" rel="noreferrer">{item.lang}: {item.url}</a>
+                              </li>
+                            ))}
+                          </ul>
                         </div>
                       )}
                     </div>
@@ -3617,7 +3637,7 @@ function AppInner() {
                     className="secondary-button"
                     disabled={webappLoading || historyLoading}
                   >
-                    {historyLoading ? 'Загружаем...' : 'История за сегодня'}
+                    {historyLoading ? 'Загружаем...' : 'Посмотреть результат за сегодня'}
                   </button>
                   {results.length === 0 && !storyResult && !webappLoading && (
                     <div className="webapp-muted">Сначала проверьте перевод, чтобы завершить.</div>

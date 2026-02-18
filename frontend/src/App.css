@@ -1114,6 +1114,41 @@ body {
   font-family: "Inter", system-ui, sans-serif;
 }
 
+.story-result {
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  background: linear-gradient(180deg, rgba(10, 28, 64, 0.95), rgba(12, 24, 46, 0.92));
+}
+
+.story-result-head {
+  background: rgba(234, 179, 8, 0.2);
+  border: 1px solid rgba(250, 204, 21, 0.5);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 800;
+  color: #fde047;
+}
+
+.story-result-feedback {
+  line-height: 1.45;
+}
+
+.story-result-answer,
+.story-result-extra,
+.story-result-links {
+  line-height: 1.45;
+}
+
+.story-result-links ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.story-result-links a {
+  color: #93c5fd;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
 .explanation-button {
   align-self: flex-start;
 }
