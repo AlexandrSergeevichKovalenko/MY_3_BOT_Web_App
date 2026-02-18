@@ -81,7 +81,7 @@ from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConf
 from datetime import datetime, timezone
 from io import BytesIO
 from uuid import uuid4
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urlparse, urlencode
 from flask import Flask, request, jsonify, send_from_directory, send_file, g
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -212,6 +212,7 @@ _audio_scheduler_lock = None
 TELEGRAM_Deutsch_BOT_TOKEN = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
 MOBILE_AUTH_SECRET = (os.getenv("MOBILE_AUTH_SECRET") or TELEGRAM_Deutsch_BOT_TOKEN or "").strip()
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
+TELEGRAM_LOGIN_TTL_SECONDS = int(os.getenv("TELEGRAM_LOGIN_TTL_SECONDS", "86400"))
 NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 
@@ -361,6 +362,59 @@ def exchange_mobile_access_token():
     )
 
 
+@app.route("/api/web/auth/config", methods=["GET"])
+def web_auth_config():
+    return jsonify(
+        {
+            "ok": True,
+            "telegram_bot_username": TELEGRAM_BOT_USERNAME,
+            "telegram_login_enabled": bool(TELEGRAM_BOT_USERNAME),
+        }
+    )
+
+
+@app.route("/api/web/auth/telegram", methods=["POST"])
+def web_auth_telegram():
+    payload = request.get_json(silent=True) or {}
+    if not _telegram_login_hash_is_valid(payload):
+        return jsonify({"error": "Telegram login hash invalid"}), 401
+
+    auth_date_raw = str(payload.get("auth_date") or "").strip()
+    try:
+        auth_date = int(auth_date_raw)
+    except Exception:
+        return jsonify({"error": "auth_date invalid"}), 400
+    if int(time.time()) - auth_date > max(60, TELEGRAM_LOGIN_TTL_SECONDS):
+        return jsonify({"error": "Telegram login expired"}), 401
+
+    user_id_raw = str(payload.get("id") or "").strip()
+    if not user_id_raw.isdigit():
+        return jsonify({"error": "user_id invalid"}), 400
+    user_id = int(user_id_raw)
+
+    if not is_telegram_user_allowed(user_id):
+        return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
+
+    user_data = {
+        "id": user_id,
+        "first_name": str(payload.get("first_name") or "").strip(),
+        "last_name": str(payload.get("last_name") or "").strip(),
+        "username": str(payload.get("username") or "").strip(),
+        "photo_url": str(payload.get("photo_url") or "").strip(),
+    }
+    init_data = _build_signed_init_data_for_user(user_data, auth_date=int(time.time()))
+    if not init_data:
+        return jsonify({"error": "Не удалось выпустить initData"}), 500
+    return jsonify(
+        {
+            "ok": True,
+            "initData": init_data,
+            "user": user_data,
+            "chat_type": "browser",
+        }
+    )
+
+
 def _build_telegram_data_check_string(init_data: str) -> str:
     pairs = parse_qsl(init_data, keep_blank_values=True)
     data = {key: value for key, value in pairs if key != "hash"}
@@ -395,6 +449,49 @@ def _parse_telegram_init_data(init_data: str) -> dict:
         "chat_type": data.get("chat_type"),
         "chat_instance": data.get("chat_instance"),
     }
+
+
+def _telegram_login_hash_is_valid(payload: dict) -> bool:
+    received_hash = str(payload.get("hash") or "").strip()
+    if not received_hash:
+        return False
+    data = {}
+    for key, value in payload.items():
+        if key == "hash":
+            continue
+        if value is None:
+            continue
+        data[str(key)] = str(value)
+    data_check_string = "\n".join(f"{key}={data[key]}" for key in sorted(data.keys()))
+    secret_key = hashlib.sha256(TELEGRAM_Deutsch_BOT_TOKEN.encode("utf-8")).digest()
+    calculated_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(calculated_hash, received_hash)
+
+
+def _build_signed_init_data_for_user(user_data: dict, auth_date: int | None = None) -> str:
+    if not user_data:
+        return ""
+    compact_user = {
+        "id": int(user_data.get("id")),
+        "first_name": str(user_data.get("first_name") or "").strip(),
+        "last_name": str(user_data.get("last_name") or "").strip(),
+        "username": str(user_data.get("username") or "").strip(),
+    }
+    photo_url = str(user_data.get("photo_url") or "").strip()
+    if photo_url:
+        compact_user["photo_url"] = photo_url
+    payload = {
+        "auth_date": str(int(auth_date or time.time())),
+        "user": json.dumps(compact_user, ensure_ascii=False, separators=(",", ":")),
+    }
+    data_check_string = "\n".join(f"{key}={payload[key]}" for key in sorted(payload.keys()))
+    secret_key = hmac.new(
+        b"WebAppData",
+        TELEGRAM_Deutsch_BOT_TOKEN.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    payload["hash"] = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    return urlencode(payload)
 
 
 def _extract_webapp_user_from_init_data(init_data: str) -> tuple[int | None, str | None]:

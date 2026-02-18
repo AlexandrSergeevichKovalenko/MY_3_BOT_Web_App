@@ -1408,12 +1408,12 @@ body {
 
 .youtube-subtitles-overlay-line.is-de {
   color: #f8fafc;
-  font-size: 16px;
+  font-size: 20px;
 }
 
 .youtube-subtitles-overlay-line.is-ru {
   color: #fde68a;
-  font-size: 14px;
+  font-size: 17px;
 }
 
 .overlay-clickable-word {
@@ -1482,8 +1482,8 @@ body {
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.3);
   padding: 8px 10px;
-  font-size: 12px;
-  line-height: 1.35;
+  font-size: 15px;
+  line-height: 1.5;
 }
 
 .webapp-subtitles-list p {
@@ -1578,6 +1578,41 @@ body {
   font-size: 12px;
   color: rgba(248, 250, 252, 0.7);
   word-break: break-word;
+}
+
+.webapp-inline-toast {
+  position: fixed;
+  left: 50%;
+  top: 18px;
+  transform: translateX(-50%);
+  z-index: 180;
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  box-shadow: 0 10px 20px rgba(8, 11, 26, 0.35);
+}
+
+.webapp-browser-auth {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.webapp-browser-auth-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.webapp-telegram-login-slot {
+  min-height: 44px;
 }
 
 @media (max-width: 900px) {
@@ -3367,11 +3402,11 @@ body {
   }
 
   .youtube-subtitles-overlay-line.is-de {
-    font-size: 14px;
+    font-size: 16px;
   }
 
   .youtube-subtitles-overlay-line.is-ru {
-    font-size: 12px;
+    font-size: 14px;
   }
 }
 
@@ -3382,11 +3417,11 @@ body {
   }
 
   .youtube-subtitles-overlay-line.is-de {
-    font-size: 13px;
+    font-size: 15px;
   }
 
   .youtube-subtitles-overlay-line.is-ru {
-    font-size: 11px;
+    font-size: 13px;
   }
 }
 

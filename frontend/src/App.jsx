@@ -60,6 +60,9 @@ function AppInner() {
   }, [telegramApp]);
 
   const [initData, setInitData] = useState(telegramApp?.initData || '');
+  const [browserAuthLoading, setBrowserAuthLoading] = useState(false);
+  const [browserAuthError, setBrowserAuthError] = useState('');
+  const [browserAuthBotUsername, setBrowserAuthBotUsername] = useState('');
   const [sessionId, setSessionId] = useState(null);
   const [webappUser, setWebappUser] = useState(null);
   const [webappChatType, setWebappChatType] = useState('');
@@ -108,6 +111,8 @@ function AppInner() {
   const [selectionPos, setSelectionPos] = useState(null);
   const [selectionCompact, setSelectionCompact] = useState(false);
   const [selectionInlineLookup, setSelectionInlineLookup] = useState({ loading: false, word: '', translation: '', direction: '' });
+  const [selectionLookupLoading, setSelectionLookupLoading] = useState(false);
+  const [inlineToast, setInlineToast] = useState('');
   const [lastLookupScrollY, setLastLookupScrollY] = useState(null);
   const [historyItems, setHistoryItems] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -244,6 +249,10 @@ function AppInner() {
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
   const selectionMenuRef = useRef(null);
+  const telegramLoginWidgetRef = useRef(null);
+  const youtubeAutoFolderCacheRef = useRef(new Map());
+  const youtubeAutoFolderPendingRef = useRef(new Map());
+  const inlineToastTimeoutRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
@@ -271,6 +280,48 @@ function AppInner() {
       window.localStorage.removeItem(key);
     } catch (error) {
       console.warn('localStorage unavailable', error);
+    }
+  };
+
+  const handleBrowserLogout = () => {
+    safeStorageRemove('browser_init_data');
+    setInitData('');
+    setWebappUser(null);
+    setWebappChatType('');
+    setBrowserAuthError('');
+    setWebappError('');
+  };
+
+  const handleBrowserTelegramAuth = async (authUser) => {
+    if (!authUser || typeof authUser !== 'object') {
+      setBrowserAuthError('Не удалось получить данные Telegram Login.');
+      return;
+    }
+    try {
+      setBrowserAuthLoading(true);
+      setBrowserAuthError('');
+      const response = await fetch('/api/web/auth/telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(authUser),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      if (!data?.initData) {
+        throw new Error('Сервер не вернул initData');
+      }
+      setInitData(data.initData);
+      safeStorageSet('browser_init_data', data.initData);
+      if (data.user) {
+        setWebappUser(data.user);
+      }
+      setWebappChatType(data.chat_type || 'browser');
+    } catch (error) {
+      setBrowserAuthError(`Ошибка входа: ${error.message}`);
+    } finally {
+      setBrowserAuthLoading(false);
     }
   };
 
@@ -795,6 +846,65 @@ function AppInner() {
   };
 
   useEffect(() => {
+    if (telegramApp?.initData) return;
+    const stored = safeStorageGet('browser_init_data');
+    if (stored && !initData) {
+      setInitData(stored);
+    }
+  }, [telegramApp, initData]);
+
+  useEffect(() => {
+    if (telegramApp?.initData) return;
+    let cancelled = false;
+    fetch('/api/web/auth/config')
+      .then(async (res) => {
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setBrowserAuthBotUsername(String(data.telegram_bot_username || '').trim());
+      })
+      .catch(() => {
+        if (!cancelled) setBrowserAuthBotUsername('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [telegramApp]);
+
+  useEffect(() => {
+    if (telegramApp?.initData) return undefined;
+    if (!browserAuthBotUsername) return undefined;
+    if (!telegramLoginWidgetRef.current) return undefined;
+    if (initData) return undefined;
+
+    window.onTelegramAuth = (user) => {
+      void handleBrowserTelegramAuth(user);
+    };
+
+    const container = telegramLoginWidgetRef.current;
+    container.innerHTML = '';
+    const script = document.createElement('script');
+    script.async = true;
+    script.src = 'https://telegram.org/js/telegram-widget.js?22';
+    script.setAttribute('data-telegram-login', browserAuthBotUsername);
+    script.setAttribute('data-size', 'large');
+    script.setAttribute('data-radius', '10');
+    script.setAttribute('data-userpic', 'false');
+    script.setAttribute('data-request-access', 'write');
+    script.setAttribute('data-onauth', 'onTelegramAuth(user)');
+    container.appendChild(script);
+
+    return () => {
+      delete window.onTelegramAuth;
+      if (container) {
+        container.innerHTML = '';
+      }
+    };
+  }, [telegramApp, browserAuthBotUsername, initData]);
+
+  useEffect(() => {
     if (!isWebAppMode || !initData) {
       return;
     }
@@ -802,6 +912,7 @@ function AppInner() {
     const bootstrap = async () => {
       try {
         setWebappError('');
+        setBrowserAuthError('');
         const response = await fetch('/api/webapp/bootstrap', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -816,6 +927,10 @@ function AppInner() {
         const unsafeChatType = telegramApp?.initDataUnsafe?.chat?.type || telegramApp?.initDataUnsafe?.chat_type;
         setWebappChatType(data.chat_type || unsafeChatType || '');
       } catch (error) {
+        if (!telegramApp?.initData && String(error?.message || '').includes('initData не прошёл')) {
+          safeStorageRemove('browser_init_data');
+          setInitData('');
+        }
         setWebappError(`Ошибка инициализации: ${error.message}`);
       }
     };
@@ -1453,6 +1568,115 @@ function AppInner() {
     return value.replace(/\s+/g, ' ').trim();
   };
 
+  const normalizeFolderKey = (value) => normalizeSelectionText(value).toLocaleLowerCase();
+
+  const showInlineToast = (text) => {
+    const value = normalizeSelectionText(text);
+    if (!value) return;
+    if (inlineToastTimeoutRef.current) {
+      clearTimeout(inlineToastTimeoutRef.current);
+      inlineToastTimeoutRef.current = null;
+    }
+    setInlineToast(value);
+    inlineToastTimeoutRef.current = setTimeout(() => {
+      setInlineToast('');
+      inlineToastTimeoutRef.current = null;
+    }, 1000);
+  };
+
+  const resolveYoutubeAutoFolderName = () => {
+    const fromPlayer = normalizeSelectionText(
+      youtubePlayerRef.current?.getVideoData?.()?.title || ''
+    );
+    const fromCatalog = normalizeSelectionText(
+      movies.find((item) => item.video_id === youtubeId)?.title || ''
+    );
+    const rawTitle = fromPlayer || fromCatalog;
+    if (!rawTitle) {
+      return youtubeId ? `YouTube ${youtubeId.slice(0, 6)}` : 'YouTube';
+    }
+    const tokens = rawTitle
+      .replace(/[|/\\()[\]{}"'`.,!?;:]+/g, ' ')
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter(Boolean);
+    if (tokens.length === 0) {
+      return youtubeId ? `YouTube ${youtubeId.slice(0, 6)}` : 'YouTube';
+    }
+    return tokens.slice(0, 2).join(' ');
+  };
+
+  const ensureYoutubeAutoFolderId = async () => {
+    if (!initData) return null;
+    const folderName = resolveYoutubeAutoFolderName();
+    const folderKey = normalizeFolderKey(folderName);
+    if (!folderKey) return null;
+    if (youtubeAutoFolderCacheRef.current.has(folderKey)) {
+      return youtubeAutoFolderCacheRef.current.get(folderKey);
+    }
+    const pending = youtubeAutoFolderPendingRef.current.get(folderKey);
+    if (pending) {
+      return pending;
+    }
+
+    const task = (async () => {
+      const localMatch = folders.find((item) => normalizeFolderKey(item?.name || '') === folderKey);
+      if (localMatch?.id) {
+        const result = { id: localMatch.id, name: localMatch.name || folderName };
+        youtubeAutoFolderCacheRef.current.set(folderKey, result);
+        return result;
+      }
+
+      const listResponse = await fetch('/api/webapp/dictionary/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!listResponse.ok) {
+        throw new Error(await listResponse.text());
+      }
+      const listData = await listResponse.json();
+      const items = Array.isArray(listData.items) ? listData.items : [];
+      setFolders(items);
+      const existing = items.find((item) => normalizeFolderKey(item?.name || '') === folderKey);
+      if (existing?.id) {
+        const result = { id: existing.id, name: existing.name || folderName };
+        youtubeAutoFolderCacheRef.current.set(folderKey, result);
+        return result;
+      }
+
+      const createResponse = await fetch('/api/webapp/dictionary/folders/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          name: folderName,
+          color: '#5ddcff',
+          icon: 'book',
+        }),
+      });
+      if (!createResponse.ok) {
+        throw new Error(await createResponse.text());
+      }
+      const createData = await createResponse.json();
+      const created = createData.item;
+      if (created?.id) {
+        youtubeAutoFolderCacheRef.current.set(folderKey, { id: created.id, name: created.name || folderName });
+      }
+      setFolders((prev) => {
+        const exists = prev.some((item) => item.id === created?.id);
+        return exists ? prev : [created, ...prev];
+      });
+      return created?.id ? { id: created.id, name: created.name || folderName } : null;
+    })()
+      .finally(() => {
+        youtubeAutoFolderPendingRef.current.delete(folderKey);
+      });
+
+    youtubeAutoFolderPendingRef.current.set(folderKey, task);
+    return task;
+  };
+
   const resolveDictionaryDirection = (item) => {
     if (!item) return 'ru-de';
     if (item.translation_de) return 'ru-de';
@@ -1494,6 +1718,7 @@ function AppInner() {
     setSelectionText('');
     setSelectionPos(null);
     setSelectionCompact(false);
+    setSelectionLookupLoading(false);
     setSelectionInlineLookup({ loading: false, word: '', translation: '', direction: '' });
   };
 
@@ -1587,6 +1812,10 @@ function AppInner() {
       const saveWordRu = detectedDirection === 'ru-de'
         ? (canonicalWordRu || normalized)
         : '';
+      const autoFolder = inlineMode && youtubeAppFullscreen
+        ? await ensureYoutubeAutoFolderId()
+        : null;
+      const autoFolderId = autoFolder?.id || null;
       if (!inlineMode) {
         setDictionaryResult(data.item || null);
         setDictionaryDirection(detectedDirection);
@@ -1603,7 +1832,7 @@ function AppInner() {
           translation_de: data.item?.translation_de || '',
           translation_ru: data.item?.translation_ru || '',
           response_json: data.item || {},
-          folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
+          folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
         }),
       });
       if (!saveResponse.ok) {
@@ -1621,6 +1850,9 @@ function AppInner() {
           ...prev,
           translation: prev.translation ? `${prev.translation} • Сохранено ✅` : 'Сохранено ✅',
         }));
+        if (youtubeAppFullscreen) {
+          showInlineToast(`Сохранено в папку: ${autoFolder?.name || 'YouTube'}`);
+        }
       } else {
         setDictionarySaved('Добавлено в словарь ✅');
       }
@@ -1656,6 +1888,7 @@ function AppInner() {
       }
     }
     setDictionaryLoading(true);
+    setSelectionLookupLoading(true);
     setDictionaryError('');
     setDictionarySaved('');
     setDictionaryWord(normalized);
@@ -1685,6 +1918,7 @@ function AppInner() {
       setDictionaryError(`Ошибка словаря: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
+      setSelectionLookupLoading(false);
     }
   };
 
@@ -2786,6 +3020,13 @@ function AppInner() {
     }
   }, [youtubeAppFullscreen]);
 
+  useEffect(() => () => {
+    if (inlineToastTimeoutRef.current) {
+      clearTimeout(inlineToastTimeoutRef.current);
+      inlineToastTimeoutRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (!youtubeSubtitlesRef.current) return;
     const listEl = youtubeSubtitlesRef.current.querySelector('.webapp-subtitles-list');
@@ -3494,15 +3735,44 @@ function AppInner() {
             
 
             {!telegramApp?.initData && (
-              <label className="webapp-field">
-                <span>initData (для локального теста)</span>
-                <textarea
-                  rows={3}
-                  value={initData}
-                  onChange={(event) => setInitData(event.target.value)}
-                  placeholder="Вставьте initData из Telegram"
-                />
-              </label>
+              <section className="webapp-browser-auth">
+                <div className="webapp-browser-auth-head">
+                  <strong>Вход из браузера</strong>
+                  {initData ? (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={handleBrowserLogout}
+                    >
+                      Выйти
+                    </button>
+                  ) : null}
+                </div>
+                {!initData && (
+                  <>
+                    <p className="webapp-muted">
+                      Войдите через Telegram, чтобы открыть ваш аккаунт вне mini app.
+                    </p>
+                    <div className="webapp-telegram-login-slot" ref={telegramLoginWidgetRef} />
+                    {browserAuthLoading && <div className="webapp-muted">Авторизация...</div>}
+                    {browserAuthError && <div className="webapp-error">{browserAuthError}</div>}
+                    {!browserAuthBotUsername && (
+                      <div className="webapp-error">
+                        Не задан `TELEGRAM_BOT_USERNAME` на сервере. Telegram Login недоступен.
+                      </div>
+                    )}
+                    <label className="webapp-field">
+                      <span>initData (ручной fallback)</span>
+                      <textarea
+                        rows={3}
+                        value={initData}
+                        onChange={(event) => setInitData(event.target.value)}
+                        placeholder="Вставьте initData из Telegram"
+                      />
+                    </label>
+                  </>
+                )}
+              </section>
             )}
 
             {!flashcardsOnly && isSectionVisible('translations') && (
@@ -5432,8 +5702,9 @@ function AppInner() {
                       type="button"
                       className="secondary-button"
                       onClick={() => handleQuickLookupDictionary(selectionText)}
+                      disabled={selectionLookupLoading}
                     >
-                      Перевести
+                      {selectionLookupLoading ? 'Переводим...' : 'Перевести'}
                     </button>
                     <button
                       type="button"
@@ -5446,6 +5717,7 @@ function AppInner() {
                 )}
               </div>
             )}
+            {inlineToast && <div className="webapp-inline-toast">{inlineToast}</div>}
           </div>
         </div>
       </div>
