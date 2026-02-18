@@ -243,6 +243,7 @@ function AppInner() {
   const assistantRef = useRef(null);
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
+  const selectionMenuRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
@@ -1578,6 +1579,14 @@ function AppInner() {
       }
       const data = await response.json();
       const detectedDirection = data.direction || resolveDictionaryDirection(data.item);
+      const canonicalWordDe = normalizeSelectionText(data.item?.word_de || '');
+      const canonicalWordRu = normalizeSelectionText(data.item?.word_ru || '');
+      const saveWordDe = detectedDirection === 'de-ru'
+        ? (canonicalWordDe || normalized)
+        : '';
+      const saveWordRu = detectedDirection === 'ru-de'
+        ? (canonicalWordRu || normalized)
+        : '';
       if (!inlineMode) {
         setDictionaryResult(data.item || null);
         setDictionaryDirection(detectedDirection);
@@ -1589,8 +1598,8 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          word_ru: detectedDirection === 'ru-de' ? normalized : '',
-          word_de: detectedDirection === 'de-ru' ? normalized : '',
+          word_ru: saveWordRu,
+          word_de: saveWordDe,
           translation_de: data.item?.translation_de || '',
           translation_ru: data.item?.translation_ru || '',
           response_json: data.item || {},
@@ -2746,6 +2755,30 @@ function AppInner() {
     if (youtubeAppFullscreen) return;
     clearSelection();
   }, [youtubeAppFullscreen]);
+
+  useEffect(() => {
+    if (!youtubeAppFullscreen || !selectionText || !selectionPos) {
+      return undefined;
+    }
+    const onPointerDown = (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (selectionMenuRef.current?.contains(target)) return;
+      if (target.closest('.overlay-clickable-word')) return;
+      clearSelection();
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        clearSelection();
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [youtubeAppFullscreen, selectionText, selectionPos]);
 
   useEffect(() => {
     if (!youtubeAppFullscreen) {
@@ -5371,6 +5404,7 @@ function AppInner() {
 
             {selectionText && selectionPos && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div
+                ref={selectionMenuRef}
                 className={`webapp-selection-menu ${selectionCompact ? 'is-compact' : ''} ${youtubeAppFullscreen ? 'is-overlay-mode' : ''}`}
                 style={{ left: `${selectionPos.x}px`, top: `${selectionPos.y}px` }}
                 onMouseLeave={clearSelection}
