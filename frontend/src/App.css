@@ -1377,6 +1377,24 @@ body {
   gap: 4px;
 }
 
+.youtube-subtitles-overlay.is-paused-history {
+  gap: 8px;
+}
+
+.youtube-subtitles-overlay-row {
+  display: grid;
+  gap: 3px;
+  transition: opacity 0.2s ease;
+}
+
+.youtube-subtitles-overlay-row.is-history {
+  opacity: 0.72;
+}
+
+.youtube-subtitles-overlay-row.is-current {
+  opacity: 1;
+}
+
 .youtube-subtitles-overlay-line {
   margin: 0;
   text-align: center;

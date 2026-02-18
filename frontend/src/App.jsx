@@ -95,6 +95,7 @@ function AppInner() {
   const [youtubeRuEnabled, setYoutubeRuEnabled] = useState(false);
   const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
   const [youtubeAppFullscreen, setYoutubeAppFullscreen] = useState(false);
+  const [youtubeIsPaused, setYoutubeIsPaused] = useState(false);
   const [youtubeManualOverride, setYoutubeManualOverride] = useState(false);
   const [youtubeTranscriptHasTiming, setYoutubeTranscriptHasTiming] = useState(true);
   const [movies, setMovies] = useState([]);
@@ -1471,8 +1472,17 @@ function AppInner() {
     }
     const clientX = event?.clientX ?? event?.touches?.[0]?.clientX ?? window.innerWidth / 2;
     const clientY = event?.clientY ?? event?.touches?.[0]?.clientY ?? window.innerHeight / 3;
+    const menuWidth = youtubeAppFullscreen ? Math.min(220, window.innerWidth * 0.58) : 210;
+    const menuHeight = youtubeAppFullscreen ? 128 : (options?.compact ? 116 : 144);
+    const margin = 10;
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    const safeX = clamp(clientX + 8, margin, Math.max(margin, window.innerWidth - menuWidth - margin));
+    const rawY = youtubeAppFullscreen
+      ? clientY - menuHeight - 12
+      : clientY + 8;
+    const safeY = clamp(rawY, margin, Math.max(margin, window.innerHeight - menuHeight - margin));
     setSelectionText(text);
-    setSelectionPos({ x: clientX, y: clientY });
+    setSelectionPos({ x: safeX, y: safeY });
     setSelectionCompact(Boolean(options?.compact));
     if (options?.inlineLookup) {
       void loadSelectionInlineLookup(text);
@@ -2587,6 +2597,7 @@ function AppInner() {
       setYoutubeRuEnabled(false);
       setYoutubeManualOverride(false);
       setYoutubeTranscriptHasTiming(true);
+      setYoutubeIsPaused(false);
     }
   }, [youtubeId, initData]);
 
@@ -2672,6 +2683,7 @@ function AppInner() {
         events: {
           onReady: () => {
             setYoutubePlayerReady(true);
+            setYoutubeIsPaused(false);
             if (youtubeTimeIntervalRef.current) {
               clearInterval(youtubeTimeIntervalRef.current);
             }
@@ -2685,6 +2697,23 @@ function AppInner() {
                 // ignore
               }
             }, 400);
+          },
+          onStateChange: (stateEvent) => {
+            const state = stateEvent?.data;
+            // YT.PlayerState.PAUSED === 2
+            if (state === 2) {
+              setYoutubeIsPaused(true);
+              try {
+                const time = youtubePlayerRef.current?.getCurrentTime?.();
+                if (typeof time === 'number' && !Number.isNaN(time)) {
+                  setYoutubeCurrentTime(time);
+                }
+              } catch (error) {
+                // ignore
+              }
+            } else if (state === 1 || state === 3 || state === 0 || state === 5 || state === -1) {
+              setYoutubeIsPaused(false);
+            }
           },
         },
       });
@@ -2716,6 +2745,12 @@ function AppInner() {
   useEffect(() => {
     if (youtubeAppFullscreen) return;
     clearSelection();
+  }, [youtubeAppFullscreen]);
+
+  useEffect(() => {
+    if (!youtubeAppFullscreen) {
+      setYoutubeIsPaused(false);
+    }
   }, [youtubeAppFullscreen]);
 
   useEffect(() => {
@@ -3867,19 +3902,33 @@ function AppInner() {
                         {youtubeOverlayEnabled && youtubeTranscript.length > 0 && (() => {
                           const activeIndex = getActiveSubtitleIndex();
                           const resolvedIndex = activeIndex >= 0 ? activeIndex : 0;
-                          const activeItem = youtubeTranscript[resolvedIndex];
-                          const overlayDeText = normalizeSubtitleText(activeItem?.text || '');
-                          const overlayRuText = (youtubeTranslations[String(resolvedIndex)] || '').trim();
+                          const showPausedHistory = youtubeAppFullscreen && youtubeIsPaused;
+                          const overlayIndexes = showPausedHistory
+                            ? [resolvedIndex - 2, resolvedIndex - 1, resolvedIndex].filter((idx) => idx >= 0)
+                            : [resolvedIndex];
                           return (
-                            <div className="youtube-subtitles-overlay" aria-hidden="true">
-                              {overlayDeText && (
-                                <p className="youtube-subtitles-overlay-line is-de">
-                                  {renderClickableText(overlayDeText, { className: 'overlay-clickable-word', compact: true, inlineLookup: youtubeAppFullscreen })}
-                                </p>
-                              )}
-                              {youtubeRuEnabled && overlayRuText && (
-                                <p className="youtube-subtitles-overlay-line is-ru">{overlayRuText}</p>
-                              )}
+                            <div className={`youtube-subtitles-overlay ${showPausedHistory ? 'is-paused-history' : ''}`} aria-hidden="true">
+                              {overlayIndexes.map((idx) => {
+                                const item = youtubeTranscript[idx];
+                                const overlayDeText = normalizeSubtitleText(item?.text || '');
+                                const overlayRuText = (youtubeTranslations[String(idx)] || '').trim();
+                                if (!overlayDeText && !(youtubeRuEnabled && overlayRuText)) {
+                                  return null;
+                                }
+                                const isCurrent = idx === resolvedIndex;
+                                return (
+                                  <div key={`overlay-line-${idx}`} className={`youtube-subtitles-overlay-row ${isCurrent ? 'is-current' : 'is-history'}`}>
+                                    {overlayDeText && (
+                                      <p className="youtube-subtitles-overlay-line is-de">
+                                        {renderClickableText(overlayDeText, { className: 'overlay-clickable-word', compact: true, inlineLookup: youtubeAppFullscreen })}
+                                      </p>
+                                    )}
+                                    {youtubeRuEnabled && overlayRuText && (
+                                      <p className="youtube-subtitles-overlay-line is-ru">{overlayRuText}</p>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           );
                         })()}
@@ -5323,7 +5372,7 @@ function AppInner() {
             {selectionText && selectionPos && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div
                 className={`webapp-selection-menu ${selectionCompact ? 'is-compact' : ''} ${youtubeAppFullscreen ? 'is-overlay-mode' : ''}`}
-                style={{ left: `${selectionPos.x + 8}px`, top: `${selectionPos.y + 8}px` }}
+                style={{ left: `${selectionPos.x}px`, top: `${selectionPos.y}px` }}
                 onMouseLeave={clearSelection}
               >
                 <div className="webapp-selection-text">{selectionText}</div>
