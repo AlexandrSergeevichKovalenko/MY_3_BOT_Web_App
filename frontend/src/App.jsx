@@ -1855,15 +1855,22 @@ function AppInner() {
       return;
     }
     try {
-      await fetch('/api/webapp/flashcards/answer', {
+      const resolvedRating = (() => {
+        const raw = String(meta.rating || '').trim().toUpperCase();
+        if (raw === 'AGAIN' || raw === 'HARD' || raw === 'GOOD' || raw === 'EASY') return raw;
+        return isCorrect ? 'GOOD' : 'AGAIN';
+      })();
+
+      await fetch('/api/cards/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          entry_id: entryId,
-          is_correct: isCorrect,
+          card_id: entryId,
+          rating: resolvedRating,
+          response_ms: typeof meta.timeSpentMs === 'number' ? Math.max(0, Math.round(meta.timeSpentMs)) : null,
+          // legacy analytics fields are kept for backward-compatible payload shape on the client side.
           mode: meta.mode || flashcardTrainingMode || 'quiz',
-          time_spent_ms: typeof meta.timeSpentMs === 'number' ? Math.max(0, Math.round(meta.timeSpentMs)) : null,
           hints_used: typeof meta.hintsUsed === 'number' ? Math.max(0, Math.round(meta.hintsUsed)) : 0,
         }),
       });

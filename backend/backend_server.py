@@ -100,6 +100,13 @@ try:
     from apscheduler.schedulers.background import BackgroundScheduler
 except Exception:  # pragma: no cover - optional in some deploys
     BackgroundScheduler = None
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover - optional in some deploys
+    matplotlib = None
+    plt = None
 
 from backend.openai_manager import (
     run_check_translation,
@@ -126,7 +133,6 @@ from backend.database import (
     get_youtube_transcript_cache,
     upsert_youtube_transcript_cache,
     upsert_youtube_translations,
-    record_flashcard_answer,
     get_flashcard_set,
     create_dictionary_folder,
     get_dictionary_folders,
@@ -207,6 +213,7 @@ TELEGRAM_Deutsch_BOT_TOKEN = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
 MOBILE_AUTH_SECRET = (os.getenv("MOBILE_AUTH_SECRET") or TELEGRAM_Deutsch_BOT_TOKEN or "").strip()
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
 NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
+TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 
 WEBAPP_TOPICS = [
     "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
@@ -487,6 +494,14 @@ def _extract_display_name(user_data: dict | None) -> str | None:
     return full_name or None
 
 
+def _build_webapp_deeplink(path: str = "review") -> str:
+    clean_path = (path or "review").strip().lstrip("/")
+    if TELEGRAM_BOT_USERNAME:
+        return f"https://t.me/{TELEGRAM_BOT_USERNAME}?startapp={clean_path}"
+    # Fallback: if bot username is unknown, return generic root.
+    return "https://t.me/"
+
+
 def _normalize_sentence_text(text: str) -> str:
     cleaned = text.strip()
     if not cleaned:
@@ -539,6 +554,17 @@ def _send_private_message(user_id: int, text: str) -> None:
         raise RuntimeError(f"Telegram API error: {response.text}")
 
 
+def _send_private_photo(user_id: int, image_bytes: bytes, filename: str, caption: str | None = None) -> None:
+    url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendPhoto"
+    data = {"chat_id": int(user_id)}
+    if caption:
+        data["caption"] = caption
+    files = {"photo": (filename, image_bytes, "image/png")}
+    response = requests.post(url, data=data, files=files, timeout=60)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Telegram API error: {response.text}")
+
+
 def _send_private_message_chunks(user_id: int, text: str, limit: int = 3800) -> None:
     parts: list[str] = []
     buf = ""
@@ -554,6 +580,58 @@ def _send_private_message_chunks(user_id: int, text: str, limit: int = 3800) -> 
         parts.append(buf)
     for part in parts:
         _send_private_message(user_id, part)
+
+
+def _build_private_analytics_chart_png(
+    user_id: int,
+    start_date: date,
+    end_date: date,
+    username: str,
+) -> bytes | None:
+    if plt is None:
+        return None
+
+    series = fetch_user_timeseries(
+        user_id=user_id,
+        start_date=start_date,
+        end_date=end_date,
+        granularity="day",
+    )
+    if not series:
+        return None
+
+    labels: list[str] = []
+    avg_scores: list[float] = []
+    success_rates: list[float] = []
+    totals: list[int] = []
+    for row in series:
+        period_start = (row.get("period_start") or "")[:10]
+        labels.append(period_start[5:] if len(period_start) >= 10 else period_start)
+        avg_scores.append(float(row.get("avg_score") or 0.0))
+        success_rates.append(float(row.get("success_rate") or 0.0))
+        totals.append(int(row.get("total_translations") or 0))
+
+    fig, ax = plt.subplots(figsize=(10, 5), dpi=140)
+    x = list(range(len(labels)))
+    ax.bar(x, totals, color="#dbeafe", alpha=0.9, label="Переводы (шт)")
+    ax.plot(x, avg_scores, color="#2563eb", marker="o", linewidth=2, label="Средний балл")
+    ax.plot(x, success_rates, color="#059669", marker="o", linewidth=2, label="Успешность %")
+
+    ax.set_title(f"Аналитика за неделю: {username}")
+    ax.set_xlabel("День")
+    ax.set_ylabel("Значения")
+    ax.set_ylim(0, 100)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=35, ha="right")
+    ax.grid(axis="y", linestyle="--", alpha=0.25)
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+
+    buff = BytesIO()
+    fig.savefig(buff, format="png")
+    plt.close(fig)
+    buff.seek(0)
+    return buff.read()
 
 
 def _send_group_audio(audio_bytes: bytes, filename: str, caption: str | None = None) -> None:
@@ -2249,6 +2327,64 @@ def lookup_mobile_dictionary():
     )
 
 
+@app.route("/api/mobile/dashboard", methods=["GET"])
+def get_mobile_dashboard():
+    user_id, _username, error = _get_mobile_authenticated_user()
+    if error:
+        return error
+
+    now_utc = datetime.now(timezone.utc)
+
+    try:
+        due_count = count_due_srs_cards(user_id=user_id, now_utc=now_utc)
+        introduced_today = count_new_cards_introduced_today(user_id=user_id, now_utc=now_utc)
+        new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка чтения SRS-статистики: {exc}"}), 500
+
+    word_of_day = None
+    try:
+        latest_items = get_webapp_dictionary_entries(user_id=user_id, limit=1)
+        if latest_items:
+            item = latest_items[0] or {}
+            response_json = item.get("response_json") if isinstance(item.get("response_json"), dict) else {}
+            source_word = (
+                item.get("word_de")
+                or item.get("word_ru")
+                or response_json.get("word_de")
+                or response_json.get("word_ru")
+            )
+            target_translation = (
+                item.get("translation_ru")
+                or item.get("translation_de")
+                or response_json.get("translation_ru")
+                or response_json.get("translation_de")
+            )
+            word_of_day = {
+                "entry_id": item.get("id"),
+                "source": source_word,
+                "target": target_translation,
+                "created_at": item.get("created_at"),
+            }
+    except Exception:
+        word_of_day = None
+
+    return jsonify(
+        {
+            "ok": True,
+            "queue_info": {
+                "due_count": int(due_count),
+                "new_remaining_today": int(new_remaining_today),
+            },
+            "word_of_day": word_of_day,
+            "deep_links": {
+                "review": _build_webapp_deeplink("review"),
+                "webapp": _build_webapp_deeplink("webapp"),
+            },
+        }
+    )
+
+
 @app.route("/api/webapp/dictionary/collocations", methods=["POST"])
 def get_webapp_dictionary_collocations():
     payload = request.get_json(silent=True) or {}
@@ -2673,32 +2809,15 @@ def get_webapp_flashcard_set():
 
 @app.route("/api/webapp/flashcards/answer", methods=["POST"])
 def record_webapp_flashcard_answer():
-    payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
-    entry_id = payload.get("entry_id")
-    is_correct = payload.get("is_correct")
-
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
-    if entry_id is None or is_correct is None:
-        return jsonify({"error": "entry_id и is_correct обязательны"}), 400
-
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-
-    try:
-        record_flashcard_answer(user_id=user_id, entry_id=int(entry_id), is_correct=bool(is_correct))
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка сохранения ответа: {exc}"}), 500
-
-    return jsonify({"ok": True})
+    # Legacy endpoint is intentionally left as a no-op.
+    # Training answers must be sent to /api/cards/review so FSRS stays the single source of truth.
+    return jsonify(
+        {
+            "ok": True,
+            "deprecated": True,
+            "message": "Use /api/cards/review for training answers.",
+        }
+    )
 
 
 @app.route("/api/cards/next", methods=["GET"])
@@ -3841,6 +3960,103 @@ def _run_audio_scheduler_job() -> None:
         logging.exception("❌ Audio scheduler failed")
 
 
+def _dispatch_private_analytics(target_date: date) -> dict:
+    users: dict[int, str] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, COALESCE(NULLIF(MAX(username), ''), '')
+                FROM bt_3_user_progress
+                WHERE start_time::date = %s
+                GROUP BY user_id;
+                """,
+                (target_date,),
+            )
+            for user_id, username in cursor.fetchall():
+                users[int(user_id)] = (username or "").strip()
+
+            cursor.execute(
+                """
+                SELECT t.user_id, COALESCE(NULLIF(MAX(t.username), ''), '')
+                FROM bt_3_translations t
+                JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                WHERE ds.date = %s
+                GROUP BY t.user_id;
+                """,
+                (target_date,),
+            )
+            for user_id, username in cursor.fetchall():
+                users.setdefault(int(user_id), (username or "").strip())
+
+    if not users:
+        return {"ok": True, "date": target_date.isoformat(), "sent": 0, "errors": []}
+
+    bounds = get_period_bounds("week", today=target_date)
+    sent = 0
+    errors: list[str] = []
+    for user_id, username in users.items():
+        if not is_telegram_user_allowed(user_id):
+            continue
+        try:
+            summary = fetch_user_summary(
+                user_id=user_id,
+                start_date=bounds.start_date,
+                end_date=bounds.end_date,
+            )
+            total = int(summary.get("total_translations") or 0)
+            if total <= 0:
+                continue
+            name = username or f"user_{user_id}"
+            text = (
+                f"📊 Твоя аналитика за неделю ({bounds.start_date} — {bounds.end_date})\n"
+                f"👤 {name}\n"
+                f"✅ Успешных переводов: {summary.get('successful_translations', 0)} / {total}\n"
+                f"🎯 Средний балл: {summary.get('avg_score', 0)}\n"
+                f"📈 Успешность: {summary.get('success_rate', 0)}%\n"
+                f"⏱️ Среднее время: {summary.get('avg_time_min', 0)} мин\n"
+                f"🔥 Final score: {summary.get('final_score', 0)}\n\n"
+                f"Открыть графики и детали:\n{_build_webapp_deeplink('review')}"
+            )
+            _send_private_message(user_id, text)
+
+            chart_png = _build_private_analytics_chart_png(
+                user_id=user_id,
+                start_date=bounds.start_date,
+                end_date=bounds.end_date,
+                username=name,
+            )
+            if chart_png:
+                _send_private_photo(
+                    user_id=user_id,
+                    image_bytes=chart_png,
+                    filename=f"analytics_{user_id}_{target_date.isoformat()}.png",
+                    caption=f"📈 График прогресса за неделю\n{bounds.start_date} — {bounds.end_date}",
+                )
+            sent += 1
+        except Exception as exc:
+            errors.append(f"user {user_id}: {exc}")
+
+    return {"ok": True, "date": target_date.isoformat(), "sent": sent, "errors": errors}
+
+
+def _run_private_analytics_scheduler_job() -> None:
+    mode = (os.getenv("ANALYTICS_SCHEDULER_DATE_MODE") or "today").strip().lower()
+    tz_name = (os.getenv("ANALYTICS_SCHEDULER_TZ") or "UTC").strip()
+    try:
+        now = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        now = datetime.utcnow()
+    target_date = now.date()
+    if mode == "yesterday":
+        target_date = target_date - timedelta(days=1)
+    try:
+        result = _dispatch_private_analytics(target_date)
+        logging.info("✅ Private analytics scheduler finished: %s", result)
+    except Exception:
+        logging.exception("❌ Private analytics scheduler failed")
+
+
 def _get_youtube_oembed(video_id: str) -> dict:
     now = time.time()
     cached = _YT_OEMBED_CACHE.get(video_id)
@@ -3942,6 +4158,19 @@ def _start_audio_scheduler() -> None:
         coalesce=True,
         misfire_grace_time=300,
     )
+    analytics_enabled = (os.getenv("ANALYTICS_PRIVATE_SCHEDULER_ENABLED") or "1").strip().lower()
+    if analytics_enabled in ("1", "true", "yes", "on"):
+        analytics_hour = int((os.getenv("ANALYTICS_PRIVATE_SCHEDULER_HOUR") or "19").strip())
+        analytics_minute = int((os.getenv("ANALYTICS_PRIVATE_SCHEDULER_MINUTE") or "30").strip())
+        _audio_scheduler.add_job(
+            _run_private_analytics_scheduler_job,
+            "cron",
+            hour=analytics_hour,
+            minute=analytics_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
     now = datetime.now(ZoneInfo(tz_name))
     first_report = now.replace(hour=17, minute=0, second=0, microsecond=0)
     if first_report <= now:
@@ -3979,6 +4208,29 @@ def send_daily_audio_to_group():
         target_date = (datetime.utcnow().date() - timedelta(days=1))
 
     result = _dispatch_daily_audio(target_date)
+    return jsonify(result)
+
+
+@app.route("/api/admin/send-private-analytics", methods=["POST"])
+def send_private_analytics_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    date_str = (payload.get("date") or "").strip()
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
+    else:
+        target_date = datetime.utcnow().date()
+
+    result = _dispatch_private_analytics(target_date)
     return jsonify(result)
 
 
