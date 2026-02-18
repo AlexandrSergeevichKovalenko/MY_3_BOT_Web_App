@@ -289,7 +289,7 @@ function AppInner() {
   const t = useMemo(() => createTranslator(uiLang), [uiLang]);
   const tr = (ru, de) => (uiLang === 'de' ? de : ru);
   const initDataMissingMsg = tr(
-    initDataMissingMsg,
+    'initData не найдено. Откройте Web App внутри Telegram.',
     'initData nicht gefunden. Oeffne die Web App in Telegram.'
   );
 
