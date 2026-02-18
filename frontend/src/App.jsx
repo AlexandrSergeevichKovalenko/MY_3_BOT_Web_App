@@ -764,6 +764,67 @@ function AppInner() {
     );
   };
 
+  const renderMenuIcon = (kind) => {
+    if (kind === 'translations') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <path d="M4 6h16v12H4z" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M8 10h8M8 14h6" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M6.5 8.5l2-2M15.5 17.5l2-2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+        </svg>
+      );
+    }
+    if (kind === 'youtube') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <rect x="3" y="6" width="18" height="12" rx="3.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M10 9.2l6 2.8-6 2.8V9.2z" fill="currentColor" />
+        </svg>
+      );
+    }
+    if (kind === 'movies') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <rect x="3" y="6" width="18" height="12" rx="2.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M7 6l2-3M12 6l2-3M17 6l2-3" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M10 10l5 2-5 2v-4z" fill="currentColor" />
+        </svg>
+      );
+    }
+    if (kind === 'dictionary') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <path d="M6 4h11a2 2 0 0 1 2 2v14H8a2 2 0 0 0-2 2V4z" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M8.5 9h7M8.5 12.5h7M8.5 16h5" fill="none" stroke="currentColor" strokeWidth="1.9" />
+        </svg>
+      );
+    }
+    if (kind === 'flashcards') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <rect x="4" y="5" width="12" height="14" rx="2.3" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M10 8h4M10 11.5h3" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M14 7l6 2.2v9L14 16V7z" fill="none" stroke="currentColor" strokeWidth="1.9" />
+        </svg>
+      );
+    }
+    if (kind === 'assistant') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <rect x="4" y="5" width="16" height="13" rx="3.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <circle cx="9" cy="11" r="1.2" fill="currentColor" />
+          <circle cx="15" cy="11" r="1.2" fill="currentColor" />
+          <path d="M9 14.5h6M12 2.5v2.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+        </svg>
+      );
+    }
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+        <path d="M4 18h16M7 18V12M12 18V8M17 18V5" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      </svg>
+    );
+  };
+
   // Состояние для хранения токена доступа. Изначально его нет.
   // Мы говорим React'у: "Создай ячейку памяти. Изначально положи туда null (пустоту)".
   // Когда мы захотим обновить эту ячейку, мы будем использовать функцию setToken.
@@ -3390,14 +3451,7 @@ function AppInner() {
                 onClick={() => toggleSection('translations')}
                 disabled={flashcardsOnly}
               >
-                <span className="menu-icon">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M7 4h7l3 3v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" fill="#1d4ed8" opacity="0.9" />
-                    <path d="M14 4v4h4" fill="#60a5fa" />
-                    <path d="M8 10h8M8 13h8M8 16h6" stroke="#ffffff" strokeWidth="1.7" strokeLinecap="round" />
-                    <path d="M4.5 12.5h2.2l1-1.6 1 3 1.1-2h2.2" stroke="#fbbf24" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                  </svg>
-                </span>
+                <span className="menu-icon menu-icon-translations">{renderMenuIcon('translations')}</span>
                 <span>Переводы</span>
               </button>
               <button
@@ -3406,12 +3460,7 @@ function AppInner() {
                 onClick={() => toggleSection('youtube')}
                 disabled={flashcardsOnly}
               >
-                <span className="menu-icon">
-                  <svg viewBox="0 0 28 20" aria-hidden="true">
-                    <rect x="0" y="0" width="28" height="20" rx="4" fill="#ff0000" />
-                    <path d="M11 5l8 5-8 5V5z" fill="#ffffff" />
-                  </svg>
-                </span>
+                <span className="menu-icon menu-icon-youtube">{renderMenuIcon('youtube')}</span>
                 <span>YouTube</span>
               </button>
               <button
@@ -3420,13 +3469,7 @@ function AppInner() {
                 onClick={() => toggleSection('movies')}
                 disabled={flashcardsOnly}
               >
-                <span className="menu-icon">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <rect x="3" y="6" width="18" height="12" rx="2" fill="#111827" />
-                    <path d="M6 6l2-3m4 3l2-3m4 3l2-3" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
-                    <path d="M9 10l6 4-6 4v-8z" fill="#f59e0b" />
-                  </svg>
-                </span>
+                <span className="menu-icon menu-icon-movies">{renderMenuIcon('movies')}</span>
                 <span>Фильмы</span>
               </button>
               <button
@@ -3435,13 +3478,7 @@ function AppInner() {
                 onClick={() => toggleSection('dictionary')}
                 disabled={flashcardsOnly}
               >
-                <span className="menu-icon">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M4 6a2 2 0 0 1 2-2h11a3 3 0 0 1 3 3v11a2 2 0 0 1-2 2H7a3 3 0 0 0-3 3V6z" fill="#0ea5e9" />
-                    <path d="M7 8h9M7 12h9M7 16h6" stroke="#ffffff" strokeWidth="1.7" strokeLinecap="round" />
-                    <path d="M6 6h10a2 2 0 0 1 2 2v10" stroke="#0284c7" strokeWidth="2" fill="none" />
-                  </svg>
-                </span>
+                <span className="menu-icon menu-icon-dictionary">{renderMenuIcon('dictionary')}</span>
                 <span>Словарь</span>
               </button>
               <button
@@ -3455,14 +3492,7 @@ function AppInner() {
                   setFlashcardExitSummary(false);
                 }}
               >
-                <span className="menu-icon">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M4 6a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z" fill="#8b5cf6" />
-                    <path d="M9 8h6M9 12h4" stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
-                    <path d="M13 7l7 2v9l-7-2V7z" fill="#c4b5fd" />
-                    <circle cx="16" cy="12" r="1.2" fill="#7c3aed" />
-                  </svg>
-                </span>
+                <span className="menu-icon menu-icon-flashcards">{renderMenuIcon('flashcards')}</span>
                 <span>Карточки</span>
               </button>
               <button
@@ -3471,15 +3501,7 @@ function AppInner() {
                 onClick={() => toggleSection('assistant')}
                 disabled={flashcardsOnly}
               >
-                <span className="menu-icon">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <rect x="3" y="4" width="18" height="16" rx="4" fill="#d97706" />
-                    <circle cx="9" cy="11" r="1.5" fill="#fff7ed" />
-                    <circle cx="15" cy="11" r="1.5" fill="#fff7ed" />
-                    <path d="M8 15h8" stroke="#fff7ed" strokeWidth="1.7" strokeLinecap="round" />
-                    <path d="M12 2v3" stroke="#fef3c7" strokeWidth="1.8" strokeLinecap="round" />
-                  </svg>
-                </span>
+                <span className="menu-icon menu-icon-assistant">{renderMenuIcon('assistant')}</span>
                 <span>Ассистент</span>
               </button>
               <button
@@ -3488,14 +3510,7 @@ function AppInner() {
                 onClick={() => toggleSection('analytics')}
                 disabled={flashcardsOnly}
               >
-                <span className="menu-icon">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <rect x="3" y="11" width="4" height="8" rx="1.2" fill="#22c55e" />
-                    <rect x="10" y="7" width="4" height="12" rx="1.2" fill="#16a34a" />
-                    <rect x="17" y="4" width="4" height="15" rx="1.2" fill="#15803d" />
-                    <path d="M3 19h18" stroke="#064e3b" strokeWidth="1.2" strokeLinecap="round" />
-                  </svg>
-                </span>
+                <span className="menu-icon menu-icon-analytics">{renderMenuIcon('analytics')}</span>
                 <span>Аналитика</span>
               </button>
             </div>
@@ -3584,14 +3599,7 @@ function AppInner() {
                       onClick={() => handleMenuSelection('translations', translationsRef)}
                       disabled={flashcardsOnly}
                     >
-                    <span className="menu-icon">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M7 4h7l3 3v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" fill="#1d4ed8" opacity="0.9" />
-                        <path d="M14 4v4h4" fill="#60a5fa" />
-                        <path d="M8 10h8M8 13h8M8 16h6" stroke="#ffffff" strokeWidth="1.7" strokeLinecap="round" />
-                        <path d="M4.5 12.5h2.2l1-1.6 1 3 1.1-2h2.2" stroke="#fbbf24" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                      </svg>
-                    </span>
+                    <span className="menu-icon menu-icon-translations">{renderMenuIcon('translations')}</span>
                     <span>Переводы</span>
                   </button>
                 <button
@@ -3600,12 +3608,7 @@ function AppInner() {
                   onClick={() => handleMenuSelection('youtube', youtubeRef)}
                   disabled={flashcardsOnly}
                 >
-                  <span className="menu-icon">
-                    <svg viewBox="0 0 28 20" aria-hidden="true">
-                      <rect x="0" y="0" width="28" height="20" rx="4" fill="#ff0000" />
-                      <path d="M11 5l8 5-8 5V5z" fill="#ffffff" />
-                    </svg>
-                  </span>
+                  <span className="menu-icon menu-icon-youtube">{renderMenuIcon('youtube')}</span>
                   <span>YouTube</span>
                 </button>
                 <button
@@ -3614,13 +3617,7 @@ function AppInner() {
                   onClick={() => handleMenuSelection('movies', moviesRef)}
                   disabled={flashcardsOnly}
                 >
-                  <span className="menu-icon">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <rect x="3" y="6" width="18" height="12" rx="2" fill="#111827" />
-                      <path d="M6 6l2-3m4 3l2-3m4 3l2-3" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
-                      <path d="M9 10l6 4-6 4v-8z" fill="#f59e0b" />
-                    </svg>
-                  </span>
+                  <span className="menu-icon menu-icon-movies">{renderMenuIcon('movies')}</span>
                   <span>Фильмы</span>
                 </button>
                 <button
@@ -3629,13 +3626,7 @@ function AppInner() {
                   onClick={() => handleMenuSelection('dictionary', dictionaryRef)}
                   disabled={flashcardsOnly}
                 >
-                  <span className="menu-icon">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 6a2 2 0 0 1 2-2h11a3 3 0 0 1 3 3v11a2 2 0 0 1-2 2H7a3 3 0 0 0-3 3V6z" fill="#0ea5e9" />
-                      <path d="M7 8h9M7 12h9M7 16h6" stroke="#ffffff" strokeWidth="1.7" strokeLinecap="round" />
-                      <path d="M6 6h10a2 2 0 0 1 2 2v10" stroke="#0284c7" strokeWidth="2" fill="none" />
-                    </svg>
-                  </span>
+                  <span className="menu-icon menu-icon-dictionary">{renderMenuIcon('dictionary')}</span>
                       <span>Словарь</span>
                     </button>
                     <button
@@ -3643,14 +3634,7 @@ function AppInner() {
                       className={`menu-item menu-item-flashcards ${selectedSections.has('flashcards') ? 'is-active' : ''}`}
                       onClick={() => handleMenuSelection('flashcards', flashcardsRef)}
                     >
-                      <span className="menu-icon">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M4 6a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z" fill="#8b5cf6" />
-                          <path d="M9 8h6M9 12h4" stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
-                          <path d="M13 7l7 2v9l-7-2V7z" fill="#c4b5fd" />
-                          <circle cx="16" cy="12" r="1.2" fill="#7c3aed" />
-                        </svg>
-                      </span>
+                      <span className="menu-icon menu-icon-flashcards">{renderMenuIcon('flashcards')}</span>
                       <span>Карточки</span>
                     </button>
                     <button
@@ -3659,15 +3643,7 @@ function AppInner() {
                       onClick={() => handleMenuSelection('assistant', assistantRef)}
                       disabled={flashcardsOnly}
                     >
-                      <span className="menu-icon">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <rect x="3" y="4" width="18" height="16" rx="4" fill="#d97706" />
-                          <circle cx="9" cy="11" r="1.5" fill="#fff7ed" />
-                          <circle cx="15" cy="11" r="1.5" fill="#fff7ed" />
-                          <path d="M8 15h8" stroke="#fff7ed" strokeWidth="1.7" strokeLinecap="round" />
-                          <path d="M12 2v3" stroke="#fef3c7" strokeWidth="1.8" strokeLinecap="round" />
-                        </svg>
-                      </span>
+                      <span className="menu-icon menu-icon-assistant">{renderMenuIcon('assistant')}</span>
                       <span>Ассистент</span>
                     </button>
                     <button
@@ -3676,14 +3652,7 @@ function AppInner() {
                       onClick={() => handleMenuSelection('analytics', analyticsRef)}
                       disabled={flashcardsOnly}
                     >
-                      <span className="menu-icon">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <rect x="3" y="11" width="4" height="8" rx="1.2" fill="#22c55e" />
-                          <rect x="10" y="7" width="4" height="12" rx="1.2" fill="#16a34a" />
-                          <rect x="17" y="4" width="4" height="15" rx="1.2" fill="#15803d" />
-                          <path d="M3 19h18" stroke="#064e3b" strokeWidth="1.2" strokeLinecap="round" />
-                        </svg>
-                      </span>
+                      <span className="menu-icon menu-icon-analytics">{renderMenuIcon('analytics')}</span>
                       <span>Аналитика</span>
                     </button>
                   </div>
