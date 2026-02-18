@@ -666,9 +666,9 @@ User's Translation (in German)
 
 Response Format (STRICTLY FOLLOW THIS):
 
-Error 1: (OBLIGATORY: Brief description of the grammatical, lexical, or stylistic error)
-Error 2: (OBLIGATORY: Brief description of the grammatical, lexical, or stylistic error)
-Error 3: (OBLIGATORY: Brief description of the grammatical, lexical, or stylistic error)
+Error 1: User fragment: "<exact wrong fragment from user's German translation>"; Issue: <brief description>; Correct fragment: "<correct version of this fragment>"; Rule: <which rule applies and why>.
+Error 2: User fragment: "<exact wrong fragment from user's German translation>"; Issue: <brief description>; Correct fragment: "<correct version of this fragment>"; Rule: <which rule applies and why>.
+Error 3: User fragment: "<exact wrong fragment from user's German translation>"; Issue: <brief description>; Correct fragment: "<correct version of this fragment>"; Rule: <which rule applies and why>.
 Correct Translation: …
 Grammar Explanation:
 Alternative Sentence Construction: …
@@ -1107,6 +1107,12 @@ async def run_check_translation(original_text: str, user_translation: str) -> st
     thread_id = thread.id
 
     user_message = (
+        "Analyze the translation and return output in this strict format.\n"
+        "For each error (Error 1/2/3), include all fields in ONE line:\n"
+        "Error N: User fragment: \"<exact wrong fragment from user's German translation>\"; "
+        "Issue: <what is wrong>; Correct fragment: \"<how this fragment should be translated>\"; "
+        "Rule: <short grammar/lexical rule and why>.\n"
+        "Then provide: Correct Translation, Grammar Explanation, Alternative Sentence Construction, Synonyms.\n\n"
         f'**Original sentence (Russian):** "{original_text}"\n'
         f'**User\'s translation (German):** "{user_translation}"'
     )
@@ -1726,7 +1732,11 @@ async def run_translation_explanation(original_text: str, user_translation: str)
     if not response_text:
         return "❌ Ошибка: Не удалось обработать ответ от Claude."
 
-    list_of_errors_pattern = re.findall(r'(Error)\s*(\d+)\:*\s*(.+?)(?:\n|$)', response_text, flags=re.DOTALL)
+    list_of_errors_pattern = re.findall(
+        r'(Error)\s*(\d+)\:*\s*(.+?)(?=\nError\s*\d+\s*:|\nCorrect Translation:|\Z)',
+        response_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
     correct_translation = re.findall(r'(Correct Translation)\:\s*(.+?)(?:\n|$)', response_text, flags=re.DOTALL)
     grammar_explanation_pattern = re.findall(
         r'(Grammar Explanation)\s*\:*\s*\n*(.+?)(?=\n[A-Z][a-zA-Z\s]+:|\Z)',
@@ -1750,7 +1760,7 @@ async def run_translation_explanation(original_text: str, user_translation: str)
     ]
 
     for line in list_of_errors_pattern:
-        result_list.append(f"🔴*{line[0]} {line[1]}*: {line[2]}\n")
+        result_list.append(f"🔴*{line[0]} {line[1]}*: {line[2].strip()}\n")
 
     for item in correct_translation:
         result_list.append(f"✅*{item[0]}*:\n➡️ {item[1]}\n")

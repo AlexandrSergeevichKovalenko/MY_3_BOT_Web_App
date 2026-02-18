@@ -2714,11 +2714,25 @@ async def check_translation_with_claude(original_text, user_translation, update,
     #client = AsyncAnthropic(api_key=CLAUDE_API_KEY)
 
     user_message = f"""
-    
-    **Original sentence (Russian):** "{original_text}"
-    **User's translation (German):** "{user_translation}"
+Analyze the translation and return output in this strict format.
 
-    """
+For each error (Error 1/2/3), include all fields in ONE line:
+Error N: User fragment: "<exact wrong fragment from user's German translation>"; Issue: <what is wrong>; Correct fragment: "<how this fragment should be translated>"; Rule: <short grammar/lexical rule and why>.
+
+Keep Error lines concise but informative.
+Do not omit the user fragment and corrected fragment.
+
+Then provide:
+Correct Translation: ...
+Grammar Explanation:
+Alternative Sentence Construction: ...
+Synonyms:
+Original Word: ...
+Possible Synonyms: ...
+
+**Original sentence (Russian):** "{original_text}"
+**User's translation (German):** "{user_translation}"
+"""
     #available_models = await client.models.list()
     # logging.info(f"📢 Available models: {available_models}")
     # print(f"📢 Available models: {available_models}")
@@ -2790,7 +2804,11 @@ async def check_translation_with_claude(original_text, user_translation, update,
         print("❌ Ошибка: Пустой ответ от Claude после 3 попыток")
         return "❌ Ошибка: Не удалось обработать ответ от Claude."
     
-    list_of_errors_pattern = re.findall(r'(Error)\s*(\d+)\:*\s*(.+?)(?:\n|$)', cloud_response, flags=re.DOTALL)
+    list_of_errors_pattern = re.findall(
+        r'(Error)\s*(\d+)\:*\s*(.+?)(?=\nError\s*\d+\s*:|\nCorrect Translation:|\Z)',
+        cloud_response,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
 
     correct_translation = re.findall(r'(Correct Translation)\:\s*(.+?)(?:\n|$)', cloud_response, flags=re.DOTALL)
 
@@ -2809,7 +2827,7 @@ async def check_translation_with_claude(original_text, user_translation, update,
 
     # Добавляем ошибки
     for line in list_of_errors_pattern:
-        result_list.append(f"🔴*{line[0]} {line[1]}*: {line[2]}\n")
+        result_list.append(f"🔴*{line[0]} {line[1]}*: {line[2].strip()}\n")
 
     # Добавляем корректный перевод
     for item in correct_translation:
