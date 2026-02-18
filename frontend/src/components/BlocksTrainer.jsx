@@ -76,6 +76,7 @@ export default function BlocksTrainer({
   autoAdvance = true,
   onNext,
   onRoundResult,
+  labels = {},
 }) {
   const containerRef = useRef(null);
   const slotsRowRef = useRef(null);
@@ -532,11 +533,22 @@ export default function BlocksTrainer({
 
   const displayAnswer = type === 'PHRASE' ? targetTokens.join(' ') : targetTokens.join('');
   const timerSeconds = timeLeftMs === null ? null : Math.ceil(timeLeftMs / 1000);
+  const text = {
+    promptFallback: labels.promptFallback || 'Соберите ответ',
+    hint: labels.hint || 'Подсказка',
+    check: labels.check || 'Проверить',
+    next: labels.next || 'Дальше',
+    correct: labels.correct || 'Верно!',
+    wrong: labels.wrong || 'Неверно',
+    timeout: labels.timeout || 'Время вышло',
+    correctAnswer: labels.correctAnswer || 'Правильный ответ',
+    hintsUsed: labels.hintsUsed || 'Подсказок',
+  };
 
   return (
     <div className={`blocks-trainer ${status !== 'idle' ? `is-${status}` : ''}`}>
       <div className="blocks-head">
-        <div className="blocks-prompt">{prompt || 'Соберите ответ'}</div>
+        <div className="blocks-prompt">{prompt || text.promptFallback}</div>
         {timerSeconds !== null && (
           <div className={`blocks-timer ${timerSeconds <= 3 ? 'is-danger' : ''}`}>{timerSeconds}s</div>
         )}
@@ -596,7 +608,7 @@ export default function BlocksTrainer({
 
       <div className="blocks-footer">
         <button type="button" className="secondary-button" onClick={applyHint} disabled={isFinished}>
-          Подсказка
+          {text.hint}
         </button>
         {!isFinished && (
           <button
@@ -605,21 +617,21 @@ export default function BlocksTrainer({
             onClick={forceCheck}
             disabled={!allSlotsFilled}
           >
-            Проверить
+            {text.check}
           </button>
         )}
         {isFinished && (
           <button type="button" className="primary-button" onClick={() => onNext?.()}>
-            Дальше
+            {text.next}
           </button>
         )}
       </div>
 
       {isFinished && (
         <div className={`blocks-result ${status === 'correct' ? 'ok' : 'bad'}`}>
-          <div>{status === 'correct' ? 'Верно!' : status === 'timeout' ? 'Время вышло' : 'Неверно'}</div>
-          <div>Правильный ответ: {displayAnswer}</div>
-          <div>Подсказок: {hintsUsed}</div>
+          <div>{status === 'correct' ? text.correct : status === 'timeout' ? text.timeout : text.wrong}</div>
+          <div>{text.correctAnswer}: {displayAnswer}</div>
+          <div>{text.hintsUsed}: {hintsUsed}</div>
         </div>
       )}
     </div>

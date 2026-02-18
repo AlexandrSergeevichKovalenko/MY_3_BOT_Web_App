@@ -458,6 +458,56 @@ body {
   gap: 10px;
 }
 
+.language-toggle-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.language-toggle-label {
+  font-size: 12px;
+  color: rgba(248, 250, 252, 0.72);
+  font-weight: 600;
+}
+
+.language-toggle {
+  min-height: 36px;
+  min-width: 86px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.language-toggle-compact {
+  min-width: 74px;
+  min-height: 32px;
+}
+
+.language-chip {
+  min-width: 34px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(248, 250, 252, 0.74);
+  transition: all 0.16s ease;
+}
+
+.language-chip.is-active {
+  background: linear-gradient(135deg, rgba(93, 220, 255, 0.9), rgba(124, 92, 255, 0.9));
+  color: #071126;
+  box-shadow: 0 4px 10px rgba(93, 220, 255, 0.36);
+}
+
 .webapp-menu-note {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.7);

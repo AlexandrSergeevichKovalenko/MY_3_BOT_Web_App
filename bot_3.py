@@ -9,7 +9,7 @@ import calendar
 from datetime import datetime, time, date, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update, Poll
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes, ApplicationHandlerStop
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes, ApplicationHandlerStop, ExtBot
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
@@ -226,40 +226,30 @@ async def _track_telegram_message_async(message, message_type: str = "text") -> 
 
 
 def _install_tracked_send_wrappers(app: Application) -> None:
-    bot = app.bot
-    if getattr(bot, "_system_tracking_wrapped", False):
-        return
+    # Backward-compatible no-op: tracking is implemented in TrackingExtBot below.
+    return
 
-    original_send_message = bot.send_message
-    original_send_photo = bot.send_photo
-    original_send_audio = bot.send_audio
-    original_send_poll = bot.send_poll
 
-    async def wrapped_send_message(*args, **kwargs):
-        msg = await original_send_message(*args, **kwargs)
+class TrackingExtBot(ExtBot):
+    async def send_message(self, *args, **kwargs):
+        msg = await super().send_message(*args, **kwargs)
         await _track_telegram_message_async(msg, "text")
         return msg
 
-    async def wrapped_send_photo(*args, **kwargs):
-        msg = await original_send_photo(*args, **kwargs)
+    async def send_photo(self, *args, **kwargs):
+        msg = await super().send_photo(*args, **kwargs)
         await _track_telegram_message_async(msg, "photo")
         return msg
 
-    async def wrapped_send_audio(*args, **kwargs):
-        msg = await original_send_audio(*args, **kwargs)
+    async def send_audio(self, *args, **kwargs):
+        msg = await super().send_audio(*args, **kwargs)
         await _track_telegram_message_async(msg, "audio")
         return msg
 
-    async def wrapped_send_poll(*args, **kwargs):
-        msg = await original_send_poll(*args, **kwargs)
+    async def send_poll(self, *args, **kwargs):
+        msg = await super().send_poll(*args, **kwargs)
         await _track_telegram_message_async(msg, "poll")
         return msg
-
-    bot.send_message = wrapped_send_message
-    bot.send_photo = wrapped_send_photo
-    bot.send_audio = wrapped_send_audio
-    bot.send_poll = wrapped_send_poll
-    bot._system_tracking_wrapped = True
 
 
 async def cleanup_system_messages(context: CallbackContext) -> None:
@@ -5541,8 +5531,8 @@ def main():
     ensure_webapp_tables()
 
     #defaults = Defaults(timeout=60)  # увеличили таймаут до 60 секунд
-    application = Application.builder().token(TELEGRAM_Deutsch_BOT_TOKEN).build()
-    _install_tracked_send_wrappers(application)
+    tracking_bot = TrackingExtBot(token=TELEGRAM_Deutsch_BOT_TOKEN)
+    application = Application.builder().bot(tracking_bot).build()
     application.bot.request.timeout = 60
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)

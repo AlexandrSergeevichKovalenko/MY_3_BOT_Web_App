@@ -9,6 +9,7 @@ import '@livekit/components-styles';
 import './App.css';
 import * as echarts from 'echarts';
 import BlocksTrainer from './components/BlocksTrainer';
+import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
@@ -29,16 +30,17 @@ class ErrorBoundary extends React.Component {
 
   render() {
     if (this.state.hasError) {
+      const isDe = typeof navigator !== 'undefined' && String(navigator.language || '').toLowerCase().startsWith('de');
       return (
         <div className="webapp-page">
           <div className="webapp-card">
             <header className="webapp-header">
               <span className="pill">Telegram Web App</span>
-              <h1>Ошибка загрузки</h1>
-              <p>Произошла ошибка при запуске приложения. Попробуйте перезагрузить.</p>
+              <h1>{isDe ? 'Ladefehler' : 'Ошибка загрузки'}</h1>
+              <p>{isDe ? 'Beim Starten der App ist ein Fehler aufgetreten. Bitte neu laden.' : 'Произошла ошибка при запуске приложения. Попробуйте перезагрузить.'}</p>
             </header>
             <div className="webapp-error">
-              {this.state.error?.message || 'Неизвестная ошибка'}
+              {this.state.error?.message || (isDe ? 'Unbekannter Fehler' : 'Неизвестная ошибка')}
             </div>
           </div>
         </div>
@@ -283,6 +285,32 @@ function AppInner() {
     }
   };
 
+  const [uiLang, setUiLang] = useState('ru');
+  const t = useMemo(() => createTranslator(uiLang), [uiLang]);
+  const tr = (ru, de) => (uiLang === 'de' ? de : ru);
+  const initDataMissingMsg = tr(
+    initDataMissingMsg,
+    'initData nicht gefunden. Oeffne die Web App in Telegram.'
+  );
+
+  const toggleLanguage = () => {
+    setUiLang((prev) => (prev === 'ru' ? 'de' : 'ru'));
+  };
+
+  useEffect(() => {
+    const stored = safeStorageGet('ui_lang');
+    if (stored) {
+      setUiLang(normalizeLanguage(stored));
+      return;
+    }
+    const nextLang = getPreferredLanguage(telegramApp);
+    setUiLang(nextLang);
+  }, [telegramApp]);
+
+  useEffect(() => {
+    safeStorageSet('ui_lang', uiLang);
+  }, [uiLang]);
+
   const handleBrowserLogout = () => {
     safeStorageRemove('browser_init_data');
     setInitData('');
@@ -294,7 +322,7 @@ function AppInner() {
 
   const handleBrowserTelegramAuth = async (authUser) => {
     if (!authUser || typeof authUser !== 'object') {
-      setBrowserAuthError('Не удалось получить данные Telegram Login.');
+      setBrowserAuthError(tr('Не удалось получить данные Telegram Login.', 'Telegram-Login-Daten konnten nicht gelesen werden.'));
       return;
     }
     try {
@@ -310,7 +338,7 @@ function AppInner() {
       }
       const data = await response.json();
       if (!data?.initData) {
-        throw new Error('Сервер не вернул initData');
+        throw new Error(tr('Сервер не вернул initData', 'Server hat initData nicht zurueckgegeben'));
       }
       setInitData(data.initData);
       safeStorageSet('browser_init_data', data.initData);
@@ -319,7 +347,7 @@ function AppInner() {
       }
       setWebappChatType(data.chat_type || 'browser');
     } catch (error) {
-      setBrowserAuthError(`Ошибка входа: ${error.message}`);
+      setBrowserAuthError(`${tr('Ошибка входа', 'Login-Fehler')}: ${error.message}`);
     } finally {
       setBrowserAuthLoading(false);
     }
@@ -541,7 +569,7 @@ function AppInner() {
       setSrsRevealAnswer(false);
       srsShownAtRef.current = Date.now();
     } catch (error) {
-      setWebappError(`Ошибка загрузки SRS карточки: ${error.message}`);
+      setWebappError(`${tr('Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte')}: ${error.message}`);
     } finally {
       setSrsLoading(false);
     }
@@ -568,7 +596,7 @@ function AppInner() {
       }
       await loadSrsNextCard();
     } catch (error) {
-      setWebappError(`Ошибка SRS review: ${error.message}`);
+      setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${error.message}`);
     } finally {
       setSrsSubmitting(false);
     }
@@ -854,7 +882,7 @@ function AppInner() {
   const handleConnect = async (e) => {
     e.preventDefault();
     if (!telegramID || !username) {
-      alert('Пожалуйста, введите ваше имя');
+      alert(tr('Пожалуйста, введите ваше имя', 'Bitte gib deinen Namen ein'));
       return;
     }
 
@@ -865,7 +893,7 @@ function AppInner() {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Ошибка получения токена: ${errorText}`);
+        throw new Error(`${tr('Ошибка получения токена', 'Token-Fehler')}: ${errorText}`);
       }
 
       const data = await response.json();
@@ -880,7 +908,7 @@ function AppInner() {
     const userId = assistantIdentity.userId;
     const displayName = assistantIdentity.displayName;
     if (!userId || !displayName) {
-      setAssistantError('Не удалось определить пользователя Telegram. Обновите страницу.');
+      setAssistantError(tr('Не удалось определить пользователя Telegram. Обновите страницу.', 'Telegram-Nutzer konnte nicht bestimmt werden. Bitte Seite aktualisieren.'));
       return;
     }
     try {
@@ -895,7 +923,7 @@ function AppInner() {
       const data = await response.json();
       setAssistantToken(data.token);
     } catch (error) {
-      setAssistantError(`Ошибка подключения ассистента: ${error.message}`);
+      setAssistantError(`${tr('Ошибка подключения ассистента', 'Assistent-Verbindungsfehler')}: ${error.message}`);
     } finally {
       setAssistantConnecting(false);
     }
@@ -992,7 +1020,7 @@ function AppInner() {
           safeStorageRemove('browser_init_data');
           setInitData('');
         }
-        setWebappError(`Ошибка инициализации: ${error.message}`);
+        setWebappError(`${tr('Ошибка инициализации', 'Initialisierungsfehler')}: ${error.message}`);
       }
     };
 
@@ -1269,7 +1297,7 @@ function AppInner() {
       setResults([]);
       setFinishStatus('idle');
     } catch (error) {
-      setWebappError(`Ошибка загрузки предложений: ${error.message}`);
+      setWebappError(`${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Saetze')}: ${error.message}`);
     }
   };
 
@@ -1288,7 +1316,7 @@ function AppInner() {
         setSelectedTopic(items[0]);
       }
     } catch (error) {
-      setTopicsError(`Ошибка тем: ${error.message}`);
+      setTopicsError(`${tr('Ошибка тем', 'Themenfehler')}: ${error.message}`);
     } finally {
       setTopicsLoading(false);
     }
@@ -1366,15 +1394,15 @@ function AppInner() {
   const handleWebappSubmit = async (event) => {
     event.preventDefault();
     if (!initData) {
-      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      setWebappError(initDataMissingMsg);
       return;
     }
     if (sentences.length === 0) {
-      setWebappError('Нет предложений для перевода.');
+      setWebappError(tr('Нет предложений для перевода.', 'Keine Saetze zur Uebersetzung vorhanden.'));
       return;
     }
     if (Object.values(translationDrafts).every((text) => !text.trim())) {
-      setWebappError('Заполните хотя бы один перевод.');
+      setWebappError(tr('Заполните хотя бы один перевод.', 'Bitte fuelle mindestens eine Uebersetzung aus.'));
       return;
     }
 
@@ -1434,7 +1462,7 @@ function AppInner() {
         });
       }
     } catch (error) {
-      setWebappError(`Ошибка проверки: ${error.message}`);
+      setWebappError(`${tr('Ошибка проверки', 'Pruefungsfehler')}: ${error.message}`);
     } finally {
       setWebappLoading(false);
     }
@@ -1451,7 +1479,7 @@ function AppInner() {
 
   const handleStartTranslation = async () => {
     if (!initData) {
-      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      setWebappError(initDataMissingMsg);
       return;
     }
     setWebappLoading(true);
@@ -1473,12 +1501,12 @@ function AppInner() {
       }
       const data = await response.json();
       if (data.blocked) {
-        setFinishMessage('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.');
+        setFinishMessage(tr('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.', 'Es gibt eine aktive Session. Beende die aktuelle Uebersetzung, um ein neues Set zu erhalten.'));
       }
       await loadSessionInfo();
       await loadSentences();
     } catch (error) {
-      setWebappError(`Ошибка старта: ${error.message}`);
+      setWebappError(`${tr('Ошибка старта', 'Startfehler')}: ${error.message}`);
     } finally {
       setWebappLoading(false);
     }
@@ -1500,7 +1528,7 @@ function AppInner() {
       const data = await response.json();
       setStoryHistory(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
-      setStoryHistoryError(`Ошибка истории: ${error.message}`);
+      setStoryHistoryError(`${tr('Ошибка истории', 'Story-Fehler')}: ${error.message}`);
     } finally {
       setStoryHistoryLoading(false);
     }
@@ -1530,7 +1558,7 @@ function AppInner() {
 
   const handleStartStory = async () => {
     if (!initData) {
-      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      setWebappError(initDataMissingMsg);
       return;
     }
     setWebappLoading(true);
@@ -1557,12 +1585,12 @@ function AppInner() {
       }
       const data = await response.json();
       if (data.blocked) {
-        setFinishMessage('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.');
+        setFinishMessage(tr('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.', 'Es gibt eine aktive Session. Beende die aktuelle Uebersetzung, um ein neues Set zu erhalten.'));
       }
       await loadSessionInfo();
       await loadSentences();
     } catch (error) {
-      setWebappError(`Ошибка старта истории: ${error.message}`);
+      setWebappError(`${tr('Ошибка старта истории', 'Story-Startfehler')}: ${error.message}`);
     } finally {
       setWebappLoading(false);
     }
@@ -1570,7 +1598,7 @@ function AppInner() {
 
   const handleStorySubmit = async () => {
     if (!initData) {
-      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      setWebappError(initDataMissingMsg);
       return;
     }
     const missing = sentences.filter((item) => {
@@ -1578,11 +1606,11 @@ function AppInner() {
       return !value;
     });
     if (missing.length > 0) {
-      setWebappError('Для истории нужно перевести все 7 предложений.');
+      setWebappError(tr('Для истории нужно перевести все 7 предложений.', 'Fuer die Story muessen alle 7 Saetze uebersetzt werden.'));
       return;
     }
     if (!storyGuess.trim()) {
-      setWebappError('Введите ваш ответ: о ком/чем была история.');
+      setWebappError(tr('Введите ваш ответ: о ком/чем была история.', 'Gib deine Antwort ein: Worum oder um wen ging die Story?'));
       return;
     }
     setWebappLoading(true);
@@ -1611,7 +1639,7 @@ function AppInner() {
       setSentences([]);
       await loadSessionInfo();
     } catch (error) {
-      setWebappError(`Ошибка истории: ${error.message}`);
+      setWebappError(`${tr('Ошибка истории', 'Story-Fehler')}: ${error.message}`);
     } finally {
       setWebappLoading(false);
     }
@@ -1827,7 +1855,7 @@ function AppInner() {
         direction,
       });
     } catch (error) {
-      setSelectionInlineLookup({ loading: false, word: normalized, translation: 'Ошибка перевода', direction: '' });
+      setSelectionInlineLookup({ loading: false, word: normalized, translation: tr('Ошибка перевода', 'Uebersetzungsfehler'), direction: '' });
     }
   };
 
@@ -1836,7 +1864,7 @@ function AppInner() {
     const cleaned = normalizeSelectionText(text);
     if (!cleaned) return;
     if (!initData) {
-      setDictionaryError('initData не найдено. Откройте Web App внутри Telegram.');
+      setDictionaryError(initDataMissingMsg);
       return;
     }
     const normalized = await normalizeForLookup(cleaned);
@@ -1909,17 +1937,17 @@ function AppInner() {
       if (inlineMode) {
         setSelectionInlineLookup((prev) => ({
           ...prev,
-          translation: prev.translation ? `${prev.translation} • Сохранено ✅` : 'Сохранено ✅',
+          translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
         }));
         if (youtubeAppFullscreen) {
-          showInlineToast(`Сохранено в папку: ${autoFolder?.name || 'YouTube'}`);
+          showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
         }
       } else {
-        setDictionarySaved('Добавлено в словарь ✅');
+        setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
       }
       clearSelection();
     } catch (error) {
-      setDictionaryError(`Ошибка сохранения: ${error.message}`);
+      setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
     }
@@ -1929,7 +1957,7 @@ function AppInner() {
     const cleaned = normalizeSelectionText(text);
     if (!cleaned) return;
     if (!initData) {
-      setDictionaryError('initData не найдено. Откройте Web App внутри Telegram.');
+      setDictionaryError(initDataMissingMsg);
       return;
     }
     let normalized = cleaned;
@@ -1976,7 +2004,7 @@ function AppInner() {
       scrollToDictionary();
       clearSelection();
     } catch (error) {
-      setDictionaryError(`Ошибка словаря: ${error.message}`);
+      setDictionaryError(`${tr('Ошибка словаря', 'Woerterbuchfehler')}: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
       setSelectionLookupLoading(false);
@@ -1985,7 +2013,7 @@ function AppInner() {
 
   const loadFlashcards = async () => {
     if (!initData) {
-      setFlashcardsError('initData не найдено. Откройте Web App внутри Telegram.');
+      setFlashcardsError(initDataMissingMsg);
       return;
     }
     setFlashcardsLoading(true);
@@ -2032,7 +2060,7 @@ function AppInner() {
         wrong: 0,
       });
     } catch (error) {
-      setFlashcardsError(`Ошибка карточек: ${error.message}`);
+      setFlashcardsError(`${tr('Ошибка карточек', 'Kartenfehler')}: ${error.message}`);
     } finally {
       setFlashcardsLoading(false);
     }
@@ -2081,7 +2109,7 @@ function AppInner() {
       const data = await response.json();
       setFolders(data.items || []);
     } catch (error) {
-      setFoldersError(`Ошибка папок: ${error.message}`);
+      setFoldersError(`${tr('Ошибка папок', 'Ordnerfehler')}: ${error.message}`);
     } finally {
       setFoldersLoading(false);
     }
@@ -2089,11 +2117,11 @@ function AppInner() {
 
   const handleCreateFolder = async () => {
     if (!initData) {
-      setFoldersError('initData не найдено. Откройте Web App внутри Telegram.');
+      setFoldersError(initDataMissingMsg);
       return;
     }
     if (!newFolderName.trim()) {
-      setFoldersError('Введите название папки.');
+      setFoldersError(tr('Введите название папки.', 'Bitte gib einen Ordnernamen ein.'));
       return;
     }
     setFoldersLoading(true);
@@ -2119,7 +2147,7 @@ function AppInner() {
       setShowNewFolderForm(false);
       setNewFolderName('');
     } catch (error) {
-      setFoldersError(`Ошибка создания папки: ${error.message}`);
+      setFoldersError(`${tr('Ошибка создания папки', 'Fehler beim Erstellen des Ordners')}: ${error.message}`);
     } finally {
       setFoldersLoading(false);
     }
@@ -2207,7 +2235,7 @@ function AppInner() {
       || responseJson.word_ru
       || entry?.translation_ru
       || responseJson.translation_ru
-      || 'Соберите ответ';
+      || t('blocks_build_answer');
   };
 
   const resolveBlocksType = (entry, answer) => {
@@ -2276,11 +2304,11 @@ function AppInner() {
       try {
         tg.showPopup(
           {
-            title: 'Завершить повтор?',
-            message: 'Текущий прогресс будет завершён.',
+            title: tr('Завершить повтор?', 'Wiederholung beenden?'),
+            message: tr('Текущий прогресс будет завершён.', 'Der aktuelle Fortschritt wird beendet.'),
             buttons: [
-              { id: 'continue', type: 'default', text: 'Продолжить' },
-              { id: 'finish', type: 'destructive', text: 'Завершить' },
+              { id: 'continue', type: 'default', text: tr('Продолжить', 'Weiter') },
+              { id: 'finish', type: 'destructive', text: tr('Завершить', 'Beenden') },
             ],
           },
           (buttonId) => {
@@ -2481,7 +2509,7 @@ function AppInner() {
       }
       setMovies([]);
     } catch (error) {
-      setYoutubeTranscriptError(`Ошибка сохранения субтитров: ${error.message}`);
+      setYoutubeTranscriptError(`${tr('Ошибка сохранения субтитров', 'Fehler beim Speichern der Untertitel')}: ${error.message}`);
     }
   };
 
@@ -2524,7 +2552,7 @@ function AppInner() {
 
   const handleFinishTranslation = async () => {
     if (!initData) {
-      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      setWebappError(initDataMissingMsg);
       return;
     }
     setWebappLoading(true);
@@ -2548,7 +2576,7 @@ function AppInner() {
         throw new Error(message);
       }
       const data = await response.json();
-      setFinishMessage(data.message || 'Перевод завершён.');
+      setFinishMessage(data.message || tr('Перевод завершён.', 'Uebersetzung abgeschlossen.'));
       setFinishStatus('done');
       const storageKey = `webappDrafts_${webappUser?.id || 'unknown'}_${sessionId || 'nosession'}`;
       safeStorageRemove(storageKey);
@@ -2560,7 +2588,7 @@ function AppInner() {
       setSelectedTopic('💼 Business');
       await loadSentences();
     } catch (error) {
-      setWebappError(`Ошибка завершения: ${error.message}`);
+      setWebappError(`${tr('Ошибка завершения', 'Abschlussfehler')}: ${error.message}`);
     } finally {
       setWebappLoading(false);
     }
@@ -2568,7 +2596,7 @@ function AppInner() {
 
   const handleExplainTranslation = async (item) => {
     if (!initData) {
-      setWebappError('initData не найдено. Откройте Web App внутри Telegram.');
+      setWebappError(initDataMissingMsg);
       return;
     }
     const key = String(item.sentence_number ?? item.original_text);
@@ -2596,7 +2624,7 @@ function AppInner() {
       const data = await response.json();
       setExplanations((prev) => ({ ...prev, [key]: data.explanation }));
     } catch (error) {
-      setWebappError(`Ошибка объяснения: ${error.message}`);
+      setWebappError(`${tr('Ошибка объяснения', 'Erklaerungsfehler')}: ${error.message}`);
     } finally {
       setExplanationLoading((prev) => ({ ...prev, [key]: false }));
     }
@@ -2644,11 +2672,11 @@ function AppInner() {
   const handleDictionaryLookup = async (event) => {
     event.preventDefault();
     if (!initData) {
-      setDictionaryError('initData не найдено. Откройте Web App внутри Telegram.');
+      setDictionaryError(initDataMissingMsg);
       return;
     }
     if (!dictionaryWord.trim()) {
-      setDictionaryError('Введите слово или фразу для словаря.');
+      setDictionaryError(tr('Введите слово или фразу для словаря.', 'Bitte gib ein Wort oder eine Phrase fuers Woerterbuch ein.'));
       return;
     }
     setDictionaryLoading(true);
@@ -2676,7 +2704,7 @@ function AppInner() {
       setDictionaryResult(data.item || null);
       setDictionaryDirection(data.direction || resolveDictionaryDirection(data.item));
     } catch (error) {
-      setDictionaryError(`Ошибка словаря: ${error.message}`);
+      setDictionaryError(`${tr('Ошибка словаря', 'Woerterbuchfehler')}: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
     }
@@ -2684,11 +2712,11 @@ function AppInner() {
 
   const handleDictionarySave = async () => {
     if (!initData) {
-      setDictionaryError('initData не найдено. Откройте Web App внутри Telegram.');
+      setDictionaryError(initDataMissingMsg);
       return;
     }
     if (!dictionaryResult) {
-      setDictionaryError('Сначала выполните перевод в словаре.');
+      setDictionaryError(tr('Сначала выполните перевод в словаре.', 'Fuehre zuerst eine Uebersetzung im Woerterbuch aus.'));
       return;
     }
     setCollocationsVisible(true);
@@ -2730,7 +2758,7 @@ function AppInner() {
       setCollocationOptions(options);
       setSelectedCollocation(options[0] || null);
     } catch (error) {
-      setCollocationsError(`Ошибка связок: ${error.message}`);
+      setCollocationsError(`${tr('Ошибка связок', 'Kollokationsfehler')}: ${error.message}`);
     } finally {
       setCollocationsLoading(false);
     }
@@ -2738,7 +2766,7 @@ function AppInner() {
 
   const handleConfirmSaveCollocation = async () => {
     if (!selectedCollocation) {
-      setCollocationsError('Выберите вариант для сохранения.');
+      setCollocationsError(tr('Выберите вариант для сохранения.', 'Waehle eine Option zum Speichern.'));
       return;
     }
     setDictionaryLoading(true);
@@ -2768,10 +2796,10 @@ function AppInner() {
         }
         throw new Error(message);
       }
-      setDictionarySaved('Добавлено в словарь ✅');
+      setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
       setCollocationsVisible(false);
     } catch (error) {
-      setDictionaryError(`Ошибка сохранения: ${error.message}`);
+      setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
     }
@@ -2779,7 +2807,7 @@ function AppInner() {
 
   const handleExportDictionaryPdf = async () => {
     if (!initData) {
-      setDictionaryError('initData не найдено. Откройте Web App внутри Telegram.');
+      setDictionaryError(initDataMissingMsg);
       return;
     }
     setExportLoading(true);
@@ -2807,7 +2835,7 @@ function AppInner() {
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (error) {
-      setDictionaryError(`Ошибка выгрузки PDF: ${error.message}`);
+      setDictionaryError(`${tr('Ошибка выгрузки PDF', 'PDF-Exportfehler')}: ${error.message}`);
     } finally {
       setExportLoading(false);
     }
@@ -2850,7 +2878,7 @@ function AppInner() {
       setYoutubeError('');
       safeStorageSet('webapp_youtube', JSON.stringify({ input: trimmed, id }));
     } else if (trimmed.length > 8) {
-      setYoutubeError('Не удалось распознать ссылку или ID видео.');
+      setYoutubeError(tr('Не удалось распознать ссылку или ID видео.', 'Video-Link oder ID konnte nicht erkannt werden.'));
       setYoutubeId('');
     } else {
       setYoutubeError('');
@@ -2887,7 +2915,7 @@ function AppInner() {
       setManualTranscript('');
     } catch (error) {
       setYoutubeTranscript([]);
-      setYoutubeTranscriptError(`Авто-субтитры недоступны: ${error.message}`);
+      setYoutubeTranscriptError(`${tr('Авто-субтитры недоступны', 'Auto-Untertitel nicht verfuegbar')}: ${error.message}`);
     } finally {
       setYoutubeTranscriptLoading(false);
     }
@@ -2927,7 +2955,7 @@ function AppInner() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setMoviesError(`Ошибка каталога: ${err.message}`);
+        setMoviesError(`${tr('Ошибка каталога', 'Katalogfehler')}: ${err.message}`);
       })
       .finally(() => {
         if (!cancelled) setMoviesLoading(false);
@@ -3171,7 +3199,7 @@ function AppInner() {
 
   const handleLoadDailyHistory = async () => {
     if (!initData) {
-      setHistoryError('initData не найдено. Откройте Web App внутри Telegram.');
+      setHistoryError(initDataMissingMsg);
       return;
     }
     setHistoryLoading(true);
@@ -3196,7 +3224,7 @@ function AppInner() {
       setHistoryItems(data.items || []);
       setHistoryVisible(true);
     } catch (error) {
-      setHistoryError(`Ошибка загрузки истории: ${error.message}`);
+      setHistoryError(`${tr('Ошибка загрузки истории', 'Fehler beim Laden der Historie')}: ${error.message}`);
     } finally {
       setHistoryLoading(false);
     }
@@ -3221,7 +3249,7 @@ function AppInner() {
 
   const loadAnalytics = async (overridePeriod) => {
     if (!initData) {
-      setAnalyticsError('initData не найдено. Откройте Web App внутри Telegram.');
+      setAnalyticsError(initDataMissingMsg);
       return;
     }
     const period = overridePeriod || analyticsPeriod;
@@ -3263,7 +3291,7 @@ function AppInner() {
       setAnalyticsCompare(compareData.items || []);
       setAnalyticsRank(compareData.self?.rank ?? null);
     } catch (error) {
-      setAnalyticsError(`Ошибка аналитики: ${error.message}`);
+      setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${error.message}`);
     } finally {
       setAnalyticsLoading(false);
     }
@@ -3303,15 +3331,15 @@ function AppInner() {
           const timeValue = avgTime[index] ?? 0;
           return `
             <strong>${labels[index] || ''}</strong><br/>
-            Успешно: ${map['Успешно'] ?? 0}<br/>
-            Ошибки: ${map['Нужно доработать'] ?? 0}<br/>
-            Ср. балл: ${map['Средний балл'] ?? 0}<br/>
-            Ср. время: ${timeValue} мин
+            ${tr('Успешно', 'Erfolgreich')}: ${map[tr('Успешно', 'Erfolgreich')] ?? 0}<br/>
+            ${tr('Ошибки', 'Fehler')}: ${map[tr('Нужно доработать', 'Verbessern')] ?? 0}<br/>
+            ${tr('Ср. балл', 'Durchschnitt')}: ${map[tr('Средний балл', 'Durchschnitt')] ?? 0}<br/>
+            ${tr('Ср. время', 'Durchschn. Zeit')}: ${timeValue} ${tr('мин', 'Min')}
           `;
         },
       },
       legend: {
-        data: ['Успешно', 'Нужно доработать', 'Средний балл'],
+        data: [tr('Успешно', 'Erfolgreich'), tr('Нужно доработать', 'Verbessern'), tr('Средний балл', 'Durchschnitt')],
         textStyle: { color: '#dbe7ff' },
       },
       grid: { left: 32, right: 32, top: 40, bottom: 40 },
@@ -3324,13 +3352,13 @@ function AppInner() {
       yAxis: [
         {
           type: 'value',
-          name: 'Переводы',
+          name: tr('Переводы', 'Uebersetzungen'),
           axisLabel: { color: '#c7d2f1' },
           splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
         },
         {
           type: 'value',
-          name: 'Баллы',
+          name: tr('Баллы', 'Punkte'),
           min: 0,
           max: 100,
           axisLabel: { color: '#c7d2f1' },
@@ -3339,7 +3367,7 @@ function AppInner() {
       ],
       series: [
         {
-          name: 'Успешно',
+          name: tr('Успешно', 'Erfolgreich'),
           type: 'bar',
           stack: 'total',
           data: success,
@@ -3347,7 +3375,7 @@ function AppInner() {
           barWidth: 22,
         },
         {
-          name: 'Нужно доработать',
+          name: tr('Нужно доработать', 'Verbessern'),
           type: 'bar',
           stack: 'total',
           data: fail,
@@ -3355,7 +3383,7 @@ function AppInner() {
           barWidth: 22,
         },
         {
-          name: 'Средний балл',
+          name: tr('Средний балл', 'Durchschnitt'),
           type: 'line',
           yAxisIndex: 1,
           data: avgScore,
@@ -3396,12 +3424,12 @@ function AppInner() {
           if (!item) return '';
           return `
             <strong>${item.username}</strong><br/>
-            Итоговый балл: ${item.final_score}<br/>
-            Успех: ${item.success_rate}%<br/>
-            Ср. балл: ${item.avg_score}<br/>
-            Переводы: ${item.total_translations}<br/>
-            Пропущено: ${item.missed_sentences}<br/>
-            Пропущено дней: ${item.missed_days ?? 0}
+            ${tr('Итоговый балл', 'Gesamtscore')}: ${item.final_score}<br/>
+            ${tr('Успех', 'Erfolg')}: ${item.success_rate}%<br/>
+            ${tr('Ср. балл', 'Durchschnitt')}: ${item.avg_score}<br/>
+            ${tr('Переводы', 'Uebersetzungen')}: ${item.total_translations}<br/>
+            ${tr('Пропущено', 'Verpasst')}: ${item.missed_sentences}<br/>
+            ${tr('Пропущено дней', 'Verpasste Tage')}: ${item.missed_days ?? 0}
           `;
         },
       },
@@ -3439,11 +3467,11 @@ function AppInner() {
           <aside className="webapp-sidebar">
             <div className="webapp-brand">
               <div className="brand-mark">DF</div>
-              <div>
-                <div className="brand-title">DeutschFlow</div>
-                <div className="brand-subtitle">Переводы • Видео • Словарь</div>
+                <div>
+                  <div className="brand-title">DeutschFlow</div>
+                  <div className="brand-subtitle">{t('brand_subtitle')}</div>
+                </div>
               </div>
-            </div>
             <div className="webapp-menu">
               <button
                 type="button"
@@ -3452,7 +3480,7 @@ function AppInner() {
                 disabled={flashcardsOnly}
               >
                 <span className="menu-icon menu-icon-translations">{renderMenuIcon('translations')}</span>
-                <span>Переводы</span>
+                <span>{t('menu_translations')}</span>
               </button>
               <button
                 type="button"
@@ -3470,7 +3498,7 @@ function AppInner() {
                 disabled={flashcardsOnly}
               >
                 <span className="menu-icon menu-icon-movies">{renderMenuIcon('movies')}</span>
-                <span>Фильмы</span>
+                <span>{t('menu_movies')}</span>
               </button>
               <button
                 type="button"
@@ -3479,7 +3507,7 @@ function AppInner() {
                 disabled={flashcardsOnly}
               >
                 <span className="menu-icon menu-icon-dictionary">{renderMenuIcon('dictionary')}</span>
-                <span>Словарь</span>
+                <span>{t('menu_dictionary')}</span>
               </button>
               <button
                 type="button"
@@ -3493,7 +3521,7 @@ function AppInner() {
                 }}
               >
                 <span className="menu-icon menu-icon-flashcards">{renderMenuIcon('flashcards')}</span>
-                <span>Карточки</span>
+                <span>{t('menu_flashcards')}</span>
               </button>
               <button
                 type="button"
@@ -3502,7 +3530,7 @@ function AppInner() {
                 disabled={flashcardsOnly}
               >
                 <span className="menu-icon menu-icon-assistant">{renderMenuIcon('assistant')}</span>
-                <span>Ассистент</span>
+                <span>{t('menu_assistant')}</span>
               </button>
               <button
                 type="button"
@@ -3511,27 +3539,34 @@ function AppInner() {
                 disabled={flashcardsOnly}
               >
                 <span className="menu-icon menu-icon-analytics">{renderMenuIcon('analytics')}</span>
-                <span>Аналитика</span>
+                <span>{t('menu_analytics')}</span>
               </button>
             </div>
             <div className="webapp-menu-actions">
+              <div className="language-toggle-wrap">
+                <span className="language-toggle-label">{t('language_toggle_label')}</span>
+                <button type="button" className="language-toggle" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
+                  <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
+                  <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
+                </button>
+              </div>
               <label className="menu-toggle-row">
                 <input
                   type="checkbox"
                   checked={menuMultiSelect}
                   onChange={(event) => setMenuMultiSelect(event.target.checked)}
                 />
-                <span>Мультивыбор</span>
+                <span>{t('menu_multi_select')}</span>
               </label>
               <button type="button" className="secondary-button" onClick={showAllSections} disabled={flashcardsOnly}>
-                Показать все
+                {t('menu_show_all')}
               </button>
               <button type="button" className="secondary-button" onClick={hideAllSections} disabled={flashcardsOnly}>
-                Скрыть всё
+                {t('menu_hide_all')}
               </button>
             </div>
             {flashcardsOnly && (
-              <div className="webapp-menu-note">Режим повторения активен</div>
+              <div className="webapp-menu-note">{t('review_mode_active')}</div>
             )}
           </aside>
 
@@ -3548,6 +3583,10 @@ function AppInner() {
               </button>
               <div className="topbar-title">DeutschFlow</div>
               <div className="topbar-profile">
+                <button type="button" className="language-toggle language-toggle-compact" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
+                  <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
+                  <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
+                </button>
                 <input
                   ref={avatarInputRef}
                   type="file"
@@ -3563,7 +3602,7 @@ function AppInner() {
                   {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
                 </button>
                 <div className="topbar-user-meta">
-                  <div className="topbar-user-name">{webappUser?.first_name || 'Гость'}</div>
+                  <div className="topbar-user-name">{webappUser?.first_name || t('guest')}</div>
                   <div className="topbar-user-line">ID: {webappUser?.id || '—'}</div>
                   <div className="topbar-user-line">Chat: {webappChatType || '—'}</div>
                 </div>
@@ -3581,7 +3620,7 @@ function AppInner() {
                       className="secondary-button"
                       onClick={() => setMenuOpen(false)}
                     >
-                      Закрыть
+                      {t('menu_close')}
                     </button>
                   </div>
                 <div className="overlay-menu">
@@ -3591,7 +3630,7 @@ function AppInner() {
                         checked={menuMultiSelect}
                         onChange={(event) => setMenuMultiSelect(event.target.checked)}
                       />
-                      <span>Мультивыбор</span>
+                      <span>{t('menu_multi_select')}</span>
                     </label>
                     <button
                       type="button"
@@ -3600,7 +3639,7 @@ function AppInner() {
                       disabled={flashcardsOnly}
                     >
                     <span className="menu-icon menu-icon-translations">{renderMenuIcon('translations')}</span>
-                    <span>Переводы</span>
+                    <span>{t('menu_translations')}</span>
                   </button>
                 <button
                   type="button"
@@ -3618,7 +3657,7 @@ function AppInner() {
                   disabled={flashcardsOnly}
                 >
                   <span className="menu-icon menu-icon-movies">{renderMenuIcon('movies')}</span>
-                  <span>Фильмы</span>
+                  <span>{t('menu_movies')}</span>
                 </button>
                 <button
                   type="button"
@@ -3627,7 +3666,7 @@ function AppInner() {
                   disabled={flashcardsOnly}
                 >
                   <span className="menu-icon menu-icon-dictionary">{renderMenuIcon('dictionary')}</span>
-                      <span>Словарь</span>
+                      <span>{t('menu_dictionary')}</span>
                     </button>
                     <button
                       type="button"
@@ -3635,7 +3674,7 @@ function AppInner() {
                       onClick={() => handleMenuSelection('flashcards', flashcardsRef)}
                     >
                       <span className="menu-icon menu-icon-flashcards">{renderMenuIcon('flashcards')}</span>
-                      <span>Карточки</span>
+                      <span>{t('menu_flashcards')}</span>
                     </button>
                     <button
                       type="button"
@@ -3644,7 +3683,7 @@ function AppInner() {
                       disabled={flashcardsOnly}
                     >
                       <span className="menu-icon menu-icon-assistant">{renderMenuIcon('assistant')}</span>
-                      <span>Ассистент</span>
+                      <span>{t('menu_assistant')}</span>
                     </button>
                     <button
                       type="button"
@@ -3653,15 +3692,15 @@ function AppInner() {
                       disabled={flashcardsOnly}
                     >
                       <span className="menu-icon menu-icon-analytics">{renderMenuIcon('analytics')}</span>
-                      <span>Аналитика</span>
+                      <span>{t('menu_analytics')}</span>
                     </button>
                   </div>
                   <div className="overlay-actions">
                     <button type="button" className="secondary-button" onClick={showAllSections} disabled={flashcardsOnly}>
-                      Показать все
+                      {t('menu_show_all')}
                     </button>
                     <button type="button" className="secondary-button" onClick={hideAllSections} disabled={flashcardsOnly}>
-                      Скрыть всё
+                      {t('menu_hide_all')}
                     </button>
                   </div>
                 </div>
@@ -3672,7 +3711,7 @@ function AppInner() {
             <header className="webapp-hero">
               <div className="webapp-hero-copy webapp-hero-copy-landing">
                 <span className="pill">Telegram Web App</span>
-                <h1>Осваивайте немецкий легко и уверенно</h1>
+                <h1>{t('hero_title')}</h1>
               </div>
               <div className="webapp-hero-mascot-flat" aria-hidden="true">
                 <img src={heroStickerSrc} alt="Deutsch mascot" className="hero-flat-image" />
@@ -3683,20 +3722,20 @@ function AppInner() {
             {showHero && (
             <section className="webapp-hero-cards">
               <div className="hero-card">
-                <div className="hero-card-head is-translate">Переводите</div>
-                <p>Напишите перевод, получите оценку и объяснения ошибок.</p>
+                <div className="hero-card-head is-translate">{t('card_translate_title')}</div>
+                <p>{t('card_translate_body')}</p>
               </div>
               <div className="hero-card">
-                <div className="hero-card-head is-save">Сохраняйте</div>
-                <p>Добавляйте слова в словарь и группируйте по папкам.</p>
+                <div className="hero-card-head is-save">{t('card_save_title')}</div>
+                <p>{t('card_save_body')}</p>
               </div>
               <div className="hero-card">
-                <div className="hero-card-head is-train">Тренируйтесь</div>
-                <p>Повторяйте слова сетами по 15 карточек с прогрессом.</p>
+                <div className="hero-card-head is-train">{t('card_train_title')}</div>
+                <p>{t('card_train_body')}</p>
               </div>
               <div className="hero-card">
-                <div className="hero-card-head is-watch">Смотрите и слушайте</div>
-                <p>Смотрите фильмы и слушайте песни с двойными субтитрами, сохраняйте новые слова для дальнейшего повторения и изучения.</p>
+                <div className="hero-card-head is-watch">{t('card_watch_title')}</div>
+                <p>{t('card_watch_body')}</p>
               </div>
             </section>
             )}
@@ -3706,37 +3745,37 @@ function AppInner() {
             {!telegramApp?.initData && (
               <section className="webapp-browser-auth">
                 <div className="webapp-browser-auth-head">
-                  <strong>Вход из браузера</strong>
+                  <strong>{t('browser_login_title')}</strong>
                   {initData ? (
                     <button
                       type="button"
                       className="secondary-button"
                       onClick={handleBrowserLogout}
                     >
-                      Выйти
+                      {t('logout')}
                     </button>
                   ) : null}
                 </div>
                 {!initData && (
                   <>
                     <p className="webapp-muted">
-                      Войдите через Telegram, чтобы открыть ваш аккаунт вне mini app.
+                      {t('browser_login_hint')}
                     </p>
                     <div className="webapp-telegram-login-slot" ref={telegramLoginWidgetRef} />
-                    {browserAuthLoading && <div className="webapp-muted">Авторизация...</div>}
+                    {browserAuthLoading && <div className="webapp-muted">{t('auth_loading')}</div>}
                     {browserAuthError && <div className="webapp-error">{browserAuthError}</div>}
                     {!browserAuthBotUsername && (
                       <div className="webapp-error">
-                        Не задан `TELEGRAM_BOT_USERNAME` на сервере. Telegram Login недоступен.
+                        {t('bot_username_missing')}
                       </div>
                     )}
                     <label className="webapp-field">
-                      <span>initData (ручной fallback)</span>
+                      <span>{t('init_data_fallback')}</span>
                       <textarea
                         rows={3}
                         value={initData}
                         onChange={(event) => setInitData(event.target.value)}
-                        placeholder="Вставьте initData из Telegram"
+                        placeholder={t('init_data_placeholder')}
                       />
                     </label>
                   </>
@@ -3747,12 +3786,12 @@ function AppInner() {
             {!flashcardsOnly && isSectionVisible('translations') && (
               <section className="webapp-section" ref={translationsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
-                  <h2>Ваши переводы</h2>
+                  <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="webapp-translation-start">
                   <label className="webapp-field">
-                    <span>Тема</span>
+                    <span>{tr('Тема', 'Thema')}</span>
                     <select
                       value={selectedTopic}
                       onChange={(event) => setSelectedTopic(event.target.value)}
@@ -3767,7 +3806,7 @@ function AppInner() {
                   </label>
                   {!isStoryTopic(selectedTopic) && (
                     <label className="webapp-field">
-                      <span>Уровень</span>
+                      <span>{tr('Уровень', 'Niveau')}</span>
                       <select
                         value={selectedLevel}
                         onChange={(event) => setSelectedLevel(event.target.value)}
@@ -3784,61 +3823,61 @@ function AppInner() {
                   {isStoryTopic(selectedTopic) && (
                     <>
                       <label className="webapp-field">
-                        <span>История</span>
+                        <span>{tr('История', 'Story')}</span>
                         <select
                           value={storyMode}
                           onChange={(event) => setStoryMode(event.target.value)}
                           disabled={webappLoading}
                         >
-                          <option value="new">Новая</option>
-                          <option value="repeat">Повторить старую</option>
+                          <option value="new">{tr('Новая', 'Neu')}</option>
+                          <option value="repeat">{tr('Повторить старую', 'Alte wiederholen')}</option>
                         </select>
                       </label>
                       {storyMode === 'repeat' && (
                         <label className="webapp-field">
-                          <span>Выберите историю</span>
+                          <span>{tr('Выберите историю', 'Story auswaehlen')}</span>
                           <select
                             value={selectedStoryId}
                             onChange={(event) => setSelectedStoryId(event.target.value)}
                             disabled={webappLoading || storyHistoryLoading}
                           >
-                            <option value="">Последняя</option>
+                            <option value="">{tr('Последняя', 'Letzte')}</option>
                             {storyHistory.map((item) => (
                               <option key={item.story_id} value={item.story_id}>
-                                {item.title || `История #${item.story_id}`}
+                                {item.title || tr(`История #${item.story_id}`, `Story #${item.story_id}`)}
                               </option>
                             ))}
                           </select>
                         </label>
                       )}
                       <label className="webapp-field">
-                        <span>Тип истории</span>
+                        <span>{tr('Тип истории', 'Story-Typ')}</span>
                         <select
                           value={storyType}
                           onChange={(event) => setStoryType(event.target.value)}
                           disabled={webappLoading}
                         >
-                          <option value="знаменитая личность">Знаменитая личность</option>
-                          <option value="историческое событие">Историческое событие</option>
-                          <option value="выдающееся открытие">Выдающееся открытие</option>
-                          <option value="выдающееся изобретение">Выдающееся изобретение</option>
-                          <option value="география">География</option>
-                          <option value="космос">Космос</option>
-                          <option value="культура">Культура</option>
-                          <option value="спорт">Спорт</option>
-                          <option value="политика">Политика</option>
+                          <option value="знаменитая личность">{tr('Знаменитая личность', 'Beruehmte Persoenlichkeit')}</option>
+                          <option value="историческое событие">{tr('Историческое событие', 'Historisches Ereignis')}</option>
+                          <option value="выдающееся открытие">{tr('Выдающееся открытие', 'Bedeutende Entdeckung')}</option>
+                          <option value="выдающееся изобретение">{tr('Выдающееся изобретение', 'Bedeutende Erfindung')}</option>
+                          <option value="география">{tr('География', 'Geografie')}</option>
+                          <option value="космос">{tr('Космос', 'Weltraum')}</option>
+                          <option value="культура">{tr('Культура', 'Kultur')}</option>
+                          <option value="спорт">{tr('Спорт', 'Sport')}</option>
+                          <option value="политика">{tr('Политика', 'Politik')}</option>
                         </select>
                       </label>
                       <label className="webapp-field">
-                        <span>Сложность</span>
+                        <span>{tr('Сложность', 'Schwierigkeit')}</span>
                         <select
                           value={storyDifficulty}
                           onChange={(event) => setStoryDifficulty(event.target.value)}
                           disabled={webappLoading}
                         >
-                          <option value="начальный">Начальный</option>
-                          <option value="средний">Средний</option>
-                          <option value="продвинутый">Продвинутый</option>
+                          <option value="начальный">{tr('Начальный', 'Anfaenger')}</option>
+                          <option value="средний">{tr('Средний', 'Mittel')}</option>
+                          <option value="продвинутый">{tr('Продвинутый', 'Fortgeschritten')}</option>
                         </select>
                       </label>
                     </>
@@ -3849,7 +3888,7 @@ function AppInner() {
                     onClick={isStoryTopic(selectedTopic) ? handleStartStory : handleStartTranslation}
                     disabled={webappLoading || topicsLoading}
                   >
-                    {webappLoading ? 'Запускаем...' : '🚀 Начать перевод'}
+                    {webappLoading ? tr('Запускаем...', 'Starten...') : tr('🚀 Начать перевод', '🚀 Uebersetzung starten')}
                   </button>
                 </div>
                 {topicsError && <div className="webapp-error">{topicsError}</div>}
@@ -3859,7 +3898,7 @@ function AppInner() {
                   <section className="webapp-translation-list">
                     {sentences.length === 0 ? (
                       <p className="webapp-muted">
-                        Нет активных предложений. Нажмите «🚀 Начать перевод», чтобы получить новые.
+                        {tr('Нет активных предложений. Нажмите «🚀 Начать перевод», чтобы получить новые.', 'Keine aktiven Saetze. Druecke «🚀 Uebersetzung starten», um neue zu laden.')}
                       </p>
                     ) : (
                       sentences.map((item, index) => {
@@ -3873,14 +3912,14 @@ function AppInner() {
                               rows={5}
                               value={draft}
                               onChange={(event) => handleDraftChange(item.id_for_mistake_table, event.target.value)}
-                              placeholder="Введите перевод..."
+                              placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
                             />
                             <div className="translation-actions">
                               <button
                                 type="button"
                                 className="translation-dict-jump"
                                 onClick={jumpToDictionaryFromSentence}
-                                aria-label="Перейти в словарь"
+                                aria-label={tr('Перейти в словарь', 'Zum Woerterbuch')}
                               >
                                 ↗
                               </button>
@@ -3893,22 +3932,22 @@ function AppInner() {
 
                   {isStorySession && (
                     <label className="webapp-field">
-                      <span>А теперь угадай, о ком / чем шла речь</span>
+                      <span>{tr('А теперь угадай, о ком / чем шла речь', 'Rate jetzt, worum oder um wen es ging')}</span>
                       <input
                         type="text"
                         value={storyGuess}
                         onChange={(event) => setStoryGuess(event.target.value)}
-                        placeholder="Ваш ответ..."
+                        placeholder={tr('Ваш ответ...', 'Deine Antwort...')}
                       />
                     </label>
                   )}
 
                   <button className="primary-button" type="submit" disabled={webappLoading}>
                     {webappLoading
-                      ? 'Проверяем...'
+                      ? tr('Проверяем...', 'Pruefen...')
                       : isStorySession
-                        ? 'Проверить историю'
-                        : 'Проверить перевод'}
+                        ? tr('Проверить историю', 'Story pruefen')
+                        : tr('Проверить перевод', 'Uebersetzung pruefen')}
                   </button>
                 </form>
                 )}
@@ -3918,10 +3957,10 @@ function AppInner() {
 
                 {isStoryResultMode && (
                   <section className="webapp-result">
-                    <h3>Результат истории</h3>
+                    <h3>{tr('Результат истории', 'Story-Ergebnis')}</h3>
                     <div className="webapp-result-card story-result">
                       <div className="story-result-head">
-                        <strong>⭐ Итоговый балл:</strong> {storyResult.score ?? '—'} / 100
+                        <strong>{tr('⭐ Итоговый балл:', '⭐ Gesamtscore:')}</strong> {storyResult.score ?? '—'} / 100
                       </div>
 
                       {storyResult.feedback && (
@@ -3932,21 +3971,21 @@ function AppInner() {
                       )}
 
                       <div className="webapp-result-text story-result-answer">
-                        <div><strong>🎯 Ответ пользователя:</strong> {storyResult.guess_correct ? 'верно по смыслу' : 'неверно по смыслу'}</div>
-                        <div><strong>✅ Эталон:</strong> {storyResult.answer || '—'}</div>
+                        <div><strong>{tr('🎯 Ответ пользователя:', '🎯 Antwort des Nutzers:')}</strong> {storyResult.guess_correct ? tr('верно по смыслу', 'inhaltlich richtig') : tr('неверно по смыслу', 'inhaltlich falsch')}</div>
+                        <div><strong>{tr('✅ Эталон:', '✅ Referenz:')}</strong> {storyResult.answer || '—'}</div>
                         {storyResult.guess_reason && (
-                          <div><strong>📝 Пояснение:</strong> {storyResult.guess_reason}</div>
+                          <div><strong>{tr('📝 Пояснение:', '📝 Erklaerung:')}</strong> {storyResult.guess_reason}</div>
                         )}
                       </div>
 
                       {storyResult.extra_de && (
                         <div className="webapp-result-text story-result-extra">
-                          <strong>📌 Дополнительно (DE):</strong> {storyResult.extra_de}
+                          <strong>{tr('📌 Дополнительно (DE):', '📌 Zusaetzlich (DE):')}</strong> {storyResult.extra_de}
                         </div>
                       )}
                       {Array.isArray(storyResult.source_links) && storyResult.source_links.length > 0 && (
                         <div className="webapp-result-text story-result-links">
-                          <strong>🔗 Официальные источники:</strong>
+                          <strong>{tr('🔗 Официальные источники:', '🔗 Offizielle Quellen:')}</strong>
                           <ul>
                             {storyResult.source_links.map((item, idx) => (
                               <li key={`${item.url}-${idx}`}>
@@ -3962,7 +4001,7 @@ function AppInner() {
 
                 {results.length > 0 && (
                   <section className="webapp-result">
-                    <h3>Результат проверки</h3>
+                    <h3>{tr('Результат проверки', 'Pruefungsergebnis')}</h3>
                     <div className="webapp-result-list">
                       {results.map((item, index) => (
                         <div key={`${item.sentence_number ?? index}`} className="webapp-result-card">
@@ -3984,8 +4023,8 @@ function AppInner() {
                                 disabled={explanationLoading[String(item.sentence_number ?? item.original_text)]}
                               >
                                 {explanationLoading[String(item.sentence_number ?? item.original_text)]
-                                  ? 'Запрашиваем объяснение...'
-                                  : 'Объяснить ошибки'}
+                                  ? tr('Запрашиваем объяснение...', 'Erklaerung wird angefragt...')
+                                  : tr('Объяснить ошибки', 'Fehler erklaeren')}
                               </button>
                               {explanations[String(item.sentence_number ?? item.original_text)] && (
                                 <div
@@ -4008,7 +4047,7 @@ function AppInner() {
                 <div className="webapp-actions webapp-actions-footer">
                   {sentences.length === 0 && !webappLoading && (
                     <div className="webapp-muted">
-                      Если сессия зависла, можно завершить её вручную.
+                      {tr('Если сессия зависла, можно завершить её вручную.', 'Wenn die Session haengt, kann sie manuell beendet werden.')}
                     </div>
                   )}
                   <button
@@ -4017,7 +4056,7 @@ function AppInner() {
                     className={`primary-button finish-button ${finishStatus === 'done' ? 'status-done' : ''}`}
                     disabled={webappLoading || ((results.length === 0 && !storyResult) && sentences.length > 0)}
                   >
-                    {finishStatus === 'done' ? 'Завершено' : 'Завершить перевод'}
+                    {finishStatus === 'done' ? tr('Завершено', 'Abgeschlossen') : tr('Завершить перевод', 'Uebersetzung beenden')}
                   </button>
                   <button
                     type="button"
@@ -4025,10 +4064,10 @@ function AppInner() {
                     className="secondary-button"
                     disabled={webappLoading || historyLoading}
                   >
-                    {historyLoading ? 'Загружаем...' : 'Посмотреть результат за сегодня'}
+                    {historyLoading ? tr('Загружаем...', 'Laden...') : tr('Посмотреть результат за сегодня', 'Ergebnis fuer heute anzeigen')}
                   </button>
                   {results.length === 0 && !storyResult && !webappLoading && (
-                    <div className="webapp-muted">Сначала проверьте перевод, чтобы завершить.</div>
+                    <div className="webapp-muted">{tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst pruefen, dann beenden.')}</div>
                   )}
                 </div>
 
@@ -4036,9 +4075,9 @@ function AppInner() {
 
                 {historyVisible && (
                   <section className="webapp-result">
-                    <h3>История переводов за сегодня</h3>
+                    <h3>{tr('История переводов за сегодня', 'Uebersetzungsverlauf fuer heute')}</h3>
                     {historyItems.length === 0 ? (
-                      <p className="webapp-muted">Сегодня пока нет завершённых переводов.</p>
+                      <p className="webapp-muted">{tr('Сегодня пока нет завершённых переводов.', 'Heute gibt es noch keine abgeschlossenen Uebersetzungen.')}</p>
                     ) : (
                       <div className="webapp-result-list">
                         {historyItems.map((item, index) => (
@@ -4064,12 +4103,12 @@ function AppInner() {
                 {isSectionVisible('youtube') && (
                   <section className="webapp-video" ref={youtubeRef}>
                     <div className="webapp-local-section-head">
-                      <h3>Видео YouTube</h3>
+                      <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
                     <div className="webapp-video-form">
                       <label className="webapp-field">
-                        <span>Ссылка или ID видео</span>
+                        <span>{tr('Ссылка или ID видео', 'Link oder Video-ID')}</span>
                         <div className="input-clear-wrap">
                           <input
                             type="text"
@@ -4083,7 +4122,7 @@ function AppInner() {
                               type="button"
                               className="input-clear-btn"
                               onClick={() => setYoutubeInput('')}
-                              aria-label="Очистить"
+                              aria-label={tr('Очистить', 'Loeschen')}
                             >
                               ×
                             </button>
@@ -4097,7 +4136,7 @@ function AppInner() {
                         onClick={() => setVideoExpanded((prev) => !prev)}
                         style={{ display: 'none' }}
                         >
-                          {videoExpanded ? 'Обычный режим' : 'Словарь рядом'}
+                          {videoExpanded ? tr('Обычный режим', 'Normalmodus') : tr('Словарь рядом', 'Woerterbuch daneben')}
                         </button>
                       </div>
                     </div>
@@ -4108,7 +4147,7 @@ function AppInner() {
                         onClick={() => setYoutubeRuEnabled((prev) => !prev)}
                         disabled={!youtubeTranscript.length}
                       >
-                        {youtubeRuEnabled ? 'Скрыть RU' : 'Показать RU'}
+                        {youtubeRuEnabled ? tr('Скрыть RU', 'RU ausblenden') : tr('Показать RU', 'RU anzeigen')}
                       </button>
                       <button
                         type="button"
@@ -4116,14 +4155,14 @@ function AppInner() {
                         onClick={() => fetchTranscript()}
                         disabled={!youtubeId || youtubeTranscriptLoading || youtubeManualOverride}
                       >
-                        {youtubeTranscriptLoading ? 'Загружаем...' : 'Загрузить'}
+                        {youtubeTranscriptLoading ? tr('Загружаем...', 'Laden...') : tr('Загрузить', 'Laden')}
                       </button>
                       <button
                         type="button"
                         className="secondary-button"
                         onClick={() => setShowManualTranscript((prev) => !prev)}
                       >
-                        {showManualTranscript ? 'Скрыть вставку' : 'Вставить транскрипцию'}
+                        {showManualTranscript ? tr('Скрыть вставку', 'Einfuegen ausblenden') : tr('Вставить транскрипцию', 'Transkript einfuegen')}
                       </button>
                       <button
                         type="button"
@@ -4139,7 +4178,7 @@ function AppInner() {
                         onClick={() => setYoutubeAppFullscreen((prev) => !prev)}
                         disabled={!youtubeId}
                       >
-                        {youtubeAppFullscreen ? 'Свернуть' : 'Развернуть'}
+                        {youtubeAppFullscreen ? tr('Свернуть', 'Minimieren') : tr('Развернуть', 'Erweitern')}
                       </button>
                     </div>
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
@@ -4154,7 +4193,7 @@ function AppInner() {
                             className="youtube-app-fullscreen-close"
                             onClick={() => setYoutubeAppFullscreen(false)}
                           >
-                            Свернуть
+                            {tr('Свернуть', 'Minimieren')}
                           </button>
                         )}
                         <div className={`webapp-video-frame ${videoExpanded ? 'is-expanded' : ''} ${youtubeOverlayEnabled ? 'has-overlay' : ''}`}>
@@ -4207,7 +4246,7 @@ function AppInner() {
                         </div>
                       </div>
                     ) : (
-                      <p className="webapp-muted">Вставьте ссылку на видео, чтобы смотреть прямо здесь.</p>
+                      <p className="webapp-muted">{tr('Вставьте ссылку на видео, чтобы смотреть прямо здесь.', 'Fuege einen Videolink ein, um hier direkt zu schauen.')}</p>
                     )}
                     {showManualTranscript && (
                       <div className="webapp-subtitles-manual">
@@ -4215,7 +4254,7 @@ function AppInner() {
                           rows={6}
                           value={manualTranscript}
                           onChange={(event) => setManualTranscript(event.target.value)}
-                          placeholder="Вставьте .srt/.vtt с таймкодами. Если таймкодов нет — покажем статично."
+                          placeholder={tr('Вставьте .srt/.vtt с таймкодами. Если таймкодов нет — покажем статично.', 'Fuege .srt/.vtt mit Zeitcodes ein. Ohne Zeitcodes zeigen wir statisch an.')}
                         />
                         <div className="webapp-video-actions">
                           <button
@@ -4223,7 +4262,7 @@ function AppInner() {
                             className="primary-button"
                             onClick={() => handleManualTranscript()}
                           >
-                            Использовать транскрипцию
+                            {tr('Использовать транскрипцию', 'Transkript verwenden')}
                           </button>
                           {youtubeManualOverride && (
                             <button
@@ -4236,7 +4275,7 @@ function AppInner() {
                                 setShowManualTranscript(false);
                               }}
                             >
-                              Вернуться к авто
+                              {tr('Вернуться к авто', 'Zu Auto zurueck')}
                             </button>
                           )}
                         </div>
@@ -4285,26 +4324,26 @@ function AppInner() {
                 {isSectionVisible('dictionary') && (
                   <section className="webapp-dictionary" ref={dictionaryRef}>
                     <div className="webapp-local-section-head">
-                      <h3>Словарь</h3>
+                      <h3>{tr('Словарь', 'Woerterbuch')}</h3>
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
-                        <span>Слово или фраза (русский / немецкий)</span>
+                        <span>{tr('Слово или фраза (русский / немецкий)', 'Wort oder Phrase (Russisch / Deutsch)')}</span>
                         <div className="dictionary-input-wrap">
                           <input
                             className="dictionary-input"
                             type="text"
                             value={dictionaryWord}
                             onChange={(event) => setDictionaryWord(event.target.value)}
-                            placeholder="Например: отказаться, уважение, несмотря на / verzichten, Respekt"
+                            placeholder={tr('Например: отказаться, уважение, несмотря на / verzichten, Respekt', 'Zum Beispiel: verzichten, Respekt, obwohl / отказаться, уважение')}
                           />
                           {dictionaryWord.trim() && (
                             <button
                               type="button"
                               className="dictionary-clear"
                               onClick={() => setDictionaryWord('')}
-                              aria-label="Очистить слово"
+                              aria-label={tr('Очистить слово', 'Wort loeschen')}
                             >
                               ×
                             </button>
@@ -4313,7 +4352,7 @@ function AppInner() {
                       </label>
                       <div className="dictionary-actions">
                         <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
-                          {dictionaryLoading ? 'Ищем...' : 'Перевести'}
+                          {dictionaryLoading ? tr('Ищем...', 'Suche...') : tr('Перевести', 'Uebersetzen')}
                         </button>
                         {lastLookupScrollY !== null && (
                           <button
@@ -4321,7 +4360,7 @@ function AppInner() {
                             className="secondary-button dictionary-back-icon"
                             onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
                           >
-                            ↙ к предложению
+                            {tr('↙ к предложению', '↙ zum Satz')}
                           </button>
                         )}
                         <button
@@ -4330,7 +4369,7 @@ function AppInner() {
                           onClick={handleDictionarySave}
                           disabled={dictionaryLoading || !dictionaryResult}
                         >
-                          Добавить в словарь
+                          {tr('Добавить в словарь', 'Zum Woerterbuch hinzufuegen')}
                         </button>
                       </div>
                     </form>
@@ -4338,12 +4377,12 @@ function AppInner() {
                     <div className="folder-panel">
                       <div className="folder-row">
                         <label className="webapp-field folder-select">
-                          <span>Папка для сохранения</span>
+                          <span>{tr('Папка для сохранения', 'Speicherordner')}</span>
                           <select
                             value={dictionaryFolderId}
                             onChange={(event) => setDictionaryFolderId(event.target.value)}
                           >
-                            <option value="none">Без папки</option>
+                            <option value="none">{tr('Без папки', 'Ohne Ordner')}</option>
                             {folders.map((folder) => (
                               <option key={folder.id} value={folder.id}>
                                 {resolveFolderIconLabel(folder.icon)} • {folder.name}
@@ -4365,7 +4404,7 @@ function AppInner() {
                           className="secondary-button"
                           onClick={() => setShowNewFolderForm((prev) => !prev)}
                         >
-                          Новая папка
+                          {tr('Новая папка', 'Neuer Ordner')}
                         </button>
                         <button
                           type="button"
@@ -4373,23 +4412,23 @@ function AppInner() {
                           onClick={handleExportDictionaryPdf}
                           disabled={exportLoading}
                         >
-                          {exportLoading ? 'Готовим PDF...' : 'Выгрузить PDF'}
+                          {exportLoading ? tr('Готовим PDF...', 'PDF wird erstellt...') : tr('Выгрузить PDF', 'PDF exportieren')}
                         </button>
                       </div>
                       {showNewFolderForm && (
                         <div className="folder-create">
                           <label className="webapp-field">
-                            <span>Название</span>
+                            <span>{tr('Название', 'Name')}</span>
                             <input
                               type="text"
                               value={newFolderName}
                               onChange={(event) => setNewFolderName(event.target.value)}
-                              placeholder="Например: Путешествия"
+                              placeholder={tr('Например: Путешествия', 'Zum Beispiel: Reisen')}
                             />
                           </label>
                           <div className="folder-pickers">
                             <div className="folder-picker">
-                              <span>Цвет</span>
+                              <span>{tr('Цвет', 'Farbe')}</span>
                               <div className="folder-color-options">
                                 {folderColorOptions.map((color) => (
                                   <button
@@ -4403,7 +4442,7 @@ function AppInner() {
                               </div>
                             </div>
                             <div className="folder-picker">
-                              <span>Иконка</span>
+                              <span>{tr('Иконка', 'Icon')}</span>
                               <div className="folder-icon-options">
                                 {folderIconOptions.map((icon) => (
                                   <button
@@ -4424,7 +4463,7 @@ function AppInner() {
                             onClick={handleCreateFolder}
                             disabled={foldersLoading}
                           >
-                            {foldersLoading ? 'Создаём...' : 'Создать папку'}
+                            {foldersLoading ? tr('Создаём...', 'Erstellen...') : tr('Создать папку', 'Ordner erstellen')}
                           </button>
                           {foldersError && <div className="webapp-error">{foldersError}</div>}
                         </div>
@@ -4443,11 +4482,11 @@ function AppInner() {
                             className="dictionary-back-button"
                             onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
                           >
-                            ← вернуться назад
+                            {tr('← вернуться назад', '← zurueck')}
                           </button>
                         )}
                         <div className="dictionary-row">
-                          <span className="dictionary-label">Перевод:</span>
+                          <span className="dictionary-label">{tr('Перевод:', 'Uebersetzung:')}</span>
                           <span className="dictionary-translation">
                             {dictionaryDirection === 'ru-de'
                               ? (dictionaryResult.translation_de || '—')
@@ -4458,11 +4497,11 @@ function AppInner() {
                           </span>
                         </div>
                         <div className="dictionary-row">
-                          <strong>Часть речи:</strong> {dictionaryResult.part_of_speech || '—'}
+                          <strong>{tr('Часть речи:', 'Wortart:')}</strong> {dictionaryResult.part_of_speech || '—'}
                         </div>
                         {dictionaryResult.article && (
                           <div className="dictionary-row">
-                            <strong>Артикль:</strong> {dictionaryResult.article}
+                            <strong>{tr('Артикль:', 'Artikel:')}</strong> {dictionaryResult.article}
                           </div>
                         )}
                         {dictionaryResult.forms && (
@@ -4477,7 +4516,7 @@ function AppInner() {
 
                         {Array.isArray(dictionaryResult.prefixes) && dictionaryResult.prefixes.length > 0 && (
                           <div className="dictionary-prefixes">
-                            <strong>Префиксы/варианты:</strong>
+                            <strong>{tr('Префиксы/варианты:', 'Praefixe/Varianten:')}</strong>
                             <ul>
                               {dictionaryResult.prefixes.map((item, index) => (
                                 <li key={`${item.variant}-${index}`}>
@@ -4492,7 +4531,7 @@ function AppInner() {
 
                         {Array.isArray(dictionaryResult.usage_examples) && dictionaryResult.usage_examples.length > 0 && (
                           <div className="dictionary-examples">
-                            <strong>Примеры:</strong>
+                            <strong>{tr('Примеры:', 'Beispiele:')}</strong>
                             <ul>
                               {dictionaryResult.usage_examples.map((example, index) => (
                                 <li key={`${index}-${example}`}>{example}</li>
@@ -4504,8 +4543,8 @@ function AppInner() {
                     )}
                     {collocationsVisible && (
                       <div className="dictionary-collocations">
-                        <h4>Выберите связку для словаря</h4>
-                        {collocationsLoading && <div className="webapp-muted">Генерируем варианты...</div>}
+                        <h4>{tr('Выберите связку для словаря', 'Waehle eine Kollokation')}</h4>
+                        {collocationsLoading && <div className="webapp-muted">{tr('Генерируем варианты...', 'Varianten werden generiert...')}</div>}
                         {collocationsError && <div className="webapp-error">{collocationsError}</div>}
                         {!collocationsLoading && collocationOptions.length > 0 && (
                           <div className="collocation-list">
@@ -4520,7 +4559,7 @@ function AppInner() {
                                 <div>
                                   <div className="collocation-source">{option.source}</div>
                                   <div className="collocation-target">{option.target}</div>
-                                  {option.isBase && <span className="collocation-tag">Исходное</span>}
+                                  {option.isBase && <span className="collocation-tag">{tr('Исходное', 'Basis')}</span>}
                                 </div>
                               </label>
                             ))}
@@ -4533,14 +4572,14 @@ function AppInner() {
                             onClick={handleConfirmSaveCollocation}
                             disabled={dictionaryLoading}
                           >
-                            {dictionaryLoading ? 'Сохраняем...' : 'Добавить выбранное'}
+                            {dictionaryLoading ? tr('Сохраняем...', 'Speichern...') : tr('Добавить выбранное', 'Ausgewaehltes hinzufuegen')}
                           </button>
                           <button
                             type="button"
                             className="secondary-button"
                             onClick={() => setCollocationsVisible(false)}
                           >
-                            Отмена
+                            {tr('Отмена', 'Abbrechen')}
                           </button>
                         </div>
                       </div>
@@ -4553,7 +4592,7 @@ function AppInner() {
                           openFlashcardsSetup(flashcardsRef);
                         }}
                       >
-                        Повторить слова
+                        {tr('Повторить слова', 'Woerter wiederholen')}
                       </button>
                     </div>
                   </section>
@@ -4564,14 +4603,14 @@ function AppInner() {
             {!flashcardsOnly && isSectionVisible('movies') && !moviesCollapsed && (
               <section className="webapp-movies" ref={moviesRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
-                  <h2>Фильмы</h2>
-                  <p>Видео с доступными субтитрами, сохранённые в каталоге.</p>
+                  <h2>{tr('Фильмы', 'Filme')}</h2>
+                  <p>{tr('Видео с доступными субтитрами, сохранённые в каталоге.', 'Videos mit verfuegbaren Untertiteln im Katalog.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
-                {moviesLoading && <div className="webapp-muted">Загружаем каталог...</div>}
+                {moviesLoading && <div className="webapp-muted">{tr('Загружаем каталог...', 'Katalog wird geladen...')}</div>}
                 {moviesError && <div className="webapp-error">{moviesError}</div>}
                 {!moviesLoading && !moviesError && movies.length === 0 && (
-                  <div className="webapp-muted">Пока нет сохранённых видео.</div>
+                  <div className="webapp-muted">{tr('Пока нет сохранённых видео.', 'Noch keine gespeicherten Videos.')}</div>
                 )}
                 {!moviesLoading && movies.length > 0 && (
                   <div className="movies-grid">
@@ -4594,7 +4633,7 @@ function AppInner() {
                           <div className="movie-title">{item.title}</div>
                           <div className="movie-subtitle">
                             {item.author ? `${item.author} • ` : ''}
-                            {item.items_count ? `${item.items_count} строк` : 'Субтитры'}
+                            {item.items_count ? `${item.items_count} ${tr('строк', 'Zeilen')}` : tr('Субтитры', 'Untertitel')}
                           </div>
                         </div>
                       </button>
@@ -4608,7 +4647,7 @@ function AppInner() {
               <section className="webapp-flashcards" ref={flashcardsRef}>
                 {!flashcardsVisible && (
                   <div className="webapp-muted">
-                    Нажмите «Повторить слова», чтобы начать тренировку.
+                    {t('flashcards_start_hint')}
                   </div>
                 )}
                 {flashcardsVisible && (
@@ -4617,15 +4656,15 @@ function AppInner() {
                       <div className="flashcard-stage is-setup">
                         <div className="srs-panel srs-panel-setup">
                           <div className="srs-panel-head">
-                            <h3>Интервальное повторение (FSRS)</h3>
+                            <h3>{t('srs_title')}</h3>
                             <div className="srs-queue">
-                              <span>Due: {srsQueueInfo?.due_count ?? 0}</span>
-                              <span>New today: {srsQueueInfo?.new_remaining_today ?? 0}</span>
+                              <span>{t('due')}: {srsQueueInfo?.due_count ?? 0}</span>
+                              <span>{t('new_today')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
                             </div>
                           </div>
-                          {srsLoading && <div className="webapp-muted">Загружаем следующую карточку…</div>}
+                          {srsLoading && <div className="webapp-muted">{t('loading_next_card')}</div>}
                           {!srsLoading && !srsCard && (
-                            <div className="webapp-muted">На сейчас нет карточек для повторения.</div>
+                            <div className="webapp-muted">{t('no_cards_now')}</div>
                           )}
                           {!srsLoading && srsCard && (
                             <div className="srs-card">
@@ -4636,9 +4675,9 @@ function AppInner() {
                                 </div>
                               )}
                               <div className="srs-state-line">
-                                <span>Status: {srsState?.status || 'new'}</span>
-                                <span>Interval: {srsState?.interval_days ?? 0} дн</span>
-                                {srsState?.is_mature && <span className="srs-mature">Освоено</span>}
+                                <span>{t('status')}: {srsState?.status || 'new'}</span>
+                                <span>{t('interval')}: {srsState?.interval_days ?? 0} {t('days_short')}</span>
+                                {srsState?.is_mature && <span className="srs-mature">{t('mature')}</span>}
                               </div>
                               {!srsRevealAnswer ? (
                                 <div className="srs-actions">
@@ -4648,7 +4687,7 @@ function AppInner() {
                                     onClick={() => setSrsRevealAnswer(true)}
                                     disabled={srsSubmitting}
                                   >
-                                    Показать ответ
+                                    {t('show_answer')}
                                   </button>
                                 </div>
                               ) : (
@@ -4671,35 +4710,35 @@ function AppInner() {
                           )}
                         </div>
                         <div className="flashcards-setup">
-                          <div className="setup-hero">
-                            <div className="setup-ring">
-                              <img src={heroStickerSrc} alt="Deutsch mascot" className="setup-mascot-flat" />
+                            <div className="setup-hero">
+                              <div className="setup-ring">
+                                <img src={heroStickerSrc} alt="Deutsch mascot" className="setup-mascot-flat" />
+                              </div>
+                              <div className="setup-title">{t('setup_training_title')}</div>
+                              <div className="setup-subtitle">{t('setup_training_subtitle')}</div>
                             </div>
-                            <div className="setup-title">Тренировка карточек</div>
-                            <div className="setup-subtitle">Выберите параметры и стартуйте сет.</div>
-                          </div>
-                          <div className="setup-grid">
-                            <div className="setup-group">
-                              <div className="setup-label">Режим тренировки</div>
-                              <div className="setup-options">
+                            <div className="setup-grid">
+                              <div className="setup-group">
+                                <div className="setup-label">{t('setup_training_mode')}</div>
+                                <div className="setup-options">
                                 <button
                                   type="button"
                                   className={`option-pill ${flashcardTrainingMode === 'quiz' ? 'is-active' : ''}`}
                                   onClick={() => setFlashcardTrainingMode('quiz')}
                                 >
-                                  Quiz (4 варианта)
+                                  {t('setup_mode_quiz')}
                                 </button>
                                 <button
                                   type="button"
                                   className={`option-pill ${flashcardTrainingMode === 'blocks' ? 'is-active' : ''}`}
                                   onClick={() => setFlashcardTrainingMode('blocks')}
                                 >
-                                  Blocks (сборка)
+                                  {t('setup_mode_blocks')}
                                 </button>
                               </div>
                             </div>
                             <div className="setup-group">
-                              <div className="setup-label">Размер сета</div>
+                              <div className="setup-label">{t('setup_set_size')}</div>
                               <div className="setup-options">
                                 {[5, 10, 15].map((size) => (
                                   <button
@@ -4708,13 +4747,13 @@ function AppInner() {
                                     className={`option-pill ${flashcardSetSize === size ? 'is-active' : ''}`}
                                     onClick={() => setFlashcardSetSize(size)}
                                   >
-                                    {size} карточек
+                                    {t('setup_cards_count', { count: size })}
                                   </button>
                                 ))}
                               </div>
                             </div>
                             <div className="setup-group">
-                              <div className="setup-label">Папка для тренировки</div>
+                              <div className="setup-label">{t('setup_folder')}</div>
                               <label className="webapp-field">
                                 <select
                                   value={flashcardFolderMode === 'folder' ? flashcardFolderId : flashcardFolderMode}
@@ -4732,8 +4771,8 @@ function AppInner() {
                                     }
                                   }}
                                 >
-                                  <option value="all">Все папки</option>
-                                  <option value="none">Без папки</option>
+                                  <option value="all">{t('setup_all_folders')}</option>
+                                  <option value="none">{t('setup_without_folder')}</option>
                                   {folders.map((folder) => (
                                     <option key={folder.id} value={folder.id}>
                                       {resolveFolderIconLabel(folder.icon)} • {folder.name}
@@ -4744,7 +4783,7 @@ function AppInner() {
                             </div>
                             {flashcardTrainingMode === 'quiz' ? (
                               <div className="setup-group">
-                                <div className="setup-label">Скорость</div>
+                                <div className="setup-label">{t('setup_speed')}</div>
                                 <div className="setup-options">
                                   {[5, 10, 15].map((seconds) => (
                                     <button
@@ -4753,55 +4792,55 @@ function AppInner() {
                                       className={`option-pill ${flashcardDurationSec === seconds ? 'is-active' : ''}`}
                                       onClick={() => setFlashcardDurationSec(seconds)}
                                     >
-                                      {seconds} сек
+                                      {seconds} {uiLang === 'de' ? 'Sek' : 'сек'}
                                     </button>
                                   ))}
                                 </div>
                               </div>
                             ) : (
                               <div className="setup-group">
-                                <div className="setup-label">Таймер Blocks</div>
+                                <div className="setup-label">{t('setup_blocks_timer')}</div>
                                 <div className="setup-options">
                                   <button
                                     type="button"
                                     className={`option-pill ${blocksTimerMode === 'adaptive' ? 'is-active' : ''}`}
                                     onClick={() => setBlocksTimerMode('adaptive')}
                                   >
-                                    Адаптивный
+                                    {t('timer_adaptive')}
                                   </button>
                                   <button
                                     type="button"
                                     className={`option-pill ${blocksTimerMode === 'fixed' ? 'is-active' : ''}`}
                                     onClick={() => setBlocksTimerMode('fixed')}
                                   >
-                                    10 сек
+                                    {t('timer_fixed_10')}
                                   </button>
                                   <button
                                     type="button"
                                     className={`option-pill ${blocksTimerMode === 'none' ? 'is-active' : ''}`}
                                     onClick={() => setBlocksTimerMode('none')}
                                   >
-                                    Без таймера
+                                    {t('timer_none')}
                                   </button>
                                 </div>
                               </div>
                             )}
                             <div className="setup-group">
-                              <div className="setup-label">Переход</div>
+                              <div className="setup-label">{t('setup_transition')}</div>
                               <div className="setup-options">
                                 <button
                                   type="button"
                                   className={`option-pill ${flashcardAutoAdvance ? 'is-active' : ''}`}
                                   onClick={() => setFlashcardAutoAdvance(true)}
                                 >
-                                  Автоматически
+                                  {t('transition_auto')}
                                 </button>
                                 <button
                                   type="button"
                                   className={`option-pill ${!flashcardAutoAdvance ? 'is-active' : ''}`}
                                   onClick={() => setFlashcardAutoAdvance(false)}
                                 >
-                                  Вручную
+                                  {t('transition_manual')}
                                 </button>
                               </div>
                             </div>
@@ -4817,7 +4856,7 @@ function AppInner() {
                               setFlashcardExitSummary(false);
                             }}
                           >
-                            Начать тренировку
+                            {t('start_training')}
                           </button>
                         </div>
                       </div>
@@ -4825,10 +4864,10 @@ function AppInner() {
 
                     {flashcardsOnly && (
                       <>
-                        {flashcardsLoading && <div className="webapp-muted">Загружаем карточки...</div>}
+                        {flashcardsLoading && <div className="webapp-muted">{t('loading_cards')}</div>}
                         {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
                         {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && (
-                          <div className="webapp-muted">Словарь пуст. Сначала добавьте слова.</div>
+                          <div className="webapp-muted">{t('dictionary_empty')}</div>
                         )}
                         {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && flashcardPreviewActive && (
                           <div className="flashcard-stage is-session is-preview">
@@ -4874,8 +4913,8 @@ function AppInner() {
                                           setPreviewAudioReady(true);
                                         }
                                       }}
-                                      aria-label="Повторить аудио"
-                                      title="Повторить аудио"
+                                      aria-label={tr('Повторить аудио', 'Audio wiederholen')}
+                                      title={tr('Повторить аудио', 'Audio wiederholen')}
                                       disabled={previewAudioPlaying}
                                     >
                                       🔊
@@ -4884,7 +4923,7 @@ function AppInner() {
                                   <div className="flashcard-details">
                                     {translationList.length > 0 && (
                                       <div className="flashcard-section">
-                                        <div className="flashcard-section-title">Переводы</div>
+                                        <div className="flashcard-section-title">{tr('Переводы', 'Uebersetzungen')}</div>
                                         <div className="flashcard-translation-list">
                                           {translationList.map((item, idx) => (
                                             <span key={`${item}-${idx}`} className="flashcard-chip">
@@ -4896,24 +4935,24 @@ function AppInner() {
                                     )}
                                     {(responseJson.article || responseJson.part_of_speech || responseJson.is_separable !== undefined) && (
                                       <div className="flashcard-section">
-                                        <div className="flashcard-section-title">Грамматика</div>
+                                        <div className="flashcard-section-title">{tr('Грамматика', 'Grammatik')}</div>
                                         <div className="flashcard-meta-grid">
                                           {responseJson.article && (
                                             <div className="flashcard-meta-item">
-                                              <span>Артикль</span>
+                                              <span>{tr('Артикль', 'Artikel')}</span>
                                               <strong>{responseJson.article}</strong>
                                             </div>
                                           )}
                                           {responseJson.part_of_speech && (
                                             <div className="flashcard-meta-item">
-                                              <span>Часть речи</span>
+                                              <span>{tr('Часть речи', 'Wortart')}</span>
                                               <strong>{responseJson.part_of_speech}</strong>
                                             </div>
                                           )}
                                           {responseJson.is_separable !== undefined && (
                                             <div className="flashcard-meta-item">
                                               <span>Trennbar</span>
-                                              <strong>{responseJson.is_separable ? 'да' : 'нет'}</strong>
+                                              <strong>{responseJson.is_separable ? tr('да', 'ja') : tr('нет', 'nein')}</strong>
                                             </div>
                                           )}
                                         </div>
@@ -4921,7 +4960,7 @@ function AppInner() {
                                     )}
                                     {feelVisible && feel && (
                                       <div className="flashcard-feel">
-                                        <strong>Почувствовать слово</strong>
+                                        <strong>{tr('Почувствовать слово', 'Wort fuehlen')}</strong>
                                         <div className="flashcard-feel-content">
                                           {feelLines.map((line, idx) => (
                                             <p key={`${entry.id}-feel-${idx}`}>{line}</p>
@@ -4949,13 +4988,13 @@ function AppInner() {
                                                     throw new Error(await response.text());
                                                   }
                                                 } catch (error) {
-                                                  setWebappError(`Ошибка feedback: ${error.message}`);
+                                                  setWebappError(`${tr('Ошибка feedback', 'Feedback-Fehler')}: ${error.message}`);
                                                 } finally {
                                                   setFlashcardFeelFeedbackLoading((prev) => ({ ...prev, [entry.id]: false }));
                                                 }
                                               }}
                                             >
-                                              👍 Нравится
+                                              {tr('👍 Нравится', '👍 Gefaellt mir')}
                                             </button>
                                             <button
                                               type="button"
@@ -4993,13 +5032,13 @@ function AppInner() {
                                                     return { ...item, response_json: nextResponse };
                                                   }));
                                                 } catch (error) {
-                                                  setWebappError(`Ошибка feedback: ${error.message}`);
+                                                  setWebappError(`${tr('Ошибка feedback', 'Feedback-Fehler')}: ${error.message}`);
                                                 } finally {
                                                   setFlashcardFeelFeedbackLoading((prev) => ({ ...prev, [entry.id]: false }));
                                                 }
                                               }}
                                             >
-                                              👎 Не нравится
+                                              {tr('👎 Не нравится', '👎 Gefaellt mir nicht')}
                                             </button>
                                           </div>
                                         )}
@@ -5043,7 +5082,7 @@ function AppInner() {
                                             }));
                                           }
                                         } catch (error) {
-                                          setWebappError(`Ошибка feel: ${error.message}`);
+                                          setWebappError(`${tr('Ошибка feel', 'Feel-Fehler')}: ${error.message}`);
                                         } finally {
                                           setFlashcardFeelLoadingMap((prev) => ({
                                             ...prev,
@@ -5052,7 +5091,7 @@ function AppInner() {
                                         }
                                       }}
                                     >
-                                      {flashcardFeelLoadingMap[entry.id] ? 'Загружаем...' : 'Почувствовать слово'}
+                                      {flashcardFeelLoadingMap[entry.id] ? tr('Загружаем...', 'Laden...') : tr('Почувствовать слово', 'Wort fuehlen')}
                                     </button>
                                   </div>
                                   <div className="flashcard-actions-row">
@@ -5067,7 +5106,7 @@ function AppInner() {
                                       }}
                                       disabled={flashcardPreviewIndex === 0 || previewAudioPlaying}
                                     >
-                                      Назад
+                                      {tr('Назад', 'Zurueck')}
                                     </button>
                                     {flashcardPreviewIndex < flashcards.length - 1 ? (
                                       <button
@@ -5081,7 +5120,7 @@ function AppInner() {
                                         }}
                                         disabled={previewNavLocked}
                                       >
-                                        {previewAudioPlaying ? 'Слушаем...' : 'Далее'}
+                                        {previewAudioPlaying ? tr('Слушаем...', 'Hoeren...') : tr('Далее', 'Weiter')}
                                       </button>
                                     ) : (
                                       <button
@@ -5096,7 +5135,7 @@ function AppInner() {
                                         }}
                                         disabled={previewNavLocked}
                                       >
-                                        {previewAudioPlaying ? 'Слушаем...' : 'Начать тренировку'}
+                                        {previewAudioPlaying ? tr('Слушаем...', 'Hoeren...') : tr('Начать тренировку', 'Training starten')}
                                       </button>
                                     )}
                                   </div>
@@ -5109,18 +5148,18 @@ function AppInner() {
                           <div className="flashcard-stage is-session">
                             {(flashcardSetComplete || flashcardExitSummary) ? (
                               <div className="flashcard-summary">
-                                <h4>{flashcardSetComplete ? 'Сет завершён' : 'Повтор завершён'}</h4>
+                                <h4>{flashcardSetComplete ? tr('Сет завершён', 'Set abgeschlossen') : tr('Повтор завершён', 'Wiederholung beendet')}</h4>
                                 <div className="summary-grid">
                                   <div>
-                                    <span>Итого слов</span>
+                                    <span>{tr('Итого слов', 'Worte gesamt')}</span>
                                     <strong>{flashcardStats.total}</strong>
                                   </div>
                                   <div>
-                                    <span>Верно</span>
+                                    <span>{tr('Верно', 'Richtig')}</span>
                                     <strong>{flashcardStats.correct}</strong>
                                   </div>
                                   <div>
-                                    <span>Неверно</span>
+                                    <span>{tr('Неверно', 'Falsch')}</span>
                                     <strong>{flashcardStats.wrong}</strong>
                                   </div>
                                 </div>
@@ -5130,7 +5169,7 @@ function AppInner() {
                                     className="primary-button"
                                     onClick={loadFlashcards}
                                   >
-                                    Да, следующий сет
+                                    {tr('Да, следующий сет', 'Ja, naechstes Set')}
                                   </button>
                                   <button
                                     type="button"
@@ -5142,7 +5181,7 @@ function AppInner() {
                                       setFlashcardExitSummary(false);
                                     }}
                                   >
-                                    Нет, завершить
+                                    {tr('Нет, завершить', 'Nein, beenden')}
                                   </button>
                                 </div>
                               </div>
@@ -5180,7 +5219,7 @@ function AppInner() {
                                             className="blocks-overflow-trigger"
                                             aria-haspopup="menu"
                                             aria-expanded={blocksMenuOpen}
-                                            aria-label="Открыть меню"
+                                            aria-label={t('blocks_menu_open')}
                                             onClick={() => {
                                               setBlocksMenuOpen((prev) => !prev);
                                               if (blocksMenuOpen) {
@@ -5201,7 +5240,7 @@ function AppInner() {
                                                   setBlocksMenuSettingsOpen(false);
                                                 }}
                                               >
-                                                Сбросить текущую карточку
+                                                {t('blocks_reset_card')}
                                               </button>
                                               <button
                                                 type="button"
@@ -5210,11 +5249,11 @@ function AppInner() {
                                                   setBlocksMenuSettingsOpen((prev) => !prev);
                                                 }}
                                               >
-                                                Настройки скорости / таймера
+                                                {t('blocks_timer_settings')}
                                               </button>
                                               {blocksMenuSettingsOpen && (
                                                 <div className="blocks-overflow-settings">
-                                                  <div className="blocks-overflow-settings-label">Таймер</div>
+                                                  <div className="blocks-overflow-settings-label">{t('blocks_timer_label')}</div>
                                                   <div className="blocks-overflow-pills">
                                                     <button
                                                       type="button"
@@ -5225,7 +5264,7 @@ function AppInner() {
                                                         setBlocksMenuSettingsOpen(false);
                                                       }}
                                                     >
-                                                      Адаптивный
+                                                      {t('timer_adaptive')}
                                                     </button>
                                                     <button
                                                       type="button"
@@ -5236,7 +5275,7 @@ function AppInner() {
                                                         setBlocksMenuSettingsOpen(false);
                                                       }}
                                                     >
-                                                      10 сек
+                                                      {t('timer_fixed_10')}
                                                     </button>
                                                     <button
                                                       type="button"
@@ -5247,7 +5286,7 @@ function AppInner() {
                                                         setBlocksMenuSettingsOpen(false);
                                                       }}
                                                     >
-                                                      Без таймера
+                                                      {t('timer_none')}
                                                     </button>
                                                   </div>
                                                 </div>
@@ -5261,7 +5300,7 @@ function AppInner() {
                                                   requestFinishFlashcardSession();
                                                 }}
                                               >
-                                                ⚠️ Закончить повтор
+                                                {t('blocks_finish_review')}
                                               </button>
                                             </div>
                                           )}
@@ -5275,6 +5314,17 @@ function AppInner() {
                                         resetSignal={blocksResetNonce}
                                         timerMode={blocksTimerMode}
                                         autoAdvance={flashcardAutoAdvance}
+                                        labels={{
+                                          promptFallback: t('blocks_build_answer'),
+                                          hint: t('blocks_hint'),
+                                          check: t('blocks_check'),
+                                          next: t('blocks_next'),
+                                          correct: t('blocks_correct'),
+                                          wrong: t('blocks_wrong'),
+                                          timeout: t('blocks_timeout'),
+                                          correctAnswer: t('blocks_correct_answer'),
+                                          hintsUsed: t('blocks_hints_used'),
+                                        }}
                                         onRoundResult={({ isCorrect, timeSpentMs, hintsUsed, status }) => {
                                           setFlashcardTimedOut(status === 'timeout');
                                           setFlashcardOutcome(isCorrect ? 'correct' : (status === 'timeout' ? 'timeout' : 'wrong'));
@@ -5300,15 +5350,15 @@ function AppInner() {
                                       {blocksFinishConfirmOpen && (
                                         <div className="blocks-confirm-backdrop" onClick={() => setBlocksFinishConfirmOpen(false)}>
                                           <div className="blocks-confirm" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-                                            <h4>Завершить повтор?</h4>
-                                            <p>Текущий прогресс будет завершён.</p>
+                                            <h4>{t('blocks_finish_title')}</h4>
+                                            <p>{t('blocks_finish_text')}</p>
                                             <div className="blocks-confirm-actions">
                                               <button
                                                 type="button"
                                                 className="secondary-button"
                                                 onClick={() => setBlocksFinishConfirmOpen(false)}
                                               >
-                                                Продолжить
+                                                {t('continue')}
                                               </button>
                                               <button
                                                 type="button"
@@ -5318,7 +5368,7 @@ function AppInner() {
                                                   setFlashcardExitSummary(true);
                                                 }}
                                               >
-                                                Завершить
+                                                {t('finish')}
                                               </button>
                                             </div>
                                           </div>
@@ -5340,7 +5390,7 @@ function AppInner() {
                                           className="flashcard-refresh"
                                           onClick={loadFlashcards}
                                         >
-                                          Обновить
+                                          {tr('Обновить', 'Aktualisieren')}
                                         </button>
                                       </div>
                                     </div>
@@ -5450,7 +5500,7 @@ function AppInner() {
                                     )}
                                     {flashcardSelection !== null && flashcardAutoAdvance && (
                                       <div className="flashcard-hint">
-                                        Следующая карточка через 3 секунды
+                                        {tr('Следующая карточка через 3 секунды', 'Naechste Karte in 3 Sekunden')}
                                       </div>
                                     )}
                                     {flashcardSelection !== null && !flashcardAutoAdvance && (
@@ -5460,7 +5510,7 @@ function AppInner() {
                                           className="primary-button"
                                           onClick={() => advanceFlashcard()}
                                         >
-                                          Следующая карточка
+                                          {tr('Следующая карточка', 'Naechste Karte')}
                                         </button>
                                       </div>
                                     )}
@@ -5473,7 +5523,7 @@ function AppInner() {
                                             setFlashcardExitSummary(true);
                                           }}
                                         >
-                                          Закончить повтор
+                                          {tr('Закончить повтор', 'Wiederholung beenden')}
                                         </button>
                                       </div>
                                     )}
@@ -5492,7 +5542,7 @@ function AppInner() {
                                 setFlashcardExitSummary(true);
                               }}
                             >
-                              Закончить повтор
+                              {tr('Закончить повтор', 'Wiederholung beenden')}
                             </button>
                           </div>
                         )}
@@ -5506,15 +5556,15 @@ function AppInner() {
             {!flashcardsOnly && isSectionVisible('assistant') && (
               <section className="webapp-section voice-assistant-section" ref={assistantRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
-                  <h2>Голосовой ассистент</h2>
-                  <p>Практика разговорного немецкого в реальном времени.</p>
+                  <h2>{tr('Голосовой ассистент', 'Sprachassistent')}</h2>
+                  <p>{tr('Практика разговорного немецкого в реальном времени.', 'Sprechtraining Deutsch in Echtzeit.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
 
                 {!assistantToken ? (
                   <div className="voice-assistant-join">
                     <div className="voice-assistant-meta">
-                      <span>Пользователь: {assistantIdentity.displayName || '—'}</span>
+                      <span>{tr('Пользователь', 'Nutzer')}: {assistantIdentity.displayName || '—'}</span>
                       <span>ID: {assistantIdentity.userId || '—'}</span>
                     </div>
                     {assistantError && <div className="webapp-error">{assistantError}</div>}
@@ -5524,7 +5574,7 @@ function AppInner() {
                       onClick={connectAssistant}
                       disabled={assistantConnecting || !webappUser?.id}
                     >
-                      {assistantConnecting ? 'Подключаем...' : 'Подключить ассистента'}
+                      {assistantConnecting ? tr('Подключаем...', 'Verbinden...') : tr('Подключить ассистента', 'Assistent verbinden')}
                     </button>
                   </div>
                 ) : (
@@ -5541,19 +5591,19 @@ function AppInner() {
                     >
                       <div className="voice-assistant-room-head">
                         <div>
-                          <span className="pill">Учитель онлайн</span>
-                          <h3>Живая практика немецкого</h3>
+                          <span className="pill">{tr('Учитель онлайн', 'Lehrer online')}</span>
+                          <h3>{tr('Живая практика немецкого', 'Live-Deutschpraxis')}</h3>
                         </div>
                         <button
                           type="button"
                           className="secondary-button"
                           onClick={disconnectAssistant}
                         >
-                          Отключить
+                          {tr('Отключить', 'Trennen')}
                         </button>
                       </div>
                       <p className="voice-assistant-hint">
-                        Нажмите на микрофон в панели управления и начинайте диалог.
+                        {tr('Нажмите на микрофон в панели управления и начинайте диалог.', 'Druecke auf das Mikrofon im Steuerfeld und starte den Dialog.')}
                       </p>
                       <div className="voice-assistant-controls">
                         <ControlBar />
@@ -5569,23 +5619,23 @@ function AppInner() {
             {!flashcardsOnly && isSectionVisible('analytics') && (
               <section className="webapp-section webapp-analytics" ref={analyticsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
-                  <h2>Аналитика</h2>
+                  <h2>{tr('Аналитика', 'Analytik')}</h2>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="analytics-controls">
                   <label className="webapp-field">
-                    <span>Период</span>
+                    <span>{tr('Период', 'Zeitraum')}</span>
                     <select
                       value={analyticsPeriod}
                       onChange={(event) => setAnalyticsPeriod(event.target.value)}
                     >
-                      <option value="day">День</option>
-                      <option value="week">Неделя</option>
-                      <option value="month">Месяц</option>
-                      <option value="quarter">Квартал</option>
-                      <option value="half-year">Полугодие</option>
-                      <option value="year">Год</option>
-                      <option value="all">Все время</option>
+                      <option value="day">{tr('День', 'Tag')}</option>
+                      <option value="week">{tr('Неделя', 'Woche')}</option>
+                      <option value="month">{tr('Месяц', 'Monat')}</option>
+                      <option value="quarter">{tr('Квартал', 'Quartal')}</option>
+                      <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
+                      <option value="year">{tr('Год', 'Jahr')}</option>
+                      <option value="all">{tr('Все время', 'Gesamt')}</option>
                     </select>
                   </label>
                   <button
@@ -5594,10 +5644,10 @@ function AppInner() {
                     onClick={() => loadAnalytics()}
                     disabled={analyticsLoading}
                   >
-                    {analyticsLoading ? 'Считаем...' : 'Обновить'}
+                    {analyticsLoading ? tr('Считаем...', 'Berechnen...') : tr('Обновить', 'Aktualisieren')}
                   </button>
                   {analyticsRank && (
-                    <div className="analytics-rank">Ваше место: #{analyticsRank}</div>
+                    <div className="analytics-rank">{tr('Ваше место', 'Dein Rang')}: #{analyticsRank}</div>
                   )}
                 </div>
 
@@ -5606,31 +5656,31 @@ function AppInner() {
                 {analyticsSummary && (
                   <div className="analytics-cards">
                     <div className="analytics-card">
-                      <span>Переводы</span>
+                      <span>{tr('Переводы', 'Uebersetzungen')}</span>
                       <strong>{analyticsSummary.total_translations}</strong>
                     </div>
                     <div className="analytics-card">
-                      <span>Успех</span>
+                      <span>{tr('Успех', 'Erfolg')}</span>
                       <strong>{analyticsSummary.success_rate}%</strong>
                     </div>
                     <div className="analytics-card">
-                      <span>Средний балл</span>
+                      <span>{tr('Средний балл', 'Durchschnitt')}</span>
                       <strong>{analyticsSummary.avg_score}</strong>
                     </div>
                     <div className="analytics-card">
-                      <span>Среднее время</span>
-                      <strong>{analyticsSummary.avg_time_min} мин</strong>
+                      <span>{tr('Среднее время', 'Durchschnittszeit')}</span>
+                      <strong>{analyticsSummary.avg_time_min} {tr('мин', 'Min')}</strong>
                     </div>
                     <div className="analytics-card">
-                      <span>Пропущено дней</span>
+                      <span>{tr('Пропущено дней', 'Verpasste Tage')}</span>
                       <strong>{analyticsSummary.missed_days}</strong>
                     </div>
                     <div className="analytics-card">
-                      <span>Пропущено</span>
+                      <span>{tr('Пропущено', 'Verpasst')}</span>
                       <strong>{analyticsSummary.missed_sentences}</strong>
                     </div>
                     <div className="analytics-card">
-                      <span>Итоговый балл</span>
+                      <span>{tr('Итоговый балл', 'Gesamtscore')}</span>
                       <strong>{analyticsSummary.final_score}</strong>
                     </div>
                   </div>
@@ -5653,7 +5703,7 @@ function AppInner() {
                   <>
                     <div className="webapp-selection-translation">
                       {selectionInlineLookup.loading
-                        ? 'Переводим...'
+                        ? tr('Переводим...', 'Uebersetzen...')
                         : (selectionInlineLookup.translation || '—')}
                     </div>
                     <button
@@ -5662,7 +5712,7 @@ function AppInner() {
                       onClick={() => handleQuickAddToDictionary(selectionText, { inlineMode: true })}
                       disabled={selectionInlineLookup.loading}
                     >
-                      Сохранить
+                      {tr('Сохранить', 'Speichern')}
                     </button>
                   </>
                 ) : (
@@ -5673,14 +5723,14 @@ function AppInner() {
                       onClick={() => handleQuickLookupDictionary(selectionText)}
                       disabled={selectionLookupLoading}
                     >
-                      {selectionLookupLoading ? 'Переводим...' : 'Перевести'}
+                      {selectionLookupLoading ? tr('Переводим...', 'Uebersetzen...') : tr('Перевести', 'Uebersetzen')}
                     </button>
                     <button
                       type="button"
                       className="secondary-button"
                       onClick={() => handleQuickAddToDictionary(selectionText)}
                     >
-                      Добавить в словарь
+                      {tr('Добавить в словарь', 'Zum Woerterbuch hinzufuegen')}
                     </button>
                   </>
                 )}
@@ -5724,32 +5774,32 @@ if (!token) {
         <div className="login-card">
           <div className="login-header">
             <span className="pill">Deutsch Tutor</span>
-            <h2>Вход в урок</h2>
-            <p>Подключитесь к разговорной практике и начните диалог с учителем.</p>
+            <h2>{tr('Вход в урок', 'Unterricht betreten')}</h2>
+            <p>{tr('Подключитесь к разговорной практике и начните диалог с учителем.', 'Verbinde dich fuer Sprachpraxis und starte den Dialog mit dem Tutor.')}</p>
           </div>
           <form onSubmit={handleConnect} className="login-form">
             <label className="field">
               <span>Telegram ID</span>
               <input
                 type="text"
-                placeholder="Ваш Telegram ID (цифры)"
+                placeholder={tr('Ваш Telegram ID (цифры)', 'Deine Telegram-ID (Ziffern)')}
                 value={telegramID}
                 onChange={(e) => setTelegramID(e.target.value)}
               />
             </label>
 
             <label className="field">
-              <span>Ваше имя</span>
+              <span>{tr('Ваше имя', 'Dein Name')}</span>
               <input
                 type="text"
-                placeholder="Как вас называть? (Имя)"
+                placeholder={tr('Как вас называть? (Имя)', 'Wie sollen wir dich nennen?')}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
               />
             </label>
 
             <button type="submit" className="primary-button">
-              Начать урок
+              {tr('Начать урок', 'Unterricht starten')}
             </button>
           </form>
         </div>
@@ -5773,12 +5823,12 @@ if (!token) {
       <div className="lesson-shell">
         <header className="lesson-header">
           <div>
-            <span className="pill">Учитель онлайн</span>
-            <h1>Живая практика немецкого</h1>
-            <p>Говорите свободно, а помощник ведет диалог, исправляет и поддерживает.</p>
+            <span className="pill">{tr('Учитель онлайн', 'Lehrer online')}</span>
+            <h1>{tr('Живая практика немецкого', 'Live-Deutschpraxis')}</h1>
+            <p>{tr('Говорите свободно, а помощник ведет диалог, исправляет и поддерживает.', 'Sprich frei, der Assistent fuehrt den Dialog, korrigiert und unterstuetzt dich.')}</p>
           </div>
           <div className="lesson-meta">
-            <span>Пользователь: {username}</span>
+            <span>{tr('Пользователь', 'Nutzer')}: {username}</span>
             <span>ID: {telegramID}</span>
           </div>
         </header>
@@ -5789,22 +5839,22 @@ if (!token) {
               <img src={heroMascotSrc} alt="" aria-hidden="true" className="lesson-hero-image" />
             </div>
             <div className="lesson-copy">
-              <h2>Сфокусируйтесь на голосе</h2>
-              <p>Нажмите на микрофон, чтобы включить речь, и нажмите выход, когда урок завершен.</p>
+              <h2>{tr('Сфокусируйтесь на голосе', 'Fokussiere dich auf die Stimme')}</h2>
+              <p>{tr('Нажмите на микрофон, чтобы включить речь, и нажмите выход, когда урок завершен.', 'Druecke auf das Mikrofon, um zu sprechen, und beende danach die Sitzung.')}</p>
               <div className="lesson-tips">
-                <div className="tip">Четко формулируйте ответы, чтобы учитель слышал интонацию.</div>
-                <div className="tip">Если нужно подумать, просто сделайте паузу — связь сохранится.</div>
+                <div className="tip">{tr('Четко формулируйте ответы, чтобы учитель слышал интонацию.', 'Formuliere klar, damit der Tutor die Intonation hoert.')}</div>
+                <div className="tip">{tr('Если нужно подумать, просто сделайте паузу — связь сохранится.', 'Wenn du nachdenken willst, pausier kurz - die Verbindung bleibt bestehen.')}</div>
               </div>
             </div>
           </section>
 
           <section className="lesson-controls">
-            <h3>Управление уроком</h3>
-            <p>Все основные действия собраны в центре: микрофон, выход и настройки.</p>
+            <h3>{tr('Управление уроком', 'Unterrichtssteuerung')}</h3>
+            <p>{tr('Все основные действия собраны в центре: микрофон, выход и настройки.', 'Alle Hauptaktionen sind zentral: Mikrofon, Verlassen und Einstellungen.')}</p>
             <div className="lesson-control-bar">
               <ControlBar />
             </div>
-            <div className="lesson-hint">Совет: держите окно открытым, чтобы учитель не прерывал сессию.</div>
+            <div className="lesson-hint">{tr('Совет: держите окно открытым, чтобы учитель не прерывал сессию.', 'Tipp: Lass das Fenster offen, damit die Sitzung nicht unterbrochen wird.')}</div>
           </section>
         </main>
       </div>
