@@ -232,25 +232,52 @@ def _install_tracked_send_wrappers(app: Application) -> None:
 
 
 class TrackingExtBot(ExtBot):
+    async def _track_single(self, msg, message_type: str):
+        await _track_telegram_message_async(msg, message_type)
+        return msg
+
     async def send_message(self, *args, **kwargs):
         msg = await super().send_message(*args, **kwargs)
-        await _track_telegram_message_async(msg, "text")
-        return msg
+        return await self._track_single(msg, "text")
 
     async def send_photo(self, *args, **kwargs):
         msg = await super().send_photo(*args, **kwargs)
-        await _track_telegram_message_async(msg, "photo")
-        return msg
+        return await self._track_single(msg, "photo")
 
     async def send_audio(self, *args, **kwargs):
         msg = await super().send_audio(*args, **kwargs)
-        await _track_telegram_message_async(msg, "audio")
-        return msg
+        return await self._track_single(msg, "audio")
+
+    async def send_voice(self, *args, **kwargs):
+        msg = await super().send_voice(*args, **kwargs)
+        return await self._track_single(msg, "voice")
+
+    async def send_document(self, *args, **kwargs):
+        msg = await super().send_document(*args, **kwargs)
+        return await self._track_single(msg, "document")
+
+    async def send_video(self, *args, **kwargs):
+        msg = await super().send_video(*args, **kwargs)
+        return await self._track_single(msg, "video")
+
+    async def send_video_note(self, *args, **kwargs):
+        msg = await super().send_video_note(*args, **kwargs)
+        return await self._track_single(msg, "video_note")
+
+    async def send_animation(self, *args, **kwargs):
+        msg = await super().send_animation(*args, **kwargs)
+        return await self._track_single(msg, "animation")
+
+    async def send_media_group(self, *args, **kwargs):
+        messages = await super().send_media_group(*args, **kwargs)
+        if messages:
+            for msg in messages:
+                await _track_telegram_message_async(msg, "media_group")
+        return messages
 
     async def send_poll(self, *args, **kwargs):
         msg = await super().send_poll(*args, **kwargs)
-        await _track_telegram_message_async(msg, "poll")
-        return msg
+        return await self._track_single(msg, "poll")
 
 
 async def cleanup_system_messages(context: CallbackContext) -> None:

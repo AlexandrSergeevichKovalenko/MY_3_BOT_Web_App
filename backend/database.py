@@ -1460,13 +1460,8 @@ def get_flashcard_set(
 
 
 def get_card_srs_state(user_id: int, card_id: int, cursor=None) -> dict | None:
-    owns_cursor = cursor is None
-    if owns_cursor:
-        conn = get_db_connection_context()
-        conn.__enter__()
-        cursor = conn.cursor()
-    try:
-        cursor.execute(
+    def _fetch(cur):
+        cur.execute(
             """
             SELECT
                 id,
@@ -1488,7 +1483,7 @@ def get_card_srs_state(user_id: int, card_id: int, cursor=None) -> dict | None:
             """,
             (int(user_id), int(card_id)),
         )
-        row = cursor.fetchone()
+        row = cur.fetchone()
         if not row:
             return None
         return {
@@ -1506,10 +1501,11 @@ def get_card_srs_state(user_id: int, card_id: int, cursor=None) -> dict | None:
             "created_at": row[11],
             "updated_at": row[12],
         }
-    finally:
-        if owns_cursor:
-            cursor.close()
-            conn.__exit__(None, None, None)
+    if cursor is not None:
+        return _fetch(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _fetch(own_cursor)
 
 
 def upsert_card_srs_state(
@@ -1525,13 +1521,8 @@ def upsert_card_srs_state(
     difficulty: float,
     cursor=None,
 ) -> dict:
-    owns_cursor = cursor is None
-    if owns_cursor:
-        conn = get_db_connection_context()
-        conn.__enter__()
-        cursor = conn.cursor()
-    try:
-        cursor.execute(
+    def _upsert(cur):
+        cur.execute(
             """
             INSERT INTO bt_3_card_srs_state (
                 user_id,
@@ -1586,7 +1577,7 @@ def upsert_card_srs_state(
                 float(difficulty),
             ),
         )
-        row = cursor.fetchone()
+        row = cur.fetchone()
         return {
             "id": row[0],
             "user_id": row[1],
@@ -1602,10 +1593,11 @@ def upsert_card_srs_state(
             "created_at": row[11],
             "updated_at": row[12],
         }
-    finally:
-        if owns_cursor:
-            cursor.close()
-            conn.__exit__(None, None, None)
+    if cursor is not None:
+        return _upsert(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _upsert(own_cursor)
 
 
 def count_due_srs_cards(user_id: int, now_utc: datetime | None = None) -> int:
@@ -1744,13 +1736,8 @@ def ensure_new_srs_state(user_id: int, card_id: int, now_utc: datetime | None = 
 
 
 def get_dictionary_entry_for_user(user_id: int, card_id: int, cursor=None) -> dict | None:
-    owns_cursor = cursor is None
-    if owns_cursor:
-        conn = get_db_connection_context()
-        conn.__enter__()
-        cursor = conn.cursor()
-    try:
-        cursor.execute(
+    def _fetch(cur):
+        cur.execute(
             """
             SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
             FROM bt_3_webapp_dictionary_queries
@@ -1759,7 +1746,7 @@ def get_dictionary_entry_for_user(user_id: int, card_id: int, cursor=None) -> di
             """,
             (int(user_id), int(card_id)),
         )
-        row = cursor.fetchone()
+        row = cur.fetchone()
         if not row:
             return None
         return {
@@ -1770,10 +1757,11 @@ def get_dictionary_entry_for_user(user_id: int, card_id: int, cursor=None) -> di
             "translation_ru": row[4],
             "response_json": row[5],
         }
-    finally:
-        if owns_cursor:
-            cursor.close()
-            conn.__exit__(None, None, None)
+    if cursor is not None:
+        return _fetch(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _fetch(own_cursor)
 
 
 def insert_card_review_log(
@@ -1792,13 +1780,8 @@ def insert_card_review_log(
     interval_days_after: int | None,
     cursor=None,
 ) -> None:
-    owns_cursor = cursor is None
-    if owns_cursor:
-        conn = get_db_connection_context()
-        conn.__enter__()
-        cursor = conn.cursor()
-    try:
-        cursor.execute(
+    def _insert(cur):
+        cur.execute(
             """
             INSERT INTO bt_3_card_review_log (
                 user_id,
@@ -1831,10 +1814,12 @@ def insert_card_review_log(
                 int(interval_days_after) if interval_days_after is not None else None,
             ),
         )
-    finally:
-        if owns_cursor:
-            cursor.close()
-            conn.__exit__(None, None, None)
+    if cursor is not None:
+        _insert(cursor)
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            _insert(own_cursor)
 
 
 def create_dictionary_folder(
