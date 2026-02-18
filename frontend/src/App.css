@@ -1728,9 +1728,9 @@ body {
 .webapp-flashcards {
   display: grid;
   gap: 18px;
-  margin-top: 18px;
+  margin-top: 6px;
   position: relative;
-  padding-top: 10px;
+  padding-top: 3px;
 }
 
 .srs-panel {
