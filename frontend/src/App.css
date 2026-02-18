@@ -1324,14 +1324,15 @@ body {
   z-index: 90;
   background: #000;
   padding: 8px;
-  display: grid;
-  align-content: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .webapp-video-player-shell.is-app-fullscreen .webapp-video-frame {
-  width: 100%;
-  max-height: calc(100dvh - 16px);
-  padding-top: 56.25%;
+  width: min(calc((100dvh - 16px) * 16 / 9), calc(100vw - 16px));
+  height: min(calc((100vw - 16px) * 9 / 16), calc(100dvh - 16px));
+  padding-top: 0;
   border-radius: 10px;
 }
 
@@ -1506,7 +1507,7 @@ body {
 
 .webapp-selection-menu {
   position: fixed;
-  z-index: 50;
+  z-index: 140;
   background: rgba(15, 23, 42, 0.95);
   border: 1px solid rgba(148, 163, 184, 0.35);
   border-radius: 12px;
@@ -3358,7 +3359,8 @@ body {
 
 @media (orientation: landscape) and (max-height: 540px) {
   .webapp-video-player-shell.is-app-fullscreen .webapp-video-frame {
-    padding-top: min(52vh, 56.25%);
+    width: min(calc((100dvh - 8px) * 16 / 9), calc(100vw - 8px));
+    height: min(calc((100vw - 8px) * 9 / 16), calc(100dvh - 8px));
   }
 
   .youtube-subtitles-overlay-line.is-de {
