@@ -1571,7 +1571,7 @@ def _is_dictionary_lookup_candidate(text: str) -> bool:
         return False
     normalized = re.sub(r"[.,!?;:()\"]", " ", text)
     words = [part for part in re.split(r"\s+", normalized.strip()) if part]
-    return 1 <= len(words) <= 8
+    return 1 <= len(words) <= 15
 
 
 def _detect_dictionary_direction(text: str) -> str | None:
