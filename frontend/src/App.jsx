@@ -4168,63 +4168,6 @@ function AppInner() {
 
             {isSectionVisible('flashcards') && (
               <section className="webapp-flashcards" ref={flashcardsRef}>
-                {!flashcardsOnly && (
-                  <div className="srs-panel">
-                    <div className="srs-panel-head">
-                      <h3>Интервальное повторение (FSRS)</h3>
-                      <div className="srs-queue">
-                        <span>Due: {srsQueueInfo?.due_count ?? 0}</span>
-                        <span>New today: {srsQueueInfo?.new_remaining_today ?? 0}</span>
-                      </div>
-                    </div>
-                    {srsLoading && <div className="webapp-muted">Загружаем следующую карточку…</div>}
-                    {!srsLoading && !srsCard && (
-                      <div className="webapp-muted">На сейчас нет карточек для повторения.</div>
-                    )}
-                    {!srsLoading && srsCard && (
-                      <div className="srs-card">
-                        <div className="srs-card-front">{srsCard.word_ru || srsCard.word_de || '—'}</div>
-                        {srsRevealAnswer && (
-                          <div className="srs-card-back">
-                            {srsCard.translation_de || srsCard.translation_ru || srsCard.word_de || '—'}
-                          </div>
-                        )}
-                        <div className="srs-state-line">
-                          <span>Status: {srsState?.status || 'new'}</span>
-                          <span>Interval: {srsState?.interval_days ?? 0} дн</span>
-                          {srsState?.is_mature && <span className="srs-mature">Освоено</span>}
-                        </div>
-                        {!srsRevealAnswer ? (
-                          <div className="srs-actions">
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() => setSrsRevealAnswer(true)}
-                              disabled={srsSubmitting}
-                            >
-                              Показать ответ
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="srs-rating-grid">
-                            <button type="button" className="srs-rate again" onClick={() => submitSrsReview('AGAIN')} disabled={srsSubmitting}>
-                              AGAIN
-                            </button>
-                            <button type="button" className="srs-rate hard" onClick={() => submitSrsReview('HARD')} disabled={srsSubmitting}>
-                              HARD
-                            </button>
-                            <button type="button" className="srs-rate good" onClick={() => submitSrsReview('GOOD')} disabled={srsSubmitting}>
-                              GOOD
-                            </button>
-                            <button type="button" className="srs-rate easy" onClick={() => submitSrsReview('EASY')} disabled={srsSubmitting}>
-                              EASY
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
                 {!flashcardsVisible && (
                   <div className="webapp-muted">
                     Нажмите «Повторить слова», чтобы начать тренировку.
@@ -4234,6 +4177,61 @@ function AppInner() {
                   <div className={`flashcards-panel ${flashcardsOnly ? 'is-session' : 'is-setup'}`}>
                     {!flashcardsOnly && (
                       <div className="flashcard-stage is-setup">
+                        <div className="srs-panel srs-panel-setup">
+                          <div className="srs-panel-head">
+                            <h3>Интервальное повторение (FSRS)</h3>
+                            <div className="srs-queue">
+                              <span>Due: {srsQueueInfo?.due_count ?? 0}</span>
+                              <span>New today: {srsQueueInfo?.new_remaining_today ?? 0}</span>
+                            </div>
+                          </div>
+                          {srsLoading && <div className="webapp-muted">Загружаем следующую карточку…</div>}
+                          {!srsLoading && !srsCard && (
+                            <div className="webapp-muted">На сейчас нет карточек для повторения.</div>
+                          )}
+                          {!srsLoading && srsCard && (
+                            <div className="srs-card">
+                              <div className="srs-card-front">{srsCard.word_ru || srsCard.word_de || '—'}</div>
+                              {srsRevealAnswer && (
+                                <div className="srs-card-back">
+                                  {srsCard.translation_de || srsCard.translation_ru || srsCard.word_de || '—'}
+                                </div>
+                              )}
+                              <div className="srs-state-line">
+                                <span>Status: {srsState?.status || 'new'}</span>
+                                <span>Interval: {srsState?.interval_days ?? 0} дн</span>
+                                {srsState?.is_mature && <span className="srs-mature">Освоено</span>}
+                              </div>
+                              {!srsRevealAnswer ? (
+                                <div className="srs-actions">
+                                  <button
+                                    type="button"
+                                    className="secondary-button"
+                                    onClick={() => setSrsRevealAnswer(true)}
+                                    disabled={srsSubmitting}
+                                  >
+                                    Показать ответ
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="srs-rating-grid">
+                                  <button type="button" className="srs-rate again" onClick={() => submitSrsReview('AGAIN')} disabled={srsSubmitting}>
+                                    AGAIN
+                                  </button>
+                                  <button type="button" className="srs-rate hard" onClick={() => submitSrsReview('HARD')} disabled={srsSubmitting}>
+                                    HARD
+                                  </button>
+                                  <button type="button" className="srs-rate good" onClick={() => submitSrsReview('GOOD')} disabled={srsSubmitting}>
+                                    GOOD
+                                  </button>
+                                  <button type="button" className="srs-rate easy" onClick={() => submitSrsReview('EASY')} disabled={srsSubmitting}>
+                                    EASY
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                         <div className="flashcards-setup">
                           <div className="setup-hero">
                             <div className="setup-ring">

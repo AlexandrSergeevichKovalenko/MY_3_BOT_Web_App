@@ -1742,6 +1742,16 @@ body {
   border: 1px solid rgba(148, 163, 184, 0.24);
 }
 
+.srs-panel.srs-panel-setup {
+  width: min(760px, 100%);
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.26);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: none;
+}
+
 .srs-panel-head {
   display: flex;
   align-items: center;
@@ -1752,6 +1762,10 @@ body {
 .srs-panel-head h3 {
   margin: 0;
   font-size: 16px;
+}
+
+.srs-panel.srs-panel-setup .srs-panel-head h3 {
+  font-size: 15px;
 }
 
 .srs-queue {
@@ -1768,6 +1782,13 @@ body {
   border-radius: 14px;
   background: rgba(2, 6, 23, 0.46);
   border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.srs-panel.srs-panel-setup .srs-card {
+  gap: 8px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.35);
 }
 
 .srs-card-front {
