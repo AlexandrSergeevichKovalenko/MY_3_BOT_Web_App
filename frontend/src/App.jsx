@@ -94,6 +94,7 @@ function AppInner() {
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
   const [youtubeRuEnabled, setYoutubeRuEnabled] = useState(false);
   const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
+  const [youtubeAppFullscreen, setYoutubeAppFullscreen] = useState(false);
   const [youtubeManualOverride, setYoutubeManualOverride] = useState(false);
   const [youtubeTranscriptHasTiming, setYoutubeTranscriptHasTiming] = useState(true);
   const [movies, setMovies] = useState([]);
@@ -104,6 +105,8 @@ function AppInner() {
   const [manualTranscript, setManualTranscript] = useState('');
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
+  const [selectionCompact, setSelectionCompact] = useState(false);
+  const [selectionInlineLookup, setSelectionInlineLookup] = useState({ loading: false, word: '', translation: '', direction: '' });
   const [lastLookupScrollY, setLastLookupScrollY] = useState(null);
   const [historyItems, setHistoryItems] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -216,6 +219,7 @@ function AppInner() {
   const moviesRef = useRef(null);
   const youtubeSubtitlesRef = useRef(null);
   const youtubePlayerRef = useRef(null);
+  const youtubePlayerShellRef = useRef(null);
   const youtubeTimeIntervalRef = useRef(null);
   const youtubeTranslateInFlightRef = useRef(false);
   const youtubeTranslateIndexRef = useRef(-1);
@@ -1457,52 +1461,95 @@ function AppInner() {
 
   const hasCyrillic = (value) => /[А-Яа-яЁё]/.test(value || '');
 
-  const handleSelection = (event, overrideText = '') => {
+  const handleSelection = (event, overrideText = '', options = {}) => {
     const text = overrideText || normalizeSelectionText(window.getSelection()?.toString() || '');
     if (!text) {
       setSelectionText('');
       setSelectionPos(null);
+      setSelectionCompact(false);
       return;
     }
     const clientX = event?.clientX ?? event?.touches?.[0]?.clientX ?? window.innerWidth / 2;
     const clientY = event?.clientY ?? event?.touches?.[0]?.clientY ?? window.innerHeight / 3;
     setSelectionText(text);
     setSelectionPos({ x: clientX, y: clientY });
+    setSelectionCompact(Boolean(options?.compact));
+    if (options?.inlineLookup) {
+      void loadSelectionInlineLookup(text);
+    }
   };
 
   const clearSelection = () => {
     setSelectionText('');
     setSelectionPos(null);
+    setSelectionCompact(false);
+    setSelectionInlineLookup({ loading: false, word: '', translation: '', direction: '' });
   };
 
-  const handleQuickAddToDictionary = async (text) => {
+  const normalizeForLookup = async (rawText) => {
+    const cleaned = normalizeSelectionText(rawText);
+    if (!cleaned) return '';
+    if (hasCyrillic(cleaned)) return cleaned;
+    try {
+      const normalizeResponse = await fetch('/api/webapp/normalize/de', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, text: cleaned }),
+      });
+      if (normalizeResponse.ok) {
+        const data = await normalizeResponse.json();
+        return data.normalized || cleaned;
+      }
+    } catch (error) {
+      // ignore normalization errors
+    }
+    return cleaned;
+  };
+
+  const loadSelectionInlineLookup = async (rawText) => {
+    if (!initData) return;
+    const normalized = await normalizeForLookup(rawText);
+    if (!normalized) return;
+    setSelectionInlineLookup({ loading: true, word: normalized, translation: '', direction: '' });
+    try {
+      const response = await fetch('/api/webapp/dictionary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, word: normalized }),
+      });
+      if (!response.ok) throw new Error('lookup failed');
+      const data = await response.json();
+      const direction = data.direction || resolveDictionaryDirection(data.item);
+      const translation = direction === 'ru-de'
+        ? (data.item?.translation_de || data.item?.word_de || '')
+        : (data.item?.translation_ru || data.item?.word_ru || '');
+      setSelectionInlineLookup({
+        loading: false,
+        word: normalized,
+        translation: String(translation || '').trim(),
+        direction,
+      });
+    } catch (error) {
+      setSelectionInlineLookup({ loading: false, word: normalized, translation: 'Ошибка перевода', direction: '' });
+    }
+  };
+
+  const handleQuickAddToDictionary = async (text, options = {}) => {
+    const inlineMode = Boolean(options?.inlineMode);
     const cleaned = normalizeSelectionText(text);
     if (!cleaned) return;
     if (!initData) {
       setDictionaryError('initData не найдено. Откройте Web App внутри Telegram.');
       return;
     }
-    let normalized = cleaned;
-    if (!hasCyrillic(cleaned)) {
-      try {
-        const normalizeResponse = await fetch('/api/webapp/normalize/de', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData, text: cleaned }),
-        });
-        if (normalizeResponse.ok) {
-          const data = await normalizeResponse.json();
-          normalized = data.normalized || cleaned;
-        }
-      } catch (error) {
-        // ignore normalization errors
-      }
-    }
+    const normalized = await normalizeForLookup(cleaned);
     setDictionaryLoading(true);
     setDictionaryError('');
     setDictionarySaved('');
-    setDictionaryWord(normalized);
-    setLastLookupScrollY(window.scrollY);
+    if (!inlineMode) {
+      setDictionaryWord(normalized);
+      setLastLookupScrollY(window.scrollY);
+    }
     try {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
@@ -1520,10 +1567,12 @@ function AppInner() {
         throw new Error(message);
       }
       const data = await response.json();
-      setDictionaryResult(data.item || null);
       const detectedDirection = data.direction || resolveDictionaryDirection(data.item);
-      setDictionaryDirection(detectedDirection);
-      scrollToDictionary();
+      if (!inlineMode) {
+        setDictionaryResult(data.item || null);
+        setDictionaryDirection(detectedDirection);
+        scrollToDictionary();
+      }
 
       const saveResponse = await fetch('/api/webapp/dictionary/save', {
         method: 'POST',
@@ -1548,7 +1597,14 @@ function AppInner() {
         }
         throw new Error(message);
       }
-      setDictionarySaved('Добавлено в словарь ✅');
+      if (inlineMode) {
+        setSelectionInlineLookup((prev) => ({
+          ...prev,
+          translation: prev.translation ? `${prev.translation} • Сохранено ✅` : 'Сохранено ✅',
+        }));
+      } else {
+        setDictionarySaved('Добавлено в словарь ✅');
+      }
       clearSelection();
     } catch (error) {
       setDictionaryError(`Ошибка сохранения: ${error.message}`);
@@ -1954,7 +2010,10 @@ function AppInner() {
       .trim();
   };
 
-  const renderClickableText = (text) => {
+  const renderClickableText = (text, options = {}) => {
+    const className = options.className || 'clickable-word';
+    const compact = Boolean(options.compact);
+    const inlineLookup = Boolean(options.inlineLookup);
     if (!text) return null;
     return text.split(/\s+/).map((word, index) => {
       const cleaned = word.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿ'’-]/g, '');
@@ -1964,8 +2023,8 @@ function AppInner() {
       return (
         <span
           key={`w-${index}`}
-          className="clickable-word"
-          onClick={(event) => handleSelection(event, cleaned)}
+          className={className}
+          onClick={(event) => handleSelection(event, cleaned, { compact, inlineLookup })}
         >
           {word}{' '}
         </span>
@@ -2644,6 +2703,20 @@ function AppInner() {
       youtubeSubtitlesRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }, [youtubeTranscript.length]);
+
+  useEffect(() => {
+    if (!youtubeAppFullscreen) return undefined;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [youtubeAppFullscreen]);
+
+  useEffect(() => {
+    if (youtubeAppFullscreen) return;
+    clearSelection();
+  }, [youtubeAppFullscreen]);
 
   useEffect(() => {
     if (!youtubeSubtitlesRef.current) return;
@@ -3753,10 +3826,31 @@ function AppInner() {
                       >
                         {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
                       </button>
+                      <button
+                        type="button"
+                        className={`secondary-button ${youtubeAppFullscreen ? 'is-active' : ''}`}
+                        onClick={() => setYoutubeAppFullscreen((prev) => !prev)}
+                        disabled={!youtubeId}
+                      >
+                        {youtubeAppFullscreen ? 'Свернуть' : 'Развернуть'}
+                      </button>
                     </div>
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
                     {youtubeId ? (
-                      <div className={`webapp-video-frame ${videoExpanded ? 'is-expanded' : ''} ${youtubeOverlayEnabled ? 'has-overlay' : ''}`}>
+                      <div
+                        ref={youtubePlayerShellRef}
+                        className={`webapp-video-player-shell ${youtubeAppFullscreen ? 'is-app-fullscreen' : ''}`}
+                      >
+                        {youtubeAppFullscreen && (
+                          <button
+                            type="button"
+                            className="youtube-app-fullscreen-close"
+                            onClick={() => setYoutubeAppFullscreen(false)}
+                          >
+                            Свернуть
+                          </button>
+                        )}
+                        <div className={`webapp-video-frame ${videoExpanded ? 'is-expanded' : ''} ${youtubeOverlayEnabled ? 'has-overlay' : ''}`}>
                         <div
                           id="youtube-player"
                           className="youtube-player-host"
@@ -3779,7 +3873,9 @@ function AppInner() {
                           return (
                             <div className="youtube-subtitles-overlay" aria-hidden="true">
                               {overlayDeText && (
-                                <p className="youtube-subtitles-overlay-line is-de">{overlayDeText}</p>
+                                <p className="youtube-subtitles-overlay-line is-de">
+                                  {renderClickableText(overlayDeText, { className: 'overlay-clickable-word', compact: true, inlineLookup: youtubeAppFullscreen })}
+                                </p>
                               )}
                               {youtubeRuEnabled && overlayRuText && (
                                 <p className="youtube-subtitles-overlay-line is-ru">{overlayRuText}</p>
@@ -3787,6 +3883,7 @@ function AppInner() {
                             </div>
                           );
                         })()}
+                        </div>
                       </div>
                     ) : (
                       <p className="webapp-muted">Вставьте ссылку на видео, чтобы смотреть прямо здесь.</p>
@@ -5225,25 +5322,45 @@ function AppInner() {
 
             {selectionText && selectionPos && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div
-                className="webapp-selection-menu"
+                className={`webapp-selection-menu ${selectionCompact ? 'is-compact' : ''} ${youtubeAppFullscreen ? 'is-overlay-mode' : ''}`}
                 style={{ left: `${selectionPos.x + 8}px`, top: `${selectionPos.y + 8}px` }}
                 onMouseLeave={clearSelection}
               >
                 <div className="webapp-selection-text">{selectionText}</div>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleQuickLookupDictionary(selectionText)}
-                >
-                  Перевести
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleQuickAddToDictionary(selectionText)}
-                >
-                  Добавить в словарь
-                </button>
+                {youtubeAppFullscreen ? (
+                  <>
+                    <div className="webapp-selection-translation">
+                      {selectionInlineLookup.loading
+                        ? 'Переводим...'
+                        : (selectionInlineLookup.translation || '—')}
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => handleQuickAddToDictionary(selectionText, { inlineMode: true })}
+                      disabled={selectionInlineLookup.loading}
+                    >
+                      Сохранить
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => handleQuickLookupDictionary(selectionText)}
+                    >
+                      Перевести
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => handleQuickAddToDictionary(selectionText)}
+                    >
+                      Добавить в словарь
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
