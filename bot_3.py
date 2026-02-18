@@ -7,6 +7,7 @@ import psycopg2
 import datetime
 import calendar
 from datetime import datetime, time, date, timedelta
+from zoneinfo import ZoneInfo
 from telegram import Update, Poll
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes, ApplicationHandlerStop
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -71,6 +72,9 @@ from backend.database import (
     upsert_dictionary_cache,
     save_webapp_dictionary_query,
     get_or_create_dictionary_folder,
+    record_telegram_system_message,
+    get_pending_telegram_system_messages,
+    mark_telegram_system_message_deleted,
 )
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
 from load_data_from_db import load_data_for_analytics 
@@ -94,6 +98,10 @@ quiz_ru_translation_cache = {}
 pending_dictionary_cards = {}
 pending_dictionary_save_options = {}
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
+SYSTEM_MESSAGE_CLEANUP_TZ = (os.getenv("SYSTEM_MESSAGE_CLEANUP_TZ") or os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
+SYSTEM_MESSAGE_CLEANUP_HOUR = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "23").strip())
+SYSTEM_MESSAGE_CLEANUP_MINUTE = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MINUTE") or "59").strip())
+SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK") or "2").strip())
 
 
 # === Логирование ===
@@ -199,6 +207,95 @@ print(f"✅ База данных подключена! Версия: {db_versio
 
 cursor.close()
 conn.close()
+
+
+async def _track_telegram_message_async(message, message_type: str = "text") -> None:
+    try:
+        if not message:
+            return
+        chat_id = int(message.chat_id)
+        message_id = int(message.message_id)
+        await asyncio.to_thread(
+            record_telegram_system_message,
+            chat_id,
+            message_id,
+            message_type,
+        )
+    except Exception:
+        logging.debug("Failed to track telegram system message", exc_info=True)
+
+
+def _install_tracked_send_wrappers(app: Application) -> None:
+    bot = app.bot
+    if getattr(bot, "_system_tracking_wrapped", False):
+        return
+
+    original_send_message = bot.send_message
+    original_send_photo = bot.send_photo
+    original_send_audio = bot.send_audio
+    original_send_poll = bot.send_poll
+
+    async def wrapped_send_message(*args, **kwargs):
+        msg = await original_send_message(*args, **kwargs)
+        await _track_telegram_message_async(msg, "text")
+        return msg
+
+    async def wrapped_send_photo(*args, **kwargs):
+        msg = await original_send_photo(*args, **kwargs)
+        await _track_telegram_message_async(msg, "photo")
+        return msg
+
+    async def wrapped_send_audio(*args, **kwargs):
+        msg = await original_send_audio(*args, **kwargs)
+        await _track_telegram_message_async(msg, "audio")
+        return msg
+
+    async def wrapped_send_poll(*args, **kwargs):
+        msg = await original_send_poll(*args, **kwargs)
+        await _track_telegram_message_async(msg, "poll")
+        return msg
+
+    bot.send_message = wrapped_send_message
+    bot.send_photo = wrapped_send_photo
+    bot.send_audio = wrapped_send_audio
+    bot.send_poll = wrapped_send_poll
+    bot._system_tracking_wrapped = True
+
+
+async def cleanup_system_messages(context: CallbackContext) -> None:
+    try:
+        now = datetime.now(ZoneInfo(SYSTEM_MESSAGE_CLEANUP_TZ))
+    except Exception:
+        now = datetime.utcnow()
+    target_date = now.date()
+
+    pending = await asyncio.to_thread(
+        get_pending_telegram_system_messages,
+        target_date,
+        SYSTEM_MESSAGE_CLEANUP_TZ,
+        SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK,
+        10000,
+    )
+    deleted = 0
+    failed = 0
+    for item in pending:
+        row_id = int(item["id"])
+        chat_id = int(item["chat_id"])
+        message_id = int(item["message_id"])
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            await asyncio.to_thread(mark_telegram_system_message_deleted, row_id)
+            deleted += 1
+        except Exception as exc:
+            failed += 1
+            await asyncio.to_thread(mark_telegram_system_message_deleted, row_id, str(exc))
+    logging.info(
+        "✅ bot_3 cleanup_system_messages finished: date=%s pending=%s deleted=%s failed=%s",
+        target_date.isoformat(),
+        len(pending),
+        deleted,
+        failed,
+    )
 
 # # === Настройки бота ===
 TELEGRAM_Deutsch_BOT_TOKEN = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
@@ -5445,6 +5542,7 @@ def main():
 
     #defaults = Defaults(timeout=60)  # увеличили таймаут до 60 секунд
     application = Application.builder().token(TELEGRAM_Deutsch_BOT_TOKEN).build()
+    _install_tracked_send_wrappers(application)
     application.bot.request.timeout = 60
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)
@@ -5595,6 +5693,12 @@ def main():
     scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="half_year"), "cron", day="last", month="6,12", hour= 10, minute=2)
 
     scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="quarter"), "cron", day="last", month="12", hour= 23, minute=2)
+    scheduler.add_job(
+        lambda: submit_async(cleanup_system_messages, CallbackContext(application=application)),
+        "cron",
+        hour=SYSTEM_MESSAGE_CLEANUP_HOUR,
+        minute=SYSTEM_MESSAGE_CLEANUP_MINUTE,
+    )
     
     scheduler.start()
     print("🚀 Бот запущен! Ожидаем сообщения...")

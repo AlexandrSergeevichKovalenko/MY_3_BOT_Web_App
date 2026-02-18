@@ -3,7 +3,7 @@ from psycopg2 import Binary
 import os
 from contextlib import contextmanager
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -260,6 +260,25 @@ def ensure_webapp_tables() -> None:
                     seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (user_id, entry_id, seen_at)
                 );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_telegram_system_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    message_type TEXT NOT NULL DEFAULT 'text',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    deleted_at TIMESTAMPTZ,
+                    delete_error TEXT
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_bt_3_telegram_sysmsg_chat_msg
+                ON bt_3_telegram_system_messages (chat_id, message_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_telegram_sysmsg_pending
+                ON bt_3_telegram_system_messages (deleted_at, created_at);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_card_srs_state (
@@ -1905,6 +1924,88 @@ def get_or_create_dictionary_folder(
                 "icon": row[3],
                 "created_at": row[4].isoformat() if row[4] else None,
             }
+
+
+def record_telegram_system_message(
+    chat_id: int,
+    message_id: int,
+    message_type: str = "text",
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_telegram_system_messages (chat_id, message_id, message_type)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (chat_id, message_id) DO NOTHING;
+                """,
+                (int(chat_id), int(message_id), (message_type or "text").strip()[:32]),
+            )
+
+
+def get_pending_telegram_system_messages(
+    target_date: date,
+    tz_name: str = "UTC",
+    max_days_back: int = 2,
+    limit: int = 5000,
+) -> list[dict]:
+    max_days_back = max(0, int(max_days_back))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, chat_id, message_id, message_type, created_at
+                FROM bt_3_telegram_system_messages
+                WHERE deleted_at IS NULL
+                  AND ((created_at AT TIME ZONE %s)::date BETWEEN %s AND %s)
+                ORDER BY created_at ASC
+                LIMIT %s;
+                """,
+                (
+                    tz_name,
+                    target_date - timedelta(days=max_days_back),
+                    target_date,
+                    int(limit),
+                ),
+            )
+            rows = cursor.fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "chat_id": int(row[1]),
+            "message_id": int(row[2]),
+            "message_type": row[3],
+            "created_at": row[4].isoformat() if row[4] else None,
+        }
+        for row in rows
+    ]
+
+
+def mark_telegram_system_message_deleted(
+    row_id: int,
+    delete_error: str | None = None,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if delete_error:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_telegram_system_messages
+                    SET delete_error = %s
+                    WHERE id = %s;
+                    """,
+                    (str(delete_error)[:500], int(row_id)),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_telegram_system_messages
+                    SET deleted_at = NOW(),
+                        delete_error = NULL
+                    WHERE id = %s;
+                    """,
+                    (int(row_id),),
+                )
 
 
 def _get_latest_session_id(cursor, user_id: int) -> str | None:

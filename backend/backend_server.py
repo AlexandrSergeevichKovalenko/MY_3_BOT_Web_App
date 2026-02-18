@@ -152,6 +152,9 @@ from backend.database import (
     upsert_card_srs_state,
     get_dictionary_entry_for_user,
     insert_card_review_log,
+    record_telegram_system_message,
+    get_pending_telegram_system_messages,
+    mark_telegram_system_message_deleted,
 )
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
 from backend.translation_workflow import (
@@ -635,6 +638,17 @@ def _send_group_message(text: str) -> None:
     )
     if response.status_code >= 400:
         raise RuntimeError(f"Telegram API error: {response.text}")
+    try:
+        payload = response.json() if response.content else {}
+        message_id = (payload.get("result") or {}).get("message_id")
+        if message_id is not None:
+            record_telegram_system_message(
+                chat_id=int(TELEGRAM_GROUP_CHAT_ID),
+                message_id=int(message_id),
+                message_type="text",
+            )
+    except Exception:
+        logging.debug("Failed to track group system message", exc_info=True)
 
 
 def _send_private_message(user_id: int, text: str) -> None:
@@ -649,6 +663,17 @@ def _send_private_message(user_id: int, text: str) -> None:
     )
     if response.status_code >= 400:
         raise RuntimeError(f"Telegram API error: {response.text}")
+    try:
+        payload = response.json() if response.content else {}
+        message_id = (payload.get("result") or {}).get("message_id")
+        if message_id is not None:
+            record_telegram_system_message(
+                chat_id=int(user_id),
+                message_id=int(message_id),
+                message_type="text",
+            )
+    except Exception:
+        logging.debug("Failed to track private system message", exc_info=True)
 
 
 def _send_private_photo(user_id: int, image_bytes: bytes, filename: str, caption: str | None = None) -> None:
@@ -660,6 +685,17 @@ def _send_private_photo(user_id: int, image_bytes: bytes, filename: str, caption
     response = requests.post(url, data=data, files=files, timeout=60)
     if response.status_code >= 400:
         raise RuntimeError(f"Telegram API error: {response.text}")
+    try:
+        payload = response.json() if response.content else {}
+        message_id = (payload.get("result") or {}).get("message_id")
+        if message_id is not None:
+            record_telegram_system_message(
+                chat_id=int(user_id),
+                message_id=int(message_id),
+                message_type="photo",
+            )
+    except Exception:
+        logging.debug("Failed to track private photo message", exc_info=True)
 
 
 def _send_private_message_chunks(user_id: int, text: str, limit: int = 3800) -> None:
@@ -742,6 +778,37 @@ def _send_group_audio(audio_bytes: bytes, filename: str, caption: str | None = N
     response = requests.post(url, data=data, files=files, timeout=60)
     if response.status_code >= 400:
         raise RuntimeError(f"Telegram API error: {response.text}")
+    try:
+        payload = response.json() if response.content else {}
+        message_id = (payload.get("result") or {}).get("message_id")
+        if message_id is not None:
+            record_telegram_system_message(
+                chat_id=int(TELEGRAM_GROUP_CHAT_ID),
+                message_id=int(message_id),
+                message_type="audio",
+            )
+    except Exception:
+        logging.debug("Failed to track group audio message", exc_info=True)
+
+
+def _delete_telegram_message(chat_id: int, message_id: int) -> None:
+    url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/deleteMessage"
+    response = requests.post(
+        url,
+        json={
+            "chat_id": int(chat_id),
+            "message_id": int(message_id),
+        },
+        timeout=15,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Telegram API error: {response.text}")
+    try:
+        payload = response.json() if response.content else {}
+    except Exception:
+        payload = {}
+    if not payload.get("ok", False):
+        raise RuntimeError(f"Telegram delete failed: {payload}")
 
 
 def _acquire_audio_scheduler_lock() -> bool:
@@ -4154,6 +4221,56 @@ def _run_private_analytics_scheduler_job() -> None:
         logging.exception("❌ Private analytics scheduler failed")
 
 
+def _run_system_message_cleanup_job() -> None:
+    enabled = (os.getenv("SYSTEM_MESSAGE_CLEANUP_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        logging.info("ℹ️ System message cleanup disabled by SYSTEM_MESSAGE_CLEANUP_ENABLED")
+        return
+    tz_name = (os.getenv("SYSTEM_MESSAGE_CLEANUP_TZ") or os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
+    max_days_back = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK") or "2").strip())
+    try:
+        now = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        now = datetime.utcnow()
+        tz_name = "UTC"
+    target_date = now.date()
+    try:
+        pending = get_pending_telegram_system_messages(
+            target_date=target_date,
+            tz_name=tz_name,
+            max_days_back=max_days_back,
+            limit=10000,
+        )
+    except Exception:
+        logging.exception("❌ System message cleanup failed while reading pending list")
+        return
+
+    deleted = 0
+    failed = 0
+    for item in pending:
+        row_id = int(item.get("id"))
+        chat_id = int(item.get("chat_id"))
+        message_id = int(item.get("message_id"))
+        try:
+            _delete_telegram_message(chat_id=chat_id, message_id=message_id)
+            mark_telegram_system_message_deleted(row_id)
+            deleted += 1
+        except Exception as exc:
+            failed += 1
+            try:
+                mark_telegram_system_message_deleted(row_id, delete_error=str(exc))
+            except Exception:
+                logging.debug("Failed to store delete error for row %s", row_id, exc_info=True)
+    logging.info(
+        "✅ System message cleanup finished: date=%s tz=%s pending=%s deleted=%s failed=%s",
+        target_date.isoformat(),
+        tz_name,
+        len(pending),
+        deleted,
+        failed,
+    )
+
+
 def _get_youtube_oembed(video_id: str) -> dict:
     now = time.time()
     cached = _YT_OEMBED_CACHE.get(video_id)
@@ -4281,6 +4398,19 @@ def _start_audio_scheduler() -> None:
         coalesce=True,
         misfire_grace_time=3600,
     )
+    cleanup_enabled = (os.getenv("SYSTEM_MESSAGE_CLEANUP_ENABLED") or "1").strip().lower()
+    if cleanup_enabled in ("1", "true", "yes", "on"):
+        cleanup_hour = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "23").strip())
+        cleanup_minute = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MINUTE") or "59").strip())
+        _audio_scheduler.add_job(
+            _run_system_message_cleanup_job,
+            "cron",
+            hour=cleanup_hour,
+            minute=cleanup_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
     _audio_scheduler.start()
     logging.info("✅ Audio scheduler started: %02d:%02d %s", hour, minute, tz_name)
 
@@ -4387,6 +4517,19 @@ def youtube_debug():
         results["pipeline"] = str(exc)
 
     return jsonify({"ok": True, "results": results})
+
+
+@app.route("/api/admin/cleanup-system-messages", methods=["POST"])
+def cleanup_system_messages_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+    _run_system_message_cleanup_job()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/webapp/explain", methods=["POST"])
