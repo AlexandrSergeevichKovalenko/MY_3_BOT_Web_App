@@ -146,6 +146,7 @@ function AppInner() {
   const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0 });
   const [srsLoading, setSrsLoading] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
+  const [srsSubmittingRating, setSrsSubmittingRating] = useState(null);
   const [srsRevealAnswer, setSrsRevealAnswer] = useState(false);
   const [srsError, setSrsError] = useState('');
   const [flashcardFeelMap, setFlashcardFeelMap] = useState({});
@@ -656,6 +657,7 @@ function AppInner() {
     try {
       setSrsError('');
       setSrsSubmitting(true);
+      setSrsSubmittingRating(ratingValue);
       const response = await fetch('/api/cards/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -676,6 +678,7 @@ function AppInner() {
       setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${error.message}`);
     } finally {
       setSrsSubmitting(false);
+      setSrsSubmittingRating(null);
     }
   };
 
@@ -5193,16 +5196,16 @@ function AppInner() {
                               ) : (
                                 <div className="srs-rating-grid">
                                   <button type="button" className="srs-rate again" onClick={() => submitSrsReview('AGAIN')} disabled={srsSubmitting}>
-                                    {srsSubmitting ? tr('Сохраняем...', 'Speichern...') : 'AGAIN'}
+                                    {srsSubmitting && srsSubmittingRating === 'AGAIN' ? tr('Сохраняем...', 'Speichern...') : 'AGAIN'}
                                   </button>
                                   <button type="button" className="srs-rate hard" onClick={() => submitSrsReview('HARD')} disabled={srsSubmitting}>
-                                    HARD
+                                    {srsSubmitting && srsSubmittingRating === 'HARD' ? tr('Сохраняем...', 'Speichern...') : 'HARD'}
                                   </button>
                                   <button type="button" className="srs-rate good" onClick={() => submitSrsReview('GOOD')} disabled={srsSubmitting}>
-                                    GOOD
+                                    {srsSubmitting && srsSubmittingRating === 'GOOD' ? tr('Сохраняем...', 'Speichern...') : 'GOOD'}
                                   </button>
                                   <button type="button" className="srs-rate easy" onClick={() => submitSrsReview('EASY')} disabled={srsSubmitting}>
-                                    EASY
+                                    {srsSubmitting && srsSubmittingRating === 'EASY' ? tr('Сохраняем...', 'Speichern...') : 'EASY'}
                                   </button>
                                 </div>
                               )}

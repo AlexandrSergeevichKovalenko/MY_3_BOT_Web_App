@@ -1,16 +1,21 @@
 import psycopg2
 from psycopg2 import Binary
+from psycopg2 import OperationalError
 import os
 from contextlib import contextmanager
 import json
 from datetime import datetime, timezone, date, timedelta
 from pathlib import Path
+import time
 from dotenv import load_dotenv
 
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY") #
+DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "12"))
+DB_CONNECT_RETRIES = max(1, int(os.getenv("DB_CONNECT_RETRIES", "3")))
+DB_CONNECT_RETRY_DELAY_SECONDS = float(os.getenv("DB_CONNECT_RETRY_DELAY_SECONDS", "0.6"))
 SUPPORTED_LEARNING_LANGUAGES = {"de", "en", "es", "it"}
 SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
@@ -25,7 +30,27 @@ else:
 
 @contextmanager
 def get_db_connection_context(): #
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=8) #
+    conn = None
+    last_error = None
+    for attempt in range(1, DB_CONNECT_RETRIES + 1):
+        try:
+            conn = psycopg2.connect(
+                DATABASE_URL,
+                sslmode='require',
+                connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5,
+            )
+            break
+        except OperationalError as exc:
+            last_error = exc
+            if attempt >= DB_CONNECT_RETRIES:
+                raise
+            time.sleep(DB_CONNECT_RETRY_DELAY_SECONDS * attempt)
+    if conn is None and last_error is not None:
+        raise last_error
     try:
         yield conn #
         conn.commit() #
