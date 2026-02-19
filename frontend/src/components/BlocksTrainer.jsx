@@ -156,6 +156,13 @@ export default function BlocksTrainer({
     const targetHeight = Math.max(240, topBase + rows * (TILE_HEIGHT + gapY) + 28);
     const boundedHeight = Math.min(targetHeight, 420);
     setPlaygroundHeight(boundedHeight);
+    const cellCoords = [];
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        cellCoords.push({ row: r, col: c });
+      }
+    }
+    const shuffledCells = shuffle(cellCoords);
     let visibleIndex = 0;
     const placedBoxes = [];
 
@@ -170,11 +177,19 @@ export default function BlocksTrainer({
           y: rect.centerY - TILE_HEIGHT / 2,
         };
       }
-      const row = Math.floor(visibleIndex / cols);
-      const col = visibleIndex % cols;
+      const pickedCell = shuffledCells[visibleIndex] || {
+        row: Math.floor(visibleIndex / cols),
+        col: visibleIndex % cols,
+      };
+      const row = pickedCell.row;
+      const col = pickedCell.col;
       visibleIndex += 1;
-      let x = leftPad + col * (desiredTileWidth + gapX);
-      let y = topBase + row * (TILE_HEIGHT + gapY);
+      const baseX = leftPad + col * (desiredTileWidth + gapX);
+      const baseY = topBase + row * (TILE_HEIGHT + gapY);
+      const jitterLimitX = Math.min(8, Math.max(2, Math.floor(gapX / 3)));
+      const jitterLimitY = Math.min(8, Math.max(2, Math.floor(gapY / 3)));
+      let x = baseX + (Math.random() * jitterLimitX * 2 - jitterLimitX);
+      let y = baseY + (Math.random() * jitterLimitY * 2 - jitterLimitY);
 
       const minX = leftPad;
       const maxX = Math.max(minX, leftPad + usableWidth - desiredTileWidth);
@@ -187,15 +202,9 @@ export default function BlocksTrainer({
         && nextY < box.y + box.h + 6
         && nextY + TILE_HEIGHT + 6 > box.y
       ));
-
-      for (let attempt = 0; attempt < 18; attempt += 1) {
-        const rx = minX + Math.random() * (maxX - minX);
-        const ry = minY + Math.random() * (maxY - minY);
-        if (!overlaps(rx, ry) || attempt > 12) {
-          x = rx;
-          y = ry;
-          break;
-        }
+      if (overlaps(x, y)) {
+        x = Math.min(maxX, Math.max(minX, baseX));
+        y = Math.min(maxY, Math.max(minY, baseY));
       }
       placedBoxes.push({ x, y, w: desiredTileWidth, h: TILE_HEIGHT });
       return {

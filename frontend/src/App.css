@@ -3748,6 +3748,10 @@ body {
   border-style: solid;
   color: var(--bb-text);
   background: #ffffff;
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
 .blocks-slot.is-selected {

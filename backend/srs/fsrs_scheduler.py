@@ -26,9 +26,13 @@ def normalize_rating(raw_rating: int | str) -> tuple[Rating, int]:
         key = raw_rating.strip().upper()
         if key in {"1", "AGAIN"}:
             return Rating.Again, 1
+        if key in {"NEW", "WRONG", "TIMEOUT", "FAIL", "INCORRECT"}:
+            return Rating.Again, 1
         if key in {"2", "HARD"}:
             return Rating.Hard, 2
         if key in {"3", "GOOD"}:
+            return Rating.Good, 3
+        if key in {"CORRECT", "OK"}:
             return Rating.Good, 3
         if key in {"4", "EASY"}:
             return Rating.Easy, 4
@@ -130,4 +134,3 @@ def schedule_review(
         difficulty=float(getattr(reviewed_card, "difficulty", 0.0) or 0.0),
     )
     return result, rating_value
-
