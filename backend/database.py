@@ -32,6 +32,33 @@ def get_db_connection_context(): #
     finally:
         conn.close() #
 
+
+def _build_language_pair_filter(
+    source_lang: str | None,
+    target_lang: str | None,
+    *,
+    table_alias: str | None = None,
+) -> tuple[str, list]:
+    if not source_lang or not target_lang:
+        return "", []
+    alias_prefix = f"{table_alias}." if table_alias else ""
+    source_expr = (
+        "LOWER(COALESCE("
+        f"NULLIF({alias_prefix}source_lang, ''), "
+        f"NULLIF({alias_prefix}response_json->>'source_lang', ''), "
+        f"NULLIF({alias_prefix}response_json#>>'{{language_pair,source_lang}}', '')"
+        "))"
+    )
+    target_expr = (
+        "LOWER(COALESCE("
+        f"NULLIF({alias_prefix}target_lang, ''), "
+        f"NULLIF({alias_prefix}response_json->>'target_lang', ''), "
+        f"NULLIF({alias_prefix}response_json#>>'{{language_pair,target_lang}}', '')"
+        "))"
+    )
+    clause = f" AND {source_expr} = %s AND {target_expr} = %s"
+    return clause, [str(source_lang).lower(), str(target_lang).lower()]
+
 def init_db(): #
     with get_db_connection_context() as conn: #
         with conn.cursor() as cursor: 
@@ -992,9 +1019,10 @@ def get_webapp_dictionary_entries(
         with conn.cursor() as cursor:
             where_clause = "WHERE user_id = %s"
             params = [user_id]
-            if source_lang and target_lang:
-                where_clause += " AND COALESCE(source_lang, 'ru') = %s AND COALESCE(target_lang, 'de') = %s"
-                params.extend([source_lang, target_lang])
+            language_filter_sql, language_params = _build_language_pair_filter(source_lang, target_lang)
+            if language_filter_sql:
+                where_clause += language_filter_sql
+                params.extend(language_params)
             if folder_mode == "folder" and folder_id is not None:
                 where_clause += " AND folder_id = %s"
                 params.append(folder_id)
@@ -1558,9 +1586,14 @@ def get_flashcard_set(
         with conn.cursor() as cursor:
             wrong_where = "s.user_id = %s AND s.last_result = FALSE"
             wrong_params = [user_id]
-            if source_lang and target_lang:
-                wrong_where += " AND COALESCE(q.source_lang, 'ru') = %s AND COALESCE(q.target_lang, 'de') = %s"
-                wrong_params.extend([source_lang, target_lang])
+            language_filter_sql_q, language_params = _build_language_pair_filter(
+                source_lang,
+                target_lang,
+                table_alias="q",
+            )
+            if language_filter_sql_q:
+                wrong_where += language_filter_sql_q
+                wrong_params.extend(language_params)
             if folder_mode == "folder" and folder_id is not None:
                 wrong_where += " AND q.folder_id = %s"
                 wrong_params.append(folder_id)
@@ -1580,9 +1613,9 @@ def get_flashcard_set(
             if len(wrong_ids) < wrong_size:
                 extra_where = "s.user_id = %s AND s.entry_id <> ALL(%s::bigint[])"
                 extra_params = [user_id, wrong_ids or [0]]
-                if source_lang and target_lang:
-                    extra_where += " AND COALESCE(q.source_lang, 'ru') = %s AND COALESCE(q.target_lang, 'de') = %s"
-                    extra_params.extend([source_lang, target_lang])
+                if language_filter_sql_q:
+                    extra_where += language_filter_sql_q
+                    extra_params.extend(language_params)
                 if folder_mode == "folder" and folder_id is not None:
                     extra_where += " AND q.folder_id = %s"
                     extra_params.append(folder_id)
@@ -1601,9 +1634,10 @@ def get_flashcard_set(
 
             base_where = "user_id = %s AND id <> ALL(%s::bigint[])"
             base_params = [user_id, wrong_ids or [0]]
-            if source_lang and target_lang:
-                base_where += " AND COALESCE(source_lang, 'ru') = %s AND COALESCE(target_lang, 'de') = %s"
-                base_params.extend([source_lang, target_lang])
+            language_filter_sql, language_params_no_alias = _build_language_pair_filter(source_lang, target_lang)
+            if language_filter_sql:
+                base_where += language_filter_sql
+                base_params.extend(language_params_no_alias)
             if folder_mode == "folder" and folder_id is not None:
                 base_where += " AND folder_id = %s"
                 base_params.append(folder_id)
@@ -1628,9 +1662,9 @@ def get_flashcard_set(
             if len(random_rows) < max(set_size - len(wrong_ids), 0):
                 fallback_where = "user_id = %s AND id <> ALL(%s::bigint[])"
                 fallback_params = [user_id, wrong_ids or [0]]
-                if source_lang and target_lang:
-                    fallback_where += " AND COALESCE(source_lang, 'ru') = %s AND COALESCE(target_lang, 'de') = %s"
-                    fallback_params.extend([source_lang, target_lang])
+                if language_filter_sql:
+                    fallback_where += language_filter_sql
+                    fallback_params.extend(language_params_no_alias)
                 if folder_mode == "folder" and folder_id is not None:
                     fallback_where += " AND folder_id = %s"
                     fallback_params.append(folder_id)
@@ -1649,9 +1683,9 @@ def get_flashcard_set(
             if wrong_ids:
                 wrong_where = "user_id = %s AND id = ANY(%s::bigint[])"
                 wrong_params = [user_id, wrong_ids]
-                if source_lang and target_lang:
-                    wrong_where += " AND COALESCE(source_lang, 'ru') = %s AND COALESCE(target_lang, 'de') = %s"
-                    wrong_params.extend([source_lang, target_lang])
+                if language_filter_sql:
+                    wrong_where += language_filter_sql
+                    wrong_params.extend(language_params_no_alias)
                 if folder_mode == "folder" and folder_id is not None:
                     wrong_where += " AND folder_id = %s"
                     wrong_params.append(folder_id)
@@ -1830,8 +1864,13 @@ def count_due_srs_cards(
     now_utc = now_utc or datetime.now(timezone.utc)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang,
+                target_lang,
+                table_alias="q",
+            )
             cursor.execute(
-                """
+                f"""
                 SELECT COUNT(*)
                 FROM bt_3_card_srs_state s
                 JOIN bt_3_webapp_dictionary_queries q
@@ -1839,10 +1878,9 @@ def count_due_srs_cards(
                 WHERE s.user_id = %s
                   AND s.status <> 'suspended'
                   AND s.due_at <= %s
-                  AND (%s IS NULL OR COALESCE(q.source_lang, 'ru') = %s)
-                  AND (%s IS NULL OR COALESCE(q.target_lang, 'de') = %s);
+                  {language_filter_sql};
                 """,
-                (int(user_id), now_utc, source_lang, source_lang, target_lang, target_lang),
+                [int(user_id), now_utc, *language_params],
             )
             row = cursor.fetchone()
             return int(row[0] if row else 0)
@@ -1857,18 +1895,22 @@ def count_new_cards_introduced_today(
     now_utc = now_utc or datetime.now(timezone.utc)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang,
+                target_lang,
+                table_alias="q",
+            )
             cursor.execute(
-                """
+                f"""
                 SELECT COUNT(*)
                 FROM bt_3_card_srs_state s
                 JOIN bt_3_webapp_dictionary_queries q
                   ON q.id = s.card_id AND q.user_id = s.user_id
                 WHERE s.user_id = %s
                   AND DATE(s.created_at AT TIME ZONE 'UTC') = DATE(%s AT TIME ZONE 'UTC')
-                  AND (%s IS NULL OR COALESCE(q.source_lang, 'ru') = %s)
-                  AND (%s IS NULL OR COALESCE(q.target_lang, 'de') = %s);
+                  {language_filter_sql};
                 """,
-                (int(user_id), now_utc, source_lang, source_lang, target_lang, target_lang),
+                [int(user_id), now_utc, *language_params],
             )
             row = cursor.fetchone()
             return int(row[0] if row else 0)
@@ -1883,8 +1925,13 @@ def get_next_due_srs_card(
     now_utc = now_utc or datetime.now(timezone.utc)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang,
+                target_lang,
+                table_alias="q",
+            )
             cursor.execute(
-                """
+                f"""
                 SELECT
                     s.card_id,
                     s.status,
@@ -1904,12 +1951,11 @@ def get_next_due_srs_card(
                 WHERE s.user_id = %s
                   AND s.status <> 'suspended'
                   AND s.due_at <= %s
-                  AND (%s IS NULL OR COALESCE(q.source_lang, 'ru') = %s)
-                  AND (%s IS NULL OR COALESCE(q.target_lang, 'de') = %s)
+                  {language_filter_sql}
                 ORDER BY s.due_at ASC
                 LIMIT 1;
                 """,
-                (int(user_id), now_utc, source_lang, source_lang, target_lang, target_lang),
+                [int(user_id), now_utc, *language_params],
             )
             row = cursor.fetchone()
             if not row:
@@ -1940,20 +1986,24 @@ def get_next_new_srs_candidate(
 ) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang,
+                target_lang,
+                table_alias="q",
+            )
             cursor.execute(
-                """
+                f"""
                 SELECT q.id, q.word_ru, q.translation_de, q.word_de, q.translation_ru, q.response_json
                 FROM bt_3_webapp_dictionary_queries q
                 LEFT JOIN bt_3_card_srs_state s
                   ON s.user_id = q.user_id AND s.card_id = q.id
                 WHERE q.user_id = %s
                   AND s.id IS NULL
-                  AND (%s IS NULL OR COALESCE(q.source_lang, 'ru') = %s)
-                  AND (%s IS NULL OR COALESCE(q.target_lang, 'de') = %s)
+                  {language_filter_sql}
                 ORDER BY q.created_at ASC
                 LIMIT 1;
                 """,
-                (int(user_id), source_lang, source_lang, target_lang, target_lang),
+                [int(user_id), *language_params],
             )
             row = cursor.fetchone()
             if not row:

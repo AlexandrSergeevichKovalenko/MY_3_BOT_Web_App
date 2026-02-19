@@ -147,6 +147,7 @@ function AppInner() {
   const [srsLoading, setSrsLoading] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
   const [srsRevealAnswer, setSrsRevealAnswer] = useState(false);
+  const [srsError, setSrsError] = useState('');
   const [flashcardFeelMap, setFlashcardFeelMap] = useState({});
   const [flashcardFeelVisibleMap, setFlashcardFeelVisibleMap] = useState({});
   const [flashcardFeelLoadingMap, setFlashcardFeelLoadingMap] = useState({});
@@ -621,6 +622,7 @@ function AppInner() {
     if (!initData) return;
     try {
       setSrsLoading(true);
+      setSrsError('');
       const response = await fetch(`/api/cards/next?initData=${encodeURIComponent(initData)}`);
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte'));
@@ -632,6 +634,7 @@ function AppInner() {
       setSrsRevealAnswer(false);
       srsShownAtRef.current = Date.now();
     } catch (error) {
+      setSrsError(error.message || tr('Не удалось загрузить FSRS карточку.', 'FSRS-Karte konnte nicht geladen werden.'));
       setWebappError(`${tr('Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte')}: ${error.message}`);
     } finally {
       setSrsLoading(false);
@@ -639,17 +642,26 @@ function AppInner() {
   };
 
   const submitSrsReview = async (ratingValue) => {
-    if (!initData || !srsCard?.id) return;
+    if (!initData) {
+      setSrsError(tr('Сессия Telegram не найдена. Откройте mini app через Telegram.', 'Telegram-Sitzung nicht gefunden. Bitte ueber Telegram oeffnen.'));
+      return;
+    }
+    const cardId = srsCard?.id || srsCard?.entry_id;
+    if (!cardId) {
+      setSrsError(tr('У карточки нет идентификатора. Обновите экран.', 'Karten-ID fehlt. Bitte Bildschirm aktualisieren.'));
+      return;
+    }
     const startedAt = srsShownAtRef.current || Date.now();
     const responseMs = Math.max(0, Date.now() - startedAt);
     try {
+      setSrsError('');
       setSrsSubmitting(true);
       const response = await fetch('/api/cards/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          card_id: srsCard.id,
+          card_id: cardId,
           rating: ratingValue,
           response_ms: responseMs,
         }),
@@ -657,8 +669,10 @@ function AppInner() {
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
       }
+      setSrsRevealAnswer(false);
       await loadSrsNextCard();
     } catch (error) {
+      setSrsError(error.message || tr('Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.'));
       setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${error.message}`);
     } finally {
       setSrsSubmitting(false);
@@ -5114,21 +5128,38 @@ function AppInner() {
                   <div className={`flashcards-panel ${flashcardsOnly ? 'is-session' : 'is-setup'}`}>
                     {!flashcardsOnly && (
                       <div className="flashcard-stage is-setup">
-                        <div className="srs-panel srs-panel-setup">
+                        <div
+                          className={`srs-panel srs-panel-setup ${
+                            (srsQueueInfo?.due_count ?? 0) > 0 || srsCard ? 'is-urgent' : 'is-calm'
+                          } ${
+                            !srsLoading && !srsCard && (srsQueueInfo?.due_count ?? 0) === 0 ? 'is-collapsed' : ''
+                          }`}
+                        >
                           <div className="srs-panel-head">
-                            <h3>{t('srs_title')}</h3>
+                            <h3>
+                              <span className="srs-head-icon" aria-hidden="true">
+                                {(srsQueueInfo?.due_count ?? 0) > 0 || srsCard ? '‼️' : '🛋️'}
+                              </span>
+                              {t('srs_title')}
+                            </h3>
                             <div className="srs-queue">
                               <span>{t('due')}: {srsQueueInfo?.due_count ?? 0}</span>
                               <span>{t('new_today')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
                             </div>
                           </div>
                           <div className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {getActiveLanguagePairLabel()}</div>
+                          {!srsLoading && !srsCard && (srsQueueInfo?.due_count ?? 0) === 0 && (
+                            <div className="srs-success-note">
+                              {tr('Сегодня по FSRS всё повторено. Можно отдыхать.', 'Heute ist alles in FSRS wiederholt. Du kannst entspannen.')}
+                            </div>
+                          )}
                           {srsLoading && <div className="webapp-muted">{t('loading_next_card')}</div>}
                           {!srsLoading && !srsCard && (
                             <div className="webapp-muted">{t('no_cards_now')}</div>
                           )}
+                          {srsError && <div className="webapp-error">{srsError}</div>}
                           {!srsLoading && srsCard && (
-                            <div className="srs-card">
+                            <div className={`srs-card ${srsRevealAnswer ? 'is-revealed' : ''}`}>
                               <div className="srs-card-front">
                                 {getDictionarySourceTarget(
                                   srsCard,
@@ -5162,7 +5193,7 @@ function AppInner() {
                               ) : (
                                 <div className="srs-rating-grid">
                                   <button type="button" className="srs-rate again" onClick={() => submitSrsReview('AGAIN')} disabled={srsSubmitting}>
-                                    AGAIN
+                                    {srsSubmitting ? tr('Сохраняем...', 'Speichern...') : 'AGAIN'}
                                   </button>
                                   <button type="button" className="srs-rate hard" onClick={() => submitSrsReview('HARD')} disabled={srsSubmitting}>
                                     HARD
