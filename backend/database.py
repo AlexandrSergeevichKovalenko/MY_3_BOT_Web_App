@@ -11,6 +11,10 @@ env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY") #
+SUPPORTED_LEARNING_LANGUAGES = {"de", "en", "es", "it"}
+SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
+DEFAULT_LEARNING_LANGUAGE = "de"
+DEFAULT_NATIVE_LANGUAGE = "ru"
 
 # Добавим проверку, чтобы сразу видеть ошибку в логах, если адреса нет
 if not DATABASE_URL:
@@ -137,6 +141,54 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_allowed_users (updated_at);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_user_language_profile (
+                    user_id BIGINT PRIMARY KEY,
+                    learning_language TEXT NOT NULL DEFAULT 'de',
+                    native_language TEXT NOT NULL DEFAULT 'ru',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute(
+                """
+                DO $$
+                DECLARE c RECORD;
+                BEGIN
+                    -- Keep language profile columns as plain TEXT for flexible app-level validation.
+                    BEGIN
+                        ALTER TABLE bt_3_user_language_profile
+                        ALTER COLUMN learning_language TYPE TEXT
+                        USING learning_language::text;
+                    EXCEPTION WHEN undefined_column THEN
+                        NULL;
+                    END;
+                    BEGIN
+                        ALTER TABLE bt_3_user_language_profile
+                        ALTER COLUMN native_language TYPE TEXT
+                        USING native_language::text;
+                    EXCEPTION WHEN undefined_column THEN
+                        NULL;
+                    END;
+
+                    -- Drop legacy CHECK constraints that may enforce old regex patterns.
+                    FOR c IN
+                        SELECT conname
+                        FROM pg_constraint
+                        WHERE conrelid = 'public.bt_3_user_language_profile'::regclass
+                          AND contype = 'c'
+                    LOOP
+                        EXECUTE format(
+                            'ALTER TABLE public.bt_3_user_language_profile DROP CONSTRAINT IF EXISTS %I',
+                            c.conname
+                        );
+                    END LOOP;
+                END $$;
+                """
+            )
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_user_language_profile_updated
+                ON bt_3_user_language_profile (updated_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_checks (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -145,8 +197,18 @@ def ensure_webapp_tables() -> None:
                     original_text TEXT NOT NULL,
                     user_translation TEXT NOT NULL,
                     result TEXT NOT NULL,
+                    source_lang TEXT,
+                    target_lang TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_checks
+                ADD COLUMN IF NOT EXISTS source_lang TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_checks
+                ADD COLUMN IF NOT EXISTS target_lang TEXT;
             """)
             cursor.execute("CREATE SEQUENCE IF NOT EXISTS bt_3_webapp_checks_id_seq;")
             cursor.execute("""
@@ -164,6 +226,8 @@ def ensure_webapp_tables() -> None:
                     translation_de TEXT,
                     word_de TEXT,
                     translation_ru TEXT,
+                    source_lang TEXT,
+                    target_lang TEXT,
                     response_json JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -183,6 +247,14 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_webapp_dictionary_queries
                 ADD COLUMN IF NOT EXISTS translation_ru TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS source_lang TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS target_lang TEXT;
             """)
             cursor.execute("""
                 ALTER TABLE bt_3_webapp_dictionary_queries
@@ -206,6 +278,32 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_folder
                 ON bt_3_webapp_dictionary_queries (user_id, folder_id);
             """)
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF to_regclass('public.bt_3_translations') IS NOT NULL THEN
+                        ALTER TABLE bt_3_translations ADD COLUMN IF NOT EXISTS source_lang TEXT;
+                        ALTER TABLE bt_3_translations ADD COLUMN IF NOT EXISTS target_lang TEXT;
+                        CREATE INDEX IF NOT EXISTS idx_bt_3_translations_user_lang_ts
+                        ON bt_3_translations (user_id, source_lang, target_lang, timestamp DESC);
+                    END IF;
+                END $$;
+                """
+            )
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF to_regclass('public.bt_3_daily_sentences') IS NOT NULL THEN
+                        ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS source_lang TEXT;
+                        ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS target_lang TEXT;
+                        CREATE INDEX IF NOT EXISTS idx_bt_3_daily_sentences_user_date_lang
+                        ON bt_3_daily_sentences (user_id, date, source_lang, target_lang);
+                    END IF;
+                END $$;
+                """
+            )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_quiz_history (
                     id SERIAL PRIMARY KEY,
@@ -534,6 +632,77 @@ def list_allowed_telegram_users(limit: int = 100) -> list[dict]:
     ]
 
 
+def _normalize_lang_code(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def get_user_language_profile(user_id: int) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT learning_language, native_language, updated_at
+                FROM bt_3_user_language_profile
+                WHERE user_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return {
+            "user_id": int(user_id),
+            "learning_language": DEFAULT_LEARNING_LANGUAGE,
+            "native_language": DEFAULT_NATIVE_LANGUAGE,
+            "updated_at": None,
+            "has_profile": False,
+        }
+    learning_language = _normalize_lang_code(row[0]) or DEFAULT_LEARNING_LANGUAGE
+    native_language = _normalize_lang_code(row[1]) or DEFAULT_NATIVE_LANGUAGE
+    if learning_language not in SUPPORTED_LEARNING_LANGUAGES:
+        learning_language = DEFAULT_LEARNING_LANGUAGE
+    if native_language not in SUPPORTED_NATIVE_LANGUAGES:
+        native_language = DEFAULT_NATIVE_LANGUAGE
+    return {
+        "user_id": int(user_id),
+        "learning_language": learning_language,
+        "native_language": native_language,
+        "updated_at": row[2].isoformat() if row[2] else None,
+        "has_profile": True,
+    }
+
+
+def upsert_user_language_profile(user_id: int, learning_language: str, native_language: str) -> dict:
+    learning = _normalize_lang_code(learning_language)
+    native = _normalize_lang_code(native_language)
+    if learning not in SUPPORTED_LEARNING_LANGUAGES:
+        raise ValueError(f"Unsupported learning language: {learning_language}")
+    if native not in SUPPORTED_NATIVE_LANGUAGES:
+        raise ValueError(f"Unsupported native language: {native_language}")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_user_language_profile (user_id, learning_language, native_language, updated_at)
+                VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO UPDATE
+                SET learning_language = EXCLUDED.learning_language,
+                    native_language = EXCLUDED.native_language,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING learning_language, native_language, updated_at;
+                """,
+                (int(user_id), learning, native),
+            )
+            row = cursor.fetchone()
+    return {
+        "user_id": int(user_id),
+        "learning_language": row[0],
+        "native_language": row[1],
+        "updated_at": row[2].isoformat() if row[2] else None,
+        "has_profile": True,
+    }
+
+
 def create_access_request(
     user_id: int,
     username: str | None = None,
@@ -709,6 +878,8 @@ def save_webapp_translation(
     original_text: str,
     user_translation: str,
     result: str,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -719,9 +890,11 @@ def save_webapp_translation(
                     session_id,
                     original_text,
                     user_translation,
-                    result
+                    result,
+                    source_lang,
+                    target_lang
                 )
-                VALUES (%s, %s, %s, %s, %s, %s);
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
             """, (
                 user_id,
                 username,
@@ -729,6 +902,8 @@ def save_webapp_translation(
                 original_text,
                 user_translation,
                 result,
+                source_lang,
+                target_lang,
             ))
 
 
@@ -742,6 +917,8 @@ def get_webapp_translation_history(user_id: int, limit: int = 20) -> list[dict]:
                     original_text,
                     user_translation,
                     result,
+                    source_lang,
+                    target_lang,
                     created_at
                 FROM bt_3_webapp_checks
                 WHERE user_id = %s
@@ -756,7 +933,9 @@ def get_webapp_translation_history(user_id: int, limit: int = 20) -> list[dict]:
                     "original_text": row[2],
                     "user_translation": row[3],
                     "result": row[4],
-                    "created_at": row[5].isoformat() if row[5] else None,
+                    "source_lang": row[5],
+                    "target_lang": row[6],
+                    "created_at": row[7].isoformat() if row[7] else None,
                 }
                 for row in rows
             ]
@@ -770,6 +949,8 @@ def save_webapp_dictionary_query(
     translation_ru: str | None,
     response_json: dict,
     folder_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -781,9 +962,11 @@ def save_webapp_dictionary_query(
                     translation_de,
                     word_de,
                     translation_ru,
+                    source_lang,
+                    target_lang,
                     response_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s);
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
             """, (
                 user_id,
                 word_ru,
@@ -791,6 +974,8 @@ def save_webapp_dictionary_query(
                 translation_de,
                 word_de,
                 translation_ru,
+                source_lang,
+                target_lang,
                 json.dumps(response_json, ensure_ascii=False),
             ))
 
@@ -800,11 +985,16 @@ def get_webapp_dictionary_entries(
     limit: int = 100,
     folder_mode: str = "all",
     folder_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             where_clause = "WHERE user_id = %s"
             params = [user_id]
+            if source_lang and target_lang:
+                where_clause += " AND COALESCE(source_lang, 'ru') = %s AND COALESCE(target_lang, 'de') = %s"
+                params.extend([source_lang, target_lang])
             if folder_mode == "folder" and folder_id is not None:
                 where_clause += " AND folder_id = %s"
                 params.append(folder_id)
@@ -812,7 +1002,7 @@ def get_webapp_dictionary_entries(
                 where_clause += " AND folder_id IS NULL"
             params.append(limit)
             cursor.execute(f"""
-                SELECT id, word_ru, translation_de, word_de, translation_ru, response_json, folder_id, created_at
+                SELECT id, word_ru, translation_de, word_de, translation_ru, source_lang, target_lang, response_json, folder_id, created_at
                 FROM bt_3_webapp_dictionary_queries
                 {where_clause}
                 ORDER BY created_at DESC
@@ -828,9 +1018,11 @@ def get_webapp_dictionary_entries(
             "translation_de": row[2],
             "word_de": row[3],
             "translation_ru": row[4],
-            "response_json": row[5],
-            "folder_id": row[6],
-            "created_at": row[7].isoformat() if row[7] else None,
+            "source_lang": row[5],
+            "target_lang": row[6],
+            "response_json": row[7],
+            "folder_id": row[8],
+            "created_at": row[9].isoformat() if row[9] else None,
         })
     return items
 
@@ -841,7 +1033,17 @@ def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT id, word_ru, translation_de, word_de, translation_ru, response_json, folder_id, created_at
+                SELECT
+                    id,
+                    word_ru,
+                    translation_de,
+                    word_de,
+                    translation_ru,
+                    source_lang,
+                    target_lang,
+                    response_json,
+                    folder_id,
+                    created_at
                 FROM bt_3_webapp_dictionary_queries
                 WHERE id = %s
                 LIMIT 1;
@@ -855,9 +1057,11 @@ def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
                 "translation_de": row[2],
                 "word_de": row[3],
                 "translation_ru": row[4],
-                "response_json": row[5],
-                "folder_id": row[6],
-                "created_at": row[7].isoformat() if row[7] else None,
+                "source_lang": row[5],
+                "target_lang": row[6],
+                "response_json": row[7],
+                "folder_id": row[8],
+                "created_at": row[9].isoformat() if row[9] else None,
             }
 
 
@@ -1344,6 +1548,8 @@ def get_flashcard_set(
     wrong_size: int = 5,
     folder_mode: str = "all",
     folder_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> list[dict]:
     if not user_id:
         return []
@@ -1352,6 +1558,9 @@ def get_flashcard_set(
         with conn.cursor() as cursor:
             wrong_where = "s.user_id = %s AND s.last_result = FALSE"
             wrong_params = [user_id]
+            if source_lang and target_lang:
+                wrong_where += " AND COALESCE(q.source_lang, 'ru') = %s AND COALESCE(q.target_lang, 'de') = %s"
+                wrong_params.extend([source_lang, target_lang])
             if folder_mode == "folder" and folder_id is not None:
                 wrong_where += " AND q.folder_id = %s"
                 wrong_params.append(folder_id)
@@ -1371,6 +1580,9 @@ def get_flashcard_set(
             if len(wrong_ids) < wrong_size:
                 extra_where = "s.user_id = %s AND s.entry_id <> ALL(%s::bigint[])"
                 extra_params = [user_id, wrong_ids or [0]]
+                if source_lang and target_lang:
+                    extra_where += " AND COALESCE(q.source_lang, 'ru') = %s AND COALESCE(q.target_lang, 'de') = %s"
+                    extra_params.extend([source_lang, target_lang])
                 if folder_mode == "folder" and folder_id is not None:
                     extra_where += " AND q.folder_id = %s"
                     extra_params.append(folder_id)
@@ -1389,6 +1601,9 @@ def get_flashcard_set(
 
             base_where = "user_id = %s AND id <> ALL(%s::bigint[])"
             base_params = [user_id, wrong_ids or [0]]
+            if source_lang and target_lang:
+                base_where += " AND COALESCE(source_lang, 'ru') = %s AND COALESCE(target_lang, 'de') = %s"
+                base_params.extend([source_lang, target_lang])
             if folder_mode == "folder" and folder_id is not None:
                 base_where += " AND folder_id = %s"
                 base_params.append(folder_id)
@@ -1413,6 +1628,9 @@ def get_flashcard_set(
             if len(random_rows) < max(set_size - len(wrong_ids), 0):
                 fallback_where = "user_id = %s AND id <> ALL(%s::bigint[])"
                 fallback_params = [user_id, wrong_ids or [0]]
+                if source_lang and target_lang:
+                    fallback_where += " AND COALESCE(source_lang, 'ru') = %s AND COALESCE(target_lang, 'de') = %s"
+                    fallback_params.extend([source_lang, target_lang])
                 if folder_mode == "folder" and folder_id is not None:
                     fallback_where += " AND folder_id = %s"
                     fallback_params.append(folder_id)
@@ -1431,6 +1649,9 @@ def get_flashcard_set(
             if wrong_ids:
                 wrong_where = "user_id = %s AND id = ANY(%s::bigint[])"
                 wrong_params = [user_id, wrong_ids]
+                if source_lang and target_lang:
+                    wrong_where += " AND COALESCE(source_lang, 'ru') = %s AND COALESCE(target_lang, 'de') = %s"
+                    wrong_params.extend([source_lang, target_lang])
                 if folder_mode == "folder" and folder_id is not None:
                     wrong_where += " AND folder_id = %s"
                     wrong_params.append(folder_id)
@@ -1600,42 +1821,65 @@ def upsert_card_srs_state(
             return _upsert(own_cursor)
 
 
-def count_due_srs_cards(user_id: int, now_utc: datetime | None = None) -> int:
+def count_due_srs_cards(
+    user_id: int,
+    now_utc: datetime | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> int:
     now_utc = now_utc or datetime.now(timezone.utc)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT COUNT(*)
-                FROM bt_3_card_srs_state
-                WHERE user_id = %s
-                  AND status <> 'suspended'
-                  AND due_at <= %s;
+                FROM bt_3_card_srs_state s
+                JOIN bt_3_webapp_dictionary_queries q
+                  ON q.id = s.card_id AND q.user_id = s.user_id
+                WHERE s.user_id = %s
+                  AND s.status <> 'suspended'
+                  AND s.due_at <= %s
+                  AND (%s IS NULL OR COALESCE(q.source_lang, 'ru') = %s)
+                  AND (%s IS NULL OR COALESCE(q.target_lang, 'de') = %s);
                 """,
-                (int(user_id), now_utc),
+                (int(user_id), now_utc, source_lang, source_lang, target_lang, target_lang),
             )
             row = cursor.fetchone()
             return int(row[0] if row else 0)
 
 
-def count_new_cards_introduced_today(user_id: int, now_utc: datetime | None = None) -> int:
+def count_new_cards_introduced_today(
+    user_id: int,
+    now_utc: datetime | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> int:
     now_utc = now_utc or datetime.now(timezone.utc)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT COUNT(*)
-                FROM bt_3_card_srs_state
-                WHERE user_id = %s
-                  AND DATE(created_at AT TIME ZONE 'UTC') = DATE(%s AT TIME ZONE 'UTC');
+                FROM bt_3_card_srs_state s
+                JOIN bt_3_webapp_dictionary_queries q
+                  ON q.id = s.card_id AND q.user_id = s.user_id
+                WHERE s.user_id = %s
+                  AND DATE(s.created_at AT TIME ZONE 'UTC') = DATE(%s AT TIME ZONE 'UTC')
+                  AND (%s IS NULL OR COALESCE(q.source_lang, 'ru') = %s)
+                  AND (%s IS NULL OR COALESCE(q.target_lang, 'de') = %s);
                 """,
-                (int(user_id), now_utc),
+                (int(user_id), now_utc, source_lang, source_lang, target_lang, target_lang),
             )
             row = cursor.fetchone()
             return int(row[0] if row else 0)
 
 
-def get_next_due_srs_card(user_id: int, now_utc: datetime | None = None) -> dict | None:
+def get_next_due_srs_card(
+    user_id: int,
+    now_utc: datetime | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> dict | None:
     now_utc = now_utc or datetime.now(timezone.utc)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -1660,10 +1904,12 @@ def get_next_due_srs_card(user_id: int, now_utc: datetime | None = None) -> dict
                 WHERE s.user_id = %s
                   AND s.status <> 'suspended'
                   AND s.due_at <= %s
+                  AND (%s IS NULL OR COALESCE(q.source_lang, 'ru') = %s)
+                  AND (%s IS NULL OR COALESCE(q.target_lang, 'de') = %s)
                 ORDER BY s.due_at ASC
                 LIMIT 1;
                 """,
-                (int(user_id), now_utc),
+                (int(user_id), now_utc, source_lang, source_lang, target_lang, target_lang),
             )
             row = cursor.fetchone()
             if not row:
@@ -1687,7 +1933,11 @@ def get_next_due_srs_card(user_id: int, now_utc: datetime | None = None) -> dict
             }
 
 
-def get_next_new_srs_candidate(user_id: int) -> dict | None:
+def get_next_new_srs_candidate(
+    user_id: int,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -1698,10 +1948,12 @@ def get_next_new_srs_candidate(user_id: int) -> dict | None:
                   ON s.user_id = q.user_id AND s.card_id = q.id
                 WHERE q.user_id = %s
                   AND s.id IS NULL
+                  AND (%s IS NULL OR COALESCE(q.source_lang, 'ru') = %s)
+                  AND (%s IS NULL OR COALESCE(q.target_lang, 'de') = %s)
                 ORDER BY q.created_at ASC
                 LIMIT 1;
                 """,
-                (int(user_id),),
+                (int(user_id), source_lang, source_lang, target_lang, target_lang),
             )
             row = cursor.fetchone()
             if not row:
@@ -1739,7 +1991,15 @@ def get_dictionary_entry_for_user(user_id: int, card_id: int, cursor=None) -> di
     def _fetch(cur):
         cur.execute(
             """
-            SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
+            SELECT
+                id,
+                word_ru,
+                translation_de,
+                word_de,
+                translation_ru,
+                source_lang,
+                target_lang,
+                response_json
             FROM bt_3_webapp_dictionary_queries
             WHERE user_id = %s AND id = %s
             LIMIT 1;
@@ -1755,7 +2015,9 @@ def get_dictionary_entry_for_user(user_id: int, card_id: int, cursor=None) -> di
             "translation_de": row[2],
             "word_de": row[3],
             "translation_ru": row[4],
-            "response_json": row[5],
+            "source_lang": row[5],
+            "target_lang": row[6],
+            "response_json": row[7],
         }
     if cursor is not None:
         return _fetch(cursor)
@@ -2033,10 +2295,35 @@ def get_latest_daily_sentences(user_id: int, limit: int = 7) -> list[dict]:
             ]
 
 
-def get_pending_daily_sentences(user_id: int, limit: int = 7) -> list[dict]:
+def get_pending_daily_sentences(
+    user_id: int,
+    limit: int = 7,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            latest_session_id = _get_latest_session_id(cursor, user_id)
+            cursor.execute(
+                """
+                SELECT up.session_id
+                FROM bt_3_user_progress up
+                WHERE up.user_id = %s
+                  AND up.completed = FALSE
+                  AND EXISTS (
+                    SELECT 1
+                    FROM bt_3_daily_sentences ds
+                    WHERE ds.user_id = up.user_id
+                      AND ds.session_id = up.session_id
+                      AND COALESCE(ds.source_lang, 'ru') = %s
+                      AND COALESCE(ds.target_lang, 'de') = %s
+                  )
+                ORDER BY up.start_time DESC
+                LIMIT 1;
+                """,
+                (user_id, source_lang, target_lang),
+            )
+            latest_session = cursor.fetchone()
+            latest_session_id = latest_session[0] if latest_session else None
             if not latest_session_id:
                 return []
 
@@ -2047,12 +2334,25 @@ def get_pending_daily_sentences(user_id: int, limit: int = 7) -> list[dict]:
                     ON tr.user_id = ds.user_id
                     AND tr.sentence_id = ds.id
                     AND tr.session_id = %s
+                    AND COALESCE(tr.source_lang, 'ru') = %s
+                    AND COALESCE(tr.target_lang, 'de') = %s
                 WHERE ds.user_id = %s
                   AND ds.session_id = %s
+                  AND COALESCE(ds.source_lang, 'ru') = %s
+                  AND COALESCE(ds.target_lang, 'de') = %s
                   AND tr.id IS NULL
                 ORDER BY ds.unique_id ASC
                 LIMIT %s;
-            """, (latest_session_id, user_id, latest_session_id, limit))
+            """, (
+                latest_session_id,
+                source_lang,
+                target_lang,
+                user_id,
+                latest_session_id,
+                source_lang,
+                target_lang,
+                limit,
+            ))
             rows = cursor.fetchall()
             return [
                 {

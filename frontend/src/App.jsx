@@ -80,6 +80,7 @@ function AppInner() {
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
   const [dictionarySaved, setDictionarySaved] = useState('');
   const [dictionaryDirection, setDictionaryDirection] = useState('ru-de');
+  const [dictionaryLanguagePair, setDictionaryLanguagePair] = useState(null);
   const [collocationsVisible, setCollocationsVisible] = useState(false);
   const [collocationsLoading, setCollocationsLoading] = useState(false);
   const [collocationsError, setCollocationsError] = useState('');
@@ -97,7 +98,7 @@ function AppInner() {
   const [youtubePlayerReady, setYoutubePlayerReady] = useState(false);
   const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
-  const [youtubeRuEnabled, setYoutubeRuEnabled] = useState(false);
+  const [youtubeTranslationEnabled, setYoutubeTranslationEnabled] = useState(false);
   const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
   const [youtubeAppFullscreen, setYoutubeAppFullscreen] = useState(false);
   const [youtubeIsPaused, setYoutubeIsPaused] = useState(false);
@@ -107,6 +108,7 @@ function AppInner() {
   const [moviesLoading, setMoviesLoading] = useState(false);
   const [moviesError, setMoviesError] = useState('');
   const [moviesCollapsed, setMoviesCollapsed] = useState(false);
+  const [moviesLanguageFilter, setMoviesLanguageFilter] = useState('all');
   const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
   const [selectionText, setSelectionText] = useState('');
@@ -217,6 +219,12 @@ function AppInner() {
   const [analyticsPoints, setAnalyticsPoints] = useState([]);
   const [analyticsCompare, setAnalyticsCompare] = useState([]);
   const [analyticsRank, setAnalyticsRank] = useState(null);
+  const [languageProfile, setLanguageProfile] = useState(null);
+  const [languageProfileDraft, setLanguageProfileDraft] = useState({ learning_language: 'de', native_language: 'ru' });
+  const [languageProfileLoading, setLanguageProfileLoading] = useState(false);
+  const [languageProfileSaving, setLanguageProfileSaving] = useState(false);
+  const [languageProfileError, setLanguageProfileError] = useState('');
+  const [languageProfileModalOpen, setLanguageProfileModalOpen] = useState(false);
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
 
@@ -288,10 +296,40 @@ function AppInner() {
   const [uiLang, setUiLang] = useState('ru');
   const t = useMemo(() => createTranslator(uiLang), [uiLang]);
   const tr = (ru, de) => (uiLang === 'de' ? de : ru);
+  const readApiError = async (response, fallbackRu, fallbackDe) => {
+    const fallback = tr(fallbackRu, fallbackDe);
+    try {
+      const raw = await response.text();
+      if (!raw) return `${fallback} (HTTP ${response.status})`;
+      try {
+        const parsed = JSON.parse(raw);
+        const message = String(parsed?.error || parsed?.message || '').trim();
+        return message || `${fallback} (HTTP ${response.status})`;
+      } catch (_jsonError) {
+        const compact = String(raw).replace(/\s+/g, ' ').trim();
+        return compact || `${fallback} (HTTP ${response.status})`;
+      }
+    } catch (_readError) {
+      return `${fallback} (HTTP ${response.status})`;
+    }
+  };
   const initDataMissingMsg = tr(
     'initData не найдено. Откройте Web App внутри Telegram.',
     'initData nicht gefunden. Oeffne die Web App in Telegram.'
   );
+  const learningLanguageOptions = [
+    { value: 'de', label: tr('Немецкий', 'Deutsch') },
+    { value: 'en', label: tr('Английский', 'Englisch') },
+    { value: 'es', label: tr('Испанский', 'Spanisch') },
+    { value: 'it', label: tr('Итальянский', 'Italienisch') },
+  ];
+  const nativeLanguageOptions = [
+    { value: 'ru', label: tr('Русский', 'Russisch') },
+    { value: 'en', label: tr('Английский', 'Englisch') },
+    { value: 'de', label: tr('Немецкий', 'Deutsch') },
+  ];
+  const needsLanguageProfileChoice = Boolean(isWebAppMode && initData && !languageProfileLoading && !languageProfile?.has_profile);
+  const languageProfileGateOpen = needsLanguageProfileChoice || languageProfileModalOpen;
 
   const toggleLanguage = () => {
     setUiLang((prev) => (prev === 'ru' ? 'de' : 'ru'));
@@ -542,16 +580,41 @@ function AppInner() {
       .filter(Boolean);
   };
 
-  const resolveFlashcardGerman = (entry) => {
-    if (!entry) return '';
-    const responseJson = entry.response_json || {};
-    return (
-      entry.word_de
+  const getLearningTtsLocale = () => {
+    const lang = normalizeLangCode(languageProfile?.learning_language);
+    if (lang === 'en') return 'en-US';
+    if (lang === 'es') return 'es-ES';
+    if (lang === 'it') return 'it-IT';
+    return 'de-DE';
+  };
+
+  const resolveFlashcardTexts = (entry) => {
+    const responseJson = entry?.response_json || {};
+    const sourceText = String(
+      responseJson.source_text
+      || entry?.word_ru
+      || responseJson.word_ru
+      || entry?.translation_ru
+      || responseJson.translation_ru
+      || entry?.word_de
       || responseJson.word_de
-      || entry.translation_de
-      || responseJson.translation_de
       || ''
-    );
+    ).trim();
+    const targetText = String(
+      responseJson.target_text
+      || entry?.translation_de
+      || responseJson.translation_de
+      || entry?.word_de
+      || responseJson.word_de
+      || entry?.translation_ru
+      || responseJson.translation_ru
+      || ''
+    ).trim();
+    return { sourceText, targetText };
+  };
+
+  const resolveFlashcardGerman = (entry) => {
+    return resolveFlashcardTexts(entry).targetText;
   };
 
   const loadSrsNextCard = async () => {
@@ -560,7 +623,7 @@ function AppInner() {
       setSrsLoading(true);
       const response = await fetch(`/api/cards/next?initData=${encodeURIComponent(initData)}`);
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte'));
       }
       const data = await response.json();
       setSrsCard(data.card || null);
@@ -592,7 +655,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
       }
       await loadSrsNextCard();
     } catch (error) {
@@ -600,6 +663,105 @@ function AppInner() {
     } finally {
       setSrsSubmitting(false);
     }
+  };
+
+  const loadLanguageProfile = async () => {
+    if (!initData) return;
+    try {
+      setLanguageProfileLoading(true);
+      setLanguageProfileError('');
+      const response = await fetch('/api/user/language-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parse errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      const profile = data?.profile || null;
+      setLanguageProfile(profile);
+      if (profile) {
+        setLanguageProfileDraft({
+          learning_language: profile.learning_language || 'de',
+          native_language: profile.native_language || 'ru',
+        });
+      }
+    } catch (error) {
+      setLanguageProfileError(`${tr('Ошибка профиля языка', 'Sprachprofil-Fehler')}: ${error.message}`);
+    } finally {
+      setLanguageProfileLoading(false);
+    }
+  };
+
+  const saveLanguageProfile = async () => {
+    if (!initData) return;
+    try {
+      setLanguageProfileSaving(true);
+      setLanguageProfileError('');
+      const response = await fetch('/api/user/language-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          learning_language: languageProfileDraft.learning_language,
+          native_language: languageProfileDraft.native_language,
+        }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parse errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      if (data?.profile) {
+        const prevPair = `${languageProfile?.native_language || 'ru'}-${languageProfile?.learning_language || 'de'}`;
+        setLanguageProfile(data.profile);
+        const nextPair = `${data.profile.native_language || 'ru'}-${data.profile.learning_language || 'de'}`;
+        const pairChanged = prevPair !== nextPair || Boolean(data.reset_sessions);
+        if (pairChanged) {
+          setSessionType('none');
+          setSentences([]);
+          setResults([]);
+          setExplanations({});
+          setTranslationDrafts({});
+          if (webappUser?.id) {
+            const oldStorageKey = `webappDrafts_${webappUser.id}_${sessionId || 'nosession'}`;
+            safeStorageRemove(oldStorageKey);
+          }
+          await loadSessionInfo();
+          await loadSentences();
+        }
+        if (!needsLanguageProfileChoice) {
+          setLanguageProfileModalOpen(false);
+        }
+      }
+    } catch (error) {
+      setLanguageProfileError(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
+    } finally {
+      setLanguageProfileSaving(false);
+    }
+  };
+
+  const openLanguageProfileModal = () => {
+    setLanguageProfileError('');
+    setLanguageProfileDraft({
+      learning_language: languageProfile?.learning_language || 'de',
+      native_language: languageProfile?.native_language || 'ru',
+    });
+    setLanguageProfileModalOpen(true);
   };
 
   const scrollToDictionary = () => {
@@ -935,6 +1097,30 @@ function AppInner() {
   };
 
   useEffect(() => {
+    if (!telegramApp) return;
+    try {
+      telegramApp.ready?.();
+      telegramApp.expand?.();
+      telegramApp.disableVerticalSwipes?.();
+    } catch (error) {
+      // Telegram API may be partially unavailable in browser mode.
+    }
+
+    const onResize = () => {
+      try {
+        telegramApp.expand?.();
+      } catch (error) {
+        // ignore
+      }
+    };
+    window.addEventListener('resize', onResize);
+
+    return () => {
+      window.removeEventListener('resize', onResize);
+    };
+  }, [telegramApp]);
+
+  useEffect(() => {
     if (telegramApp?.initData) return;
     const stored = safeStorageGet('browser_init_data');
     if (stored && !initData) {
@@ -1026,6 +1212,11 @@ function AppInner() {
 
     bootstrap();
   }, [initData, isWebAppMode]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) return;
+    loadLanguageProfile();
+  }, [isWebAppMode, initData]);
 
   useEffect(() => {
     if (flashcardsOnly || !selectedSections.has('assistant')) {
@@ -1123,7 +1314,7 @@ function AppInner() {
       }
       setPreviewAudioReady(false);
       setPreviewAudioPlaying(true);
-      await playTts(text, 'de-DE');
+      await playTts(text, getLearningTtsLocale());
       if (cancelled) return;
       setPreviewAudioPlaying(false);
       setPreviewAudioReady(true);
@@ -1179,12 +1370,7 @@ function AppInner() {
       if (currentSelection !== null) return;
       const entry = flashcards[currentIndex];
       if (!entry) return;
-      const responseJson = entry.response_json || {};
-      const correct = entry.translation_de
-        || responseJson.translation_de
-        || entry.translation_ru
-        || responseJson.translation_ru
-        || '—';
+      const correct = resolveFlashcardTexts(entry).targetText || '—';
       const timeSpentMs = Math.max(0, Date.now() - flashcardRoundStartRef.current);
       recordFlashcardAnswer(entry.id, false, {
         mode: 'quiz',
@@ -1202,7 +1388,7 @@ function AppInner() {
       (async () => {
         const german = resolveFlashcardGerman(entry);
         if (german) {
-          await playTts(german, 'de-DE');
+          await playTts(german, getLearningTtsLocale());
         }
         if (flashcardAutoAdvance) {
           revealTimeoutRef.current = setTimeout(() => {
@@ -1290,7 +1476,7 @@ function AppInner() {
         body: JSON.stringify({ initData, limit: 7 }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка загрузки предложений', 'Fehler beim Laden der Saetze'));
       }
       const data = await response.json();
       setSentences(data.items || []);
@@ -1307,7 +1493,7 @@ function AppInner() {
     try {
       const response = await fetch('/api/webapp/topics');
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка загрузки тем', 'Fehler beim Laden der Themen'));
       }
       const data = await response.json();
       const items = Array.isArray(data.items) ? data.items : [];
@@ -1423,18 +1609,18 @@ function AppInner() {
     setExplanationLoading({});
 
     try {
-      const submittedIds = Object.entries(translationDrafts)
-        .filter(([, text]) => text && text.trim())
-        .map(([id]) => Number(id));
+      const submittedEntries = Object.entries(translationDrafts)
+        .map(([id, translation]) => ({ id: Number(id), translation: String(translation || '').trim() }))
+        .filter((item) => item.translation);
       const response = await fetch('/api/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
           session_id: sessionId,
-          translations: Object.entries(translationDrafts).map(([id, translation]) => ({
-            id_for_mistake_table: Number(id),
-            translation,
+          translations: submittedEntries.map((item) => ({
+            id_for_mistake_table: item.id,
+            translation: item.translation,
           })),
           original_text: numberedOriginal,
           user_translation: numberedTranslations,
@@ -1444,23 +1630,24 @@ function AppInner() {
         throw new Error(await response.text());
       }
       const data = await response.json();
-      setResults(data.results || []);
-      if (submittedIds.length > 0) {
-        setSentences((prev) => prev.filter((item) => !submittedIds.includes(Number(item.id_for_mistake_table))));
-        setTranslationDrafts((prev) => {
-          const next = { ...prev };
-          submittedIds.forEach((id) => {
-            delete next[String(id)];
-          });
-          const storageKey = `webappDrafts_${webappUser?.id || 'unknown'}_${sessionId || 'nosession'}`;
-          if (Object.keys(next).length === 0) {
-            safeStorageRemove(storageKey);
-          } else {
-            safeStorageSet(storageKey, JSON.stringify(next));
-          }
-          return next;
+      setResults((prev) => {
+        const indexByKey = new Map();
+        const merged = [...prev];
+        merged.forEach((item, idx) => {
+          const key = String(item?.sentence_number ?? item?.id_for_mistake_table ?? item?.original_text ?? idx);
+          indexByKey.set(key, idx);
         });
-      }
+        (data.results || []).forEach((item, idx) => {
+          const key = String(item?.sentence_number ?? item?.id_for_mistake_table ?? item?.original_text ?? `new-${idx}`);
+          if (indexByKey.has(key)) {
+            merged[indexByKey.get(key)] = item;
+          } else {
+            indexByKey.set(key, merged.length);
+            merged.push(item);
+          }
+        });
+        return merged;
+      });
     } catch (error) {
       setWebappError(`${tr('Ошибка проверки', 'Pruefungsfehler')}: ${error.message}`);
     } finally {
@@ -1767,11 +1954,148 @@ function AppInner() {
   };
 
   const resolveDictionaryDirection = (item) => {
-    if (!item) return 'ru-de';
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const forward = `${pair.source_lang}-${pair.target_lang}`;
+    const reverse = `${pair.target_lang}-${pair.source_lang}`;
+    if (!item) return forward;
+    if (item.source_text || item.target_text) return forward;
     if (item.translation_de) return 'ru-de';
     if (item.translation_ru) return 'de-ru';
     if (item.word_de) return 'de-ru';
-    return 'ru-de';
+    return forward;
+  };
+
+  const normalizeLangCode = (value) => String(value || '').trim().toLowerCase();
+  const getMovieLanguageCode = (item) => normalizeLangCode(item?.language || '').slice(0, 2) || 'unknown';
+  const resolveLanguagePairForUI = (pair) => {
+    const source = normalizeLangCode(pair?.source_lang);
+    const target = normalizeLangCode(pair?.target_lang);
+    if (source && target) return { source_lang: source, target_lang: target };
+    const profileSource = normalizeLangCode(languageProfile?.native_language) || 'ru';
+    const profileTarget = normalizeLangCode(languageProfile?.learning_language) || 'de';
+    return { source_lang: profileSource, target_lang: profileTarget };
+  };
+  const getDictionaryDirectionLabel = () => {
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const source = String(pair.source_lang || '').toUpperCase();
+    const target = String(pair.target_lang || '').toUpperCase();
+    return `${source} → ${target}`;
+  };
+  const getLookupDirectionLabel = () => {
+    const dir = String(dictionaryDirection || '').trim().toLowerCase();
+    if (dir && dir.includes('-')) {
+      const [from, to] = dir.split('-', 2);
+      if (from && to) return `${from.toUpperCase()} → ${to.toUpperCase()}`;
+    }
+    return getDictionaryDirectionLabel();
+  };
+  const getActiveLanguagePairLabel = () => {
+    const source = String(languageProfile?.native_language || 'ru').toUpperCase();
+    const target = String(languageProfile?.learning_language || 'de').toUpperCase();
+    return `${source} → ${target}`;
+  };
+  const getNativeSubtitleCode = () => {
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    return String(pair.source_lang || languageProfile?.native_language || 'ru').toUpperCase();
+  };
+  const movieLanguageOptions = useMemo(() => {
+    const set = new Set();
+    movies.forEach((item) => set.add(getMovieLanguageCode(item)));
+    return Array.from(set)
+      .filter(Boolean)
+      .sort();
+  }, [movies]);
+  const moviesFiltered = useMemo(() => {
+    if (moviesLanguageFilter === 'all') return movies;
+    return movies.filter((item) => getMovieLanguageCode(item) === moviesLanguageFilter);
+  }, [movies, moviesLanguageFilter]);
+  const getDictionarySourceTarget = (item, direction = dictionaryDirection) => {
+    if (!item) return { sourceText: '', targetText: '' };
+    const sourceText = String(
+      item.source_text
+      || (direction === 'de-ru'
+        ? (item.translation_ru || item.word_ru || '')
+        : (item.word_ru || item.translation_ru || ''))
+      || ''
+    ).trim();
+    const targetText = String(
+      item.target_text
+      || (direction === 'de-ru'
+        ? (item.word_de || item.translation_de || '')
+        : (item.translation_de || item.word_de || ''))
+      || ''
+    ).trim();
+    return { sourceText, targetText };
+  };
+  const getDictionaryDisplayedTranslation = (item, direction = dictionaryDirection) => {
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const normalizedDirection = String(direction || '').trim().toLowerCase();
+    const forward = `${pair.source_lang}-${pair.target_lang}`;
+    const reverse = `${pair.target_lang}-${pair.source_lang}`;
+    const { sourceText, targetText } = getDictionarySourceTarget(item, direction);
+    if (normalizedDirection === reverse) {
+      return sourceText || '';
+    }
+    if (normalizedDirection === forward) {
+      return targetText || '';
+    }
+    return targetText || sourceText || '';
+  };
+  const getFormValue = (forms, keys) => {
+    if (!forms || typeof forms !== 'object') return '';
+    const candidates = Array.isArray(keys) ? keys : [keys];
+    for (const key of candidates) {
+      const value = String(forms?.[key] ?? '').trim();
+      if (value && value !== '-' && value !== '—') return value;
+    }
+    return '';
+  };
+  const getDictionaryFormRows = (item) => {
+    const forms = item?.forms;
+    if (!forms || typeof forms !== 'object') return [];
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const learningLang = normalizeLangCode(pair?.target_lang || languageProfile?.learning_language || 'de');
+
+    const byLang = {
+      de: [
+        { label: 'Plural', keys: ['plural'] },
+        { label: 'Präteritum', keys: ['praeteritum'] },
+        { label: 'Perfekt', keys: ['perfekt'] },
+        { label: 'Konjunktiv I', keys: ['konjunktiv1'] },
+        { label: 'Konjunktiv II', keys: ['konjunktiv2'] },
+      ],
+      it: [
+        { label: 'Plurale', keys: ['plural'] },
+        { label: 'Presente', keys: ['presente'] },
+        { label: 'Passato prossimo', keys: ['passato_prossimo', 'past_perfect', 'perfekt'] },
+        { label: 'Imperfetto', keys: ['imperfetto'] },
+        { label: 'Congiuntivo', keys: ['congiuntivo'] },
+      ],
+      es: [
+        { label: 'Plural', keys: ['plural'] },
+        { label: 'Presente', keys: ['presente'] },
+        { label: 'Pretérito', keys: ['preterito', 'past', 'praeteritum'] },
+        { label: 'Pretérito perfecto', keys: ['preterito_perfecto', 'perfekt'] },
+        { label: 'Subjuntivo', keys: ['subjuntivo', 'konjunktiv1', 'konjunktiv2'] },
+      ],
+      en: [
+        { label: 'Plural', keys: ['plural'] },
+        { label: 'Past', keys: ['past', 'praeteritum'] },
+        { label: 'Past participle', keys: ['past_participle', 'perfekt'] },
+        { label: 'Gerund', keys: ['gerund'] },
+      ],
+    };
+
+    const schema = byLang[learningLang] || byLang.en;
+    return schema
+      .map((field) => ({ label: field.label, value: getFormValue(forms, field.keys) }))
+      .filter((row) => row.value);
+  };
+
+  const isLegacyRuDeDirection = (direction) => direction === 'ru-de' || direction === 'de-ru';
+  const getNormalizeLookupLang = () => {
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    return pair.target_lang || languageProfile?.learning_language || 'de';
   };
 
   const hasCyrillic = (value) => /[А-Яа-яЁё]/.test(value || '');
@@ -1816,7 +2140,8 @@ function AppInner() {
     if (!cleaned) return '';
     if (hasCyrillic(cleaned)) return cleaned;
     try {
-      const normalizeResponse = await fetch('/api/webapp/normalize/de', {
+      const normalizeLang = encodeURIComponent(getNormalizeLookupLang());
+      const normalizeResponse = await fetch(`/api/webapp/normalize/${normalizeLang}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData, text: cleaned }),
@@ -1845,9 +2170,8 @@ function AppInner() {
       if (!response.ok) throw new Error('lookup failed');
       const data = await response.json();
       const direction = data.direction || resolveDictionaryDirection(data.item);
-      const translation = direction === 'ru-de'
-        ? (data.item?.translation_de || data.item?.word_de || '')
-        : (data.item?.translation_ru || data.item?.word_ru || '');
+      setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
+      const translation = getDictionarySourceTarget(data.item, direction).targetText || '';
       setSelectionInlineLookup({
         loading: false,
         word: normalized,
@@ -1893,12 +2217,15 @@ function AppInner() {
       }
       const data = await response.json();
       const detectedDirection = data.direction || resolveDictionaryDirection(data.item);
+      setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
+      const pair = resolveLanguagePairForUI(data.language_pair);
+      const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(detectedDirection);
       const canonicalWordDe = normalizeSelectionText(data.item?.word_de || '');
       const canonicalWordRu = normalizeSelectionText(data.item?.word_ru || '');
-      const saveWordDe = detectedDirection === 'de-ru'
+      const saveWordDe = isLegacyPair && detectedDirection === 'de-ru'
         ? (canonicalWordDe || normalized)
         : '';
-      const saveWordRu = detectedDirection === 'ru-de'
+      const saveWordRu = isLegacyPair && detectedDirection === 'ru-de'
         ? (canonicalWordRu || normalized)
         : '';
       const autoFolder = inlineMode && youtubeAppFullscreen
@@ -1920,6 +2247,8 @@ function AppInner() {
           word_de: saveWordDe,
           translation_de: data.item?.translation_de || '',
           translation_ru: data.item?.translation_ru || '',
+          source_text: getDictionarySourceTarget(data.item, detectedDirection).sourceText || normalized,
+          target_text: getDictionarySourceTarget(data.item, detectedDirection).targetText || '',
           response_json: data.item || {},
           folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
         }),
@@ -1934,6 +2263,8 @@ function AppInner() {
         }
         throw new Error(message);
       }
+      const savePayload = await saveResponse.json();
+      setDictionaryLanguagePair(resolveLanguagePairForUI(savePayload.language_pair));
       if (inlineMode) {
         setSelectionInlineLookup((prev) => ({
           ...prev,
@@ -1963,7 +2294,8 @@ function AppInner() {
     let normalized = cleaned;
     if (!hasCyrillic(cleaned)) {
       try {
-        const normalizeResponse = await fetch('/api/webapp/normalize/de', {
+        const normalizeLang = encodeURIComponent(getNormalizeLookupLang());
+        const normalizeResponse = await fetch(`/api/webapp/normalize/${normalizeLang}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ initData, text: cleaned }),
@@ -2001,6 +2333,7 @@ function AppInner() {
       const data = await response.json();
       setDictionaryResult(data.item || null);
       setDictionaryDirection(data.direction || resolveDictionaryDirection(data.item));
+      setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
       scrollToDictionary();
       clearSelection();
     } catch (error) {
@@ -2034,6 +2367,7 @@ function AppInner() {
         throw new Error(await response.text());
       }
       const data = await response.json();
+      setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
       const items = (data.items || []).map((item) => ({
         ...item,
         response_json: coerceResponseJson(item.response_json),
@@ -2079,6 +2413,7 @@ function AppInner() {
         });
         if (poolResponse.ok) {
           const poolData = await poolResponse.json();
+          setDictionaryLanguagePair(resolveLanguagePairForUI(poolData.language_pair));
           const poolItems = (poolData.items || []).map((item) => ({
             ...item,
             response_json: coerceResponseJson(item.response_json),
@@ -2171,24 +2506,13 @@ function AppInner() {
   };
 
   const buildFlashcardOptions = (entry, allEntries) => {
-    const responseJson = entry?.response_json || {};
-    const correct = entry?.translation_de
-      || responseJson.translation_de
-      || entry?.translation_ru
-      || responseJson.translation_ru
-      || '';
+    const correct = resolveFlashcardTexts(entry).targetText || '';
     if (!correct) return [];
     const pool = [...allEntries, ...flashcardPool]
       .filter((item) => item && item.id !== entry?.id);
     const values = Array.from(new Set(
       pool
-        .map((item) => (
-          item.translation_de
-            || item.response_json?.translation_de
-            || item.translation_ru
-            || item.response_json?.translation_ru
-            || ''
-        ))
+        .map((item) => resolveFlashcardTexts(item).targetText || '')
         .filter(Boolean)
         .filter((value) => value !== correct)
     ));
@@ -2211,7 +2535,7 @@ function AppInner() {
 
   const resolveBlocksAnswer = (entry) => {
     const responseJson = entry?.response_json || {};
-    const translationDe = entry?.translation_de || responseJson.translation_de || '';
+    const translationDe = resolveFlashcardTexts(entry).targetText || '';
     const translationArray = Array.isArray(responseJson.translations)
       ? responseJson.translations.filter(Boolean)
       : [];
@@ -2230,12 +2554,7 @@ function AppInner() {
   };
 
   const resolveBlocksPrompt = (entry) => {
-    const responseJson = entry?.response_json || {};
-    return entry?.word_ru
-      || responseJson.word_ru
-      || entry?.translation_ru
-      || responseJson.translation_ru
-      || t('blocks_build_answer');
+    return resolveFlashcardTexts(entry).sourceText || t('blocks_build_answer');
   };
 
   const resolveBlocksType = (entry, answer) => {
@@ -2641,6 +2960,26 @@ function AppInner() {
       .replace(/\*(.+?)\*/g, '<strong>$1</strong>');
   };
 
+  const renderExplanationRichText = (text) => {
+    if (!text) return '';
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    const withSections = escaped
+      .replace(/^Error\s+(\d+):/gim, '<strong>🔴 Error $1:</strong>')
+      .replace(/^Correct Translation:/gim, '<strong>🟣 Correct Translation:</strong>')
+      .replace(/^Grammar Explanation:/gim, '<strong>🟡 Grammar Explanation:</strong>')
+      .replace(/^Alternative Sentence Construction:/gim, '<strong>🔵 Alternative Sentence Construction:</strong>')
+      .replace(/^Alternative Construction:/gim, '<strong>🔵 Alternative Sentence Construction:</strong>')
+      .replace(/^Synonyms:/gim, '<strong>➡️ Synonyms:</strong>')
+      .replace(/^Original Word:/gim, '<strong>• Original Word:</strong>')
+      .replace(/^Possible Synonyms:/gim, '<strong>• Possible Synonyms:</strong>');
+
+    return withSections.replace(/\n/g, '<br />');
+  };
+
   const renderFeedback = (feedback) => {
     if (!feedback) return null;
     const lines = feedback.split('\n').map((line) => line.trim()).filter(Boolean);
@@ -2703,6 +3042,7 @@ function AppInner() {
       const data = await response.json();
       setDictionaryResult(data.item || null);
       setDictionaryDirection(data.direction || resolveDictionaryDirection(data.item));
+      setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
     } catch (error) {
       setDictionaryError(`${tr('Ошибка словаря', 'Woerterbuchfehler')}: ${error.message}`);
     } finally {
@@ -2730,23 +3070,21 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          word: dictionaryWord.trim() || dictionaryResult.word_ru || dictionaryResult.word_de,
-          translation: dictionaryDirection === 'ru-de'
-            ? (dictionaryResult.translation_de || '')
-            : (dictionaryResult.translation_ru || ''),
+          word: dictionaryWord.trim() || getDictionarySourceTarget(dictionaryResult).sourceText || dictionaryResult.word_ru || dictionaryResult.word_de,
+          translation: getDictionarySourceTarget(dictionaryResult).targetText,
           direction: dictionaryDirection,
+          source_lang: resolveLanguagePairForUI(dictionaryLanguagePair).source_lang,
+          target_lang: resolveLanguagePairForUI(dictionaryLanguagePair).target_lang,
         }),
       });
       if (!response.ok) {
         throw new Error(await response.text());
       }
       const data = await response.json();
-      const baseSource = dictionaryDirection === 'ru-de'
-        ? (dictionaryResult.word_ru || dictionaryWord.trim())
-        : (dictionaryResult.word_de || dictionaryWord.trim());
-      const baseTarget = dictionaryDirection === 'ru-de'
-        ? (dictionaryResult.translation_de || '')
-        : (dictionaryResult.translation_ru || '');
+      setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
+      const sourceTarget = getDictionarySourceTarget(dictionaryResult);
+      const baseSource = sourceTarget.sourceText || dictionaryWord.trim();
+      const baseTarget = sourceTarget.targetText || '';
       const options = [
         { source: baseSource, target: baseTarget, isBase: true },
         ...(data.items || []).map((item) => ({
@@ -2773,16 +3111,27 @@ function AppInner() {
     setDictionaryError('');
     setDictionarySaved('');
     try {
+      const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+      const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(dictionaryDirection);
       const response = await fetch('/api/webapp/dictionary/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          word_ru: dictionaryDirection === 'ru-de' ? selectedCollocation.source : '',
-          word_de: dictionaryDirection === 'de-ru' ? selectedCollocation.source : '',
-          translation_de: dictionaryDirection === 'ru-de' ? selectedCollocation.target : '',
-          translation_ru: dictionaryDirection === 'de-ru' ? selectedCollocation.target : '',
-          response_json: dictionaryResult,
+          word_ru: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.source : '',
+          word_de: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.source : '',
+          translation_de: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.target : '',
+          translation_ru: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.target : '',
+          source_text: selectedCollocation.source,
+          target_text: selectedCollocation.target,
+          response_json: {
+            ...(dictionaryResult || {}),
+            source_text: selectedCollocation.source,
+            target_text: selectedCollocation.target,
+            source_lang: pair.source_lang,
+            target_lang: pair.target_lang,
+            language_pair: pair,
+          },
           folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
         }),
       });
@@ -2796,6 +3145,8 @@ function AppInner() {
         }
         throw new Error(message);
       }
+      const payload = await response.json();
+      setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
       setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
       setCollocationsVisible(false);
     } catch (error) {
@@ -2926,7 +3277,7 @@ function AppInner() {
       setYoutubeTranscript([]);
       setYoutubeTranscriptError('');
       setYoutubeTranslations({});
-      setYoutubeRuEnabled(false);
+      setYoutubeTranslationEnabled(false);
       setYoutubeManualOverride(false);
       setYoutubeTranscriptHasTiming(true);
       setYoutubeIsPaused(false);
@@ -2964,6 +3315,16 @@ function AppInner() {
       cancelled = true;
     };
   }, [isWebAppMode, flashcardsOnly, initData, selectedSections, movies.length]);
+
+  useEffect(() => {
+    const learning = normalizeLangCode(languageProfile?.learning_language);
+    if (!learning) return;
+    if (movieLanguageOptions.includes(learning)) {
+      setMoviesLanguageFilter(learning);
+    } else {
+      setMoviesLanguageFilter('all');
+    }
+  }, [languageProfile?.learning_language, movieLanguageOptions]);
 
   useEffect(() => {
     if (!youtubeId) {
@@ -3129,19 +3490,19 @@ function AppInner() {
   }, [youtubeCurrentTime, youtubeTranscript.length]);
 
   useEffect(() => {
-    const ruRef = document.querySelector('.webapp-subtitles.is-translation .webapp-subtitles-list');
-    if (!ruRef) return;
-    const activeEl = ruRef.querySelector('.is-active');
+    const translationListRef = document.querySelector('.webapp-subtitles.is-translation .webapp-subtitles-list');
+    if (!translationListRef) return;
+    const activeEl = translationListRef.querySelector('.is-active');
     if (activeEl) {
-      const listRect = ruRef.getBoundingClientRect();
+      const listRect = translationListRef.getBoundingClientRect();
       const activeRect = activeEl.getBoundingClientRect();
       const offset = activeRect.top - listRect.top - listRect.height / 2 + activeRect.height / 2;
-      ruRef.scrollTop += offset;
+      translationListRef.scrollTop += offset;
     }
-  }, [youtubeCurrentTime, youtubeTranscript.length, youtubeRuEnabled]);
+  }, [youtubeCurrentTime, youtubeTranscript.length, youtubeTranslationEnabled]);
 
   useEffect(() => {
-    if (!youtubeRuEnabled) return;
+    if (!youtubeTranslationEnabled) return;
     if (!youtubeTranscript.length || !youtubeId || !initData) return;
     const activeIndex = getActiveSubtitleIndex();
     if (activeIndex < 0) return;
@@ -3195,7 +3556,7 @@ function AppInner() {
       .finally(() => {
         youtubeTranslateInFlightRef.current = false;
       });
-  }, [youtubeCurrentTime, youtubeTranscript.length, youtubeId, initData, youtubeTranslations, youtubeRuEnabled]);
+  }, [youtubeCurrentTime, youtubeTranscript.length, youtubeId, initData, youtubeTranslations, youtubeTranslationEnabled]);
 
   const handleLoadDailyHistory = async () => {
     if (!initData) {
@@ -3572,39 +3933,53 @@ function AppInner() {
 
           <div className="webapp-main">
             <div className="webapp-topbar">
-              <button
-                type="button"
-                className="menu-toggle"
-                onClick={() => setMenuOpen(true)}
-              >
-                <span />
-                <span />
-                <span />
-              </button>
-              <div className="topbar-title">DeutschFlow</div>
-              <div className="topbar-profile">
-                <button type="button" className="language-toggle language-toggle-compact" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
-                  <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
-                  <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
-                </button>
-                <input
-                  ref={avatarInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="avatar-input"
-                  onChange={handleAvatarUpload}
-                />
+              <div className="topbar-left">
                 <button
                   type="button"
-                  className="avatar-button topbar-avatar"
-                  onClick={() => avatarInputRef.current?.click()}
+                  className="menu-toggle"
+                  onClick={() => setMenuOpen(true)}
                 >
-                  {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                  <span />
+                  <span />
+                  <span />
                 </button>
-                <div className="topbar-user-meta">
-                  <div className="topbar-user-name">{webappUser?.first_name || t('guest')}</div>
-                  <div className="topbar-user-line">ID: {webappUser?.id || '—'}</div>
-                  <div className="topbar-user-line">Chat: {webappChatType || '—'}</div>
+                <div className="topbar-title">DeutschFlow</div>
+              </div>
+              <div className="topbar-right">
+                <div className="topbar-controls">
+                  <button type="button" className="language-toggle language-toggle-compact" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
+                    <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
+                    <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="language-pair-button"
+                    onClick={openLanguageProfileModal}
+                    title={tr('Изменить языковую пару обучения', 'Sprachpaar aendern')}
+                  >
+                    {getActiveLanguagePairLabel()}
+                  </button>
+                </div>
+                <div className="topbar-profile">
+                  <input
+                    ref={avatarInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="avatar-input"
+                    onChange={handleAvatarUpload}
+                  />
+                  <button
+                    type="button"
+                    className="avatar-button topbar-avatar"
+                    onClick={() => avatarInputRef.current?.click()}
+                  >
+                    {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                  </button>
+                  <div className="topbar-user-meta">
+                    <div className="topbar-user-name">{webappUser?.first_name || t('guest')}</div>
+                    <div className="topbar-user-line topbar-user-extra">ID: {webappUser?.id || '—'}</div>
+                    <div className="topbar-user-line topbar-user-extra">Chat: {webappChatType || '—'}</div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -3781,6 +4156,65 @@ function AppInner() {
                   </>
                 )}
               </section>
+            )}
+
+            {languageProfileGateOpen && (
+              <div className="language-profile-gate" role="dialog" aria-modal="true">
+                <div className="language-profile-card">
+                  <h3>{tr('Выберите языки для обучения', 'Waehle deine Lernsprachen')}</h3>
+                  <p className="webapp-muted">
+                    {tr(
+                      'Укажите язык, который изучаете, и родной язык. Это нужно для переводов, словаря, карточек и аналитики.',
+                      'Waehle Lernsprache und Muttersprache. Das wird fuer Uebersetzung, Woerterbuch, Karten und Analytik genutzt.'
+                    )}
+                  </p>
+                  <label className="webapp-field">
+                    <span>{tr('Язык изучения', 'Lernsprache')}</span>
+                    <select
+                      value={languageProfileDraft.learning_language}
+                      onChange={(event) => setLanguageProfileDraft((prev) => ({ ...prev, learning_language: event.target.value }))}
+                      disabled={languageProfileSaving}
+                    >
+                      {learningLanguageOptions.map((item) => (
+                        <option key={item.value} value={item.value}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="webapp-field">
+                    <span>{tr('Родной язык', 'Muttersprache')}</span>
+                    <select
+                      value={languageProfileDraft.native_language}
+                      onChange={(event) => setLanguageProfileDraft((prev) => ({ ...prev, native_language: event.target.value }))}
+                      disabled={languageProfileSaving}
+                    >
+                      {nativeLanguageOptions.map((item) => (
+                        <option key={item.value} value={item.value}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {languageProfileError && <div className="webapp-error">{languageProfileError}</div>}
+                  <div className="language-profile-actions">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={saveLanguageProfile}
+                      disabled={languageProfileSaving}
+                    >
+                      {languageProfileSaving ? tr('Сохраняем...', 'Speichern...') : tr('Сохранить и продолжить', 'Speichern und fortsetzen')}
+                    </button>
+                    {!needsLanguageProfileChoice && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setLanguageProfileModalOpen(false)}
+                        disabled={languageProfileSaving}
+                      >
+                        {tr('Закрыть', 'Schliessen')}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
             )}
 
             {!flashcardsOnly && isSectionVisible('translations') && (
@@ -4030,7 +4464,7 @@ function AppInner() {
                                 <div
                                   className="webapp-explanation"
                                   dangerouslySetInnerHTML={{
-                                    __html: renderRichText(
+                                    __html: renderExplanationRichText(
                                       explanations[String(item.sentence_number ?? item.original_text)]
                                     ),
                                   }}
@@ -4076,6 +4510,7 @@ function AppInner() {
                 {historyVisible && (
                   <section className="webapp-result">
                     <h3>{tr('История переводов за сегодня', 'Uebersetzungsverlauf fuer heute')}</h3>
+                    <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {getActiveLanguagePairLabel()}</p>
                     {historyItems.length === 0 ? (
                       <p className="webapp-muted">{tr('Сегодня пока нет завершённых переводов.', 'Heute gibt es noch keine abgeschlossenen Uebersetzungen.')}</p>
                     ) : (
@@ -4143,11 +4578,13 @@ function AppInner() {
                     <div className="webapp-video-actions is-subtitle-toolbar">
                       <button
                         type="button"
-                        className={`secondary-button ${youtubeRuEnabled ? 'is-active' : ''}`}
-                        onClick={() => setYoutubeRuEnabled((prev) => !prev)}
+                        className={`secondary-button ${youtubeTranslationEnabled ? 'is-active' : ''}`}
+                        onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
                         disabled={!youtubeTranscript.length}
                       >
-                        {youtubeRuEnabled ? tr('Скрыть RU', 'RU ausblenden') : tr('Показать RU', 'RU anzeigen')}
+                        {youtubeTranslationEnabled
+                          ? `${tr('Скрыть', 'Ausblenden')} ${getNativeSubtitleCode()}`
+                          : `${tr('Показать', 'Anzeigen')} ${getNativeSubtitleCode()}`}
                       </button>
                       <button
                         type="button"
@@ -4222,8 +4659,8 @@ function AppInner() {
                               {overlayIndexes.map((idx) => {
                                 const item = youtubeTranscript[idx];
                                 const overlayDeText = normalizeSubtitleText(item?.text || '');
-                                const overlayRuText = (youtubeTranslations[String(idx)] || '').trim();
-                                if (!overlayDeText && !(youtubeRuEnabled && overlayRuText)) {
+                                const overlayTranslationText = (youtubeTranslations[String(idx)] || '').trim();
+                                if (!overlayDeText && !(youtubeTranslationEnabled && overlayTranslationText)) {
                                   return null;
                                 }
                                 const isCurrent = idx === resolvedIndex;
@@ -4234,8 +4671,8 @@ function AppInner() {
                                         {renderClickableText(overlayDeText, { className: 'overlay-clickable-word', compact: true, inlineLookup: youtubeAppFullscreen })}
                                       </p>
                                     )}
-                                    {youtubeRuEnabled && overlayRuText && (
-                                      <p className="youtube-subtitles-overlay-line is-ru">{overlayRuText}</p>
+                                    {youtubeTranslationEnabled && overlayTranslationText && (
+                                      <p className="youtube-subtitles-overlay-line is-translation">{overlayTranslationText}</p>
                                     )}
                                   </div>
                                 );
@@ -4298,7 +4735,7 @@ function AppInner() {
                         </div>
                       </div>
                     )}
-                    {youtubeTranscript.length > 0 && youtubeRuEnabled && !youtubeOverlayEnabled && (
+                    {youtubeTranscript.length > 0 && youtubeTranslationEnabled && !youtubeOverlayEnabled && (
                       <div className="webapp-subtitles is-translation">
                         <div className="webapp-subtitles-list">
                           {(() => {
@@ -4307,7 +4744,7 @@ function AppInner() {
                               const translation = youtubeTranslations[String(index)] || '…';
                               return (
                                 <p
-                                  key={`ru-${item.start}-${index}`}
+                                  key={`translation-${item.start}-${index}`}
                                   className={index === activeIndex ? 'is-active' : ''}
                                 >
                                   {translation}
@@ -4329,14 +4766,14 @@ function AppInner() {
                     </div>
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
-                        <span>{tr('Слово или фраза (русский / немецкий)', 'Wort oder Phrase (Russisch / Deutsch)')}</span>
+                        <span>{tr('Слово или фраза', 'Wort oder Phrase')}</span>
                         <div className="dictionary-input-wrap">
                           <input
                             className="dictionary-input"
                             type="text"
                             value={dictionaryWord}
                             onChange={(event) => setDictionaryWord(event.target.value)}
-                            placeholder={tr('Например: отказаться, уважение, несмотря на / verzichten, Respekt', 'Zum Beispiel: verzichten, Respekt, obwohl / отказаться, уважение')}
+                            placeholder={tr('Например: слово, фраза или выражение', 'Zum Beispiel: Wort, Phrase oder Ausdruck')}
                           />
                           {dictionaryWord.trim() && (
                             <button
@@ -4488,12 +4925,10 @@ function AppInner() {
                         <div className="dictionary-row">
                           <span className="dictionary-label">{tr('Перевод:', 'Uebersetzung:')}</span>
                           <span className="dictionary-translation">
-                            {dictionaryDirection === 'ru-de'
-                              ? (dictionaryResult.translation_de || '—')
-                              : (dictionaryResult.translation_ru || '—')}
+                            {getDictionaryDisplayedTranslation(dictionaryResult) || '—'}
                           </span>
                           <span className="dictionary-direction">
-                            {dictionaryDirection === 'ru-de' ? 'RU → DE' : 'DE → RU'}
+                            {getLookupDirectionLabel()}
                           </span>
                         </div>
                         <div className="dictionary-row">
@@ -4504,13 +4939,11 @@ function AppInner() {
                             <strong>{tr('Артикль:', 'Artikel:')}</strong> {dictionaryResult.article}
                           </div>
                         )}
-                        {dictionaryResult.forms && (
+                        {getDictionaryFormRows(dictionaryResult).length > 0 && (
                           <div className="dictionary-forms">
-                            <div><strong>Plural:</strong> {dictionaryResult.forms.plural || '—'}</div>
-                            <div><strong>Präteritum:</strong> {dictionaryResult.forms.praeteritum || '—'}</div>
-                            <div><strong>Perfekt:</strong> {dictionaryResult.forms.perfekt || '—'}</div>
-                            <div><strong>Konjunktiv I:</strong> {dictionaryResult.forms.konjunktiv1 || '—'}</div>
-                            <div><strong>Konjunktiv II:</strong> {dictionaryResult.forms.konjunktiv2 || '—'}</div>
+                            {getDictionaryFormRows(dictionaryResult).map((row) => (
+                              <div key={row.label}><strong>{row.label}:</strong> {row.value}</div>
+                            ))}
                           </div>
                         )}
 
@@ -4520,9 +4953,11 @@ function AppInner() {
                             <ul>
                               {dictionaryResult.prefixes.map((item, index) => (
                                 <li key={`${item.variant}-${index}`}>
-                                  <div><strong>{item.variant}:</strong> {item.translation_de || '—'}</div>
+                                  <div>
+                                    <strong>{item.variant}:</strong> {item.translation_target || item.translation_de || item.translation_ru || '—'}
+                                  </div>
                                   {item.explanation && <div>{item.explanation}</div>}
-                                  {item.example_de && <div><em>{item.example_de}</em></div>}
+                                  {(item.example_target || item.example_de) && <div><em>{item.example_target || item.example_de}</em></div>}
                                 </li>
                               ))}
                             </ul>
@@ -4612,9 +5047,30 @@ function AppInner() {
                 {!moviesLoading && !moviesError && movies.length === 0 && (
                   <div className="webapp-muted">{tr('Пока нет сохранённых видео.', 'Noch keine gespeicherten Videos.')}</div>
                 )}
-                {!moviesLoading && movies.length > 0 && (
+                {!moviesLoading && movieLanguageOptions.length > 0 && (
+                  <div className="movies-language-filter">
+                    <button
+                      type="button"
+                      className={`movies-filter-chip ${moviesLanguageFilter === 'all' ? 'is-active' : ''}`}
+                      onClick={() => setMoviesLanguageFilter('all')}
+                    >
+                      {tr('Все', 'Alle')}
+                    </button>
+                    {movieLanguageOptions.map((code) => (
+                      <button
+                        type="button"
+                        key={code}
+                        className={`movies-filter-chip ${moviesLanguageFilter === code ? 'is-active' : ''}`}
+                        onClick={() => setMoviesLanguageFilter(code)}
+                      >
+                        {code.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!moviesLoading && moviesFiltered.length > 0 && (
                   <div className="movies-grid">
-                    {movies.map((item) => (
+                    {moviesFiltered.map((item) => (
                       <button
                         type="button"
                         key={item.video_id}
@@ -4633,12 +5089,16 @@ function AppInner() {
                           <div className="movie-title">{item.title}</div>
                           <div className="movie-subtitle">
                             {item.author ? `${item.author} • ` : ''}
+                            {(item.language ? `${String(item.language).toUpperCase()} • ` : '')}
                             {item.items_count ? `${item.items_count} ${tr('строк', 'Zeilen')}` : tr('Субтитры', 'Untertitel')}
                           </div>
                         </div>
                       </button>
                     ))}
                   </div>
+                )}
+                {!moviesLoading && movies.length > 0 && moviesFiltered.length === 0 && (
+                  <div className="webapp-muted">{tr('Для выбранного языка пока нет фильмов.', 'Fuer die gewaehlt Sprache gibt es noch keine Videos.')}</div>
                 )}
               </section>
             )}
@@ -4662,16 +5122,25 @@ function AppInner() {
                               <span>{t('new_today')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
                             </div>
                           </div>
+                          <div className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {getActiveLanguagePairLabel()}</div>
                           {srsLoading && <div className="webapp-muted">{t('loading_next_card')}</div>}
                           {!srsLoading && !srsCard && (
                             <div className="webapp-muted">{t('no_cards_now')}</div>
                           )}
                           {!srsLoading && srsCard && (
                             <div className="srs-card">
-                              <div className="srs-card-front">{srsCard.word_ru || srsCard.word_de || '—'}</div>
+                              <div className="srs-card-front">
+                                {getDictionarySourceTarget(
+                                  srsCard,
+                                  (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de'
+                                ).sourceText || '—'}
+                              </div>
                               {srsRevealAnswer && (
                                 <div className="srs-card-back">
-                                  {srsCard.translation_de || srsCard.translation_ru || srsCard.word_de || '—'}
+                                  {getDictionarySourceTarget(
+                                    srsCard,
+                                    (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de'
+                                  ).targetText || '—'}
                                 </div>
                               )}
                               <div className="srs-state-line">
@@ -4874,11 +5343,9 @@ function AppInner() {
                             {(() => {
                               const entry = flashcards[flashcardPreviewIndex] || {};
                               const responseJson = entry.response_json || {};
+                              const cardTexts = resolveFlashcardTexts(entry);
                               const translations = responseJson.translations
-                                || responseJson.translation_de
-                                || entry.translation_de
-                                || responseJson.translation_ru
-                                || entry.translation_ru
+                                || cardTexts.targetText
                                 || '';
                               const translationList = Array.isArray(translations)
                                 ? translations
@@ -4898,7 +5365,7 @@ function AppInner() {
                                     </span>
                                   </div>
                                   <div className="flashcard-word-row">
-                                    <div className="flashcard-word">{entry.word_ru || entry.word_de || '—'}</div>
+                                    <div className="flashcard-word">{cardTexts.sourceText || '—'}</div>
                                     <button
                                       type="button"
                                       className="flashcard-audio-replay"
@@ -4907,7 +5374,7 @@ function AppInner() {
                                         if (!text || previewAudioPlaying) return;
                                         try {
                                           setPreviewAudioPlaying(true);
-                                          await playTts(text, 'de-DE');
+                                          await playTts(text, getLearningTtsLocale());
                                         } finally {
                                           setPreviewAudioPlaying(false);
                                           setPreviewAudioReady(true);
@@ -5063,8 +5530,10 @@ function AppInner() {
                                             body: JSON.stringify({
                                               initData,
                                               entry_id: entry.id,
-                                              word_ru: entry.word_ru,
-                                              word_de: entry.word_de,
+                                              word_ru: cardTexts.sourceText,
+                                              word_de: cardTexts.targetText,
+                                              source_text: cardTexts.sourceText,
+                                              target_text: cardTexts.targetText,
                                             }),
                                           });
                                           if (!response.ok) {
@@ -5189,16 +5658,9 @@ function AppInner() {
                               (() => {
                                 const entry = flashcards[flashcardIndex] || {};
                                 const responseJson = entry.response_json || {};
-                                const correct = entry.translation_de
-                                  || responseJson.translation_de
-                                  || entry.translation_ru
-                                  || responseJson.translation_ru
-                                  || '—';
-                                const questionWord = entry.word_ru
-                                  || responseJson.word_ru
-                                  || entry.word_de
-                                  || responseJson.word_de
-                                  || '—';
+                                const cardTexts = resolveFlashcardTexts(entry);
+                                const correct = cardTexts.targetText || '—';
+                                const questionWord = cardTexts.sourceText || '—';
                                 const context = Array.isArray(responseJson.usage_examples)
                                   ? responseJson.usage_examples[0]
                                   : '';
@@ -5342,7 +5804,7 @@ function AppInner() {
                                           });
                                           const german = resolveFlashcardGerman(entry) || blocksAnswer;
                                           if (german) {
-                                            void playTts(german, 'de-DE');
+                                            void playTts(german, getLearningTtsLocale());
                                           }
                                         }}
                                         onNext={() => advanceFlashcard()}
@@ -5480,7 +5942,7 @@ function AppInner() {
                                                 }
                                                 const german = resolveFlashcardGerman(entry);
                                                 if (german) {
-                                                  await playTts(german, 'de-DE');
+                                                  await playTts(german, getLearningTtsLocale());
                                                 }
                                                 if (flashcardAutoAdvance) {
                                                   revealTimeoutRef.current = setTimeout(() => {
@@ -5620,6 +6082,7 @@ function AppInner() {
               <section className="webapp-section webapp-analytics" ref={analyticsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Аналитика', 'Analytik')}</h2>
+                  <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {getActiveLanguagePairLabel()}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="analytics-controls">
@@ -5691,7 +6154,7 @@ function AppInner() {
               </section>
             )}
 
-            {selectionText && selectionPos && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
+            {selectionText && selectionPos && (isSectionVisible('youtube') || isSectionVisible('dictionary') || isSectionVisible('translations')) && (
               <div
                 ref={selectionMenuRef}
                 className={`webapp-selection-menu ${selectionCompact ? 'is-compact' : ''} ${youtubeAppFullscreen ? 'is-overlay-mode' : ''}`}

@@ -42,9 +42,8 @@ export default defineConfig(async () => {
 
       proxy: {
         '/api': {
-          target: 'http://localhost:5001',
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api/, '')
+          target: 'http://127.0.0.1:5001',
+          changeOrigin: true
         }
       }
     }

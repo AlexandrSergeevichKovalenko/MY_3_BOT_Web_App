@@ -119,7 +119,8 @@ def _period_start_expr(column: str, granularity: str) -> str:
 
 
 def _calculate_final_score(avg_score: float, avg_time_min: float, missed: int) -> float:
-    return round(avg_score - avg_time_min * 1 - missed * 20, 2)
+    raw_score = avg_score - avg_time_min * 1 - missed * 20
+    return round(max(0.0, raw_score), 2)
 
 
 def _post_process_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -153,6 +154,8 @@ def fetch_user_timeseries(
     start_date: date,
     end_date: date,
     granularity: str,
+    source_lang: str = "ru",
+    target_lang: str = "de",
 ) -> list[dict[str, Any]]:
     granularity = _normalize_granularity(granularity)
     period_expr_t = _period_start_expr("ds.date", granularity)
@@ -178,7 +181,10 @@ def fetch_user_timeseries(
                 ) AS rn_period
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
-            WHERE t.user_id = %s AND ds.date BETWEEN %s AND %s
+            WHERE t.user_id = %s
+              AND COALESCE(t.source_lang, 'ru') = %s
+              AND COALESCE(t.target_lang, 'de') = %s
+              AND ds.date BETWEEN %s AND %s
         ),
         filtered AS (
             SELECT *,
@@ -202,11 +208,22 @@ def fetch_user_timeseries(
             GROUP BY period_start
         ),
         time_agg AS (
+            WITH pair_sessions AS (
+                SELECT DISTINCT t.session_id
+                FROM bt_3_translations t
+                JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                WHERE t.user_id = %s
+                  AND COALESCE(t.source_lang, 'ru') = %s
+                  AND COALESCE(t.target_lang, 'de') = %s
+                  AND ds.date BETWEEN %s AND %s
+                  AND t.session_id IS NOT NULL
+            )
             SELECT
                 {period_expr_p}::date AS period_start,
                 SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS total_time_min,
                 AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS avg_session_time_min
             FROM bt_3_user_progress p
+            JOIN pair_sessions ps ON ps.session_id = p.session_id
             WHERE p.user_id = %s
                 AND p.completed = TRUE
                 AND p.start_time::date BETWEEN %s AND %s
@@ -218,6 +235,8 @@ def fetch_user_timeseries(
                 COUNT(DISTINCT id_for_mistake_table) AS assigned_sentences
             FROM bt_3_daily_sentences ds
             WHERE ds.user_id = %s
+                AND COALESCE(ds.source_lang, 'ru') = %s
+                AND COALESCE(ds.target_lang, 'de') = %s
                 AND ds.date BETWEEN %s AND %s
             GROUP BY period_start
         )
@@ -246,12 +265,21 @@ def fetch_user_timeseries(
                 sql,
                 (
                     user_id,
+                    source_lang,
+                    target_lang,
+                    start_date,
+                    end_date,
+                    user_id,
+                    source_lang,
+                    target_lang,
                     start_date,
                     end_date,
                     user_id,
                     start_date,
                     end_date,
                     user_id,
+                    source_lang,
+                    target_lang,
                     start_date,
                     end_date,
                 ),
@@ -270,6 +298,8 @@ def fetch_user_summary(
     user_id: int,
     start_date: date,
     end_date: date,
+    source_lang: str = "ru",
+    target_lang: str = "de",
 ) -> dict[str, Any]:
     sql = """
         WITH base AS (
@@ -288,7 +318,10 @@ def fetch_user_summary(
                 ) AS attempt_index
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
-            WHERE t.user_id = %s AND ds.date BETWEEN %s AND %s
+            WHERE t.user_id = %s
+              AND COALESCE(t.source_lang, 'ru') = %s
+              AND COALESCE(t.target_lang, 'de') = %s
+              AND ds.date BETWEEN %s AND %s
         ),
         filtered AS (
             SELECT *,
@@ -307,10 +340,21 @@ def fetch_user_summary(
             FROM filtered
         ),
         time_agg AS (
+            WITH pair_sessions AS (
+                SELECT DISTINCT t.session_id
+                FROM bt_3_translations t
+                JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                WHERE t.user_id = %s
+                  AND COALESCE(t.source_lang, 'ru') = %s
+                  AND COALESCE(t.target_lang, 'de') = %s
+                  AND ds.date BETWEEN %s AND %s
+                  AND t.session_id IS NOT NULL
+            )
             SELECT
                 SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS total_time_min,
                 AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS avg_session_time_min
-            FROM bt_3_user_progress
+            FROM bt_3_user_progress p
+            JOIN pair_sessions ps ON ps.session_id = p.session_id
             WHERE user_id = %s
                 AND completed = TRUE
                 AND start_time::date BETWEEN %s AND %s
@@ -318,19 +362,28 @@ def fetch_user_summary(
         assigned_agg AS (
             SELECT
                 COUNT(DISTINCT id_for_mistake_table) AS assigned_sentences
-            FROM bt_3_daily_sentences
-            WHERE user_id = %s AND date BETWEEN %s AND %s
+            FROM bt_3_daily_sentences ds
+            WHERE user_id = %s
+              AND COALESCE(ds.source_lang, 'ru') = %s
+              AND COALESCE(ds.target_lang, 'de') = %s
+              AND date BETWEEN %s AND %s
         ),
         assigned_days AS (
             SELECT DISTINCT date
-            FROM bt_3_daily_sentences
-            WHERE user_id = %s AND date BETWEEN %s AND %s
+            FROM bt_3_daily_sentences ds
+            WHERE user_id = %s
+              AND COALESCE(ds.source_lang, 'ru') = %s
+              AND COALESCE(ds.target_lang, 'de') = %s
+              AND date BETWEEN %s AND %s
         ),
         translated_days AS (
             SELECT DISTINCT ds.date AS date
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
-            WHERE t.user_id = %s AND ds.date BETWEEN %s AND %s
+            WHERE t.user_id = %s
+              AND COALESCE(t.source_lang, 'ru') = %s
+              AND COALESCE(t.target_lang, 'de') = %s
+              AND ds.date BETWEEN %s AND %s
         ),
         missed_days AS (
             SELECT COUNT(*) AS missed_days
@@ -355,18 +408,31 @@ def fetch_user_summary(
                 sql,
                 (
                     user_id,
+                    source_lang,
+                    target_lang,
+                    start_date,
+                    end_date,
+                    user_id,
+                    source_lang,
+                    target_lang,
                     start_date,
                     end_date,
                     user_id,
                     start_date,
                     end_date,
                     user_id,
+                    source_lang,
+                    target_lang,
                     start_date,
                     end_date,
                     user_id,
+                    source_lang,
+                    target_lang,
                     start_date,
                     end_date,
                     user_id,
+                    source_lang,
+                    target_lang,
                     start_date,
                     end_date,
                 ),
@@ -382,6 +448,8 @@ def fetch_comparison_leaderboard(
     start_date: date,
     end_date: date,
     limit: int = 10,
+    source_lang: str = "ru",
+    target_lang: str = "de",
 ) -> list[dict[str, Any]]:
     sql = """
         WITH base AS (
@@ -401,6 +469,8 @@ def fetch_comparison_leaderboard(
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
             WHERE ds.date BETWEEN %s AND %s
+              AND COALESCE(t.source_lang, 'ru') = %s
+              AND COALESCE(t.target_lang, 'de') = %s
         ),
         filtered AS (
             SELECT *,
@@ -421,32 +491,48 @@ def fetch_comparison_leaderboard(
             GROUP BY user_id
         ),
         time_agg AS (
+            WITH pair_sessions AS (
+                SELECT DISTINCT t.user_id, t.session_id
+                FROM bt_3_translations t
+                JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                WHERE ds.date BETWEEN %s AND %s
+                  AND COALESCE(t.source_lang, 'ru') = %s
+                  AND COALESCE(t.target_lang, 'de') = %s
+                  AND t.session_id IS NOT NULL
+            )
             SELECT
-                user_id,
+                p.user_id,
                 SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS total_time_min
-            FROM bt_3_user_progress
+            FROM bt_3_user_progress p
+            JOIN pair_sessions ps ON ps.user_id = p.user_id AND ps.session_id = p.session_id
             WHERE completed = TRUE
                 AND start_time::date BETWEEN %s AND %s
-            GROUP BY user_id
+            GROUP BY p.user_id
         ),
         assigned_agg AS (
             SELECT
                 user_id,
                 COUNT(DISTINCT id_for_mistake_table) AS assigned_sentences
-            FROM bt_3_daily_sentences
+            FROM bt_3_daily_sentences ds
             WHERE date BETWEEN %s AND %s
+              AND COALESCE(ds.source_lang, 'ru') = %s
+              AND COALESCE(ds.target_lang, 'de') = %s
             GROUP BY user_id
         ),
         assigned_days AS (
             SELECT DISTINCT user_id, date
-            FROM bt_3_daily_sentences
+            FROM bt_3_daily_sentences ds
             WHERE date BETWEEN %s AND %s
+              AND COALESCE(ds.source_lang, 'ru') = %s
+              AND COALESCE(ds.target_lang, 'de') = %s
         ),
         translated_days AS (
             SELECT DISTINCT t.user_id, ds.date AS date
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
             WHERE ds.date BETWEEN %s AND %s
+              AND COALESCE(t.source_lang, 'ru') = %s
+              AND COALESCE(t.target_lang, 'de') = %s
         ),
         missed_days AS (
             SELECT
@@ -489,14 +575,26 @@ def fetch_comparison_leaderboard(
                 (
                     start_date,
                     end_date,
+                    source_lang,
+                    target_lang,
+                    start_date,
+                    end_date,
+                    source_lang,
+                    target_lang,
                     start_date,
                     end_date,
                     start_date,
                     end_date,
+                    source_lang,
+                    target_lang,
                     start_date,
                     end_date,
+                    source_lang,
+                    target_lang,
                     start_date,
                     end_date,
+                    source_lang,
+                    target_lang,
                 ),
             )
             columns = [desc[0] for desc in cursor.description]

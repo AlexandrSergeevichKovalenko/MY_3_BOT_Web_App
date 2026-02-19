@@ -82,9 +82,10 @@ from datetime import datetime, timezone
 from io import BytesIO
 from uuid import uuid4
 from urllib.parse import parse_qsl, urlparse, urlencode
-from flask import Flask, request, jsonify, send_from_directory, send_file, g
+from flask import Flask, request, jsonify, send_from_directory, send_file, g, redirect
 from flask_cors import CORS
 from dotenv import load_dotenv
+from werkzeug.exceptions import HTTPException
 from backend.database import get_db_connection_context
 from backend.translation_workflow import _extract_correct_translation
 from livekit.api import AccessToken, VideoGrants
@@ -110,13 +111,20 @@ except Exception:  # pragma: no cover - optional in some deploys
 
 from backend.openai_manager import (
     run_check_translation,
+    run_check_translation_multilang,
     run_dictionary_lookup,
     run_dictionary_lookup_de,
+    run_dictionary_lookup_multilang,
     run_dictionary_collocations,
+    run_dictionary_collocations_multilang,
     run_translate_subtitles_ru,
+    run_translate_subtitles_multilang,
     run_translation_explanation,
+    run_translation_explanation_multilang,
     run_feel_word,
+    run_feel_word_multilang,
     run_enrich_word,
+    run_enrich_word_multilang,
     run_tts_chunk_de,
 )
 from backend.database import (
@@ -155,6 +163,10 @@ from backend.database import (
     record_telegram_system_message,
     get_pending_telegram_system_messages,
     mark_telegram_system_message_deleted,
+    get_user_language_profile,
+    upsert_user_language_profile,
+    SUPPORTED_LEARNING_LANGUAGES,
+    SUPPORTED_NATIVE_LANGUAGES,
 )
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
 from backend.translation_workflow import (
@@ -260,11 +272,35 @@ FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 
 _ACCESS_PUBLIC_WEBAPP_PATHS = {"/api/webapp/topics"}
 _ACCESS_PROTECTED_EXACT_PATHS = {"/api/message"}
+_LEGACY_API_PREFIXES = (
+    "/webapp/",
+    "/web/",
+    "/user/",
+    "/telegram/",
+    "/cards/",
+    "/mobile/",
+    "/admin/",
+)
+_LEGACY_API_EXACT_PATHS = {"/token", "/message"}
+
+
+def _is_webapp_allowlist_bypass_enabled() -> bool:
+    return str(os.getenv("WEBAPP_DISABLE_ALLOWLIST") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_webapp_user_allowed(user_id: int) -> bool:
+    if _is_webapp_allowlist_bypass_enabled():
+        return True
+    return is_telegram_user_allowed(int(user_id))
 
 
 @app.before_request
 def enforce_webapp_access():
     path = request.path or ""
+    # Backward compatibility for legacy frontend/API paths without /api prefix.
+    if path in _LEGACY_API_EXACT_PATHS or path.startswith(_LEGACY_API_PREFIXES):
+        return redirect(f"/api{path}", code=307)
+
     is_protected = path.startswith("/api/webapp/") or path in _ACCESS_PROTECTED_EXACT_PATHS
     if not is_protected or path in _ACCESS_PUBLIC_WEBAPP_PATHS:
         return None
@@ -283,7 +319,7 @@ def enforce_webapp_access():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    if not is_telegram_user_allowed(int(user_id)):
+    if not _is_webapp_user_allowed(int(user_id)):
         return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
 
     g.telegram_user_id = int(user_id)
@@ -418,6 +454,91 @@ def web_auth_telegram():
     )
 
 
+@app.route("/api/user/language-profile", methods=["GET", "POST"])
+def user_language_profile():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    if request.method == "GET":
+        profile = get_user_language_profile(user_id=user_id)
+        return jsonify(
+            {
+                "ok": True,
+                "profile": profile,
+                "supported": {
+                    "learning_language": sorted(SUPPORTED_LEARNING_LANGUAGES),
+                    "native_language": sorted(SUPPORTED_NATIVE_LANGUAGES),
+                },
+            }
+        )
+
+    payload = request.get_json(silent=True) or {}
+    learning_language = str(payload.get("learning_language") or "").strip().lower()
+    native_language = str(payload.get("native_language") or "").strip().lower()
+
+    # Allow POST read-mode to avoid query-string issues with large initData in WebView.
+    if not learning_language and not native_language:
+        profile = get_user_language_profile(user_id=user_id)
+        return jsonify(
+            {
+                "ok": True,
+                "profile": profile,
+                "supported": {
+                    "learning_language": sorted(SUPPORTED_LEARNING_LANGUAGES),
+                    "native_language": sorted(SUPPORTED_NATIVE_LANGUAGES),
+                },
+            }
+        )
+
+    if not learning_language or not native_language:
+        return jsonify({"error": "learning_language и native_language обязательны"}), 400
+    try:
+        old_profile = get_user_language_profile(user_id=user_id)
+        old_pair = (
+            str(old_profile.get("native_language") or "ru").strip().lower(),
+            str(old_profile.get("learning_language") or "de").strip().lower(),
+        )
+        profile = upsert_user_language_profile(
+            user_id=user_id,
+            learning_language=learning_language,
+            native_language=native_language,
+        )
+        new_pair = (
+            str(profile.get("native_language") or "ru").strip().lower(),
+            str(profile.get("learning_language") or "de").strip().lower(),
+        )
+        reset_sessions = old_pair != new_pair
+        if reset_sessions:
+            # Switching language pair must start from a clean translation screen.
+            # Unfinished sentences remain untranslated in DB (counted in analytics),
+            # while active sessions are closed to avoid cross-pair leakage in UI.
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_user_progress
+                        SET end_time = NOW(), completed = TRUE
+                        WHERE user_id = %s AND completed = FALSE;
+                        """,
+                        (int(user_id),),
+                    )
+    except ValueError as exc:
+        return jsonify(
+            {
+                "error": str(exc),
+                "supported": {
+                    "learning_language": sorted(SUPPORTED_LEARNING_LANGUAGES),
+                    "native_language": sorted(SUPPORTED_NATIVE_LANGUAGES),
+                },
+            }
+        ), 400
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения language profile: {exc}"}), 500
+    return jsonify({"ok": True, "profile": profile, "reset_sessions": reset_sessions})
+
+
 def _build_telegram_data_check_string(init_data: str) -> str:
     pairs = parse_qsl(init_data, keep_blank_values=True)
     data = {key: value for key, value in pairs if key != "hash"}
@@ -506,6 +627,215 @@ def _extract_webapp_user_from_init_data(init_data: str) -> tuple[int | None, str
     if not user_id:
         return None, None
     return int(user_id), _extract_display_name(user_data)
+
+
+def _get_authenticated_user_from_request_init_data() -> tuple[int | None, str | None, str | None]:
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData") or request.args.get("initData") or request.headers.get("X-Telegram-Init-Data")
+    if not init_data:
+        return None, None, "initData обязателен"
+    user_id, username = _extract_webapp_user_from_init_data(init_data)
+    if not user_id:
+        return None, None, "initData не прошёл проверку или user_id отсутствует"
+    if not _is_webapp_user_allowed(int(user_id)):
+        return None, None, "Доступ к WebApp закрыт. Ожидайте одобрения администратора."
+    return int(user_id), username, None
+
+
+def _get_user_language_pair(user_id: int) -> tuple[str, str, dict]:
+    profile = get_user_language_profile(user_id=int(user_id))
+    native_language = str(profile.get("native_language") or "ru").strip().lower() or "ru"
+    learning_language = str(profile.get("learning_language") or "de").strip().lower() or "de"
+    return native_language, learning_language, profile
+
+
+def _build_language_pair_payload(source_lang: str, target_lang: str) -> dict:
+    return {
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "code": f"{source_lang}-{target_lang}",
+    }
+
+
+def _is_legacy_ru_de_pair(source_lang: str, target_lang: str) -> bool:
+    return source_lang == "ru" and target_lang == "de"
+
+
+def _normalize_short_lang_code(value: str | None, fallback: str = "ru") -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return fallback
+    raw = raw.replace("_", "-")
+    if "-" in raw:
+        raw = raw.split("-", 1)[0]
+    return raw or fallback
+
+
+def _youtube_translation_key(target_lang: str, idx: int | str) -> str:
+    return f"{_normalize_short_lang_code(target_lang)}:{idx}"
+
+
+def _extract_youtube_translations_for_target(
+    translations_map: dict | None,
+    target_lang: str,
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    if not isinstance(translations_map, dict):
+        return result
+
+    normalized_target = _normalize_short_lang_code(target_lang)
+    prefix = f"{normalized_target}:"
+    for key, value in translations_map.items():
+        key_str = str(key)
+        if key_str.startswith(prefix):
+            idx = key_str[len(prefix):]
+            if idx:
+                result[idx] = str(value or "")
+
+    # Backward compatibility for old RU-only cache format: key is index.
+    if normalized_target == "ru":
+        for key, value in translations_map.items():
+            key_str = str(key)
+            if key_str.isdigit() and key_str not in result:
+                result[key_str] = str(value or "")
+    return result
+
+
+def _decorate_dictionary_item(
+    item: dict | None,
+    source_lang: str,
+    target_lang: str,
+    direction: str,
+) -> dict:
+    data = dict(item or {})
+    if data.get("source_text") is not None and data.get("target_text") is not None:
+        source_text = data.get("source_text") or ""
+        target_text = data.get("target_text") or ""
+    else:
+        reverse_direction_code = f"{target_lang}-{source_lang}"
+        is_reverse = direction == reverse_direction_code or direction == "de-ru"
+        if is_reverse:
+            source_text = data.get("translation_ru") or data.get("word_ru") or ""
+            target_text = data.get("word_de") or data.get("translation_de") or ""
+        else:
+            source_text = data.get("word_ru") or data.get("translation_ru") or ""
+            target_text = data.get("translation_de") or data.get("word_de") or ""
+
+    data.setdefault("source_text", source_text)
+    data.setdefault("target_text", target_text)
+    data.setdefault("source_lang", source_lang)
+    data.setdefault("target_lang", target_lang)
+    return data
+
+
+def _resolve_entry_texts_for_pair(
+    entry: dict | None,
+    response_json: dict | None,
+    source_lang: str,
+    target_lang: str,
+    source_text_hint: str | None = None,
+    target_text_hint: str | None = None,
+) -> tuple[str, str]:
+    response_json = response_json if isinstance(response_json, dict) else {}
+    entry = entry if isinstance(entry, dict) else {}
+
+    source_text = str(source_text_hint or "").strip()
+    target_text = str(target_text_hint or "").strip()
+
+    if not source_text:
+        source_text = str(
+            response_json.get("source_text")
+            or entry.get("word_ru")
+            or response_json.get("word_ru")
+            or entry.get("translation_ru")
+            or response_json.get("translation_ru")
+            or entry.get("word_de")
+            or response_json.get("word_de")
+            or ""
+        ).strip()
+    if not target_text:
+        target_text = str(
+            response_json.get("target_text")
+            or entry.get("translation_de")
+            or response_json.get("translation_de")
+            or entry.get("word_de")
+            or response_json.get("word_de")
+            or entry.get("translation_ru")
+            or response_json.get("translation_ru")
+            or ""
+        ).strip()
+
+    # Final fallback based on pair direction if generic fields are missing.
+    if not source_text and source_lang == "de":
+        source_text = str(entry.get("word_de") or response_json.get("word_de") or "").strip()
+    if not target_text and target_lang == "de":
+        target_text = str(entry.get("translation_de") or response_json.get("translation_de") or "").strip()
+
+    return source_text, target_text
+
+
+def _build_multilang_dictionary_result(
+    raw: dict,
+    query_word: str,
+    source_lang: str,
+    target_lang: str,
+) -> tuple[dict, str, str, str]:
+    detected = str(raw.get("detected_language") or "source").strip().lower()
+    direction = f"{source_lang}-{target_lang}" if detected != "target" else f"{target_lang}-{source_lang}"
+    word_source = str(raw.get("word_source") or "").strip()
+    word_target = str(raw.get("word_target") or "").strip()
+    forms = raw.get("forms") if isinstance(raw.get("forms"), dict) else {}
+    examples = raw.get("usage_examples") if isinstance(raw.get("usage_examples"), list) else []
+
+    if detected == "target":
+        source_value = word_source
+        target_value = word_target or query_word
+    else:
+        source_value = word_source or query_word
+        target_value = word_target
+
+    if not target_value:
+        target_value = query_word
+    if not source_value:
+        source_value = query_word
+
+    result = {
+        "word_ru": source_value,
+        "translation_de": target_value,
+        "word_de": target_value,
+        "translation_ru": source_value,
+        "source_text": source_value,
+        "target_text": target_value,
+        "part_of_speech": raw.get("part_of_speech"),
+        "article": raw.get("article"),
+        "forms": forms,
+        "usage_examples": examples,
+        "raw_text": raw.get("raw_text"),
+    }
+    return result, detected, source_value, target_value
+
+
+def _force_translate_text(
+    text: str,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    try:
+        translated = asyncio.run(
+            run_translate_subtitles_multilang(
+                lines=[cleaned],
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        )
+        if isinstance(translated, list) and translated:
+            return str(translated[0] or "").strip()
+    except Exception:
+        return ""
+    return ""
 
 
 def _mobile_b64encode(data: bytes) -> str:
@@ -1207,6 +1537,18 @@ def _normalize_german_text(text: str) -> str:
             lemma = lemma.lower()
         lemmas.append(lemma)
     return " ".join(lemmas).strip()
+
+
+def _normalize_lookup_text(text: str, lang_code: str) -> str:
+    cleaned = _normalize_sentence_text(text)
+    if not cleaned:
+        return ""
+    lang = (lang_code or "").strip().lower()
+    if lang == "de":
+        return _normalize_german_text(cleaned)
+    # For non-German pairs we keep normalization lightweight to avoid
+    # language-specific distortions (lemmatization/stemming side-effects).
+    return cleaned
 
 
 
@@ -2131,6 +2473,10 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(error):
+    if isinstance(error, HTTPException):
+        # Preserve Flask/Werkzeug HTTP status codes (e.g. 404/405) without
+        # converting them into noisy 500 errors.
+        return error
     logging.exception("Unhandled exception: %s", error)
     if request.path.startswith("/api/"):
         return jsonify({"error": "Internal Server Error"}), 500
@@ -2190,15 +2536,41 @@ def process_webapp_message():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
     if translations:
         try:
-            results = asyncio.run(check_user_translation_webapp(user_id, username, translations))
+            results = asyncio.run(
+                check_user_translation_webapp(
+                    user_id,
+                    username,
+                    translations,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
         except Exception as exc:
             return jsonify({"error": f"Ошибка обработки запроса: {exc}"}), 500
-        return jsonify({"ok": True, "results": results})
+        return jsonify(
+            {
+                "ok": True,
+                "results": results,
+                "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            }
+        )
 
     try:
-        result = asyncio.run(run_check_translation(original_text, user_translation))
+        if _is_legacy_ru_de_pair(source_lang, target_lang):
+            result = asyncio.run(run_check_translation(original_text, user_translation))
+        else:
+            result = asyncio.run(
+                run_check_translation_multilang(
+                    original_text=original_text,
+                    user_translation=user_translation,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
     except Exception as exc:
         return jsonify({"error": f"Ошибка обработки запроса: {exc}"}), 500
 
@@ -2209,9 +2581,17 @@ def process_webapp_message():
         original_text=original_text,
         user_translation=user_translation,
         result=result,
+        source_lang=source_lang,
+        target_lang=target_lang,
     )
 
-    return jsonify({"ok": True, "result": result})
+    return jsonify(
+        {
+            "ok": True,
+            "result": result,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/history", methods=["POST"])
@@ -2255,9 +2635,20 @@ def get_webapp_daily_history():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
-
-    history = get_daily_translation_history(user_id=user_id, limit=int(limit))
-    return jsonify({"ok": True, "items": history})
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    history = get_daily_translation_history(
+        user_id=user_id,
+        limit=int(limit),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "items": history,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 def _parse_iso_date(value: str | None):
@@ -2286,6 +2677,7 @@ def get_webapp_analytics_summary():
     user_id = user_data.get("id")
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
         period = _normalize_period(period)
@@ -2296,7 +2688,13 @@ def get_webapp_analytics_summary():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    summary = fetch_user_summary(user_id, bounds.start_date, bounds.end_date)
+    summary = fetch_user_summary(
+        user_id,
+        bounds.start_date,
+        bounds.end_date,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     return jsonify(
         {
             "ok": True,
@@ -2306,6 +2704,7 @@ def get_webapp_analytics_summary():
                 "end_date": bounds.end_date.isoformat(),
             },
             "summary": summary,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
 
@@ -2330,6 +2729,7 @@ def get_webapp_analytics_timeseries():
     user_id = user_data.get("id")
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     start_date = _parse_iso_date(start_date_raw)
     end_date = _parse_iso_date(end_date_raw)
@@ -2346,7 +2746,14 @@ def get_webapp_analytics_timeseries():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    points = fetch_user_timeseries(user_id, start_date, end_date, granularity)
+    points = fetch_user_timeseries(
+        user_id,
+        start_date,
+        end_date,
+        granularity,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     return jsonify(
         {
             "ok": True,
@@ -2357,6 +2764,7 @@ def get_webapp_analytics_timeseries():
                 "end_date": end_date.isoformat(),
             },
             "points": points,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
 
@@ -2381,6 +2789,7 @@ def get_webapp_analytics_compare():
     user_id = user_data.get("id")
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     start_date = _parse_iso_date(start_date_raw)
     end_date = _parse_iso_date(end_date_raw)
@@ -2396,7 +2805,13 @@ def get_webapp_analytics_compare():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    leaderboard = fetch_comparison_leaderboard(start_date, end_date, limit=limit)
+    leaderboard = fetch_comparison_leaderboard(
+        start_date,
+        end_date,
+        limit=limit,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     user_rank = None
     for index, item in enumerate(leaderboard, start=1):
         if int(item.get("user_id")) == int(user_id):
@@ -2413,6 +2828,7 @@ def get_webapp_analytics_compare():
             },
             "items": leaderboard,
             "self": {"user_id": user_id, "rank": user_rank},
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
 
@@ -2437,22 +2853,92 @@ def lookup_webapp_dictionary():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
     try:
-        is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word_ru)
-        if is_ru:
-            cached = get_dictionary_cache(word_ru)
-            if cached:
-                return jsonify({"ok": True, "item": cached, "direction": "ru-de"})
-            result = asyncio.run(run_dictionary_lookup(word_ru))
+        if _is_legacy_ru_de_pair(source_lang, target_lang):
+            is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word_ru)
+            if is_ru:
+                cached = get_dictionary_cache(word_ru)
+                if cached:
+                    cached_item = _decorate_dictionary_item(
+                        cached if isinstance(cached, dict) else {},
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        direction="ru-de",
+                    )
+                    return jsonify(
+                        {
+                            "ok": True,
+                            "item": cached_item,
+                            "direction": "ru-de",
+                            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                        }
+                    )
+                result = asyncio.run(run_dictionary_lookup(word_ru))
+            else:
+                result = asyncio.run(run_dictionary_lookup_de(word_ru))
+            if result and is_ru:
+                upsert_dictionary_cache(word_ru, result)
+            direction = "ru-de" if is_ru else "de-ru"
         else:
-            result = asyncio.run(run_dictionary_lookup_de(word_ru))
+            raw = asyncio.run(
+                run_dictionary_lookup_multilang(
+                    word=word_ru,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
+            result, detected, source_value, target_value = _build_multilang_dictionary_result(
+                raw=raw,
+                query_word=word_ru,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            direction = f"{source_lang}-{target_lang}" if detected != "target" else f"{target_lang}-{source_lang}"
+
+            # Fallback for cases where model returns identical source/target.
+            # Example: RU->IT, query in Italian, but source translation is missing.
+            if not source_value or source_value.casefold() == target_value.casefold():
+                reverse_raw = asyncio.run(
+                    run_dictionary_lookup_multilang(
+                        word=word_ru,
+                        source_lang=target_lang,
+                        target_lang=source_lang,
+                    )
+                )
+                reverse_target = str(reverse_raw.get("word_target") or "").strip()
+                if reverse_target and reverse_target.casefold() != target_value.casefold():
+                    result["word_ru"] = reverse_target
+                    result["translation_ru"] = reverse_target
+                    result["source_text"] = reverse_target
+                else:
+                    forced = _force_translate_text(
+                        text=word_ru,
+                        source_lang=target_lang,
+                        target_lang=source_lang,
+                    )
+                    if forced and forced.casefold() != target_value.casefold():
+                        result["word_ru"] = forced
+                        result["translation_ru"] = forced
+                        result["source_text"] = forced
     except Exception as exc:
         return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
 
-    if result and is_ru:
-        upsert_dictionary_cache(word_ru, result)
-
-    return jsonify({"ok": True, "item": result, "direction": "ru-de" if is_ru else "de-ru"})
+    result = _decorate_dictionary_item(
+        result if isinstance(result, dict) else {},
+        source_lang=source_lang,
+        target_lang=target_lang,
+        direction=direction,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "item": result,
+            "direction": direction,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/mobile/dictionary/lookup", methods=["POST"])
@@ -2466,27 +2952,90 @@ def lookup_mobile_dictionary():
     if not word:
         return jsonify({"error": "word обязателен"}), 400
 
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
     try:
-        is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word)
-        if is_ru:
-            cached = get_dictionary_cache(word)
-            if cached:
-                return jsonify({"ok": True, "item": cached, "direction": "ru-de", "user_id": user_id})
-            result = asyncio.run(run_dictionary_lookup(word))
+        if _is_legacy_ru_de_pair(source_lang, target_lang):
+            is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word)
+            if is_ru:
+                cached = get_dictionary_cache(word)
+                if cached:
+                    cached_item = _decorate_dictionary_item(
+                        cached if isinstance(cached, dict) else {},
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        direction="ru-de",
+                    )
+                    return jsonify(
+                        {
+                            "ok": True,
+                            "item": cached_item,
+                            "direction": "ru-de",
+                            "user_id": user_id,
+                            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                        }
+                    )
+                result = asyncio.run(run_dictionary_lookup(word))
+            else:
+                result = asyncio.run(run_dictionary_lookup_de(word))
+            if result and is_ru:
+                upsert_dictionary_cache(word, result)
+            direction = "ru-de" if is_ru else "de-ru"
         else:
-            result = asyncio.run(run_dictionary_lookup_de(word))
+            raw = asyncio.run(
+                run_dictionary_lookup_multilang(
+                    word=word,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
+            result, detected, source_value, target_value = _build_multilang_dictionary_result(
+                raw=raw,
+                query_word=word,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            direction = f"{source_lang}-{target_lang}" if detected != "target" else f"{target_lang}-{source_lang}"
+
+            if not source_value or source_value.casefold() == target_value.casefold():
+                reverse_raw = asyncio.run(
+                    run_dictionary_lookup_multilang(
+                        word=word,
+                        source_lang=target_lang,
+                        target_lang=source_lang,
+                    )
+                )
+                reverse_target = str(reverse_raw.get("word_target") or "").strip()
+                if reverse_target and reverse_target.casefold() != target_value.casefold():
+                    result["word_ru"] = reverse_target
+                    result["translation_ru"] = reverse_target
+                    result["source_text"] = reverse_target
+                else:
+                    forced = _force_translate_text(
+                        text=word,
+                        source_lang=target_lang,
+                        target_lang=source_lang,
+                    )
+                    if forced and forced.casefold() != target_value.casefold():
+                        result["word_ru"] = forced
+                        result["translation_ru"] = forced
+                        result["source_text"] = forced
     except Exception as exc:
         return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
 
-    if result and is_ru:
-        upsert_dictionary_cache(word, result)
-
+    result = _decorate_dictionary_item(
+        result if isinstance(result, dict) else {},
+        source_lang=source_lang,
+        target_lang=target_lang,
+        direction=direction,
+    )
     return jsonify(
         {
             "ok": True,
             "item": result,
-            "direction": "ru-de" if is_ru else "de-ru",
+            "direction": direction,
             "user_id": user_id,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
 
@@ -2498,17 +3047,33 @@ def get_mobile_dashboard():
         return error
 
     now_utc = datetime.now(timezone.utc)
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
-        due_count = count_due_srs_cards(user_id=user_id, now_utc=now_utc)
-        introduced_today = count_new_cards_introduced_today(user_id=user_id, now_utc=now_utc)
+        due_count = count_due_srs_cards(
+            user_id=user_id,
+            now_utc=now_utc,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        introduced_today = count_new_cards_introduced_today(
+            user_id=user_id,
+            now_utc=now_utc,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
         new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
     except Exception as exc:
         return jsonify({"error": f"Ошибка чтения SRS-статистики: {exc}"}), 500
 
     word_of_day = None
     try:
-        latest_items = get_webapp_dictionary_entries(user_id=user_id, limit=1)
+        latest_items = get_webapp_dictionary_entries(
+            user_id=user_id,
+            limit=1,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
         if latest_items:
             item = latest_items[0] or {}
             response_json = item.get("response_json") if isinstance(item.get("response_json"), dict) else {}
@@ -2565,15 +3130,49 @@ def get_webapp_dictionary_collocations():
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
     try:
-        if not direction:
-            is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word)
-            direction = "ru-de" if is_ru else "de-ru"
-        result = asyncio.run(run_dictionary_collocations(direction, word, translation))
+        if _is_legacy_ru_de_pair(source_lang, target_lang):
+            if not direction:
+                is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word)
+                direction = "ru-de" if is_ru else "de-ru"
+            result = asyncio.run(run_dictionary_collocations(direction, word, translation))
+        else:
+            if not direction:
+                direction = f"{source_lang}-{target_lang}"
+            reverse_direction = f"{target_lang}-{source_lang}"
+            is_reverse = direction == reverse_direction or direction == "de-ru"
+            if is_reverse:
+                word_source = translation or word
+                word_target = word
+            else:
+                word_source = word
+                word_target = translation
+            result = asyncio.run(
+                run_dictionary_collocations_multilang(
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    word_source=word_source,
+                    word_target=word_target,
+                )
+            )
     except Exception as exc:
         return jsonify({"error": f"Ошибка генерации связок: {exc}"}), 500
 
-    return jsonify({"ok": True, "items": result.get("items", []), "direction": direction})
+    return jsonify(
+        {
+            "ok": True,
+            "items": result.get("items", []),
+            "direction": direction,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 def _wrap_text(text: str, max_chars: int = 80) -> list[str]:
@@ -2614,6 +3213,7 @@ def export_webapp_dictionary_pdf():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
         items = get_webapp_dictionary_entries(
@@ -2621,6 +3221,8 @@ def export_webapp_dictionary_pdf():
             limit=500,
             folder_mode=folder_mode,
             folder_id=int(folder_id) if folder_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка получения словаря: {exc}"}), 500
@@ -2742,13 +3344,15 @@ def save_webapp_dictionary_entry():
     word_de = (payload.get("word_de") or "").strip()
     translation_de = (payload.get("translation_de") or "").strip()
     translation_ru = (payload.get("translation_ru") or "").strip()
+    source_text = (payload.get("source_text") or "").strip()
+    target_text = (payload.get("target_text") or "").strip()
     response_json = payload.get("response_json") or {}
     folder_id = payload.get("folder_id")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
-    if not word_ru and not word_de:
-        return jsonify({"error": "word_ru или word_de обязателен"}), 400
+    if not word_ru and not word_de and not source_text:
+        return jsonify({"error": "word_ru или word_de или source_text обязателен"}), 400
 
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
@@ -2759,6 +3363,16 @@ def save_webapp_dictionary_entry():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    if source_text and not word_ru and source_lang != "de":
+        word_ru = source_text
+    if source_text and not word_de and source_lang == "de":
+        word_de = source_text
+    if target_text and not translation_de and target_lang == "de":
+        translation_de = target_text
+    if target_text and not translation_ru and target_lang != "de":
+        translation_ru = target_text
 
     if folder_id is None:
         try:
@@ -2775,6 +3389,16 @@ def save_webapp_dictionary_entry():
     try:
         resolved_word_ru = word_ru or response_json.get("word_ru")
         resolved_word_de = word_de or response_json.get("word_de")
+        if isinstance(response_json, dict):
+            response_json = dict(response_json)
+            response_json.setdefault("source_text", source_text or word_ru or word_de or "")
+            response_json.setdefault("target_text", target_text or translation_de or translation_ru or word_de or "")
+            response_json.setdefault("source_lang", source_lang)
+            response_json.setdefault("target_lang", target_lang)
+            response_json.setdefault(
+                "language_pair",
+                _build_language_pair_payload(source_lang, target_lang),
+            )
         save_webapp_dictionary_query(
             user_id=user_id,
             word_ru=resolved_word_ru if resolved_word_ru else None,
@@ -2783,11 +3407,18 @@ def save_webapp_dictionary_entry():
             translation_ru=translation_ru or response_json.get("translation_ru"),
             response_json=response_json,
             folder_id=int(folder_id) if folder_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
 
-    return jsonify({"ok": True})
+    return jsonify(
+        {
+            "ok": True,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/mobile/dictionary/save", methods=["POST"])
@@ -2801,11 +3432,22 @@ def save_mobile_dictionary_entry():
     word_de = (payload.get("word_de") or "").strip()
     translation_de = (payload.get("translation_de") or "").strip()
     translation_ru = (payload.get("translation_ru") or "").strip()
+    source_text = (payload.get("source_text") or "").strip()
+    target_text = (payload.get("target_text") or "").strip()
     response_json = payload.get("response_json") or {}
     folder_id = payload.get("folder_id")
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
-    if not word_ru and not word_de and not isinstance(response_json, dict):
-        return jsonify({"error": "word_ru/word_de или response_json обязателен"}), 400
+    if not word_ru and not word_de and not source_text and not isinstance(response_json, dict):
+        return jsonify({"error": "word_ru/word_de/source_text или response_json обязателен"}), 400
+    if source_text and not word_ru and source_lang != "de":
+        word_ru = source_text
+    if source_text and not word_de and source_lang == "de":
+        word_de = source_text
+    if target_text and not translation_de and target_lang == "de":
+        translation_de = target_text
+    if target_text and not translation_ru and target_lang != "de":
+        translation_ru = target_text
 
     if folder_id is None:
         try:
@@ -2824,6 +3466,16 @@ def save_mobile_dictionary_entry():
         resolved_word_de = word_de or (response_json.get("word_de") if isinstance(response_json, dict) else None)
         resolved_translation_de = translation_de or (response_json.get("translation_de") if isinstance(response_json, dict) else None)
         resolved_translation_ru = translation_ru or (response_json.get("translation_ru") if isinstance(response_json, dict) else None)
+        if isinstance(response_json, dict):
+            response_json = dict(response_json)
+            response_json.setdefault("source_text", source_text or word_ru or word_de or "")
+            response_json.setdefault("target_text", target_text or translation_de or translation_ru or word_de or "")
+            response_json.setdefault("source_lang", source_lang)
+            response_json.setdefault("target_lang", target_lang)
+            response_json.setdefault(
+                "language_pair",
+                _build_language_pair_payload(source_lang, target_lang),
+            )
 
         save_webapp_dictionary_query(
             user_id=user_id,
@@ -2833,11 +3485,19 @@ def save_mobile_dictionary_entry():
             translation_ru=resolved_translation_ru,
             response_json=response_json if isinstance(response_json, dict) else {},
             folder_id=int(folder_id) if folder_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
 
-    return jsonify({"ok": True, "user_id": user_id})
+    return jsonify(
+        {
+            "ok": True,
+            "user_id": user_id,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/dictionary/cards", methods=["POST"])
@@ -2860,6 +3520,7 @@ def get_webapp_dictionary_cards():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
         items = get_webapp_dictionary_entries(
@@ -2867,11 +3528,29 @@ def get_webapp_dictionary_cards():
             limit=int(limit),
             folder_mode=folder_mode,
             folder_id=int(folder_id) if folder_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка получения словаря: {exc}"}), 500
 
-    return jsonify({"ok": True, "items": items})
+    direction = f"{source_lang}-{target_lang}"
+    decorated_items = [
+        _decorate_dictionary_item(
+            item if isinstance(item, dict) else {},
+            source_lang=source_lang,
+            target_lang=target_lang,
+            direction=direction,
+        )
+        for item in items
+    ]
+    return jsonify(
+        {
+            "ok": True,
+            "items": decorated_items,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/dictionary/folders", methods=["POST"])
@@ -2956,6 +3635,7 @@ def get_webapp_flashcard_set():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
         items = get_flashcard_set(
@@ -2964,11 +3644,29 @@ def get_webapp_flashcard_set():
             wrong_size=wrong_size,
             folder_mode=folder_mode,
             folder_id=int(folder_id) if folder_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка получения карточек: {exc}"}), 500
 
-    return jsonify({"ok": True, "items": items})
+    direction = f"{source_lang}-{target_lang}"
+    decorated_items = [
+        _decorate_dictionary_item(
+            item if isinstance(item, dict) else {},
+            source_lang=source_lang,
+            target_lang=target_lang,
+            direction=direction,
+        )
+        for item in items
+    ]
+    return jsonify(
+        {
+            "ok": True,
+            "items": decorated_items,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/flashcards/answer", methods=["POST"])
@@ -2993,12 +3691,18 @@ def get_next_srs_card():
     user_id, _username = _extract_webapp_user_from_init_data(init_data)
     if not user_id:
         return jsonify({"error": "initData не прошёл проверку или user_id отсутствует"}), 401
-    if not is_telegram_user_allowed(int(user_id)):
+    if not _is_webapp_user_allowed(int(user_id)):
         return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
 
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     now_utc = datetime.now(timezone.utc)
 
-    due_payload = get_next_due_srs_card(user_id=user_id, now_utc=now_utc)
+    due_payload = get_next_due_srs_card(
+        user_id=user_id,
+        now_utc=now_utc,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     card_payload = None
     srs_payload = None
 
@@ -3006,10 +3710,19 @@ def get_next_srs_card():
         card_payload = due_payload.get("card")
         srs_payload = due_payload.get("srs")
     else:
-        introduced_today = count_new_cards_introduced_today(user_id=user_id, now_utc=now_utc)
+        introduced_today = count_new_cards_introduced_today(
+            user_id=user_id,
+            now_utc=now_utc,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
         new_remaining = max(NEW_PER_DAY - introduced_today, 0)
         if new_remaining > 0:
-            candidate = get_next_new_srs_candidate(user_id=user_id)
+            candidate = get_next_new_srs_candidate(
+                user_id=user_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
             if candidate:
                 state = ensure_new_srs_state(user_id=user_id, card_id=int(candidate["id"]), now_utc=now_utc)
                 card_payload = candidate
@@ -3021,8 +3734,18 @@ def get_next_srs_card():
                     "difficulty": float(state.get("difficulty") or 0.0),
                 }
 
-    due_count = count_due_srs_cards(user_id=user_id, now_utc=now_utc)
-    introduced_today = count_new_cards_introduced_today(user_id=user_id, now_utc=now_utc)
+    due_count = count_due_srs_cards(
+        user_id=user_id,
+        now_utc=now_utc,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    introduced_today = count_new_cards_introduced_today(
+        user_id=user_id,
+        now_utc=now_utc,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
 
     if not card_payload:
@@ -3049,16 +3772,23 @@ def get_next_srs_card():
         "difficulty": float(srs_payload.get("difficulty") or 0.0),
         "is_mature": interval_days >= MATURE_INTERVAL_DAYS,
     }
+    card_response = _decorate_dictionary_item(
+        card_payload if isinstance(card_payload, dict) else {},
+        source_lang=source_lang,
+        target_lang=target_lang,
+        direction=f"{source_lang}-{target_lang}",
+    )
 
     return jsonify(
         {
             "ok": True,
-            "card": card_payload,
+            "card": card_response,
             "srs": srs_response,
             "queue_info": {
                 "due_count": due_count,
                 "new_remaining_today": new_remaining_today,
             },
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
 
@@ -3081,8 +3811,9 @@ def review_srs_card():
     user_id, _username = _extract_webapp_user_from_init_data(init_data)
     if not user_id:
         return jsonify({"error": "initData не прошёл проверку или user_id отсутствует"}), 401
-    if not is_telegram_user_allowed(int(user_id)):
+    if not _is_webapp_user_allowed(int(user_id)):
         return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     reviewed_at = datetime.now(timezone.utc)
     card_id = int(card_id)
@@ -3163,6 +3894,7 @@ def review_srs_card():
             "difficulty": float(persisted.get("difficulty") or 0.0),
             "is_mature": interval_days >= MATURE_INTERVAL_DAYS,
             "message": "Review saved",
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
 
@@ -3174,6 +3906,8 @@ def get_flashcard_feel():
     entry_id = payload.get("entry_id")
     word_ru = (payload.get("word_ru") or "").strip()
     word_de = (payload.get("word_de") or "").strip()
+    source_text_hint = (payload.get("source_text") or "").strip()
+    target_text_hint = (payload.get("target_text") or "").strip()
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -3182,6 +3916,12 @@ def get_flashcard_feel():
 
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     response_json = None
     entry = None
@@ -3216,14 +3956,29 @@ def get_flashcard_feel():
             or ""
         ).strip()
 
-    # Allow feel generation for cards where Russian field is empty.
-    # In this case we pass German source as primary text.
-    source_text = word_ru or word_de
+    source_text, target_text = _resolve_entry_texts_for_pair(
+        entry=entry,
+        response_json=response_json if isinstance(response_json, dict) else {},
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text_hint=source_text_hint or word_ru,
+        target_text_hint=target_text_hint or word_de,
+    )
     if not source_text:
-        return jsonify({"error": "Нужно передать word_ru или word_de"}), 400
+        return jsonify({"error": "Нужно передать source_text/word_ru/word_de"}), 400
 
     try:
-        feel_text = asyncio.run(run_feel_word(source_text, word_de))
+        if _is_legacy_ru_de_pair(source_lang, target_lang):
+            feel_text = asyncio.run(run_feel_word(source_text, target_text))
+        else:
+            feel_text = asyncio.run(
+                run_feel_word_multilang(
+                    source_text=source_text,
+                    target_text=target_text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
     except Exception as exc:
         return jsonify({"error": f"Ошибка feel: {exc}"}), 500
 
@@ -3235,7 +3990,13 @@ def get_flashcard_feel():
     except Exception:
         pass
 
-    return jsonify({"ok": True, "feel_explanation": feel_text})
+    return jsonify(
+        {
+            "ok": True,
+            "feel_explanation": feel_text,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/flashcards/feel/feedback", methods=["POST"])
@@ -3368,6 +4129,8 @@ def enrich_flashcard_entry():
     entry_id = payload.get("entry_id")
     word_ru = (payload.get("word_ru") or "").strip()
     word_de = (payload.get("word_de") or "").strip()
+    source_text_hint = (payload.get("source_text") or "").strip()
+    target_text_hint = (payload.get("target_text") or "").strip()
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -3376,6 +4139,12 @@ def enrich_flashcard_entry():
 
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     entry = get_dictionary_entry_by_id(int(entry_id))
     response_json = entry.get("response_json") if entry else None
@@ -3385,27 +4154,68 @@ def enrich_flashcard_entry():
         except Exception:
             response_json = None
 
-    if not word_ru and entry:
-        word_ru = (entry.get("word_ru") or "").strip()
-    if not word_de and entry:
-        word_de = (entry.get("word_de") or "").strip()
+    source_text, target_text = _resolve_entry_texts_for_pair(
+        entry=entry,
+        response_json=response_json if isinstance(response_json, dict) else {},
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text_hint=source_text_hint or word_ru,
+        target_text_hint=target_text_hint or word_de,
+    )
 
     try:
-        enrich = asyncio.run(run_enrich_word(word_ru, word_de))
+        if _is_legacy_ru_de_pair(source_lang, target_lang):
+            enrich = asyncio.run(run_enrich_word(source_text, target_text))
+        else:
+            enrich = asyncio.run(
+                run_enrich_word_multilang(
+                    source_text=source_text,
+                    target_text=target_text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
     except Exception as exc:
         return jsonify({"error": f"Ошибка enrich: {exc}"}), 500
 
     if not response_json:
         response_json = {}
     if isinstance(enrich, dict):
-        response_json.update(enrich)
+        enrich_data = dict(enrich)
+        prefixes = enrich_data.get("prefixes")
+        if isinstance(prefixes, list):
+            normalized_prefixes = []
+            for item in prefixes:
+                if not isinstance(item, dict):
+                    continue
+                normalized = dict(item)
+                if normalized.get("translation_target") and not normalized.get("translation_de"):
+                    normalized["translation_de"] = normalized.get("translation_target")
+                if normalized.get("translation_source") and not normalized.get("translation_ru"):
+                    normalized["translation_ru"] = normalized.get("translation_source")
+                if normalized.get("example_target") and not normalized.get("example_de"):
+                    normalized["example_de"] = normalized.get("example_target")
+                normalized_prefixes.append(normalized)
+            enrich_data["prefixes"] = normalized_prefixes
+
+        response_json.update(enrich_data)
+        response_json["source_text"] = source_text
+        response_json["target_text"] = target_text
+        response_json["source_lang"] = source_lang
+        response_json["target_lang"] = target_lang
 
     try:
         update_webapp_dictionary_entry(int(entry_id), response_json)
     except Exception:
         pass
 
-    return jsonify({"ok": True, "response_json": response_json})
+    return jsonify(
+        {
+            "ok": True,
+            "response_json": response_json,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/youtube/transcript", methods=["POST"])
@@ -3429,19 +4239,26 @@ def get_youtube_transcript():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    subtitle_target_lang = _normalize_short_lang_code(source_lang, fallback="ru")
 
     now = time.time()
 
     cached = _yt_transcript_cache.get(video_id)
     if cached and now - cached.get("ts", 0) < _YT_CACHE_TTL:
         data = cached.get("data") or {}
+        visible_translations = _extract_youtube_translations_for_target(
+            data.get("translations") or {},
+            subtitle_target_lang,
+        )
         return jsonify(
             {
                 "ok": True,
                 "items": data.get("items", []),
                 "language": data.get("language"),
                 "is_generated": data.get("is_generated"),
-                "translations": data.get("translations") or {},
+                "translations": visible_translations,
+                "translation_lang": subtitle_target_lang,
                 "source": data.get("source"),
                 "cached": True,
             }
@@ -3459,13 +4276,18 @@ def get_youtube_transcript():
             "translations": cached_db.get("translations") or {},
         }
         _yt_transcript_cache[video_id] = {"ts": now, "data": data}
+        visible_translations = _extract_youtube_translations_for_target(
+            data.get("translations") or {},
+            subtitle_target_lang,
+        )
         return jsonify(
             {
                 "ok": True,
                 "items": data.get("items", []),
                 "language": data.get("language"),
                 "is_generated": data.get("is_generated"),
-                "translations": data.get("translations") or {},
+                "translations": visible_translations,
+                "translation_lang": subtitle_target_lang,
                 "source": data.get("source"),
                 "cached_db": True,
             }
@@ -3500,7 +4322,11 @@ def get_youtube_transcript():
             "items": data.get("items", []),
             "language": data.get("language"),
             "is_generated": data.get("is_generated"),
-            "translations": data.get("translations") or {},
+            "translations": _extract_youtube_translations_for_target(
+                data.get("translations") or {},
+                subtitle_target_lang,
+            ),
+            "translation_lang": subtitle_target_lang,
             "source": data.get("source"),
         }
     )
@@ -3633,6 +4459,13 @@ def translate_youtube_subtitles():
         return jsonify({"error": "initData не прошёл проверку"}), 401
     if not isinstance(lines, list):
         return jsonify({"error": "lines должен быть массивом"}), 400
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    subtitle_target_lang = _normalize_short_lang_code(source_lang, fallback="ru")
 
     try:
         start_index = int(start_index) if start_index is not None else 0
@@ -3655,8 +4488,12 @@ def translate_youtube_subtitles():
     missing_indices = []
     for offset, line in enumerate(lines):
         line_clean = str(line).strip()
-        idx = str(start_index + offset)
-        cached = translations_map.get(idx)
+        idx_int = start_index + offset
+        idx = str(idx_int)
+        lang_key = _youtube_translation_key(subtitle_target_lang, idx)
+        cached = translations_map.get(lang_key)
+        if cached is None and subtitle_target_lang == "ru":
+            cached = translations_map.get(idx)
         if cached:
             results.append(cached)
         elif not line_clean:
@@ -3664,34 +4501,57 @@ def translate_youtube_subtitles():
         else:
             results.append("")
             missing_lines.append(line_clean)
-            missing_indices.append(idx)
+            missing_indices.append(idx_int)
 
     if missing_lines:
+        detected_source_lang = "de"
         try:
-            translated = asyncio.run(run_translate_subtitles_ru(missing_lines))
+            cached_db = get_youtube_transcript_cache(video_id) or {}
+            detected_source_lang = _normalize_short_lang_code(cached_db.get("language"), fallback="de")
+        except Exception:
+            detected_source_lang = "de"
+        try:
+            if subtitle_target_lang == "ru" and detected_source_lang == "de":
+                translated = asyncio.run(run_translate_subtitles_ru(missing_lines))
+            else:
+                translated = asyncio.run(
+                    run_translate_subtitles_multilang(
+                        lines=missing_lines,
+                        source_lang=detected_source_lang,
+                        target_lang=subtitle_target_lang,
+                    )
+                )
         except Exception as exc:
             return jsonify({"error": f"translation error: {exc}"}), 500
         update_map = {}
-        for idx, text in zip(missing_indices, translated):
-            update_map[idx] = text
+        for idx_int, text in zip(missing_indices, translated):
+            idx = str(idx_int)
+            update_map[_youtube_translation_key(subtitle_target_lang, idx)] = text
+            if subtitle_target_lang == "ru":
+                update_map[idx] = text
         translations_map.update(update_map)
         try:
             upsert_youtube_translations(video_id, update_map)
         except Exception:
             pass
-        for i, idx in enumerate(missing_indices):
-            pos = int(idx) - start_index
+        for idx_int in missing_indices:
+            pos = idx_int - start_index
+            idx = str(idx_int)
             if 0 <= pos < len(results):
-                results[pos] = update_map.get(idx, "")
+                results[pos] = update_map.get(
+                    _youtube_translation_key(subtitle_target_lang, idx),
+                    "",
+                )
         cached = _yt_transcript_cache.get(video_id)
         if cached and cached.get("data"):
             cached["data"]["translations"] = translations_map
 
-    return jsonify({"ok": True, "translations": results})
+    return jsonify({"ok": True, "translations": results, "translation_lang": subtitle_target_lang})
 
 
 @app.route("/api/webapp/normalize/de", methods=["POST"])
-def normalize_german():
+@app.route("/api/webapp/normalize/<lang_code>", methods=["POST"])
+def normalize_lookup_text(lang_code: str = "de"):
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     text = (payload.get("text") or "").strip()
@@ -3712,7 +4572,7 @@ def normalize_german():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     try:
-        normalized = _normalize_german_text(text)
+        normalized = _normalize_lookup_text(text, lang_code)
     except Exception as exc:
         return jsonify({"error": f"Не удалось нормализовать текст: {exc}"}), 500
 
@@ -3738,9 +4598,21 @@ def get_webapp_sentences():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    sentences = get_pending_daily_sentences(user_id=user_id, limit=int(limit))
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    sentences = get_pending_daily_sentences(
+        user_id=user_id,
+        limit=int(limit),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     deduped = _dedupe_sentences(sentences)
-    return jsonify({"ok": True, "items": deduped})
+    return jsonify(
+        {
+            "ok": True,
+            "items": deduped,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/topics", methods=["GET"])
@@ -3769,6 +4641,8 @@ def start_webapp_translation():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
     try:
         result = asyncio.run(
             start_translation_session_webapp(
@@ -3776,12 +4650,20 @@ def start_webapp_translation():
                 username=username,
                 topic=topic if topic else "Random sentences",
                 level=level,
+                source_lang=source_lang,
+                target_lang=target_lang,
             )
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка запуска сессии: {exc}"}), 500
 
-    return jsonify({"ok": True, **result})
+    return jsonify(
+        {
+            "ok": True,
+            **result,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/story/history", methods=["POST"])
@@ -3802,9 +4684,16 @@ def get_webapp_story_history():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     items = get_story_history_webapp(user_id=user_id, limit=limit)
-    return jsonify({"ok": True, "items": items})
+    return jsonify(
+        {
+            "ok": True,
+            "items": items,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/story/start", methods=["POST"])
@@ -3829,6 +4718,7 @@ def start_webapp_story():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
         result = asyncio.run(
@@ -3847,7 +4737,13 @@ def start_webapp_story():
     if isinstance(result, dict) and result.get("error"):
         return jsonify({"error": result["error"]}), 400
 
-    return jsonify({"ok": True, **result})
+    return jsonify(
+        {
+            "ok": True,
+            **result,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/story/submit", methods=["POST"])
@@ -3874,6 +4770,7 @@ def submit_webapp_story():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
         result = asyncio.run(
@@ -3882,6 +4779,8 @@ def submit_webapp_story():
                 username=username,
                 translations=translations,
                 guess=guess,
+                source_lang=source_lang,
+                target_lang=target_lang,
             )
         )
     except Exception as exc:
@@ -3890,7 +4789,13 @@ def submit_webapp_story():
     if isinstance(result, dict) and result.get("error"):
         return jsonify({"error": result["error"]}), 400
 
-    return jsonify({"ok": True, **result})
+    return jsonify(
+        {
+            "ok": True,
+            **result,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/session", methods=["POST"])
@@ -4554,12 +5459,30 @@ def explain_webapp_translation():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
-        explanation = asyncio.run(run_translation_explanation(original_text, user_translation))
+        if _is_legacy_ru_de_pair(source_lang, target_lang):
+            explanation = asyncio.run(run_translation_explanation(original_text, user_translation))
+        else:
+            explanation = asyncio.run(
+                run_translation_explanation_multilang(
+                    original_text=original_text,
+                    user_translation=user_translation,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    explanation_lang=source_lang,
+                )
+            )
     except Exception as exc:
         return jsonify({"error": f"Ошибка объяснения: {exc}"}), 500
 
-    return jsonify({"ok": True, "explanation": explanation})
+    return jsonify(
+        {
+            "ok": True,
+            "explanation": explanation,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/finish", methods=["POST"])
@@ -4584,12 +5507,17 @@ def finish_webapp_translation():
 
     result = finish_translation_webapp(user_id)
     summary = build_user_daily_summary(user_id=user_id, username=username or user_name)
+    group_warning = None
     if summary:
         try:
             _send_group_message(summary)
         except Exception as exc:
-            return jsonify({"error": f"Ошибка отправки в группу: {exc}"}), 500
-    return jsonify({"ok": True, **result})
+            # Group delivery is optional for WebApp flow; do not fail finish.
+            group_warning = f"Не удалось отправить сводку в группу: {exc}"
+    response_payload = {"ok": True, **result}
+    if group_warning:
+        response_payload["group_warning"] = group_warning
+    return jsonify(response_payload)
 
 
 _start_audio_scheduler()

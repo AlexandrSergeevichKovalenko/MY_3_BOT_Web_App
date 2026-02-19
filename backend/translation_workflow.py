@@ -20,6 +20,8 @@ from backend.config_mistakes_data import (
 from backend.openai_manager import (
     client,
     get_or_create_openai_resources,
+    generate_sentences_multilang,
+    run_check_translation_multilang,
     run_check_translation_story,
     run_check_story_guess_semantic,
 )
@@ -36,17 +38,43 @@ def get_db_connection():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
-def _get_active_session_id(cursor, user_id: int) -> str | None:
-    cursor.execute(
-        """
-        SELECT session_id
-        FROM bt_3_user_progress
-        WHERE user_id = %s AND completed = FALSE
-        ORDER BY start_time DESC
-        LIMIT 1;
-        """,
-        (user_id,),
-    )
+def _get_active_session_id(
+    cursor,
+    user_id: int,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> str | None:
+    if source_lang and target_lang:
+        cursor.execute(
+            """
+            SELECT up.session_id
+            FROM bt_3_user_progress up
+            WHERE up.user_id = %s
+              AND up.completed = FALSE
+              AND EXISTS (
+                SELECT 1
+                FROM bt_3_daily_sentences ds
+                WHERE ds.user_id = up.user_id
+                  AND ds.session_id = up.session_id
+                  AND COALESCE(ds.source_lang, 'ru') = %s
+                  AND COALESCE(ds.target_lang, 'de') = %s
+              )
+            ORDER BY up.start_time DESC
+            LIMIT 1;
+            """,
+            (user_id, source_lang, target_lang),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT session_id
+            FROM bt_3_user_progress
+            WHERE user_id = %s AND completed = FALSE
+            ORDER BY start_time DESC
+            LIMIT 1;
+            """,
+            (user_id,),
+        )
     row = cursor.fetchone()
     return row[0] if row else None
 
@@ -65,6 +93,10 @@ def _normalize_level(level: str | None) -> str:
         return "c2"
     allowed = {"a2", "b1", "b2", "c1", "c2"}
     return normalized if normalized in allowed else "c1"
+
+
+def _is_legacy_ru_de_pair(source_lang: str | None, target_lang: str | None) -> bool:
+    return (source_lang or "").strip().lower() == "ru" and (target_lang or "").strip().lower() == "de"
 
 
 def _extract_json_payload(text: str) -> dict[str, Any] | None:
@@ -240,6 +272,16 @@ def _insert_story_session_sentences(
             """,
             (sentence, i, user_id, session_id, id_for_mistake_table),
         )
+        cursor.execute(
+            """
+            UPDATE bt_3_daily_sentences
+            SET source_lang = COALESCE(source_lang, 'ru'),
+                target_lang = COALESCE(target_lang, 'de')
+            WHERE user_id = %s AND session_id = %s AND sentence = %s
+              AND source_lang IS NULL AND target_lang IS NULL;
+            """,
+            (user_id, session_id, sentence),
+        )
 
 
 def _save_story_bank(
@@ -347,7 +389,7 @@ async def start_story_session_webapp(
     cursor = conn.cursor()
 
     try:
-        active_session_id = _get_active_session_id(cursor, user_id)
+        active_session_id = _get_active_session_id(cursor, user_id, source_lang=source_lang, target_lang=target_lang)
         if active_session_id:
             return {"session_id": active_session_id, "created": False, "blocked": True}
 
@@ -355,7 +397,7 @@ async def start_story_session_webapp(
             """
             UPDATE bt_3_user_progress
             SET end_time = NOW(), completed = TRUE
-            WHERE user_id = %s AND start_time::date < CURRENT_DATE AND completed = FALSE;
+            WHERE user_id = %s AND completed = FALSE;
             """,
             (user_id,),
         )
@@ -473,6 +515,8 @@ async def submit_story_translation_webapp(
     username: str | None,
     translations: list[dict[str, Any]],
     guess: str,
+    source_lang: str = "ru",
+    target_lang: str = "de",
 ) -> dict[str, Any]:
     if not translations:
         return {"error": "translations обязательны"}
@@ -571,8 +615,8 @@ async def submit_story_translation_webapp(
             cursor.execute(
                 """
                 INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
-                user_translation, score, feedback)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                user_translation, score, feedback, source_lang, target_lang)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                 """,
                 (
                     user_id,
@@ -583,6 +627,8 @@ async def submit_story_translation_webapp(
                     user_sentence,
                     score_value,
                     feedback,
+                    (source_lang or "ru"),
+                    (target_lang or "de"),
                 ),
             )
 
@@ -782,14 +828,62 @@ async def start_translation_session_webapp(
     username: str | None = None,
     topic: str = "Random sentences",
     level: str | None = None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
 ) -> dict[str, Any]:
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
-        active_session_id = _get_active_session_id(cursor, user_id)
+        active_session_id = _get_active_session_id(
+            cursor,
+            user_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
         if active_session_id:
-            return {"session_id": active_session_id, "created": False, "blocked": True}
+            # Keep blocking only when there are still pending sentences in this
+            # active session for the same language pair.
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_daily_sentences ds
+                LEFT JOIN bt_3_translations tr
+                  ON tr.user_id = ds.user_id
+                 AND tr.sentence_id = ds.id
+                 AND tr.session_id = ds.session_id
+                 AND COALESCE(tr.source_lang, 'ru') = %s
+                 AND COALESCE(tr.target_lang, 'de') = %s
+                WHERE ds.user_id = %s
+                  AND ds.session_id = %s
+                  AND COALESCE(ds.source_lang, 'ru') = %s
+                  AND COALESCE(ds.target_lang, 'de') = %s
+                  AND tr.id IS NULL;
+                """,
+                (
+                    source_lang,
+                    target_lang,
+                    user_id,
+                    active_session_id,
+                    source_lang,
+                    target_lang,
+                ),
+            )
+            row = cursor.fetchone()
+            pending_count = int(row[0] or 0) if row else 0
+            if pending_count > 0:
+                return {"session_id": active_session_id, "created": False, "blocked": True}
+
+            # Auto-close stale empty session and allow creating a fresh one.
+            cursor.execute(
+                """
+                UPDATE bt_3_user_progress
+                SET end_time = NOW(), completed = TRUE
+                WHERE user_id = %s AND session_id = %s;
+                """,
+                (user_id, active_session_id),
+            )
+            conn.commit()
 
         cursor.execute(
             """
@@ -810,7 +904,17 @@ async def start_translation_session_webapp(
         )
         conn.commit()
 
-        sentences = [s.strip() for s in await get_original_sentences_webapp(user_id, topic, level) if s.strip()]
+        if _is_legacy_ru_de_pair(source_lang, target_lang):
+            sentences = [s.strip() for s in await get_original_sentences_webapp(user_id, topic, level) if s.strip()]
+        else:
+            generated = await generate_sentences_multilang(
+                num_sentences=7,
+                topic=topic,
+                level=level,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            sentences = [s.strip() for s in generated if s.strip()]
         sentences = correct_numbering(sentences)
 
         if not sentences:
@@ -820,9 +924,12 @@ async def start_translation_session_webapp(
             """
             SELECT COALESCE(MAX(unique_id), 0)
             FROM bt_3_daily_sentences
-            WHERE user_id = %s AND date = CURRENT_DATE;
+            WHERE user_id = %s
+              AND date = CURRENT_DATE
+              AND COALESCE(source_lang, 'ru') = %s
+              AND COALESCE(target_lang, 'de') = %s;
             """,
-            (user_id,),
+            (user_id, source_lang, target_lang),
         )
         row = cursor.fetchone()
         start_index = (row[0] or 0) + 1
@@ -833,9 +940,11 @@ async def start_translation_session_webapp(
                 SELECT id_for_mistake_table
                 FROM bt_3_daily_sentences
                 WHERE sentence = %s
+                  AND COALESCE(source_lang, 'ru') = %s
+                  AND COALESCE(target_lang, 'de') = %s
                 LIMIT 1;
                 """,
-                (sentence,),
+                (sentence, source_lang, target_lang),
             )
             result = cursor.fetchone()
 
@@ -849,10 +958,19 @@ async def start_translation_session_webapp(
 
             cursor.execute(
                 """
-                INSERT INTO bt_3_daily_sentences (date, sentence, unique_id, user_id, session_id, id_for_mistake_table)
-                VALUES (CURRENT_DATE, %s, %s, %s, %s, %s);
+                INSERT INTO bt_3_daily_sentences (
+                    date,
+                    sentence,
+                    unique_id,
+                    user_id,
+                    session_id,
+                    id_for_mistake_table,
+                    source_lang,
+                    target_lang
+                )
+                VALUES (CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s);
                 """,
-                (sentence, i, user_id, session_id, id_for_mistake_table),
+                (sentence, i, user_id, session_id, id_for_mistake_table, source_lang, target_lang),
             )
 
         conn.commit()
@@ -866,7 +984,35 @@ async def check_translation(
     original_text: str,
     user_translation: str,
     sentence_number: int | None = None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
 ) -> tuple[str, list[str], list[str], int | None, str | None]:
+    if not _is_legacy_ru_de_pair(source_lang, target_lang):
+        feedback = await run_check_translation_multilang(
+            original_text=original_text,
+            user_translation=user_translation,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        score = None
+        correct_translation = None
+        score_match = re.search(r"Score:\s*(\d+)", feedback, flags=re.IGNORECASE)
+        if score_match:
+            score = int(score_match.group(1))
+        translation_match = re.search(r"Correct Translation:\s*(.+?)(?:\n|\Z)", feedback, flags=re.IGNORECASE)
+        if translation_match:
+            correct_translation = translation_match.group(1).strip()
+        sentence_label = sentence_number if sentence_number is not None else "—"
+        if score is not None and "Sentence number" not in feedback:
+            feedback = (
+                f"🟢 *Sentence number:* {sentence_label}\n"
+                f"✅ *Score:* {score}/100\n"
+                f"🔵 *Original Sentence:* {original_text}\n"
+                f"🟡 *User Translation:* {user_translation}\n"
+                f"🟣 *Correct Translation:* {correct_translation or '—'}\n"
+            )
+        return feedback, [], [], score, correct_translation
+
     task_name = "check_translation"
     system_instruction_key = "check_translation"
     assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
@@ -1056,7 +1202,12 @@ def _extract_correct_translation(feedback: str | None) -> str | None:
     return None
 
 
-def get_daily_translation_history(user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+def get_daily_translation_history(
+    user_id: int,
+    limit: int = 50,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> list[dict[str, Any]]:
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -1068,16 +1219,20 @@ def get_daily_translation_history(user_id: int, limit: int = 50) -> list[dict[st
                     t.feedback,
                     t.timestamp,
                     ds.sentence,
-                    ds.unique_id
+                    ds.unique_id,
+                    t.source_lang,
+                    t.target_lang
                 FROM bt_3_translations t
                 JOIN bt_3_daily_sentences ds
                     ON ds.id = t.sentence_id
                 WHERE t.user_id = %s
+                  AND COALESCE(t.source_lang, 'ru') = %s
+                  AND COALESCE(t.target_lang, 'de') = %s
                   AND t.timestamp::date = CURRENT_DATE
                 ORDER BY t.timestamp DESC
                 LIMIT %s;
                 """,
-                (user_id, limit),
+                (user_id, source_lang, target_lang, limit),
             )
             rows = cursor.fetchall()
 
@@ -1094,6 +1249,8 @@ def get_daily_translation_history(user_id: int, limit: int = 50) -> list[dict[st
                 "original_text": row[5],
                 "sentence_number": row[6],
                 "correct_translation": _extract_correct_translation(feedback),
+                "source_lang": row[7] or source_lang,
+                "target_lang": row[8] or target_lang,
             }
         )
     return items
@@ -1171,6 +1328,8 @@ async def check_user_translation_webapp(
     user_id: int,
     username: str | None,
     translations: list[dict[str, Any]],
+    source_lang: str = "ru",
+    target_lang: str = "de",
 ) -> list[dict[str, Any]]:
     if not translations:
         return []
@@ -1184,10 +1343,12 @@ async def check_user_translation_webapp(
             SELECT session_id
             FROM bt_3_daily_sentences
             WHERE user_id = %s
+              AND COALESCE(source_lang, 'ru') = %s
+              AND COALESCE(target_lang, 'de') = %s
             ORDER BY id DESC
             LIMIT 1;
             """,
-            (user_id,),
+            (user_id, (source_lang or "ru"), (target_lang or "de")),
         )
         latest_session = cursor.fetchone()
         if not latest_session:
@@ -1198,9 +1359,12 @@ async def check_user_translation_webapp(
             """
             SELECT unique_id, id_for_mistake_table, id, sentence, session_id
             FROM bt_3_daily_sentences
-            WHERE session_id = %s AND user_id = %s;
+            WHERE session_id = %s
+              AND user_id = %s
+              AND COALESCE(source_lang, 'ru') = %s
+              AND COALESCE(target_lang, 'de') = %s;
             """,
-            (latest_session_id, user_id),
+            (latest_session_id, user_id, (source_lang or "ru"), (target_lang or "de")),
         )
         allowed_rows = cursor.fetchall()
         allowed_by_mistake_id = {
@@ -1241,9 +1405,13 @@ async def check_user_translation_webapp(
             cursor.execute(
                 """
                 SELECT id FROM bt_3_translations
-                WHERE user_id = %s AND sentence_id = %s AND timestamp::date = CURRENT_DATE;
+                WHERE user_id = %s
+                  AND sentence_id = %s
+                  AND COALESCE(source_lang, 'ru') = %s
+                  AND COALESCE(target_lang, 'de') = %s
+                  AND timestamp::date = CURRENT_DATE;
                 """,
-                (user_id, sentence_pk_id),
+                (user_id, sentence_pk_id, (source_lang or "ru"), (target_lang or "de")),
             )
 
             existing_translation = cursor.fetchone()
@@ -1261,6 +1429,8 @@ async def check_user_translation_webapp(
                     original_text,
                     user_translation,
                     sentence_number,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
                 )
             except Exception as exc:
                 logging.error("Ошибка при проверке перевода №%s: %s", sentence_number, exc, exc_info=True)
@@ -1277,8 +1447,8 @@ async def check_user_translation_webapp(
             cursor.execute(
                 """
                 INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
-                user_translation, score, feedback)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                user_translation, score, feedback, source_lang, target_lang)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                 """,
                 (
                     user_id,
@@ -1289,6 +1459,8 @@ async def check_user_translation_webapp(
                     user_translation,
                     score_value,
                     feedback,
+                    (source_lang or "ru"),
+                    (target_lang or "de"),
                 ),
             )
             conn.commit()

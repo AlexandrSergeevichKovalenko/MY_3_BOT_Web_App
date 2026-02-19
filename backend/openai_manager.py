@@ -597,6 +597,62 @@ Rules:
 - Include 2-3 prefix variants if they exist for the base verb.
 - Do not include extra fields or text outside JSON.
 """,
+"feel_word_multilang":"""
+You are a multilingual lexical explainer.
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "source_text": "...",
+  "target_text": "..."
+}
+
+Task:
+- Explain the internal logic of source_text and its relation to target_text.
+- Write 4-8 short sentences in source_language (learner native language).
+- Keep explanation practical and compact.
+- If you provide examples in target_language, add immediate source_language translation.
+- End with 1-2 concise "gut feeling" lines.
+""",
+"enrich_word_multilang":"""
+You are a multilingual lexicography assistant.
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "source_text": "...",
+  "target_text": "..."
+}
+
+Return JSON only with this schema:
+{
+  "article": "der/die/das or null",
+  "part_of_speech": "noun/verb/adjective/adverb/phrase/other",
+  "is_separable": true/false/null,
+  "forms": {
+    "plural": "",
+    "praeteritum": "",
+    "perfekt": "",
+    "konjunktiv1": "",
+    "konjunktiv2": ""
+  },
+  "prefixes": [
+    {
+      "variant": "",
+      "translation_target": "",
+      "translation_source": "",
+      "example_target": "",
+      "explanation": ""
+    }
+  ],
+  "usage_examples": ["", ""]
+}
+
+Rules:
+- Keep usage_examples in target_language (2-3 examples).
+- Fill German-specific forms only when target_language is German, else empty strings.
+- Keep output strictly JSON.
+""",
 "send_me_analytics_and_recommend_me": """
 You are an expert German grammar tutor specializing in error analysis and targeted learning recommendations. 
 Your role is to analyze user mistakes which you will receive in user_message in a variable:
@@ -675,6 +731,35 @@ Alternative Sentence Construction: …
 Synonyms:
 Original Word: …
 Possible Synonyms: … (maximum two)
+""",
+"check_translation_explanation_multilang": """
+You are an expert translation reviewer.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
+  "original_text": "...",
+  "user_translation": "..."
+}
+
+Task:
+- Analyze mistakes in user_translation against original_text.
+- Keep section labels exactly as below in English.
+- Write explanatory content in explanation_language.
+- Keep corrected translation in target_language.
+
+Output format:
+Error 1: User fragment: "<...>"; Issue: <...>; Correct fragment: "<...>"; Rule: <...>
+Error 2: ...
+Error 3: ...
+Correct Translation: ...
+Grammar Explanation: ...
+Alternative Sentence Construction: ...
+Synonyms:
+Original Word: ...
+Possible Synonyms: ... (maximum two)
 """,
 "sales_assistant_instructions": """
     Ти - привітний та професійний асистент з продажів, що представляє компанію. 
@@ -921,6 +1006,69 @@ Rules:
 - Do NOT add extra commentary.
 Respond ONLY with JSON.
 """,
+"dictionary_collocations_multilang": """
+You generate common collocations/short phrases for a word in arbitrary language pairs.
+Input JSON:
+{
+  "source_language": "...",
+  "target_language": "...",
+  "word_source": "...",
+  "word_target": "..."
+}
+
+Return STRICT JSON:
+{
+  "items": [
+    {"source": "...", "target": "..."},
+    {"source": "...", "target": "..."},
+    {"source": "...", "target": "..."}
+  ]
+}
+
+Rules:
+- Exactly 3 items.
+- Keep source phrase in source_language and target phrase in target_language.
+- Include the provided base word/phrase naturally in each source phrase.
+- Keep phrases short and practical.
+- Output ONLY JSON.
+""",
+"dictionary_assistant_multilang": """
+You are a multilingual dictionary assistant.
+Input is JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "word": "<user input>"
+}
+
+Task:
+- Detect whether "word" is in source_language or in target_language.
+- Translate it to the opposite language.
+- Return lexical metadata where possible.
+
+Return STRICT JSON with keys:
+{
+  "detected_language": "source" | "target",
+  "word_source": "<normalized word/phrase in source_language>",
+  "word_target": "<normalized word/phrase in target_language>",
+  "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
+  "article": "<der|die|das|null>",
+  "forms": {
+    "plural": string|null,
+    "praeteritum": string|null,
+    "perfekt": string|null,
+    "konjunktiv1": string|null,
+    "konjunktiv2": string|null
+  },
+  "usage_examples": ["...", "..."],
+  "raw_text": "<optional short note>"
+}
+
+Rules:
+- Output ONLY JSON.
+- Keep examples short and natural.
+- If data is unknown, use nulls or empty arrays.
+""",
 "translate_subtitles_ru": """
 You translate short subtitle lines from German to Russian.
 Input JSON: { "lines": [ "...", "...", ... ] }
@@ -930,6 +1078,21 @@ Rules:
 - Preserve punctuation and speaker markers if present.
 - Keep translations concise and natural for subtitles.
 Respond ONLY with JSON.
+""",
+"translate_subtitles_multilang": """
+You translate short subtitle lines from source language to target language.
+Input JSON:
+{
+  "source_language": "de|en|es|it|ru",
+  "target_language": "de|en|es|it|ru",
+  "lines": [ "...", "...", ... ]
+}
+Return STRICT JSON: { "translations": [ "...", "...", ... ] }
+Rules:
+- Keep the same number of items.
+- Preserve punctuation and speaker markers if present.
+- Keep translations concise and natural for subtitles.
+- Output ONLY JSON.
 """,
 "generate_word_quiz": """
 You create one Telegram quiz question for Russian-speaking learners of German at C1–C2 level.
@@ -942,6 +1105,42 @@ Make the question tricky and high-level. Use one of these formats:
 Ensure the correct answer is fully correct in meaning, register, collocation, and word order.
 Use the provided usage_examples for context if available.
 Return STRICT JSON with keys: question, options (array of strings), correct_option_id (0-based int), quiz_type.
+""",
+"check_translation_multilang": """
+You are a strict translation evaluator.
+The user provides:
+- source_language (ISO code)
+- target_language (ISO code)
+- original_text (in source_language)
+- user_translation (in target_language)
+
+Return STRICTLY in this exact format:
+Score: X/100
+Mistake Categories: ...
+Subcategories: ...
+Correct Translation: ...
+
+Rules:
+- Score is integer 0..100.
+- If translation is empty or unrelated, score must be 0.
+- Mistake Categories and Subcategories can be short generic labels, comma-separated.
+- Correct Translation must be in target language.
+- No extra lines, no markdown, no explanations outside required fields.
+""",
+"generate_sentences_multilang": """
+You generate source-language practice sentences for translation training.
+Input fields:
+- source_language (ISO code)
+- target_language (ISO code)
+- level (a2|b1|b2|c1|c2)
+- topic
+- count
+
+Task:
+- Generate exactly count distinct natural sentences in source_language.
+- Sentences should be suitable for translation into target_language.
+- Keep sentences short and practical for learning.
+- Output one sentence per line, no numbering, no markdown, no extra commentary.
 """,
 }
 
@@ -1169,6 +1368,87 @@ async def run_check_translation(original_text: str, user_translation: str) -> st
     return result_text
 
 
+def _language_name(code: str) -> str:
+    mapping = {
+        "ru": "Russian",
+        "de": "German",
+        "en": "English",
+        "es": "Spanish",
+        "it": "Italian",
+    }
+    return mapping.get((code or "").strip().lower(), code or "unknown")
+
+
+async def run_check_translation_multilang(
+    original_text: str,
+    user_translation: str,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    task_name = "check_translation_multilang"
+    system_instruction_key = "check_translation_multilang"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    source_name = _language_name(source_lang)
+    target_name = _language_name(target_lang)
+    user_message = (
+        f"source_language: {source_lang}\n"
+        f"target_language: {target_lang}\n"
+        f'original_text ({source_name}): "{original_text}"\n'
+        f'user_translation ({target_name}): "{user_translation}"'
+    )
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=user_message,
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    collected_text = last_message.content[0].text.value
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning("Не удалось удалить thread: %s", exc)
+
+    score = None
+    correct_translation = None
+    if "Score:" in collected_text:
+        score_candidate = collected_text.split("Score:")[-1].split("/")[0].strip()
+        if score_candidate.isdigit():
+            score = score_candidate
+    match = re.search(r"Correct Translation:\s*(.+?)(?:\n|\Z)", collected_text)
+    if match:
+        correct_translation = match.group(1).strip()
+
+    return (
+        f"🟢 Sentence\n"
+        f"✅ Score: {score or '—'}/100\n"
+        f"🔵 Original Sentence: {original_text}\n"
+        f"🟡 User Translation: {user_translation}\n"
+        f"🟣 Correct Translation: {correct_translation or '—'}\n"
+    )
+
+
 async def run_check_translation_story(original_text: str, user_translation: str) -> str:
     task_name = "check_translation_story"
     system_instruction_key = "check_translation_story"
@@ -1369,6 +1649,116 @@ async def run_enrich_word(word_ru: str, word_de: str | None = None) -> dict:
         return {}
 
 
+async def run_feel_word_multilang(
+    source_text: str,
+    target_text: str | None,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    task_name = "feel_word_multilang"
+    system_instruction_key = "feel_word_multilang"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    payload = {
+        "source_language": (source_lang or "").strip().lower(),
+        "target_language": (target_lang or "").strip().lower(),
+        "source_text": (source_text or "").strip(),
+        "target_text": (target_text or "").strip(),
+    }
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value.strip()
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    return content
+
+
+async def run_enrich_word_multilang(
+    source_text: str,
+    target_text: str | None,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    task_name = "enrich_word_multilang"
+    system_instruction_key = "enrich_word_multilang"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    payload = {
+        "source_language": (source_lang or "").strip().lower(),
+        "target_language": (target_lang or "").strip().lower(),
+        "source_text": (source_text or "").strip(),
+        "target_text": (target_text or "").strip(),
+    }
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value.strip()
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    try:
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {}
+
+
 async def run_dictionary_lookup(word_ru: str) -> dict:
     task_name = "dictionary_assistant"
     system_instruction_key = "dictionary_assistant"
@@ -1484,6 +1874,145 @@ async def run_dictionary_lookup_de(word_de: str) -> dict:
         }
 
 
+async def run_dictionary_lookup_multilang(
+    word: str,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    task_name = "dictionary_assistant_multilang"
+    system_instruction_key = "dictionary_assistant_multilang"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    payload = {
+        "source_language": (source_lang or "").strip().lower(),
+        "target_language": (target_lang or "").strip().lower(),
+        "word": (word or "").strip(),
+    }
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning("Не удалось удалить thread: %s", exc)
+
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    return {
+        "detected_language": "source",
+        "word_source": word,
+        "word_target": "",
+        "part_of_speech": "other",
+        "article": None,
+        "forms": {
+            "plural": None,
+            "praeteritum": None,
+            "perfekt": None,
+            "konjunktiv1": None,
+            "konjunktiv2": None,
+        },
+        "usage_examples": [],
+        "raw_text": content,
+    }
+
+
+async def generate_sentences_multilang(
+    num_sentences: int,
+    topic: str,
+    level: str | None,
+    source_lang: str,
+    target_lang: str,
+) -> list[str]:
+    task_name = "generate_sentences_multilang"
+    system_instruction_key = "generate_sentences_multilang"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    user_message = json.dumps(
+        {
+            "source_language": (source_lang or "").strip().lower(),
+            "target_language": (target_lang or "").strip().lower(),
+            "level": (level or "b1").strip().lower(),
+            "topic": (topic or "General").strip(),
+            "count": int(max(1, num_sentences)),
+        },
+        ensure_ascii=False,
+    )
+
+    for attempt in range(4):
+        try:
+            await client.beta.threads.messages.create(
+                thread_id=thread_id,
+                role="user",
+                content=user_message,
+            )
+            run = await client.beta.threads.runs.create(
+                thread_id=thread_id,
+                assistant_id=assistant_id,
+            )
+            while True:
+                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+                if run_status.status == "completed":
+                    break
+                await asyncio.sleep(1)
+
+            messages = await client.beta.threads.messages.list(thread_id=thread_id)
+            last_message = messages.data[0]
+            content = last_message.content[0].text.value
+            lines = [re.sub(r"^\s*\d+\.\s*", "", line).strip() for line in content.splitlines()]
+            filtered = [line for line in lines if line]
+            if filtered:
+                try:
+                    await client.beta.threads.delete(thread_id=thread_id)
+                except Exception:
+                    pass
+                return filtered[: int(max(1, num_sentences))]
+        except openai.RateLimitError:
+            await asyncio.sleep((attempt + 1) * 2)
+        except Exception:
+            break
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception:
+        pass
+    return []
+
+
 async def run_tts_chunk_de(sentence: str) -> dict:
     task_name = "tts_chunk_de"
     system_instruction_key = "tts_chunk_de"
@@ -1576,6 +2105,61 @@ async def run_dictionary_collocations(direction: str, word: str, translation: st
         return {"items": []}
 
 
+async def run_dictionary_collocations_multilang(
+    source_lang: str,
+    target_lang: str,
+    word_source: str,
+    word_target: str | None,
+) -> dict:
+    task_name = "dictionary_collocations_multilang"
+    system_instruction_key = "dictionary_collocations_multilang"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    payload = {
+        "source_language": (source_lang or "").strip().lower(),
+        "target_language": (target_lang or "").strip().lower(),
+        "word_source": (word_source or "").strip(),
+        "word_target": (word_target or "").strip(),
+    }
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning("Не удалось удалить thread: %s", exc)
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {"items": []}
+
+
 async def run_translate_subtitles_ru(lines: list[str]) -> list[str]:
     task_name = "translate_subtitles_ru"
     system_instruction_key = "translate_subtitles_ru"
@@ -1585,6 +2169,63 @@ async def run_translate_subtitles_ru(lines: list[str]) -> list[str]:
     thread_id = thread.id
 
     payload = {"lines": lines}
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        await asyncio.sleep(2)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = last_message.content[0].text.value.strip()
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+    try:
+        parsed = json.loads(content)
+        translations = parsed.get("translations")
+        if isinstance(translations, list):
+            return [str(item).strip() for item in translations]
+    except Exception:
+        pass
+    return [""] * len(lines)
+
+
+async def run_translate_subtitles_multilang(
+    lines: list[str],
+    source_lang: str,
+    target_lang: str,
+) -> list[str]:
+    task_name = "translate_subtitles_multilang"
+    system_instruction_key = "translate_subtitles_multilang"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    payload = {
+        "source_language": (source_lang or "de").strip().lower(),
+        "target_language": (target_lang or "ru").strip().lower(),
+        "lines": lines,
+    }
 
     await client.beta.threads.messages.create(
         thread_id=thread_id,
@@ -1786,3 +2427,59 @@ async def run_translation_explanation(original_text: str, user_translation: str)
                     result_list.append(f"• {clean_part}")
 
     return "\n".join(result_list).strip()
+
+
+async def run_translation_explanation_multilang(
+    original_text: str,
+    user_translation: str,
+    source_lang: str,
+    target_lang: str,
+    explanation_lang: str,
+) -> str:
+    task_name = "check_translation_explanation_multilang"
+    system_instruction_key = "check_translation_explanation_multilang"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    payload = {
+        "source_language": (source_lang or "").strip().lower(),
+        "target_language": (target_lang or "").strip().lower(),
+        "explanation_language": (explanation_lang or source_lang or "").strip().lower(),
+        "original_text": original_text,
+        "user_translation": user_translation,
+    }
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        if run_status.status in {"failed", "cancelled", "expired"}:
+            break
+        await asyncio.sleep(1)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = (last_message.content[0].text.value or "").strip()
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning("Не удалось удалить thread: %s", exc)
+
+    return content or "❌ Ошибка: Не удалось обработать объяснение."

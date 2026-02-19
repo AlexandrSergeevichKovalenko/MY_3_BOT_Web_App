@@ -268,6 +268,19 @@ class TrackingExtBot(ExtBot):
         msg = await super().send_animation(*args, **kwargs)
         return await self._track_single(msg, "animation")
 
+    async def send_sticker(self, *args, **kwargs):
+        msg = await super().send_sticker(*args, **kwargs)
+        return await self._track_single(msg, "sticker")
+
+    async def copy_message(self, *args, **kwargs):
+        msg_id = await super().copy_message(*args, **kwargs)
+        # copy_message returns MessageId, not Message.
+        return msg_id
+
+    async def forward_message(self, *args, **kwargs):
+        msg = await super().forward_message(*args, **kwargs)
+        return await self._track_single(msg, "forward")
+
     async def send_media_group(self, *args, **kwargs):
         messages = await super().send_media_group(*args, **kwargs)
         if messages:
