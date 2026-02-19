@@ -24,11 +24,10 @@ export const shuffle = (items) => {
   return arr;
 };
 
-const BASE_SECONDS_MIN = 7;
-const BASE_SECONDS_MAX = 10;
-const ADAPTIVE_SECONDS_PER_CHAR = 2;
-const ADAPTIVE_SECONDS_MAX = 30;
-const AUTO_NEXT_DELAY_OK_MS = 900;
+const BASE_SECONDS_FIXED = 10;
+const ADAPTIVE_SECONDS_PER_CHAR = 4;
+const ADAPTIVE_SECONDS_MAX = 180;
+const AUTO_NEXT_DELAY_OK_MS = 1100;
 const AUTO_NEXT_DELAY_FAIL_MS = 4500;
 const TILE_WIDTH = 92;
 const TILE_HEIGHT = 56;
@@ -59,11 +58,11 @@ const tokenize = (answer, cardType) => {
 const calcTimerMs = (answer, timerMode) => {
   if (timerMode === 'none') return null;
   if (timerMode === 'adaptive') {
-    const len = String(answer || '').length;
-    const seconds = Math.min(Math.max(len * ADAPTIVE_SECONDS_PER_CHAR, BASE_SECONDS_MIN), ADAPTIVE_SECONDS_MAX);
+    const len = Math.max(1, String(answer || '').length); // includes spaces by definition
+    const seconds = Math.min(len * ADAPTIVE_SECONDS_PER_CHAR, ADAPTIVE_SECONDS_MAX);
     return seconds * 1000;
   }
-  return BASE_SECONDS_MAX * 1000;
+  return BASE_SECONDS_FIXED * 1000;
 };
 
 export default function BlocksTrainer({
@@ -97,6 +96,8 @@ export default function BlocksTrainer({
   const finishedRef = useRef(false);
   const startAtRef = useRef(Date.now());
   const autoNextRef = useRef(null);
+  const snapSlotTimeoutRef = useRef(null);
+  const tileMotionTimeoutsRef = useRef({});
 
   const type = useMemo(() => detectCardType(answer, cardType), [answer, cardType]);
   const targetTokens = useMemo(() => tokenize(answer, type), [answer, type]);
@@ -112,9 +113,12 @@ export default function BlocksTrainer({
   const [selectedSlotIndex, setSelectedSlotIndex] = useState(null);
   const [dragTileId, setDragTileId] = useState(null);
   const [hoverSlotIndex, setHoverSlotIndex] = useState(null);
+  const [snapSlotIndex, setSnapSlotIndex] = useState(null);
+  const [tileMotionMap, setTileMotionMap] = useState({});
 
   const allSlotsFilled = slots.length > 0 && slots.every((item) => item !== null);
   const isFinished = status !== 'idle';
+  const tileWidthPx = type === 'WORD' ? 60 : TILE_WIDTH;
 
   const syncSlotRects = () => {
     const containerRect = containerRef.current?.getBoundingClientRect();
@@ -142,15 +146,18 @@ export default function BlocksTrainer({
     const rightPad = 16;
     const topBase = 12;
     const usableWidth = Math.max(containerRect.width - leftPad - rightPad, 220);
-    const cols = Math.max(2, Math.min(5, Math.floor(usableWidth / (TILE_WIDTH + 16))));
-    const gapX = Math.max(8, Math.floor((usableWidth - cols * TILE_WIDTH) / Math.max(cols - 1, 1)));
+    const desiredTileWidth = tileWidthPx;
+    const cols = Math.max(3, Math.min(type === 'WORD' ? 8 : 5, Math.floor(usableWidth / (desiredTileWidth + 12))));
+    const gapX = Math.max(8, Math.floor((usableWidth - cols * desiredTileWidth) / Math.max(cols - 1, 1)));
     const gapY = 14;
     const occupiedSet = new Set(currentSlots.filter(Boolean));
     const visibleCount = tileItems.filter((item) => !occupiedSet.has(item.id)).length;
     const rows = Math.max(1, Math.ceil(visibleCount / cols));
-    const targetHeight = Math.max(220, topBase + rows * (TILE_HEIGHT + gapY) + 16);
-    setPlaygroundHeight(targetHeight);
+    const targetHeight = Math.max(240, topBase + rows * (TILE_HEIGHT + gapY) + 28);
+    const boundedHeight = Math.min(targetHeight, 420);
+    setPlaygroundHeight(boundedHeight);
     let visibleIndex = 0;
+    const placedBoxes = [];
 
     return tileItems.map((tile, index) => {
       const placedSlot = currentSlots.findIndex((slotId) => slotId === tile.id);
@@ -159,17 +166,38 @@ export default function BlocksTrainer({
         return {
           ...tile,
           slotIndex: placedSlot,
-          x: rect.centerX - TILE_WIDTH / 2,
+          x: rect.centerX - tileWidthPx / 2,
           y: rect.centerY - TILE_HEIGHT / 2,
         };
       }
       const row = Math.floor(visibleIndex / cols);
       const col = visibleIndex % cols;
       visibleIndex += 1;
-      const jitterX = (Math.random() - 0.5) * 10;
-      const jitterY = (Math.random() - 0.5) * 8;
-      const x = leftPad + col * (TILE_WIDTH + gapX) + jitterX;
-      const y = topBase + row * (TILE_HEIGHT + gapY) + jitterY;
+      let x = leftPad + col * (desiredTileWidth + gapX);
+      let y = topBase + row * (TILE_HEIGHT + gapY);
+
+      const minX = leftPad;
+      const maxX = Math.max(minX, leftPad + usableWidth - desiredTileWidth);
+      const minY = topBase;
+      const maxY = Math.max(minY, boundedHeight - TILE_HEIGHT - 10);
+
+      const overlaps = (nextX, nextY) => placedBoxes.some((box) => (
+        nextX < box.x + box.w + 6
+        && nextX + desiredTileWidth + 6 > box.x
+        && nextY < box.y + box.h + 6
+        && nextY + TILE_HEIGHT + 6 > box.y
+      ));
+
+      for (let attempt = 0; attempt < 18; attempt += 1) {
+        const rx = minX + Math.random() * (maxX - minX);
+        const ry = minY + Math.random() * (maxY - minY);
+        if (!overlaps(rx, ry) || attempt > 12) {
+          x = rx;
+          y = ry;
+          break;
+        }
+      }
+      placedBoxes.push({ x, y, w: desiredTileWidth, h: TILE_HEIGHT });
       return {
         ...tile,
         slotIndex: null,
@@ -187,6 +215,7 @@ export default function BlocksTrainer({
         id: `tile-${idx}`,
         text,
         targetIndex: idx,
+        angle: (Math.random() * 14 - 7),
         slotIndex: null,
         x: 0,
         y: 0,
@@ -203,6 +232,8 @@ export default function BlocksTrainer({
     setSelectedSlotIndex(null);
     setDragTileId(null);
     setHoverSlotIndex(null);
+    setSnapSlotIndex(null);
+    setTileMotionMap({});
     finishedRef.current = false;
     startAtRef.current = Date.now();
     if (autoNextRef.current) {
@@ -272,8 +303,27 @@ export default function BlocksTrainer({
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (autoNextRef.current) clearTimeout(autoNextRef.current);
+      if (snapSlotTimeoutRef.current) clearTimeout(snapSlotTimeoutRef.current);
+      Object.values(tileMotionTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
     };
   }, []);
+
+  const markTileMotion = (tileId, motion) => {
+    if (!tileId) return;
+    setTileMotionMap((prev) => ({ ...prev, [tileId]: motion }));
+    if (tileMotionTimeoutsRef.current[tileId]) {
+      clearTimeout(tileMotionTimeoutsRef.current[tileId]);
+    }
+    tileMotionTimeoutsRef.current[tileId] = setTimeout(() => {
+      setTileMotionMap((prev) => {
+        if (!prev[tileId]) return prev;
+        const next = { ...prev };
+        delete next[tileId];
+        return next;
+      });
+      delete tileMotionTimeoutsRef.current[tileId];
+    }, 420);
+  };
 
   const findSlotByPoint = (x, y) => {
     for (let i = 0; i < slotRects.length; i += 1) {
@@ -311,7 +361,7 @@ export default function BlocksTrainer({
         const slotRect = slotRects[slotIndex];
         tile.slotIndex = slotIndex;
         if (slotRect) {
-          tile.x = slotRect.centerX - TILE_WIDTH / 2;
+          tile.x = slotRect.centerX - tileWidthPx / 2;
           tile.y = slotRect.centerY - TILE_HEIGHT / 2;
         }
         nextSlots[slotIndex] = tile.id;
@@ -319,9 +369,15 @@ export default function BlocksTrainer({
       });
       return nextTiles;
     });
+    setSnapSlotIndex(slotIndex);
+    if (snapSlotTimeoutRef.current) clearTimeout(snapSlotTimeoutRef.current);
+    snapSlotTimeoutRef.current = setTimeout(() => {
+      setSnapSlotIndex(null);
+    }, 260);
   };
 
   const returnTileToHome = (tileId) => {
+    markTileMotion(tileId, 'return');
     setTiles((prev) => prev.map((tile) => {
       if (tile.id !== tileId) return tile;
       return {
@@ -457,7 +513,8 @@ export default function BlocksTrainer({
     const tileId = slots[slotIndex];
     if (selectedSlotIndex === null) {
       if (tileId) {
-        setSelectedSlotIndex(slotIndex);
+        // Tap on a filled slot removes this tile back to selection area.
+        returnTileToHome(tileId);
       }
       return;
     }
@@ -490,11 +547,11 @@ export default function BlocksTrainer({
         const firstRect = slotRects[slotIndex];
         const secondRect = slotRects[selectedSlotIndex];
         if (firstRect) {
-          firstTile.x = firstRect.centerX - TILE_WIDTH / 2;
+          firstTile.x = firstRect.centerX - tileWidthPx / 2;
           firstTile.y = firstRect.centerY - TILE_HEIGHT / 2;
         }
         if (secondRect) {
-          secondTile.x = secondRect.centerX - TILE_WIDTH / 2;
+          secondTile.x = secondRect.centerX - tileWidthPx / 2;
           secondTile.y = secondRect.centerY - TILE_HEIGHT / 2;
         }
         return nextSlots;
@@ -567,6 +624,7 @@ export default function BlocksTrainer({
                 placed ? 'is-filled' : '',
                 selectedSlotIndex === idx ? 'is-selected' : '',
                 hoverSlotIndex === idx ? 'is-hovered' : '',
+                snapSlotIndex === idx ? 'is-snapping' : '',
               ].filter(Boolean).join(' ')}
               role="button"
               tabIndex={0}
@@ -596,8 +654,18 @@ export default function BlocksTrainer({
           <button
             key={tile.id}
             type="button"
-            className={`blocks-tile color-${tile.targetIndex % 6} ${dragTileId === tile.id ? 'is-dragging' : ''}`}
-            style={{ transform: `translate3d(${tile.x}px, ${tile.y}px, 0)` }}
+            className={[
+              'blocks-tile',
+              `color-${tile.targetIndex % 6}`,
+              `shape-${tile.targetIndex % 5}`,
+              dragTileId === tile.id ? 'is-dragging' : '',
+              tileMotionMap[tile.id] === 'return' ? 'is-returning' : '',
+            ].filter(Boolean).join(' ')}
+            style={{
+              transform: `translate3d(${tile.x}px, ${tile.y}px, 0) rotate(${dragTileId === tile.id ? tile.angle * 0.25 : tile.angle}deg)`,
+              width: type === 'WORD' ? '60px' : undefined,
+              fontSize: type === 'WORD' ? '22px' : undefined,
+            }}
             onPointerDown={(event) => onTilePointerDown(event, tile)}
             disabled={isFinished}
           >

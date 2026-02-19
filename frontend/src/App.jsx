@@ -245,6 +245,7 @@ function AppInner() {
   const revealTimeoutRef = useRef(null);
   const flashcardIndexRef = useRef(0);
   const flashcardSelectionRef = useRef(null);
+  const flashcardTrainingModeRef = useRef('quiz');
   const flashcardRoundStartRef = useRef(Date.now());
   const blocksMenuRef = useRef(null);
   const srsShownAtRef = useRef(null);
@@ -314,6 +315,23 @@ function AppInner() {
     } catch (_readError) {
       return `${fallback} (HTTP ${response.status})`;
     }
+  };
+  const normalizeNetworkErrorMessage = (error, fallbackRu, fallbackDe) => {
+    const fallback = tr(fallbackRu, fallbackDe);
+    const raw = String(error?.message || '').trim().toLowerCase();
+    if (!raw) return fallback;
+    if (
+      raw.includes('load failed')
+      || raw.includes('failed to fetch')
+      || raw.includes('networkerror')
+      || raw.includes('network request failed')
+    ) {
+      return tr(
+        'Сетевой сбой. Проверьте интернет и повторите.',
+        'Netzwerkfehler. Bitte Internet pruefen und erneut versuchen.'
+      );
+    }
+    return String(error?.message || fallback);
   };
   const initDataMissingMsg = tr(
     'initData не найдено. Откройте Web App внутри Telegram.',
@@ -624,7 +642,11 @@ function AppInner() {
     try {
       setSrsLoading(true);
       setSrsError('');
-      const response = await fetch(`/api/cards/next?initData=${encodeURIComponent(initData)}`);
+      let response = await fetch(`/api/cards/next?initData=${encodeURIComponent(initData)}`);
+      if (!response.ok && response.status >= 500) {
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        response = await fetch(`/api/cards/next?initData=${encodeURIComponent(initData)}`);
+      }
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte'));
       }
@@ -635,8 +657,9 @@ function AppInner() {
       setSrsRevealAnswer(false);
       srsShownAtRef.current = Date.now();
     } catch (error) {
-      setSrsError(error.message || tr('Не удалось загрузить FSRS карточку.', 'FSRS-Karte konnte nicht geladen werden.'));
-      setWebappError(`${tr('Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte')}: ${error.message}`);
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить FSRS карточку.', 'FSRS-Karte konnte nicht geladen werden.');
+      setSrsError(friendly);
+      setWebappError(`${tr('Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte')}: ${friendly}`);
     } finally {
       setSrsLoading(false);
     }
@@ -658,7 +681,7 @@ function AppInner() {
       setSrsError('');
       setSrsSubmitting(true);
       setSrsSubmittingRating(ratingValue);
-      const response = await fetch('/api/cards/review', {
+      let response = await fetch('/api/cards/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -668,14 +691,28 @@ function AppInner() {
           response_ms: responseMs,
         }),
       });
+      if (!response.ok && response.status >= 500) {
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        response = await fetch('/api/cards/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            card_id: cardId,
+            rating: ratingValue,
+            response_ms: responseMs,
+          }),
+        });
+      }
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
       }
       setSrsRevealAnswer(false);
       await loadSrsNextCard();
     } catch (error) {
-      setSrsError(error.message || tr('Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.'));
-      setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${error.message}`);
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.');
+      setSrsError(friendly);
+      setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${friendly}`);
     } finally {
       setSrsSubmitting(false);
       setSrsSubmittingRating(null);
@@ -1372,6 +1409,10 @@ function AppInner() {
   useEffect(() => {
     flashcardSelectionRef.current = flashcardSelection;
   }, [flashcardSelection]);
+
+  useEffect(() => {
+    flashcardTrainingModeRef.current = flashcardTrainingMode;
+  }, [flashcardTrainingMode]);
 
   useEffect(() => {
     if (!flashcardSessionActive || flashcards.length === 0) {
@@ -5240,14 +5281,20 @@ function AppInner() {
                                 <button
                                   type="button"
                                   className={`option-pill ${flashcardTrainingMode === 'quiz' ? 'is-active' : ''}`}
-                                  onClick={() => setFlashcardTrainingMode('quiz')}
+                                  onClick={() => {
+                                    flashcardTrainingModeRef.current = 'quiz';
+                                    setFlashcardTrainingMode('quiz');
+                                  }}
                                 >
                                   {t('setup_mode_quiz')}
                                 </button>
                                 <button
                                   type="button"
                                   className={`option-pill ${flashcardTrainingMode === 'blocks' ? 'is-active' : ''}`}
-                                  onClick={() => setFlashcardTrainingMode('blocks')}
+                                  onClick={() => {
+                                    flashcardTrainingModeRef.current = 'blocks';
+                                    setFlashcardTrainingMode('blocks');
+                                  }}
                                 >
                                   {t('setup_mode_blocks')}
                                 </button>
@@ -5365,6 +5412,7 @@ function AppInner() {
                             type="button"
                             className="primary-button flashcards-start"
                             onClick={() => {
+                              setFlashcardTrainingMode(flashcardTrainingModeRef.current || 'quiz');
                               unlockAudio();
                               loadFlashcards();
                               setFlashcardPreviewActive(true);
@@ -5391,12 +5439,10 @@ function AppInner() {
                               const entry = flashcards[flashcardPreviewIndex] || {};
                               const responseJson = entry.response_json || {};
                               const cardTexts = resolveFlashcardTexts(entry);
-                              const translations = responseJson.translations
-                                || cardTexts.targetText
-                                || '';
-                              const translationList = Array.isArray(translations)
-                                ? translations
-                                : String(translations).split(/[,;/]/).map((t) => t.trim()).filter(Boolean);
+                              const previewLearningText = cardTexts.targetText || cardTexts.sourceText || '—';
+                              const previewNativeText = cardTexts.sourceText || cardTexts.targetText || '—';
+                              const learningCode = String(languageProfile?.learning_language || 'de').toUpperCase();
+                              const nativeCode = String(languageProfile?.native_language || 'ru').toUpperCase();
                               const feel = flashcardFeelMap[entry.id]
                                 || responseJson.feel_explanation
                                 || '';
@@ -5412,7 +5458,10 @@ function AppInner() {
                                     </span>
                                   </div>
                                   <div className="flashcard-word-row">
-                                    <div className="flashcard-word">{cardTexts.sourceText || '—'}</div>
+                                    <div className="flashcard-word-block">
+                                      <span className="flashcard-lang-tag">{learningCode}</span>
+                                      <div className="flashcard-word">{previewLearningText}</div>
+                                    </div>
                                     <button
                                       type="button"
                                       className="flashcard-audio-replay"
@@ -5434,19 +5483,11 @@ function AppInner() {
                                       🔊
                                     </button>
                                   </div>
+                                  <div className="flashcard-native-block">
+                                    <span className="flashcard-lang-tag is-native">{nativeCode}</span>
+                                    <div className="flashcard-native-translation">{previewNativeText}</div>
+                                  </div>
                                   <div className="flashcard-details">
-                                    {translationList.length > 0 && (
-                                      <div className="flashcard-section">
-                                        <div className="flashcard-section-title">{tr('Переводы', 'Uebersetzungen')}</div>
-                                        <div className="flashcard-translation-list">
-                                          {translationList.map((item, idx) => (
-                                            <span key={`${item}-${idx}`} className="flashcard-chip">
-                                              {item}
-                                            </span>
-                                          ))}
-                                        </div>
-                                      </div>
-                                    )}
                                     {(responseJson.article || responseJson.part_of_speech || responseJson.is_separable !== undefined) && (
                                       <div className="flashcard-section">
                                         <div className="flashcard-section-title">{tr('Грамматика', 'Grammatik')}</div>
@@ -5816,6 +5857,7 @@ function AppInner() {
                                         </div>
                                       </div>
                                       <BlocksTrainer
+                                        key={`blocks-${entry.id || 'na'}-${flashcardIndex}`}
                                         card={entry}
                                         prompt={blocksPrompt}
                                         answer={blocksAnswer}
