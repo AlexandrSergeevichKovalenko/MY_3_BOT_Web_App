@@ -3746,7 +3746,7 @@ body {
 
 .blocks-slot.is-filled {
   border-style: solid;
-  color: var(--bb-text);
+  color: #16334d;
   background: #ffffff;
   font-size: 17px;
   font-weight: 900;
