@@ -330,6 +330,69 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_folder
                 ON bt_3_webapp_dictionary_queries (user_id, folder_id);
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_schema_migrations (
+                    migration_key TEXT PRIMARY KEY,
+                    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            # One-time backfill for legacy imported dictionary rows (pre-multilang).
+            # Must run only once, not on every startup.
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM bt_3_schema_migrations
+                        WHERE migration_key = '2026_02_19_legacy_dictionary_lang_backfill_once'
+                    ) THEN
+                        UPDATE bt_3_webapp_dictionary_queries
+                        SET
+                            source_lang = COALESCE(NULLIF(source_lang, ''), 'ru'),
+                            target_lang = COALESCE(NULLIF(target_lang, ''), 'de')
+                        WHERE (source_lang IS NULL OR source_lang = '')
+                          AND (target_lang IS NULL OR target_lang = '');
+
+                        UPDATE bt_3_webapp_dictionary_queries
+                        SET response_json = jsonb_set(
+                            jsonb_set(
+                                COALESCE(response_json, '{}'::jsonb),
+                                '{source_lang}',
+                                to_jsonb(COALESCE(NULLIF(source_lang, ''), 'ru')::text),
+                                true
+                            ),
+                            '{target_lang}',
+                            to_jsonb(COALESCE(NULLIF(target_lang, ''), 'de')::text),
+                            true
+                        )
+                        WHERE response_json IS NULL
+                           OR COALESCE(response_json->>'source_lang', '') = ''
+                           OR COALESCE(response_json->>'target_lang', '') = '';
+
+                        UPDATE bt_3_webapp_dictionary_queries
+                        SET response_json = jsonb_set(
+                            jsonb_set(
+                                COALESCE(response_json, '{}'::jsonb),
+                                '{language_pair,source_lang}',
+                                to_jsonb(COALESCE(NULLIF(source_lang, ''), 'ru')::text),
+                                true
+                            ),
+                            '{language_pair,target_lang}',
+                            to_jsonb(COALESCE(NULLIF(target_lang, ''), 'de')::text),
+                            true
+                        )
+                        WHERE response_json IS NULL
+                           OR COALESCE(response_json#>>'{language_pair,source_lang}', '') = ''
+                           OR COALESCE(response_json#>>'{language_pair,target_lang}', '') = '';
+
+                        INSERT INTO bt_3_schema_migrations (migration_key)
+                        VALUES ('2026_02_19_legacy_dictionary_lang_backfill_once')
+                        ON CONFLICT (migration_key) DO NOTHING;
+                    END IF;
+                END $$;
+                """
+            )
             cursor.execute(
                 """
                 DO $$

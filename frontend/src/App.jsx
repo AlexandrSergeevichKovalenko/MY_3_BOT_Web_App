@@ -749,6 +749,11 @@ function AppInner() {
         const nextPair = `${data.profile.native_language || 'ru'}-${data.profile.learning_language || 'de'}`;
         const pairChanged = prevPair !== nextPair || Boolean(data.reset_sessions);
         if (pairChanged) {
+          setSrsCard(null);
+          setSrsState(null);
+          setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
+          setSrsRevealAnswer(false);
+          setSrsError('');
           setSessionType('none');
           setSentences([]);
           setResults([]);
@@ -760,6 +765,9 @@ function AppInner() {
           }
           await loadSessionInfo();
           await loadSentences();
+          if (!flashcardsOnly && isSectionVisible('flashcards')) {
+            await loadSrsNextCard();
+          }
         }
         if (!needsLanguageProfileChoice) {
           setLanguageProfileModalOpen(false);
@@ -1279,8 +1287,13 @@ function AppInner() {
     if (!initData || flashcardsOnly || !isSectionVisible('flashcards')) {
       return;
     }
+    setSrsCard(null);
+    setSrsState(null);
+    setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
+    setSrsRevealAnswer(false);
+    setSrsError('');
     loadSrsNextCard();
-  }, [initData, flashcardsOnly, selectedSections]);
+  }, [initData, flashcardsOnly, selectedSections, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
     if (!flashcardSessionActive) {
