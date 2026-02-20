@@ -951,6 +951,30 @@ function AppInner() {
     await updateTodayItemStatus(item.id, 'complete');
   };
 
+  const getTodayItemTitle = (item) => {
+    const taskType = String(item?.task_type || '').toLowerCase();
+    const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+    const mode = String(payload?.mode || '').toLowerCase();
+
+    if (taskType === 'cards') {
+      if (mode === 'cards_new') return tr('Карточки: новые слова', 'Karten: neue Woerter');
+      return tr('Карточки: повторение', 'Karten: Wiederholung');
+    }
+    if (taskType === 'translation') {
+      const sentences = Number(payload?.sentences || 5);
+      return tr(`Перевод: ${sentences} предложений`, `Uebersetzung: ${sentences} Saetze`);
+    }
+    if (taskType === 'video' || taskType === 'youtube') {
+      const minutes = Math.max(1, Math.round(Number(payload?.duration_sec || 300) / 60));
+      return tr(`Видео: ${minutes} минут`, `Video: ${minutes} Minuten`);
+    }
+    if (taskType === 'dialogue') {
+      const minutes = Number(item?.estimated_minutes || 3);
+      return tr(`Диалог: ${minutes} минут`, `Dialog: ${minutes} Minuten`);
+    }
+    return item?.title || tr('Задача', 'Aufgabe');
+  };
+
   const submitSrsReview = async (ratingValue) => {
     if (!initData) {
       setSrsError(tr('Сессия Telegram не найдена. Откройте mini app через Telegram.', 'Telegram-Sitzung nicht gefunden. Bitte ueber Telegram oeffnen.'));
@@ -4724,7 +4748,7 @@ function AppInner() {
                       return (
                         <div className={`today-plan-item is-${item.status || 'todo'}`} key={item.id}>
                           <div className="today-plan-item-main">
-                            <div className="today-plan-item-title">{item.title}</div>
+                            <div className="today-plan-item-title">{getTodayItemTitle(item)}</div>
                             <div className="today-plan-item-meta">
                               <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>
                               <span>{String(item.status || 'todo').toUpperCase()}</span>
