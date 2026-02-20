@@ -2,6 +2,7 @@ import psycopg2
 from psycopg2 import Binary
 from psycopg2 import OperationalError
 import os
+import hashlib
 from contextlib import contextmanager
 import json
 from datetime import datetime, timezone, date, timedelta, time as dt_time
@@ -1098,6 +1099,7 @@ def ensure_webapp_tables() -> None:
                     translations_goal INTEGER NOT NULL DEFAULT 0,
                     learned_words_goal INTEGER NOT NULL DEFAULT 0,
                     agent_minutes_goal INTEGER NOT NULL DEFAULT 0,
+                    reading_minutes_goal INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE (user_id, source_lang, target_lang, week_start)
@@ -1106,6 +1108,10 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_weekly_goals
                 ADD COLUMN IF NOT EXISTS agent_minutes_goal INTEGER NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_weekly_goals
+                ADD COLUMN IF NOT EXISTS reading_minutes_goal INTEGER NOT NULL DEFAULT 0;
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_weekly_goals_user_week
@@ -1123,6 +1129,53 @@ def ensure_webapp_tables() -> None:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_reader_sessions (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    ended_at TIMESTAMPTZ,
+                    duration_seconds INTEGER,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_reader_sessions_user_active
+                ON bt_3_reader_sessions (user_id, source_lang, target_lang, started_at DESC)
+                WHERE ended_at IS NULL;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_reader_sessions_user_range
+                ON bt_3_reader_sessions (user_id, source_lang, target_lang, started_at, ended_at);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_reader_library (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    title TEXT NOT NULL DEFAULT 'Untitled',
+                    source_type TEXT NOT NULL DEFAULT 'text',
+                    source_url TEXT,
+                    text_hash TEXT NOT NULL,
+                    content_text TEXT NOT NULL,
+                    total_chars INTEGER NOT NULL DEFAULT 0,
+                    progress_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    bookmark_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    reading_mode TEXT NOT NULL DEFAULT 'vertical',
+                    last_opened_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, source_lang, target_lang, text_hash)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_reader_library_user_pair
+                ON bt_3_reader_library (user_id, source_lang, target_lang, updated_at DESC);
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_user_active
@@ -3143,7 +3196,7 @@ def get_weekly_goals(
             cursor.execute(
                 """
                 SELECT translations_goal, learned_words_goal, updated_at
-                     , agent_minutes_goal
+                     , agent_minutes_goal, reading_minutes_goal
                 FROM bt_3_weekly_goals
                 WHERE user_id = %s
                   AND source_lang = %s
@@ -3164,6 +3217,7 @@ def get_weekly_goals(
         "translations_goal": max(0, int(row[0] or 0)),
         "learned_words_goal": max(0, int(row[1] or 0)),
         "agent_minutes_goal": max(0, int(row[3] or 0)),
+        "reading_minutes_goal": max(0, int(row[4] or 0)),
         "updated_at": row[2].isoformat() if row[2] else None,
     }
 
@@ -3176,6 +3230,7 @@ def upsert_weekly_goals(
     translations_goal: int,
     learned_words_goal: int,
     agent_minutes_goal: int,
+    reading_minutes_goal: int,
     week_start: date | None = None,
 ) -> dict:
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
@@ -3184,6 +3239,7 @@ def upsert_weekly_goals(
     translations_goal = max(0, int(translations_goal or 0))
     learned_words_goal = max(0, int(learned_words_goal or 0))
     agent_minutes_goal = max(0, int(agent_minutes_goal or 0))
+    reading_minutes_goal = max(0, int(reading_minutes_goal or 0))
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -3197,16 +3253,18 @@ def upsert_weekly_goals(
                     translations_goal,
                     learned_words_goal,
                     agent_minutes_goal,
+                    reading_minutes_goal,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (user_id, source_lang, target_lang, week_start) DO UPDATE
                 SET
                     translations_goal = EXCLUDED.translations_goal,
                     learned_words_goal = EXCLUDED.learned_words_goal,
                     agent_minutes_goal = EXCLUDED.agent_minutes_goal,
+                    reading_minutes_goal = EXCLUDED.reading_minutes_goal,
                     updated_at = NOW()
-                RETURNING translations_goal, learned_words_goal, agent_minutes_goal, updated_at;
+                RETURNING translations_goal, learned_words_goal, agent_minutes_goal, reading_minutes_goal, updated_at;
                 """,
                 (
                     int(user_id),
@@ -3216,6 +3274,7 @@ def upsert_weekly_goals(
                     translations_goal,
                     learned_words_goal,
                     agent_minutes_goal,
+                    reading_minutes_goal,
                 ),
             )
             saved = cursor.fetchone()
@@ -3228,7 +3287,8 @@ def upsert_weekly_goals(
         "translations_goal": max(0, int(saved[0] if saved else translations_goal)),
         "learned_words_goal": max(0, int(saved[1] if saved else learned_words_goal)),
         "agent_minutes_goal": max(0, int(saved[2] if saved else agent_minutes_goal)),
-        "updated_at": saved[3].isoformat() if saved and saved[3] else None,
+        "reading_minutes_goal": max(0, int(saved[3] if saved else reading_minutes_goal)),
+        "updated_at": saved[4].isoformat() if saved and saved[4] else None,
     }
 
 
@@ -3262,7 +3322,8 @@ def get_plan_progress(
                 SELECT
                     COALESCE(SUM(translations_goal), 0) AS translations_goal,
                     COALESCE(SUM(learned_words_goal), 0) AS learned_words_goal,
-                    COALESCE(SUM(agent_minutes_goal), 0) AS agent_minutes_goal
+                    COALESCE(SUM(agent_minutes_goal), 0) AS agent_minutes_goal,
+                    COALESCE(SUM(reading_minutes_goal), 0) AS reading_minutes_goal
                 FROM bt_3_weekly_goals
                 WHERE user_id = %s
                   AND source_lang = %s
@@ -3275,6 +3336,7 @@ def get_plan_progress(
             translations_goal = max(0, int(goals_row[0] or 0)) if goals_row else 0
             learned_words_goal = max(0, int(goals_row[1] or 0)) if goals_row else 0
             agent_minutes_goal = max(0, int(goals_row[2] or 0)) if goals_row else 0
+            reading_minutes_goal = max(0, int(goals_row[3] or 0)) if goals_row else 0
 
             cursor.execute(
                 """
@@ -3387,6 +3449,47 @@ def get_plan_progress(
             else:
                 agent_minutes_actual = 0.0
 
+            if cap_dt > period_start_dt:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(
+                        SUM(
+                            GREATEST(
+                                0,
+                                EXTRACT(
+                                    EPOCH FROM (
+                                        LEAST(COALESCE(ended_at, %s), %s)
+                                        - GREATEST(started_at, %s)
+                                    )
+                                )
+                            )
+                        ),
+                        0
+                    )
+                    FROM bt_3_reader_sessions
+                    WHERE user_id = %s
+                      AND source_lang = %s
+                      AND target_lang = %s
+                      AND started_at < %s
+                      AND COALESCE(ended_at, %s) > %s;
+                    """,
+                    (
+                        cap_dt,
+                        cap_dt,
+                        period_start_dt,
+                        int(user_id),
+                        normalized_source,
+                        normalized_target,
+                        cap_dt,
+                        cap_dt,
+                        period_start_dt,
+                    ),
+                )
+                reading_row = cursor.fetchone()
+                reading_minutes_actual = float(reading_row[0] or 0.0) / 60.0 if reading_row else 0.0
+            else:
+                reading_minutes_actual = 0.0
+
     def _metric(goal: int, actual: float) -> dict:
         safe_goal = max(0, int(goal or 0))
         safe_actual = max(0.0, float(actual or 0.0))
@@ -3417,6 +3520,7 @@ def get_plan_progress(
             "translations": _metric(translations_goal, translations_actual),
             "learned_words": _metric(learned_words_goal, learned_words_actual),
             "agent_minutes": _metric(agent_minutes_goal, agent_minutes_actual),
+            "reading_minutes": _metric(reading_minutes_goal, reading_minutes_actual),
         },
     }
 
@@ -3565,6 +3669,342 @@ def finish_agent_voice_session(
         "source_lang": str(row[4] or normalized_source),
         "target_lang": str(row[5] or normalized_target),
     }
+
+
+def start_reader_session(
+    *,
+    user_id: int,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    started_at: datetime | None = None,
+) -> dict:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    started = started_at or datetime.now(timezone.utc)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_sessions
+                SET
+                    ended_at = %s,
+                    duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (%s - started_at))::INT),
+                    updated_at = NOW()
+                WHERE user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                  AND ended_at IS NULL;
+                """,
+                (started, started, int(user_id), normalized_source, normalized_target),
+            )
+            cursor.execute(
+                """
+                INSERT INTO bt_3_reader_sessions (
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    started_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, NOW())
+                RETURNING id, started_at;
+                """,
+                (int(user_id), normalized_source, normalized_target, started),
+            )
+            row = cursor.fetchone()
+    return {
+        "session_id": int(row[0]),
+        "started_at": row[1].isoformat() if row and row[1] else started.isoformat(),
+    }
+
+
+def finish_reader_session(
+    *,
+    user_id: int,
+    session_id: int | None = None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    ended_at: datetime | None = None,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    ended = ended_at or datetime.now(timezone.utc)
+    if ended.tzinfo is None:
+        ended = ended.replace(tzinfo=timezone.utc)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if session_id is not None:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_reader_sessions
+                    SET
+                        ended_at = COALESCE(ended_at, %s),
+                        duration_seconds = CASE
+                            WHEN ended_at IS NOT NULL THEN duration_seconds
+                            ELSE GREATEST(0, EXTRACT(EPOCH FROM (%s - started_at))::INT)
+                        END,
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND user_id = %s
+                    RETURNING id, started_at, ended_at, duration_seconds, source_lang, target_lang;
+                    """,
+                    (ended, ended, int(session_id), int(user_id)),
+                )
+            else:
+                cursor.execute(
+                    """
+                    WITH latest AS (
+                        SELECT id
+                        FROM bt_3_reader_sessions
+                        WHERE user_id = %s
+                          AND source_lang = %s
+                          AND target_lang = %s
+                          AND ended_at IS NULL
+                        ORDER BY started_at DESC
+                        LIMIT 1
+                    )
+                    UPDATE bt_3_reader_sessions s
+                    SET
+                        ended_at = %s,
+                        duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (%s - s.started_at))::INT),
+                        updated_at = NOW()
+                    FROM latest
+                    WHERE s.id = latest.id
+                    RETURNING s.id, s.started_at, s.ended_at, s.duration_seconds, s.source_lang, s.target_lang;
+                    """,
+                    (int(user_id), normalized_source, normalized_target, ended, ended),
+                )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    duration_seconds = int(row[3] or 0)
+    return {
+        "session_id": int(row[0]),
+        "started_at": row[1].isoformat() if row[1] else None,
+        "ended_at": row[2].isoformat() if row[2] else ended.isoformat(),
+        "duration_seconds": duration_seconds,
+        "duration_minutes": round(duration_seconds / 60.0, 2),
+        "source_lang": str(row[4] or normalized_source),
+        "target_lang": str(row[5] or normalized_target),
+    }
+
+
+def _reader_library_row_to_dict(row: tuple, *, include_content: bool = False) -> dict:
+    payload = {
+        "id": int(row[0]),
+        "user_id": int(row[1]),
+        "source_lang": str(row[2] or "ru"),
+        "target_lang": str(row[3] or "de"),
+        "title": str(row[4] or "Untitled"),
+        "source_type": str(row[5] or "text"),
+        "source_url": row[6] if row[6] else None,
+        "text_hash": str(row[7] or ""),
+        "total_chars": max(0, int(row[8] or 0)),
+        "progress_percent": round(max(0.0, min(100.0, float(row[9] or 0.0))), 2),
+        "bookmark_percent": round(max(0.0, min(100.0, float(row[10] or 0.0))), 2),
+        "reading_mode": str(row[11] or "vertical"),
+        "last_opened_at": row[12].isoformat() if row[12] else None,
+        "created_at": row[13].isoformat() if row[13] else None,
+        "updated_at": row[14].isoformat() if row[14] else None,
+    }
+    if include_content:
+        payload["content_text"] = str(row[15] or "")
+    return payload
+
+
+def upsert_reader_library_document(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    title: str,
+    source_type: str,
+    source_url: str | None,
+    content_text: str,
+) -> dict:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_title = str(title or "Untitled").strip() or "Untitled"
+    resolved_source_type = str(source_type or "text").strip().lower() or "text"
+    resolved_source_url = str(source_url or "").strip() or None
+    resolved_content = str(content_text or "").strip()
+    text_hash = hashlib.sha256(resolved_content.encode("utf-8")).hexdigest()
+    total_chars = len(resolved_content)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_reader_library (
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    title,
+                    source_type,
+                    source_url,
+                    text_hash,
+                    content_text,
+                    total_chars,
+                    last_opened_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (user_id, source_lang, target_lang, text_hash) DO UPDATE
+                SET
+                    title = EXCLUDED.title,
+                    source_type = EXCLUDED.source_type,
+                    source_url = COALESCE(EXCLUDED.source_url, bt_3_reader_library.source_url),
+                    content_text = EXCLUDED.content_text,
+                    total_chars = EXCLUDED.total_chars,
+                    last_opened_at = NOW(),
+                    updated_at = NOW()
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    last_opened_at, created_at, updated_at, content_text;
+                """,
+                (
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                    resolved_title,
+                    resolved_source_type,
+                    resolved_source_url,
+                    text_hash,
+                    resolved_content,
+                    total_chars,
+                ),
+            )
+            row = cursor.fetchone()
+    return _reader_library_row_to_dict(row, include_content=True)
+
+
+def list_reader_library_documents(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    limit: int = 100,
+) -> list[dict]:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    safe_limit = max(1, min(300, int(limit or 100)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    last_opened_at, created_at, updated_at
+                FROM bt_3_reader_library
+                WHERE user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                ORDER BY COALESCE(last_opened_at, updated_at, created_at) DESC
+                LIMIT %s;
+                """,
+                (int(user_id), normalized_source, normalized_target, safe_limit),
+            )
+            rows = cursor.fetchall()
+    return [_reader_library_row_to_dict(row, include_content=False) for row in rows]
+
+
+def get_reader_library_document(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    last_opened_at, created_at, updated_at, content_text
+                FROM bt_3_reader_library
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                LIMIT 1;
+                """,
+                (int(document_id), int(user_id), normalized_source, normalized_target),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_library
+                SET last_opened_at = NOW(), updated_at = NOW()
+                WHERE id = %s;
+                """,
+                (int(document_id),),
+            )
+    return _reader_library_row_to_dict(row, include_content=True)
+
+
+def update_reader_library_state(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    progress_percent: float | None = None,
+    bookmark_percent: float | None = None,
+    reading_mode: str | None = None,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_progress = None if progress_percent is None else max(0.0, min(100.0, float(progress_percent)))
+    resolved_bookmark = None if bookmark_percent is None else max(0.0, min(100.0, float(bookmark_percent)))
+    resolved_mode = str(reading_mode or "").strip().lower()
+    if resolved_mode not in {"", "vertical", "horizontal"}:
+        resolved_mode = ""
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_library
+                SET
+                    progress_percent = COALESCE(%s, progress_percent),
+                    bookmark_percent = COALESCE(%s, bookmark_percent),
+                    reading_mode = COALESCE(NULLIF(%s, ''), reading_mode),
+                    last_opened_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    last_opened_at, created_at, updated_at;
+                """,
+                (
+                    resolved_progress,
+                    resolved_bookmark,
+                    resolved_mode,
+                    int(document_id),
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _reader_library_row_to_dict(row, include_content=False)
 
 
 def get_daily_plan(user_id: int, plan_date: date) -> dict | None:

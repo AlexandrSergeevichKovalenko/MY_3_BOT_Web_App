@@ -111,9 +111,27 @@ function AppInner() {
   const [moviesLanguageFilter, setMoviesLanguageFilter] = useState('all');
   const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
+  const [readerInput, setReaderInput] = useState('');
+  const [readerLoading, setReaderLoading] = useState(false);
+  const [readerError, setReaderError] = useState('');
+  const [readerContent, setReaderContent] = useState('');
+  const [readerTitle, setReaderTitle] = useState('');
+  const [readerSourceType, setReaderSourceType] = useState('');
+  const [readerSourceUrl, setReaderSourceUrl] = useState('');
+  const [readerDetectedLanguage, setReaderDetectedLanguage] = useState('');
+  const [readerDocumentId, setReaderDocumentId] = useState(null);
+  const [readerDocuments, setReaderDocuments] = useState([]);
+  const [readerLibraryLoading, setReaderLibraryLoading] = useState(false);
+  const [readerLibraryError, setReaderLibraryError] = useState('');
+  const [readerProgressPercent, setReaderProgressPercent] = useState(0);
+  const [readerBookmarkPercent, setReaderBookmarkPercent] = useState(0);
+  const [readerReadingMode, setReaderReadingMode] = useState('vertical');
+  const [readerSessionStartedAt, setReaderSessionStartedAt] = useState('');
+  const [readerLiveSeconds, setReaderLiveSeconds] = useState(0);
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
   const [selectionCompact, setSelectionCompact] = useState(false);
+  const [selectionLookupLang, setSelectionLookupLang] = useState('');
   const [selectionInlineLookup, setSelectionInlineLookup] = useState({ loading: false, word: '', translation: '', direction: '' });
   const [selectionLookupLoading, setSelectionLookupLoading] = useState(false);
   const [inlineToast, setInlineToast] = useState('');
@@ -160,7 +178,7 @@ function AppInner() {
   const [weeklyPlanLoading, setWeeklyPlanLoading] = useState(false);
   const [weeklyPlanSaving, setWeeklyPlanSaving] = useState(false);
   const [weeklyPlanError, setWeeklyPlanError] = useState('');
-  const [weeklyPlanDraft, setWeeklyPlanDraft] = useState({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '' });
+  const [weeklyPlanDraft, setWeeklyPlanDraft] = useState({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '', reading_minutes_goal: '' });
   const [weeklyPlanCollapsed, setWeeklyPlanCollapsed] = useState(false);
   const [planAnalyticsPeriod, setPlanAnalyticsPeriod] = useState('week');
   const [planAnalyticsMetrics, setPlanAnalyticsMetrics] = useState({});
@@ -171,6 +189,7 @@ function AppInner() {
     translations: true,
     learned_words: true,
     agent_minutes: true,
+    reading_minutes: true,
   });
   const [srsLoading, setSrsLoading] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
@@ -259,6 +278,8 @@ function AppInner() {
   const isStoryResultMode = Boolean(storyResult && isStorySession);
 
   const dictionaryRef = useRef(null);
+  const readerRef = useRef(null);
+  const readerArticleRef = useRef(null);
   const flashcardsRef = useRef(null);
   const translationsRef = useRef(null);
   const youtubeRef = useRef(null);
@@ -294,6 +315,9 @@ function AppInner() {
   const youtubeAutoFolderCacheRef = useRef(new Map());
   const youtubeAutoFolderPendingRef = useRef(new Map());
   const inlineToastTimeoutRef = useRef(null);
+  const readerSessionStartingRef = useRef(false);
+  const readerStateSaveTimeoutRef = useRef(null);
+  const readerTimerIntervalRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
@@ -633,7 +657,17 @@ function AppInner() {
     if (lang === 'en') return 'en-US';
     if (lang === 'es') return 'es-ES';
     if (lang === 'it') return 'it-IT';
+    if (lang === 'ru') return 'ru-RU';
     return 'de-DE';
+  };
+  const getTtsLocaleForLang = (langCode) => {
+    const lang = normalizeLangCode(langCode);
+    if (lang === 'en') return 'en-US';
+    if (lang === 'es') return 'es-ES';
+    if (lang === 'it') return 'it-IT';
+    if (lang === 'ru') return 'ru-RU';
+    if (lang === 'de') return 'de-DE';
+    return getLearningTtsLocale();
   };
 
   const resolveFlashcardTexts = (entry) => {
@@ -808,7 +842,7 @@ function AppInner() {
       const data = await response.json();
       const plan = {
         week: data?.week || null,
-        plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0 },
+        plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
         metrics: data?.metrics || {},
       };
       setWeeklyPlan(plan);
@@ -816,6 +850,7 @@ function AppInner() {
         translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
         learned_words_goal: String(Number(plan?.plan?.learned_words_goal || 0)),
         agent_minutes_goal: String(Number(plan?.plan?.agent_minutes_goal || 0)),
+        reading_minutes_goal: String(Number(plan?.plan?.reading_minutes_goal || 0)),
       });
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
@@ -859,6 +894,7 @@ function AppInner() {
     const translationsGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.translations_goal || '0'), 10) || 0);
     const learnedWordsGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.learned_words_goal || '0'), 10) || 0);
     const agentMinutesGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.agent_minutes_goal || '0'), 10) || 0);
+    const readingMinutesGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.reading_minutes_goal || '0'), 10) || 0);
     try {
       setWeeklyPlanSaving(true);
       setWeeklyPlanError('');
@@ -870,6 +906,7 @@ function AppInner() {
           translations_goal: translationsGoal,
           learned_words_goal: learnedWordsGoal,
           agent_minutes_goal: agentMinutesGoal,
+          reading_minutes_goal: readingMinutesGoal,
         }),
       });
       if (!response.ok) {
@@ -878,7 +915,7 @@ function AppInner() {
       const data = await response.json();
       const plan = {
         week: data?.week || null,
-        plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0 },
+        plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
         metrics: data?.metrics || {},
       };
       setWeeklyPlan(plan);
@@ -886,12 +923,14 @@ function AppInner() {
         translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
         learned_words_goal: String(Number(plan?.plan?.learned_words_goal || 0)),
         agent_minutes_goal: String(Number(plan?.plan?.agent_minutes_goal || 0)),
+        reading_minutes_goal: String(Number(plan?.plan?.reading_minutes_goal || 0)),
       });
       setWeeklyPlanCollapsed(true);
       setWeeklyMetricExpanded({
         translations: false,
         learned_words: false,
         agent_minutes: false,
+        reading_minutes: false,
       });
       loadPlanAnalytics();
     } catch (error) {
@@ -1344,6 +1383,12 @@ function AppInner() {
       unit: tr('мин', 'Min'),
       data: weeklyMetrics.agent_minutes || {},
     },
+    {
+      key: 'reading_minutes',
+      title: tr('Чтение (минуты)', 'Lesen (Minuten)'),
+      unit: tr('мин', 'Min'),
+      data: weeklyMetrics.reading_minutes || {},
+    },
   ];
   const weeklyWeekLabel = planAnalyticsRange?.start_date && planAnalyticsRange?.end_date
     ? `${planAnalyticsRange.start_date} — ${planAnalyticsRange.end_date}`
@@ -1361,6 +1406,7 @@ function AppInner() {
     if (key === 'translations') return 'is-translations';
     if (key === 'learned_words') return 'is-words';
     if (key === 'agent_minutes') return 'is-agent';
+    if (key === 'reading_minutes') return 'is-reading';
     return '';
   };
   const formatWeeklyValue = (value, digits = 0) => {
@@ -1454,7 +1500,7 @@ function AppInner() {
   };
 
   const showAllSections = () => {
-    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'flashcards', 'assistant', 'analytics']));
+    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'analytics']));
     setMoviesCollapsed(false);
   };
 
@@ -1598,6 +1644,15 @@ function AppInner() {
         </svg>
       );
     }
+    if (kind === 'reader') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <path d="M4 6a2 2 0 0 1 2-2h6v15H6a2 2 0 0 0-2 2V6z" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M20 6a2 2 0 0 0-2-2h-6v15h6a2 2 0 0 1 2 2V6z" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M8 9h2.6M13.4 9H16M8 12h8M8 15h8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+        </svg>
+      );
+    }
     if (kind === 'flashcards') {
       return (
         <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
@@ -1636,6 +1691,7 @@ function AppInner() {
   const [assistantConnecting, setAssistantConnecting] = useState(false);
   const [assistantError, setAssistantError] = useState('');
   const [assistantSessionId, setAssistantSessionId] = useState(null);
+  const [readerSessionId, setReaderSessionId] = useState(null);
 
   // LiveKit login state
   const [telegramID, setTelegramID] = useState('');
@@ -1749,6 +1805,65 @@ function AppInner() {
     }
     setAssistantToken(null);
     setAssistantError('');
+  };
+
+  const startReaderSessionTracking = async () => {
+    if (!initData || readerSessionId || readerSessionStartingRef.current) return;
+    readerSessionStartingRef.current = true;
+    try {
+      const response = await fetch('/api/reader/session/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      const nextSessionId = data?.session?.session_id;
+      if (nextSessionId !== undefined && nextSessionId !== null) {
+        setReaderSessionId(Number(nextSessionId));
+      }
+      const startedAt = String(data?.session?.started_at || '').trim();
+      setReaderSessionStartedAt(startedAt);
+      if (startedAt) {
+        const elapsed = Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+        setReaderLiveSeconds(elapsed);
+      } else {
+        setReaderLiveSeconds(0);
+      }
+    } catch (error) {
+      console.warn('reader session start error', error);
+    } finally {
+      readerSessionStartingRef.current = false;
+    }
+  };
+
+  const stopReaderSessionTracking = async (sessionIdOverride = null) => {
+    if (!initData) return;
+    const sid = sessionIdOverride ?? readerSessionId;
+    const latestProgress = computeReaderProgressPercent();
+    setReaderProgressPercent(latestProgress);
+    if (readerDocumentId) {
+      await syncReaderState({ progress_percent: Number(latestProgress.toFixed(2)) });
+    }
+    setReaderSessionId(null);
+    setReaderSessionStartedAt('');
+    setReaderLiveSeconds(0);
+    try {
+      const response = await fetch('/api/reader/session/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sid ? { initData, session_id: sid } : { initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      await loadWeeklyPlan();
+      await loadPlanAnalytics();
+    } catch (error) {
+      console.warn('reader session stop error', error);
+    }
   };
 
   useEffect(() => {
@@ -1897,7 +2012,7 @@ function AppInner() {
     if (!isWebAppMode || !initData) {
       setWeeklyPlan(null);
       setWeeklyPlanError('');
-      setWeeklyPlanDraft({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '' });
+      setWeeklyPlanDraft({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '', reading_minutes_goal: '' });
       setWeeklyPlanCollapsed(false);
       setPlanAnalyticsMetrics({});
       setPlanAnalyticsRange(null);
@@ -1906,11 +2021,21 @@ function AppInner() {
         translations: true,
         learned_words: true,
         agent_minutes: true,
+        reading_minutes: true,
       });
       return;
     }
     loadWeeklyPlan();
     loadPlanAnalytics();
+  }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      setReaderDocuments([]);
+      setReaderLibraryError('');
+      return;
+    }
+    loadReaderLibrary();
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
@@ -1937,6 +2062,81 @@ function AppInner() {
       setAssistantToken(null);
     }
   }, [flashcardsOnly, selectedSections]);
+
+  useEffect(() => {
+    const shouldTrackReader = Boolean(
+      isWebAppMode
+      && initData
+      && !flashcardsOnly
+      && selectedSections.has('reader')
+      && String(readerContent || '').trim()
+    );
+    if (shouldTrackReader) {
+      startReaderSessionTracking();
+      return;
+    }
+    if (readerSessionId) {
+      stopReaderSessionTracking(readerSessionId);
+    }
+  }, [isWebAppMode, initData, flashcardsOnly, selectedSections, readerContent]);
+
+  useEffect(() => {
+    return () => {
+      if (readerSessionId) {
+        stopReaderSessionTracking(readerSessionId);
+      }
+    };
+  }, [readerSessionId]);
+
+  useEffect(() => {
+    if (readerTimerIntervalRef.current) {
+      clearInterval(readerTimerIntervalRef.current);
+      readerTimerIntervalRef.current = null;
+    }
+    if (!readerSessionStartedAt) return;
+    const baseTs = new Date(readerSessionStartedAt).getTime();
+    if (!Number.isFinite(baseTs) || baseTs <= 0) return;
+    setReaderLiveSeconds(Math.max(0, Math.floor((Date.now() - baseTs) / 1000)));
+    readerTimerIntervalRef.current = setInterval(() => {
+      setReaderLiveSeconds(Math.max(0, Math.floor((Date.now() - baseTs) / 1000)));
+    }, 1000);
+    return () => {
+      if (readerTimerIntervalRef.current) {
+        clearInterval(readerTimerIntervalRef.current);
+        readerTimerIntervalRef.current = null;
+      }
+    };
+  }, [readerSessionStartedAt]);
+
+  useEffect(() => {
+    const node = readerArticleRef.current;
+    if (!node || !readerDocumentId || !readerContent) return undefined;
+    const handleScroll = () => {
+      const nextPercent = computeReaderProgressPercent();
+      setReaderProgressPercent(nextPercent);
+      if (readerStateSaveTimeoutRef.current) {
+        clearTimeout(readerStateSaveTimeoutRef.current);
+      }
+      readerStateSaveTimeoutRef.current = setTimeout(() => {
+        syncReaderState({ progress_percent: Number(nextPercent.toFixed(2)) });
+      }, 900);
+    };
+    node.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      node.removeEventListener('scroll', handleScroll);
+      if (readerStateSaveTimeoutRef.current) {
+        clearTimeout(readerStateSaveTimeoutRef.current);
+        readerStateSaveTimeoutRef.current = null;
+      }
+    };
+  }, [readerDocumentId, readerReadingMode, readerContent]);
+
+  useEffect(() => {
+    if (!readerDocumentId || !readerContent) return;
+    const targetPercent = readerBookmarkPercent > 0 ? readerBookmarkPercent : readerProgressPercent;
+    const timer = setTimeout(() => applyReaderProgressPercent(targetPercent), 90);
+    return () => clearTimeout(timer);
+  }, [readerReadingMode, readerDocumentId, readerContent]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -2829,6 +3029,7 @@ function AppInner() {
       setSelectionText('');
       setSelectionPos(null);
       setSelectionCompact(false);
+      setSelectionLookupLang('');
       return;
     }
     const clientX = event?.clientX ?? event?.touches?.[0]?.clientX ?? window.innerWidth / 2;
@@ -2845,6 +3046,7 @@ function AppInner() {
     setSelectionText(text);
     setSelectionPos({ x: safeX, y: safeY });
     setSelectionCompact(Boolean(options?.compact));
+    setSelectionLookupLang(normalizeLangCode(options?.lookupLang || ''));
     if (options?.inlineLookup) {
       void loadSelectionInlineLookup(text);
     }
@@ -2854,6 +3056,7 @@ function AppInner() {
     setSelectionText('');
     setSelectionPos(null);
     setSelectionCompact(false);
+    setSelectionLookupLang('');
     setSelectionLookupLoading(false);
     setSelectionInlineLookup({ loading: false, word: '', translation: '', direction: '' });
   };
@@ -2863,7 +3066,8 @@ function AppInner() {
     if (!cleaned) return '';
     if (hasCyrillic(cleaned)) return cleaned;
     try {
-      const normalizeLang = encodeURIComponent(getNormalizeLookupLang());
+      const effectiveLang = normalizeLangCode(selectionLookupLang || getNormalizeLookupLang()) || getNormalizeLookupLang();
+      const normalizeLang = encodeURIComponent(effectiveLang);
       const normalizeResponse = await fetch(`/api/webapp/normalize/${normalizeLang}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3066,6 +3270,177 @@ function AppInner() {
       setSelectionLookupLoading(false);
     }
   };
+
+  function formatReaderTimer(seconds) {
+    const value = Math.max(0, Number(seconds || 0));
+    const hours = Math.floor(value / 3600);
+    const minutes = Math.floor((value % 3600) / 60);
+    const secs = Math.floor(value % 60);
+    const pad = (num) => String(num).padStart(2, '0');
+    if (hours > 0) return `${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
+    return `${pad(minutes)}:${pad(secs)}`;
+  }
+
+  function computeReaderProgressPercent() {
+    const node = readerArticleRef.current;
+    if (!node) return 0;
+    if (readerReadingMode === 'horizontal') {
+      const max = Math.max(1, node.scrollWidth - node.clientWidth);
+      return Math.max(0, Math.min(100, (node.scrollLeft / max) * 100));
+    }
+    const max = Math.max(1, node.scrollHeight - node.clientHeight);
+    return Math.max(0, Math.min(100, (node.scrollTop / max) * 100));
+  }
+
+  function applyReaderProgressPercent(percent) {
+    const node = readerArticleRef.current;
+    if (!node) return;
+    const safe = Math.max(0, Math.min(100, Number(percent || 0)));
+    if (readerReadingMode === 'horizontal') {
+      const max = Math.max(1, node.scrollWidth - node.clientWidth);
+      node.scrollLeft = (safe / 100) * max;
+      return;
+    }
+    const max = Math.max(1, node.scrollHeight - node.clientHeight);
+    node.scrollTop = (safe / 100) * max;
+  }
+
+  async function loadReaderLibrary() {
+    if (!initData) return;
+    try {
+      setReaderLibraryLoading(true);
+      setReaderLibraryError('');
+      const response = await fetch('/api/webapp/reader/library', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, limit: 120 }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки библиотеки', 'Fehler beim Laden der Bibliothek'));
+      }
+      const data = await response.json();
+      setReaderDocuments(Array.isArray(data?.items) ? data.items : []);
+    } catch (error) {
+      setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить библиотеку.', 'Bibliothek konnte nicht geladen werden.'));
+    } finally {
+      setReaderLibraryLoading(false);
+    }
+  }
+
+  async function syncReaderState(patch = {}) {
+    if (!initData || !readerDocumentId) return;
+    try {
+      await fetch('/api/webapp/reader/library/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          document_id: readerDocumentId,
+          ...patch,
+        }),
+      });
+    } catch (_error) {
+      // ignore transient sync errors
+    }
+    setReaderDocuments((prev) => prev.map((item) => (
+      Number(item?.id) === Number(readerDocumentId)
+        ? { ...item, ...patch }
+        : item
+    )));
+  }
+
+  async function openReaderDocument(documentId) {
+    if (!initData || !documentId) return;
+    try {
+      setReaderLoading(true);
+      setReaderError('');
+      const response = await fetch('/api/webapp/reader/library/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, document_id: documentId }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка открытия книги', 'Fehler beim Oeffnen des Dokuments'));
+      }
+      const data = await response.json();
+      const doc = data?.document || {};
+      const progress = Number(doc?.progress_percent || 0);
+      const bookmark = Number(doc?.bookmark_percent || 0);
+      setReaderDocumentId(Number(doc?.id || documentId));
+      setReaderTitle(String(data?.title || doc?.title || ''));
+      setReaderContent(String(data?.text || doc?.content_text || '').trim());
+      setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
+      setReaderSourceUrl(String(data?.source_url || doc?.source_url || ''));
+      setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
+      setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
+      setReaderProgressPercent(progress);
+      setReaderBookmarkPercent(bookmark);
+      ensureSectionVisible('reader');
+      setTimeout(() => {
+        scrollToRef(readerRef, { block: 'start' });
+        const target = bookmark > 0 ? bookmark : progress;
+        applyReaderProgressPercent(target);
+      }, 100);
+      loadReaderLibrary();
+    } catch (error) {
+      setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось открыть книгу.', 'Dokument konnte nicht geoeffnet werden.'));
+    } finally {
+      setReaderLoading(false);
+    }
+  }
+
+  async function handleReaderIngest(event) {
+    event?.preventDefault?.();
+    const rawInput = String(readerInput || '').trim();
+    if (!rawInput) {
+      setReaderError(tr('Вставьте ссылку или текст.', 'Fuege einen Link oder Text ein.'));
+      return;
+    }
+    if (!initData) {
+      setReaderError(initDataMissingMsg);
+      return;
+    }
+    setReaderLoading(true);
+    setReaderError('');
+    try {
+      const looksLikeUrl = /^https?:\/\//i.test(rawInput) || /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawInput);
+      const response = await fetch('/api/webapp/reader/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          url: looksLikeUrl ? rawInput : '',
+          text: looksLikeUrl ? '' : rawInput,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus'));
+      }
+      const data = await response.json();
+      const doc = data?.document || {};
+      const docId = Number(doc?.id || 0) || null;
+      setReaderContent(String(data?.text || '').trim());
+      setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
+      setReaderSourceType(String(data?.source_type || 'text'));
+      setReaderSourceUrl(String(data?.source_url || rawInput));
+      setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
+      setReaderDocumentId(docId);
+      setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
+      setReaderProgressPercent(Number(doc?.progress_percent || 0));
+      setReaderBookmarkPercent(Number(doc?.bookmark_percent || 0));
+      ensureSectionVisible('reader');
+      setTimeout(() => {
+        scrollToRef(readerRef, { block: 'start' });
+        const target = Number(doc?.bookmark_percent || doc?.progress_percent || 0);
+        applyReaderProgressPercent(target);
+      }, 80);
+      loadReaderLibrary();
+    } catch (error) {
+      setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить текст в читалку.', 'Text konnte nicht in den Leser geladen werden.'));
+    } finally {
+      setReaderLoading(false);
+    }
+  }
 
   const loadFlashcards = async () => {
     if (!initData) {
@@ -3398,9 +3773,10 @@ function AppInner() {
     const className = options.className || 'clickable-word';
     const compact = Boolean(options.compact);
     const inlineLookup = Boolean(options.inlineLookup);
+    const lookupLang = options.lookupLang || '';
     if (!text) return null;
     return text.split(/\s+/).map((word, index) => {
-      const cleaned = word.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿ'’-]/g, '');
+      const cleaned = word.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё'’-]/g, '');
       if (!cleaned) {
         return <span key={`w-${index}`}>{word} </span>;
       }
@@ -3408,7 +3784,7 @@ function AppInner() {
         <span
           key={`w-${index}`}
           className={className}
-          onClick={(event) => handleSelection(event, cleaned, { compact, inlineLookup })}
+          onClick={(event) => handleSelection(event, cleaned, { compact, inlineLookup, lookupLang })}
         >
           {word}{' '}
         </span>
@@ -4603,6 +4979,15 @@ function AppInner() {
               </button>
               <button
                 type="button"
+                className={`menu-item menu-item-reader ${selectedSections.has('reader') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('reader')}
+                disabled={flashcardsOnly}
+              >
+                <span className="menu-icon menu-icon-reader">{renderMenuIcon('reader')}</span>
+                <span>{tr('Читалка', 'Leser')}</span>
+              </button>
+              <button
+                type="button"
                 className={`menu-item menu-item-flashcards ${selectedSections.has('flashcards') ? 'is-active' : ''}`}
                 onClick={() => {
                   toggleSection('flashcards');
@@ -4784,6 +5169,15 @@ function AppInner() {
                 >
                   <span className="menu-icon menu-icon-dictionary">{renderMenuIcon('dictionary')}</span>
                       <span>{t('menu_dictionary')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item menu-item-reader ${selectedSections.has('reader') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('reader', readerRef)}
+                      disabled={flashcardsOnly}
+                    >
+                      <span className="menu-icon menu-icon-reader">{renderMenuIcon('reader')}</span>
+                      <span>{tr('Читалка', 'Leser')}</span>
                     </button>
                     <button
                       type="button"
@@ -5028,6 +5422,18 @@ function AppInner() {
                       inputMode="numeric"
                       value={weeklyPlanDraft.agent_minutes_goal}
                       onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, agent_minutes_goal: event.target.value }))}
+                      disabled={weeklyPlanSaving}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="webapp-field">
+                    <span>{tr('Минуты чтения', 'Leseminuten')}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      inputMode="numeric"
+                      value={weeklyPlanDraft.reading_minutes_goal}
+                      onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, reading_minutes_goal: event.target.value }))}
                       disabled={weeklyPlanSaving}
                       placeholder="0"
                     />
@@ -6121,6 +6527,144 @@ function AppInner() {
                   </section>
                 )}
               </div>
+            )}
+
+            {!flashcardsOnly && isSectionVisible('reader') && (
+              <section className="webapp-section webapp-reader" ref={readerRef}>
+                <div className="webapp-section-title webapp-section-title-with-logo">
+                  <div className="webapp-local-section-head">
+                    <h3>{tr('Читалка', 'Leser')}</h3>
+                    {isFocusedSection('reader') && (
+                      <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                        {tr('На главную', 'Startseite')}
+                      </button>
+                    )}
+                    <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                  </div>
+                </div>
+                <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
+                  <label className="webapp-field">
+                    <span>{tr('Ссылка или текст', 'Link oder Text')}</span>
+                    <textarea
+                      rows={4}
+                      value={readerInput}
+                      onChange={(event) => setReaderInput(event.target.value)}
+                      placeholder={tr(
+                        'Вставьте URL статьи/книги (включая PDF) или сам текст.',
+                        'Fuege die URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
+                      )}
+                    />
+                  </label>
+                  <div className="webapp-actions">
+                    <button type="submit" className="primary-button" disabled={readerLoading}>
+                      {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser oeffnen')}
+                    </button>
+                    <button
+                      type="button"
+                      className={`secondary-button ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
+                      onClick={() => {
+                        const nextMode = readerReadingMode === 'vertical' ? 'horizontal' : 'vertical';
+                        setReaderReadingMode(nextMode);
+                        if (readerDocumentId) {
+                          syncReaderState({ reading_mode: nextMode });
+                        }
+                      }}
+                      disabled={!readerContent}
+                    >
+                      {readerReadingMode === 'vertical'
+                        ? tr('Режим: вертикально', 'Modus: vertikal')
+                        : tr('Режим: горизонтально', 'Modus: horizontal')}
+                    </button>
+                    <button
+                      type="button"
+                      className="reader-bookmark-btn"
+                      onClick={() => {
+                        const mark = computeReaderProgressPercent();
+                        setReaderBookmarkPercent(mark);
+                        if (readerDocumentId) {
+                          syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
+                        }
+                      }}
+                      disabled={!readerContent || !readerDocumentId}
+                      title={tr('Поставить закладку на текущей позиции', 'Lesezeichen an der aktuellen Position setzen')}
+                    >
+                      {tr('Закладка', 'Lesezeichen')}
+                    </button>
+                    {readerDetectedLanguage && (
+                      <span className="webapp-muted">
+                        {tr('Язык текста', 'Textsprache')}: {readerDetectedLanguage.toUpperCase()}
+                      </span>
+                    )}
+                    <span className="reader-timer-pill">
+                      {tr('Чтение', 'Lesen')}: {formatReaderTimer(readerLiveSeconds)}
+                    </span>
+                  </div>
+                </form>
+                {readerError && <div className="webapp-error">{readerError}</div>}
+                <section className="reader-library">
+                  <div className="reader-library-head">
+                    <h4>{tr('Библиотека', 'Bibliothek')}</h4>
+                    <button type="button" className="secondary-button" onClick={loadReaderLibrary} disabled={readerLibraryLoading}>
+                      {readerLibraryLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
+                    </button>
+                  </div>
+                  {readerLibraryError && <div className="webapp-error">{readerLibraryError}</div>}
+                  {!readerLibraryError && readerDocuments.length === 0 && (
+                    <div className="webapp-muted">{tr('Пока библиотека пуста. Откройте текст или книгу, и она появится здесь.', 'Die Bibliothek ist noch leer. Oeffne Text oder Buch, dann erscheint es hier.')}</div>
+                  )}
+                  {readerDocuments.length > 0 && (
+                    <div className="reader-library-grid">
+                      {readerDocuments.map((item) => {
+                        const progress = Math.max(0, Math.min(100, Number(item?.progress_percent || 0)));
+                        const badgeStyle = { '--reader-progress': `${progress}%` };
+                        return (
+                          <button
+                            type="button"
+                            key={`reader-doc-${item.id}`}
+                            className={`reader-library-card ${Number(readerDocumentId) === Number(item.id) ? 'is-active' : ''}`}
+                            onClick={() => openReaderDocument(item.id)}
+                          >
+                            <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
+                            <div className="reader-library-meta">
+                              <span>{String(item.source_type || 'text').toUpperCase()}</span>
+                              <span>{String(item.target_lang || '').toUpperCase()}</span>
+                            </div>
+                            <div className="reader-library-progress-ring" style={badgeStyle}>
+                              <span>{Math.round(progress)}%</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+                {readerContent && (
+                  <article
+                    ref={readerArticleRef}
+                    className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'}`}
+                    onMouseUp={(event) => handleSelection(event, '', { lookupLang: readerDetectedLanguage })}
+                  >
+                    {readerSourceType && (
+                      <div className="reader-meta">
+                        {readerTitle && <span>{tr('Книга', 'Buch')}: {readerTitle}</span>}
+                        <span>{tr('Источник', 'Quelle')}: {readerSourceType.toUpperCase()}</span>
+                        {readerSourceUrl && <span>{readerSourceUrl}</span>}
+                        <span>{tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%</span>
+                        <span>{tr('Закладка', 'Lesezeichen')}: {Math.round(readerBookmarkPercent)}%</span>
+                      </div>
+                    )}
+                    {readerContent.split(/\n{2,}/).map((paragraph, index) => {
+                      const value = String(paragraph || '').trim();
+                      if (!value) return null;
+                      return (
+                        <p key={`reader-p-${index}`}>
+                          {renderClickableText(value, { className: 'reader-clickable-word', lookupLang: readerDetectedLanguage })}
+                        </p>
+                      );
+                    })}
+                  </article>
+                )}
+              </section>
             )}
 
             {!flashcardsOnly && isSectionVisible('movies') && !moviesCollapsed && (
@@ -7295,7 +7839,7 @@ function AppInner() {
               </section>
             )}
 
-            {selectionText && selectionPos && (isSectionVisible('youtube') || isSectionVisible('dictionary') || isSectionVisible('translations')) && (
+            {selectionText && selectionPos && (isSectionVisible('youtube') || isSectionVisible('dictionary') || isSectionVisible('translations') || isSectionVisible('reader')) && (
               <div
                 ref={selectionMenuRef}
                 className={`webapp-selection-menu ${selectionCompact ? 'is-compact' : ''} ${youtubeAppFullscreen ? 'is-overlay-mode' : ''}`}
@@ -7313,6 +7857,14 @@ function AppInner() {
                     <button
                       type="button"
                       className="secondary-button"
+                      onClick={() => playTts(selectionText, getTtsLocaleForLang(selectionLookupLang || readerDetectedLanguage || getNormalizeLookupLang()))}
+                      disabled={selectionInlineLookup.loading}
+                    >
+                      {tr('Прослушать', 'Anhoeren')}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
                       onClick={() => handleQuickAddToDictionary(selectionText, { inlineMode: true })}
                       disabled={selectionInlineLookup.loading}
                     >
@@ -7321,6 +7873,13 @@ function AppInner() {
                   </>
                 ) : (
                   <>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => playTts(selectionText, getTtsLocaleForLang(selectionLookupLang || readerDetectedLanguage || getNormalizeLookupLang()))}
+                    >
+                      {tr('Прослушать', 'Anhoeren')}
+                    </button>
                     <button
                       type="button"
                       className="secondary-button"

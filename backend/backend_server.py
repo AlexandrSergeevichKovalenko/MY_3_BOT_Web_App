@@ -73,6 +73,7 @@ import time
 import random
 import http.cookiejar
 import re
+import html
 from zoneinfo import ZoneInfo
 from datetime import timedelta, date
 import importlib.metadata as importlib_metadata
@@ -95,6 +96,10 @@ try:
     import spacy
 except Exception:  # pragma: no cover - optional dependency
     spacy = None
+try:
+    from pypdf import PdfReader
+except Exception:  # pragma: no cover - optional dependency
+    PdfReader = None
 from backend.utils import prepare_google_creds_for_tts
 from pydub import AudioSegment
 try:
@@ -188,6 +193,12 @@ from backend.database import (
     get_plan_progress,
     start_agent_voice_session,
     finish_agent_voice_session,
+    start_reader_session,
+    finish_reader_session,
+    upsert_reader_library_document,
+    list_reader_library_documents,
+    get_reader_library_document,
+    update_reader_library_state,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
 )
@@ -1213,6 +1224,141 @@ def _normalize_short_lang_code(value: str | None, fallback: str = "ru") -> str:
     if "-" in raw:
         raw = raw.split("-", 1)[0]
     return raw or fallback
+
+
+def _language_label(code: str) -> str:
+    normalized = _normalize_short_lang_code(code, fallback="unknown")
+    labels = {
+        "de": "Deutsch",
+        "en": "English",
+        "es": "Espanol",
+        "it": "Italiano",
+        "ru": "Russkiy",
+    }
+    return labels.get(normalized, normalized.upper())
+
+
+def _detect_reader_language(text: str, fallback: str = "de") -> str:
+    sample = str(text or "")[:6000]
+    if not sample.strip():
+        return _normalize_short_lang_code(fallback, fallback="de")
+
+    cyrillic_count = len(re.findall(r"[А-Яа-яЁё]", sample))
+    latin_count = len(re.findall(r"[A-Za-zÀ-ÿ]", sample))
+    if cyrillic_count > max(16, latin_count * 0.7):
+        return "ru"
+
+    tokens = re.findall(r"[A-Za-zÀ-ÿ']{2,}", sample.lower())
+    if not tokens:
+        return _normalize_short_lang_code(fallback, fallback="de")
+
+    stopwords = {
+        "de": {"der", "die", "das", "und", "ist", "nicht", "ich", "du", "wir", "sie", "mit", "auf", "zu", "von", "ein", "eine", "im", "den"},
+        "en": {"the", "and", "is", "are", "i", "you", "we", "they", "to", "of", "in", "that", "it", "with", "for", "on", "this"},
+        "es": {"el", "la", "los", "las", "y", "es", "de", "que", "en", "un", "una", "con", "por", "para", "como", "yo"},
+        "it": {"il", "la", "gli", "le", "e", "che", "di", "in", "un", "una", "con", "per", "come", "io", "tu", "noi"},
+        "ru": {"и", "в", "на", "что", "это", "как", "я", "ты", "мы", "вы", "он", "она", "они"},
+    }
+    scores: dict[str, int] = {lang: 0 for lang in stopwords}
+    for token in tokens:
+        for lang, vocab in stopwords.items():
+            if token in vocab:
+                scores[lang] += 1
+
+    best_lang = max(scores, key=scores.get)
+    best_score = scores.get(best_lang, 0)
+    if best_score < 2:
+        return _normalize_short_lang_code(fallback, fallback="de")
+    return best_lang
+
+
+def _normalize_reader_text(raw_text: str, max_chars: int = 150000) -> str:
+    text = str(raw_text or "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t\u00a0]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()[:max_chars]
+
+
+def _extract_text_from_html(html_content: str) -> str:
+    content = str(html_content or "")
+    content = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", content)
+    content = re.sub(r"(?i)<br\s*/?>", "\n", content)
+    content = re.sub(r"(?i)</(p|div|article|section|h1|h2|h3|h4|h5|h6|li|blockquote)>", "\n", content)
+    content = re.sub(r"(?s)<[^>]+>", " ", content)
+    content = html.unescape(content)
+    return _normalize_reader_text(content)
+
+
+def _extract_text_from_pdf_bytes(data: bytes) -> str:
+    if not data:
+        return ""
+    if PdfReader is None:
+        raise RuntimeError("PDF extraction is unavailable: install pypdf")
+    reader = PdfReader(BytesIO(data))
+    chunks: list[str] = []
+    for idx, page in enumerate(reader.pages):
+        if idx >= 250:
+            break
+        try:
+            page_text = page.extract_text() or ""
+        except Exception:
+            page_text = ""
+        if page_text.strip():
+            chunks.append(page_text)
+    return _normalize_reader_text("\n\n".join(chunks))
+
+
+def _fetch_reader_text_from_url(raw_url: str) -> tuple[str, str]:
+    parsed = urlparse(str(raw_url or "").strip())
+    if not parsed.scheme:
+        raw_url = f"https://{str(raw_url or '').strip()}"
+        parsed = urlparse(raw_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Only http/https links are supported")
+
+    response = requests.get(
+        raw_url,
+        timeout=20,
+        allow_redirects=True,
+        headers={"User-Agent": "DeutschFlow-Reader/1.0"},
+    )
+    response.raise_for_status()
+    content_type = str(response.headers.get("Content-Type") or "").lower()
+    final_url = response.url or raw_url
+    is_pdf = "application/pdf" in content_type or final_url.lower().split("?", 1)[0].endswith(".pdf")
+    if is_pdf:
+        return _extract_text_from_pdf_bytes(response.content), "pdf"
+    return _extract_text_from_html(response.text), "html"
+
+
+def _infer_reader_title(
+    *,
+    input_text: str,
+    input_url: str,
+    source_type: str,
+) -> str:
+    if input_url:
+        try:
+            parsed = urlparse(input_url)
+            path = str(parsed.path or "").strip("/")
+            if path:
+                leaf = path.split("/")[-1]
+                leaf = re.sub(r"\.[A-Za-z0-9]{1,6}$", "", leaf)
+                leaf = re.sub(r"[-_]+", " ", leaf).strip()
+                if leaf:
+                    return leaf[:120]
+            host = str(parsed.netloc or "").strip()
+            if host:
+                return host[:120]
+        except Exception:
+            pass
+    first_line = str(input_text or "").strip().splitlines()[0] if str(input_text or "").strip() else ""
+    first_line = re.sub(r"\s+", " ", first_line).strip()
+    if first_line:
+        return first_line[:120]
+    fallback = "PDF document" if source_type == "pdf" else "Text document"
+    return fallback
 
 
 def _youtube_translation_key(target_lang: str, idx: int | str) -> str:
@@ -4102,6 +4248,51 @@ def complete_assistant_session():
     return jsonify({"ok": True, "session": session})
 
 
+@app.route("/api/reader/session/start", methods=["POST"])
+def start_reader_session_route():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        session = start_reader_session(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка старта сессии чтения: {exc}"}), 500
+    return jsonify({"ok": True, "session": session})
+
+
+@app.route("/api/reader/session/complete", methods=["POST"])
+def complete_reader_session_route():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    payload = request.get_json(silent=True) or {}
+    session_id_raw = payload.get("session_id")
+    session_id = None
+    if session_id_raw is not None and str(session_id_raw).strip() != "":
+        try:
+            session_id = int(session_id_raw)
+        except Exception:
+            return jsonify({"error": "session_id должен быть числом"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        session = finish_reader_session(
+            user_id=int(user_id),
+            session_id=session_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка завершения сессии чтения: {exc}"}), 500
+    return jsonify({"ok": True, "session": session})
+
+
 @app.route("/api/progress/skills", methods=["GET"])
 def get_skill_progress():
     user_id, username, error = _get_authenticated_user_from_request_init_data()
@@ -4154,6 +4345,7 @@ def weekly_plan_progress():
             translations_goal = max(0, int(payload.get("translations_goal", 0)))
             learned_words_goal = max(0, int(payload.get("learned_words_goal", 0)))
             agent_minutes_goal = max(0, int(payload.get("agent_minutes_goal", 0)))
+            reading_minutes_goal = max(0, int(payload.get("reading_minutes_goal", 0)))
         except Exception:
             return jsonify({"error": "Значения плана должны быть целыми числами"}), 400
         try:
@@ -4164,6 +4356,7 @@ def weekly_plan_progress():
                 translations_goal=translations_goal,
                 learned_words_goal=learned_words_goal,
                 agent_minutes_goal=agent_minutes_goal,
+                reading_minutes_goal=reading_minutes_goal,
             )
         except Exception as exc:
             return jsonify({"error": f"Ошибка сохранения недельного плана: {exc}"}), 500
@@ -4177,6 +4370,7 @@ def weekly_plan_progress():
             "translations_goal": 0,
             "learned_words_goal": 0,
             "agent_minutes_goal": 0,
+            "reading_minutes_goal": 0,
         }
         progress = get_weekly_plan_progress(
             user_id=int(user_id),
@@ -4202,6 +4396,7 @@ def weekly_plan_progress():
                 "translations_goal": int(goals.get("translations_goal") or 0),
                 "learned_words_goal": int(goals.get("learned_words_goal") or 0),
                 "agent_minutes_goal": int(goals.get("agent_minutes_goal") or 0),
+                "reading_minutes_goal": int(goals.get("reading_minutes_goal") or 0),
             },
             "metrics": progress.get("metrics") or {},
         }
@@ -5705,6 +5900,210 @@ def translate_youtube_subtitles():
     return jsonify({"ok": True, "translations": results, "translation_lang": subtitle_target_lang})
 
 
+@app.route("/api/webapp/reader/ingest", methods=["POST"])
+def ingest_reader_content():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    input_text = str(payload.get("text") or "").strip()
+    input_url = str(payload.get("url") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not input_text and not input_url:
+        return jsonify({"error": "Нужно передать text или url"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    normalized_text = ""
+    source_type = "text"
+    resolved_url = None
+
+    try:
+        if input_text:
+            normalized_text = _normalize_reader_text(input_text)
+            source_type = "text"
+        else:
+            normalized_text, source_type = _fetch_reader_text_from_url(input_url)
+            resolved_url = input_url
+    except requests.RequestException as exc:
+        return jsonify({"error": f"Не удалось загрузить ссылку: {exc}"}), 400
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка обработки читалки: {exc}"}), 500
+
+    if not normalized_text:
+        return jsonify({"error": "Не удалось извлечь текст"}), 422
+
+    title = _infer_reader_title(
+        input_text=normalized_text,
+        input_url=resolved_url or input_url,
+        source_type=source_type,
+    )
+    try:
+        document = upsert_reader_library_document(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            title=title,
+            source_type=source_type,
+            source_url=resolved_url or input_url or None,
+            content_text=normalized_text,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения в библиотеку: {exc}"}), 500
+
+    detected_lang = _detect_reader_language(normalized_text, fallback=target_lang)
+    return jsonify(
+        {
+            "ok": True,
+            "text": normalized_text,
+            "source_type": source_type,
+            "source_url": resolved_url,
+            "title": title,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "detected_language": detected_lang,
+            "detected_language_label": _language_label(detected_lang),
+            "document": document,
+        }
+    )
+
+
+@app.route("/api/webapp/reader/library", methods=["POST"])
+def reader_library_list():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    limit = int(payload.get("limit", 100))
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        items = list_reader_library_documents(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            limit=limit,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка загрузки библиотеки: {exc}"}), 500
+    return jsonify(
+        {
+            "ok": True,
+            "items": items,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+
+
+@app.route("/api/webapp/reader/library/open", methods=["POST"])
+def reader_library_open():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if document_id is None:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        doc = get_reader_library_document(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка открытия книги: {exc}"}), 500
+    if not doc:
+        return jsonify({"error": "Книга не найдена"}), 404
+    detected_lang = _detect_reader_language(str(doc.get("content_text") or ""), fallback=target_lang)
+    return jsonify(
+        {
+            "ok": True,
+            "document": doc,
+            "text": str(doc.get("content_text") or ""),
+            "title": str(doc.get("title") or "Untitled"),
+            "source_type": str(doc.get("source_type") or "text"),
+            "source_url": doc.get("source_url"),
+            "detected_language": detected_lang,
+            "detected_language_label": _language_label(detected_lang),
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+
+
+@app.route("/api/webapp/reader/library/state", methods=["POST"])
+def reader_library_state():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+    progress_percent = payload.get("progress_percent")
+    bookmark_percent = payload.get("bookmark_percent")
+    reading_mode = payload.get("reading_mode")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if document_id is None:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
+    try:
+        progress_val = None if progress_percent is None else float(progress_percent)
+        bookmark_val = None if bookmark_percent is None else float(bookmark_percent)
+    except Exception:
+        return jsonify({"error": "progress_percent/bookmark_percent должны быть числами"}), 400
+
+    try:
+        doc = update_reader_library_state(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            progress_percent=progress_val,
+            bookmark_percent=bookmark_val,
+            reading_mode=str(reading_mode or "").strip().lower() or None,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка обновления прогресса чтения: {exc}"}), 500
+    if not doc:
+        return jsonify({"error": "Книга не найдена"}), 404
+    return jsonify({"ok": True, "document": doc})
+
+
 @app.route("/api/webapp/normalize/de", methods=["POST"])
 @app.route("/api/webapp/normalize/<lang_code>", methods=["POST"])
 def normalize_lookup_text(lang_code: str = "de"):
@@ -6355,6 +6754,7 @@ def _build_plan_goals_chart_png(
         ("Переводы", metrics.get("translations") or {}, "#60a5fa"),
         ("Выученные слова", metrics.get("learned_words") or {}, "#34d399"),
         ("Минуты с агентом", metrics.get("agent_minutes") or {}, "#fbbf24"),
+        ("Чтение (мин)", metrics.get("reading_minutes") or {}, "#22d3ee"),
     ]
     labels = [item[0] for item in ordered]
     plan_values = [float(item[1].get("goal") or 0.0) for item in ordered]
@@ -6437,6 +6837,7 @@ def _dispatch_plan_period_progress(
                     COALESCE(g.translations_goal, 0) > 0
                     OR COALESCE(g.learned_words_goal, 0) > 0
                     OR COALESCE(g.agent_minutes_goal, 0) > 0
+                    OR COALESCE(g.reading_minutes_goal, 0) > 0
                   );
                 """,
                 (bounds.start_date, bounds.end_date),
@@ -6486,12 +6887,14 @@ def _dispatch_plan_period_progress(
             m_trans = (metrics or {}).get("translations") or {}
             m_words = (metrics or {}).get("learned_words") or {}
             m_agent = (metrics or {}).get("agent_minutes") or {}
+            m_reading = (metrics or {}).get("reading_minutes") or {}
             caption = (
                 f"🎯 Личные цели ({period_label}): {title_name} ({source_lang}->{target_lang})\n"
                 f"{progress.get('start_date')} — {progress.get('end_date')}\n"
                 f"Переводы: {m_trans.get('actual', 0)} / {m_trans.get('goal', 0)} (прогноз {m_trans.get('forecast', 0)})\n"
                 f"Слова: {m_words.get('actual', 0)} / {m_words.get('goal', 0)} (прогноз {m_words.get('forecast', 0)})\n"
-                f"Агент (мин): {m_agent.get('actual', 0)} / {m_agent.get('goal', 0)} (прогноз {m_agent.get('forecast', 0)})"
+                f"Агент (мин): {m_agent.get('actual', 0)} / {m_agent.get('goal', 0)} (прогноз {m_agent.get('forecast', 0)})\n"
+                f"Чтение (мин): {m_reading.get('actual', 0)} / {m_reading.get('goal', 0)} (прогноз {m_reading.get('forecast', 0)})"
             )
 
             if _is_user_member_of_group_chat(user_id):
@@ -6529,13 +6932,14 @@ def _dispatch_plan_period_progress(
                     int(goals.get("translations_goal") or 0) > 0
                     or int(goals.get("learned_words_goal") or 0) > 0
                     or int(goals.get("agent_minutes_goal") or 0) > 0
+                    or int(goals.get("reading_minutes_goal") or 0) > 0
                 )
                 if has_plan:
                     continue
                 name = username or f"user_{user_id}"
                 reminder = (
                     f"🗓 Новый понедельник, {name}.\n"
-                    "Поставь личный план на неделю: переводы, выученные слова и минуты с агентом."
+                    "Поставь личный план на неделю: переводы, выученные слова, минуты с агентом и чтение."
                 )
                 if _is_user_member_of_group_chat(user_id):
                     _send_group_message(reminder)

@@ -429,6 +429,7 @@ body {
 .menu-icon-youtube,
 .menu-icon-movies,
 .menu-icon-dictionary,
+.menu-icon-reader,
 .menu-icon-flashcards,
 .menu-icon-assistant,
 .menu-icon-analytics {
@@ -455,6 +456,7 @@ body {
 .menu-item-youtube.is-active .menu-icon { color: #ff7676; }
 .menu-item-movies.is-active .menu-icon { color: #ffc97b; }
 .menu-item-dictionary.is-active .menu-icon { color: #7fe2ff; }
+.menu-item-reader.is-active .menu-icon { color: #9ef0ff; }
 .menu-item-flashcards.is-active .menu-icon { color: #c2a2ff; }
 .menu-item-assistant.is-active .menu-icon { color: #ffc786; }
 .menu-item-analytics.is-active .menu-icon { color: #8ce3b0; }
@@ -1347,6 +1349,184 @@ body {
 .webapp-video-dictionary {
   display: grid;
   gap: 16px;
+}
+
+.webapp-reader {
+  margin-top: 20px;
+  background: rgba(16, 23, 44, 0.92);
+  border-radius: 18px;
+  padding: 18px;
+  box-shadow: 0 16px 32px rgba(8, 11, 26, 0.35);
+}
+
+.webapp-reader-form {
+  display: grid;
+  gap: 12px;
+}
+
+.webapp-reader-form textarea {
+  min-height: 108px;
+  resize: vertical;
+}
+
+.reader-article {
+  margin-top: 8px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(147, 197, 253, 0.18);
+  background: rgba(8, 14, 30, 0.75);
+  color: #ecf2ff;
+  line-height: 1.72;
+  max-height: 68vh;
+  overflow: auto;
+}
+
+.reader-article.is-horizontal {
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 68vh;
+  max-height: 68vh;
+  column-width: min(72vw, 620px);
+  column-gap: 28px;
+  scroll-snap-type: x proximity;
+}
+
+.reader-article.is-horizontal p {
+  break-inside: avoid;
+  margin-bottom: 14px;
+}
+
+.reader-bookmark-btn {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 122, 122, 0.6);
+  background: linear-gradient(145deg, rgba(180, 24, 24, 0.88), rgba(122, 14, 14, 0.88));
+  color: #fff;
+  font-weight: 700;
+}
+
+.reader-bookmark-btn:disabled {
+  opacity: 0.55;
+}
+
+.reader-timer-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 205, 255, 0.34);
+  background: rgba(8, 18, 36, 0.75);
+  color: #cde5ff;
+  font-weight: 700;
+}
+
+.reader-library {
+  margin-top: 8px;
+  border: 1px solid rgba(147, 197, 253, 0.22);
+  border-radius: 14px;
+  background: rgba(8, 14, 30, 0.52);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.reader-library-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.reader-library-head h4 {
+  margin: 0;
+}
+
+.reader-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.reader-library-card {
+  position: relative;
+  text-align: left;
+  border: 1px solid rgba(120, 174, 237, 0.28);
+  background: rgba(10, 18, 38, 0.78);
+  border-radius: 12px;
+  padding: 10px 44px 10px 10px;
+  color: #e6f0ff;
+  min-height: 78px;
+}
+
+.reader-library-card.is-active {
+  border-color: rgba(93, 220, 255, 0.55);
+  box-shadow: 0 0 0 1px rgba(93, 220, 255, 0.18) inset;
+}
+
+.reader-library-title {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.reader-library-meta {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: rgba(176, 202, 236, 0.9);
+}
+
+.reader-library-progress-ring {
+  --reader-progress: 0%;
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: conic-gradient(#7bf1b3 var(--reader-progress), rgba(95, 112, 145, 0.35) 0);
+  display: grid;
+  place-items: center;
+}
+
+.reader-library-progress-ring span {
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.reader-article p {
+  margin: 0 0 12px;
+}
+
+.reader-article p:last-child {
+  margin-bottom: 0;
+}
+
+.reader-meta {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 10px;
+  color: rgba(179, 199, 235, 0.88);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.reader-clickable-word {
+  cursor: pointer;
+  border-radius: 7px;
+  transition: background-color 0.14s ease;
+}
+
+.reader-clickable-word:hover {
+  background: rgba(112, 185, 255, 0.2);
 }
 
 .webapp-movies {
@@ -4248,6 +4428,11 @@ body {
 .weekly-plan-metric-card.is-agent {
   border-color: rgba(251, 191, 36, 0.44);
   background: linear-gradient(145deg, rgba(44, 31, 8, 0.66), rgba(9, 18, 38, 0.58));
+}
+
+.weekly-plan-metric-card.is-reading {
+  border-color: rgba(34, 211, 238, 0.44);
+  background: linear-gradient(145deg, rgba(8, 37, 44, 0.66), rgba(9, 18, 38, 0.58));
 }
 
 .weekly-plan-metric-top {
