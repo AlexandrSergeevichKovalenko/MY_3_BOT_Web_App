@@ -8,6 +8,7 @@ html,
 body,
 #root {
   overscroll-behavior-y: contain;
+  overflow-x: hidden;
 }
 
 * {
@@ -309,6 +310,7 @@ body {
   justify-content: center;
   align-items: flex-start;
   overscroll-behavior-y: contain;
+  overflow-x: hidden;
 }
 
 .webapp-page.is-flashcards {
@@ -4155,6 +4157,8 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .weekly-plan-period-select {
@@ -4194,7 +4198,9 @@ body {
   border-radius: 999px;
   border: 1px solid rgba(130, 166, 236, 0.32);
   background: rgba(10, 20, 42, 0.6);
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
 }
 
 .weekly-plan-form {
@@ -4720,7 +4726,22 @@ body {
   }
   .weekly-plan-head-actions {
     width: 100%;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: start;
+  }
+  .weekly-plan-period-select {
+    grid-column: 1;
+    min-width: 0;
+  }
+  .weekly-plan-period {
+    grid-column: 1 / -1;
+  }
+  .weekly-plan-collapse-btn {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: start;
   }
   .today-plan-head {
     padding-right: 56px;
