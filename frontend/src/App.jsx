@@ -144,6 +144,10 @@ function AppInner() {
   const [srsCard, setSrsCard] = useState(null);
   const [srsState, setSrsState] = useState(null);
   const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0 });
+  const [todayPlan, setTodayPlan] = useState(null);
+  const [todayPlanLoading, setTodayPlanLoading] = useState(false);
+  const [todayPlanError, setTodayPlanError] = useState('');
+  const [todayItemLoading, setTodayItemLoading] = useState({});
   const [srsLoading, setSrsLoading] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
   const [srsSubmittingRating, setSrsSubmittingRating] = useState(null);
@@ -663,6 +667,96 @@ function AppInner() {
     } finally {
       setSrsLoading(false);
     }
+  };
+
+  const loadTodayPlan = async () => {
+    if (!initData) return;
+    try {
+      setTodayPlanLoading(true);
+      setTodayPlanError('');
+      const response = await fetch(`/api/today?initData=${encodeURIComponent(initData)}`);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки плана на сегодня', 'Fehler beim Laden des Tagesplans'));
+      }
+      const data = await response.json();
+      setTodayPlan({
+        date: data?.date || null,
+        total_minutes: data?.total_minutes || 0,
+        items: Array.isArray(data?.items) ? data.items : [],
+      });
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось загрузить задачи на сегодня.',
+        'Tagesaufgaben konnten nicht geladen werden.'
+      );
+      setTodayPlanError(friendly);
+    } finally {
+      setTodayPlanLoading(false);
+    }
+  };
+
+  const updateTodayItemStatus = async (itemId, action) => {
+    if (!initData || !itemId) return null;
+    try {
+      setTodayItemLoading((prev) => ({ ...prev, [itemId]: action }));
+      const response = await fetch(`/api/today/items/${itemId}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка обновления статуса задачи', 'Fehler beim Aktualisieren des Aufgabenstatus'));
+      }
+      const data = await response.json();
+      const updated = data?.item || null;
+      if (updated) {
+        setTodayPlan((prev) => {
+          if (!prev || !Array.isArray(prev.items)) return prev;
+          return {
+            ...prev,
+            items: prev.items.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
+          };
+        });
+      }
+      return updated;
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось обновить задачу.',
+        'Aufgabe konnte nicht aktualisiert werden.'
+      );
+      setTodayPlanError(friendly);
+      return null;
+    } finally {
+      setTodayItemLoading((prev) => {
+        const next = { ...prev };
+        delete next[itemId];
+        return next;
+      });
+    }
+  };
+
+  const startTodayTask = async (item) => {
+    if (!item?.id) return;
+    await updateTodayItemStatus(item.id, 'start');
+    const taskType = String(item?.task_type || '').toLowerCase();
+    if (taskType === 'cards') {
+      openFlashcardsSetup(flashcardsRef);
+      return;
+    }
+    if (taskType === 'translation') {
+      openSectionAndScroll('translations', translationsRef);
+      return;
+    }
+    if (taskType === 'video' || taskType === 'youtube') {
+      openSectionAndScroll('youtube', youtubeRef);
+    }
+  };
+
+  const completeTodayTask = async (item) => {
+    if (!item?.id) return;
+    await updateTodayItemStatus(item.id, 'complete');
   };
 
   const submitSrsReview = async (ratingValue) => {
@@ -1279,6 +1373,15 @@ function AppInner() {
     if (!isWebAppMode || !initData) return;
     loadLanguageProfile();
   }, [isWebAppMode, initData]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      setTodayPlan(null);
+      setTodayPlanError('');
+      return;
+    }
+    loadTodayPlan();
+  }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
     if (flashcardsOnly || !selectedSections.has('assistant')) {
@@ -4286,6 +4389,58 @@ function AppInner() {
                   </div>
                 </div>
               </div>
+            )}
+
+            {!flashcardsOnly && initData && (
+              <section className="today-plan-panel">
+                <div className="today-plan-head">
+                  <h2>{tr('Сегодня', 'Heute')}</h2>
+                  <span className="today-plan-total">
+                    {tr('Всего', 'Gesamt')}: {todayPlan?.total_minutes || 0} {tr('мин', 'Min')}
+                  </span>
+                </div>
+                {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
+                {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
+                {!todayPlanLoading && !todayPlanError && (!todayPlan?.items || todayPlan.items.length === 0) && (
+                  <div className="webapp-muted">{tr('План на сегодня пуст.', 'Tagesplan ist leer.')}</div>
+                )}
+                {!todayPlanLoading && !todayPlanError && Array.isArray(todayPlan?.items) && todayPlan.items.length > 0 && (
+                  <div className="today-plan-items">
+                    {todayPlan.items.map((item) => {
+                      const loadingAction = todayItemLoading[item.id];
+                      return (
+                        <div className={`today-plan-item is-${item.status || 'todo'}`} key={item.id}>
+                          <div className="today-plan-item-main">
+                            <div className="today-plan-item-title">{item.title}</div>
+                            <div className="today-plan-item-meta">
+                              <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>
+                              <span>{String(item.status || 'todo').toUpperCase()}</span>
+                            </div>
+                          </div>
+                          <div className="today-plan-item-actions">
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => startTodayTask(item)}
+                              disabled={Boolean(loadingAction) || item.status === 'done'}
+                            >
+                              {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
+                            </button>
+                            <button
+                              type="button"
+                              className="primary-button"
+                              onClick={() => completeTodayTask(item)}
+                              disabled={Boolean(loadingAction) || item.status === 'done'}
+                            >
+                              {loadingAction === 'complete' ? tr('Сохраняем...', 'Speichern...') : tr('Готово', 'Fertig')}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
             )}
 
             {!flashcardsOnly && isSectionVisible('translations') && (

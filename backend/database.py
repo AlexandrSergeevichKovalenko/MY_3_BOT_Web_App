@@ -548,6 +548,55 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_card_review_log (user_id, card_id, reviewed_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_daily_plans (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    plan_date DATE NOT NULL,
+                    total_minutes INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, plan_date)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_daily_plans_user_date
+                ON bt_3_daily_plans (user_id, plan_date DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_daily_plan_items (
+                    id BIGSERIAL PRIMARY KEY,
+                    plan_id BIGINT NOT NULL REFERENCES bt_3_daily_plans(id) ON DELETE CASCADE,
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    task_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    estimated_minutes INTEGER NOT NULL DEFAULT 0,
+                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    status TEXT NOT NULL DEFAULT 'todo',
+                    completed_at TIMESTAMPTZ
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_daily_plan_items_plan
+                ON bt_3_daily_plan_items (plan_id, order_index);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_daily_plan_items_status
+                ON bt_3_daily_plan_items (status);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_today_reminder_settings (
+                    user_id BIGINT PRIMARY KEY,
+                    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    timezone TEXT NOT NULL DEFAULT 'Europe/Vienna',
+                    reminder_hour SMALLINT NOT NULL DEFAULT 7,
+                    reminder_minute SMALLINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_today_reminder_settings_enabled
+                ON bt_3_today_reminder_settings (enabled, updated_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_tts_chunk_cache (
                     cache_key TEXT PRIMARY KEY,
                     language TEXT NOT NULL,
@@ -2391,6 +2440,360 @@ def mark_telegram_system_message_deleted(
                     """,
                     (int(row_id),),
                 )
+
+
+def _map_daily_plan_item(row: tuple) -> dict:
+    return {
+        "id": int(row[0]),
+        "plan_id": int(row[1]),
+        "order_index": int(row[2] or 0),
+        "task_type": row[3],
+        "title": row[4],
+        "estimated_minutes": int(row[5] or 0),
+        "payload": row[6] if isinstance(row[6], dict) else {},
+        "status": row[7] or "todo",
+        "completed_at": row[8].isoformat() if row[8] else None,
+    }
+
+
+def get_daily_plan(user_id: int, plan_date: date) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, plan_date, total_minutes, created_at
+                FROM bt_3_daily_plans
+                WHERE user_id = %s AND plan_date = %s
+                LIMIT 1;
+                """,
+                (int(user_id), plan_date),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            plan_id = int(row[0])
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    plan_id,
+                    order_index,
+                    task_type,
+                    title,
+                    estimated_minutes,
+                    payload,
+                    status,
+                    completed_at
+                FROM bt_3_daily_plan_items
+                WHERE plan_id = %s
+                ORDER BY order_index ASC, id ASC;
+                """,
+                (plan_id,),
+            )
+            items = [_map_daily_plan_item(item_row) for item_row in cursor.fetchall()]
+
+    return {
+        "id": plan_id,
+        "user_id": int(row[1]),
+        "plan_date": row[2].isoformat() if row[2] else None,
+        "total_minutes": int(row[3] or 0),
+        "created_at": row[4].isoformat() if row[4] else None,
+        "items": items,
+    }
+
+
+def create_daily_plan(
+    user_id: int,
+    plan_date: date,
+    total_minutes: int,
+    items: list[dict],
+) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_daily_plans (user_id, plan_date, total_minutes)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, plan_date) DO UPDATE
+                SET total_minutes = EXCLUDED.total_minutes
+                RETURNING id;
+                """,
+                (int(user_id), plan_date, max(0, int(total_minutes))),
+            )
+            plan_id = int(cursor.fetchone()[0])
+
+            cursor.execute(
+                """
+                DELETE FROM bt_3_daily_plan_items
+                WHERE plan_id = %s;
+                """,
+                (plan_id,),
+            )
+
+            for index, item in enumerate(items):
+                payload = item.get("payload") if isinstance(item, dict) else {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_daily_plan_items (
+                        plan_id,
+                        order_index,
+                        task_type,
+                        title,
+                        estimated_minutes,
+                        payload,
+                        status
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s);
+                    """,
+                    (
+                        plan_id,
+                        int(item.get("order_index", index)),
+                        str(item.get("task_type") or "task"),
+                        str(item.get("title") or "Задача"),
+                        max(0, int(item.get("estimated_minutes", 0))),
+                        json.dumps(payload, ensure_ascii=False),
+                        str(item.get("status") or "todo"),
+                    ),
+                )
+
+    return get_daily_plan(user_id=user_id, plan_date=plan_date) or {
+        "id": plan_id,
+        "user_id": int(user_id),
+        "plan_date": plan_date.isoformat(),
+        "total_minutes": max(0, int(total_minutes)),
+        "created_at": None,
+        "items": [],
+    }
+
+
+def update_daily_plan_item_status(
+    *,
+    user_id: int,
+    item_id: int,
+    status: str,
+) -> dict | None:
+    normalized = str(status or "").strip().lower()
+    if normalized not in {"todo", "doing", "done", "skipped"}:
+        raise ValueError("status must be one of: todo, doing, done, skipped")
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_daily_plan_items i
+                SET
+                    status = %s,
+                    completed_at = CASE
+                        WHEN %s = 'done' THEN NOW()
+                        ELSE NULL
+                    END
+                FROM bt_3_daily_plans p
+                WHERE i.id = %s
+                  AND i.plan_id = p.id
+                  AND p.user_id = %s
+                RETURNING
+                    i.id,
+                    i.plan_id,
+                    i.order_index,
+                    i.task_type,
+                    i.title,
+                    i.estimated_minutes,
+                    i.payload,
+                    i.status,
+                    i.completed_at;
+                """,
+                (normalized, normalized, int(item_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return _map_daily_plan_item(row)
+
+
+def get_top_weak_topic(
+    *,
+    user_id: int,
+    lookback_days: int = 7,
+) -> dict | None:
+    lookback_days = max(1, int(lookback_days))
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        COALESCE(NULLIF(main_category, ''), 'Other mistake') AS main_category,
+                        COALESCE(NULLIF(sub_category, ''), 'Unclassified mistake') AS sub_category,
+                        SUM(COALESCE(mistake_count, 1)) AS total_mistakes
+                    FROM bt_3_detailed_mistakes
+                    WHERE user_id = %s
+                      AND COALESCE(last_seen, added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                    GROUP BY 1, 2
+                    ORDER BY total_mistakes DESC, main_category ASC, sub_category ASC
+                    LIMIT 1;
+                    """,
+                    (int(user_id), lookback_days),
+                )
+                row = cursor.fetchone()
+    except Exception:
+        return None
+
+    if not row:
+        return None
+    return {
+        "main_category": row[0],
+        "sub_category": row[1],
+        "mistakes": int(row[2] or 0),
+    }
+
+
+def get_weak_topic_sentences(
+    *,
+    user_id: int,
+    main_category: str,
+    sub_category: str,
+    lookback_days: int = 7,
+    limit: int = 5,
+) -> list[str]:
+    if not main_category and not sub_category:
+        return []
+    lookback_days = max(1, int(lookback_days))
+    limit = max(1, min(int(limit), 20))
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT sentence
+                    FROM bt_3_detailed_mistakes
+                    WHERE user_id = %s
+                      AND COALESCE(NULLIF(main_category, ''), 'Other mistake') = %s
+                      AND COALESCE(NULLIF(sub_category, ''), 'Unclassified mistake') = %s
+                      AND COALESCE(last_seen, added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                      AND sentence IS NOT NULL
+                      AND sentence <> ''
+                    ORDER BY COALESCE(last_seen, added_data, NOW()) DESC, COALESCE(mistake_count, 1) DESC
+                    LIMIT %s;
+                    """,
+                    (int(user_id), main_category, sub_category, lookback_days, limit),
+                )
+                rows = cursor.fetchall()
+    except Exception:
+        return []
+    return [str(row[0]).strip() for row in rows if row and str(row[0]).strip()]
+
+
+def get_today_reminder_settings(user_id: int) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT enabled, timezone, reminder_hour, reminder_minute, updated_at
+                FROM bt_3_today_reminder_settings
+                WHERE user_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return {
+            "user_id": int(user_id),
+            "enabled": False,
+            "timezone": "Europe/Vienna",
+            "reminder_hour": 7,
+            "reminder_minute": 0,
+            "updated_at": None,
+        }
+    return {
+        "user_id": int(user_id),
+        "enabled": bool(row[0]),
+        "timezone": row[1] or "Europe/Vienna",
+        "reminder_hour": int(row[2] or 7),
+        "reminder_minute": int(row[3] or 0),
+        "updated_at": row[4].isoformat() if row[4] else None,
+    }
+
+
+def upsert_today_reminder_settings(
+    user_id: int,
+    *,
+    enabled: bool,
+    timezone_name: str = "Europe/Vienna",
+    reminder_hour: int = 7,
+    reminder_minute: int = 0,
+) -> dict:
+    tz_name = (timezone_name or "Europe/Vienna").strip() or "Europe/Vienna"
+    hour = max(0, min(int(reminder_hour), 23))
+    minute = max(0, min(int(reminder_minute), 59))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_today_reminder_settings (
+                    user_id,
+                    enabled,
+                    timezone,
+                    reminder_hour,
+                    reminder_minute,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET
+                    enabled = EXCLUDED.enabled,
+                    timezone = EXCLUDED.timezone,
+                    reminder_hour = EXCLUDED.reminder_hour,
+                    reminder_minute = EXCLUDED.reminder_minute,
+                    updated_at = NOW()
+                RETURNING enabled, timezone, reminder_hour, reminder_minute, updated_at;
+                """,
+                (int(user_id), bool(enabled), tz_name, hour, minute),
+            )
+            row = cursor.fetchone()
+    return {
+        "user_id": int(user_id),
+        "enabled": bool(row[0]),
+        "timezone": row[1] or "Europe/Vienna",
+        "reminder_hour": int(row[2] or 7),
+        "reminder_minute": int(row[3] or 0),
+        "updated_at": row[4].isoformat() if row[4] else None,
+    }
+
+
+def list_today_reminder_users(limit: int = 1000, offset: int = 0) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    s.user_id,
+                    COALESCE(NULLIF(u.username, ''), '') AS username,
+                    s.timezone,
+                    s.reminder_hour,
+                    s.reminder_minute
+                FROM bt_3_today_reminder_settings s
+                LEFT JOIN bt_3_allowed_users u ON u.user_id = s.user_id
+                WHERE s.enabled = TRUE
+                ORDER BY s.updated_at DESC
+                LIMIT %s OFFSET %s;
+                """,
+                (max(1, min(int(limit), 5000)), max(0, int(offset))),
+            )
+            rows = cursor.fetchall()
+    return [
+        {
+            "user_id": int(row[0]),
+            "username": row[1] or None,
+            "timezone": row[2] or "Europe/Vienna",
+            "reminder_hour": int(row[3] or 7),
+            "reminder_minute": int(row[4] or 0),
+        }
+        for row in rows
+    ]
 
 
 def _get_latest_session_id(cursor, user_id: int) -> str | None:

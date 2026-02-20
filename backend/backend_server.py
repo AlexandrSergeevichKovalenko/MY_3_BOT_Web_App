@@ -165,6 +165,14 @@ from backend.database import (
     mark_telegram_system_message_deleted,
     get_user_language_profile,
     upsert_user_language_profile,
+    get_daily_plan,
+    create_daily_plan,
+    update_daily_plan_item_status,
+    get_top_weak_topic,
+    get_weak_topic_sentences,
+    get_today_reminder_settings,
+    upsert_today_reminder_settings,
+    list_today_reminder_users,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
 )
@@ -230,6 +238,7 @@ MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
 TELEGRAM_LOGIN_TTL_SECONDS = int(os.getenv("TELEGRAM_LOGIN_TTL_SECONDS", "86400"))
 NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+TODAY_PLAN_DEFAULT_TZ = (os.getenv("TODAY_PLAN_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 
 WEBAPP_TOPICS = [
     "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
@@ -661,6 +670,209 @@ def _is_legacy_ru_de_pair(source_lang: str, target_lang: str) -> bool:
     return source_lang == "ru" and target_lang == "de"
 
 
+def _get_local_today_date(tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> date:
+    try:
+        return datetime.now(ZoneInfo(tz_name)).date()
+    except Exception:
+        return datetime.utcnow().date()
+
+
+def _safe_plan_date(raw: str | None, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> date:
+    if not raw:
+        return _get_local_today_date(tz_name)
+    try:
+        return datetime.fromisoformat(str(raw)).date()
+    except Exception:
+        return _get_local_today_date(tz_name)
+
+
+def _today_cards_item_payload(
+    *,
+    due_count: int,
+    has_new_candidates: bool,
+) -> tuple[dict | None, int]:
+    if due_count > 0:
+        limit = max(10, min(20, int(due_count)))
+        minutes = 10 if limit <= 15 else 15
+        return (
+            {
+                "task_type": "cards",
+                "title": "Карточки: повторение",
+                "estimated_minutes": minutes,
+                "payload": {"mode": "fsrs_due", "limit": limit, "due_total": int(due_count)},
+                "status": "todo",
+            },
+            minutes,
+        )
+    if has_new_candidates:
+        return (
+            {
+                "task_type": "cards",
+                "title": "Карточки: новые слова",
+                "estimated_minutes": 10,
+                "payload": {"mode": "cards_new", "limit": 10},
+                "status": "todo",
+            },
+            10,
+        )
+    return None, 0
+
+
+def _build_today_plan_for_user(
+    *,
+    user_id: int,
+    plan_date: date,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    now_utc = datetime.now(timezone.utc)
+    due_count = 0
+    has_new_candidates = False
+    weak_topic = None
+    weak_sentences: list[str] = []
+
+    try:
+        due_count = count_due_srs_cards(
+            user_id=user_id,
+            now_utc=now_utc,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception:
+        due_count = 0
+
+    if due_count <= 0:
+        try:
+            has_new_candidates = bool(
+                get_next_new_srs_candidate(
+                    user_id=user_id,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
+        except Exception:
+            has_new_candidates = False
+
+    try:
+        weak_topic = get_top_weak_topic(user_id=user_id, lookback_days=7)
+    except Exception:
+        weak_topic = None
+
+    if weak_topic:
+        try:
+            weak_sentences = get_weak_topic_sentences(
+                user_id=user_id,
+                main_category=str(weak_topic.get("main_category") or ""),
+                sub_category=str(weak_topic.get("sub_category") or ""),
+                lookback_days=7,
+                limit=5,
+            )
+        except Exception:
+            weak_sentences = []
+
+    items: list[dict] = []
+    total_minutes = 0
+
+    cards_item, cards_minutes = _today_cards_item_payload(
+        due_count=due_count,
+        has_new_candidates=has_new_candidates,
+    )
+    if cards_item:
+        items.append(cards_item)
+        total_minutes += cards_minutes
+
+    weak_title = "Перевод: 5 предложений по ошибкам"
+    if weak_topic and weak_topic.get("sub_category"):
+        weak_title = f"Перевод: 5 предложений ({weak_topic.get('sub_category')})"
+    items.append(
+        {
+            "task_type": "translation",
+            "title": weak_title,
+            "estimated_minutes": 10,
+            "payload": {
+                "mode": "weakest_topic",
+                "lookback_days": 7,
+                "sentences": 5,
+                "main_category": weak_topic.get("main_category") if weak_topic else None,
+                "sub_category": weak_topic.get("sub_category") if weak_topic else None,
+                "examples": weak_sentences[:5],
+                "start_action": "translations",
+            },
+            "status": "todo",
+        }
+    )
+    total_minutes += 10
+
+    include_video = str(os.getenv("TODAY_PLAN_INCLUDE_VIDEO") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    if include_video:
+        items.append(
+            {
+                "task_type": "video",
+                "title": "Видео: 5 минут",
+                "estimated_minutes": 5,
+                "payload": {
+                    "mode": "short_video",
+                    "source": "youtube_library",
+                    "duration_sec": 300,
+                    "focus": "same_as_weak_topic",
+                    "main_category": weak_topic.get("main_category") if weak_topic else None,
+                    "sub_category": weak_topic.get("sub_category") if weak_topic else None,
+                    "start_action": "youtube",
+                },
+                "status": "todo",
+            }
+        )
+        total_minutes += 5
+
+    for idx, item in enumerate(items):
+        item["order_index"] = idx
+
+    return create_daily_plan(
+        user_id=user_id,
+        plan_date=plan_date,
+        total_minutes=total_minutes,
+        items=items,
+    )
+
+
+def _get_or_create_today_plan(
+    *,
+    user_id: int,
+    plan_date: date,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    existing = get_daily_plan(user_id=user_id, plan_date=plan_date)
+    if existing:
+        return existing
+    return _build_today_plan_for_user(
+        user_id=user_id,
+        plan_date=plan_date,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+
+
+def _format_today_plan_response(plan: dict | None) -> dict:
+    if not plan:
+        return {"date": None, "total_minutes": 0, "items": []}
+    return {
+        "date": plan.get("plan_date"),
+        "total_minutes": int(plan.get("total_minutes") or 0),
+        "items": [
+            {
+                "id": int(item.get("id")),
+                "task_type": item.get("task_type"),
+                "title": item.get("title"),
+                "estimated_minutes": int(item.get("estimated_minutes") or 0),
+                "status": item.get("status") or "todo",
+                "payload": item.get("payload") if isinstance(item.get("payload"), dict) else {},
+            }
+            for item in (plan.get("items") or [])
+        ],
+    }
+
+
 def _normalize_short_lang_code(value: str | None, fallback: str = "ru") -> str:
     raw = str(value or "").strip().lower()
     if not raw:
@@ -981,14 +1193,23 @@ def _send_group_message(text: str) -> None:
         logging.debug("Failed to track group system message", exc_info=True)
 
 
-def _send_private_message(user_id: int, text: str) -> None:
+def _send_private_message(
+    user_id: int,
+    text: str,
+    reply_markup: dict | None = None,
+    disable_web_page_preview: bool = True,
+) -> None:
+    payload = {
+        "chat_id": int(user_id),
+        "text": text,
+        "disable_web_page_preview": bool(disable_web_page_preview),
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendMessage"
     response = requests.post(
         url,
-        json={
-            "chat_id": int(user_id),
-            "text": text,
-        },
+        json=payload,
         timeout=15,
     )
     if response.status_code >= 400:
@@ -3114,6 +3335,113 @@ def get_mobile_dashboard():
     )
 
 
+@app.route("/api/today", methods=["GET"])
+def get_today_plan():
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    requested_date = request.args.get("date")
+    plan_date = _safe_plan_date(requested_date, TODAY_PLAN_DEFAULT_TZ)
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        plan = _get_or_create_today_plan(
+            user_id=int(user_id),
+            plan_date=plan_date,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка формирования плана: {exc}"}), 500
+
+    response_payload = _format_today_plan_response(plan)
+    response_payload.update(
+        {
+            "ok": True,
+            "user_id": int(user_id),
+            "username": username,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+    return jsonify(response_payload)
+
+
+@app.route("/api/today/items/<int:item_id>/start", methods=["POST"])
+def start_today_item(item_id: int):
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    try:
+        item = update_daily_plan_item_status(
+            user_id=int(user_id),
+            item_id=int(item_id),
+            status="doing",
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка обновления статуса: {exc}"}), 500
+
+    if not item:
+        return jsonify({"error": "Задача не найдена"}), 404
+    return jsonify({"ok": True, "item": item})
+
+
+@app.route("/api/today/items/<int:item_id>/complete", methods=["POST"])
+def complete_today_item(item_id: int):
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    try:
+        item = update_daily_plan_item_status(
+            user_id=int(user_id),
+            item_id=int(item_id),
+            status="done",
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка обновления статуса: {exc}"}), 500
+
+    if not item:
+        return jsonify({"error": "Задача не найдена"}), 404
+    return jsonify({"ok": True, "item": item})
+
+
+@app.route("/api/today/reminders", methods=["GET", "POST"])
+def today_reminders_settings():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    if request.method == "GET":
+        settings = get_today_reminder_settings(int(user_id))
+        return jsonify({"ok": True, "settings": settings})
+
+    payload = request.get_json(silent=True) or {}
+    enabled = bool(payload.get("enabled"))
+    timezone_name = (payload.get("timezone") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    reminder_hour = int(payload.get("reminder_hour", 7))
+    reminder_minute = int(payload.get("reminder_minute", 0))
+    try:
+        settings = upsert_today_reminder_settings(
+            int(user_id),
+            enabled=enabled,
+            timezone_name=timezone_name,
+            reminder_hour=reminder_hour,
+            reminder_minute=reminder_minute,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения настроек reminder: {exc}"}), 500
+    return jsonify({"ok": True, "settings": settings})
+
+
 @app.route("/api/webapp/dictionary/collocations", methods=["POST"])
 def get_webapp_dictionary_collocations():
     payload = request.get_json(silent=True) or {}
@@ -5126,6 +5454,83 @@ def _run_private_analytics_scheduler_job() -> None:
         logging.exception("❌ Private analytics scheduler failed")
 
 
+def _format_today_plan_message(plan: dict) -> str:
+    total = int(plan.get("total_minutes") or 0)
+    lines = ["Твои задачи на сегодня готовы ✅", f"Всего {total} минут:"]
+    for idx, item in enumerate(plan.get("items") or [], start=1):
+        title = str(item.get("title") or "Задача").strip()
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        if item.get("task_type") == "cards":
+            limit = payload.get("limit")
+            if limit:
+                lines.append(f"{idx}. Карточки: {limit} повторений")
+            else:
+                lines.append(f"{idx}. {title}")
+            continue
+        if item.get("task_type") == "translation":
+            sub = str(payload.get("sub_category") or "").strip()
+            if sub:
+                lines.append(f"{idx}. Перевод: 5 предложений ({sub})")
+            else:
+                lines.append(f"{idx}. Перевод: 5 предложений")
+            continue
+        if item.get("task_type") == "video":
+            lines.append(f"{idx}. Видео: 5 минут")
+            continue
+        lines.append(f"{idx}. {title}")
+    lines.append("")
+    lines.append("Нажми и начинай 👇")
+    return "\n".join(lines)
+
+
+def _send_today_plan_private_message(user_id: int, plan: dict) -> None:
+    button_url = _build_webapp_deeplink("today")
+    reply_markup = {
+        "inline_keyboard": [[{"text": "Открыть план", "url": button_url}]],
+    }
+    _send_private_message(
+        user_id=int(user_id),
+        text=_format_today_plan_message(plan),
+        reply_markup=reply_markup,
+    )
+
+
+def _dispatch_today_plans(target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
+    users = list_today_reminder_users(limit=5000, offset=0)
+    if not users:
+        return {"ok": True, "date": target_date.isoformat(), "sent": 0, "errors": []}
+
+    sent = 0
+    errors: list[str] = []
+    for row in users:
+        user_id = int(row.get("user_id"))
+        if not is_telegram_user_allowed(user_id):
+            continue
+        try:
+            source_lang, target_lang, _profile = _get_user_language_pair(user_id)
+            plan = _get_or_create_today_plan(
+                user_id=user_id,
+                plan_date=target_date,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            _send_today_plan_private_message(user_id=user_id, plan=plan)
+            sent += 1
+        except Exception as exc:
+            errors.append(f"user {user_id}: {exc}")
+    return {"ok": True, "date": target_date.isoformat(), "sent": sent, "errors": errors}
+
+
+def _run_today_plan_scheduler_job() -> None:
+    tz_name = (os.getenv("TODAY_PLAN_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    target_date = _get_local_today_date(tz_name)
+    try:
+        result = _dispatch_today_plans(target_date=target_date, tz_name=tz_name)
+        logging.info("✅ Today plan scheduler finished: %s", result)
+    except Exception:
+        logging.exception("❌ Today plan scheduler failed")
+
+
 def _run_system_message_cleanup_job() -> None:
     enabled = (os.getenv("SYSTEM_MESSAGE_CLEANUP_ENABLED") or "1").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
@@ -5290,6 +5695,19 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=300,
         )
+    today_plan_enabled = (os.getenv("TODAY_PLAN_SCHEDULER_ENABLED") or "0").strip().lower()
+    if today_plan_enabled in ("1", "true", "yes", "on"):
+        today_hour = int((os.getenv("TODAY_PLAN_SCHEDULER_HOUR") or "7").strip())
+        today_minute = int((os.getenv("TODAY_PLAN_SCHEDULER_MINUTE") or "0").strip())
+        _audio_scheduler.add_job(
+            _run_today_plan_scheduler_job,
+            "cron",
+            hour=today_hour,
+            minute=today_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
     now = datetime.now(ZoneInfo(tz_name))
     first_report = now.replace(hour=17, minute=0, second=0, microsecond=0)
     if first_report <= now:
@@ -5363,6 +5781,30 @@ def send_private_analytics_now():
         target_date = datetime.utcnow().date()
 
     result = _dispatch_private_analytics(target_date)
+    return jsonify(result)
+
+
+@app.route("/api/admin/send-today-plans", methods=["POST"])
+def send_today_plans_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    date_str = (payload.get("date") or "").strip()
+    tz_name = (payload.get("tz") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
+    else:
+        target_date = _get_local_today_date(tz_name)
+
+    result = _dispatch_today_plans(target_date=target_date, tz_name=tz_name)
     return jsonify(result)
 
 
