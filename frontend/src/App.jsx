@@ -7207,7 +7207,7 @@ function AppInner() {
                   )}
                 </section>
                 )}
-                {readerContent && (
+                {readerImmersive && readerContent && (
                   <article
                     ref={readerArticleRef}
                     className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${readerPageCount > 0 ? 'has-pages' : ''}`}
