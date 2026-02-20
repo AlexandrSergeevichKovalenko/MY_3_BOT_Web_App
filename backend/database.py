@@ -21,6 +21,140 @@ SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
 DEFAULT_NATIVE_LANGUAGE = "ru"
 
+SKILL_SEED: list[tuple[str, str, str]] = [
+    ("nouns_articles_gender", "Nouns: Articles & Gender", "Nouns"),
+    ("nouns_plural", "Nouns: Plural", "Nouns"),
+    ("nouns_compounds", "Nouns: Compound Nouns", "Nouns"),
+    ("nouns_declension", "Nouns: Declension", "Nouns"),
+    ("cases_nominative", "Cases: Nominative", "Cases"),
+    ("cases_accusative", "Cases: Accusative", "Cases"),
+    ("cases_dative", "Cases: Dative", "Cases"),
+    ("cases_genitive", "Cases: Genitive", "Cases"),
+    ("cases_preposition_accusative", "Cases: Akk + Preposition", "Cases"),
+    ("cases_preposition_dative", "Cases: Dat + Preposition", "Cases"),
+    ("cases_preposition_genitive", "Cases: Gen + Preposition", "Cases"),
+    ("verbs_conjugation", "Verbs: Conjugation", "Verbs"),
+    ("verbs_weak", "Verbs: Weak", "Verbs"),
+    ("verbs_strong", "Verbs: Strong", "Verbs"),
+    ("verbs_mixed", "Verbs: Mixed", "Verbs"),
+    ("verbs_separable", "Verbs: Separable", "Verbs"),
+    ("verbs_reflexive", "Verbs: Reflexive", "Verbs"),
+    ("verbs_auxiliaries", "Verbs: Auxiliaries", "Verbs"),
+    ("verbs_modals", "Verbs: Modals", "Verbs"),
+    ("verbs_placement_general", "Verbs: Placement", "Verbs"),
+    ("verbs_placement_subordinate", "Verbs: Placement in Subordinate Clause", "Verbs"),
+    ("tenses_present", "Tenses: Present", "Tenses"),
+    ("tenses_past_general", "Tenses: Past (General)", "Tenses"),
+    ("tenses_prateritum", "Tenses: Prateritum", "Tenses"),
+    ("tenses_perfekt", "Tenses: Perfekt", "Tenses"),
+    ("tenses_plusquamperfekt", "Tenses: Plusquamperfekt", "Tenses"),
+    ("tenses_future_general", "Tenses: Future (General)", "Tenses"),
+    ("tenses_futur1", "Tenses: Futur I", "Tenses"),
+    ("tenses_futur2", "Tenses: Futur II", "Tenses"),
+    ("voice_passive_plusquamperfekt", "Passive: Plusquamperfekt", "Tenses"),
+    ("voice_passive_futur1", "Passive: Futur I", "Tenses"),
+    ("voice_passive_futur2", "Passive: Futur II", "Tenses"),
+    ("adjectives_endings_general", "Adjectives: Endings", "Adjectives"),
+    ("adjectives_declension_weak", "Adjectives: Weak Declension", "Adjectives"),
+    ("adjectives_declension_strong", "Adjectives: Strong Declension", "Adjectives"),
+    ("adjectives_declension_mixed", "Adjectives: Mixed Declension", "Adjectives"),
+    ("adjectives_placement", "Adjectives: Placement", "Adjectives"),
+    ("adjectives_comparative", "Adjectives: Comparative", "Adjectives"),
+    ("adjectives_superlative", "Adjectives: Superlative", "Adjectives"),
+    ("adjectives_case_agreement", "Adjectives: Case Agreement", "Adjectives"),
+    ("adverbs_placement", "Adverbs: Placement", "Adverbs"),
+    ("adverbs_multiple_order", "Adverbs: Multiple Adverbs", "Adverbs"),
+    ("adverbs_usage", "Adverbs: Usage", "Adverbs"),
+    ("conj_coordinating", "Conjunctions: Coordinating", "Conjunctions"),
+    ("conj_subordinating", "Conjunctions: Subordinating", "Conjunctions"),
+    ("conj_usage", "Conjunctions: Usage", "Conjunctions"),
+    ("prepositions_accusative_group", "Prepositions: Accusative Group", "Prepositions"),
+    ("prepositions_dative_group", "Prepositions: Dative Group", "Prepositions"),
+    ("prepositions_genitive_group", "Prepositions: Genitive Group", "Prepositions"),
+    ("prepositions_two_way", "Prepositions: Two-way", "Prepositions"),
+    ("prepositions_usage", "Prepositions: Usage", "Prepositions"),
+    ("moods_indicative", "Moods: Indicative", "Moods"),
+    ("moods_declarative", "Moods: Declarative", "Moods"),
+    ("moods_interrogative", "Moods: Interrogative", "Moods"),
+    ("moods_imperative", "Moods: Imperative", "Moods"),
+    ("moods_subjunctive1", "Moods: Subjunctive I", "Moods"),
+    ("moods_subjunctive2", "Moods: Subjunctive II", "Moods"),
+    ("word_order_standard", "Word Order: Standard", "Word Order"),
+    ("word_order_inverted", "Word Order: Inverted", "Word Order"),
+    ("word_order_v2_rule", "Word Order: V2 Rule", "Word Order"),
+    ("word_order_negation_position", "Word Order: Negation Position", "Word Order"),
+    ("word_order_subordinate_clause", "Word Order: Subordinate Clause", "Word Order"),
+    ("word_order_modal_structure", "Word Order: Modal Structure", "Word Order"),
+    ("other_unclassified", "Other: Unclassified", "Other"),
+]
+
+ERROR_SKILL_MAP_SEED: list[tuple[str, str, str, float]] = [
+    ("Nouns", "Gendered Articles", "nouns_articles_gender", 1.2),
+    ("Nouns", "Pluralization", "nouns_plural", 1.0),
+    ("Nouns", "Compound Nouns", "nouns_compounds", 0.8),
+    ("Nouns", "Declension Errors", "nouns_declension", 1.0),
+    ("Cases", "Nominative", "cases_nominative", 0.8),
+    ("Cases", "Accusative", "cases_accusative", 1.0),
+    ("Cases", "Dative", "cases_dative", 1.0),
+    ("Cases", "Genitive", "cases_genitive", 0.9),
+    ("Cases", "Akkusativ + Preposition", "cases_preposition_accusative", 1.1),
+    ("Cases", "Dative + Preposition", "cases_preposition_dative", 1.1),
+    ("Cases", "Genitive + Preposition", "cases_preposition_genitive", 1.0),
+    ("Verbs", "Placement", "verbs_placement_general", 1.2),
+    ("Verbs", "Conjugation", "verbs_conjugation", 1.1),
+    ("Verbs", "Weak Verbs", "verbs_weak", 0.9),
+    ("Verbs", "Strong Verbs", "verbs_strong", 1.0),
+    ("Verbs", "Mixed Verbs", "verbs_mixed", 1.0),
+    ("Verbs", "Separable Verbs", "verbs_separable", 1.1),
+    ("Verbs", "Reflexive Verbs", "verbs_reflexive", 1.1),
+    ("Verbs", "Auxiliary Verbs", "verbs_auxiliaries", 1.2),
+    ("Verbs", "Modal Verbs", "verbs_modals", 1.2),
+    ("Verbs", "Verb Placement in Subordinate Clause", "verbs_placement_subordinate", 1.3),
+    ("Tenses", "Present", "tenses_present", 0.7),
+    ("Tenses", "Past", "tenses_past_general", 0.8),
+    ("Tenses", "Simple Past", "tenses_prateritum", 0.9),
+    ("Tenses", "Present Perfect", "tenses_perfekt", 1.0),
+    ("Tenses", "Past Perfect", "tenses_plusquamperfekt", 1.0),
+    ("Tenses", "Future", "tenses_future_general", 0.9),
+    ("Tenses", "Future 1", "tenses_futur1", 0.9),
+    ("Tenses", "Future 2", "tenses_futur2", 1.0),
+    ("Tenses", "Plusquamperfekt Passive", "voice_passive_plusquamperfekt", 1.2),
+    ("Tenses", "Futur 1 Passive", "voice_passive_futur1", 1.2),
+    ("Tenses", "Futur 2 Passive", "voice_passive_futur2", 1.2),
+    ("Adjectives", "Endings", "adjectives_endings_general", 1.3),
+    ("Adjectives", "Weak Declension", "adjectives_declension_weak", 1.2),
+    ("Adjectives", "Strong Declension", "adjectives_declension_strong", 1.2),
+    ("Adjectives", "Mixed Declension", "adjectives_declension_mixed", 1.2),
+    ("Adjectives", "Placement", "adjectives_placement", 0.9),
+    ("Adjectives", "Comparative", "adjectives_comparative", 0.8),
+    ("Adjectives", "Superlative", "adjectives_superlative", 0.8),
+    ("Adjectives", "Incorrect Adjective Case Agreement", "adjectives_case_agreement", 1.3),
+    ("Adverbs", "Placement", "adverbs_placement", 0.9),
+    ("Adverbs", "Multiple Adverbs", "adverbs_multiple_order", 1.0),
+    ("Adverbs", "Incorrect Adverb Usage", "adverbs_usage", 1.0),
+    ("Conjunctions", "Coordinating", "conj_coordinating", 0.9),
+    ("Conjunctions", "Subordinating", "conj_subordinating", 1.1),
+    ("Conjunctions", "Incorrect Use of Conjunctions", "conj_usage", 1.1),
+    ("Prepositions", "Accusative", "prepositions_accusative_group", 1.0),
+    ("Prepositions", "Dative", "prepositions_dative_group", 1.0),
+    ("Prepositions", "Genitive", "prepositions_genitive_group", 0.9),
+    ("Prepositions", "Two-way", "prepositions_two_way", 1.2),
+    ("Prepositions", "Incorrect Preposition Usage", "prepositions_usage", 1.2),
+    ("Moods", "Indicative", "moods_indicative", 0.6),
+    ("Moods", "Declarative", "moods_declarative", 0.6),
+    ("Moods", "Interrogative", "moods_interrogative", 0.7),
+    ("Moods", "Imperative", "moods_imperative", 0.9),
+    ("Moods", "Subjunctive 1", "moods_subjunctive1", 1.2),
+    ("Moods", "Subjunctive 2", "moods_subjunctive2", 1.2),
+    ("Word Order", "Standard", "word_order_standard", 0.8),
+    ("Word Order", "Inverted", "word_order_inverted", 1.0),
+    ("Word Order", "Verb-Second Rule", "word_order_v2_rule", 1.2),
+    ("Word Order", "Position of Negation", "word_order_negation_position", 1.1),
+    ("Word Order", "Incorrect Order in Subordinate Clause", "word_order_subordinate_clause", 1.3),
+    ("Word Order", "Incorrect Order with Modal Verb", "word_order_modal_structure", 1.2),
+    ("Other mistake", "Unclassified mistake", "other_unclassified", 1.0),
+]
+
 # Добавим проверку, чтобы сразу видеть ошибку в логах, если адреса нет
 if not DATABASE_URL:
     print("❌ ОШИБКА: DATABASE_URL_RAILWAY не найден в .env или переменных окружения!")
@@ -336,6 +470,93 @@ def ensure_webapp_tables() -> None:
                     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_skills (
+                    skill_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_skills_category
+                ON bt_3_skills (category, skill_id);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_error_skill_map (
+                    id BIGSERIAL PRIMARY KEY,
+                    error_category TEXT NOT NULL,
+                    error_subcategory TEXT NOT NULL,
+                    skill_id TEXT NOT NULL REFERENCES bt_3_skills(skill_id) ON DELETE CASCADE,
+                    weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+                    notes TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (error_category, error_subcategory, skill_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_error_skill_map_err
+                ON bt_3_error_skill_map (error_category, error_subcategory);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_error_skill_map_skill
+                ON bt_3_error_skill_map (skill_id);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_user_skill_state (
+                    user_id BIGINT NOT NULL,
+                    skill_id TEXT NOT NULL REFERENCES bt_3_skills(skill_id) ON DELETE CASCADE,
+                    mastery DOUBLE PRECISION NOT NULL DEFAULT 50.0,
+                    success_streak INTEGER NOT NULL DEFAULT 0,
+                    fail_streak INTEGER NOT NULL DEFAULT 0,
+                    total_events INTEGER NOT NULL DEFAULT 0,
+                    last_event_delta DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                    last_event_at TIMESTAMPTZ,
+                    last_practiced_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, skill_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_user_skill_state_user_mastery
+                ON bt_3_user_skill_state (user_id, mastery ASC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_user_skill_state_skill
+                ON bt_3_user_skill_state (skill_id, mastery ASC);
+            """)
+            cursor.executemany(
+                """
+                INSERT INTO bt_3_skills (skill_id, title, category, is_active, updated_at)
+                VALUES (%s, %s, %s, TRUE, NOW())
+                ON CONFLICT (skill_id) DO UPDATE
+                SET
+                    title = EXCLUDED.title,
+                    category = EXCLUDED.category,
+                    updated_at = NOW();
+                """,
+                SKILL_SEED,
+            )
+            cursor.executemany(
+                """
+                INSERT INTO bt_3_error_skill_map (
+                    error_category,
+                    error_subcategory,
+                    skill_id,
+                    weight,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (error_category, error_subcategory, skill_id) DO UPDATE
+                SET
+                    weight = EXCLUDED.weight,
+                    updated_at = NOW();
+                """,
+                ERROR_SKILL_MAP_SEED,
+            )
             # One-time backfill for legacy imported dictionary rows (pre-multilang).
             # Must run only once, not on every startup.
             cursor.execute(
@@ -595,6 +816,18 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_today_reminder_settings_enabled
                 ON bt_3_today_reminder_settings (enabled, updated_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_today_regenerate_limits (
+                    user_id BIGINT NOT NULL,
+                    limit_date DATE NOT NULL,
+                    consumed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, limit_date)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_today_regenerate_limits_date
+                ON bt_3_today_regenerate_limits (limit_date, consumed_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_tts_chunk_cache (
@@ -2613,6 +2846,45 @@ def update_daily_plan_item_status(
             return _map_daily_plan_item(row)
 
 
+def consume_today_regenerate_limit(
+    *,
+    user_id: int,
+    limit_date: date,
+) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_today_regenerate_limits (user_id, limit_date)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id, limit_date) DO NOTHING
+                RETURNING consumed_at;
+                """,
+                (int(user_id), limit_date),
+            )
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "allowed": True,
+                    "consumed_at": row[0].isoformat() if row[0] else None,
+                }
+
+            cursor.execute(
+                """
+                SELECT consumed_at
+                FROM bt_3_today_regenerate_limits
+                WHERE user_id = %s AND limit_date = %s
+                LIMIT 1;
+                """,
+                (int(user_id), limit_date),
+            )
+            existing = cursor.fetchone()
+    return {
+        "allowed": False,
+        "consumed_at": existing[0].isoformat() if existing and existing[0] else None,
+    }
+
+
 def get_top_weak_topic(
     *,
     user_id: int,
@@ -2684,6 +2956,109 @@ def get_weak_topic_sentences(
     except Exception:
         return []
     return [str(row[0]).strip() for row in rows if row and str(row[0]).strip()]
+
+
+def get_lowest_mastery_skill(user_id: int) -> dict | None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        s.skill_id,
+                        k.title,
+                        k.category,
+                        s.mastery,
+                        s.total_events,
+                        s.updated_at
+                    FROM bt_3_user_skill_state s
+                    JOIN bt_3_skills k ON k.skill_id = s.skill_id
+                    WHERE s.user_id = %s
+                    ORDER BY s.mastery ASC, s.total_events DESC, s.updated_at DESC
+                    LIMIT 1;
+                    """,
+                    (int(user_id),),
+                )
+                row = cursor.fetchone()
+    except Exception:
+        return None
+
+    if not row:
+        return None
+    return {
+        "skill_id": str(row[0]),
+        "skill_title": str(row[1] or ""),
+        "skill_category": str(row[2] or ""),
+        "mastery": float(row[3] or 0.0),
+        "total_events": int(row[4] or 0),
+        "updated_at": row[5].isoformat() if row[5] else None,
+    }
+
+
+def get_top_error_topic_for_skill(
+    *,
+    user_id: int,
+    skill_id: str,
+    lookback_days: int = 7,
+) -> dict | None:
+    if not skill_id:
+        return None
+    lookback_days = max(1, int(lookback_days))
+    normalized_skill_id = str(skill_id).strip()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        COALESCE(NULLIF(dm.main_category, ''), 'Other mistake') AS main_category,
+                        COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake') AS sub_category,
+                        SUM(COALESCE(dm.mistake_count, 1)) AS total_mistakes,
+                        MAX(m.weight) AS map_weight
+                    FROM bt_3_detailed_mistakes dm
+                    JOIN bt_3_error_skill_map m
+                      ON m.error_category = COALESCE(NULLIF(dm.main_category, ''), 'Other mistake')
+                     AND m.error_subcategory = COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')
+                    WHERE dm.user_id = %s
+                      AND m.skill_id = %s
+                      AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                    GROUP BY 1, 2
+                    ORDER BY total_mistakes DESC, map_weight DESC, main_category ASC, sub_category ASC
+                    LIMIT 1;
+                    """,
+                    (int(user_id), normalized_skill_id, lookback_days),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        "main_category": str(row[0] or "Other mistake"),
+                        "sub_category": str(row[1] or "Unclassified mistake"),
+                        "mistakes": int(row[2] or 0),
+                        "map_weight": float(row[3] or 1.0),
+                    }
+
+                cursor.execute(
+                    """
+                    SELECT error_category, error_subcategory, weight
+                    FROM bt_3_error_skill_map
+                    WHERE skill_id = %s
+                    ORDER BY weight DESC, error_category ASC, error_subcategory ASC
+                    LIMIT 1;
+                    """,
+                    (normalized_skill_id,),
+                )
+                fallback = cursor.fetchone()
+    except Exception:
+        return None
+
+    if not fallback:
+        return None
+    return {
+        "main_category": str(fallback[0] or "Other mistake"),
+        "sub_category": str(fallback[1] or "Unclassified mistake"),
+        "mistakes": 0,
+        "map_weight": float(fallback[2] or 1.0),
+    }
 
 
 def get_today_reminder_settings(user_id: int) -> dict:
@@ -2794,6 +3169,370 @@ def list_today_reminder_users(limit: int = 1000, offset: int = 0) -> list[dict]:
         }
         for row in rows
     ]
+
+
+def list_skills(category: str | None = None) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if category:
+                cursor.execute(
+                    """
+                    SELECT skill_id, title, category, is_active
+                    FROM bt_3_skills
+                    WHERE category = %s
+                    ORDER BY skill_id;
+                    """,
+                    (category,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT skill_id, title, category, is_active
+                    FROM bt_3_skills
+                    ORDER BY category, skill_id;
+                    """
+                )
+            rows = cursor.fetchall()
+    return [
+        {
+            "skill_id": row[0],
+            "title": row[1],
+            "category": row[2],
+            "is_active": bool(row[3]),
+        }
+        for row in rows
+    ]
+
+
+def get_skill_by_id(skill_id: str) -> dict | None:
+    normalized = str(skill_id or "").strip()
+    if not normalized:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT skill_id, title, category, is_active
+                FROM bt_3_skills
+                WHERE skill_id = %s
+                LIMIT 1;
+                """,
+                (normalized,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "skill_id": row[0],
+        "title": row[1],
+        "category": row[2],
+        "is_active": bool(row[3]),
+    }
+
+
+def get_skill_mapping_for_error(
+    error_category: str,
+    error_subcategory: str | None,
+) -> list[dict]:
+    category = str(error_category or "").strip()
+    subcategory = str(error_subcategory or "").strip()
+    if not category:
+        return [{"skill_id": "other_unclassified", "weight": 1.0}]
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT skill_id, weight
+                FROM bt_3_error_skill_map
+                WHERE error_category = %s
+                  AND error_subcategory = %s
+                ORDER BY weight DESC, skill_id ASC;
+                """,
+                (category, subcategory),
+            )
+            rows = cursor.fetchall()
+            if rows:
+                return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in rows]
+
+            cursor.execute(
+                """
+                SELECT skill_id, weight
+                FROM bt_3_error_skill_map
+                WHERE error_category = %s
+                  AND error_subcategory = 'Unclassified mistake'
+                ORDER BY weight DESC, skill_id ASC;
+                """,
+                (category,),
+            )
+            fallback_rows = cursor.fetchall()
+            if fallback_rows:
+                return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in fallback_rows]
+
+    return [{"skill_id": "other_unclassified", "weight": 1.0}]
+
+
+def _clamp_mastery(value: float) -> float:
+    return max(0.0, min(100.0, float(value)))
+
+
+def apply_user_skill_event(
+    *,
+    user_id: int,
+    skill_id: str,
+    event_type: str,
+    base_delta: float,
+    event_at: datetime | None = None,
+) -> dict:
+    normalized_event = str(event_type or "").strip().lower()
+    if normalized_event not in {"success", "fail"}:
+        raise ValueError("event_type must be success or fail")
+    event_at = event_at or datetime.now(timezone.utc)
+    if event_at.tzinfo is None:
+        event_at = event_at.replace(tzinfo=timezone.utc)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT mastery, success_streak, fail_streak, total_events, last_practiced_at
+                FROM bt_3_user_skill_state
+                WHERE user_id = %s AND skill_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id), str(skill_id)),
+            )
+            row = cursor.fetchone()
+
+            mastery = float(row[0]) if row else 50.0
+            success_streak = int(row[1]) if row else 0
+            fail_streak = int(row[2]) if row else 0
+            total_events = int(row[3]) if row else 0
+            last_practiced_at = row[4] if row else None
+
+            # Light decay if user did not practice this skill for a while.
+            if isinstance(last_practiced_at, datetime):
+                last_ts = last_practiced_at if last_practiced_at.tzinfo else last_practiced_at.replace(tzinfo=timezone.utc)
+                days_idle = max(0, (event_at.date() - last_ts.date()).days)
+                decay = min(8.0, days_idle * 0.15)
+                mastery -= decay
+
+            if normalized_event == "success":
+                accel = min(success_streak, 5) * 0.2
+                effective_delta = max(0.0, float(base_delta)) + accel
+                success_streak += 1
+                fail_streak = 0
+            else:
+                accel = min(fail_streak, 5) * 0.3
+                effective_delta = min(0.0, float(base_delta)) - accel
+                fail_streak += 1
+                success_streak = 0
+
+            mastery = _clamp_mastery(mastery + effective_delta)
+            total_events += 1
+
+            cursor.execute(
+                """
+                INSERT INTO bt_3_user_skill_state (
+                    user_id,
+                    skill_id,
+                    mastery,
+                    success_streak,
+                    fail_streak,
+                    total_events,
+                    last_event_delta,
+                    last_event_at,
+                    last_practiced_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id, skill_id) DO UPDATE
+                SET
+                    mastery = EXCLUDED.mastery,
+                    success_streak = EXCLUDED.success_streak,
+                    fail_streak = EXCLUDED.fail_streak,
+                    total_events = EXCLUDED.total_events,
+                    last_event_delta = EXCLUDED.last_event_delta,
+                    last_event_at = EXCLUDED.last_event_at,
+                    last_practiced_at = EXCLUDED.last_practiced_at,
+                    updated_at = NOW()
+                RETURNING mastery, success_streak, fail_streak, total_events, last_event_delta, last_practiced_at;
+                """,
+                (
+                    int(user_id),
+                    str(skill_id),
+                    mastery,
+                    success_streak,
+                    fail_streak,
+                    total_events,
+                    float(effective_delta),
+                    event_at,
+                    event_at,
+                ),
+            )
+            saved = cursor.fetchone()
+
+    return {
+        "user_id": int(user_id),
+        "skill_id": str(skill_id),
+        "mastery": float(saved[0] if saved else mastery),
+        "success_streak": int(saved[1] if saved else success_streak),
+        "fail_streak": int(saved[2] if saved else fail_streak),
+        "total_events": int(saved[3] if saved else total_events),
+        "last_event_delta": float(saved[4] if saved else 0.0),
+        "last_practiced_at": saved[5].isoformat() if saved and saved[5] else None,
+    }
+
+
+def apply_skill_events_for_error(
+    *,
+    user_id: int,
+    error_category: str,
+    error_subcategory: str | None,
+    event_type: str,
+    success_delta: float = 2.0,
+    fail_delta: float = -3.0,
+    event_at: datetime | None = None,
+) -> list[dict]:
+    mapping = get_skill_mapping_for_error(error_category, error_subcategory)
+    base = float(success_delta if str(event_type).lower() == "success" else fail_delta)
+    results: list[dict] = []
+    for item in mapping:
+        skill_id = str(item.get("skill_id") or "").strip()
+        weight = float(item.get("weight") or 1.0)
+        if not skill_id:
+            continue
+        try:
+            result = apply_user_skill_event(
+                user_id=int(user_id),
+                skill_id=skill_id,
+                event_type=event_type,
+                base_delta=base * weight,
+                event_at=event_at,
+            )
+            results.append(result)
+        except Exception:
+            continue
+    return results
+
+
+def get_skill_progress_report(
+    *,
+    user_id: int,
+    lookback_days: int = 7,
+) -> dict:
+    window_days = max(1, min(int(lookback_days), 30))
+    now_utc = datetime.now(timezone.utc)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH err_7d AS (
+                    SELECT
+                        m.skill_id,
+                        SUM(COALESCE(dm.mistake_count, 1))::BIGINT AS errors_7d
+                    FROM bt_3_detailed_mistakes dm
+                    JOIN bt_3_error_skill_map m
+                      ON m.error_category = COALESCE(NULLIF(dm.main_category, ''), 'Other mistake')
+                     AND m.error_subcategory = COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')
+                    WHERE dm.user_id = %s
+                      AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                    GROUP BY m.skill_id
+                ),
+                err_prev_7d AS (
+                    SELECT
+                        m.skill_id,
+                        SUM(COALESCE(dm.mistake_count, 1))::BIGINT AS errors_prev_7d
+                    FROM bt_3_detailed_mistakes dm
+                    JOIN bt_3_error_skill_map m
+                      ON m.error_category = COALESCE(NULLIF(dm.main_category, ''), 'Other mistake')
+                     AND m.error_subcategory = COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')
+                    WHERE dm.user_id = %s
+                      AND COALESCE(dm.last_seen, dm.added_data, NOW()) < NOW() - (%s::text || ' days')::interval
+                      AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - ((%s * 2)::text || ' days')::interval
+                    GROUP BY m.skill_id
+                )
+                SELECT
+                    k.skill_id,
+                    k.title,
+                    k.category,
+                    COALESCE(s.mastery, 50.0) AS mastery,
+                    COALESCE(s.total_events, 0) AS total_events,
+                    COALESCE(e.errors_7d, 0) AS errors_7d,
+                    COALESCE(p.errors_prev_7d, 0) AS errors_prev_7d,
+                    s.last_practiced_at
+                FROM bt_3_skills k
+                LEFT JOIN bt_3_user_skill_state s
+                  ON s.skill_id = k.skill_id
+                 AND s.user_id = %s
+                LEFT JOIN err_7d e ON e.skill_id = k.skill_id
+                LEFT JOIN err_prev_7d p ON p.skill_id = k.skill_id
+                WHERE k.is_active = TRUE
+                ORDER BY k.category ASC, mastery ASC, k.skill_id ASC;
+                """,
+                (int(user_id), window_days, int(user_id), window_days, window_days, int(user_id)),
+            )
+            rows = cursor.fetchall()
+
+    skills: list[dict] = []
+    groups_map: dict[str, list[dict]] = {}
+    for row in rows:
+        mastery = float(row[3] or 0.0)
+        total_events = int(row[4] or 0)
+        errors_7d = int(row[5] or 0)
+        errors_prev_7d = int(row[6] or 0)
+        if errors_7d < errors_prev_7d:
+            trend = "up"
+        elif errors_7d > errors_prev_7d:
+            trend = "down"
+        else:
+            trend = "flat"
+        if mastery < 40:
+            zone = "weak"
+        elif mastery < 70:
+            zone = "growing"
+        elif mastery < 90:
+            zone = "confident"
+        else:
+            zone = "stable"
+
+        skill = {
+            "skill_id": str(row[0]),
+            "name": str(row[1] or row[0] or ""),
+            "group": str(row[2] or "Other"),
+            "mastery": round(mastery, 2),
+            "errors_7d": errors_7d,
+            "errors_prev_7d": errors_prev_7d,
+            "trend": trend,
+            "zone": zone,
+            "confidence": round(min(1.0, total_events / 20.0), 3),
+            "total_events": total_events,
+            "last_practiced_at": row[7].isoformat() if row[7] else None,
+        }
+        skills.append(skill)
+        group_name = skill["group"]
+        groups_map.setdefault(group_name, []).append(skill)
+
+    top_weak = sorted(
+        skills,
+        key=lambda item: (
+            float(item.get("mastery") or 50.0),
+            -int(item.get("errors_7d") or 0),
+            str(item.get("skill_id") or ""),
+        ),
+    )[:5]
+    groups = [
+        {"group": group_name, "skills": groups_map[group_name]}
+        for group_name in sorted(groups_map.keys())
+    ]
+    return {
+        "updated_at": now_utc.isoformat(),
+        "period_days": window_days,
+        "top_weak": top_weak,
+        "groups": groups,
+        "total_skills": len(skills),
+    }
 
 
 def _get_latest_session_id(cursor, user_id: int) -> str | None:

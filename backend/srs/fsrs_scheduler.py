@@ -58,7 +58,8 @@ def _status_from_state(state: Any) -> str:
         return "learning"
     if "review" in name:
         return "review"
-    return "new"
+    # fsrs>=6 has no explicit "New" state enum; unknown should behave like learning.
+    return "learning"
 
 
 def _state_from_status(status: str) -> State:
@@ -67,9 +68,10 @@ def _state_from_status(status: str) -> State:
         return State.Review
     if normalized == "relearning":
         return State.Relearning
-    if normalized == "learning":
+    if normalized in {"learning", "new"}:
         return State.Learning
-    return State.New
+    # Backward compatibility for legacy/unknown statuses from DB.
+    return State.Learning
 
 
 def _build_fsrs_card(state: dict | None, now_utc: datetime) -> Card:
@@ -120,7 +122,7 @@ def schedule_review(
     if due_at.tzinfo is None:
         due_at = due_at.replace(tzinfo=timezone.utc)
 
-    status = _status_from_state(getattr(reviewed_card, "state", State.New))
+    status = _status_from_state(getattr(reviewed_card, "state", State.Learning))
     interval_days = _interval_days(due_at, reviewed_at)
 
     result = ScheduledResult(

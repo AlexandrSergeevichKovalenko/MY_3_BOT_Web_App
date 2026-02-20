@@ -168,6 +168,11 @@ from backend.database import (
     get_daily_plan,
     create_daily_plan,
     update_daily_plan_item_status,
+    consume_today_regenerate_limit,
+    get_lowest_mastery_skill,
+    get_top_error_topic_for_skill,
+    get_skill_by_id,
+    get_skill_progress_report,
     get_top_weak_topic,
     get_weak_topic_sentences,
     get_today_reminder_settings,
@@ -865,6 +870,7 @@ def _build_today_plan_for_user(
     now_utc = datetime.now(timezone.utc)
     due_count = 0
     has_new_candidates = False
+    weakest_skill = None
     weak_topic = None
     weak_sentences: list[str] = []
 
@@ -891,9 +897,25 @@ def _build_today_plan_for_user(
             has_new_candidates = False
 
     try:
-        weak_topic = get_top_weak_topic(user_id=user_id, lookback_days=7)
+        weakest_skill = get_lowest_mastery_skill(user_id=user_id)
     except Exception:
-        weak_topic = None
+        weakest_skill = None
+
+    if weakest_skill and weakest_skill.get("skill_id"):
+        try:
+            weak_topic = get_top_error_topic_for_skill(
+                user_id=user_id,
+                skill_id=str(weakest_skill.get("skill_id") or ""),
+                lookback_days=7,
+            )
+        except Exception:
+            weak_topic = None
+
+    if not weak_topic:
+        try:
+            weak_topic = get_top_weak_topic(user_id=user_id, lookback_days=7)
+        except Exception:
+            weak_topic = None
 
     if weak_topic:
         try:
@@ -919,7 +941,9 @@ def _build_today_plan_for_user(
         total_minutes += cards_minutes
 
     weak_title = "Перевод: 5 предложений по ошибкам"
-    if weak_topic and weak_topic.get("sub_category"):
+    if weakest_skill and weakest_skill.get("skill_title"):
+        weak_title = f"Перевод: 5 предложений ({weakest_skill.get('skill_title')})"
+    elif weak_topic and weak_topic.get("sub_category"):
         weak_title = f"Перевод: 5 предложений ({weak_topic.get('sub_category')})"
     items.append(
         {
@@ -930,6 +954,11 @@ def _build_today_plan_for_user(
                 "mode": "weakest_topic",
                 "lookback_days": 7,
                 "sentences": 5,
+                "focus_source": "mastery" if weakest_skill else "mistakes",
+                "skill_id": weakest_skill.get("skill_id") if weakest_skill else None,
+                "skill_title": weakest_skill.get("skill_title") if weakest_skill else None,
+                "skill_category": weakest_skill.get("skill_category") if weakest_skill else None,
+                "skill_mastery": weakest_skill.get("mastery") if weakest_skill else None,
                 "main_category": weak_topic.get("main_category") if weak_topic else None,
                 "sub_category": weak_topic.get("sub_category") if weak_topic else None,
                 "examples": weak_sentences[:5],
@@ -956,6 +985,9 @@ def _build_today_plan_for_user(
                     "source": "youtube_library",
                     "duration_sec": 300,
                     "focus": "same_as_weak_topic",
+                    "focus_source": "mastery" if weakest_skill else "mistakes",
+                    "skill_id": weakest_skill.get("skill_id") if weakest_skill else None,
+                    "skill_title": weakest_skill.get("skill_title") if weakest_skill else None,
                     "main_category": weak_topic.get("main_category") if weak_topic else None,
                     "sub_category": weak_topic.get("sub_category") if weak_topic else None,
                     "start_action": "youtube",
@@ -3531,6 +3563,60 @@ def get_today_plan():
     return jsonify(response_payload)
 
 
+@app.route("/api/today/regenerate", methods=["POST"])
+def regenerate_today_plan():
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    requested_date = request.args.get("date")
+    if not requested_date and isinstance(payload, dict):
+        requested_date = payload.get("date")
+    plan_date = _safe_plan_date(requested_date, TODAY_PLAN_DEFAULT_TZ)
+    try:
+        limit_result = consume_today_regenerate_limit(
+            user_id=int(user_id),
+            limit_date=plan_date,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка проверки лимита пересборки: {exc}"}), 500
+    if not bool((limit_result or {}).get("allowed")):
+        return jsonify(
+            {
+                "error": "План можно пересобрать только один раз в день.",
+                "ok": False,
+                "limit_reached": True,
+                "date": plan_date.isoformat(),
+                "consumed_at": (limit_result or {}).get("consumed_at"),
+            }
+        ), 429
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        plan = _build_today_plan_for_user(
+            user_id=int(user_id),
+            plan_date=plan_date,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка пересборки плана: {exc}"}), 500
+
+    response_payload = _format_today_plan_response(plan)
+    response_payload.update(
+        {
+            "ok": True,
+            "regenerated": True,
+            "user_id": int(user_id),
+            "username": username,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+    return jsonify(response_payload)
+
+
 @app.route("/api/today/items/<int:item_id>/start", methods=["POST"])
 def start_today_item(item_id: int):
     user_id, _username, error = _get_authenticated_user_from_request_init_data()
@@ -3604,6 +3690,118 @@ def today_reminders_settings():
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения настроек reminder: {exc}"}), 500
     return jsonify({"ok": True, "settings": settings})
+
+
+@app.route("/api/progress/skills", methods=["GET"])
+def get_skill_progress():
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    raw_period = str(request.args.get("period") or "7d").strip().lower()
+    lookback_days = 7
+    if raw_period.endswith("d"):
+        try:
+            lookback_days = int(raw_period[:-1] or "7")
+        except Exception:
+            lookback_days = 7
+
+    try:
+        report = get_skill_progress_report(
+            user_id=int(user_id),
+            lookback_days=lookback_days,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка построения отчёта по навыкам: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "user_id": int(user_id),
+            "username": username,
+            **report,
+        }
+    )
+
+
+@app.route("/api/progress/skills/<string:skill_id>/practice/start", methods=["POST"])
+def start_skill_practice(skill_id: str):
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    level = str(payload.get("level") or "b1").strip().lower() or "b1"
+    skill = get_skill_by_id(skill_id)
+    if not skill or not bool(skill.get("is_active")):
+        return jsonify({"error": "Навык не найден"}), 404
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    focus_topic = get_top_error_topic_for_skill(
+        user_id=int(user_id),
+        skill_id=str(skill.get("skill_id") or skill_id),
+        lookback_days=14,
+    )
+    main_category = (focus_topic or {}).get("main_category")
+    sub_category = (focus_topic or {}).get("sub_category")
+    examples: list[str] = []
+    if main_category and sub_category:
+        examples = get_weak_topic_sentences(
+            user_id=int(user_id),
+            main_category=str(main_category),
+            sub_category=str(sub_category),
+            lookback_days=14,
+            limit=5,
+        )
+    topic_label = str(skill.get("title") or skill.get("skill_id") or "Skill practice")
+    if sub_category:
+        topic_label = f"{topic_label}: {sub_category}"
+    elif main_category:
+        topic_label = f"{topic_label}: {main_category}"
+
+    try:
+        session = asyncio.run(
+            start_translation_session_webapp(
+                user_id=int(user_id),
+                username=username,
+                topic=topic_label,
+                level=level,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка запуска прокачки навыка: {exc}"}), 500
+
+    recommended_video = _pick_today_recommended_video(
+        str(main_category or ""),
+        str(sub_category or ""),
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "skill": {
+                "skill_id": skill.get("skill_id"),
+                "title": skill.get("title"),
+                "category": skill.get("category"),
+            },
+            "practice": {
+                "task_type": "translation",
+                "topic_label": topic_label,
+                "level": level,
+                "main_category": main_category,
+                "sub_category": sub_category,
+                "examples": examples[:5],
+                "video_url": (recommended_video or {}).get("video_url"),
+                "video_id": (recommended_video or {}).get("video_id"),
+                "video_title": (recommended_video or {}).get("title"),
+            },
+            **session,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/webapp/dictionary/collocations", methods=["POST"])

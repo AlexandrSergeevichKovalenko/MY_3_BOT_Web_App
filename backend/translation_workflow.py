@@ -25,7 +25,10 @@ from backend.openai_manager import (
     run_check_translation_story,
     run_check_story_guess_semantic,
 )
-from backend.database import get_db_connection_context
+from backend.database import (
+    get_db_connection_context,
+    apply_skill_events_for_error,
+)
 
 
 DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY")
@@ -1322,6 +1325,17 @@ async def log_translation_mistake(
                     """,
                     (user_id, original_text, main_category, sub_category, sentence_id, correct_translation, score),
                 )
+                try:
+                    apply_skill_events_for_error(
+                        user_id=int(user_id),
+                        error_category=main_category,
+                        error_subcategory=sub_category,
+                        event_type="fail",
+                        fail_delta=-3.0,
+                        success_delta=2.0,
+                    )
+                except Exception as exc:
+                    logging.warning("Skill fail update skipped: %s", exc)
 
 
 async def check_user_translation_webapp(
@@ -1479,6 +1493,18 @@ async def check_user_translation_webapp(
                 if score_value >= 85:
                     cursor.execute(
                         """
+                        SELECT DISTINCT
+                            COALESCE(NULLIF(main_category, ''), 'Other mistake') AS main_category,
+                            COALESCE(NULLIF(sub_category, ''), 'Unclassified mistake') AS sub_category
+                        FROM bt_3_detailed_mistakes
+                        WHERE sentence_id = %s AND user_id = %s;
+                        """,
+                        (sentence_id_for_mistake, user_id),
+                    )
+                    resolved_skill_targets = cursor.fetchall()
+
+                    cursor.execute(
+                        """
                         SELECT attempt
                         FROM bt_3_attempts
                         WHERE id_for_mistake_table = %s AND user_id = %s;
@@ -1514,6 +1540,18 @@ async def check_user_translation_webapp(
                     )
 
                     conn.commit()
+                    for main_category, sub_category in resolved_skill_targets:
+                        try:
+                            apply_skill_events_for_error(
+                                user_id=int(user_id),
+                                error_category=str(main_category or "Other mistake"),
+                                error_subcategory=str(sub_category or "Unclassified mistake"),
+                                event_type="success",
+                                success_delta=2.0,
+                                fail_delta=-3.0,
+                            )
+                        except Exception as exc:
+                            logging.warning("Skill success update skipped: %s", exc)
                 else:
                     cursor.execute(
                         """
@@ -1524,7 +1562,7 @@ async def check_user_translation_webapp(
                             attempt = bt_3_attempts.attempt + 1,
                             timestamp= NOW();
                         """,
-                        (sentence_id_for_mistake, user_id),
+                        (user_id, sentence_id_for_mistake),
                     )
                     conn.commit()
             else:
@@ -1537,6 +1575,38 @@ async def check_user_translation_webapp(
                         (user_id, sentence_id_for_mistake, score_value, 1),
                     )
                     conn.commit()
+                    if categories and subcategories:
+                        valid_success_combinations: list[tuple[str, str]] = []
+                        for cat in categories:
+                            cat_lower = str(cat or "").lower()
+                            for subcat in subcategories:
+                                subcat_lower = str(subcat or "").lower()
+                                if cat_lower in VALID_SUBCATEGORIES_lower and subcat_lower in VALID_SUBCATEGORIES_lower[cat_lower]:
+                                    canonical_cat = next(
+                                        (x for x in VALID_CATEGORIES if x.lower() == cat_lower),
+                                        str(cat or ""),
+                                    )
+                                    canonical_sub = next(
+                                        (
+                                            x
+                                            for x in VALID_SUBCATEGORIES.get(canonical_cat, [])
+                                            if x.lower() == subcat_lower
+                                        ),
+                                        str(subcat or ""),
+                                    )
+                                    valid_success_combinations.append((canonical_cat, canonical_sub))
+                        for main_category, sub_category in set(valid_success_combinations):
+                            try:
+                                apply_skill_events_for_error(
+                                    user_id=int(user_id),
+                                    error_category=main_category,
+                                    error_subcategory=sub_category,
+                                    event_type="success",
+                                    success_delta=2.0,
+                                    fail_delta=-3.0,
+                                )
+                            except Exception as exc:
+                                logging.warning("Skill success update skipped: %s", exc)
                 else:
                     cursor.execute(
                         """

@@ -148,6 +148,12 @@ function AppInner() {
   const [todayPlanLoading, setTodayPlanLoading] = useState(false);
   const [todayPlanError, setTodayPlanError] = useState('');
   const [todayItemLoading, setTodayItemLoading] = useState({});
+  const [skillReport, setSkillReport] = useState(null);
+  const [skillReportLoading, setSkillReportLoading] = useState(false);
+  const [skillReportError, setSkillReportError] = useState('');
+  const [skillPracticeLoading, setSkillPracticeLoading] = useState({});
+  const [showAllSkills, setShowAllSkills] = useState(false);
+  const [skillZoneFilter, setSkillZoneFilter] = useState('all');
   const [srsLoading, setSrsLoading] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
   const [srsSubmittingRating, setSrsSubmittingRating] = useState(null);
@@ -696,6 +702,107 @@ function AppInner() {
     }
   };
 
+  const loadSkillReport = async () => {
+    if (!initData) return;
+    try {
+      setSkillReportLoading(true);
+      setSkillReportError('');
+      const response = await fetch(`/api/progress/skills?period=7d&initData=${encodeURIComponent(initData)}`);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки отчета по навыкам', 'Fehler beim Laden des Skills-Reports'));
+      }
+      const data = await response.json();
+      setSkillReport({
+        updated_at: data?.updated_at || null,
+        top_weak: Array.isArray(data?.top_weak) ? data.top_weak : [],
+        groups: Array.isArray(data?.groups) ? data.groups : [],
+        total_skills: Number(data?.total_skills || 0),
+      });
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось загрузить прогресс навыков.',
+        'Skill-Fortschritt konnte nicht geladen werden.'
+      );
+      setSkillReportError(friendly);
+    } finally {
+      setSkillReportLoading(false);
+    }
+  };
+
+  const startSkillPractice = async (skill) => {
+    if (!initData || !skill?.skill_id) return;
+    const skillId = String(skill.skill_id);
+    try {
+      setSkillPracticeLoading((prev) => ({ ...prev, [skillId]: true }));
+      setSkillReportError('');
+      const response = await fetch(`/api/progress/skills/${encodeURIComponent(skillId)}/practice/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, level: selectedLevel }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка запуска прокачки', 'Fehler beim Start der Skill-Uebung'));
+      }
+      const data = await response.json();
+      if (data?.blocked) {
+        setFinishMessage(
+          tr(
+            'Есть активная сессия. Завершите текущую, чтобы начать новую тренировку.',
+            'Es gibt eine aktive Session. Beende die aktuelle, um eine neue Uebung zu starten.'
+          )
+        );
+      }
+      await loadSessionInfo();
+      await loadSentences();
+      openSingleSectionAndScroll('translations', translationsRef);
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось запустить тренировку навыка.',
+        'Skill-Uebung konnte nicht gestartet werden.'
+      );
+      setSkillReportError(friendly);
+    } finally {
+      setSkillPracticeLoading((prev) => {
+        const next = { ...prev };
+        delete next[skillId];
+        return next;
+      });
+    }
+  };
+
+  const regenerateTodayPlan = async () => {
+    if (!initData) return;
+    try {
+      setTodayPlanLoading(true);
+      setTodayPlanError('');
+      const response = await fetch('/api/today/regenerate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка пересборки плана', 'Fehler beim Aktualisieren des Plans'));
+      }
+      const data = await response.json();
+      setTodayPlan({
+        date: data?.date || null,
+        total_minutes: data?.total_minutes || 0,
+        items: Array.isArray(data?.items) ? data.items : [],
+      });
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось пересобрать задачи на сегодня.',
+        'Tagesaufgaben konnten nicht aktualisiert werden.'
+      );
+      setTodayPlanError(friendly);
+    } finally {
+      setTodayPlanLoading(false);
+    }
+  };
+
   const updateTodayItemStatus = async (itemId, action) => {
     if (!initData || !itemId) return null;
     try {
@@ -954,6 +1061,19 @@ function AppInner() {
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
+  const allSkillGroups = (Array.isArray(skillReport?.groups) ? skillReport.groups : [])
+    .map((group) => {
+      const sourceSkills = Array.isArray(group?.skills) ? group.skills : [];
+      const filtered = sourceSkills.filter((skill) => {
+        if (skillZoneFilter === 'all') return true;
+        return String(skill?.zone || '') === skillZoneFilter;
+      });
+      return {
+        group: String(group?.group || ''),
+        skills: filtered,
+      };
+    })
+    .filter((group) => group.skills.length > 0);
 
   const toggleSection = (key) => {
     setSelectedSections((prev) => {
@@ -1415,6 +1535,15 @@ function AppInner() {
       return;
     }
     loadTodayPlan();
+  }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      setSkillReport(null);
+      setSkillReportError('');
+      return;
+    }
+    loadSkillReport();
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
@@ -4455,6 +4584,16 @@ function AppInner() {
                     {tr('Всего', 'Gesamt')}: {todayPlan?.total_minutes || 0} {tr('мин', 'Min')}
                   </span>
                 </div>
+                <div className="today-plan-toolbar">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={regenerateTodayPlan}
+                    disabled={todayPlanLoading}
+                  >
+                    {todayPlanLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить план', 'Plan aktualisieren')}
+                  </button>
+                </div>
                 <img src={heroStickerSrc} alt="" aria-hidden="true" className="today-plan-mascot" />
                 {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
                 {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
@@ -4495,6 +4634,125 @@ function AppInner() {
                         </div>
                       );
                     })}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {isHomeScreen && initData && (
+              <section className="skill-report-panel">
+                <div className="skill-report-head">
+                  <h3>{tr('Слабые навыки недели', 'Schwaechste Skills der Woche')}</h3>
+                  <div className="skill-report-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => setShowAllSkills((prev) => !prev)}
+                      disabled={skillReportLoading}
+                    >
+                      {showAllSkills ? tr('Скрыть все', 'Alle ausblenden') : tr('Все навыки', 'Alle Skills')}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={loadSkillReport}
+                      disabled={skillReportLoading}
+                    >
+                      {skillReportLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
+                    </button>
+                  </div>
+                </div>
+                {skillReportLoading && <div className="webapp-muted">{tr('Загружаем прогресс...', 'Fortschritt wird geladen...')}</div>}
+                {skillReportError && <div className="webapp-error">{skillReportError}</div>}
+                {!skillReportLoading && !skillReportError && (
+                  <div className="skill-report-top-list">
+                    {(skillReport?.top_weak || []).slice(0, 5).map((skill) => (
+                      <div className="skill-report-top-item" key={skill.skill_id}>
+                        <div className="skill-report-top-main">
+                          <span className="skill-report-top-name">{skill.name}</span>
+                          <span className={`skill-trend trend-${skill.trend || 'flat'}`}>
+                            {skill.trend === 'up' ? '↑' : skill.trend === 'down' ? '↓' : '→'}
+                          </span>
+                        </div>
+                        <div className="skill-report-top-meta">
+                          <span>{tr('Оценка', 'Score')}: {Math.round(Number(skill.mastery || 0))}</span>
+                          <span>{tr('Ошибки 7д', 'Fehler 7T')}: {Number(skill.errors_7d || 0)}</span>
+                        </div>
+                        <div className="skill-card-actions">
+                          <button
+                            type="button"
+                            className="primary-button"
+                            onClick={() => startSkillPractice(skill)}
+                            disabled={Boolean(skillPracticeLoading[String(skill.skill_id || '')])}
+                          >
+                            {skillPracticeLoading[String(skill.skill_id || '')]
+                              ? tr('Запуск...', 'Start...')
+                              : tr('Прокачать', 'Trainieren')}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {(!skillReport?.top_weak || skillReport.top_weak.length === 0) && (
+                      <div className="webapp-muted">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
+                    )}
+                  </div>
+                )}
+                {!skillReportLoading && !skillReportError && showAllSkills && (
+                  <div className="skills-all-wrap">
+                    <div className="skills-filter-row">
+                      {[
+                        { id: 'all', ru: 'Все', de: 'Alle' },
+                        { id: 'weak', ru: 'Слабые', de: 'Schwach' },
+                        { id: 'growing', ru: 'В работе', de: 'Im Aufbau' },
+                        { id: 'confident', ru: 'Уверенно', de: 'Sicher' },
+                        { id: 'stable', ru: 'Стабильно', de: 'Stabil' },
+                      ].map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className={`skill-filter-chip ${skillZoneFilter === option.id ? 'is-active' : ''}`}
+                          onClick={() => setSkillZoneFilter(option.id)}
+                        >
+                          {tr(option.ru, option.de)}
+                        </button>
+                      ))}
+                    </div>
+
+                    {allSkillGroups.length === 0 && (
+                      <div className="webapp-muted">{tr('Нет навыков для выбранного фильтра.', 'Keine Skills fuer diesen Filter.')}</div>
+                    )}
+
+                    {allSkillGroups.map((group) => (
+                      <div className="skills-group-block" key={group.group}>
+                        <div className="skills-group-title">{group.group}</div>
+                        <div className="skills-grid">
+                          {group.skills.map((skill) => (
+                            <div className={`skill-card zone-${skill.zone || 'growing'}`} key={skill.skill_id}>
+                              <div className="skill-card-name">{skill.name}</div>
+                              <div className="skill-card-meta">
+                                <span>{tr('Оценка', 'Score')}: {Math.round(Number(skill.mastery || 0))}</span>
+                                <span>{tr('Ошибки 7д', 'Fehler 7T')}: {Number(skill.errors_7d || 0)}</span>
+                                <span className={`skill-trend trend-${skill.trend || 'flat'}`}>
+                                  {skill.trend === 'up' ? '↑' : skill.trend === 'down' ? '↓' : '→'}
+                                </span>
+                              </div>
+                              <div className="skill-card-actions">
+                                <button
+                                  type="button"
+                                  className="primary-button"
+                                  onClick={() => startSkillPractice(skill)}
+                                  disabled={Boolean(skillPracticeLoading[String(skill.skill_id || '')])}
+                                >
+                                  {skillPracticeLoading[String(skill.skill_id || '')]
+                                    ? tr('Запуск...', 'Start...')
+                                    : tr('Прокачать', 'Trainieren')}
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </section>
