@@ -1359,6 +1359,30 @@ body {
   box-shadow: 0 16px 32px rgba(8, 11, 26, 0.35);
 }
 
+.webapp-reader.is-immersive {
+  margin-top: 0;
+  padding: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: rgba(5, 12, 25, 0.98);
+  min-height: calc(100vh - 72px);
+}
+
+.webapp-reader.is-immersive .webapp-section-title {
+  display: none;
+}
+
+.reader-immersive-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 8px;
+  background: linear-gradient(180deg, rgba(5, 12, 25, 0.98), rgba(5, 12, 25, 0.82));
+}
+
 .webapp-reader-form {
   display: grid;
   gap: 12px;
@@ -1381,19 +1405,41 @@ body {
   overflow: auto;
 }
 
+.webapp-reader.is-immersive .reader-article {
+  margin-top: 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  max-height: calc(100vh - 124px);
+  min-height: calc(100vh - 124px);
+  padding: 10px;
+}
+
+.reader-article.has-pages {
+  overflow: hidden;
+}
+
 .reader-article.is-horizontal {
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: hidden;
   height: 68vh;
   max-height: 68vh;
   column-width: min(72vw, 620px);
   column-gap: 28px;
-  scroll-snap-type: x proximity;
+  scroll-snap-type: none;
 }
 
 .reader-article.is-horizontal p {
   break-inside: avoid;
   margin-bottom: 14px;
+}
+
+.reader-article.is-horizontal.has-pages {
+  touch-action: pan-x;
+}
+
+.reader-article.is-vertical.has-pages {
+  touch-action: pan-y;
 }
 
 .reader-bookmark-btn {
@@ -1420,6 +1466,12 @@ body {
   background: rgba(8, 18, 36, 0.75);
   color: #cde5ff;
   font-weight: 700;
+}
+
+.reader-timer-pill.is-paused {
+  background: rgba(255, 209, 102, 0.92);
+  border-color: rgba(255, 190, 60, 0.92);
+  color: #3a2a00;
 }
 
 .reader-library {
@@ -1553,6 +1605,10 @@ body {
 .reader-pages-layout {
   display: grid;
   gap: 10px;
+}
+
+.webapp-reader.is-immersive .reader-pages-layout {
+  gap: 6px;
 }
 
 .reader-pages-controls {

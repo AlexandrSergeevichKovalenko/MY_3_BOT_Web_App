@@ -136,6 +136,10 @@ function AppInner() {
   const [readerReadingMode, setReaderReadingMode] = useState('vertical');
   const [readerSessionStartedAt, setReaderSessionStartedAt] = useState('');
   const [readerLiveSeconds, setReaderLiveSeconds] = useState(0);
+  const [readerAccumulatedSeconds, setReaderAccumulatedSeconds] = useState(0);
+  const [readerTimerPaused, setReaderTimerPaused] = useState(false);
+  const [readerSwipeSensitivity, setReaderSwipeSensitivity] = useState('medium');
+  const [readerImmersive, setReaderImmersive] = useState(false);
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
   const [selectionCompact, setSelectionCompact] = useState(false);
@@ -326,6 +330,8 @@ function AppInner() {
   const readerSessionStartingRef = useRef(false);
   const readerStateSaveTimeoutRef = useRef(null);
   const readerTimerIntervalRef = useRef(null);
+  const readerSwipeStartRef = useRef(null);
+  const readerPageNavLockRef = useRef(false);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
@@ -1340,6 +1346,10 @@ function AppInner() {
   };
 
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
+  const readerHasContent = Boolean(String(readerContent || '').trim());
+  const readerElapsedTotalSeconds = Math.max(0, Number(readerAccumulatedSeconds || 0) + Number(readerLiveSeconds || 0));
+  const readerSwipeThreshold = readerSwipeSensitivity === 'high' ? 24 : readerSwipeSensitivity === 'low' ? 52 : 36;
+  const readerSwipeLockMs = readerSwipeSensitivity === 'high' ? 180 : readerSwipeSensitivity === 'low' ? 340 : 260;
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
   const uniqueSkills = (() => {
@@ -1816,7 +1826,7 @@ function AppInner() {
   };
 
   const startReaderSessionTracking = async () => {
-    if (!initData || readerSessionId || readerSessionStartingRef.current) return;
+    if (!initData || readerSessionId || readerSessionStartingRef.current || readerTimerPaused) return;
     readerSessionStartingRef.current = true;
     try {
       const response = await fetch('/api/reader/session/start', {
@@ -1834,12 +1844,7 @@ function AppInner() {
       }
       const startedAt = String(data?.session?.started_at || '').trim();
       setReaderSessionStartedAt(startedAt);
-      if (startedAt) {
-        const elapsed = Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
-        setReaderLiveSeconds(elapsed);
-      } else {
-        setReaderLiveSeconds(0);
-      }
+      setReaderLiveSeconds(0);
     } catch (error) {
       console.warn('reader session start error', error);
     } finally {
@@ -1871,6 +1876,23 @@ function AppInner() {
       await loadPlanAnalytics();
     } catch (error) {
       console.warn('reader session stop error', error);
+    }
+  };
+
+  const toggleReaderTimerPause = async () => {
+    if (!readerHasContent) return;
+    if (readerTimerPaused) {
+      setReaderTimerPaused(false);
+      await startReaderSessionTracking();
+      return;
+    }
+    const segmentSeconds = readerSessionStartedAt
+      ? Math.max(0, Math.floor((Date.now() - new Date(readerSessionStartedAt).getTime()) / 1000))
+      : 0;
+    setReaderAccumulatedSeconds((prev) => prev + segmentSeconds);
+    setReaderTimerPaused(true);
+    if (readerSessionId) {
+      await stopReaderSessionTracking(readerSessionId);
     }
   };
 
@@ -2078,6 +2100,7 @@ function AppInner() {
       && !flashcardsOnly
       && selectedSections.has('reader')
       && String(readerContent || '').trim()
+      && !readerTimerPaused
     );
     if (shouldTrackReader) {
       startReaderSessionTracking();
@@ -2086,7 +2109,7 @@ function AppInner() {
     if (readerSessionId) {
       stopReaderSessionTracking(readerSessionId);
     }
-  }, [isWebAppMode, initData, flashcardsOnly, selectedSections, readerContent]);
+  }, [isWebAppMode, initData, flashcardsOnly, selectedSections, readerContent, readerTimerPaused]);
 
   useEffect(() => {
     return () => {
@@ -2115,6 +2138,28 @@ function AppInner() {
       }
     };
   }, [readerSessionStartedAt]);
+
+  useEffect(() => {
+    if (!isWebAppMode) return;
+    const saved = safeStorageGet('reader_swipe_sensitivity');
+    if (saved === 'high' || saved === 'medium' || saved === 'low') {
+      setReaderSwipeSensitivity(saved);
+    }
+  }, [isWebAppMode]);
+
+  useEffect(() => {
+    if (!isWebAppMode) return;
+    safeStorageSet('reader_swipe_sensitivity', readerSwipeSensitivity);
+  }, [isWebAppMode, readerSwipeSensitivity]);
+
+  useEffect(() => {
+    if (readerHasContent) return;
+    setReaderImmersive(false);
+    setReaderTimerPaused(false);
+    setReaderAccumulatedSeconds(0);
+    setReaderLiveSeconds(0);
+    setReaderSessionStartedAt('');
+  }, [readerHasContent]);
 
   useEffect(() => {
     const node = readerArticleRef.current;
@@ -3361,6 +3406,65 @@ function AppInner() {
     }
   };
 
+  const goReaderPage = (delta) => {
+    if (!Array.isArray(readerPages) || readerPages.length === 0) return;
+    const step = delta > 0 ? 1 : -1;
+    setReaderCurrentPage((prev) => {
+      const next = prev + step;
+      return Math.max(1, Math.min(readerPages.length, next));
+    });
+  };
+
+  const handleReaderPageWheel = (event) => {
+    if (!Array.isArray(readerPages) || readerPages.length === 0) return;
+    event.preventDefault();
+    if (readerPageNavLockRef.current) return;
+    const deltaRaw = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    if (!deltaRaw) return;
+    readerPageNavLockRef.current = true;
+    goReaderPage(deltaRaw > 0 ? 1 : -1);
+    setTimeout(() => {
+      readerPageNavLockRef.current = false;
+    }, readerSwipeLockMs);
+  };
+
+  const handleReaderPageTouchStart = (event) => {
+    if (!Array.isArray(readerPages) || readerPages.length === 0) return;
+    const touch = event?.touches?.[0];
+    if (!touch) return;
+    readerSwipeStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      ts: Date.now(),
+    };
+  };
+
+  const handleReaderPageTouchEnd = (event) => {
+    if (!Array.isArray(readerPages) || readerPages.length === 0) return;
+    const start = readerSwipeStartRef.current;
+    readerSwipeStartRef.current = null;
+    if (!start || readerPageNavLockRef.current) return;
+    const touch = event?.changedTouches?.[0];
+    if (!touch) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    const elapsed = Date.now() - start.ts;
+    if (elapsed > 900) return;
+    const threshold = readerSwipeThreshold;
+    if (readerReadingMode === 'horizontal') {
+      if (Math.abs(dx) < threshold || Math.abs(dx) < Math.abs(dy)) return;
+      readerPageNavLockRef.current = true;
+      goReaderPage(dx < 0 ? 1 : -1);
+    } else {
+      if (Math.abs(dy) < threshold || Math.abs(dy) < Math.abs(dx)) return;
+      readerPageNavLockRef.current = true;
+      goReaderPage(dy < 0 ? 1 : -1);
+    }
+    setTimeout(() => {
+      readerPageNavLockRef.current = false;
+    }, readerSwipeLockMs);
+  };
+
   const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -3434,6 +3538,10 @@ function AppInner() {
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
       setReaderAudioError('');
+      setReaderAccumulatedSeconds(0);
+      setReaderLiveSeconds(0);
+      setReaderTimerPaused(false);
+      setReaderImmersive(true);
       ensureSectionVisible('reader');
       setTimeout(() => {
         scrollToRef(readerRef, { block: 'start' });
@@ -3626,6 +3734,10 @@ function AppInner() {
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
       setReaderAudioError('');
+      setReaderAccumulatedSeconds(0);
+      setReaderLiveSeconds(0);
+      setReaderTimerPaused(false);
+      setReaderImmersive(true);
       ensureSectionVisible('reader');
       setTimeout(() => {
         scrollToRef(readerRef, { block: 'start' });
@@ -6729,18 +6841,65 @@ function AppInner() {
             )}
 
             {!flashcardsOnly && isSectionVisible('reader') && (
-              <section className="webapp-section webapp-reader" ref={readerRef}>
+              <section className={`webapp-section webapp-reader ${readerHasContent && readerImmersive ? 'is-immersive' : ''}`} ref={readerRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <div className="webapp-local-section-head">
                     <h3>{tr('Читалка', 'Leser')}</h3>
-                    {isFocusedSection('reader') && (
+                    {!readerImmersive && isFocusedSection('reader') && (
                       <button type="button" className="section-home-back" onClick={goHomeScreen}>
                         {tr('На главную', 'Startseite')}
                       </button>
                     )}
-                    <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                    {!readerImmersive && <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />}
                   </div>
                 </div>
+                {readerHasContent && readerImmersive && (
+                  <div className="reader-immersive-topbar">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => setReaderImmersive(false)}
+                    >
+                      {tr('Назад', 'Zurueck')}
+                    </button>
+                    <button
+                      type="button"
+                      className={`secondary-button ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
+                      onClick={() => {
+                        const nextMode = readerReadingMode === 'vertical' ? 'horizontal' : 'vertical';
+                        setReaderReadingMode(nextMode);
+                        if (readerDocumentId) {
+                          syncReaderState({ reading_mode: nextMode });
+                        }
+                      }}
+                    >
+                      {readerReadingMode === 'vertical' ? '↕︎' : '↔︎'}
+                    </button>
+                    <button
+                      type="button"
+                      className="reader-bookmark-btn"
+                      onClick={() => {
+                        const mark = computeReaderProgressPercent();
+                        setReaderBookmarkPercent(mark);
+                        if (readerDocumentId) {
+                          syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
+                        }
+                      }}
+                      title={tr('Поставить закладку', 'Lesezeichen setzen')}
+                    >
+                      🔖
+                    </button>
+                    <button
+                      type="button"
+                      className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
+                      onClick={toggleReaderTimerPause}
+                    >
+                      {readerTimerPaused ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}` : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
+                    </button>
+                  </div>
+                )}
+
+                {!readerImmersive && (
                 <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
                   <label className="webapp-field">
                     <span>{tr('Ссылка или текст', 'Link oder Text')}</span>
@@ -6807,12 +6966,30 @@ function AppInner() {
                         {tr('Язык текста', 'Textsprache')}: {readerDetectedLanguage.toUpperCase()}
                       </span>
                     )}
-                    <span className="reader-timer-pill">
-                      {tr('Чтение', 'Lesen')}: {formatReaderTimer(readerLiveSeconds)}
-                    </span>
+                    <button
+                      type="button"
+                      className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
+                      onClick={toggleReaderTimerPause}
+                      disabled={!readerHasContent}
+                      title={tr('Пауза/продолжение таймера чтения', 'Lese-Timer pausieren/fortsetzen')}
+                    >
+                      {readerTimerPaused ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}` : `${tr('Чтение', 'Lesen')}: ${formatReaderTimer(readerElapsedTotalSeconds)}`}
+                    </button>
                   </div>
+                  <label className="webapp-field">
+                    <span>{tr('Чувствительность свайпа', 'Swipe-Empfindlichkeit')}</span>
+                    <select
+                      value={readerSwipeSensitivity}
+                      onChange={(event) => setReaderSwipeSensitivity(event.target.value)}
+                    >
+                      <option value="high">{tr('Высокая', 'Hoch')}</option>
+                      <option value="medium">{tr('Средняя', 'Mittel')}</option>
+                      <option value="low">{tr('Низкая', 'Niedrig')}</option>
+                    </select>
+                  </label>
                 </form>
-                {readerDocumentId && (
+                )}
+                {!readerImmersive && readerDocumentId && (
                   <section className="reader-audio-panel">
                     <div className="reader-audio-head">
                       <strong>{tr('Оффлайн-аудио документа', 'Offline-Audio des Dokuments')}</strong>
@@ -6862,7 +7039,8 @@ function AppInner() {
                     {readerAudioError && <div className="webapp-error">{readerAudioError}</div>}
                   </section>
                 )}
-                {readerError && <div className="webapp-error">{readerError}</div>}
+                {!readerImmersive && readerError && <div className="webapp-error">{readerError}</div>}
+                {!readerImmersive && (
                 <section className="reader-library">
                   <div className="reader-library-head">
                     <h4>{tr('Библиотека', 'Bibliothek')}</h4>
@@ -6936,13 +7114,17 @@ function AppInner() {
                     </div>
                   )}
                 </section>
+                )}
                 {readerContent && (
                   <article
                     ref={readerArticleRef}
-                    className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'}`}
+                    className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${Array.isArray(readerPages) && readerPages.length > 0 ? 'has-pages' : ''}`}
                     onMouseUp={(event) => handleSelection(event, '', { lookupLang: readerDetectedLanguage })}
+                    onWheel={handleReaderPageWheel}
+                    onTouchStart={handleReaderPageTouchStart}
+                    onTouchEnd={handleReaderPageTouchEnd}
                   >
-                    {readerSourceType && (
+                    {readerSourceType && !readerImmersive && (
                       <div className="reader-meta">
                         {readerTitle && <span>{tr('Книга', 'Buch')}: {readerTitle}</span>}
                         <span>{tr('Источник', 'Quelle')}: {readerSourceType.toUpperCase()}</span>
@@ -6953,11 +7135,12 @@ function AppInner() {
                     )}
                     {Array.isArray(readerPages) && readerPages.length > 0 ? (
                       <div className="reader-pages-layout">
+                        {!readerImmersive && (
                         <div className="reader-pages-controls">
                           <button
                             type="button"
                             className="secondary-button"
-                            onClick={() => setReaderCurrentPage((prev) => Math.max(1, prev - 1))}
+                            onClick={() => goReaderPage(-1)}
                             disabled={readerCurrentPage <= 1}
                           >
                             {tr('Назад', 'Zurueck')}
@@ -6968,12 +7151,13 @@ function AppInner() {
                           <button
                             type="button"
                             className="secondary-button"
-                            onClick={() => setReaderCurrentPage((prev) => Math.min(readerPages.length, prev + 1))}
+                            onClick={() => goReaderPage(1)}
                             disabled={readerCurrentPage >= readerPages.length}
                           >
                             {tr('Вперёд', 'Weiter')}
                           </button>
                         </div>
+                        )}
                         <div className="reader-page-sheet">
                           <div className="reader-page-sheet-inner">
                             {renderClickableText(
@@ -6982,7 +7166,7 @@ function AppInner() {
                             )}
                           </div>
                           <div className="reader-page-num">
-                            {tr('Стр.', 'S.')}{' '}{readerCurrentPage}
+                            {tr('Стр.', 'S.')}{' '}{readerCurrentPage}{Array.isArray(readerPages) && readerPages.length > 0 ? ` / ${readerPages.length}` : ''}
                           </div>
                         </div>
                       </div>
