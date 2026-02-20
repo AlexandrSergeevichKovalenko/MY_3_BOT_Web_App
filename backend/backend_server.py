@@ -3751,11 +3751,11 @@ def start_skill_practice(skill_id: str):
 
     payload = request.get_json(silent=True) or {}
     level = str(payload.get("level") or "b1").strip().lower() or "b1"
-    skill = get_skill_by_id(skill_id)
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    skill = get_skill_by_id(skill_id, language_code=target_lang)
     if not skill or not bool(skill.get("is_active")):
         return jsonify({"error": "Навык не найден"}), 404
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     focus_topic = get_top_error_topic_for_skill(
         user_id=int(user_id),
         skill_id=str(skill.get("skill_id") or skill_id),

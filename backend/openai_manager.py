@@ -1384,6 +1384,8 @@ async def run_check_translation_multilang(
     user_translation: str,
     source_lang: str,
     target_lang: str,
+    allowed_categories: list[str] | None = None,
+    allowed_subcategories: dict[str, list[str]] | None = None,
 ) -> str:
     task_name = "check_translation_multilang"
     system_instruction_key = "check_translation_multilang"
@@ -1394,11 +1396,24 @@ async def run_check_translation_multilang(
 
     source_name = _language_name(source_lang)
     target_name = _language_name(target_lang)
+    taxonomy_hint = ""
+    if allowed_categories:
+        taxonomy_hint += f"\nallowed_categories: {', '.join([str(x) for x in allowed_categories if str(x).strip()])}"
+    if allowed_subcategories:
+        compact = []
+        for cat, values in allowed_subcategories.items():
+            if not values:
+                continue
+            compact.append(f"{cat}: {', '.join(values)}")
+        if compact:
+            taxonomy_hint += f"\nallowed_subcategories:\n- " + "\n- ".join(compact)
+
     user_message = (
         f"source_language: {source_lang}\n"
         f"target_language: {target_lang}\n"
         f'original_text ({source_name}): "{original_text}"\n'
         f'user_translation ({target_name}): "{user_translation}"'
+        f"{taxonomy_hint}"
     )
 
     await client.beta.threads.messages.create(
@@ -1429,6 +1444,12 @@ async def run_check_translation_multilang(
         await client.beta.threads.delete(thread_id=thread_id)
     except Exception as exc:
         logging.warning("Не удалось удалить thread: %s", exc)
+
+    if any(
+        marker in collected_text
+        for marker in ("Mistake Categories:", "Subcategories:", "Mistake category:", "First subcategory:")
+    ):
+        return collected_text
 
     score = None
     correct_translation = None

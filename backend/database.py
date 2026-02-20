@@ -21,7 +21,7 @@ SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
 DEFAULT_NATIVE_LANGUAGE = "ru"
 
-SKILL_SEED: list[tuple[str, str, str]] = [
+SKILL_SEED_DE: list[tuple[str, str, str]] = [
     ("nouns_articles_gender", "Nouns: Articles & Gender", "Nouns"),
     ("nouns_plural", "Nouns: Plural", "Nouns"),
     ("nouns_compounds", "Nouns: Compound Nouns", "Nouns"),
@@ -88,7 +88,7 @@ SKILL_SEED: list[tuple[str, str, str]] = [
     ("other_unclassified", "Other: Unclassified", "Other"),
 ]
 
-ERROR_SKILL_MAP_SEED: list[tuple[str, str, str, float]] = [
+ERROR_SKILL_MAP_SEED_DE: list[tuple[str, str, str, float]] = [
     ("Nouns", "Gendered Articles", "nouns_articles_gender", 1.2),
     ("Nouns", "Pluralization", "nouns_plural", 1.0),
     ("Nouns", "Compound Nouns", "nouns_compounds", 0.8),
@@ -154,6 +154,216 @@ ERROR_SKILL_MAP_SEED: list[tuple[str, str, str, float]] = [
     ("Word Order", "Incorrect Order with Modal Verb", "word_order_modal_structure", 1.2),
     ("Other mistake", "Unclassified mistake", "other_unclassified", 1.0),
 ]
+
+SKILL_SEED_EN: list[tuple[str, str, str]] = [
+    ("en_nouns_plural", "Nouns: Pluralization", "Nouns"),
+    ("en_nouns_countability", "Nouns: Countable vs Uncountable", "Nouns"),
+    ("en_determiners_articles", "Articles: a/an/the/zero", "Articles & Determiners"),
+    ("en_determiners_quantifiers", "Determiners: some/any/much/many", "Articles & Determiners"),
+    ("en_pronouns_case", "Pronouns: Subject/Object", "Pronouns"),
+    ("en_pronouns_reflexive", "Pronouns: Reflexive", "Pronouns"),
+    ("en_verbs_agreement", "Verbs: Conjugation/Agreement", "Verbs"),
+    ("en_aux_do_support", "Auxiliaries: do-support", "Verbs"),
+    ("en_aux_be_having", "Auxiliaries: be/have", "Verbs"),
+    ("en_modals", "Verbs: Modal Verbs", "Verbs"),
+    ("en_phrasal_verbs", "Verbs: Phrasal Verbs", "Verbs"),
+    ("en_verb_patterns", "Verbs: to V / V-ing", "Verbs"),
+    ("en_tense_present_simple", "Tense: Present Simple", "Tenses & Aspect"),
+    ("en_tense_present_continuous", "Tense: Present Continuous", "Tenses & Aspect"),
+    ("en_tense_past_simple", "Tense: Past Simple", "Tenses & Aspect"),
+    ("en_tense_past_continuous", "Tense: Past Continuous", "Tenses & Aspect"),
+    ("en_tense_present_perfect", "Tense: Present Perfect", "Tenses & Aspect"),
+    ("en_tense_past_perfect", "Tense: Past Perfect", "Tenses & Aspect"),
+    ("en_future", "Tense: Future", "Tenses & Aspect"),
+    ("en_conditionals", "Conditionals", "Tenses & Aspect"),
+    ("en_adjectives_order", "Adjectives: Order", "Adjectives"),
+    ("en_comparative_superlative", "Comparative/Superlative", "Adjectives"),
+    ("en_adverbs_placement", "Adverbs: Placement", "Adverbs"),
+    ("en_prepositions_time_place", "Prepositions: Time/Place", "Prepositions"),
+    ("en_word_order_questions_negation", "Word Order: Questions/Negation", "Word Order"),
+    ("en_other_unclassified", "Other: Unclassified", "Other"),
+]
+
+ERROR_SKILL_MAP_SEED_EN: list[tuple[str, str, str, float]] = [
+    ("Nouns", "Pluralization", "en_nouns_plural", 1.0),
+    ("Nouns", "Countable vs Uncountable", "en_nouns_countability", 1.2),
+    ("Nouns", "Articles/Determiners", "en_determiners_articles", 1.1),
+    ("Pronouns", "Subject/Object", "en_pronouns_case", 1.0),
+    ("Pronouns", "Reflexive Pronouns", "en_pronouns_reflexive", 1.0),
+    ("Verbs", "Conjugation/Agreement", "en_verbs_agreement", 1.2),
+    ("Verbs", "Auxiliaries (do/be/have)", "en_aux_do_support", 1.1),
+    ("Verbs", "Modal Verbs", "en_modals", 1.1),
+    ("Verbs", "Phrasal Verbs", "en_phrasal_verbs", 1.0),
+    ("Verbs", "Verb Patterns (to V / V-ing)", "en_verb_patterns", 1.2),
+    ("Tenses & Aspect", "Present Simple", "en_tense_present_simple", 0.9),
+    ("Tenses & Aspect", "Present Continuous", "en_tense_present_continuous", 0.9),
+    ("Tenses & Aspect", "Past Simple", "en_tense_past_simple", 0.9),
+    ("Tenses & Aspect", "Past Continuous", "en_tense_past_continuous", 1.0),
+    ("Tenses & Aspect", "Present Perfect", "en_tense_present_perfect", 1.1),
+    ("Tenses & Aspect", "Past Perfect", "en_tense_past_perfect", 1.0),
+    ("Tenses & Aspect", "Future (will/going to)", "en_future", 0.9),
+    ("Tenses & Aspect", "Conditionals", "en_conditionals", 1.2),
+    ("Adjectives", "Order of Adjectives", "en_adjectives_order", 1.0),
+    ("Adjectives", "Comparative", "en_comparative_superlative", 0.8),
+    ("Adjectives", "Superlative", "en_comparative_superlative", 0.8),
+    ("Adverbs", "Placement", "en_adverbs_placement", 1.0),
+    ("Prepositions", "Time", "en_prepositions_time_place", 1.0),
+    ("Prepositions", "Place", "en_prepositions_time_place", 1.0),
+    ("Word Order", "Questions (aux inversion)", "en_word_order_questions_negation", 1.2),
+    ("Word Order", "Negation", "en_word_order_questions_negation", 1.1),
+    ("Articles & Determiners", "a/an/the/zero", "en_determiners_articles", 1.2),
+    ("Articles & Determiners", "Some/Any", "en_determiners_quantifiers", 1.0),
+    ("Articles & Determiners", "Much/Many", "en_determiners_quantifiers", 1.0),
+    ("Other mistake", "Unclassified mistake", "en_other_unclassified", 1.0),
+]
+
+SKILL_SEED_ES: list[tuple[str, str, str]] = [
+    ("es_articles_gender", "Nouns: Gendered Articles", "Nouns"),
+    ("es_nouns_plural", "Nouns: Pluralization", "Nouns"),
+    ("es_agreement_gender_number", "Agreement: Gender/Number", "Nouns"),
+    ("es_pronouns_object_lo_la_le", "Pronouns: lo/la/le", "Pronouns"),
+    ("es_clitics_placement", "Pronouns: Clitic Placement", "Pronouns"),
+    ("es_reflexive_se", "Pronouns: Reflexive se", "Pronouns"),
+    ("es_conjugation_general", "Verbs: Conjugation", "Verbs"),
+    ("es_ser_estar", "Verbs: Ser vs Estar", "Verbs"),
+    ("es_periphrasis_modals", "Verbs: Periphrasis", "Verbs"),
+    ("es_imperatives", "Verbs: Imperatives", "Verbs"),
+    ("es_tense_present", "Tense: Present", "Tenses"),
+    ("es_tense_perfecto", "Tense: Preterito Perfecto", "Tenses"),
+    ("es_tense_indefinido", "Tense: Preterito Indefinido", "Tenses"),
+    ("es_tense_imperfecto", "Tense: Imperfecto", "Tenses"),
+    ("es_tense_pluscuamperfecto", "Tense: Pluscuamperfecto", "Tenses"),
+    ("es_tense_future", "Tense: Future", "Tenses"),
+    ("es_tense_conditional", "Tense: Conditional", "Tenses"),
+    ("es_subjunctive_present", "Mood: Subjunctive Present", "Moods"),
+    ("es_subjunctive_past", "Mood: Subjunctive Past", "Moods"),
+    ("es_subjunctive_selection", "Mood: Indicative vs Subjunctive", "Moods"),
+    ("es_por_para", "Prepositions: Por vs Para", "Prepositions"),
+    ("es_personal_a", "Prepositions: Personal A", "Prepositions"),
+    ("es_prepositions_usage_general", "Prepositions: Usage", "Prepositions"),
+    ("es_word_order_questions", "Word Order: Questions", "Word Order"),
+    ("es_negation", "Word Order: Negation", "Word Order"),
+    ("es_clitic_order_se_lo", "Word Order: se lo order", "Word Order"),
+    ("es_adj_adv_comparison", "Adjectives/Adverbs: Comparison", "Adjectives/Adverbs"),
+    ("es_adverbs_formation", "Adverbs: Formation", "Adjectives/Adverbs"),
+    ("es_orthography_accents", "Orthography: Accent Marks", "Orthography"),
+    ("es_orthography_punctuation_spelling", "Orthography: Punctuation/Spelling", "Orthography"),
+    ("es_other_unclassified", "Other: Unclassified", "Other"),
+]
+
+ERROR_SKILL_MAP_SEED_ES: list[tuple[str, str, str, float]] = [
+    ("Nouns", "Gendered Articles", "es_articles_gender", 1.2),
+    ("Nouns", "Pluralization", "es_nouns_plural", 1.0),
+    ("Nouns", "Agreement (gender/number)", "es_agreement_gender_number", 1.2),
+    ("Pronouns", "Object Pronouns (lo/la/le)", "es_pronouns_object_lo_la_le", 1.2),
+    ("Pronouns", "Clitic Placement", "es_clitics_placement", 1.2),
+    ("Pronouns", "Reflexive (se)", "es_reflexive_se", 1.0),
+    ("Verbs", "Conjugation", "es_conjugation_general", 1.1),
+    ("Verbs", "Ser vs Estar", "es_ser_estar", 1.3),
+    ("Verbs", "Modal/Periphrasis (ir a, tener que)", "es_periphrasis_modals", 1.0),
+    ("Verbs", "Imperatives", "es_imperatives", 1.0),
+    ("Tenses", "Present", "es_tense_present", 0.8),
+    ("Tenses", "Preterito Perfecto", "es_tense_perfecto", 1.0),
+    ("Tenses", "Preterito Indefinido", "es_tense_indefinido", 1.1),
+    ("Tenses", "Imperfecto", "es_tense_imperfecto", 1.1),
+    ("Tenses", "Pluscuamperfecto", "es_tense_pluscuamperfecto", 1.1),
+    ("Tenses", "Future", "es_tense_future", 0.9),
+    ("Tenses", "Conditional", "es_tense_conditional", 1.0),
+    ("Moods", "Subjunctive (Present)", "es_subjunctive_present", 1.2),
+    ("Moods", "Subjunctive (Past)", "es_subjunctive_past", 1.2),
+    ("Moods", "Indicative vs Subjunctive", "es_subjunctive_selection", 1.3),
+    ("Prepositions", "Por vs Para", "es_por_para", 1.3),
+    ("Prepositions", "A personal", "es_personal_a", 1.1),
+    ("Prepositions", "Preposition Usage", "es_prepositions_usage_general", 1.1),
+    ("Word Order", "Questions", "es_word_order_questions", 1.0),
+    ("Word Order", "Negation", "es_negation", 0.9),
+    ("Word Order", "Clitic order (se lo)", "es_clitic_order_se_lo", 1.3),
+    ("Adjectives/Adverbs", "Comparative/Superlative", "es_adj_adv_comparison", 0.9),
+    ("Adjectives/Adverbs", "Adverb Formation", "es_adverbs_formation", 0.9),
+    ("Orthography", "Accent Marks", "es_orthography_accents", 1.1),
+    ("Orthography", "Punctuation (¿¡)", "es_orthography_punctuation_spelling", 0.8),
+    ("Orthography", "Spelling", "es_orthography_punctuation_spelling", 0.9),
+    ("Other mistake", "Unclassified mistake", "es_other_unclassified", 1.0),
+]
+
+SKILL_SEED_IT: list[tuple[str, str, str]] = [
+    ("it_articles_gender", "Nouns: Gendered Articles", "Nouns"),
+    ("it_nouns_plural", "Nouns: Pluralization", "Nouns"),
+    ("it_agreement_gender_number", "Agreement: Gender/Number", "Nouns"),
+    ("it_partitive_articles", "Nouns: Partitive Articles", "Nouns"),
+    ("it_pronouns_direct_indirect", "Pronouns: Direct/Indirect", "Pronouns"),
+    ("it_clitics_placement", "Pronouns: Clitic Placement", "Pronouns"),
+    ("it_reflexive_si", "Pronouns: Reflexive si", "Pronouns"),
+    ("it_ci_ne", "Pronouns: ci/ne", "Pronouns"),
+    ("it_conjugation_general", "Verbs: Conjugation", "Verbs"),
+    ("it_aux_essere_avere", "Verbs: essere vs avere", "Verbs"),
+    ("it_modals", "Verbs: Modal Verbs", "Verbs"),
+    ("it_imperatives", "Verbs: Imperatives", "Verbs"),
+    ("it_tense_presente", "Tense: Presente", "Tenses"),
+    ("it_tense_passato_prossimo", "Tense: Passato Prossimo", "Tenses"),
+    ("it_tense_imperfetto", "Tense: Imperfetto", "Tenses"),
+    ("it_tense_trapassato", "Tense: Trapassato Prossimo", "Tenses"),
+    ("it_tense_futuro", "Tense: Futuro", "Tenses"),
+    ("it_tense_condizionale", "Tense: Condizionale", "Tenses"),
+    ("it_congiuntivo_present", "Mood: Congiuntivo Present", "Moods"),
+    ("it_congiuntivo_past", "Mood: Congiuntivo Past", "Moods"),
+    ("it_congiuntivo_selection", "Mood: Indicative vs Congiuntivo", "Moods"),
+    ("it_prepositions_articulated", "Prepositions: Articulated", "Prepositions"),
+    ("it_prepositions_usage_general", "Prepositions: Usage", "Prepositions"),
+    ("it_word_order_questions", "Word Order: Questions", "Word Order"),
+    ("it_negation", "Word Order: Negation", "Word Order"),
+    ("it_double_pronouns", "Word Order: Double Pronouns", "Word Order"),
+    ("it_adj_adv_comparison", "Adjectives/Adverbs: Comparison", "Adjectives/Adverbs"),
+    ("it_orthography_accents_spelling", "Orthography: Accents/Spelling", "Orthography"),
+    ("it_other_unclassified", "Other: Unclassified", "Other"),
+]
+
+ERROR_SKILL_MAP_SEED_IT: list[tuple[str, str, str, float]] = [
+    ("Nouns", "Gendered Articles", "it_articles_gender", 1.2),
+    ("Nouns", "Pluralization", "it_nouns_plural", 1.0),
+    ("Nouns", "Agreement (gender/number)", "it_agreement_gender_number", 1.2),
+    ("Nouns", "Partitive (del, della)", "it_partitive_articles", 1.1),
+    ("Pronouns", "Direct/Indirect (lo/la/gli/le)", "it_pronouns_direct_indirect", 1.2),
+    ("Pronouns", "Clitic Placement", "it_clitics_placement", 1.2),
+    ("Pronouns", "Reflexive (si)", "it_reflexive_si", 1.0),
+    ("Pronouns", "Ci/Ne", "it_ci_ne", 1.1),
+    ("Verbs", "Conjugation", "it_conjugation_general", 1.1),
+    ("Verbs", "Essere vs Avere (aux)", "it_aux_essere_avere", 1.3),
+    ("Verbs", "Modal Verbs", "it_modals", 1.0),
+    ("Verbs", "Imperatives", "it_imperatives", 1.0),
+    ("Tenses", "Presente", "it_tense_presente", 0.8),
+    ("Tenses", "Passato Prossimo", "it_tense_passato_prossimo", 1.1),
+    ("Tenses", "Imperfetto", "it_tense_imperfetto", 1.1),
+    ("Tenses", "Trapassato Prossimo", "it_tense_trapassato", 1.1),
+    ("Tenses", "Futuro", "it_tense_futuro", 0.9),
+    ("Tenses", "Condizionale", "it_tense_condizionale", 1.0),
+    ("Moods", "Congiuntivo (Present)", "it_congiuntivo_present", 1.2),
+    ("Moods", "Congiuntivo (Past)", "it_congiuntivo_past", 1.2),
+    ("Moods", "Indicative vs Congiuntivo", "it_congiuntivo_selection", 1.3),
+    ("Prepositions", "Articulated (nel, sul)", "it_prepositions_articulated", 1.1),
+    ("Prepositions", "Preposition Usage", "it_prepositions_usage_general", 1.1),
+    ("Word Order", "Questions", "it_word_order_questions", 1.0),
+    ("Word Order", "Negation", "it_negation", 0.9),
+    ("Word Order", "Double pronouns", "it_double_pronouns", 1.2),
+    ("Adjectives/Adverbs", "Comparative/Superlative", "it_adj_adv_comparison", 0.9),
+    ("Orthography", "Accents", "it_orthography_accents_spelling", 1.0),
+    ("Orthography", "Spelling", "it_orthography_accents_spelling", 1.0),
+    ("Other mistake", "Unclassified mistake", "it_other_unclassified", 1.0),
+]
+
+SKILL_SEED: list[tuple[str, str, str, str]] = (
+    [(skill_id, title, category, "de") for skill_id, title, category in SKILL_SEED_DE]
+    + [(skill_id, title, category, "en") for skill_id, title, category in SKILL_SEED_EN]
+    + [(skill_id, title, category, "es") for skill_id, title, category in SKILL_SEED_ES]
+    + [(skill_id, title, category, "it") for skill_id, title, category in SKILL_SEED_IT]
+)
+
+ERROR_SKILL_MAP_SEED: list[tuple[str, str, str, str, float]] = (
+    [("de", cat, subcat, skill_id, weight) for cat, subcat, skill_id, weight in ERROR_SKILL_MAP_SEED_DE]
+    + [("en", cat, subcat, skill_id, weight) for cat, subcat, skill_id, weight in ERROR_SKILL_MAP_SEED_EN]
+    + [("es", cat, subcat, skill_id, weight) for cat, subcat, skill_id, weight in ERROR_SKILL_MAP_SEED_ES]
+    + [("it", cat, subcat, skill_id, weight) for cat, subcat, skill_id, weight in ERROR_SKILL_MAP_SEED_IT]
+)
 
 # Добавим проверку, чтобы сразу видеть ошибку в логах, если адреса нет
 if not DATABASE_URL:
@@ -473,6 +683,7 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_skills (
                     skill_id TEXT PRIMARY KEY,
+                    language_code TEXT NOT NULL DEFAULT 'de',
                     title TEXT NOT NULL,
                     category TEXT NOT NULL,
                     is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -481,12 +692,30 @@ def ensure_webapp_tables() -> None:
                 );
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_skills
+                ADD COLUMN IF NOT EXISTS language_code TEXT;
+            """)
+            cursor.execute("""
+                UPDATE bt_3_skills
+                SET language_code = COALESCE(NULLIF(language_code, ''), 'de')
+                WHERE language_code IS NULL OR language_code = '';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_skills
+                ALTER COLUMN language_code SET DEFAULT 'de';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_skills
+                ALTER COLUMN language_code SET NOT NULL;
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_skills_category
-                ON bt_3_skills (category, skill_id);
+                ON bt_3_skills (language_code, category, skill_id);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_error_skill_map (
                     id BIGSERIAL PRIMARY KEY,
+                    language_code TEXT NOT NULL DEFAULT 'de',
                     error_category TEXT NOT NULL,
                     error_subcategory TEXT NOT NULL,
                     skill_id TEXT NOT NULL REFERENCES bt_3_skills(skill_id) ON DELETE CASCADE,
@@ -498,12 +727,29 @@ def ensure_webapp_tables() -> None:
                 );
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_error_skill_map
+                ADD COLUMN IF NOT EXISTS language_code TEXT;
+            """)
+            cursor.execute("""
+                UPDATE bt_3_error_skill_map
+                SET language_code = COALESCE(NULLIF(language_code, ''), 'de')
+                WHERE language_code IS NULL OR language_code = '';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_error_skill_map
+                ALTER COLUMN language_code SET DEFAULT 'de';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_error_skill_map
+                ALTER COLUMN language_code SET NOT NULL;
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_error_skill_map_err
-                ON bt_3_error_skill_map (error_category, error_subcategory);
+                ON bt_3_error_skill_map (language_code, error_category, error_subcategory);
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_error_skill_map_skill
-                ON bt_3_error_skill_map (skill_id);
+                ON bt_3_error_skill_map (language_code, skill_id);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_user_skill_state (
@@ -586,12 +832,13 @@ def ensure_webapp_tables() -> None:
             """)
             cursor.executemany(
                 """
-                INSERT INTO bt_3_skills (skill_id, title, category, is_active, updated_at)
-                VALUES (%s, %s, %s, TRUE, NOW())
+                INSERT INTO bt_3_skills (skill_id, title, category, language_code, is_active, updated_at)
+                VALUES (%s, %s, %s, %s, TRUE, NOW())
                 ON CONFLICT (skill_id) DO UPDATE
                 SET
                     title = EXCLUDED.title,
                     category = EXCLUDED.category,
+                    language_code = EXCLUDED.language_code,
                     updated_at = NOW();
                 """,
                 SKILL_SEED,
@@ -599,15 +846,17 @@ def ensure_webapp_tables() -> None:
             cursor.executemany(
                 """
                 INSERT INTO bt_3_error_skill_map (
+                    language_code,
                     error_category,
                     error_subcategory,
                     skill_id,
                     weight,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (error_category, error_subcategory, skill_id) DO UPDATE
                 SET
+                    language_code = EXCLUDED.language_code,
                     weight = EXCLUDED.weight,
                     updated_at = NOW();
                 """,
@@ -3059,10 +3308,16 @@ def get_lowest_mastery_skill(
                     WHERE s.user_id = %s
                       AND s.source_lang = COALESCE(%s, 'ru')
                       AND s.target_lang = COALESCE(%s, 'de')
+                      AND k.language_code = COALESCE(%s, 'de')
                     ORDER BY s.mastery ASC, s.total_events DESC, s.updated_at DESC
                     LIMIT 1;
                     """,
-                    (int(user_id), source_lang or "ru", target_lang or "de"),
+                    (
+                        int(user_id),
+                        source_lang or "ru",
+                        target_lang or "de",
+                        target_lang or "de",
+                    ),
                 )
                 row = cursor.fetchone()
     except Exception:
@@ -3092,6 +3347,7 @@ def get_top_error_topic_for_skill(
         return None
     lookback_days = max(1, int(lookback_days))
     normalized_skill_id = str(skill_id).strip()
+    normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -3110,6 +3366,7 @@ def get_top_error_topic_for_skill(
                       ON m.error_category = COALESCE(NULLIF(dm.main_category, ''), 'Other mistake')
                      AND m.error_subcategory = COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')
                     WHERE dm.user_id = %s
+                      AND m.language_code = %s
                       AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
                       AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
                       AND m.skill_id = %s
@@ -3120,8 +3377,9 @@ def get_top_error_topic_for_skill(
                     """,
                     (
                         int(user_id),
+                        normalized_target_lang,
                         source_lang or "ru",
-                        target_lang or "de",
+                        normalized_target_lang,
                         normalized_skill_id,
                         lookback_days,
                     ),
@@ -3140,10 +3398,11 @@ def get_top_error_topic_for_skill(
                     SELECT error_category, error_subcategory, weight
                     FROM bt_3_error_skill_map
                     WHERE skill_id = %s
+                      AND language_code = %s
                     ORDER BY weight DESC, error_category ASC, error_subcategory ASC
                     LIMIT 1;
                     """,
-                    (normalized_skill_id,),
+                    (normalized_skill_id, normalized_target_lang),
                 )
                 fallback = cursor.fetchone()
     except Exception:
@@ -3269,27 +3528,50 @@ def list_today_reminder_users(limit: int = 1000, offset: int = 0) -> list[dict]:
     ]
 
 
-def list_skills(category: str | None = None) -> list[dict]:
+def list_skills(category: str | None = None, language_code: str | None = None) -> list[dict]:
+    lang = (language_code or "").strip().lower()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             if category:
-                cursor.execute(
-                    """
-                    SELECT skill_id, title, category, is_active
-                    FROM bt_3_skills
-                    WHERE category = %s
-                    ORDER BY skill_id;
-                    """,
-                    (category,),
-                )
+                if lang:
+                    cursor.execute(
+                        """
+                        SELECT skill_id, title, category, is_active, language_code
+                        FROM bt_3_skills
+                        WHERE category = %s AND language_code = %s
+                        ORDER BY skill_id;
+                        """,
+                        (category, lang),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT skill_id, title, category, is_active, language_code
+                        FROM bt_3_skills
+                        WHERE category = %s
+                        ORDER BY skill_id;
+                        """,
+                        (category,),
+                    )
             else:
-                cursor.execute(
-                    """
-                    SELECT skill_id, title, category, is_active
-                    FROM bt_3_skills
-                    ORDER BY category, skill_id;
-                    """
-                )
+                if lang:
+                    cursor.execute(
+                        """
+                        SELECT skill_id, title, category, is_active, language_code
+                        FROM bt_3_skills
+                        WHERE language_code = %s
+                        ORDER BY category, skill_id;
+                        """,
+                        (lang,),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT skill_id, title, category, is_active, language_code
+                        FROM bt_3_skills
+                        ORDER BY language_code, category, skill_id;
+                        """
+                    )
             rows = cursor.fetchall()
     return [
         {
@@ -3297,26 +3579,39 @@ def list_skills(category: str | None = None) -> list[dict]:
             "title": row[1],
             "category": row[2],
             "is_active": bool(row[3]),
+            "language_code": row[4] or "de",
         }
         for row in rows
     ]
 
 
-def get_skill_by_id(skill_id: str) -> dict | None:
+def get_skill_by_id(skill_id: str, language_code: str | None = None) -> dict | None:
     normalized = str(skill_id or "").strip()
     if not normalized:
         return None
+    lang = (language_code or "").strip().lower()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT skill_id, title, category, is_active
-                FROM bt_3_skills
-                WHERE skill_id = %s
-                LIMIT 1;
-                """,
-                (normalized,),
-            )
+            if lang:
+                cursor.execute(
+                    """
+                    SELECT skill_id, title, category, is_active, language_code
+                    FROM bt_3_skills
+                    WHERE skill_id = %s AND language_code = %s
+                    LIMIT 1;
+                    """,
+                    (normalized, lang),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT skill_id, title, category, is_active, language_code
+                    FROM bt_3_skills
+                    WHERE skill_id = %s
+                    LIMIT 1;
+                    """,
+                    (normalized,),
+                )
             row = cursor.fetchone()
     if not row:
         return None
@@ -3325,17 +3620,26 @@ def get_skill_by_id(skill_id: str) -> dict | None:
         "title": row[1],
         "category": row[2],
         "is_active": bool(row[3]),
+        "language_code": row[4] or "de",
     }
 
 
 def get_skill_mapping_for_error(
     error_category: str,
     error_subcategory: str | None,
+    language_code: str | None = None,
 ) -> list[dict]:
     category = str(error_category or "").strip()
     subcategory = str(error_subcategory or "").strip()
+    lang = (language_code or "de").strip().lower() or "de"
+    fallback_skill = {
+        "de": "other_unclassified",
+        "en": "en_other_unclassified",
+        "es": "es_other_unclassified",
+        "it": "it_other_unclassified",
+    }.get(lang, "other_unclassified")
     if not category:
-        return [{"skill_id": "other_unclassified", "weight": 1.0}]
+        return [{"skill_id": fallback_skill, "weight": 1.0}]
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -3343,11 +3647,12 @@ def get_skill_mapping_for_error(
                 """
                 SELECT skill_id, weight
                 FROM bt_3_error_skill_map
-                WHERE error_category = %s
+                WHERE language_code = %s
+                  AND error_category = %s
                   AND error_subcategory = %s
                 ORDER BY weight DESC, skill_id ASC;
                 """,
-                (category, subcategory),
+                (lang, category, subcategory),
             )
             rows = cursor.fetchall()
             if rows:
@@ -3357,17 +3662,18 @@ def get_skill_mapping_for_error(
                 """
                 SELECT skill_id, weight
                 FROM bt_3_error_skill_map
-                WHERE error_category = %s
+                WHERE language_code = %s
+                  AND error_category = %s
                   AND error_subcategory = 'Unclassified mistake'
                 ORDER BY weight DESC, skill_id ASC;
                 """,
-                (category,),
+                (lang, category),
             )
             fallback_rows = cursor.fetchall()
             if fallback_rows:
                 return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in fallback_rows]
 
-    return [{"skill_id": "other_unclassified", "weight": 1.0}]
+    return [{"skill_id": fallback_skill, "weight": 1.0}]
 
 
 def _clamp_mastery(value: float) -> float:
@@ -3505,7 +3811,11 @@ def apply_skill_events_for_error(
     fail_delta: float = -3.0,
     event_at: datetime | None = None,
 ) -> list[dict]:
-    mapping = get_skill_mapping_for_error(error_category, error_subcategory)
+    mapping = get_skill_mapping_for_error(
+        error_category,
+        error_subcategory,
+        language_code=target_lang or "de",
+    )
     base = float(success_delta if str(event_type).lower() == "success" else fail_delta)
     results: list[dict] = []
     for item in mapping:
@@ -3538,6 +3848,8 @@ def get_skill_progress_report(
 ) -> dict:
     window_days = max(1, min(int(lookback_days), 30))
     now_utc = datetime.now(timezone.utc)
+    normalized_source_lang = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -3555,6 +3867,7 @@ def get_skill_progress_report(
                       ON m.error_category = COALESCE(NULLIF(dm.main_category, ''), 'Other mistake')
                      AND m.error_subcategory = COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')
                     WHERE dm.user_id = %s
+                      AND m.language_code = %s
                       AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
                       AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
@@ -3572,6 +3885,7 @@ def get_skill_progress_report(
                       ON m.error_category = COALESCE(NULLIF(dm.main_category, ''), 'Other mistake')
                      AND m.error_subcategory = COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')
                     WHERE dm.user_id = %s
+                      AND m.language_code = %s
                       AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
                       AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) < NOW() - (%s::text || ' days')::interval
@@ -3596,21 +3910,25 @@ def get_skill_progress_report(
                 LEFT JOIN err_7d e ON e.skill_id = k.skill_id
                 LEFT JOIN err_prev_7d p ON p.skill_id = k.skill_id
                 WHERE k.is_active = TRUE
+                  AND k.language_code = %s
                 ORDER BY k.category ASC, mastery ASC, k.skill_id ASC;
                 """,
                 (
                     int(user_id),
-                    source_lang or "ru",
-                    target_lang or "de",
+                    normalized_target_lang,
+                    normalized_source_lang,
+                    normalized_target_lang,
                     window_days,
                     int(user_id),
-                    source_lang or "ru",
-                    target_lang or "de",
+                    normalized_target_lang,
+                    normalized_source_lang,
+                    normalized_target_lang,
                     window_days,
                     window_days,
                     int(user_id),
-                    source_lang or "ru",
-                    target_lang or "de",
+                    normalized_source_lang,
+                    normalized_target_lang,
+                    normalized_target_lang,
                 ),
             )
             rows = cursor.fetchall()

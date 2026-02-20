@@ -13,9 +13,7 @@ import psycopg2
 
 from backend.config_mistakes_data import (
     VALID_CATEGORIES,
-    VALID_CATEGORIES_lower,
     VALID_SUBCATEGORIES,
-    VALID_SUBCATEGORIES_lower,
 )
 from backend.openai_manager import (
     client,
@@ -100,6 +98,104 @@ def _normalize_level(level: str | None) -> str:
 
 def _is_legacy_ru_de_pair(source_lang: str | None, target_lang: str | None) -> bool:
     return (source_lang or "").strip().lower() == "ru" and (target_lang or "").strip().lower() == "de"
+
+
+VALID_CATEGORIES_EN = [
+    "Nouns", "Pronouns", "Verbs", "Tenses & Aspect", "Adjectives", "Adverbs",
+    "Prepositions", "Word Order", "Articles & Determiners", "Other mistake",
+]
+VALID_SUBCATEGORIES_EN = {
+    "Nouns": ["Pluralization", "Countable vs Uncountable", "Possessives", "Articles/Determiners"],
+    "Pronouns": ["Subject/Object", "Possessive Pronouns", "Reflexive Pronouns"],
+    "Verbs": ["Conjugation/Agreement", "Auxiliaries (do/be/have)", "Modal Verbs", "Phrasal Verbs", "Verb Patterns (to V / V-ing)"],
+    "Tenses & Aspect": ["Present Simple", "Present Continuous", "Past Simple", "Past Continuous", "Present Perfect", "Past Perfect", "Future (will/going to)", "Conditionals"],
+    "Adjectives": ["Order of Adjectives", "Comparative", "Superlative"],
+    "Adverbs": ["Placement", "Frequency Adverbs", "Too/Enough"],
+    "Prepositions": ["Time", "Place", "Verb+Preposition Collocations"],
+    "Word Order": ["Questions (aux inversion)", "Negation", "Indirect Questions", "Relative Clauses"],
+    "Articles & Determiners": ["a/an/the/zero", "Some/Any", "Much/Many", "This/That"],
+    "Other mistake": ["Unclassified mistake"],
+}
+
+VALID_CATEGORIES_ES = [
+    "Nouns", "Pronouns", "Verbs", "Tenses", "Moods", "Prepositions",
+    "Word Order", "Adjectives/Adverbs", "Orthography", "Other mistake",
+]
+VALID_SUBCATEGORIES_ES = {
+    "Nouns": ["Gendered Articles", "Pluralization", "Agreement (gender/number)"],
+    "Pronouns": ["Subject Pronouns", "Object Pronouns (lo/la/le)", "Clitic Placement", "Reflexive (se)"],
+    "Verbs": ["Conjugation", "Ser vs Estar", "Reflexive Verbs", "Modal/Periphrasis (ir a, tener que)", "Imperatives"],
+    "Tenses": ["Present", "Preterito Perfecto", "Preterito Indefinido", "Imperfecto", "Pluscuamperfecto", "Future", "Conditional"],
+    "Moods": ["Subjunctive (Present)", "Subjunctive (Past)", "Indicative vs Subjunctive"],
+    "Prepositions": ["Por vs Para", "A personal", "De/En/Con", "Preposition Usage"],
+    "Word Order": ["Questions", "Negation", "Clitic order (se lo)", "Placement with infinitive/gerund"],
+    "Adjectives/Adverbs": ["Agreement", "Comparative/Superlative", "Adverb Formation"],
+    "Orthography": ["Accent Marks", "Punctuation (¿¡)", "Spelling"],
+    "Other mistake": ["Unclassified mistake"],
+}
+
+VALID_CATEGORIES_IT = [
+    "Nouns", "Pronouns", "Verbs", "Tenses", "Moods", "Prepositions",
+    "Word Order", "Adjectives/Adverbs", "Orthography", "Other mistake",
+]
+VALID_SUBCATEGORIES_IT = {
+    "Nouns": ["Gendered Articles", "Pluralization", "Agreement (gender/number)", "Partitive (del, della)"],
+    "Pronouns": ["Direct/Indirect (lo/la/gli/le)", "Clitic Placement", "Reflexive (si)", "Ci/Ne"],
+    "Verbs": ["Conjugation", "Essere vs Avere (aux)", "Reflexive Verbs", "Modal Verbs", "Imperatives"],
+    "Tenses": ["Presente", "Passato Prossimo", "Imperfetto", "Trapassato Prossimo", "Futuro", "Condizionale"],
+    "Moods": ["Congiuntivo (Present)", "Congiuntivo (Past)", "Indicative vs Congiuntivo"],
+    "Prepositions": ["Articulated (nel, sul)", "Di/A/Da/In/Con/Su/Per/Tra", "Preposition Usage"],
+    "Word Order": ["Questions", "Negation", "Clitic with infinitive", "Double pronouns"],
+    "Adjectives/Adverbs": ["Agreement", "Comparative/Superlative", "Adverbs"],
+    "Orthography": ["Accents", "Spelling"],
+    "Other mistake": ["Unclassified mistake"],
+}
+
+
+def _get_language_taxonomy(target_lang: str | None) -> tuple[list[str], dict[str, list[str]], dict[str, list[str]]]:
+    lang = (target_lang or "de").strip().lower()
+    if lang == "en":
+        categories = VALID_CATEGORIES_EN
+        subcategories = VALID_SUBCATEGORIES_EN
+    elif lang == "es":
+        categories = VALID_CATEGORIES_ES
+        subcategories = VALID_SUBCATEGORIES_ES
+    elif lang == "it":
+        categories = VALID_CATEGORIES_IT
+        subcategories = VALID_SUBCATEGORIES_IT
+    else:
+        categories = VALID_CATEGORIES
+        subcategories = VALID_SUBCATEGORIES
+    subcategories_lower = {k.lower(): [v.lower() for v in values] for k, values in subcategories.items()}
+    return categories, subcategories, subcategories_lower
+
+
+def _extract_categories_from_feedback(text: str) -> tuple[list[str], list[str]]:
+    if not text:
+        return [], []
+    categories: list[str] = []
+    subcategories: list[str] = []
+
+    cat_match = re.search(r"Mistake Categories?:\s*(.+)", text, flags=re.IGNORECASE)
+    if cat_match:
+        categories.extend([x.strip() for x in cat_match.group(1).split(",") if x.strip()])
+    single_cat = re.search(r"Mistake category:\s*(.+)", text, flags=re.IGNORECASE)
+    if single_cat:
+        categories.append(single_cat.group(1).strip())
+
+    sub_match = re.search(r"Subcategories?:\s*(.+)", text, flags=re.IGNORECASE)
+    if sub_match:
+        subcategories.extend([x.strip() for x in sub_match.group(1).split(",") if x.strip()])
+    first_sub = re.search(r"First subcategory:\s*(.+)", text, flags=re.IGNORECASE)
+    second_sub = re.search(r"Second subcategory:\s*(.+)", text, flags=re.IGNORECASE)
+    if first_sub:
+        subcategories.append(first_sub.group(1).strip())
+    if second_sub:
+        subcategories.append(second_sub.group(1).strip())
+
+    categories = [re.sub(r"[^0-9a-zA-Z\u00C0-\u024F\s,+\-–&/()¿¡]", "", cat).strip() for cat in categories if cat.strip()]
+    subcategories = [re.sub(r"[^0-9a-zA-Z\u00C0-\u024F\s,+\-–&/()¿¡]", "", sub).strip() for sub in subcategories if sub.strip()]
+    return categories, subcategories
 
 
 def _extract_json_payload(text: str) -> dict[str, Any] | None:
@@ -990,31 +1086,51 @@ async def check_translation(
     source_lang: str = "ru",
     target_lang: str = "de",
 ) -> tuple[str, list[str], list[str], int | None, str | None]:
+    language_categories, language_subcategories, language_subcategories_lower = _get_language_taxonomy(target_lang)
     if not _is_legacy_ru_de_pair(source_lang, target_lang):
         feedback = await run_check_translation_multilang(
             original_text=original_text,
             user_translation=user_translation,
             source_lang=source_lang,
             target_lang=target_lang,
+            allowed_categories=language_categories,
+            allowed_subcategories=language_subcategories,
         )
         score = None
         correct_translation = None
+        categories, subcategories = _extract_categories_from_feedback(feedback)
+        valid_categories: list[str] = []
+        valid_subcategories: list[str] = []
         score_match = re.search(r"Score:\s*(\d+)", feedback, flags=re.IGNORECASE)
         if score_match:
             score = int(score_match.group(1))
         translation_match = re.search(r"Correct Translation:\s*(.+?)(?:\n|\Z)", feedback, flags=re.IGNORECASE)
         if translation_match:
             correct_translation = translation_match.group(1).strip()
+        for cat in categories:
+            cat_lower = str(cat or "").lower().strip()
+            canonical_cat = next((x for x in language_categories if x.lower() == cat_lower), None)
+            if canonical_cat:
+                valid_categories.append(canonical_cat)
+        for sub in subcategories:
+            sub_lower = str(sub or "").lower().strip()
+            for cat, values in language_subcategories.items():
+                if sub_lower in [v.lower() for v in values]:
+                    canonical_sub = next((x for x in values if x.lower() == sub_lower), None)
+                    if canonical_sub:
+                        valid_subcategories.append(canonical_sub)
+                        break
         sentence_label = sentence_number if sentence_number is not None else "—"
-        if score is not None and "Sentence number" not in feedback:
+        if score is not None and "Sentence number" not in feedback and "Mistake Categories" not in feedback:
             feedback = (
                 f"🟢 *Sentence number:* {sentence_label}\n"
                 f"✅ *Score:* {score}/100\n"
                 f"🔵 *Original Sentence:* {original_text}\n"
                 f"🟡 *User Translation:* {user_translation}\n"
                 f"🟣 *Correct Translation:* {correct_translation or '—'}\n"
+                f"{feedback}"
             )
-        return feedback, [], [], score, correct_translation
+        return feedback, list(set(valid_categories)), list(set(valid_subcategories)), score, correct_translation
 
     task_name = "check_translation"
     system_instruction_key = "check_translation"
@@ -1070,16 +1186,7 @@ async def check_translation(
                 if "Score:" in collected_text
                 else None
             )
-            categories = (
-                collected_text.split("Mistake Categories: ")[-1].split("\n")[0].split(", ")
-                if "Mistake Categories:" in collected_text
-                else []
-            )
-            subcategories = (
-                collected_text.split("Subcategories: ")[-1].split("\n")[0].split(", ")
-                if "Subcategories:" in collected_text
-                else []
-            )
+            categories, subcategories = _extract_categories_from_feedback(collected_text)
 
             match = re.search(r"Correct Translation:\s*(.+?)(?:\n|\Z)", collected_text)
             if match:
@@ -1270,6 +1377,7 @@ async def log_translation_mistake(
     source_lang: str = "ru",
     target_lang: str = "de",
 ) -> None:
+    language_categories, language_subcategories, language_subcategories_lower = _get_language_taxonomy(target_lang)
     if categories:
         logging.info("Categories from log_translation_mistake: %s", ", ".join(categories))
     if subcategories:
@@ -1280,7 +1388,7 @@ async def log_translation_mistake(
         cat_lower = cat.lower()
         for subcat in subcategories:
             subcat_lower = subcat.lower()
-            if cat_lower in VALID_SUBCATEGORIES_lower and subcat_lower in VALID_SUBCATEGORIES_lower[cat_lower]:
+            if cat_lower in language_subcategories_lower and subcat_lower in language_subcategories_lower[cat_lower]:
                 valid_combinations.append((cat_lower, subcat_lower))
 
     if not valid_combinations:
@@ -1290,11 +1398,15 @@ async def log_translation_mistake(
 
     for main_category, sub_category in valid_combinations:
         main_category = next(
-            (cat for cat in VALID_CATEGORIES if cat.lower() == main_category),
+            (cat for cat in language_categories if cat.lower() == main_category),
             main_category,
         )
         sub_category = next(
-            (subcat for subcat in VALID_SUBCATEGORIES.get(main_category, []) if subcat.lower() == sub_category),
+            (
+                subcat
+                for subcat in language_subcategories.get(main_category, [])
+                if subcat.lower() == sub_category
+            ),
             sub_category,
         )
 
@@ -1356,6 +1468,7 @@ async def check_user_translation_webapp(
 
     conn = get_db_connection()
     cursor = conn.cursor()
+    language_categories, language_subcategories, language_subcategories_lower = _get_language_taxonomy(target_lang)
 
     try:
         cursor.execute(
@@ -1589,15 +1702,15 @@ async def check_user_translation_webapp(
                             cat_lower = str(cat or "").lower()
                             for subcat in subcategories:
                                 subcat_lower = str(subcat or "").lower()
-                                if cat_lower in VALID_SUBCATEGORIES_lower and subcat_lower in VALID_SUBCATEGORIES_lower[cat_lower]:
+                                if cat_lower in language_subcategories_lower and subcat_lower in language_subcategories_lower[cat_lower]:
                                     canonical_cat = next(
-                                        (x for x in VALID_CATEGORIES if x.lower() == cat_lower),
+                                        (x for x in language_categories if x.lower() == cat_lower),
                                         str(cat or ""),
                                     )
                                     canonical_sub = next(
                                         (
                                             x
-                                            for x in VALID_SUBCATEGORIES.get(canonical_cat, [])
+                                            for x in language_subcategories.get(canonical_cat, [])
                                             if x.lower() == subcat_lower
                                         ),
                                         str(subcat or ""),

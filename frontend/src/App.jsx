@@ -152,8 +152,6 @@ function AppInner() {
   const [skillReportLoading, setSkillReportLoading] = useState(false);
   const [skillReportError, setSkillReportError] = useState('');
   const [skillPracticeLoading, setSkillPracticeLoading] = useState({});
-  const [showAllSkills, setShowAllSkills] = useState(false);
-  const [skillZoneFilter, setSkillZoneFilter] = useState('all');
   const [srsLoading, setSrsLoading] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
   const [srsSubmittingRating, setSrsSubmittingRating] = useState(null);
@@ -1061,19 +1059,32 @@ function AppInner() {
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
-  const allSkillGroups = (Array.isArray(skillReport?.groups) ? skillReport.groups : [])
-    .map((group) => {
-      const sourceSkills = Array.isArray(group?.skills) ? group.skills : [];
-      const filtered = sourceSkills.filter((skill) => {
-        if (skillZoneFilter === 'all') return true;
-        return String(skill?.zone || '') === skillZoneFilter;
-      });
-      return {
-        group: String(group?.group || ''),
-        skills: filtered,
-      };
-    })
-    .filter((group) => group.skills.length > 0);
+  const uniqueSkills = (() => {
+    const flat = (Array.isArray(skillReport?.groups) ? skillReport.groups : [])
+      .flatMap((group) => (Array.isArray(group?.skills) ? group.skills : []));
+    const byId = new Map();
+    for (const skill of flat) {
+      const id = String(skill?.skill_id || '').trim();
+      if (!id || byId.has(id)) continue;
+      byId.set(id, skill);
+    }
+    return Array.from(byId.values());
+  })();
+  const weakestSkills = [...uniqueSkills]
+    .sort((a, b) => (Number(a?.mastery || 0) - Number(b?.mastery || 0)) || (Number(b?.errors_7d || 0) - Number(a?.errors_7d || 0)))
+    .slice(0, 3)
+    .map((item) => ({ ...item, ring_type: 'weak' }));
+  const strongestSkills = [...uniqueSkills]
+    .sort((a, b) => (Number(b?.mastery || 0) - Number(a?.mastery || 0)) || (Number(a?.errors_7d || 0) - Number(b?.errors_7d || 0)))
+    .filter((item) => !weakestSkills.some((weak) => String(weak?.skill_id || '') === String(item?.skill_id || '')))
+    .slice(0, 3)
+    .map((item) => ({ ...item, ring_type: 'best' }));
+  const ringSkills = [...weakestSkills, ...strongestSkills];
+  const ringPalette = ['#ff5d7a', '#ff9d57', '#ffd84d', '#46dca0', '#53c7ff', '#7c9dff'];
+  const ringSize = 264;
+  const ringCenter = ringSize / 2;
+  const ringStartRadius = 118;
+  const ringStep = 14;
 
   const toggleSection = (key) => {
     setSelectedSections((prev) => {
@@ -4642,16 +4653,8 @@ function AppInner() {
             {isHomeScreen && initData && (
               <section className="skill-report-panel">
                 <div className="skill-report-head">
-                  <h3>{tr('Слабые навыки недели', 'Schwaechste Skills der Woche')}</h3>
+                  <h3>{tr('Карта навыков', 'Skill-Ringe')}</h3>
                   <div className="skill-report-actions">
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => setShowAllSkills((prev) => !prev)}
-                      disabled={skillReportLoading}
-                    >
-                      {showAllSkills ? tr('Скрыть все', 'Alle ausblenden') : tr('Все навыки', 'Alle Skills')}
-                    </button>
                     <button
                       type="button"
                       className="secondary-button"
@@ -4665,94 +4668,78 @@ function AppInner() {
                 {skillReportLoading && <div className="webapp-muted">{tr('Загружаем прогресс...', 'Fortschritt wird geladen...')}</div>}
                 {skillReportError && <div className="webapp-error">{skillReportError}</div>}
                 {!skillReportLoading && !skillReportError && (
-                  <div className="skill-report-top-list">
-                    {(skillReport?.top_weak || []).slice(0, 5).map((skill) => (
-                      <div className="skill-report-top-item" key={skill.skill_id}>
-                        <div className="skill-report-top-main">
-                          <span className="skill-report-top-name">{skill.name}</span>
-                          <span className={`skill-trend trend-${skill.trend || 'flat'}`}>
-                            {skill.trend === 'up' ? '↑' : skill.trend === 'down' ? '↓' : '→'}
-                          </span>
-                        </div>
-                        <div className="skill-report-top-meta">
-                          <span>{tr('Оценка', 'Score')}: {Math.round(Number(skill.mastery || 0))}</span>
-                          <span>{tr('Ошибки 7д', 'Fehler 7T')}: {Number(skill.errors_7d || 0)}</span>
-                        </div>
-                        <div className="skill-card-actions">
-                          <button
-                            type="button"
-                            className="primary-button"
-                            onClick={() => startSkillPractice(skill)}
-                            disabled={Boolean(skillPracticeLoading[String(skill.skill_id || '')])}
-                          >
-                            {skillPracticeLoading[String(skill.skill_id || '')]
-                              ? tr('Запуск...', 'Start...')
-                              : tr('Прокачать', 'Trainieren')}
-                          </button>
-                        </div>
+                  <div className="skill-rings-layout">
+                    <div className="skill-rings-canvas">
+                      <svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`} role="img" aria-label="Skill rings">
+                        {ringSkills.map((skill, index) => {
+                          const radius = ringStartRadius - index * ringStep;
+                          const circumference = 2 * Math.PI * radius;
+                          const progress = Math.max(0, Math.min(1, Number(skill?.mastery || 0) / 100));
+                          const offset = circumference * (1 - progress);
+                          const color = ringPalette[index % ringPalette.length];
+                          return (
+                            <g key={skill.skill_id}>
+                              <circle
+                                cx={ringCenter}
+                                cy={ringCenter}
+                                r={radius}
+                                fill="none"
+                                stroke="rgba(143, 167, 206, 0.22)"
+                                strokeWidth="10"
+                              />
+                              <circle
+                                cx={ringCenter}
+                                cy={ringCenter}
+                                r={radius}
+                                fill="none"
+                                stroke={color}
+                                strokeWidth="10"
+                                strokeLinecap="round"
+                                strokeDasharray={`${circumference} ${circumference}`}
+                                strokeDashoffset={offset}
+                                transform={`rotate(-90 ${ringCenter} ${ringCenter})`}
+                              />
+                            </g>
+                          );
+                        })}
+                      </svg>
+                      <div className="skill-rings-center">
+                        <div className="skill-rings-center-title">{tr('Фокус', 'Fokus')}</div>
+                        <div className="skill-rings-center-value">{ringSkills.length}</div>
+                        <div className="skill-rings-center-sub">{tr('3 слабых + 3 сильных', '3 schwache + 3 starke')}</div>
                       </div>
-                    ))}
-                    {(!skillReport?.top_weak || skillReport.top_weak.length === 0) && (
-                      <div className="webapp-muted">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
-                    )}
-                  </div>
-                )}
-                {!skillReportLoading && !skillReportError && showAllSkills && (
-                  <div className="skills-all-wrap">
-                    <div className="skills-filter-row">
-                      {[
-                        { id: 'all', ru: 'Все', de: 'Alle' },
-                        { id: 'weak', ru: 'Слабые', de: 'Schwach' },
-                        { id: 'growing', ru: 'В работе', de: 'Im Aufbau' },
-                        { id: 'confident', ru: 'Уверенно', de: 'Sicher' },
-                        { id: 'stable', ru: 'Стабильно', de: 'Stabil' },
-                      ].map((option) => (
-                        <button
-                          key={option.id}
-                          type="button"
-                          className={`skill-filter-chip ${skillZoneFilter === option.id ? 'is-active' : ''}`}
-                          onClick={() => setSkillZoneFilter(option.id)}
-                        >
-                          {tr(option.ru, option.de)}
-                        </button>
-                      ))}
                     </div>
-
-                    {allSkillGroups.length === 0 && (
-                      <div className="webapp-muted">{tr('Нет навыков для выбранного фильтра.', 'Keine Skills fuer diesen Filter.')}</div>
-                    )}
-
-                    {allSkillGroups.map((group) => (
-                      <div className="skills-group-block" key={group.group}>
-                        <div className="skills-group-title">{group.group}</div>
-                        <div className="skills-grid">
-                          {group.skills.map((skill) => (
-                            <div className={`skill-card zone-${skill.zone || 'growing'}`} key={skill.skill_id}>
-                              <div className="skill-card-name">{skill.name}</div>
-                              <div className="skill-card-meta">
-                                <span>{tr('Оценка', 'Score')}: {Math.round(Number(skill.mastery || 0))}</span>
+                    <div className="skill-rings-legend">
+                      {ringSkills.map((skill, index) => {
+                        const color = ringPalette[index % ringPalette.length];
+                        return (
+                          <div className="skill-rings-legend-item" key={`legend-${skill.skill_id}`}>
+                            <span className="skill-rings-dot" style={{ backgroundColor: color }} />
+                            <div className="skill-rings-text">
+                              <div className="skill-rings-name">{skill.name}</div>
+                              <div className="skill-rings-meta">
+                                <span>{skill.ring_type === 'weak' ? tr('Слабый', 'Schwach') : tr('Сильный', 'Stark')}</span>
+                                <span>{tr('Оценка', 'Score')}: {Math.round(Number(skill.mastery || 0))}%</span>
                                 <span>{tr('Ошибки 7д', 'Fehler 7T')}: {Number(skill.errors_7d || 0)}</span>
-                                <span className={`skill-trend trend-${skill.trend || 'flat'}`}>
-                                  {skill.trend === 'up' ? '↑' : skill.trend === 'down' ? '↓' : '→'}
-                                </span>
-                              </div>
-                              <div className="skill-card-actions">
-                                <button
-                                  type="button"
-                                  className="primary-button"
-                                  onClick={() => startSkillPractice(skill)}
-                                  disabled={Boolean(skillPracticeLoading[String(skill.skill_id || '')])}
-                                >
-                                  {skillPracticeLoading[String(skill.skill_id || '')]
-                                    ? tr('Запуск...', 'Start...')
-                                    : tr('Прокачать', 'Trainieren')}
-                                </button>
                               </div>
                             </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
+                            <button
+                              type="button"
+                              className="secondary-button skill-rings-train-btn"
+                              onClick={() => startSkillPractice(skill)}
+                              disabled={Boolean(skillPracticeLoading[String(skill.skill_id || '')])}
+                            >
+                              {skillPracticeLoading[String(skill.skill_id || '')]
+                                ? tr('Запуск...', 'Start...')
+                                : tr('Прокачать', 'Trainieren')}
+                            </button>
+                          </div>
+                        );
+                      })}
+                      {ringSkills.length === 0 && (
+                        <div className="webapp-muted">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
+                      )}
+                    </div>
                   </div>
                 )}
               </section>
