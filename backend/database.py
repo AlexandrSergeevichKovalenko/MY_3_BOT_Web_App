@@ -4118,7 +4118,7 @@ def get_skill_progress_report(
                     k.skill_id,
                     k.title,
                     k.category,
-                    COALESCE(s.mastery, 50.0) AS mastery,
+                    s.mastery AS mastery,
                     COALESCE(s.total_events, 0) AS total_events,
                     COALESCE(e.errors_7d, 0) AS errors_7d,
                     COALESCE(p.errors_prev_7d, 0) AS errors_prev_7d,
@@ -4158,35 +4158,46 @@ def get_skill_progress_report(
     skills: list[dict] = []
     groups_map: dict[str, list[dict]] = {}
     for row in rows:
-        mastery = float(row[3] or 0.0)
+        mastery_raw = row[3]
         total_events = int(row[4] or 0)
         errors_7d = int(row[5] or 0)
         errors_prev_7d = int(row[6] or 0)
-        if errors_7d < errors_prev_7d:
-            trend = "up"
-        elif errors_7d > errors_prev_7d:
-            trend = "down"
+        has_data = total_events > 0 and mastery_raw is not None
+
+        mastery: float | None = None
+        if has_data:
+            mastery = float(mastery_raw)
+
+        if not has_data:
+            trend = "none"
+            zone = "unknown"
         else:
-            trend = "flat"
-        if mastery < 40:
-            zone = "weak"
-        elif mastery < 70:
-            zone = "growing"
-        elif mastery < 90:
-            zone = "confident"
-        else:
-            zone = "stable"
+            if errors_7d < errors_prev_7d:
+                trend = "up"
+            elif errors_7d > errors_prev_7d:
+                trend = "down"
+            else:
+                trend = "flat"
+            if mastery < 40:
+                zone = "weak"
+            elif mastery < 70:
+                zone = "growing"
+            elif mastery < 90:
+                zone = "confident"
+            else:
+                zone = "stable"
 
         skill = {
             "skill_id": str(row[0]),
             "name": str(row[1] or row[0] or ""),
             "group": str(row[2] or "Other"),
-            "mastery": round(mastery, 2),
+            "mastery": round(mastery, 2) if mastery is not None else None,
             "errors_7d": errors_7d,
             "errors_prev_7d": errors_prev_7d,
             "trend": trend,
             "zone": zone,
-            "confidence": round(min(1.0, total_events / 20.0), 3),
+            "confidence": round(min(1.0, total_events / 20.0), 3) if has_data else 0.0,
+            "has_data": has_data,
             "total_events": total_events,
             "last_practiced_at": row[7].isoformat() if row[7] else None,
         }
@@ -4194,10 +4205,11 @@ def get_skill_progress_report(
         group_name = skill["group"]
         groups_map.setdefault(group_name, []).append(skill)
 
+    skills_with_data = [item for item in skills if bool(item.get("has_data"))]
     top_weak = sorted(
-        skills,
+        skills_with_data,
         key=lambda item: (
-            float(item.get("mastery") or 50.0),
+            float(item.get("mastery") or 0.0),
             -int(item.get("errors_7d") or 0),
             str(item.get("skill_id") or ""),
         ),
@@ -4212,6 +4224,7 @@ def get_skill_progress_report(
         "top_weak": top_weak,
         "groups": groups,
         "total_skills": len(skills),
+        "skills_with_data": len(skills_with_data),
     }
 
 

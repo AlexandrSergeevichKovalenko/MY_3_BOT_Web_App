@@ -1156,11 +1156,12 @@ function AppInner() {
     }
     return Array.from(byId.values());
   })();
-  const weakestSkills = [...uniqueSkills]
+  const skilledWithData = uniqueSkills.filter((item) => Boolean(item?.has_data) && item?.mastery !== null && item?.mastery !== undefined);
+  const weakestSkills = [...skilledWithData]
     .sort((a, b) => (Number(a?.mastery || 0) - Number(b?.mastery || 0)) || (Number(b?.errors_7d || 0) - Number(a?.errors_7d || 0)))
     .slice(0, 3)
     .map((item) => ({ ...item, ring_type: 'weak' }));
-  const strongestSkills = [...uniqueSkills]
+  const strongestSkills = [...skilledWithData]
     .sort((a, b) => (Number(b?.mastery || 0) - Number(a?.mastery || 0)) || (Number(a?.errors_7d || 0) - Number(b?.errors_7d || 0)))
     .filter((item) => !weakestSkills.some((weak) => String(weak?.skill_id || '') === String(item?.skill_id || '')))
     .slice(0, 3)
@@ -4824,7 +4825,11 @@ function AppInner() {
                               <div className="skill-rings-name">{skill.name}</div>
                               <div className="skill-rings-meta">
                                 <span>{skill.ring_type === 'weak' ? tr('Слабый', 'Schwach') : tr('Сильный', 'Stark')}</span>
-                                <span>{tr('Оценка', 'Score')}: {Math.round(Number(skill.mastery || 0))}%</span>
+                                <span>
+                                  {tr('Оценка', 'Score')}: {skill?.mastery === null || skill?.mastery === undefined
+                                    ? tr('нет данных', 'keine Daten')
+                                    : `${Math.round(Number(skill.mastery || 0))}%`}
+                                </span>
                                 <span>{tr('Ошибки 7д', 'Fehler 7T')}: {Number(skill.errors_7d || 0)}</span>
                               </div>
                             </div>
