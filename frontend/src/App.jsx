@@ -161,6 +161,12 @@ function AppInner() {
   const [weeklyPlanSaving, setWeeklyPlanSaving] = useState(false);
   const [weeklyPlanError, setWeeklyPlanError] = useState('');
   const [weeklyPlanDraft, setWeeklyPlanDraft] = useState({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '' });
+  const [weeklyPlanCollapsed, setWeeklyPlanCollapsed] = useState(false);
+  const [weeklyMetricExpanded, setWeeklyMetricExpanded] = useState({
+    translations: true,
+    learned_words: true,
+    agent_minutes: true,
+  });
   const [srsLoading, setSrsLoading] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
   const [srsSubmittingRating, setSrsSubmittingRating] = useState(null);
@@ -851,6 +857,12 @@ function AppInner() {
         learned_words_goal: String(Number(plan?.plan?.learned_words_goal || 0)),
         agent_minutes_goal: String(Number(plan?.plan?.agent_minutes_goal || 0)),
       });
+      setWeeklyPlanCollapsed(true);
+      setWeeklyMetricExpanded({
+        translations: false,
+        learned_words: false,
+        agent_minutes: false,
+      });
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -1303,12 +1315,22 @@ function AppInner() {
   const weeklyWeekLabel = weeklyPlan?.week?.start_date && weeklyPlan?.week?.end_date
     ? `${weeklyPlan.week.start_date} — ${weeklyPlan.week.end_date}`
     : '';
+  const weeklyMetricToneClass = (key) => {
+    if (key === 'translations') return 'is-translations';
+    if (key === 'learned_words') return 'is-words';
+    if (key === 'agent_minutes') return 'is-agent';
+    return '';
+  };
   const formatWeeklyValue = (value, digits = 0) => {
     const num = Number(value || 0);
     if (!Number.isFinite(num)) return '0';
     if (digits <= 0) return String(Math.round(num));
     return num.toFixed(digits);
   };
+  const weeklyPlanCollapseStorageKey = useMemo(() => {
+    const uid = webappUser?.id ? String(webappUser.id) : 'anon';
+    return `weekly_plan_collapsed_${uid}`;
+  }, [webappUser]);
 
   const toggleSection = (key) => {
     setSelectedSections((prev) => {
@@ -1834,10 +1856,27 @@ function AppInner() {
       setWeeklyPlan(null);
       setWeeklyPlanError('');
       setWeeklyPlanDraft({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '' });
+      setWeeklyPlanCollapsed(false);
+      setWeeklyMetricExpanded({
+        translations: true,
+        learned_words: true,
+        agent_minutes: true,
+      });
       return;
     }
     loadWeeklyPlan();
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+
+  useEffect(() => {
+    if (!isWebAppMode) return;
+    const saved = safeStorageGet(weeklyPlanCollapseStorageKey);
+    setWeeklyPlanCollapsed(saved === '1');
+  }, [isWebAppMode, weeklyPlanCollapseStorageKey]);
+
+  useEffect(() => {
+    if (!isWebAppMode) return;
+    safeStorageSet(weeklyPlanCollapseStorageKey, weeklyPlanCollapsed ? '1' : '0');
+  }, [isWebAppMode, weeklyPlanCollapseStorageKey, weeklyPlanCollapsed]);
 
   useEffect(() => {
     if (flashcardsOnly || !selectedSections.has('assistant')) {
@@ -4876,11 +4915,21 @@ function AppInner() {
                     <h2>{tr('План на неделю', 'Wochenplan')}</h2>
                     <p>{tr('Личные цели и факт с прогнозом до конца недели', 'Persoenliche Ziele mit Ist-Werten und Prognose bis Wochenende')}</p>
                   </div>
-                  {weeklyWeekLabel && (
-                    <span className="weekly-plan-period">{weeklyWeekLabel}</span>
-                  )}
+                  <div className="weekly-plan-head-actions">
+                    {weeklyWeekLabel && (
+                      <span className="weekly-plan-period">{weeklyWeekLabel}</span>
+                    )}
+                    <button
+                      type="button"
+                      className="secondary-button weekly-plan-collapse-btn"
+                      onClick={() => setWeeklyPlanCollapsed((prev) => !prev)}
+                    >
+                      {weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
+                    </button>
+                  </div>
                 </div>
 
+                {!weeklyPlanCollapsed && (
                 <div className="weekly-plan-form">
                   <label className="webapp-field">
                     <span>{tr('Количество переводов', 'Anzahl Uebersetzungen')}</span>
@@ -4927,6 +4976,7 @@ function AppInner() {
                     {weeklyPlanSaving ? tr('Сохраняем...', 'Speichern...') : tr('Сохранить план', 'Plan speichern')}
                   </button>
                 </div>
+                )}
 
                 {weeklyPlanLoading && <div className="webapp-muted">{tr('Считаем недельные показатели...', 'Wochenwerte werden berechnet...')}</div>}
                 {weeklyPlanError && <div className="webapp-error">{weeklyPlanError}</div>}
@@ -4942,17 +4992,28 @@ function AppInner() {
                       const forecastDelta = Number(item.data?.forecast_delta_vs_goal || 0);
                       const completionRingStyle = { '--weekly-progress': `${completionClamped}%` };
                       const forecastClass = forecastDelta >= 0 ? 'is-good' : 'is-bad';
+                      const expanded = Boolean(weeklyMetricExpanded[item.key]);
                       return (
-                        <article className="weekly-plan-metric-card" key={item.key}>
+                        <article className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`} key={item.key}>
                           <div className="weekly-plan-metric-top">
                             <div>
                               <h4>{item.title}</h4>
                               <p>{tr('План/Факт/Прогноз', 'Plan/Ist/Prognose')}</p>
                             </div>
-                            <div className="weekly-plan-progress-ring" style={completionRingStyle}>
-                              <span>{formatWeeklyValue(completion, 1)}%</span>
+                            <div className="weekly-plan-metric-actions">
+                              <div className="weekly-plan-progress-ring" style={completionRingStyle}>
+                                <span>{formatWeeklyValue(completion, 1)}%</span>
+                              </div>
+                              <button
+                                type="button"
+                                className="secondary-button weekly-plan-card-toggle"
+                                onClick={() => setWeeklyMetricExpanded((prev) => ({ ...prev, [item.key]: !prev[item.key] }))}
+                              >
+                                {expanded ? tr('Свернуть', 'Einklappen') : tr('Развернуть', 'Aufklappen')}
+                              </button>
                             </div>
                           </div>
+                          {expanded ? (
                           <div className="weekly-plan-values">
                             <div>
                               <span>{tr('План', 'Plan')}</span>
@@ -4971,6 +5032,12 @@ function AppInner() {
                               <strong>{forecastDelta >= 0 ? '+' : ''}{formatWeeklyValue(forecastDelta, 1)} {item.unit}</strong>
                             </div>
                           </div>
+                          ) : (
+                            <div className="weekly-plan-values-compact">
+                              <span>{tr('Факт', 'Ist')}: <strong>{formatWeeklyValue(actual)} {item.unit}</strong></span>
+                              <span>{tr('План', 'Plan')}: <strong>{formatWeeklyValue(goal)} {item.unit}</strong></span>
+                            </div>
+                          )}
                         </article>
                       );
                     })}
@@ -4983,7 +5050,7 @@ function AppInner() {
               <section className="today-plan-panel">
                 <div className="today-plan-head">
                   <div className="today-plan-title-wrap">
-                    <h2>{tr('Сегодня', 'Heute')}</h2>
+                    <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
                     <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persoenlicher Plan fuer heute')}</p>
                   </div>
                   <span className="today-plan-total">
