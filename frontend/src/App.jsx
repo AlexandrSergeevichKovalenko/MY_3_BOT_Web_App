@@ -750,6 +750,14 @@ function AppInner() {
       return;
     }
     if (taskType === 'video' || taskType === 'youtube') {
+      const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+      const videoUrl = String(payload.video_url || '').trim();
+      const videoId = String(payload.video_id || '').trim();
+      if (videoUrl) {
+        setYoutubeInput(videoUrl);
+      } else if (videoId) {
+        setYoutubeInput(`https://youtu.be/${videoId}`);
+      }
       openSectionAndScroll('youtube', youtubeRef);
     }
   };

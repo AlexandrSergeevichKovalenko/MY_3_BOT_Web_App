@@ -239,6 +239,21 @@ TELEGRAM_LOGIN_TTL_SECONDS = int(os.getenv("TELEGRAM_LOGIN_TTL_SECONDS", "86400"
 NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 TODAY_PLAN_DEFAULT_TZ = (os.getenv("TODAY_PLAN_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+YOUTUBE_API_KEY = (os.getenv("YOUTUBE_API_KEY") or "").strip()
+
+_TODAY_PREFERRED_CHANNELS = [
+    "UCthmoIZKvuR1-KuwednkjHg",
+    "UCHLkEhIoBRu2JTqYJlqlgbw",
+    "UCeVQK7ZPXDOAyjY0NYqmX-Q",
+    "UCuVbK_d3wh3M8TYUk5aFCiQ",
+    "UCsxqCqZHE6guBCdSUEWpPsg",
+    "UCm-E8MXdNquzETSsNxgoWig",
+    "UCjdRXC3Wh2hDq8Utx7RIaMw",
+    "UC9rwo-ES6aDKxD2qqkL6seA",
+    "UCVx6RFaEAg46xfbsDjb440A",
+    "UCvs8dBa7v3ti1QDaXE7dtKw",
+    "UCE2vOZZIluHMtt2sAXhRhcw",
+]
 
 WEBAPP_TOPICS = [
     "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
@@ -718,6 +733,128 @@ def _today_cards_item_payload(
     return None, 0
 
 
+def _build_video_search_query(main_category: str | None, sub_category: str | None) -> str:
+    sub = str(sub_category or "").strip()
+    main = str(main_category or "").strip()
+    if sub:
+        return f"{sub} deutsch grammatik uebung"
+    if main:
+        return f"{main} deutsch lernen"
+    return "deutsch grammatik b1 b2"
+
+
+def _youtube_search_videos(query: str, *, max_results: int = 5) -> list[dict]:
+    if not YOUTUBE_API_KEY or not query:
+        return []
+    collected: list[dict] = []
+    try:
+        base_url = "https://www.googleapis.com/youtube/v3/search"
+        common_params = {
+            "part": "snippet",
+            "q": query,
+            "type": "video",
+            "maxResults": max_results,
+            "key": YOUTUBE_API_KEY,
+        }
+        for channel_id in _TODAY_PREFERRED_CHANNELS:
+            params = {**common_params, "channelId": channel_id}
+            resp = requests.get(base_url, params=params, timeout=12)
+            if resp.status_code >= 400:
+                continue
+            data = resp.json() if resp.content else {}
+            for item in data.get("items", []):
+                video_id = ((item.get("id") or {}).get("videoId") or "").strip()
+                title = ((item.get("snippet") or {}).get("title") or "").strip()
+                if not video_id:
+                    continue
+                collected.append({"video_id": video_id, "title": title})
+        if not collected:
+            fallback_params = {
+                **common_params,
+                "relevanceLanguage": "de",
+                "regionCode": "DE",
+            }
+            resp = requests.get(base_url, params=fallback_params, timeout=12)
+            if resp.status_code < 400:
+                data = resp.json() if resp.content else {}
+                for item in data.get("items", []):
+                    video_id = ((item.get("id") or {}).get("videoId") or "").strip()
+                    title = ((item.get("snippet") or {}).get("title") or "").strip()
+                    if not video_id:
+                        continue
+                    collected.append({"video_id": video_id, "title": title})
+    except Exception:
+        return []
+
+    unique = {}
+    for row in collected:
+        vid = row.get("video_id")
+        if vid and vid not in unique:
+            unique[vid] = {"video_id": vid, "title": row.get("title") or ""}
+    return list(unique.values())
+
+
+def _youtube_fill_view_counts(videos: list[dict]) -> list[dict]:
+    if not videos or not YOUTUBE_API_KEY:
+        return videos
+    try:
+        ids = ",".join([str(v.get("video_id") or "").strip() for v in videos if v.get("video_id")])
+        if not ids:
+            return videos
+        resp = requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={
+                "part": "statistics,snippet",
+                "id": ids,
+                "key": YOUTUBE_API_KEY,
+            },
+            timeout=12,
+        )
+        if resp.status_code >= 400:
+            return videos
+        stats = resp.json() if resp.content else {}
+        by_id = {}
+        for item in stats.get("items", []):
+            vid = (item.get("id") or "").strip()
+            if not vid:
+                continue
+            by_id[vid] = {
+                "views": int(((item.get("statistics") or {}).get("viewCount") or 0)),
+                "title": ((item.get("snippet") or {}).get("title") or "").strip(),
+            }
+        enriched = []
+        for video in videos:
+            vid = str(video.get("video_id") or "").strip()
+            row = dict(video)
+            row["views"] = int((by_id.get(vid) or {}).get("views") or 0)
+            if not row.get("title"):
+                row["title"] = (by_id.get(vid) or {}).get("title") or ""
+            enriched.append(row)
+        return enriched
+    except Exception:
+        return videos
+
+
+def _pick_today_recommended_video(main_category: str | None, sub_category: str | None) -> dict | None:
+    query = _build_video_search_query(main_category, sub_category)
+    videos = _youtube_search_videos(query, max_results=5)
+    if not videos:
+        return None
+    videos = _youtube_fill_view_counts(videos)
+    videos.sort(key=lambda x: int(x.get("views") or 0), reverse=True)
+    best = videos[0] if videos else None
+    if not best or not best.get("video_id"):
+        return None
+    video_id = str(best.get("video_id")).strip()
+    return {
+        "video_id": video_id,
+        "video_url": f"https://www.youtube.com/watch?v={video_id}",
+        "title": str(best.get("title") or "").strip(),
+        "query": query,
+        "views": int(best.get("views") or 0),
+    }
+
+
 def _build_today_plan_for_user(
     *,
     user_id: int,
@@ -805,6 +942,10 @@ def _build_today_plan_for_user(
 
     include_video = str(os.getenv("TODAY_PLAN_INCLUDE_VIDEO") or "0").strip().lower() in {"1", "true", "yes", "on"}
     if include_video:
+        recommended_video = _pick_today_recommended_video(
+            weak_topic.get("main_category") if weak_topic else None,
+            weak_topic.get("sub_category") if weak_topic else None,
+        )
         items.append(
             {
                 "task_type": "video",
@@ -818,6 +959,10 @@ def _build_today_plan_for_user(
                     "main_category": weak_topic.get("main_category") if weak_topic else None,
                     "sub_category": weak_topic.get("sub_category") if weak_topic else None,
                     "start_action": "youtube",
+                    "video_id": (recommended_video or {}).get("video_id"),
+                    "video_url": (recommended_video or {}).get("video_url"),
+                    "video_title": (recommended_video or {}).get("title"),
+                    "video_query": (recommended_video or {}).get("query"),
                 },
                 "status": "todo",
             }
@@ -844,6 +989,25 @@ def _get_or_create_today_plan(
 ) -> dict:
     existing = get_daily_plan(user_id=user_id, plan_date=plan_date)
     if existing:
+        include_video = str(os.getenv("TODAY_PLAN_INCLUDE_VIDEO") or "0").strip().lower() in {"1", "true", "yes", "on"}
+        if include_video:
+            items = existing.get("items") or []
+            has_video_item = any(str(item.get("task_type") or "").lower() == "video" for item in items)
+            video_missing_link = any(
+                str(item.get("task_type") or "").lower() == "video"
+                and isinstance(item.get("payload"), dict)
+                and not (item.get("payload") or {}).get("video_id")
+                and not (item.get("payload") or {}).get("video_url")
+                for item in items
+            )
+            has_non_todo = any(str(item.get("status") or "").lower() in {"doing", "done"} for item in items)
+            if has_video_item and video_missing_link and not has_non_todo:
+                return _build_today_plan_for_user(
+                    user_id=user_id,
+                    plan_date=plan_date,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
         return existing
     return _build_today_plan_for_user(
         user_id=user_id,
