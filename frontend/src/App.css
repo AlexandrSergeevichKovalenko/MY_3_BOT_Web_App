@@ -423,6 +423,7 @@ body {
 }
 
 .menu-icon-translations,
+.menu-icon-today,
 .menu-icon-youtube,
 .menu-icon-movies,
 .menu-icon-dictionary,
@@ -448,6 +449,7 @@ body {
 }
 
 .menu-item-translations.is-active .menu-icon { color: #8fc5ff; }
+.menu-item-today.is-active .menu-icon { color: #7bf1b3; }
 .menu-item-youtube.is-active .menu-icon { color: #ff7676; }
 .menu-item-movies.is-active .menu-icon { color: #ffc97b; }
 .menu-item-dictionary.is-active .menu-icon { color: #7fe2ff; }
@@ -917,6 +919,11 @@ body {
   gap: 16px;
 }
 
+.webapp-section-title {
+  display: grid;
+  gap: 8px;
+}
+
 .webapp-section-title h2 {
   margin: 0;
   font-size: 20px;
@@ -938,6 +945,29 @@ body {
 
 .webapp-local-section-head h3 {
   margin: 0;
+}
+
+.section-home-back {
+  justify-self: start;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 241, 179, 0.55);
+  background: rgba(12, 28, 35, 0.7);
+  color: #b7ffd8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.section-home-back:hover {
+  border-color: rgba(120, 241, 179, 0.78);
+  background: rgba(16, 44, 48, 0.78);
+}
+
+.section-inline-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
 }
 
 .section-corner-logo {
@@ -4072,44 +4102,58 @@ body {
 }
 
 .today-plan-panel {
-  margin: 14px 0 18px;
-  padding: 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: linear-gradient(140deg, rgba(18, 28, 54, 0.85), rgba(20, 34, 66, 0.76));
+  position: relative;
+  margin: 10px 0 18px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(132, 232, 190, 0.25);
+  background:
+    radial-gradient(1200px 240px at -10% 120%, rgba(123, 241, 179, 0.12), transparent),
+    radial-gradient(520px 180px at 100% 0%, rgba(93, 220, 255, 0.18), transparent),
+    linear-gradient(145deg, rgba(12, 22, 42, 0.9), rgba(16, 28, 52, 0.86));
+  box-shadow: 0 20px 38px rgba(7, 14, 30, 0.42);
+  overflow: hidden;
 }
 
 .today-plan-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+  padding-right: 66px;
 }
 
 .today-plan-head h2 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: 1.2rem;
+}
+
+.today-plan-title-wrap p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: rgba(214, 228, 255, 0.72);
 }
 
 .today-plan-total {
-  color: #d2def7;
+  color: #d8fbe9;
   font-size: 0.92rem;
+  font-weight: 700;
 }
 
 .today-plan-items {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .today-plan-item {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 11px 12px;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(9, 16, 34, 0.58);
+  border: 1px solid rgba(154, 191, 255, 0.2);
+  background: rgba(9, 18, 38, 0.56);
 }
 
 .today-plan-item.is-done {
@@ -4137,4 +4181,27 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.today-plan-mascot {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+@media (max-width: 860px) {
+  .today-plan-head {
+    padding-right: 56px;
+  }
+  .today-plan-item {
+    grid-template-columns: 1fr;
+  }
+  .today-plan-item-actions {
+    justify-content: flex-end;
+  }
 }

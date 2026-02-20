@@ -742,11 +742,12 @@ function AppInner() {
     await updateTodayItemStatus(item.id, 'start');
     const taskType = String(item?.task_type || '').toLowerCase();
     if (taskType === 'cards') {
+      setSelectedSections(new Set(['flashcards']));
       openFlashcardsSetup(flashcardsRef);
       return;
     }
     if (taskType === 'translation') {
-      openSectionAndScroll('translations', translationsRef);
+      openSingleSectionAndScroll('translations', translationsRef);
       return;
     }
     if (taskType === 'video' || taskType === 'youtube') {
@@ -758,7 +759,7 @@ function AppInner() {
       } else if (videoId) {
         setYoutubeInput(`https://youtu.be/${videoId}`);
       }
-      openSectionAndScroll('youtube', youtubeRef);
+      openSingleSectionAndScroll('youtube', youtubeRef);
     }
   };
 
@@ -950,7 +951,9 @@ function AppInner() {
     return selectedSections.has(key);
   };
 
-  const showHero = !flashcardsOnly && selectedSections.size === 0;
+  const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
+  const showHero = false;
+  const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
 
   const toggleSection = (key) => {
     setSelectedSections((prev) => {
@@ -993,6 +996,20 @@ function AppInner() {
     setTimeout(() => {
       scrollToRef(ref, { center: key === 'flashcards', block: 'start' });
     }, 80);
+  };
+
+  const openSingleSectionAndScroll = (key, ref) => {
+    setSelectedSections(new Set([key]));
+    setTimeout(() => {
+      scrollToRef(ref, { center: key === 'flashcards', block: 'start' });
+    }, 80);
+  };
+
+  const goHomeScreen = () => {
+    setFlashcardsOnly(false);
+    setFlashcardSessionActive(false);
+    setSelectedSections(new Set());
+    setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 60);
   };
 
   const jumpToDictionaryFromSentence = () => {
@@ -1119,6 +1136,15 @@ function AppInner() {
   };
 
   const renderMenuIcon = (kind) => {
+    if (kind === 'today') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <path d="M4 8h16v12H4z" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M8 4v4M16 4v4M4 11h16" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <circle cx="12" cy="16" r="2.2" fill="currentColor" />
+        </svg>
+      );
+    }
     if (kind === 'translations') {
       return (
         <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
@@ -4018,6 +4044,14 @@ function AppInner() {
             <div className="webapp-menu">
               <button
                 type="button"
+                className={`menu-item menu-item-today ${isHomeScreen ? 'is-active' : ''}`}
+                onClick={goHomeScreen}
+              >
+                <span className="menu-icon menu-icon-today">{renderMenuIcon('today')}</span>
+                <span>{tr('Сегодня', 'Heute')}</span>
+              </button>
+              <button
+                type="button"
                 className={`menu-item menu-item-translations ${selectedSections.has('translations') ? 'is-active' : ''}`}
                 onClick={() => toggleSection('translations')}
                 disabled={flashcardsOnly}
@@ -4189,6 +4223,17 @@ function AppInner() {
                       />
                       <span>{t('menu_multi_select')}</span>
                     </label>
+                    <button
+                      type="button"
+                      className={`menu-item menu-item-today ${isHomeScreen ? 'is-active' : ''}`}
+                      onClick={() => {
+                        goHomeScreen();
+                        setMenuOpen(false);
+                      }}
+                    >
+                      <span className="menu-icon menu-icon-today">{renderMenuIcon('today')}</span>
+                      <span>{tr('Сегодня', 'Heute')}</span>
+                    </button>
                     <button
                       type="button"
                       className={`menu-item menu-item-translations ${selectedSections.has('translations') ? 'is-active' : ''}`}
@@ -4399,14 +4444,18 @@ function AppInner() {
               </div>
             )}
 
-            {!flashcardsOnly && initData && (
+            {isHomeScreen && initData && (
               <section className="today-plan-panel">
                 <div className="today-plan-head">
-                  <h2>{tr('Сегодня', 'Heute')}</h2>
+                  <div className="today-plan-title-wrap">
+                    <h2>{tr('Сегодня', 'Heute')}</h2>
+                    <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persoenlicher Plan fuer heute')}</p>
+                  </div>
                   <span className="today-plan-total">
                     {tr('Всего', 'Gesamt')}: {todayPlan?.total_minutes || 0} {tr('мин', 'Min')}
                   </span>
                 </div>
+                <img src={heroStickerSrc} alt="" aria-hidden="true" className="today-plan-mascot" />
                 {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
                 {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
                 {!todayPlanLoading && !todayPlanError && (!todayPlan?.items || todayPlan.items.length === 0) && (
@@ -4455,6 +4504,11 @@ function AppInner() {
               <section className="webapp-section" ref={translationsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
+                  {isFocusedSection('translations') && (
+                    <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                      {tr('На главную', 'Startseite')}
+                    </button>
+                  )}
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="webapp-translation-start">
@@ -4773,6 +4827,11 @@ function AppInner() {
                   <section className="webapp-video" ref={youtubeRef}>
                     <div className="webapp-local-section-head">
                       <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
+                      {isFocusedSection('youtube') && (
+                        <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                          {tr('На главную', 'Startseite')}
+                        </button>
+                      )}
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
                     <div className="webapp-video-form">
@@ -5339,6 +5398,13 @@ function AppInner() {
 
             {isSectionVisible('flashcards') && (
               <section className="webapp-flashcards" ref={flashcardsRef}>
+                {isFocusedSection('flashcards') && (
+                  <div className="section-inline-actions">
+                    <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                      {tr('На главную', 'Startseite')}
+                    </button>
+                  </div>
+                )}
                 {!flashcardsVisible && (
                   <div className="webapp-muted">
                     {t('flashcards_start_hint')}
