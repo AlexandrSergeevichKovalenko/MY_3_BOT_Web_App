@@ -147,6 +147,7 @@ function AppInner() {
   const [todayPlan, setTodayPlan] = useState(null);
   const [todayPlanLoading, setTodayPlanLoading] = useState(false);
   const [todayPlanError, setTodayPlanError] = useState('');
+  const [todayTestSending, setTodayTestSending] = useState(false);
   const [todayItemLoading, setTodayItemLoading] = useState({});
   const [skillReport, setSkillReport] = useState(null);
   const [skillReportLoading, setSkillReportLoading] = useState(false);
@@ -801,6 +802,32 @@ function AppInner() {
     }
   };
 
+  const sendTodayReminderTest = async () => {
+    if (!initData) return;
+    try {
+      setTodayTestSending(true);
+      setTodayPlanError('');
+      const response = await fetch('/api/today/reminders/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка тестовой отправки в личку', 'Fehler beim Testversand'));
+      }
+      setTodayPlanError(tr('Тест отправлен в личку. Проверьте диалог с ботом.', 'Test wurde in den privaten Chat gesendet.'));
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось отправить тест в личку.',
+        'Test in den privaten Chat konnte nicht gesendet werden.'
+      );
+      setTodayPlanError(friendly);
+    } finally {
+      setTodayTestSending(false);
+    }
+  };
+
   const updateTodayItemStatus = async (itemId, action) => {
     if (!initData || !itemId) return null;
     try {
@@ -915,8 +942,16 @@ function AppInner() {
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
       }
+      const data = await response.json();
       setSrsRevealAnswer(false);
-      await loadSrsNextCard();
+      if (data?.next && typeof data.next === 'object') {
+        setSrsCard(data.next.card || null);
+        setSrsState(data.next.srs || null);
+        setSrsQueueInfo(data.next.queue_info || { due_count: 0, new_remaining_today: 0 });
+        srsShownAtRef.current = Date.now();
+      } else {
+        await loadSrsNextCard();
+      }
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.');
       setSrsError(friendly);
@@ -4603,6 +4638,14 @@ function AppInner() {
                     disabled={todayPlanLoading}
                   >
                     {todayPlanLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить план', 'Plan aktualisieren')}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={sendTodayReminderTest}
+                    disabled={todayTestSending}
+                  >
+                    {todayTestSending ? tr('Отправка...', 'Senden...') : tr('Проверить личку', 'Privat testen')}
                   </button>
                 </div>
                 <img src={heroStickerSrc} alt="" aria-hidden="true" className="today-plan-mascot" />

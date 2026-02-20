@@ -4144,7 +4144,9 @@ body {
 .today-plan-toolbar {
   display: flex;
   justify-content: flex-start;
+  gap: 8px;
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
 .today-plan-items {

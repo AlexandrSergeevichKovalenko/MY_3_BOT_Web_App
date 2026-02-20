@@ -2591,6 +2591,34 @@ def count_new_cards_introduced_today(
             return int(row[0] if row else 0)
 
 
+def count_available_new_srs_cards(
+    user_id: int,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang,
+                target_lang,
+                table_alias="q",
+            )
+            cursor.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM bt_3_webapp_dictionary_queries q
+                LEFT JOIN bt_3_card_srs_state s
+                  ON s.user_id = q.user_id AND s.card_id = q.id
+                WHERE q.user_id = %s
+                  AND s.id IS NULL
+                  {language_filter_sql};
+                """,
+                [int(user_id), *language_params],
+            )
+            row = cursor.fetchone()
+            return int(row[0] if row else 0)
+
+
 def get_next_due_srs_card(
     user_id: int,
     now_utc: datetime | None = None,

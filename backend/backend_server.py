@@ -155,6 +155,7 @@ from backend.database import (
     get_next_new_srs_candidate,
     count_due_srs_cards,
     count_new_cards_introduced_today,
+    count_available_new_srs_cards,
     ensure_new_srs_state,
     get_card_srs_state,
     upsert_card_srs_state,
@@ -736,6 +737,119 @@ def _today_cards_item_payload(
             10,
         )
     return None, 0
+
+
+def _compute_srs_queue_info(
+    *,
+    user_id: int,
+    now_utc: datetime,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    due_count = count_due_srs_cards(
+        user_id=user_id,
+        now_utc=now_utc,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    introduced_today = count_new_cards_introduced_today(
+        user_id=user_id,
+        now_utc=now_utc,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    available_new_total = count_available_new_srs_cards(
+        user_id=user_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
+    new_remaining_today = min(new_remaining_today, max(0, int(available_new_total)))
+    return {
+        "due_count": int(due_count),
+        "new_remaining_today": int(new_remaining_today),
+        "available_new_total": int(available_new_total),
+    }
+
+
+def _build_next_srs_payload(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    now_utc: datetime,
+) -> dict:
+    due_payload = get_next_due_srs_card(
+        user_id=user_id,
+        now_utc=now_utc,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    card_payload = None
+    srs_payload = None
+    queue_info = _compute_srs_queue_info(
+        user_id=user_id,
+        now_utc=now_utc,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+
+    if due_payload:
+        card_payload = due_payload.get("card")
+        srs_payload = due_payload.get("srs")
+    else:
+        if int(queue_info.get("new_remaining_today") or 0) > 0:
+            candidate = get_next_new_srs_candidate(
+                user_id=user_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            if candidate:
+                state = ensure_new_srs_state(user_id=user_id, card_id=int(candidate["id"]), now_utc=now_utc)
+                card_payload = candidate
+                srs_payload = {
+                    "status": state.get("status") or "new",
+                    "due_at": state.get("due_at"),
+                    "interval_days": int(state.get("interval_days") or 0),
+                    "stability": float(state.get("stability") or 0.0),
+                    "difficulty": float(state.get("difficulty") or 0.0),
+                }
+
+    if not card_payload:
+        return {
+            "card": None,
+            "srs": None,
+            "queue_info": {
+                "due_count": int(queue_info.get("due_count") or 0),
+                "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
+            },
+        }
+
+    due_at = srs_payload.get("due_at")
+    due_iso = due_at.isoformat() if hasattr(due_at, "isoformat") else None
+    interval_days = int(srs_payload.get("interval_days") or 0)
+    srs_response = {
+        "status": srs_payload.get("status") or "new",
+        "due_at": due_iso,
+        "interval_days": interval_days,
+        "stability": float(srs_payload.get("stability") or 0.0),
+        "difficulty": float(srs_payload.get("difficulty") or 0.0),
+        "is_mature": interval_days >= MATURE_INTERVAL_DAYS,
+    }
+    card_response = _decorate_dictionary_item(
+        card_payload if isinstance(card_payload, dict) else {},
+        source_lang=source_lang,
+        target_lang=target_lang,
+        direction=f"{source_lang}-{target_lang}",
+    )
+    return {
+        "card": card_response,
+        "srs": srs_response,
+        "queue_info": {
+            "due_count": int(queue_info.get("due_count") or 0),
+            "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
+        },
+    }
 
 
 def _build_video_search_query(main_category: str | None, sub_category: str | None) -> str:
@@ -3480,19 +3594,12 @@ def get_mobile_dashboard():
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
-        due_count = count_due_srs_cards(
+        queue_info = _compute_srs_queue_info(
             user_id=user_id,
             now_utc=now_utc,
             source_lang=source_lang,
             target_lang=target_lang,
         )
-        introduced_today = count_new_cards_introduced_today(
-            user_id=user_id,
-            now_utc=now_utc,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-        new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
     except Exception as exc:
         return jsonify({"error": f"Ошибка чтения SRS-статистики: {exc}"}), 500
 
@@ -3532,8 +3639,8 @@ def get_mobile_dashboard():
         {
             "ok": True,
             "queue_info": {
-                "due_count": int(due_count),
-                "new_remaining_today": int(new_remaining_today),
+                "due_count": int(queue_info.get("due_count") or 0),
+                "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
             },
             "word_of_day": word_of_day,
             "deep_links": {
@@ -3553,6 +3660,21 @@ def get_today_plan():
 
     requested_date = request.args.get("date")
     plan_date = _safe_plan_date(requested_date, TODAY_PLAN_DEFAULT_TZ)
+    auto_opt_in = (os.getenv("TODAY_REMINDER_AUTO_OPT_IN") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    if auto_opt_in:
+        try:
+            current = get_today_reminder_settings(int(user_id))
+            if not current.get("updated_at"):
+                upsert_today_reminder_settings(
+                    int(user_id),
+                    enabled=True,
+                    timezone_name=TODAY_PLAN_DEFAULT_TZ,
+                    reminder_hour=7,
+                    reminder_minute=0,
+                )
+        except Exception as exc:
+            logging.warning("Today reminder auto-opt-in skipped for user %s: %s", user_id, exc)
+
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
         plan = _get_or_create_today_plan(
@@ -3703,6 +3825,41 @@ def today_reminders_settings():
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения настроек reminder: {exc}"}), 500
     return jsonify({"ok": True, "settings": settings})
+
+
+@app.route("/api/today/reminders/test", methods=["POST"])
+def today_reminders_test_send():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    requested_date = request.args.get("date")
+    if not requested_date and isinstance(payload, dict):
+        requested_date = payload.get("date")
+    plan_date = _safe_plan_date(requested_date, TODAY_PLAN_DEFAULT_TZ)
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        plan = _get_or_create_today_plan(
+            user_id=int(user_id),
+            plan_date=plan_date,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        _send_today_plan_private_message(user_id=int(user_id), plan=plan)
+    except Exception as exc:
+        return jsonify({"error": f"Не удалось отправить тест в личку: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "sent": True,
+            "date": plan_date.isoformat(),
+            "user_id": int(user_id),
+        }
+    )
 
 
 @app.route("/api/progress/skills", methods=["GET"])
@@ -4408,97 +4565,17 @@ def get_next_srs_card():
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     now_utc = datetime.now(timezone.utc)
 
-    due_payload = get_next_due_srs_card(
-        user_id=user_id,
+    payload_next = _build_next_srs_payload(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
         now_utc=now_utc,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
-    card_payload = None
-    srs_payload = None
-
-    if due_payload:
-        card_payload = due_payload.get("card")
-        srs_payload = due_payload.get("srs")
-    else:
-        introduced_today = count_new_cards_introduced_today(
-            user_id=user_id,
-            now_utc=now_utc,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-        new_remaining = max(NEW_PER_DAY - introduced_today, 0)
-        if new_remaining > 0:
-            candidate = get_next_new_srs_candidate(
-                user_id=user_id,
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
-            if candidate:
-                state = ensure_new_srs_state(user_id=user_id, card_id=int(candidate["id"]), now_utc=now_utc)
-                card_payload = candidate
-                srs_payload = {
-                    "status": state.get("status") or "new",
-                    "due_at": state.get("due_at"),
-                    "interval_days": int(state.get("interval_days") or 0),
-                    "stability": float(state.get("stability") or 0.0),
-                    "difficulty": float(state.get("difficulty") or 0.0),
-                }
-
-    due_count = count_due_srs_cards(
-        user_id=user_id,
-        now_utc=now_utc,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
-    introduced_today = count_new_cards_introduced_today(
-        user_id=user_id,
-        now_utc=now_utc,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
-    new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
-
-    if not card_payload:
-        return jsonify(
-            {
-                "ok": True,
-                "card": None,
-                "srs": None,
-                "queue_info": {
-                    "due_count": due_count,
-                    "new_remaining_today": new_remaining_today,
-                },
-            }
-        )
-
-    due_at = srs_payload.get("due_at")
-    due_iso = due_at.isoformat() if hasattr(due_at, "isoformat") else None
-    interval_days = int(srs_payload.get("interval_days") or 0)
-    srs_response = {
-        "status": srs_payload.get("status") or "new",
-        "due_at": due_iso,
-        "interval_days": interval_days,
-        "stability": float(srs_payload.get("stability") or 0.0),
-        "difficulty": float(srs_payload.get("difficulty") or 0.0),
-        "is_mature": interval_days >= MATURE_INTERVAL_DAYS,
-    }
-    card_response = _decorate_dictionary_item(
-        card_payload if isinstance(card_payload, dict) else {},
-        source_lang=source_lang,
-        target_lang=target_lang,
-        direction=f"{source_lang}-{target_lang}",
     )
 
     return jsonify(
         {
             "ok": True,
-            "card": card_response,
-            "srs": srs_response,
-            "queue_info": {
-                "due_count": due_count,
-                "new_remaining_today": new_remaining_today,
-            },
+            **payload_next,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
@@ -4595,6 +4672,12 @@ def review_srs_card():
 
     interval_days = int(persisted.get("interval_days") or 0)
     due_at = persisted.get("due_at")
+    payload_next = _build_next_srs_payload(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        now_utc=datetime.now(timezone.utc),
+    )
     return jsonify(
         {
             "ok": True,
@@ -4605,6 +4688,7 @@ def review_srs_card():
             "difficulty": float(persisted.get("difficulty") or 0.0),
             "is_mature": interval_days >= MATURE_INTERVAL_DAYS,
             "message": "Review saved",
+            "next": payload_next,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
@@ -5053,6 +5137,13 @@ def get_youtube_catalog():
         return jsonify({"error": "initData обязателен"}), 400
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    learning_code = _normalize_short_lang_code(target_lang, fallback="de")
 
     try:
         with get_db_connection_context() as conn:
@@ -5076,6 +5167,11 @@ def get_youtube_catalog():
 
     items = []
     for video_id, language, is_generated, updated_at, items_count in rows:
+        language_code = _normalize_short_lang_code(language, fallback="")
+        if learning_code and language_code and language_code != learning_code:
+            continue
+        if learning_code and not language_code:
+            continue
         oembed = _get_youtube_oembed(video_id)
         title = oembed.get("title") or video_id
         author = oembed.get("author_name") or ""
@@ -5942,6 +6038,7 @@ def _dispatch_today_plans(target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_T
                 _send_group_message(fallback_text)
                 sent_group_fallback += 1
                 logging.warning("Today private send failed for user %s: %s", user_id, private_exc)
+                errors.append(f"user {user_id}: private_send_failed: {private_exc}")
         except Exception as exc:
             errors.append(f"user {user_id}: {exc}")
     return {
@@ -6127,7 +6224,7 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=300,
         )
-    today_plan_enabled = (os.getenv("TODAY_PLAN_SCHEDULER_ENABLED") or "0").strip().lower()
+    today_plan_enabled = (os.getenv("TODAY_PLAN_SCHEDULER_ENABLED") or "1").strip().lower()
     if today_plan_enabled in ("1", "true", "yes", "on"):
         today_hour = int((os.getenv("TODAY_PLAN_SCHEDULER_HOUR") or "7").strip())
         today_minute = int((os.getenv("TODAY_PLAN_SCHEDULER_MINUTE") or "0").strip())
