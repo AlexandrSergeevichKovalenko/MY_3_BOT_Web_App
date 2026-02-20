@@ -4,7 +4,7 @@ from psycopg2 import OperationalError
 import os
 from contextlib import contextmanager
 import json
-from datetime import datetime, timezone, date, timedelta
+from datetime import datetime, timezone, date, timedelta, time as dt_time
 from pathlib import Path
 import time
 from dotenv import load_dotenv
@@ -1086,6 +1086,51 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_daily_plans_user_date
                 ON bt_3_daily_plans (user_id, plan_date DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_weekly_goals (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    week_start DATE NOT NULL,
+                    translations_goal INTEGER NOT NULL DEFAULT 0,
+                    learned_words_goal INTEGER NOT NULL DEFAULT 0,
+                    agent_minutes_goal INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, source_lang, target_lang, week_start)
+                );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_weekly_goals
+                ADD COLUMN IF NOT EXISTS agent_minutes_goal INTEGER NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_weekly_goals_user_week
+                ON bt_3_weekly_goals (user_id, source_lang, target_lang, week_start DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_agent_voice_sessions (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    ended_at TIMESTAMPTZ,
+                    duration_seconds INTEGER,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_user_active
+                ON bt_3_agent_voice_sessions (user_id, source_lang, target_lang, started_at DESC)
+                WHERE ended_at IS NULL;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_user_range
+                ON bt_3_agent_voice_sessions (user_id, source_lang, target_lang, started_at, ended_at);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_daily_plan_items (
@@ -3048,6 +3093,418 @@ def _map_daily_plan_item(row: tuple) -> dict:
         "payload": row[6] if isinstance(row[6], dict) else {},
         "status": row[7] or "todo",
         "completed_at": row[8].isoformat() if row[8] else None,
+    }
+
+
+def _week_bounds(anchor_date: date | None = None) -> tuple[date, date]:
+    current = anchor_date or date.today()
+    week_start = current - timedelta(days=current.weekday())
+    return week_start, week_start + timedelta(days=6)
+
+
+def get_weekly_goals(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    week_start: date | None = None,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_week_start, week_end = _week_bounds(week_start)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT translations_goal, learned_words_goal, updated_at
+                     , agent_minutes_goal
+                FROM bt_3_weekly_goals
+                WHERE user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                  AND week_start = %s
+                LIMIT 1;
+                """,
+                (int(user_id), normalized_source, normalized_target, resolved_week_start),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "week_start": resolved_week_start.isoformat(),
+        "week_end": week_end.isoformat(),
+        "source_lang": normalized_source,
+        "target_lang": normalized_target,
+        "translations_goal": max(0, int(row[0] or 0)),
+        "learned_words_goal": max(0, int(row[1] or 0)),
+        "agent_minutes_goal": max(0, int(row[3] or 0)),
+        "updated_at": row[2].isoformat() if row[2] else None,
+    }
+
+
+def upsert_weekly_goals(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    translations_goal: int,
+    learned_words_goal: int,
+    agent_minutes_goal: int,
+    week_start: date | None = None,
+) -> dict:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_week_start, week_end = _week_bounds(week_start)
+    translations_goal = max(0, int(translations_goal or 0))
+    learned_words_goal = max(0, int(learned_words_goal or 0))
+    agent_minutes_goal = max(0, int(agent_minutes_goal or 0))
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_weekly_goals (
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    week_start,
+                    translations_goal,
+                    learned_words_goal,
+                    agent_minutes_goal,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id, source_lang, target_lang, week_start) DO UPDATE
+                SET
+                    translations_goal = EXCLUDED.translations_goal,
+                    learned_words_goal = EXCLUDED.learned_words_goal,
+                    agent_minutes_goal = EXCLUDED.agent_minutes_goal,
+                    updated_at = NOW()
+                RETURNING translations_goal, learned_words_goal, agent_minutes_goal, updated_at;
+                """,
+                (
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                    resolved_week_start,
+                    translations_goal,
+                    learned_words_goal,
+                    agent_minutes_goal,
+                ),
+            )
+            saved = cursor.fetchone()
+
+    return {
+        "week_start": resolved_week_start.isoformat(),
+        "week_end": week_end.isoformat(),
+        "source_lang": normalized_source,
+        "target_lang": normalized_target,
+        "translations_goal": max(0, int(saved[0] if saved else translations_goal)),
+        "learned_words_goal": max(0, int(saved[1] if saved else learned_words_goal)),
+        "agent_minutes_goal": max(0, int(saved[2] if saved else agent_minutes_goal)),
+        "updated_at": saved[3].isoformat() if saved and saved[3] else None,
+    }
+
+
+def get_weekly_plan_progress(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    mature_interval_days: int = 21,
+    week_start: date | None = None,
+    as_of_date: date | None = None,
+) -> dict:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_week_start, resolved_week_end = _week_bounds(week_start)
+    today = as_of_date or date.today()
+    effective_end = min(resolved_week_end, max(resolved_week_start, today))
+    days_total = max(1, (resolved_week_end - resolved_week_start).days + 1)
+    days_elapsed = max(1, (effective_end - resolved_week_start).days + 1)
+    mature_threshold = max(1, int(mature_interval_days or 21))
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT translations_goal, learned_words_goal, agent_minutes_goal
+                FROM bt_3_weekly_goals
+                WHERE user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                  AND week_start = %s
+                LIMIT 1;
+                """,
+                (int(user_id), normalized_source, normalized_target, resolved_week_start),
+            )
+            goals_row = cursor.fetchone()
+            translations_goal = max(0, int(goals_row[0] or 0)) if goals_row else 0
+            learned_words_goal = max(0, int(goals_row[1] or 0)) if goals_row else 0
+            agent_minutes_goal = max(0, int(goals_row[2] or 0)) if goals_row else 0
+
+            cursor.execute(
+                """
+                WITH base AS (
+                    SELECT
+                        t.id_for_mistake_table,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY t.user_id, t.id_for_mistake_table
+                            ORDER BY t.timestamp DESC
+                        ) AS rn_range
+                    FROM bt_3_translations t
+                    JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                    WHERE t.user_id = %s
+                      AND COALESCE(t.source_lang, 'ru') = %s
+                      AND COALESCE(t.target_lang, 'de') = %s
+                      AND ds.date BETWEEN %s AND %s
+                )
+                SELECT COUNT(*)
+                FROM base
+                WHERE rn_range = 1;
+                """,
+                (
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                    resolved_week_start,
+                    effective_end,
+                ),
+            )
+            translation_row = cursor.fetchone()
+            translations_actual = max(0, int(translation_row[0] or 0)) if translation_row else 0
+
+            language_filter_sql, language_params = _build_language_pair_filter(
+                normalized_source,
+                normalized_target,
+                table_alias="q",
+            )
+            cursor.execute(
+                f"""
+                WITH first_learned AS (
+                    SELECT
+                        l.card_id,
+                        MIN(l.reviewed_at) AS learned_at
+                    FROM bt_3_card_review_log l
+                    JOIN bt_3_webapp_dictionary_queries q
+                      ON q.id = l.card_id
+                     AND q.user_id = l.user_id
+                    WHERE l.user_id = %s
+                      AND COALESCE(l.interval_days_after, 0) >= %s
+                      {language_filter_sql}
+                    GROUP BY l.card_id
+                )
+                SELECT COUNT(*)
+                FROM first_learned
+                WHERE (learned_at AT TIME ZONE 'UTC')::date BETWEEN %s AND %s;
+                """,
+                [
+                    int(user_id),
+                    mature_threshold,
+                    *language_params,
+                    resolved_week_start,
+                    effective_end,
+                ],
+            )
+            learned_row = cursor.fetchone()
+            learned_words_actual = max(0, int(learned_row[0] or 0)) if learned_row else 0
+
+            week_start_dt = datetime.combine(resolved_week_start, dt_time.min, tzinfo=timezone.utc)
+            end_exclusive_dt = datetime.combine(effective_end + timedelta(days=1), dt_time.min, tzinfo=timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+            cap_dt = min(end_exclusive_dt, now_utc)
+            if cap_dt > week_start_dt:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(
+                        SUM(
+                            GREATEST(
+                                0,
+                                EXTRACT(
+                                    EPOCH FROM (
+                                        LEAST(COALESCE(ended_at, %s), %s)
+                                        - GREATEST(started_at, %s)
+                                    )
+                                )
+                            )
+                        ),
+                        0
+                    )
+                    FROM bt_3_agent_voice_sessions
+                    WHERE user_id = %s
+                      AND source_lang = %s
+                      AND target_lang = %s
+                      AND started_at < %s
+                      AND COALESCE(ended_at, %s) > %s;
+                    """,
+                    (
+                        cap_dt,
+                        cap_dt,
+                        week_start_dt,
+                        int(user_id),
+                        normalized_source,
+                        normalized_target,
+                        cap_dt,
+                        cap_dt,
+                        week_start_dt,
+                    ),
+                )
+                agent_row = cursor.fetchone()
+                agent_minutes_actual = float(agent_row[0] or 0.0) / 60.0 if agent_row else 0.0
+            else:
+                agent_minutes_actual = 0.0
+
+    def _metric(goal: int, actual: float) -> dict:
+        safe_goal = max(0, int(goal or 0))
+        safe_actual = max(0.0, float(actual or 0.0))
+        forecast = (safe_actual / float(days_elapsed)) * float(days_total)
+        expected_to_date = (safe_goal / float(days_total)) * float(days_elapsed)
+        completion = (safe_actual / float(safe_goal) * 100.0) if safe_goal > 0 else 0.0
+        return {
+            "goal": safe_goal,
+            "actual": round(safe_actual, 2),
+            "forecast": round(forecast, 2),
+            "completion_percent": round(completion, 1),
+            "delta_vs_goal": round(safe_actual - safe_goal, 2),
+            "forecast_delta_vs_goal": round(forecast - safe_goal, 2),
+            "expected_to_date": round(expected_to_date, 2),
+            "delta_vs_expected": round(safe_actual - expected_to_date, 2),
+        }
+
+    return {
+        "week_start": resolved_week_start.isoformat(),
+        "week_end": resolved_week_end.isoformat(),
+        "as_of_date": effective_end.isoformat(),
+        "days_elapsed": days_elapsed,
+        "days_total": days_total,
+        "source_lang": normalized_source,
+        "target_lang": normalized_target,
+        "metrics": {
+            "translations": _metric(translations_goal, translations_actual),
+            "learned_words": _metric(learned_words_goal, learned_words_actual),
+            "agent_minutes": _metric(agent_minutes_goal, agent_minutes_actual),
+        },
+    }
+
+
+def start_agent_voice_session(
+    *,
+    user_id: int,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    started_at: datetime | None = None,
+) -> dict:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    started = started_at or datetime.now(timezone.utc)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_agent_voice_sessions
+                SET
+                    ended_at = %s,
+                    duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (%s - started_at))::INT),
+                    updated_at = NOW()
+                WHERE user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                  AND ended_at IS NULL;
+                """,
+                (started, started, int(user_id), normalized_source, normalized_target),
+            )
+            cursor.execute(
+                """
+                INSERT INTO bt_3_agent_voice_sessions (
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    started_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, NOW())
+                RETURNING id, started_at;
+                """,
+                (int(user_id), normalized_source, normalized_target, started),
+            )
+            row = cursor.fetchone()
+    return {
+        "session_id": int(row[0]),
+        "started_at": row[1].isoformat() if row and row[1] else started.isoformat(),
+    }
+
+
+def finish_agent_voice_session(
+    *,
+    user_id: int,
+    session_id: int | None = None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    ended_at: datetime | None = None,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    ended = ended_at or datetime.now(timezone.utc)
+    if ended.tzinfo is None:
+        ended = ended.replace(tzinfo=timezone.utc)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if session_id is not None:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_agent_voice_sessions
+                    SET
+                        ended_at = COALESCE(ended_at, %s),
+                        duration_seconds = CASE
+                            WHEN ended_at IS NOT NULL THEN duration_seconds
+                            ELSE GREATEST(0, EXTRACT(EPOCH FROM (%s - started_at))::INT)
+                        END,
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND user_id = %s
+                    RETURNING id, started_at, ended_at, duration_seconds, source_lang, target_lang;
+                    """,
+                    (ended, ended, int(session_id), int(user_id)),
+                )
+            else:
+                cursor.execute(
+                    """
+                    WITH latest AS (
+                        SELECT id
+                        FROM bt_3_agent_voice_sessions
+                        WHERE user_id = %s
+                          AND source_lang = %s
+                          AND target_lang = %s
+                          AND ended_at IS NULL
+                        ORDER BY started_at DESC
+                        LIMIT 1
+                    )
+                    UPDATE bt_3_agent_voice_sessions s
+                    SET
+                        ended_at = %s,
+                        duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (%s - s.started_at))::INT),
+                        updated_at = NOW()
+                    FROM latest
+                    WHERE s.id = latest.id
+                    RETURNING s.id, s.started_at, s.ended_at, s.duration_seconds, s.source_lang, s.target_lang;
+                    """,
+                    (int(user_id), normalized_source, normalized_target, ended, ended),
+                )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    duration_seconds = int(row[3] or 0)
+    return {
+        "session_id": int(row[0]),
+        "started_at": row[1].isoformat() if row[1] else None,
+        "ended_at": row[2].isoformat() if row[2] else ended.isoformat(),
+        "duration_seconds": duration_seconds,
+        "duration_minutes": round(duration_seconds / 60.0, 2),
+        "source_lang": str(row[4] or normalized_source),
+        "target_lang": str(row[5] or normalized_target),
     }
 
 

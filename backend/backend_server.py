@@ -182,6 +182,11 @@ from backend.database import (
     list_today_reminder_users,
     get_audio_grammar_settings,
     upsert_audio_grammar_settings,
+    get_weekly_goals,
+    upsert_weekly_goals,
+    get_weekly_plan_progress,
+    start_agent_voice_session,
+    finish_agent_voice_session,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
 )
@@ -1573,6 +1578,49 @@ def _send_private_photo(user_id: int, image_bytes: bytes, filename: str, caption
             )
     except Exception:
         logging.debug("Failed to track private photo message", exc_info=True)
+
+
+def _send_group_photo(image_bytes: bytes, filename: str, caption: str | None = None) -> None:
+    if not TELEGRAM_GROUP_CHAT_ID:
+        raise RuntimeError("TELEGRAM_GROUP_CHAT_ID должен быть установлен")
+    url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendPhoto"
+    data = {"chat_id": TELEGRAM_GROUP_CHAT_ID}
+    if caption:
+        data["caption"] = caption
+    files = {"photo": (filename, image_bytes, "image/png")}
+    response = requests.post(url, data=data, files=files, timeout=60)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Telegram API error: {response.text}")
+    try:
+        payload = response.json() if response.content else {}
+        message_id = (payload.get("result") or {}).get("message_id")
+        if message_id is not None:
+            record_telegram_system_message(
+                chat_id=int(TELEGRAM_GROUP_CHAT_ID),
+                message_id=int(message_id),
+                message_type="photo",
+            )
+    except Exception:
+        logging.debug("Failed to track group photo message", exc_info=True)
+
+
+def _is_user_member_of_group_chat(user_id: int) -> bool:
+    if not TELEGRAM_GROUP_CHAT_ID:
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/getChatMember"
+    try:
+        response = requests.post(
+            url,
+            json={"chat_id": TELEGRAM_GROUP_CHAT_ID, "user_id": int(user_id)},
+            timeout=15,
+        )
+        if response.status_code >= 400:
+            return False
+        payload = response.json() if response.content else {}
+        status = str((payload.get("result") or {}).get("status") or "").strip().lower()
+        return status in {"creator", "administrator", "member", "restricted"}
+    except Exception:
+        return False
 
 
 def _send_private_message_chunks(user_id: int, text: str, limit: int = 3800) -> None:
@@ -4008,6 +4056,51 @@ def audio_grammar_settings():
     return jsonify({"ok": True, "settings": settings})
 
 
+@app.route("/api/assistant/session/start", methods=["POST"])
+def start_assistant_session():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        session = start_agent_voice_session(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка старта голосовой сессии: {exc}"}), 500
+    return jsonify({"ok": True, "session": session})
+
+
+@app.route("/api/assistant/session/complete", methods=["POST"])
+def complete_assistant_session():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    payload = request.get_json(silent=True) or {}
+    session_id_raw = payload.get("session_id")
+    session_id = None
+    if session_id_raw is not None and str(session_id_raw).strip() != "":
+        try:
+            session_id = int(session_id_raw)
+        except Exception:
+            return jsonify({"error": "session_id должен быть числом"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        session = finish_agent_voice_session(
+            user_id=int(user_id),
+            session_id=session_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка завершения голосовой сессии: {exc}"}), 500
+    return jsonify({"ok": True, "session": session})
+
+
 @app.route("/api/progress/skills", methods=["GET"])
 def get_skill_progress():
     user_id, username, error = _get_authenticated_user_from_request_init_data()
@@ -4041,6 +4134,75 @@ def get_skill_progress():
             "username": username,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
             **report,
+        }
+    )
+
+
+@app.route("/api/progress/weekly-plan", methods=["GET", "POST"])
+def weekly_plan_progress():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        try:
+            translations_goal = max(0, int(payload.get("translations_goal", 0)))
+            learned_words_goal = max(0, int(payload.get("learned_words_goal", 0)))
+            agent_minutes_goal = max(0, int(payload.get("agent_minutes_goal", 0)))
+        except Exception:
+            return jsonify({"error": "Значения плана должны быть целыми числами"}), 400
+        try:
+            upsert_weekly_goals(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                translations_goal=translations_goal,
+                learned_words_goal=learned_words_goal,
+                agent_minutes_goal=agent_minutes_goal,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка сохранения недельного плана: {exc}"}), 500
+
+    try:
+        goals = get_weekly_goals(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        ) or {
+            "translations_goal": 0,
+            "learned_words_goal": 0,
+            "agent_minutes_goal": 0,
+        }
+        progress = get_weekly_plan_progress(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            mature_interval_days=MATURE_INTERVAL_DAYS,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка расчёта недельного прогресса: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "week": {
+                "start_date": progress.get("week_start"),
+                "end_date": progress.get("week_end"),
+                "as_of_date": progress.get("as_of_date"),
+                "days_elapsed": int(progress.get("days_elapsed") or 1),
+                "days_total": int(progress.get("days_total") or 7),
+            },
+            "plan": {
+                "translations_goal": int(goals.get("translations_goal") or 0),
+                "learned_words_goal": int(goals.get("learned_words_goal") or 0),
+                "agent_minutes_goal": int(goals.get("agent_minutes_goal") or 0),
+            },
+            "metrics": progress.get("metrics") or {},
         }
     )
 
@@ -6135,6 +6297,153 @@ def _dispatch_private_analytics(target_date: date) -> dict:
     return {"ok": True, "date": target_date.isoformat(), "sent": sent, "errors": errors}
 
 
+def _build_weekly_goals_chart_png(
+    *,
+    username: str,
+    source_lang: str,
+    target_lang: str,
+    week_start: str,
+    week_end: str,
+    metrics: dict | None,
+) -> bytes | None:
+    if plt is None:
+        return None
+    metrics = metrics or {}
+    ordered = [
+        ("Переводы", metrics.get("translations") or {}, "#60a5fa"),
+        ("Выученные слова", metrics.get("learned_words") or {}, "#34d399"),
+        ("Минуты с агентом", metrics.get("agent_minutes") or {}, "#fbbf24"),
+    ]
+    labels = [item[0] for item in ordered]
+    plan_values = [float(item[1].get("goal") or 0.0) for item in ordered]
+    actual_values = [float(item[1].get("actual") or 0.0) for item in ordered]
+    forecast_values = [float(item[1].get("forecast") or 0.0) for item in ordered]
+    if max(plan_values + actual_values + forecast_values + [0.0]) <= 0:
+        return None
+
+    fig, ax = plt.subplots(figsize=(9, 5), dpi=140)
+    x = list(range(len(labels)))
+    width = 0.24
+    ax.bar([i - width for i in x], plan_values, width=width, label="План", color="#93c5fd", alpha=0.9)
+    ax.bar(x, actual_values, width=width, label="Факт", color="#34d399", alpha=0.9)
+    ax.bar([i + width for i in x], forecast_values, width=width, label="Прогноз", color="#f59e0b", alpha=0.9)
+
+    ax.set_title(f"Личные цели: {username} ({source_lang}->{target_lang})\n{week_start} — {week_end}")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=0)
+    ax.grid(axis="y", linestyle="--", alpha=0.25)
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+
+    buff = BytesIO()
+    fig.savefig(buff, format="png")
+    plt.close(fig)
+    buff.seek(0)
+    return buff.read()
+
+
+def _dispatch_weekly_goals_progress(target_date: date) -> dict:
+    bounds = get_period_bounds("week", today=target_date)
+    users: dict[tuple[int, str, str], str] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH latest_name AS (
+                    SELECT DISTINCT ON (user_id)
+                        user_id,
+                        username
+                    FROM bt_3_user_progress
+                    ORDER BY user_id, start_time DESC
+                )
+                SELECT
+                    g.user_id,
+                    g.source_lang,
+                    g.target_lang,
+                    COALESCE(NULLIF(n.username, ''), '') AS username
+                FROM bt_3_weekly_goals g
+                LEFT JOIN latest_name n ON n.user_id = g.user_id
+                WHERE g.week_start = %s
+                  AND (
+                    COALESCE(g.translations_goal, 0) > 0
+                    OR COALESCE(g.learned_words_goal, 0) > 0
+                    OR COALESCE(g.agent_minutes_goal, 0) > 0
+                  );
+                """,
+                (bounds.start_date,),
+            )
+            rows = cursor.fetchall()
+    for user_id, source_lang, target_lang, username in rows:
+        users[(int(user_id), str(source_lang or "ru"), str(target_lang or "de"))] = str(username or "").strip()
+
+    if not users:
+        return {"ok": True, "date": target_date.isoformat(), "sent_group": 0, "sent_private": 0, "errors": []}
+
+    sent_group = 0
+    sent_private = 0
+    errors: list[str] = []
+    for (user_id, source_lang, target_lang), username in users.items():
+        if not is_telegram_user_allowed(user_id):
+            continue
+        try:
+            progress = get_weekly_plan_progress(
+                user_id=user_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                mature_interval_days=MATURE_INTERVAL_DAYS,
+                as_of_date=target_date,
+            )
+            metrics = progress.get("metrics") if isinstance(progress, dict) else {}
+            title_name = username or f"user_{user_id}"
+            chart_png = _build_weekly_goals_chart_png(
+                username=title_name,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                week_start=str(progress.get("week_start") or bounds.start_date),
+                week_end=str(progress.get("week_end") or bounds.end_date),
+                metrics=metrics if isinstance(metrics, dict) else {},
+            )
+            if not chart_png:
+                continue
+
+            m_trans = (metrics or {}).get("translations") or {}
+            m_words = (metrics or {}).get("learned_words") or {}
+            m_agent = (metrics or {}).get("agent_minutes") or {}
+            caption = (
+                f"🎯 Личные цели: {title_name} ({source_lang}->{target_lang})\n"
+                f"{progress.get('week_start')} — {progress.get('week_end')}\n"
+                f"Переводы: {m_trans.get('actual', 0)} / {m_trans.get('goal', 0)} (прогноз {m_trans.get('forecast', 0)})\n"
+                f"Слова: {m_words.get('actual', 0)} / {m_words.get('goal', 0)} (прогноз {m_words.get('forecast', 0)})\n"
+                f"Агент (мин): {m_agent.get('actual', 0)} / {m_agent.get('goal', 0)} (прогноз {m_agent.get('forecast', 0)})"
+            )
+
+            if _is_user_member_of_group_chat(user_id):
+                _send_group_photo(
+                    image_bytes=chart_png,
+                    filename=f"weekly_goals_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
+                    caption=caption,
+                )
+                sent_group += 1
+            else:
+                _send_private_photo(
+                    user_id=user_id,
+                    image_bytes=chart_png,
+                    filename=f"weekly_goals_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
+                    caption=caption,
+                )
+                sent_private += 1
+        except Exception as exc:
+            errors.append(f"user {user_id} {source_lang}->{target_lang}: {exc}")
+
+    return {
+        "ok": True,
+        "date": target_date.isoformat(),
+        "sent_group": sent_group,
+        "sent_private": sent_private,
+        "errors": errors,
+    }
+
+
 def _run_private_analytics_scheduler_job() -> None:
     mode = (os.getenv("ANALYTICS_SCHEDULER_DATE_MODE") or "today").strip().lower()
     tz_name = (os.getenv("ANALYTICS_SCHEDULER_TZ") or "UTC").strip()
@@ -6150,6 +6459,16 @@ def _run_private_analytics_scheduler_job() -> None:
         logging.info("✅ Private analytics scheduler finished: %s", result)
     except Exception:
         logging.exception("❌ Private analytics scheduler failed")
+
+
+def _run_weekly_goals_scheduler_job() -> None:
+    tz_name = (os.getenv("WEEKLY_GOALS_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    target_date = _get_local_today_date(tz_name)
+    try:
+        result = _dispatch_weekly_goals_progress(target_date=target_date)
+        logging.info("✅ Weekly goals scheduler finished: %s", result)
+    except Exception:
+        logging.exception("❌ Weekly goals scheduler failed")
 
 
 def _format_today_plan_message(plan: dict) -> str:
@@ -6456,6 +6775,19 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=300,
         )
+    weekly_goals_enabled = (os.getenv("WEEKLY_GOALS_SCHEDULER_ENABLED") or "1").strip().lower()
+    if weekly_goals_enabled in ("1", "true", "yes", "on"):
+        weekly_goals_hour = int((os.getenv("WEEKLY_GOALS_SCHEDULER_HOUR") or "6").strip())
+        weekly_goals_minute = int((os.getenv("WEEKLY_GOALS_SCHEDULER_MINUTE") or "45").strip())
+        _audio_scheduler.add_job(
+            _run_weekly_goals_scheduler_job,
+            "cron",
+            hour=weekly_goals_hour,
+            minute=weekly_goals_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
     now = datetime.now(ZoneInfo(tz_name))
     first_report = now.replace(hour=17, minute=0, second=0, microsecond=0)
     if first_report <= now:
@@ -6529,6 +6861,30 @@ def send_private_analytics_now():
         target_date = datetime.utcnow().date()
 
     result = _dispatch_private_analytics(target_date)
+    return jsonify(result)
+
+
+@app.route("/api/admin/send-weekly-goals", methods=["POST"])
+def send_weekly_goals_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    date_str = (payload.get("date") or "").strip()
+    tz_name = (payload.get("tz") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
+    else:
+        target_date = _get_local_today_date(tz_name)
+
+    result = _dispatch_weekly_goals_progress(target_date=target_date)
     return jsonify(result)
 
 

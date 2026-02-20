@@ -156,6 +156,11 @@ function AppInner() {
   const [skillReportLoading, setSkillReportLoading] = useState(false);
   const [skillReportError, setSkillReportError] = useState('');
   const [skillPracticeLoading, setSkillPracticeLoading] = useState({});
+  const [weeklyPlan, setWeeklyPlan] = useState(null);
+  const [weeklyPlanLoading, setWeeklyPlanLoading] = useState(false);
+  const [weeklyPlanSaving, setWeeklyPlanSaving] = useState(false);
+  const [weeklyPlanError, setWeeklyPlanError] = useState('');
+  const [weeklyPlanDraft, setWeeklyPlanDraft] = useState({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '' });
   const [srsLoading, setSrsLoading] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
   const [srsSubmittingRating, setSrsSubmittingRating] = useState(null);
@@ -780,6 +785,84 @@ function AppInner() {
     }
   };
 
+  const loadWeeklyPlan = async () => {
+    if (!initData) return;
+    try {
+      setWeeklyPlanLoading(true);
+      setWeeklyPlanError('');
+      const response = await fetch(`/api/progress/weekly-plan?initData=${encodeURIComponent(initData)}`);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки недельного плана', 'Fehler beim Laden des Wochenplans'));
+      }
+      const data = await response.json();
+      const plan = {
+        week: data?.week || null,
+        plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0 },
+        metrics: data?.metrics || {},
+      };
+      setWeeklyPlan(plan);
+      setWeeklyPlanDraft({
+        translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
+        learned_words_goal: String(Number(plan?.plan?.learned_words_goal || 0)),
+        agent_minutes_goal: String(Number(plan?.plan?.agent_minutes_goal || 0)),
+      });
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось загрузить недельный план.',
+        'Wochenplan konnte nicht geladen werden.'
+      );
+      setWeeklyPlanError(friendly);
+    } finally {
+      setWeeklyPlanLoading(false);
+    }
+  };
+
+  const saveWeeklyPlan = async () => {
+    if (!initData) return;
+    const translationsGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.translations_goal || '0'), 10) || 0);
+    const learnedWordsGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.learned_words_goal || '0'), 10) || 0);
+    const agentMinutesGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.agent_minutes_goal || '0'), 10) || 0);
+    try {
+      setWeeklyPlanSaving(true);
+      setWeeklyPlanError('');
+      const response = await fetch('/api/progress/weekly-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          translations_goal: translationsGoal,
+          learned_words_goal: learnedWordsGoal,
+          agent_minutes_goal: agentMinutesGoal,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка сохранения недельного плана', 'Fehler beim Speichern des Wochenplans'));
+      }
+      const data = await response.json();
+      const plan = {
+        week: data?.week || null,
+        plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0 },
+        metrics: data?.metrics || {},
+      };
+      setWeeklyPlan(plan);
+      setWeeklyPlanDraft({
+        translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
+        learned_words_goal: String(Number(plan?.plan?.learned_words_goal || 0)),
+        agent_minutes_goal: String(Number(plan?.plan?.agent_minutes_goal || 0)),
+      });
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось сохранить недельный план.',
+        'Wochenplan konnte nicht gespeichert werden.'
+      );
+      setWeeklyPlanError(friendly);
+    } finally {
+      setWeeklyPlanSaving(false);
+    }
+  };
+
   const startSkillPractice = async (skill) => {
     if (!initData || !skill?.skill_id) return;
     const skillId = String(skill.skill_id);
@@ -1196,6 +1279,36 @@ function AppInner() {
   const ringCenter = ringSize / 2;
   const ringStartRadius = 118;
   const ringStep = 14;
+  const weeklyMetrics = weeklyPlan?.metrics || {};
+  const weeklyMetricRows = [
+    {
+      key: 'translations',
+      title: tr('Переводы предложений', 'Satz-Uebersetzungen'),
+      unit: tr('шт', 'Stk'),
+      data: weeklyMetrics.translations || {},
+    },
+    {
+      key: 'learned_words',
+      title: tr('Выученные слова (FSRS)', 'Gelernte Woerter (FSRS)'),
+      unit: tr('слов', 'Woerter'),
+      data: weeklyMetrics.learned_words || {},
+    },
+    {
+      key: 'agent_minutes',
+      title: tr('Минуты разговора с агентом', 'Gesprächsminuten mit Assistent'),
+      unit: tr('мин', 'Min'),
+      data: weeklyMetrics.agent_minutes || {},
+    },
+  ];
+  const weeklyWeekLabel = weeklyPlan?.week?.start_date && weeklyPlan?.week?.end_date
+    ? `${weeklyPlan.week.start_date} — ${weeklyPlan.week.end_date}`
+    : '';
+  const formatWeeklyValue = (value, digits = 0) => {
+    const num = Number(value || 0);
+    if (!Number.isFinite(num)) return '0';
+    if (digits <= 0) return String(Math.round(num));
+    return num.toFixed(digits);
+  };
 
   const toggleSection = (key) => {
     setSelectedSections((prev) => {
@@ -1458,6 +1571,7 @@ function AppInner() {
   const [assistantToken, setAssistantToken] = useState(null);
   const [assistantConnecting, setAssistantConnecting] = useState(false);
   const [assistantError, setAssistantError] = useState('');
+  const [assistantSessionId, setAssistantSessionId] = useState(null);
 
   // LiveKit login state
   const [telegramID, setTelegramID] = useState('');
@@ -1516,6 +1630,7 @@ function AppInner() {
       }
       const data = await response.json();
       setAssistantToken(data.token);
+      setAssistantSessionId(null);
     } catch (error) {
       setAssistantError(`${tr('Ошибка подключения ассистента', 'Assistent-Verbindungsfehler')}: ${error.message}`);
     } finally {
@@ -1523,7 +1638,51 @@ function AppInner() {
     }
   };
 
+  const startAssistantSessionTracking = async () => {
+    if (!initData || assistantSessionId) return;
+    try {
+      const response = await fetch('/api/assistant/session/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      const nextSessionId = data?.session?.session_id;
+      if (nextSessionId !== undefined && nextSessionId !== null) {
+        setAssistantSessionId(Number(nextSessionId));
+      }
+    } catch (error) {
+      setAssistantError(`${tr('Ошибка старта сессии ассистента', 'Fehler beim Start der Assistent-Session')}: ${error.message}`);
+    }
+  };
+
+  const stopAssistantSessionTracking = async (sessionIdOverride = null) => {
+    if (!initData) return;
+    const sid = sessionIdOverride ?? assistantSessionId;
+    setAssistantSessionId(null);
+    try {
+      const response = await fetch('/api/assistant/session/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sid ? { initData, session_id: sid } : { initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      await loadWeeklyPlan();
+    } catch (error) {
+      console.warn('assistant session stop error', error);
+    }
+  };
+
   const disconnectAssistant = () => {
+    const sid = assistantSessionId;
+    if (sid) {
+      stopAssistantSessionTracking(sid);
+    }
     setAssistantToken(null);
     setAssistantError('');
   };
@@ -1671,7 +1830,20 @@ function AppInner() {
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      setWeeklyPlan(null);
+      setWeeklyPlanError('');
+      setWeeklyPlanDraft({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '' });
+      return;
+    }
+    loadWeeklyPlan();
+  }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+
+  useEffect(() => {
     if (flashcardsOnly || !selectedSections.has('assistant')) {
+      if (assistantSessionId) {
+        stopAssistantSessionTracking(assistantSessionId);
+      }
       setAssistantToken(null);
     }
   }, [flashcardsOnly, selectedSections]);
@@ -4698,6 +4870,116 @@ function AppInner() {
             )}
 
             {isHomeScreen && initData && (
+              <section className="weekly-plan-panel">
+                <div className="weekly-plan-head">
+                  <div>
+                    <h2>{tr('План на неделю', 'Wochenplan')}</h2>
+                    <p>{tr('Личные цели и факт с прогнозом до конца недели', 'Persoenliche Ziele mit Ist-Werten und Prognose bis Wochenende')}</p>
+                  </div>
+                  {weeklyWeekLabel && (
+                    <span className="weekly-plan-period">{weeklyWeekLabel}</span>
+                  )}
+                </div>
+
+                <div className="weekly-plan-form">
+                  <label className="webapp-field">
+                    <span>{tr('Количество переводов', 'Anzahl Uebersetzungen')}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      inputMode="numeric"
+                      value={weeklyPlanDraft.translations_goal}
+                      onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, translations_goal: event.target.value }))}
+                      disabled={weeklyPlanSaving}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="webapp-field">
+                    <span>{tr('Количество выученных слов', 'Anzahl gelernter Woerter')}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      inputMode="numeric"
+                      value={weeklyPlanDraft.learned_words_goal}
+                      onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, learned_words_goal: event.target.value }))}
+                      disabled={weeklyPlanSaving}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="webapp-field">
+                    <span>{tr('Минуты разговора с агентом', 'Gesprächsminuten mit Assistent')}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      inputMode="numeric"
+                      value={weeklyPlanDraft.agent_minutes_goal}
+                      onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, agent_minutes_goal: event.target.value }))}
+                      disabled={weeklyPlanSaving}
+                      placeholder="0"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="primary-button weekly-plan-save-btn"
+                    onClick={saveWeeklyPlan}
+                    disabled={weeklyPlanSaving || weeklyPlanLoading}
+                  >
+                    {weeklyPlanSaving ? tr('Сохраняем...', 'Speichern...') : tr('Сохранить план', 'Plan speichern')}
+                  </button>
+                </div>
+
+                {weeklyPlanLoading && <div className="webapp-muted">{tr('Считаем недельные показатели...', 'Wochenwerte werden berechnet...')}</div>}
+                {weeklyPlanError && <div className="webapp-error">{weeklyPlanError}</div>}
+
+                {!weeklyPlanLoading && !weeklyPlanError && (
+                  <div className="weekly-plan-metrics">
+                    {weeklyMetricRows.map((item) => {
+                      const goal = Number(item.data?.goal || 0);
+                      const actual = Number(item.data?.actual || 0);
+                      const forecast = Number(item.data?.forecast || 0);
+                      const completion = Number(item.data?.completion_percent || 0);
+                      const completionClamped = Math.max(0, Math.min(100, completion));
+                      const forecastDelta = Number(item.data?.forecast_delta_vs_goal || 0);
+                      const completionRingStyle = { '--weekly-progress': `${completionClamped}%` };
+                      const forecastClass = forecastDelta >= 0 ? 'is-good' : 'is-bad';
+                      return (
+                        <article className="weekly-plan-metric-card" key={item.key}>
+                          <div className="weekly-plan-metric-top">
+                            <div>
+                              <h4>{item.title}</h4>
+                              <p>{tr('План/Факт/Прогноз', 'Plan/Ist/Prognose')}</p>
+                            </div>
+                            <div className="weekly-plan-progress-ring" style={completionRingStyle}>
+                              <span>{formatWeeklyValue(completion, 1)}%</span>
+                            </div>
+                          </div>
+                          <div className="weekly-plan-values">
+                            <div>
+                              <span>{tr('План', 'Plan')}</span>
+                              <strong>{formatWeeklyValue(goal)} {item.unit}</strong>
+                            </div>
+                            <div>
+                              <span>{tr('Факт', 'Ist')}</span>
+                              <strong>{formatWeeklyValue(actual)} {item.unit}</strong>
+                            </div>
+                            <div>
+                              <span>{tr('Прогноз', 'Prognose')}</span>
+                              <strong>{formatWeeklyValue(forecast, 1)} {item.unit}</strong>
+                            </div>
+                            <div className={forecastClass}>
+                              <span>{tr('Отклонение прогноза', 'Abweichung Prognose')}</span>
+                              <strong>{forecastDelta >= 0 ? '+' : ''}{formatWeeklyValue(forecastDelta, 1)} {item.unit}</strong>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {isHomeScreen && initData && (
               <section className="today-plan-panel">
                 <div className="today-plan-head">
                   <div className="today-plan-title-wrap">
@@ -6744,7 +7026,17 @@ function AppInner() {
                       connect={true}
                       audio={true}
                       video={false}
-                      onDisconnected={() => setAssistantToken(null)}
+                      onConnected={() => {
+                        setAssistantError('');
+                        startAssistantSessionTracking();
+                      }}
+                      onDisconnected={() => {
+                        const sid = assistantSessionId;
+                        if (sid) {
+                          stopAssistantSessionTracking(sid);
+                        }
+                        setAssistantToken(null);
+                      }}
                       onError={(e) => setAssistantError(`LiveKit error: ${e?.message || e}`)}
                       className="voice-assistant-room"
                     >
@@ -6843,6 +7135,24 @@ function AppInner() {
                       <span>{tr('Итоговый балл', 'Gesamtscore')}</span>
                       <strong>{analyticsSummary.final_score}</strong>
                     </div>
+                  </div>
+                )}
+
+                {weeklyPlan && (
+                  <div className="analytics-goals-grid">
+                    {weeklyMetricRows.map((item) => (
+                      <div className="analytics-goal-card" key={`analytics-goal-${item.key}`}>
+                        <span>{item.title}</span>
+                        <strong>
+                          {formatWeeklyValue(item.data?.actual)} / {formatWeeklyValue(item.data?.goal)} {item.unit}
+                        </strong>
+                        <small>
+                          {tr('Прогноз', 'Prognose')}: {formatWeeklyValue(item.data?.forecast, 1)} {item.unit}
+                          {' • '}
+                          {tr('% выполнения', '% Erfuellung')}: {formatWeeklyValue(item.data?.completion_percent, 1)}%
+                        </small>
+                      </div>
+                    ))}
                   </div>
                 )}
 

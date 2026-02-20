@@ -1034,6 +1034,36 @@ body {
   font-size: 20px;
 }
 
+.analytics-goals-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.analytics-goal-card {
+  border: 1px solid rgba(136, 177, 245, 0.22);
+  background: rgba(9, 18, 38, 0.62);
+  border-radius: 14px;
+  padding: 12px;
+  display: grid;
+  gap: 5px;
+}
+
+.analytics-goal-card span {
+  color: rgba(226, 232, 240, 0.72);
+  font-size: 12px;
+}
+
+.analytics-goal-card strong {
+  font-size: 18px;
+}
+
+.analytics-goal-card small {
+  color: #9eb1d6;
+  font-size: 12px;
+}
+
 .analytics-chart {
   width: 100%;
   height: 320px;
@@ -4101,6 +4131,144 @@ body {
   }
 }
 
+.weekly-plan-panel {
+  margin: 10px 0 18px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(124, 177, 255, 0.3);
+  background:
+    radial-gradient(900px 220px at -10% 110%, rgba(124, 92, 255, 0.16), transparent),
+    radial-gradient(520px 180px at 105% 0%, rgba(93, 220, 255, 0.17), transparent),
+    linear-gradient(145deg, rgba(13, 20, 44, 0.92), rgba(16, 27, 54, 0.88));
+  box-shadow: 0 20px 38px rgba(7, 14, 30, 0.42);
+}
+
+.weekly-plan-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.weekly-plan-head h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.weekly-plan-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: rgba(214, 228, 255, 0.72);
+}
+
+.weekly-plan-period {
+  color: #d5e4ff;
+  font-size: 0.82rem;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(130, 166, 236, 0.32);
+  background: rgba(10, 20, 42, 0.6);
+  white-space: nowrap;
+}
+
+.weekly-plan-form {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.weekly-plan-save-btn {
+  min-height: 44px;
+  white-space: nowrap;
+}
+
+.weekly-plan-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.weekly-plan-metric-card {
+  border: 1px solid rgba(136, 177, 245, 0.2);
+  background: rgba(5, 14, 31, 0.58);
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.weekly-plan-metric-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.weekly-plan-metric-top h4 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.weekly-plan-metric-top p {
+  margin: 3px 0 0;
+  color: #9eb1d6;
+  font-size: 0.76rem;
+}
+
+.weekly-plan-progress-ring {
+  --weekly-progress: 0%;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%),
+    conic-gradient(#7bf1b3 var(--weekly-progress), rgba(94, 117, 159, 0.35) 0);
+  display: grid;
+  place-items: center;
+}
+
+.weekly-plan-progress-ring span {
+  font-size: 0.72rem;
+  color: #e7f2ff;
+  font-weight: 700;
+}
+
+.weekly-plan-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.weekly-plan-values div {
+  border: 1px solid rgba(137, 175, 236, 0.2);
+  border-radius: 10px;
+  padding: 8px 9px;
+  background: rgba(9, 18, 38, 0.56);
+  display: grid;
+  gap: 3px;
+}
+
+.weekly-plan-values span {
+  color: #9eb1d6;
+  font-size: 0.74rem;
+}
+
+.weekly-plan-values strong {
+  color: #e9f2ff;
+  font-size: 0.88rem;
+}
+
+.weekly-plan-values .is-good strong {
+  color: #7bf1b3;
+}
+
+.weekly-plan-values .is-bad strong {
+  color: #ff9f9f;
+}
+
 .today-plan-panel {
   position: relative;
   margin: 10px 0 18px;
@@ -4473,6 +4641,12 @@ body {
 }
 
 @media (max-width: 860px) {
+  .weekly-plan-form {
+    grid-template-columns: 1fr;
+  }
+  .weekly-plan-metrics {
+    grid-template-columns: 1fr;
+  }
   .today-plan-head {
     padding-right: 56px;
   }
