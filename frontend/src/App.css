@@ -333,6 +333,28 @@ body {
   gap: 0;
 }
 
+.webapp-page.is-reader-immersive {
+  padding: 0;
+}
+
+.webapp-page.is-reader-immersive .webapp-shell {
+  width: 100%;
+  max-width: none;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+.webapp-page.is-reader-immersive .webapp-sidebar,
+.webapp-page.is-reader-immersive .webapp-topbar {
+  display: none;
+}
+
+.webapp-page.is-reader-immersive .webapp-main {
+  min-height: 100vh;
+  padding: 0;
+  gap: 0;
+}
+
 .webapp-shell {
   width: min(1200px, 100%);
   display: grid;
@@ -1381,6 +1403,31 @@ body {
   gap: 8px;
   padding: 10px 10px 8px;
   background: linear-gradient(180deg, rgba(5, 12, 25, 0.98), rgba(5, 12, 25, 0.82));
+  justify-content: center;
+}
+
+.reader-immersive-indicator {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+
+.reader-immersive-indicator.is-on {
+  background: rgba(67, 210, 154, 0.2);
+  color: #8bf4cb;
+  border-color: rgba(67, 210, 154, 0.45);
+}
+
+.reader-immersive-indicator.is-off {
+  background: rgba(145, 163, 191, 0.15);
+  color: #c2d3ec;
+  border-color: rgba(145, 163, 191, 0.32);
 }
 
 .webapp-reader-form {
@@ -1412,7 +1459,9 @@ body {
   background: transparent;
   max-height: calc(100vh - 124px);
   min-height: calc(100vh - 124px);
-  padding: 10px;
+  padding: 8px;
+  display: grid;
+  justify-items: center;
 }
 
 .reader-article.has-pages {
@@ -1624,15 +1673,27 @@ body {
   border: 1px solid rgba(138, 109, 74, 0.22);
   border-radius: 10px;
   box-shadow: 0 12px 22px rgba(7, 12, 26, 0.2);
-  min-height: 55vh;
+  width: min(92vw, 720px);
+  height: 72vh;
+  min-height: 72vh;
+  margin: 0 auto;
   padding: 18px 18px 12px;
   display: flex;
   flex-direction: column;
 }
 
+.webapp-reader.is-immersive .reader-page-sheet {
+  width: min(95vw, 760px);
+  height: 80vh;
+  min-height: 80vh;
+}
+
 .reader-page-sheet-inner {
   flex: 1;
   line-height: 1.72;
+  font-size: var(--reader-font-size, 18px);
+  font-weight: var(--reader-font-weight, 500);
+  overflow: hidden;
 }
 
 .reader-page-num {
