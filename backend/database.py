@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timezone, date, timedelta, time as dt_time
 from pathlib import Path
 import time
+from calendar import monthrange
 from dotenv import load_dotenv
 
 env_path = Path(__file__).parent / ".env"
@@ -3102,6 +3103,31 @@ def _week_bounds(anchor_date: date | None = None) -> tuple[date, date]:
     return week_start, week_start + timedelta(days=6)
 
 
+def _period_bounds(period: str, anchor_date: date | None = None) -> tuple[date, date]:
+    current = anchor_date or date.today()
+    normalized = str(period or "week").strip().lower()
+    if normalized == "week":
+        return _week_bounds(current)
+    if normalized == "month":
+        start = current.replace(day=1)
+        end = date(current.year, current.month, monthrange(current.year, current.month)[1])
+        return start, end
+    if normalized == "quarter":
+        quarter_index = (current.month - 1) // 3
+        start_month = quarter_index * 3 + 1
+        end_month = start_month + 2
+        start = date(current.year, start_month, 1)
+        end = date(current.year, end_month, monthrange(current.year, end_month)[1])
+        return start, end
+    if normalized == "half-year":
+        if current.month <= 6:
+            return date(current.year, 1, 1), date(current.year, 6, 30)
+        return date(current.year, 7, 1), date(current.year, 12, 31)
+    if normalized == "year":
+        return date(current.year, 1, 1), date(current.year, 12, 31)
+    return _week_bounds(current)
+
+
 def get_weekly_goals(
     *,
     user_id: int,
@@ -3206,37 +3232,44 @@ def upsert_weekly_goals(
     }
 
 
-def get_weekly_plan_progress(
+def get_plan_progress(
     *,
     user_id: int,
     source_lang: str,
     target_lang: str,
     mature_interval_days: int = 21,
+    period: str = "week",
     week_start: date | None = None,
     as_of_date: date | None = None,
 ) -> dict:
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
-    resolved_week_start, resolved_week_end = _week_bounds(week_start)
+    normalized_period = str(period or "week").strip().lower()
+    if normalized_period == "week":
+        resolved_start, resolved_end = _week_bounds(week_start or as_of_date)
+    else:
+        resolved_start, resolved_end = _period_bounds(normalized_period, as_of_date)
     today = as_of_date or date.today()
-    effective_end = min(resolved_week_end, max(resolved_week_start, today))
-    days_total = max(1, (resolved_week_end - resolved_week_start).days + 1)
-    days_elapsed = max(1, (effective_end - resolved_week_start).days + 1)
+    effective_end = min(resolved_end, max(resolved_start, today))
+    days_total = max(1, (resolved_end - resolved_start).days + 1)
+    days_elapsed = max(1, (effective_end - resolved_start).days + 1)
     mature_threshold = max(1, int(mature_interval_days or 21))
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT translations_goal, learned_words_goal, agent_minutes_goal
+                SELECT
+                    COALESCE(SUM(translations_goal), 0) AS translations_goal,
+                    COALESCE(SUM(learned_words_goal), 0) AS learned_words_goal,
+                    COALESCE(SUM(agent_minutes_goal), 0) AS agent_minutes_goal
                 FROM bt_3_weekly_goals
                 WHERE user_id = %s
                   AND source_lang = %s
                   AND target_lang = %s
-                  AND week_start = %s
-                LIMIT 1;
+                  AND week_start BETWEEN %s AND %s;
                 """,
-                (int(user_id), normalized_source, normalized_target, resolved_week_start),
+                (int(user_id), normalized_source, normalized_target, resolved_start, resolved_end),
             )
             goals_row = cursor.fetchone()
             translations_goal = max(0, int(goals_row[0] or 0)) if goals_row else 0
@@ -3267,7 +3300,7 @@ def get_weekly_plan_progress(
                     int(user_id),
                     normalized_source,
                     normalized_target,
-                    resolved_week_start,
+                    resolved_start,
                     effective_end,
                 ),
             )
@@ -3302,18 +3335,18 @@ def get_weekly_plan_progress(
                     int(user_id),
                     mature_threshold,
                     *language_params,
-                    resolved_week_start,
+                    resolved_start,
                     effective_end,
                 ],
             )
             learned_row = cursor.fetchone()
             learned_words_actual = max(0, int(learned_row[0] or 0)) if learned_row else 0
 
-            week_start_dt = datetime.combine(resolved_week_start, dt_time.min, tzinfo=timezone.utc)
+            period_start_dt = datetime.combine(resolved_start, dt_time.min, tzinfo=timezone.utc)
             end_exclusive_dt = datetime.combine(effective_end + timedelta(days=1), dt_time.min, tzinfo=timezone.utc)
             now_utc = datetime.now(timezone.utc)
             cap_dt = min(end_exclusive_dt, now_utc)
-            if cap_dt > week_start_dt:
+            if cap_dt > period_start_dt:
                 cursor.execute(
                     """
                     SELECT COALESCE(
@@ -3340,13 +3373,13 @@ def get_weekly_plan_progress(
                     (
                         cap_dt,
                         cap_dt,
-                        week_start_dt,
+                        period_start_dt,
                         int(user_id),
                         normalized_source,
                         normalized_target,
                         cap_dt,
                         cap_dt,
-                        week_start_dt,
+                        period_start_dt,
                     ),
                 )
                 agent_row = cursor.fetchone()
@@ -3372,8 +3405,9 @@ def get_weekly_plan_progress(
         }
 
     return {
-        "week_start": resolved_week_start.isoformat(),
-        "week_end": resolved_week_end.isoformat(),
+        "period": normalized_period,
+        "start_date": resolved_start.isoformat(),
+        "end_date": resolved_end.isoformat(),
         "as_of_date": effective_end.isoformat(),
         "days_elapsed": days_elapsed,
         "days_total": days_total,
@@ -3384,6 +3418,31 @@ def get_weekly_plan_progress(
             "learned_words": _metric(learned_words_goal, learned_words_actual),
             "agent_minutes": _metric(agent_minutes_goal, agent_minutes_actual),
         },
+    }
+
+
+def get_weekly_plan_progress(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    mature_interval_days: int = 21,
+    week_start: date | None = None,
+    as_of_date: date | None = None,
+) -> dict:
+    result = get_plan_progress(
+        user_id=user_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        mature_interval_days=mature_interval_days,
+        period="week",
+        week_start=week_start,
+        as_of_date=as_of_date,
+    )
+    return {
+        **result,
+        "week_start": result.get("start_date"),
+        "week_end": result.get("end_date"),
     }
 
 

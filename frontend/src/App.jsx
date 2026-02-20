@@ -162,6 +162,11 @@ function AppInner() {
   const [weeklyPlanError, setWeeklyPlanError] = useState('');
   const [weeklyPlanDraft, setWeeklyPlanDraft] = useState({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '' });
   const [weeklyPlanCollapsed, setWeeklyPlanCollapsed] = useState(false);
+  const [planAnalyticsPeriod, setPlanAnalyticsPeriod] = useState('week');
+  const [planAnalyticsMetrics, setPlanAnalyticsMetrics] = useState({});
+  const [planAnalyticsRange, setPlanAnalyticsRange] = useState(null);
+  const [planAnalyticsLoading, setPlanAnalyticsLoading] = useState(false);
+  const [planAnalyticsError, setPlanAnalyticsError] = useState('');
   const [weeklyMetricExpanded, setWeeklyMetricExpanded] = useState({
     translations: true,
     learned_words: true,
@@ -824,6 +829,31 @@ function AppInner() {
     }
   };
 
+  const loadPlanAnalytics = async (periodOverride) => {
+    if (!initData) return;
+    const period = periodOverride || planAnalyticsPeriod;
+    try {
+      setPlanAnalyticsLoading(true);
+      setPlanAnalyticsError('');
+      const response = await fetch(`/api/progress/plan-analytics?initData=${encodeURIComponent(initData)}&period=${encodeURIComponent(period)}`);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки аналитики планов', 'Fehler beim Laden der Plan-Analytik'));
+      }
+      const data = await response.json();
+      setPlanAnalyticsMetrics(data?.metrics || {});
+      setPlanAnalyticsRange(data?.range || null);
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось загрузить аналитику планов.',
+        'Plan-Analytik konnte nicht geladen werden.'
+      );
+      setPlanAnalyticsError(friendly);
+    } finally {
+      setPlanAnalyticsLoading(false);
+    }
+  };
+
   const saveWeeklyPlan = async () => {
     if (!initData) return;
     const translationsGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.translations_goal || '0'), 10) || 0);
@@ -863,6 +893,7 @@ function AppInner() {
         learned_words: false,
         agent_minutes: false,
       });
+      loadPlanAnalytics();
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -1291,7 +1322,9 @@ function AppInner() {
   const ringCenter = ringSize / 2;
   const ringStartRadius = 118;
   const ringStep = 14;
-  const weeklyMetrics = weeklyPlan?.metrics || {};
+  const weeklyMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0
+    ? planAnalyticsMetrics
+    : (weeklyPlan?.metrics || {});
   const weeklyMetricRows = [
     {
       key: 'translations',
@@ -1312,9 +1345,18 @@ function AppInner() {
       data: weeklyMetrics.agent_minutes || {},
     },
   ];
-  const weeklyWeekLabel = weeklyPlan?.week?.start_date && weeklyPlan?.week?.end_date
-    ? `${weeklyPlan.week.start_date} — ${weeklyPlan.week.end_date}`
-    : '';
+  const weeklyWeekLabel = planAnalyticsRange?.start_date && planAnalyticsRange?.end_date
+    ? `${planAnalyticsRange.start_date} — ${planAnalyticsRange.end_date}`
+    : (weeklyPlan?.week?.start_date && weeklyPlan?.week?.end_date
+      ? `${weeklyPlan.week.start_date} — ${weeklyPlan.week.end_date}`
+      : '');
+  const planPeriodLabel = {
+    week: tr('Неделя', 'Woche'),
+    month: tr('Месяц', 'Monat'),
+    quarter: tr('Квартал', 'Quartal'),
+    'half-year': tr('Полугодие', 'Halbjahr'),
+    year: tr('Год', 'Jahr'),
+  }[planAnalyticsPeriod] || tr('Неделя', 'Woche');
   const weeklyMetricToneClass = (key) => {
     if (key === 'translations') return 'is-translations';
     if (key === 'learned_words') return 'is-words';
@@ -1857,6 +1899,9 @@ function AppInner() {
       setWeeklyPlanError('');
       setWeeklyPlanDraft({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '' });
       setWeeklyPlanCollapsed(false);
+      setPlanAnalyticsMetrics({});
+      setPlanAnalyticsRange(null);
+      setPlanAnalyticsError('');
       setWeeklyMetricExpanded({
         translations: true,
         learned_words: true,
@@ -1865,7 +1910,13 @@ function AppInner() {
       return;
     }
     loadWeeklyPlan();
+    loadPlanAnalytics();
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) return;
+    loadPlanAnalytics(planAnalyticsPeriod);
+  }, [planAnalyticsPeriod]);
 
   useEffect(() => {
     if (!isWebAppMode) return;
@@ -4916,8 +4967,22 @@ function AppInner() {
                     <p>{tr('Личные цели и факт с прогнозом до конца недели', 'Persoenliche Ziele mit Ist-Werten und Prognose bis Wochenende')}</p>
                   </div>
                   <div className="weekly-plan-head-actions">
+                    <label className="weekly-plan-period-select">
+                      <span>{tr('Период', 'Zeitraum')}</span>
+                      <select
+                        value={planAnalyticsPeriod}
+                        onChange={(event) => setPlanAnalyticsPeriod(event.target.value)}
+                        disabled={planAnalyticsLoading}
+                      >
+                        <option value="week">{tr('Неделя', 'Woche')}</option>
+                        <option value="month">{tr('Месяц', 'Monat')}</option>
+                        <option value="quarter">{tr('Квартал', 'Quartal')}</option>
+                        <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
+                        <option value="year">{tr('Год', 'Jahr')}</option>
+                      </select>
+                    </label>
                     {weeklyWeekLabel && (
-                      <span className="weekly-plan-period">{weeklyWeekLabel}</span>
+                      <span className="weekly-plan-period">{planPeriodLabel}: {weeklyWeekLabel}</span>
                     )}
                     <button
                       type="button"
@@ -4980,8 +5045,10 @@ function AppInner() {
 
                 {weeklyPlanLoading && <div className="webapp-muted">{tr('Считаем недельные показатели...', 'Wochenwerte werden berechnet...')}</div>}
                 {weeklyPlanError && <div className="webapp-error">{weeklyPlanError}</div>}
+                {planAnalyticsLoading && <div className="webapp-muted">{tr('Считаем показатели плана...', 'Planwerte werden berechnet...')}</div>}
+                {planAnalyticsError && <div className="webapp-error">{planAnalyticsError}</div>}
 
-                {!weeklyPlanLoading && !weeklyPlanError && (
+                {!weeklyPlanLoading && !weeklyPlanError && !planAnalyticsLoading && !planAnalyticsError && (
                   <div className="weekly-plan-metrics">
                     {weeklyMetricRows.map((item) => {
                       const goal = Number(item.data?.goal || 0);

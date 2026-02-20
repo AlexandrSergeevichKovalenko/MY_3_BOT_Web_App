@@ -4157,6 +4157,25 @@ body {
   gap: 8px;
 }
 
+.weekly-plan-period-select {
+  display: grid;
+  gap: 4px;
+}
+
+.weekly-plan-period-select span {
+  font-size: 11px;
+  color: #a9bde6;
+}
+
+.weekly-plan-period-select select {
+  border: 1px solid rgba(130, 166, 236, 0.32);
+  background: rgba(10, 20, 42, 0.7);
+  color: #dbe9ff;
+  border-radius: 10px;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
 .weekly-plan-head h2 {
   margin: 0;
   font-size: 1.2rem;

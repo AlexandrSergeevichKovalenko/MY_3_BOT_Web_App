@@ -185,6 +185,7 @@ from backend.database import (
     get_weekly_goals,
     upsert_weekly_goals,
     get_weekly_plan_progress,
+    get_plan_progress,
     start_agent_voice_session,
     finish_agent_voice_session,
     SUPPORTED_LEARNING_LANGUAGES,
@@ -4207,6 +4208,46 @@ def weekly_plan_progress():
     )
 
 
+@app.route("/api/progress/plan-analytics", methods=["GET"])
+def get_plan_analytics():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    raw_period = str(request.args.get("period") or "week").strip().lower()
+    if raw_period == "half_year":
+        raw_period = "half-year"
+    if raw_period not in {"week", "month", "quarter", "half-year", "year"}:
+        return jsonify({"error": "period must be one of: week, month, quarter, half-year, year"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        progress = get_plan_progress(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            mature_interval_days=MATURE_INTERVAL_DAYS,
+            period=raw_period,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка расчёта аналитики плана: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "period": raw_period,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "range": {
+                "start_date": progress.get("start_date"),
+                "end_date": progress.get("end_date"),
+                "as_of_date": progress.get("as_of_date"),
+                "days_elapsed": int(progress.get("days_elapsed") or 1),
+                "days_total": int(progress.get("days_total") or 1),
+            },
+            "metrics": progress.get("metrics") or {},
+        }
+    )
+
+
 @app.route("/api/progress/skills/<string:skill_id>/practice/start", methods=["POST"])
 def start_skill_practice(skill_id: str):
     user_id, username, error = _get_authenticated_user_from_request_init_data()
@@ -6297,13 +6338,14 @@ def _dispatch_private_analytics(target_date: date) -> dict:
     return {"ok": True, "date": target_date.isoformat(), "sent": sent, "errors": errors}
 
 
-def _build_weekly_goals_chart_png(
+def _build_plan_goals_chart_png(
     *,
     username: str,
     source_lang: str,
     target_lang: str,
-    week_start: str,
-    week_end: str,
+    start_date: str,
+    end_date: str,
+    period_label: str,
     metrics: dict | None,
 ) -> bytes | None:
     if plt is None:
@@ -6328,7 +6370,7 @@ def _build_weekly_goals_chart_png(
     ax.bar(x, actual_values, width=width, label="Факт", color="#34d399", alpha=0.9)
     ax.bar([i + width for i in x], forecast_values, width=width, label="Прогноз", color="#f59e0b", alpha=0.9)
 
-    ax.set_title(f"Личные цели: {username} ({source_lang}->{target_lang})\n{week_start} — {week_end}")
+    ax.set_title(f"Личные цели ({period_label}): {username} ({source_lang}->{target_lang})\n{start_date} — {end_date}")
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=0)
     ax.grid(axis="y", linestyle="--", alpha=0.25)
@@ -6342,8 +6384,35 @@ def _build_weekly_goals_chart_png(
     return buff.read()
 
 
-def _dispatch_weekly_goals_progress(target_date: date) -> dict:
-    bounds = get_period_bounds("week", today=target_date)
+def _collect_active_users_for_plan_reminders(target_date: date) -> dict[int, str]:
+    active_since = target_date - timedelta(days=30)
+    users: dict[int, str] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, COALESCE(NULLIF(MAX(username), ''), '')
+                FROM bt_3_user_progress
+                WHERE start_time::date >= %s
+                GROUP BY user_id;
+                """,
+                (active_since,),
+            )
+            rows = cursor.fetchall()
+            for user_id, username in rows:
+                users[int(user_id)] = str(username or "").strip()
+    return users
+
+
+def _dispatch_plan_period_progress(
+    *,
+    target_date: date,
+    period: str,
+) -> dict:
+    normalized_period = str(period or "week").strip().lower()
+    if normalized_period == "half_year":
+        normalized_period = "half-year"
+    bounds = get_period_bounds(normalized_period, today=target_date)
     users: dict[tuple[int, str, str], str] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -6363,44 +6432,52 @@ def _dispatch_weekly_goals_progress(target_date: date) -> dict:
                     COALESCE(NULLIF(n.username, ''), '') AS username
                 FROM bt_3_weekly_goals g
                 LEFT JOIN latest_name n ON n.user_id = g.user_id
-                WHERE g.week_start = %s
+                WHERE g.week_start BETWEEN %s AND %s
                   AND (
                     COALESCE(g.translations_goal, 0) > 0
                     OR COALESCE(g.learned_words_goal, 0) > 0
                     OR COALESCE(g.agent_minutes_goal, 0) > 0
                   );
                 """,
-                (bounds.start_date,),
+                (bounds.start_date, bounds.end_date),
             )
             rows = cursor.fetchall()
     for user_id, source_lang, target_lang, username in rows:
         users[(int(user_id), str(source_lang or "ru"), str(target_lang or "de"))] = str(username or "").strip()
 
-    if not users:
-        return {"ok": True, "date": target_date.isoformat(), "sent_group": 0, "sent_private": 0, "errors": []}
-
+    period_label_map = {
+        "week": "неделя",
+        "month": "месяц",
+        "quarter": "квартал",
+        "half-year": "полугодие",
+        "year": "год",
+    }
+    period_label = period_label_map.get(normalized_period, normalized_period)
     sent_group = 0
     sent_private = 0
+    reminders_sent = 0
     errors: list[str] = []
     for (user_id, source_lang, target_lang), username in users.items():
         if not is_telegram_user_allowed(user_id):
             continue
         try:
-            progress = get_weekly_plan_progress(
+            progress = get_plan_progress(
                 user_id=user_id,
                 source_lang=source_lang,
                 target_lang=target_lang,
                 mature_interval_days=MATURE_INTERVAL_DAYS,
+                period=normalized_period,
                 as_of_date=target_date,
             )
             metrics = progress.get("metrics") if isinstance(progress, dict) else {}
             title_name = username or f"user_{user_id}"
-            chart_png = _build_weekly_goals_chart_png(
+            chart_png = _build_plan_goals_chart_png(
                 username=title_name,
                 source_lang=source_lang,
                 target_lang=target_lang,
-                week_start=str(progress.get("week_start") or bounds.start_date),
-                week_end=str(progress.get("week_end") or bounds.end_date),
+                start_date=str(progress.get("start_date") or bounds.start_date),
+                end_date=str(progress.get("end_date") or bounds.end_date),
+                period_label=period_label,
                 metrics=metrics if isinstance(metrics, dict) else {},
             )
             if not chart_png:
@@ -6410,8 +6487,8 @@ def _dispatch_weekly_goals_progress(target_date: date) -> dict:
             m_words = (metrics or {}).get("learned_words") or {}
             m_agent = (metrics or {}).get("agent_minutes") or {}
             caption = (
-                f"🎯 Личные цели: {title_name} ({source_lang}->{target_lang})\n"
-                f"{progress.get('week_start')} — {progress.get('week_end')}\n"
+                f"🎯 Личные цели ({period_label}): {title_name} ({source_lang}->{target_lang})\n"
+                f"{progress.get('start_date')} — {progress.get('end_date')}\n"
                 f"Переводы: {m_trans.get('actual', 0)} / {m_trans.get('goal', 0)} (прогноз {m_trans.get('forecast', 0)})\n"
                 f"Слова: {m_words.get('actual', 0)} / {m_words.get('goal', 0)} (прогноз {m_words.get('forecast', 0)})\n"
                 f"Агент (мин): {m_agent.get('actual', 0)} / {m_agent.get('goal', 0)} (прогноз {m_agent.get('forecast', 0)})"
@@ -6420,7 +6497,7 @@ def _dispatch_weekly_goals_progress(target_date: date) -> dict:
             if _is_user_member_of_group_chat(user_id):
                 _send_group_photo(
                     image_bytes=chart_png,
-                    filename=f"weekly_goals_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
+                    filename=f"plan_{normalized_period}_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
                     caption=caption,
                 )
                 sent_group += 1
@@ -6428,18 +6505,55 @@ def _dispatch_weekly_goals_progress(target_date: date) -> dict:
                 _send_private_photo(
                     user_id=user_id,
                     image_bytes=chart_png,
-                    filename=f"weekly_goals_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
+                    filename=f"plan_{normalized_period}_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
                     caption=caption,
                 )
                 sent_private += 1
         except Exception as exc:
             errors.append(f"user {user_id} {source_lang}->{target_lang}: {exc}")
 
+    if normalized_period == "week" and target_date.weekday() == 0:
+        active_users = _collect_active_users_for_plan_reminders(target_date=target_date)
+        for user_id, username in active_users.items():
+            if not is_telegram_user_allowed(user_id):
+                continue
+            try:
+                source_lang, target_lang, _profile = _get_user_language_pair(user_id)
+                goals = get_weekly_goals(
+                    user_id=user_id,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    week_start=bounds.start_date,
+                ) or {}
+                has_plan = (
+                    int(goals.get("translations_goal") or 0) > 0
+                    or int(goals.get("learned_words_goal") or 0) > 0
+                    or int(goals.get("agent_minutes_goal") or 0) > 0
+                )
+                if has_plan:
+                    continue
+                name = username or f"user_{user_id}"
+                reminder = (
+                    f"🗓 Новый понедельник, {name}.\n"
+                    "Поставь личный план на неделю: переводы, выученные слова и минуты с агентом."
+                )
+                if _is_user_member_of_group_chat(user_id):
+                    _send_group_message(reminder)
+                else:
+                    _send_private_message(user_id=user_id, text=reminder)
+                reminders_sent += 1
+            except Exception as exc:
+                errors.append(f"reminder user {user_id}: {exc}")
+
     return {
         "ok": True,
+        "period": normalized_period,
         "date": target_date.isoformat(),
+        "start_date": bounds.start_date.isoformat(),
+        "end_date": bounds.end_date.isoformat(),
         "sent_group": sent_group,
         "sent_private": sent_private,
+        "reminders_sent": reminders_sent,
         "errors": errors,
     }
 
@@ -6465,8 +6579,21 @@ def _run_weekly_goals_scheduler_job() -> None:
     tz_name = (os.getenv("WEEKLY_GOALS_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     target_date = _get_local_today_date(tz_name)
     try:
-        result = _dispatch_weekly_goals_progress(target_date=target_date)
-        logging.info("✅ Weekly goals scheduler finished: %s", result)
+        result_week = _dispatch_plan_period_progress(target_date=target_date, period="week")
+        logging.info("✅ Weekly goals scheduler finished (week): %s", result_week)
+        if target_date.day == 1:
+            prev_day = target_date - timedelta(days=1)
+            result_month = _dispatch_plan_period_progress(target_date=prev_day, period="month")
+            logging.info("✅ Weekly goals scheduler finished (month): %s", result_month)
+            if target_date.month in {1, 4, 7, 10}:
+                result_quarter = _dispatch_plan_period_progress(target_date=prev_day, period="quarter")
+                logging.info("✅ Weekly goals scheduler finished (quarter): %s", result_quarter)
+            if target_date.month in {1, 7}:
+                result_half = _dispatch_plan_period_progress(target_date=prev_day, period="half-year")
+                logging.info("✅ Weekly goals scheduler finished (half-year): %s", result_half)
+            if target_date.month == 1:
+                result_year = _dispatch_plan_period_progress(target_date=prev_day, period="year")
+                logging.info("✅ Weekly goals scheduler finished (year): %s", result_year)
     except Exception:
         logging.exception("❌ Weekly goals scheduler failed")
 
@@ -6876,6 +7003,11 @@ def send_weekly_goals_now():
 
     date_str = (payload.get("date") or "").strip()
     tz_name = (payload.get("tz") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    period = str(payload.get("period") or "week").strip().lower()
+    if period == "half_year":
+        period = "half-year"
+    if period not in {"week", "month", "quarter", "half-year", "year"}:
+        return jsonify({"error": "period must be one of: week, month, quarter, half-year, year"}), 400
     if date_str:
         try:
             target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -6884,7 +7016,7 @@ def send_weekly_goals_now():
     else:
         target_date = _get_local_today_date(tz_name)
 
-    result = _dispatch_weekly_goals_progress(target_date=target_date)
+    result = _dispatch_plan_period_progress(target_date=target_date, period=period)
     return jsonify(result)
 
 
