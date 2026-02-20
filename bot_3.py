@@ -27,7 +27,7 @@ from telegram.ext import CallbackContext
 from googleapiclient.discovery import build
 from telegram.error import TelegramError
 from telegram.helpers import escape_markdown
-from telegram.error import TimedOut, BadRequest
+from telegram.error import TimedOut, BadRequest, RetryAfter
 import tempfile
 import sys
 import livekit.api # Нужен для LiveKit комнат
@@ -75,6 +75,9 @@ from backend.database import (
     record_telegram_system_message,
     get_pending_telegram_system_messages,
     mark_telegram_system_message_deleted,
+    upsert_active_quiz,
+    get_active_quiz,
+    delete_active_quiz,
 )
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
 from load_data_from_db import load_data_for_analytics 
@@ -4990,15 +4993,27 @@ async def _send_quiz_result_private(
         f"Перевод (RU): {ru_text or '—'}",
     ])
 
-    try:
-        await context.bot.send_message(
-            chat_id=int(user_id),
-            text="\n".join(lines),
-        )
-        return True
-    except Exception as exc:
-        logging.warning(f"⚠️ Не удалось отправить результат квиза в личку user_id={user_id}: {exc}")
-        return False
+    max_attempts = 2
+    for attempt in range(max_attempts):
+        try:
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text="\n".join(lines),
+            )
+            return True
+        except RetryAfter as exc:
+            delay = max(1, int(getattr(exc, "retry_after", 1)))
+            logging.warning("⚠️ RetryAfter for quiz private result user_id=%s, sleep=%ss", user_id, delay)
+            await asyncio.sleep(delay)
+        except TimedOut:
+            if attempt + 1 < max_attempts:
+                await asyncio.sleep(1.0)
+                continue
+            logging.warning("⚠️ Timeout sending quiz private result user_id=%s", user_id)
+        except Exception as exc:
+            logging.warning(f"⚠️ Не удалось отправить результат квиза в личку user_id={user_id}: {exc}")
+            return False
+    return False
 
 
 def _apply_quiz_freeform_option(quiz: dict) -> dict:
@@ -5443,6 +5458,10 @@ async def cleanup_quiz_cache(context: CallbackContext) -> None:
     poll_id = context.job.data.get("poll_id")
     if poll_id in active_quizzes:
         active_quizzes.pop(poll_id, None)
+    try:
+        await asyncio.to_thread(delete_active_quiz, str(poll_id))
+    except Exception:
+        logging.debug("Failed to delete active quiz from DB", exc_info=True)
 
 
 async def delete_temporary_message(context: CallbackContext) -> None:
@@ -5526,6 +5545,21 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
         "quiz_type": quiz.get("quiz_type", "generated"),
         "word_ru": quiz.get("word_ru"),
     }
+    try:
+        await asyncio.to_thread(
+            upsert_active_quiz,
+            str(poll_message.poll.id),
+            chat_id=int(BOT_GROUP_CHAT_ID_Deutsch),
+            message_id=int(poll_message.message_id),
+            correct_option_id=int(quiz["correct_option_id"]),
+            options=[str(option) for option in (quiz.get("options") or [])],
+            correct_text=(quiz.get("correct_text") or ""),
+            freeform_option=QUIZ_FREEFORM_OPTION,
+            quiz_type=(quiz.get("quiz_type") or "generated"),
+            word_ru=(quiz.get("word_ru") or ""),
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось сохранить активный квиз в БД", exc_info=True)
 
     context.job_queue.run_once(
         cleanup_quiz_cache,
@@ -5537,6 +5571,13 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     poll_answer = update.poll_answer
     quiz_data = active_quizzes.get(poll_answer.poll_id)
+    if not quiz_data:
+        try:
+            quiz_data = await asyncio.to_thread(get_active_quiz, str(poll_answer.poll_id))
+            if quiz_data:
+                active_quizzes[poll_answer.poll_id] = dict(quiz_data)
+        except Exception:
+            logging.warning("⚠️ Не удалось получить active quiz из БД", exc_info=True)
     if not quiz_data or not poll_answer.option_ids:
         return
 

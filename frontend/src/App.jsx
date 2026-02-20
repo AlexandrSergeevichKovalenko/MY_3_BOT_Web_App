@@ -149,6 +149,9 @@ function AppInner() {
   const [todayPlanError, setTodayPlanError] = useState('');
   const [todayTestSending, setTodayTestSending] = useState(false);
   const [todayItemLoading, setTodayItemLoading] = useState({});
+  const [audioGrammarEnabled, setAudioGrammarEnabled] = useState(false);
+  const [audioGrammarLoading, setAudioGrammarLoading] = useState(false);
+  const [audioGrammarSaving, setAudioGrammarSaving] = useState(false);
   const [skillReport, setSkillReport] = useState(null);
   const [skillReportLoading, setSkillReportLoading] = useState(false);
   const [skillReportError, setSkillReportError] = useState('');
@@ -698,6 +701,54 @@ function AppInner() {
       setTodayPlanError(friendly);
     } finally {
       setTodayPlanLoading(false);
+    }
+  };
+
+  const loadAudioGrammarSettings = async () => {
+    if (!initData) return;
+    try {
+      setAudioGrammarLoading(true);
+      const response = await fetch(`/api/audio/grammar-settings?initData=${encodeURIComponent(initData)}`);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки audio-настроек', 'Fehler beim Laden der Audio-Einstellungen'));
+      }
+      const data = await response.json();
+      setAudioGrammarEnabled(Boolean(data?.settings?.enabled));
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось загрузить настройку grammar audio.',
+        'Grammar-Audio-Einstellung konnte nicht geladen werden.'
+      );
+      setTodayPlanError(friendly);
+    } finally {
+      setAudioGrammarLoading(false);
+    }
+  };
+
+  const toggleAudioGrammarSettings = async (nextEnabled) => {
+    if (!initData) return;
+    try {
+      setAudioGrammarSaving(true);
+      const response = await fetch('/api/audio/grammar-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, enabled: Boolean(nextEnabled) }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка сохранения audio-настроек', 'Fehler beim Speichern der Audio-Einstellungen'));
+      }
+      const data = await response.json();
+      setAudioGrammarEnabled(Boolean(data?.settings?.enabled));
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось сохранить настройку grammar audio.',
+        'Grammar-Audio-Einstellung konnte nicht gespeichert werden.'
+      );
+      setTodayPlanError(friendly);
+    } finally {
+      setAudioGrammarSaving(false);
     }
   };
 
@@ -1578,9 +1629,11 @@ function AppInner() {
     if (!isWebAppMode || !initData) {
       setTodayPlan(null);
       setTodayPlanError('');
+      setAudioGrammarEnabled(false);
       return;
     }
     loadTodayPlan();
+    loadAudioGrammarSettings();
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
@@ -4648,6 +4701,15 @@ function AppInner() {
                     {todayTestSending ? tr('Отправка...', 'Senden...') : tr('Проверить личку', 'Privat testen')}
                   </button>
                 </div>
+                <label className="today-plan-toggle">
+                  <span>{tr('Грамматика в аудио (LLM)', 'Grammatik im Audio (LLM)')}</span>
+                  <input
+                    type="checkbox"
+                    checked={audioGrammarEnabled}
+                    onChange={(event) => toggleAudioGrammarSettings(event.target.checked)}
+                    disabled={audioGrammarLoading || audioGrammarSaving}
+                  />
+                </label>
                 <img src={heroStickerSrc} alt="" aria-hidden="true" className="today-plan-mascot" />
                 {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
                 {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}

@@ -761,6 +761,34 @@ Synonyms:
 Original Word: ...
 Possible Synonyms: ... (maximum two)
 """,
+"audio_sentence_grammar_explain_multilang": """
+You are a professional language teacher.
+
+Your task is to explain the grammar of a sentence in a clear and beginner-friendly way.
+
+You will receive JSON:
+{
+  "language": "de|en|es|it|ru",
+  "sentence": "...",
+  "explanation_language": "de|en|es|it|ru"
+}
+
+Output rules:
+- Explain in explanation_language.
+- Focus ONLY on grammar actually present in the sentence.
+- Keep it concise and suitable for audio playback.
+- No markdown, no tables, no bullet chaos, no long theory.
+
+Your explanation must include:
+1) Main grammatical structure.
+2) Tense (if applicable) and why used.
+3) Word order explanation (especially verb position).
+4) Articles explanation (if applicable).
+5) Cases explanation (if applicable).
+6) Prepositions explanation (if applicable).
+7) Verb forms (conjugation / irregular / auxiliary if present).
+8) Any key beginner-relevant detail actually present in this sentence.
+""",
 "sales_assistant_instructions": """
     Ти - привітний та професійний асистент з продажів, що представляє компанію. 
     Твоя мета - ефективно спілкуватися з клієнтами, надавати інформацію про продукти, 
@@ -2504,3 +2532,55 @@ async def run_translation_explanation_multilang(
         logging.warning("Не удалось удалить thread: %s", exc)
 
     return content or "❌ Ошибка: Не удалось обработать объяснение."
+
+
+async def run_audio_sentence_grammar_explain_multilang(
+    sentence: str,
+    language: str,
+    explanation_language: str,
+) -> str:
+    task_name = "audio_sentence_grammar_explain_multilang"
+    system_instruction_key = "audio_sentence_grammar_explain_multilang"
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    payload = {
+        "language": (language or "").strip().lower(),
+        "sentence": (sentence or "").strip(),
+        "explanation_language": (explanation_language or "").strip().lower(),
+    }
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        if run_status.status in {"failed", "cancelled", "expired"}:
+            break
+        await asyncio.sleep(1)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = (last_message.content[0].text.value or "").strip()
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning("Не удалось удалить thread: %s", exc)
+
+    return content

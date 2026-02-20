@@ -1123,6 +1123,17 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_today_reminder_settings (enabled, updated_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_audio_grammar_settings (
+                    user_id BIGINT PRIMARY KEY,
+                    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_audio_grammar_settings_enabled
+                ON bt_3_audio_grammar_settings (enabled, updated_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_today_regenerate_limits (
                     user_id BIGINT NOT NULL,
                     limit_date DATE NOT NULL,
@@ -1212,6 +1223,24 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_story_bank_type
                 ON bt_3_story_bank (story_type, difficulty);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_active_quizzes (
+                    poll_id TEXT PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    message_id BIGINT,
+                    correct_option_id INTEGER NOT NULL,
+                    correct_text TEXT,
+                    options JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    freeform_option TEXT,
+                    quiz_type TEXT,
+                    word_ru TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_active_quizzes_created_at
+                ON bt_3_active_quizzes (created_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_access_requests (
@@ -3554,6 +3583,171 @@ def list_today_reminder_users(limit: int = 1000, offset: int = 0) -> list[dict]:
         }
         for row in rows
     ]
+
+
+def get_audio_grammar_settings(user_id: int) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT enabled, updated_at
+                FROM bt_3_audio_grammar_settings
+                WHERE user_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return {
+            "user_id": int(user_id),
+            "enabled": False,
+            "updated_at": None,
+        }
+    return {
+        "user_id": int(user_id),
+        "enabled": bool(row[0]),
+        "updated_at": row[1].isoformat() if row[1] else None,
+    }
+
+
+def upsert_audio_grammar_settings(user_id: int, *, enabled: bool) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_audio_grammar_settings (
+                    user_id,
+                    enabled,
+                    updated_at
+                )
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET
+                    enabled = EXCLUDED.enabled,
+                    updated_at = NOW()
+                RETURNING enabled, updated_at;
+                """,
+                (int(user_id), bool(enabled)),
+            )
+            row = cursor.fetchone()
+    return {
+        "user_id": int(user_id),
+        "enabled": bool(row[0]),
+        "updated_at": row[1].isoformat() if row[1] else None,
+    }
+
+
+def upsert_active_quiz(
+    poll_id: str,
+    *,
+    chat_id: int,
+    message_id: int | None,
+    correct_option_id: int,
+    options: list[str],
+    correct_text: str | None = None,
+    freeform_option: str | None = None,
+    quiz_type: str | None = None,
+    word_ru: str | None = None,
+) -> None:
+    payload_options = [str(option) for option in (options or [])]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_active_quizzes (
+                    poll_id,
+                    chat_id,
+                    message_id,
+                    correct_option_id,
+                    correct_text,
+                    options,
+                    freeform_option,
+                    quiz_type,
+                    word_ru,
+                    created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, NOW())
+                ON CONFLICT (poll_id) DO UPDATE
+                SET
+                    chat_id = EXCLUDED.chat_id,
+                    message_id = EXCLUDED.message_id,
+                    correct_option_id = EXCLUDED.correct_option_id,
+                    correct_text = EXCLUDED.correct_text,
+                    options = EXCLUDED.options,
+                    freeform_option = EXCLUDED.freeform_option,
+                    quiz_type = EXCLUDED.quiz_type,
+                    word_ru = EXCLUDED.word_ru,
+                    created_at = NOW();
+                """,
+                (
+                    str(poll_id),
+                    int(chat_id),
+                    int(message_id) if message_id is not None else None,
+                    int(correct_option_id),
+                    (correct_text or None),
+                    json.dumps(payload_options, ensure_ascii=False),
+                    (freeform_option or None),
+                    (quiz_type or None),
+                    (word_ru or None),
+                ),
+            )
+
+
+def get_active_quiz(poll_id: str) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    poll_id,
+                    chat_id,
+                    message_id,
+                    correct_option_id,
+                    correct_text,
+                    options,
+                    freeform_option,
+                    quiz_type,
+                    word_ru,
+                    created_at
+                FROM bt_3_active_quizzes
+                WHERE poll_id = %s
+                LIMIT 1;
+                """,
+                (str(poll_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    raw_options = row[5]
+    if isinstance(raw_options, str):
+        try:
+            raw_options = json.loads(raw_options)
+        except json.JSONDecodeError:
+            raw_options = []
+    options = [str(item) for item in (raw_options or [])]
+    return {
+        "poll_id": str(row[0]),
+        "chat_id": int(row[1]),
+        "message_id": int(row[2]) if row[2] is not None else None,
+        "correct_option_id": int(row[3]),
+        "correct_text": row[4] or "",
+        "options": options,
+        "freeform_option": row[6] or None,
+        "quiz_type": row[7] or None,
+        "word_ru": row[8] or None,
+        "created_at": row[9].isoformat() if row[9] else None,
+    }
+
+
+def delete_active_quiz(poll_id: str) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM bt_3_active_quizzes WHERE poll_id = %s;",
+                (str(poll_id),),
+            )
+            return cursor.rowcount > 0
 
 
 def list_skills(category: str | None = None, language_code: str | None = None) -> list[dict]:

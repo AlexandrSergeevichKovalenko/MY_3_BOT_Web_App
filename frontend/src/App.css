@@ -4149,6 +4149,20 @@ body {
   flex-wrap: wrap;
 }
 
+.today-plan-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: rgba(224, 240, 255, 0.9);
+  font-size: 0.9rem;
+}
+
+.today-plan-toggle input {
+  width: 18px;
+  height: 18px;
+}
+
 .today-plan-items {
   display: grid;
   gap: 12px;

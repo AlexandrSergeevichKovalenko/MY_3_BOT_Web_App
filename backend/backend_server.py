@@ -121,6 +121,7 @@ from backend.openai_manager import (
     run_translate_subtitles_multilang,
     run_translation_explanation,
     run_translation_explanation_multilang,
+    run_audio_sentence_grammar_explain_multilang,
     run_feel_word,
     run_feel_word_multilang,
     run_enrich_word,
@@ -179,6 +180,8 @@ from backend.database import (
     get_today_reminder_settings,
     upsert_today_reminder_settings,
     list_today_reminder_users,
+    get_audio_grammar_settings,
+    upsert_audio_grammar_settings,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
 )
@@ -1743,11 +1746,21 @@ def _build_practice_text(sentences: list[str]) -> str:
 _TTS_CACHE: dict[str, AudioSegment] = {}
 _CHAIN_CACHE: dict[str, AudioSegment] = {}
 _SILENCE_CACHE: dict[int, AudioSegment] = {}
+_AUDIO_GRAMMAR_EXPL_CACHE: dict[str, str] = {}
 
 _TTS_VOICES = {
     "de": "de-DE-Neural2-C",
     "ru": "ru-RU-Wavenet-B",
     "en": "en-US-Wavenet-D",
+    "es": "es-ES-Standard-A",
+    "it": "it-IT-Standard-A",
+}
+_TTS_LANG_CODES = {
+    "de": "de-DE",
+    "ru": "ru-RU",
+    "en": "en-US",
+    "es": "es-ES",
+    "it": "it-IT",
 }
 
 _TTS_SPEED_DEFAULT = 0.9
@@ -1768,6 +1781,47 @@ def safe_filename(username: str | None, user_id: int, date_str: str) -> str:
 def _normalize_utterance_text(text: str) -> str:
     cleaned = (text or "").strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+def _audio_grammar_cache_key(target_lang: str, source_lang: str, sentence: str) -> str:
+    raw = "|".join(
+        [
+            _normalize_short_lang_code(target_lang, fallback="de"),
+            _normalize_short_lang_code(source_lang, fallback="ru"),
+            _normalize_utterance_text(sentence),
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _generate_audio_grammar_explanation(
+    *,
+    sentence: str,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    text = _normalize_utterance_text(sentence)
+    if not text:
+        return ""
+    key = _audio_grammar_cache_key(target_lang, source_lang, text)
+    cached = _AUDIO_GRAMMAR_EXPL_CACHE.get(key)
+    if cached:
+        return cached
+    try:
+        content = asyncio.run(
+            run_audio_sentence_grammar_explain_multilang(
+                sentence=text,
+                language=_normalize_short_lang_code(target_lang, fallback="de"),
+                explanation_language=_normalize_short_lang_code(source_lang, fallback="ru"),
+            )
+        )
+    except Exception as exc:
+        logging.warning("Audio grammar explanation generation failed: %s", exc)
+        return ""
+    cleaned = _normalize_utterance_text(content)
+    if cleaned:
+        _AUDIO_GRAMMAR_EXPL_CACHE[key] = cleaned
     return cleaned
 
 
@@ -1819,7 +1873,7 @@ def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAU
         except Exception as exc:
             logging.warning("Failed to sync /tmp TTS cache to DB: %s", exc)
         return audio
-    language = "de-DE" if lang == "de" else "ru-RU" if lang == "ru" else "en-US"
+    language = _TTS_LANG_CODES.get(lang, "en-US")
     audio_bytes = _synthesize_mp3(text, language=language, voice=voice, speed=speed)
     audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
     audio.export(cache_path, format="mp3", bitrate="192k")
@@ -1876,7 +1930,7 @@ def _merge_smallest_chunks(chunks: list[str], max_chunks: int) -> list[str]:
     return items
 
 
-def chunk_sentence_llm(de_sentence: str) -> list[str]:
+def chunk_sentence_llm_de(de_sentence: str) -> list[str]:
     cleaned = (de_sentence or "").strip()
     if not cleaned:
         return []
@@ -1916,17 +1970,72 @@ def chunk_sentence_llm(de_sentence: str) -> list[str]:
     return chunks
 
 
-def build_de_script(chunks: list[str]) -> list[dict]:
+def _split_sentence_by_connectors(sentence: str, connectors: list[str]) -> list[str]:
+    if not sentence:
+        return []
+    escaped = [re.escape(item.strip()) for item in connectors if item and item.strip()]
+    if not escaped:
+        return [sentence]
+    pattern = r"\s+(?=(?:" + "|".join(escaped) + r")\b)"
+    parts = [part.strip() for part in re.split(pattern, sentence, flags=re.IGNORECASE) if part and part.strip()]
+    return parts or [sentence]
+
+
+def _chunk_sentence_rules_for_language(sentence: str, language: str) -> list[str]:
+    cleaned = _normalize_utterance_text(sentence)
+    if not cleaned:
+        return []
+
+    lang = _normalize_short_lang_code(language, fallback="de")
+    connectors_map = {
+        "de": ["weil", "dass", "wenn", "obwohl", "damit", "während", "bevor", "nachdem"],
+        "en": ["because", "that", "when", "if", "although", "while", "before", "after"],
+        "es": ["porque", "que", "cuando", "si", "aunque", "mientras", "antes", "después"],
+        "it": ["perché", "che", "quando", "se", "anche", "mentre", "prima", "dopo"],
+        "ru": ["потому что", "что", "когда", "если", "хотя", "пока", "перед", "после"],
+    }
+    connectors = connectors_map.get(lang, connectors_map["de"])
+
+    primary_parts = [part.strip() for part in re.split(r"(?<=[\.\!\?\:\;])\s+", cleaned) if part.strip()]
+    if not primary_parts:
+        primary_parts = [cleaned]
+    chunks: list[str] = []
+    for part in primary_parts:
+        comma_parts = [p.strip() for p in re.split(r",\s*", part) if p.strip()]
+        for comma_part in comma_parts:
+            split_parts = _split_sentence_by_connectors(comma_part, connectors)
+            for item in split_parts:
+                item = item.strip()
+                if item:
+                    chunks.append(item)
+    if not chunks:
+        chunks = [cleaned]
+    if len(chunks) > _MAX_CHUNKS:
+        chunks = _merge_smallest_chunks(chunks, _MAX_CHUNKS)
+    return chunks
+
+
+def chunk_sentence_for_language(sentence: str, language: str) -> list[str]:
+    lang = _normalize_short_lang_code(language, fallback="de")
+    if lang == "de":
+        chunks = chunk_sentence_llm_de(sentence)
+        if chunks:
+            return chunks
+    return _chunk_sentence_rules_for_language(sentence, lang)
+
+
+def build_target_script(chunks: list[str], target_lang: str = "de") -> list[dict]:
     if not chunks:
         return []
     script = []
+    lang = _normalize_short_lang_code(target_lang, fallback="de")
     for i in range(len(chunks)):
         chunk = chunks[i]
         for _ in range(2):
             script.append(
                 {
                     "kind": "utterance",
-                    "lang": "de",
+                    "lang": lang,
                     "text": chunk,
                     "speed": _TTS_SPEED_DEFAULT,
                     "pause_ms_after": _PAUSE_BETWEEN_REPEATS_MS,
@@ -1938,7 +2047,7 @@ def build_de_script(chunks: list[str]) -> list[dict]:
                 script.append(
                     {
                         "kind": "chain",
-                        "lang": "de",
+                        "lang": lang,
                         "chunks": chain,
                         "speed": _TTS_SPEED_DEFAULT,
                         "pause_ms_after": _PAUSE_BETWEEN_REPEATS_MS,
@@ -1948,14 +2057,14 @@ def build_de_script(chunks: list[str]) -> list[dict]:
     return script
 
 
-def build_ru_script(ru_text: str) -> list[dict]:
-    cleaned = (ru_text or "").strip()
+def build_source_script(source_text: str, source_lang: str = "ru") -> list[dict]:
+    cleaned = (source_text or "").strip()
     if not cleaned:
         return []
     return [
         {
             "kind": "utterance",
-            "lang": "ru",
+            "lang": _normalize_short_lang_code(source_lang, fallback="ru"),
             "text": cleaned,
             "speed": _TTS_SPEED_DEFAULT,
             "pause_ms_after": 600,
@@ -1963,16 +2072,33 @@ def build_ru_script(ru_text: str) -> list[dict]:
     ]
 
 
-def build_full_script(mistakes: list[dict]) -> list[dict]:
+def build_de_script(chunks: list[str]) -> list[dict]:
+    return build_target_script(chunks, target_lang="de")
+
+
+def build_ru_script(ru_text: str) -> list[dict]:
+    return build_source_script(ru_text, source_lang="ru")
+
+
+def build_full_script(
+    mistakes: list[dict],
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> list[dict]:
     script = []
+    src = _normalize_short_lang_code(source_lang, fallback="ru")
+    tgt = _normalize_short_lang_code(target_lang, fallback="de")
     for item in mistakes:
-        ru = item.get("ru_original") or ""
-        de = item.get("de_correct") or ""
-        script.extend(build_ru_script(ru))
-        chunks = chunk_sentence_llm(de)
+        source_text = item.get("source_text") or item.get("ru_original") or ""
+        target_text = item.get("target_text") or item.get("de_correct") or ""
+        explanation_text = item.get("explanation_text") or ""
+        script.extend(build_source_script(source_text, source_lang=src))
+        chunks = chunk_sentence_for_language(target_text, tgt)
         if not chunks:
-            chunks = [de.strip()] if de.strip() else []
-        script.extend(build_de_script(chunks))
+            chunks = [target_text.strip()] if target_text.strip() else []
+        script.extend(build_target_script(chunks, target_lang=tgt))
+        if explanation_text:
+            script.extend(build_source_script(explanation_text, source_lang=src))
         if script:
             script[-1]["pause_ms_after"] = _PAUSE_BETWEEN_MISTAKES_MS
     return script
@@ -3862,6 +3988,26 @@ def today_reminders_test_send():
     )
 
 
+@app.route("/api/audio/grammar-settings", methods=["GET", "POST"])
+def audio_grammar_settings():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    if request.method == "GET":
+        settings = get_audio_grammar_settings(int(user_id))
+        return jsonify({"ok": True, "settings": settings})
+
+    payload = request.get_json(silent=True) or {}
+    enabled = bool(payload.get("enabled"))
+    try:
+        settings = upsert_audio_grammar_settings(int(user_id), enabled=enabled)
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения audio grammar settings: {exc}"}), 500
+    return jsonify({"ok": True, "settings": settings})
+
+
 @app.route("/api/progress/skills", methods=["GET"])
 def get_skill_progress():
     user_id, username, error = _get_authenticated_user_from_request_init_data()
@@ -5683,6 +5829,11 @@ def submit_webapp_group_message():
 
 
 def _dispatch_daily_audio(target_date: date) -> dict:
+    def _pair_code(source_lang: str | None, target_lang: str | None) -> str:
+        src = str(source_lang or "ru").strip().upper() or "RU"
+        tgt = str(target_lang or "de").strip().upper() or "DE"
+        return f"{src}->{tgt}"
+
     story_sessions: dict[int, set[str]] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -5705,7 +5856,16 @@ def _dispatch_daily_audio(target_date: date) -> dict:
             if story_session_ids:
                 cursor.execute(
                     """
-                    SELECT t.user_id, t.username, t.feedback, t.user_translation, ds.sentence, ds.unique_id, t.session_id
+                    SELECT
+                        t.user_id,
+                        t.username,
+                        t.feedback,
+                        t.user_translation,
+                        ds.sentence,
+                        ds.unique_id,
+                        t.session_id,
+                        COALESCE(t.source_lang, 'ru') AS source_lang,
+                        COALESCE(t.target_lang, 'de') AS target_lang
                     FROM bt_3_translations t
                     JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
                     WHERE ds.date = %s
@@ -5718,7 +5878,16 @@ def _dispatch_daily_audio(target_date: date) -> dict:
             else:
                 cursor.execute(
                     """
-                    SELECT t.user_id, t.username, t.feedback, t.user_translation, ds.sentence, ds.unique_id, t.session_id
+                    SELECT
+                        t.user_id,
+                        t.username,
+                        t.feedback,
+                        t.user_translation,
+                        ds.sentence,
+                        ds.unique_id,
+                        t.session_id,
+                        COALESCE(t.source_lang, 'ru') AS source_lang,
+                        COALESCE(t.target_lang, 'de') AS target_lang
                     FROM bt_3_translations t
                     JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
                     WHERE ds.date = %s
@@ -5729,10 +5898,12 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 )
             daily_rows = cursor.fetchall()
 
-    daily_by_user: dict[int, list[dict]] = {}
+    daily_by_user_pair: dict[tuple[int, str, str], list[dict]] = {}
     daily_names: dict[int, str] = {}
-    for user_id, username, feedback, user_translation, _sentence, _unique_id, _session_id in daily_rows:
+    for user_id, username, feedback, user_translation, _sentence, _unique_id, _session_id, source_lang, target_lang in daily_rows:
         user_id = int(user_id)
+        src = str(source_lang or "ru").strip().lower() or "ru"
+        tgt = str(target_lang or "de").strip().lower() or "de"
         display = (username or "").strip()
         if display:
             daily_names[user_id] = display
@@ -5741,11 +5912,14 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         de_correct = (correct or user_translation or "").strip()
         if not de_correct:
             continue
-        daily_by_user.setdefault(user_id, []).append(
-            {"ru_original": ru_original, "de_correct": de_correct}
+        daily_by_user_pair.setdefault((user_id, src, tgt), []).append(
+            {
+                "source_text": ru_original,
+                "target_text": de_correct,
+            }
         )
 
-    story_by_user: dict[int, list[dict]] = {}
+    story_by_user_pair: dict[tuple[int, str, str], list[dict]] = {}
     story_names: dict[int, str] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -5753,7 +5927,15 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 for session_id in session_ids:
                     cursor.execute(
                         """
-                        SELECT t.user_id, t.username, t.feedback, t.user_translation, ds.sentence, ds.unique_id
+                        SELECT
+                            t.user_id,
+                            t.username,
+                            t.feedback,
+                            t.user_translation,
+                            ds.sentence,
+                            ds.unique_id,
+                            COALESCE(t.source_lang, 'ru') AS source_lang,
+                            COALESCE(t.target_lang, 'de') AS target_lang
                         FROM bt_3_translations t
                         JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
                         WHERE t.user_id = %s
@@ -5764,8 +5946,10 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                         (user_id, session_id, target_date),
                     )
                     rows = cursor.fetchall()
-                    for uid, username, feedback, user_translation, _sentence, _unique_id in rows:
+                    for uid, username, feedback, user_translation, _sentence, _unique_id, source_lang, target_lang in rows:
                         uid = int(uid)
+                        src = str(source_lang or "ru").strip().lower() or "ru"
+                        tgt = str(target_lang or "de").strip().lower() or "de"
                         display = (username or "").strip()
                         if display:
                             story_names[uid] = display
@@ -5774,41 +5958,76 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                         de_correct = (correct or user_translation or "").strip()
                         if not de_correct:
                             continue
-                        story_by_user.setdefault(uid, []).append(
-                            {"ru_original": ru_original, "de_correct": de_correct}
+                        story_by_user_pair.setdefault((uid, src, tgt), []).append(
+                            {
+                                "source_text": ru_original,
+                                "target_text": de_correct,
+                            }
                         )
 
     sent_daily = 0
     sent_story = 0
     errors: list[str] = []
 
-    for user_id, mistakes in daily_by_user.items():
+    for (user_id, source_lang, target_lang), mistakes in daily_by_user_pair.items():
         if not mistakes:
             continue
         try:
-            script = build_full_script(mistakes)
+            audio_settings = get_audio_grammar_settings(user_id)
+            explain_enabled = bool(audio_settings.get("enabled"))
+            if explain_enabled:
+                enriched: list[dict] = []
+                for item in mistakes:
+                    enriched_item = dict(item)
+                    explanation_text = _generate_audio_grammar_explanation(
+                        sentence=str(item.get("target_text") or ""),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                    if explanation_text:
+                        enriched_item["explanation_text"] = explanation_text
+                    enriched.append(enriched_item)
+                mistakes = enriched
+            script = build_full_script(mistakes, source_lang=source_lang, target_lang=target_lang)
             audio = render_script_to_audio(script)
             name = daily_names.get(user_id) or f"user_{user_id}"
-            filename = safe_filename(name, user_id, target_date.isoformat())
-            caption = f"Ошибки за {target_date.isoformat()} — {name}"
+            pair_label = _pair_code(source_lang, target_lang)
+            filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
+            caption = f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
             _send_group_audio(audio, filename, caption)
             sent_daily += 1
         except Exception as exc:
-            errors.append(f"daily user {user_id}: {exc}")
+            errors.append(f"daily user {user_id} {source_lang}->{target_lang}: {exc}")
 
-    for user_id, mistakes in story_by_user.items():
+    for (user_id, source_lang, target_lang), mistakes in story_by_user_pair.items():
         if not mistakes:
             continue
         try:
-            script = build_full_script(mistakes)
+            audio_settings = get_audio_grammar_settings(user_id)
+            explain_enabled = bool(audio_settings.get("enabled"))
+            if explain_enabled:
+                enriched: list[dict] = []
+                for item in mistakes:
+                    enriched_item = dict(item)
+                    explanation_text = _generate_audio_grammar_explanation(
+                        sentence=str(item.get("target_text") or ""),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                    if explanation_text:
+                        enriched_item["explanation_text"] = explanation_text
+                    enriched.append(enriched_item)
+                mistakes = enriched
+            script = build_full_script(mistakes, source_lang=source_lang, target_lang=target_lang)
             audio = render_script_to_audio(script)
             name = story_names.get(user_id) or f"user_{user_id}"
-            filename = safe_filename(name, user_id, target_date.isoformat())
-            caption = f"История за {target_date.isoformat()} — {name}"
+            pair_label = _pair_code(source_lang, target_lang)
+            filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
+            caption = f"История за {target_date.isoformat()} — {name} ({pair_label})"
             _send_group_audio(audio, filename, caption)
             sent_story += 1
         except Exception as exc:
-            errors.append(f"story user {user_id}: {exc}")
+            errors.append(f"story user {user_id} {source_lang}->{target_lang}: {exc}")
 
     return {
         "ok": True,
