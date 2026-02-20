@@ -1133,6 +1133,7 @@ function AppInner() {
               skill_title: payload.skill_title || null,
               main_category: payload.main_category || null,
               sub_category: payload.sub_category || null,
+              examples: Array.isArray(payload.examples) ? payload.examples.slice(0, 5) : [],
               lookback_days: payload.lookback_days || 7,
             }),
           });
@@ -1272,7 +1273,6 @@ function AppInner() {
       return tr(`Перевод: ${sentences} предложений`, `Uebersetzung: ${sentences} Saetze`);
     }
     if (taskType === 'video' || taskType === 'youtube') {
-      const minutes = Math.max(1, Math.round(Number(payload?.duration_sec || 300) / 60));
       const focusTopic = String(
         payload?.sub_category
         || payload?.skill_title
@@ -1280,12 +1280,9 @@ function AppInner() {
         || ''
       ).trim();
       if (focusTopic) {
-        return tr(
-          `Видео: ${minutes} минут (тренируй мою тему: ${focusTopic})`,
-          `Video: ${minutes} Minuten (trainiere mein Thema: ${focusTopic})`
-        );
+        return tr(`Видео`, `Video`);
       }
-      return tr(`Видео: ${minutes} минут (тренируй мою тему)`, `Video: ${minutes} Minuten (trainiere mein Thema)`);
+      return tr(`Видео`, `Video`);
     }
     if (taskType === 'dialogue') {
       const minutes = Number(item?.estimated_minutes || 3);
@@ -6069,6 +6066,7 @@ function AppInner() {
                       const loadingAction = todayItemLoading[item.id];
                       const taskType = String(item?.task_type || '').toLowerCase();
                       const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+                      const videoTopic = String(payload?.sub_category || payload?.skill_title || payload?.main_category || '').trim();
                       const videoLikes = Number(payload?.video_likes || 0);
                       const videoDislikes = Number(payload?.video_dislikes || 0);
                       const videoScore = Number(payload?.video_score || 0);
@@ -6078,11 +6076,15 @@ function AppInner() {
                           <div className="today-plan-item-main">
                             <div className="today-plan-item-title">{getTodayItemTitle(item)}</div>
                             <div className="today-plan-item-meta">
-                              <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>
+                              {taskType !== 'video' && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
                               <span>{String(item.status || 'todo').toUpperCase()}</span>
                             </div>
                             {taskType === 'video' && (
                               <div className="today-video-hint">
+                                <div className="today-video-topic-line">
+                                  <span>{tr('Тема для тренировки:', 'Thema fuer Training:')}</span>{' '}
+                                  <span className="today-video-topic-value">{videoTopic || tr('не определена', 'nicht definiert')}</span>
+                                </div>
                                 {tr(
                                   'Если видео полезно по теме - поставьте 👍. Если не по теме - 👎.',
                                   'Wenn das Video zum Thema passt - 👍. Wenn nicht - 👎.'

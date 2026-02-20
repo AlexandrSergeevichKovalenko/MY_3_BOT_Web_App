@@ -4839,6 +4839,15 @@ body {
   line-height: 1.35;
 }
 
+.today-video-topic-line {
+  margin-bottom: 4px;
+}
+
+.today-video-topic-value {
+  color: #facc15;
+  font-weight: 700;
+}
+
 .today-video-vote {
   min-width: 38px;
   padding: 0 10px;

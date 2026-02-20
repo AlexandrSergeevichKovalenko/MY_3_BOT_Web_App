@@ -884,20 +884,68 @@ def _build_next_srs_payload(
     }
 
 
-def _build_video_search_query(main_category: str | None, sub_category: str | None) -> str:
+def _build_video_search_queries(
+    main_category: str | None,
+    sub_category: str | None,
+    *,
+    skill_title: str | None = None,
+    examples: list[str] | None = None,
+) -> list[str]:
     sub = str(sub_category or "").strip()
     main = str(main_category or "").strip()
+    skill = str(skill_title or "").strip()
+    sample_items = []
+    if isinstance(examples, list):
+        for item in examples[:3]:
+            text = " ".join(str(item or "").strip().split())
+            if text:
+                sample_items.append(text[:80])
+
+    queries: list[str] = []
     if sub:
-        return f"{sub} deutsch grammatik uebung"
+        queries.extend(
+            [
+                f"{sub} deutsch grammatik erklaert",
+                f"{sub} deutsch grammatik uebung",
+                f"{sub} deutsch lernen b1 b2",
+            ]
+        )
     if main:
-        return f"{main} deutsch lernen"
-    return "deutsch grammatik b1 b2"
+        queries.extend(
+            [
+                f"{main} deutsch grammatik erklaert",
+                f"{main} deutsch lernen",
+            ]
+        )
+    if skill:
+        queries.extend(
+            [
+                f"{skill} deutsch grammatik erklaert",
+                f"{skill} deutsch lernen",
+            ]
+        )
+    for sample in sample_items:
+        queries.append(f"{sample} deutsch grammatik erklaerung")
+    queries.append("deutsch grammatik b1 b2")
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        norm = " ".join(query.strip().lower().split())
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        unique.append(query.strip())
+    return unique
 
 
 def _youtube_search_videos(query: str, *, max_results: int = 5) -> list[dict]:
     if not YOUTUBE_API_KEY or not query:
+        logging.info("YT search skipped: query='%s' key_present=%s", query, bool(YOUTUBE_API_KEY))
         return []
     collected: list[dict] = []
+    preferred_hits = 0
+    fallback_hits = 0
     try:
         base_url = "https://www.googleapis.com/youtube/v3/search"
         common_params = {
@@ -919,6 +967,7 @@ def _youtube_search_videos(query: str, *, max_results: int = 5) -> list[dict]:
                 if not video_id:
                     continue
                 collected.append({"video_id": video_id, "title": title})
+                preferred_hits += 1
         if not collected:
             fallback_params = {
                 **common_params,
@@ -934,7 +983,9 @@ def _youtube_search_videos(query: str, *, max_results: int = 5) -> list[dict]:
                     if not video_id:
                         continue
                     collected.append({"video_id": video_id, "title": title})
+                    fallback_hits += 1
     except Exception:
+        logging.exception("YT search failed: query='%s'", query)
         return []
 
     unique = {}
@@ -942,6 +993,13 @@ def _youtube_search_videos(query: str, *, max_results: int = 5) -> list[dict]:
         vid = row.get("video_id")
         if vid and vid not in unique:
             unique[vid] = {"video_id": vid, "title": row.get("title") or ""}
+    logging.info(
+        "YT search query='%s' preferred_hits=%s fallback_hits=%s unique=%s",
+        query,
+        preferred_hits,
+        fallback_hits,
+        len(unique),
+    )
     return list(unique.values())
 
 
@@ -986,24 +1044,38 @@ def _youtube_fill_view_counts(videos: list[dict]) -> list[dict]:
         return videos
 
 
-def _pick_today_recommended_video(main_category: str | None, sub_category: str | None) -> dict | None:
-    query = _build_video_search_query(main_category, sub_category)
-    videos = _youtube_search_videos(query, max_results=5)
-    if not videos:
-        return None
-    videos = _youtube_fill_view_counts(videos)
-    videos.sort(key=lambda x: int(x.get("views") or 0), reverse=True)
-    best = videos[0] if videos else None
-    if not best or not best.get("video_id"):
-        return None
-    video_id = str(best.get("video_id")).strip()
-    return {
-        "video_id": video_id,
-        "video_url": f"https://www.youtube.com/watch?v={video_id}",
-        "title": str(best.get("title") or "").strip(),
-        "query": query,
-        "views": int(best.get("views") or 0),
-    }
+def _pick_today_recommended_video(
+    main_category: str | None,
+    sub_category: str | None,
+    *,
+    skill_title: str | None = None,
+    examples: list[str] | None = None,
+) -> dict | None:
+    queries = _build_video_search_queries(
+        main_category,
+        sub_category,
+        skill_title=skill_title,
+        examples=examples,
+    )
+    logging.info("YT recommendation queries: %s", queries)
+    for query in queries:
+        videos = _youtube_search_videos(query, max_results=5)
+        if not videos:
+            continue
+        videos = _youtube_fill_view_counts(videos)
+        videos.sort(key=lambda x: int(x.get("views") or 0), reverse=True)
+        best = videos[0] if videos else None
+        if not best or not best.get("video_id"):
+            continue
+        video_id = str(best.get("video_id")).strip()
+        return {
+            "video_id": video_id,
+            "video_url": f"https://www.youtube.com/watch?v={video_id}",
+            "title": str(best.get("title") or "").strip(),
+            "query": query,
+            "views": int(best.get("views") or 0),
+        }
+    return None
 
 
 def _build_today_plan_for_user(
@@ -1133,6 +1205,8 @@ def _build_today_plan_for_user(
         recommended_video = _pick_today_recommended_video(
             weak_topic.get("main_category") if weak_topic else None,
             weak_topic.get("sub_category") if weak_topic else None,
+            skill_title=weakest_skill.get("skill_title") if weakest_skill else None,
+            examples=weak_sentences[:5],
         )
         items.append(
             {
@@ -4162,6 +4236,7 @@ def recommend_today_video():
     skill_title = str(payload.get("skill_title") or "").strip()
     main_category = str(payload.get("main_category") or "").strip()
     sub_category = str(payload.get("sub_category") or "").strip()
+    examples_payload = payload.get("examples") if isinstance(payload.get("examples"), list) else []
     resolved_skill = None
 
     if not skill_id:
@@ -4236,22 +4311,21 @@ def recommend_today_video():
         }
 
     if not recommended_video:
-        recommended_video = _pick_today_recommended_video(main_category or None, sub_category or None)
-        if not recommended_video and skill_title:
-            fallback_query = f"{skill_title} deutsch grammatik uebung"
-            videos = _youtube_search_videos(fallback_query, max_results=5)
-            videos = _youtube_fill_view_counts(videos)
-            videos.sort(key=lambda x: int(x.get("views") or 0), reverse=True)
-            best = videos[0] if videos else None
-            if best and best.get("video_id"):
-                video_id = str(best.get("video_id") or "").strip()
-                recommended_video = {
-                    "video_id": video_id,
-                    "video_url": f"https://www.youtube.com/watch?v={video_id}",
-                    "title": str(best.get("title") or "").strip(),
-                    "query": fallback_query,
-                    "views": int(best.get("views") or 0),
-                }
+        recommended_video = _pick_today_recommended_video(
+            main_category or None,
+            sub_category or None,
+            skill_title=skill_title or None,
+            examples=examples_payload[:5],
+        )
+        if not recommended_video:
+            logging.warning(
+                "YT recommendation not found: user_id=%s skill_id=%s skill_title='%s' main='%s' sub='%s'",
+                int(user_id),
+                skill_id,
+                skill_title,
+                main_category,
+                sub_category,
+            )
 
         if recommended_video and recommended_video.get("video_id"):
             try:
