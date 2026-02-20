@@ -897,7 +897,11 @@ def _build_today_plan_for_user(
             has_new_candidates = False
 
     try:
-        weakest_skill = get_lowest_mastery_skill(user_id=user_id)
+        weakest_skill = get_lowest_mastery_skill(
+            user_id=user_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
     except Exception:
         weakest_skill = None
 
@@ -907,13 +911,20 @@ def _build_today_plan_for_user(
                 user_id=user_id,
                 skill_id=str(weakest_skill.get("skill_id") or ""),
                 lookback_days=7,
+                source_lang=source_lang,
+                target_lang=target_lang,
             )
         except Exception:
             weak_topic = None
 
     if not weak_topic:
         try:
-            weak_topic = get_top_weak_topic(user_id=user_id, lookback_days=7)
+            weak_topic = get_top_weak_topic(
+                user_id=user_id,
+                lookback_days=7,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
         except Exception:
             weak_topic = None
 
@@ -925,6 +936,8 @@ def _build_today_plan_for_user(
                 sub_category=str(weak_topic.get("sub_category") or ""),
                 lookback_days=7,
                 limit=5,
+                source_lang=source_lang,
+                target_lang=target_lang,
             )
         except Exception:
             weak_sentences = []
@@ -3707,10 +3720,13 @@ def get_skill_progress():
         except Exception:
             lookback_days = 7
 
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
         report = get_skill_progress_report(
             user_id=int(user_id),
             lookback_days=lookback_days,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка построения отчёта по навыкам: {exc}"}), 500
@@ -3720,6 +3736,7 @@ def get_skill_progress():
             "ok": True,
             "user_id": int(user_id),
             "username": username,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
             **report,
         }
     )
@@ -3743,6 +3760,8 @@ def start_skill_practice(skill_id: str):
         user_id=int(user_id),
         skill_id=str(skill.get("skill_id") or skill_id),
         lookback_days=14,
+        source_lang=source_lang,
+        target_lang=target_lang,
     )
     main_category = (focus_topic or {}).get("main_category")
     sub_category = (focus_topic or {}).get("sub_category")
@@ -3754,6 +3773,8 @@ def start_skill_practice(skill_id: str):
             sub_category=str(sub_category),
             lookback_days=14,
             limit=5,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
     topic_label = str(skill.get("title") or skill.get("skill_id") or "Skill practice")
     if sub_category:

@@ -1267,6 +1267,8 @@ async def log_translation_mistake(
     subcategories: list[str],
     score: int,
     correct_translation: str | None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
 ) -> None:
     if categories:
         logging.info("Categories from log_translation_mistake: %s", ", ".join(categories))
@@ -1303,9 +1305,11 @@ async def log_translation_mistake(
                     SELECT id_for_mistake_table
                     FROM bt_3_daily_sentences
                     WHERE sentence=%s
+                      AND COALESCE(source_lang, 'ru') = %s
+                      AND COALESCE(target_lang, 'de') = %s
                     LIMIT 1;
                     """,
-                    (original_text,),
+                    (original_text, source_lang or "ru", target_lang or "de"),
                 )
                 result = cursor.fetchone()
                 sentence_id = result[0] if result else None
@@ -1328,6 +1332,8 @@ async def log_translation_mistake(
                 try:
                     apply_skill_events_for_error(
                         user_id=int(user_id),
+                        source_lang=source_lang or "ru",
+                        target_lang=target_lang or "de",
                         error_category=main_category,
                         error_subcategory=sub_category,
                         event_type="fail",
@@ -1544,6 +1550,8 @@ async def check_user_translation_webapp(
                         try:
                             apply_skill_events_for_error(
                                 user_id=int(user_id),
+                                source_lang=source_lang or "ru",
+                                target_lang=target_lang or "de",
                                 error_category=str(main_category or "Other mistake"),
                                 error_subcategory=str(sub_category or "Unclassified mistake"),
                                 event_type="success",
@@ -1599,6 +1607,8 @@ async def check_user_translation_webapp(
                             try:
                                 apply_skill_events_for_error(
                                     user_id=int(user_id),
+                                    source_lang=source_lang or "ru",
+                                    target_lang=target_lang or "de",
                                     error_category=main_category,
                                     error_subcategory=sub_category,
                                     event_type="success",
@@ -1627,6 +1637,8 @@ async def check_user_translation_webapp(
                         subcategories,
                         score_value,
                         correct_translation,
+                        source_lang=source_lang or "ru",
+                        target_lang=target_lang or "de",
                     )
 
             results.append(

@@ -509,6 +509,8 @@ def ensure_webapp_tables() -> None:
                 CREATE TABLE IF NOT EXISTS bt_3_user_skill_state (
                     user_id BIGINT NOT NULL,
                     skill_id TEXT NOT NULL REFERENCES bt_3_skills(skill_id) ON DELETE CASCADE,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
                     mastery DOUBLE PRECISION NOT NULL DEFAULT 50.0,
                     success_streak INTEGER NOT NULL DEFAULT 0,
                     fail_streak INTEGER NOT NULL DEFAULT 0,
@@ -517,16 +519,70 @@ def ensure_webapp_tables() -> None:
                     last_event_at TIMESTAMPTZ,
                     last_practiced_at TIMESTAMPTZ,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (user_id, skill_id)
+                    PRIMARY KEY (user_id, skill_id, source_lang, target_lang)
                 );
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_user_skill_state
+                ADD COLUMN IF NOT EXISTS source_lang TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_user_skill_state
+                ADD COLUMN IF NOT EXISTS target_lang TEXT;
+            """)
+            cursor.execute("""
+                UPDATE bt_3_user_skill_state
+                SET
+                    source_lang = COALESCE(NULLIF(source_lang, ''), 'ru'),
+                    target_lang = COALESCE(NULLIF(target_lang, ''), 'de')
+                WHERE source_lang IS NULL
+                   OR target_lang IS NULL
+                   OR source_lang = ''
+                   OR target_lang = '';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_user_skill_state
+                ALTER COLUMN source_lang SET DEFAULT 'ru';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_user_skill_state
+                ALTER COLUMN target_lang SET DEFAULT 'de';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_user_skill_state
+                ALTER COLUMN source_lang SET NOT NULL;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_user_skill_state
+                ALTER COLUMN target_lang SET NOT NULL;
+            """)
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    BEGIN
+                        ALTER TABLE bt_3_user_skill_state
+                        DROP CONSTRAINT IF EXISTS bt_3_user_skill_state_pkey;
+                    EXCEPTION WHEN undefined_object THEN
+                        NULL;
+                    END;
+                    BEGIN
+                        ALTER TABLE bt_3_user_skill_state
+                        ADD CONSTRAINT bt_3_user_skill_state_pkey
+                        PRIMARY KEY (user_id, skill_id, source_lang, target_lang);
+                    EXCEPTION
+                        WHEN duplicate_object THEN NULL;
+                    END;
+                END $$;
+                """
+            )
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_user_skill_state_user_mastery
-                ON bt_3_user_skill_state (user_id, mastery ASC);
+                ON bt_3_user_skill_state (user_id, source_lang, target_lang, mastery ASC);
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_user_skill_state_skill
-                ON bt_3_user_skill_state (skill_id, mastery ASC);
+                ON bt_3_user_skill_state (skill_id, source_lang, target_lang, mastery ASC);
             """)
             cursor.executemany(
                 """
@@ -2889,6 +2945,8 @@ def get_top_weak_topic(
     *,
     user_id: int,
     lookback_days: int = 7,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> dict | None:
     lookback_days = max(1, int(lookback_days))
     try:
@@ -2897,17 +2955,22 @@ def get_top_weak_topic(
                 cursor.execute(
                     """
                     SELECT
-                        COALESCE(NULLIF(main_category, ''), 'Other mistake') AS main_category,
-                        COALESCE(NULLIF(sub_category, ''), 'Unclassified mistake') AS sub_category,
-                        SUM(COALESCE(mistake_count, 1)) AS total_mistakes
-                    FROM bt_3_detailed_mistakes
-                    WHERE user_id = %s
-                      AND COALESCE(last_seen, added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                        COALESCE(NULLIF(dm.main_category, ''), 'Other mistake') AS main_category,
+                        COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake') AS sub_category,
+                        SUM(COALESCE(dm.mistake_count, 1)) AS total_mistakes
+                    FROM bt_3_detailed_mistakes dm
+                    JOIN bt_3_daily_sentences ds
+                      ON ds.id_for_mistake_table = dm.sentence_id
+                     AND ds.user_id = dm.user_id
+                    WHERE dm.user_id = %s
+                      AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
+                      AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
+                      AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
                     GROUP BY 1, 2
                     ORDER BY total_mistakes DESC, main_category ASC, sub_category ASC
                     LIMIT 1;
                     """,
-                    (int(user_id), lookback_days),
+                    (int(user_id), source_lang or "ru", target_lang or "de", lookback_days),
                 )
                 row = cursor.fetchone()
     except Exception:
@@ -2929,6 +2992,8 @@ def get_weak_topic_sentences(
     sub_category: str,
     lookback_days: int = 7,
     limit: int = 5,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> list[str]:
     if not main_category and not sub_category:
         return []
@@ -2939,18 +3004,31 @@ def get_weak_topic_sentences(
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT sentence
-                    FROM bt_3_detailed_mistakes
-                    WHERE user_id = %s
-                      AND COALESCE(NULLIF(main_category, ''), 'Other mistake') = %s
-                      AND COALESCE(NULLIF(sub_category, ''), 'Unclassified mistake') = %s
-                      AND COALESCE(last_seen, added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
-                      AND sentence IS NOT NULL
-                      AND sentence <> ''
-                    ORDER BY COALESCE(last_seen, added_data, NOW()) DESC, COALESCE(mistake_count, 1) DESC
+                    SELECT dm.sentence
+                    FROM bt_3_detailed_mistakes dm
+                    JOIN bt_3_daily_sentences ds
+                      ON ds.id_for_mistake_table = dm.sentence_id
+                     AND ds.user_id = dm.user_id
+                    WHERE dm.user_id = %s
+                      AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
+                      AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
+                      AND COALESCE(NULLIF(dm.main_category, ''), 'Other mistake') = %s
+                      AND COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake') = %s
+                      AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                      AND dm.sentence IS NOT NULL
+                      AND dm.sentence <> ''
+                    ORDER BY COALESCE(dm.last_seen, dm.added_data, NOW()) DESC, COALESCE(dm.mistake_count, 1) DESC
                     LIMIT %s;
                     """,
-                    (int(user_id), main_category, sub_category, lookback_days, limit),
+                    (
+                        int(user_id),
+                        source_lang or "ru",
+                        target_lang or "de",
+                        main_category,
+                        sub_category,
+                        lookback_days,
+                        limit,
+                    ),
                 )
                 rows = cursor.fetchall()
     except Exception:
@@ -2958,7 +3036,12 @@ def get_weak_topic_sentences(
     return [str(row[0]).strip() for row in rows if row and str(row[0]).strip()]
 
 
-def get_lowest_mastery_skill(user_id: int) -> dict | None:
+def get_lowest_mastery_skill(
+    user_id: int,
+    *,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> dict | None:
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -2974,10 +3057,12 @@ def get_lowest_mastery_skill(user_id: int) -> dict | None:
                     FROM bt_3_user_skill_state s
                     JOIN bt_3_skills k ON k.skill_id = s.skill_id
                     WHERE s.user_id = %s
+                      AND s.source_lang = COALESCE(%s, 'ru')
+                      AND s.target_lang = COALESCE(%s, 'de')
                     ORDER BY s.mastery ASC, s.total_events DESC, s.updated_at DESC
                     LIMIT 1;
                     """,
-                    (int(user_id),),
+                    (int(user_id), source_lang or "ru", target_lang or "de"),
                 )
                 row = cursor.fetchone()
     except Exception:
@@ -3000,6 +3085,8 @@ def get_top_error_topic_for_skill(
     user_id: int,
     skill_id: str,
     lookback_days: int = 7,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> dict | None:
     if not skill_id:
         return None
@@ -3016,17 +3103,28 @@ def get_top_error_topic_for_skill(
                         SUM(COALESCE(dm.mistake_count, 1)) AS total_mistakes,
                         MAX(m.weight) AS map_weight
                     FROM bt_3_detailed_mistakes dm
+                    JOIN bt_3_daily_sentences ds
+                      ON ds.id_for_mistake_table = dm.sentence_id
+                     AND ds.user_id = dm.user_id
                     JOIN bt_3_error_skill_map m
                       ON m.error_category = COALESCE(NULLIF(dm.main_category, ''), 'Other mistake')
                      AND m.error_subcategory = COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')
                     WHERE dm.user_id = %s
+                      AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
+                      AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
                       AND m.skill_id = %s
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
                     GROUP BY 1, 2
                     ORDER BY total_mistakes DESC, map_weight DESC, main_category ASC, sub_category ASC
                     LIMIT 1;
                     """,
-                    (int(user_id), normalized_skill_id, lookback_days),
+                    (
+                        int(user_id),
+                        source_lang or "ru",
+                        target_lang or "de",
+                        normalized_skill_id,
+                        lookback_days,
+                    ),
                 )
                 row = cursor.fetchone()
                 if row:
@@ -3280,6 +3378,8 @@ def apply_user_skill_event(
     *,
     user_id: int,
     skill_id: str,
+    source_lang: str = "ru",
+    target_lang: str = "de",
     event_type: str,
     base_delta: float,
     event_at: datetime | None = None,
@@ -3297,10 +3397,13 @@ def apply_user_skill_event(
                 """
                 SELECT mastery, success_streak, fail_streak, total_events, last_practiced_at
                 FROM bt_3_user_skill_state
-                WHERE user_id = %s AND skill_id = %s
+                WHERE user_id = %s
+                  AND skill_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
                 LIMIT 1;
                 """,
-                (int(user_id), str(skill_id)),
+                (int(user_id), str(skill_id), source_lang or "ru", target_lang or "de"),
             )
             row = cursor.fetchone()
 
@@ -3336,6 +3439,8 @@ def apply_user_skill_event(
                 INSERT INTO bt_3_user_skill_state (
                     user_id,
                     skill_id,
+                    source_lang,
+                    target_lang,
                     mastery,
                     success_streak,
                     fail_streak,
@@ -3345,8 +3450,8 @@ def apply_user_skill_event(
                     last_practiced_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                ON CONFLICT (user_id, skill_id) DO UPDATE
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id, skill_id, source_lang, target_lang) DO UPDATE
                 SET
                     mastery = EXCLUDED.mastery,
                     success_streak = EXCLUDED.success_streak,
@@ -3361,6 +3466,8 @@ def apply_user_skill_event(
                 (
                     int(user_id),
                     str(skill_id),
+                    source_lang or "ru",
+                    target_lang or "de",
                     mastery,
                     success_streak,
                     fail_streak,
@@ -3375,6 +3482,8 @@ def apply_user_skill_event(
     return {
         "user_id": int(user_id),
         "skill_id": str(skill_id),
+        "source_lang": source_lang or "ru",
+        "target_lang": target_lang or "de",
         "mastery": float(saved[0] if saved else mastery),
         "success_streak": int(saved[1] if saved else success_streak),
         "fail_streak": int(saved[2] if saved else fail_streak),
@@ -3387,6 +3496,8 @@ def apply_user_skill_event(
 def apply_skill_events_for_error(
     *,
     user_id: int,
+    source_lang: str = "ru",
+    target_lang: str = "de",
     error_category: str,
     error_subcategory: str | None,
     event_type: str,
@@ -3406,6 +3517,8 @@ def apply_skill_events_for_error(
             result = apply_user_skill_event(
                 user_id=int(user_id),
                 skill_id=skill_id,
+                source_lang=source_lang or "ru",
+                target_lang=target_lang or "de",
                 event_type=event_type,
                 base_delta=base * weight,
                 event_at=event_at,
@@ -3420,6 +3533,8 @@ def get_skill_progress_report(
     *,
     user_id: int,
     lookback_days: int = 7,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> dict:
     window_days = max(1, min(int(lookback_days), 30))
     now_utc = datetime.now(timezone.utc)
@@ -3433,10 +3548,15 @@ def get_skill_progress_report(
                         m.skill_id,
                         SUM(COALESCE(dm.mistake_count, 1))::BIGINT AS errors_7d
                     FROM bt_3_detailed_mistakes dm
+                    JOIN bt_3_daily_sentences ds
+                      ON ds.id_for_mistake_table = dm.sentence_id
+                     AND ds.user_id = dm.user_id
                     JOIN bt_3_error_skill_map m
                       ON m.error_category = COALESCE(NULLIF(dm.main_category, ''), 'Other mistake')
                      AND m.error_subcategory = COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')
                     WHERE dm.user_id = %s
+                      AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
+                      AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
                     GROUP BY m.skill_id
                 ),
@@ -3445,10 +3565,15 @@ def get_skill_progress_report(
                         m.skill_id,
                         SUM(COALESCE(dm.mistake_count, 1))::BIGINT AS errors_prev_7d
                     FROM bt_3_detailed_mistakes dm
+                    JOIN bt_3_daily_sentences ds
+                      ON ds.id_for_mistake_table = dm.sentence_id
+                     AND ds.user_id = dm.user_id
                     JOIN bt_3_error_skill_map m
                       ON m.error_category = COALESCE(NULLIF(dm.main_category, ''), 'Other mistake')
                      AND m.error_subcategory = COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')
                     WHERE dm.user_id = %s
+                      AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
+                      AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) < NOW() - (%s::text || ' days')::interval
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - ((%s * 2)::text || ' days')::interval
                     GROUP BY m.skill_id
@@ -3466,12 +3591,27 @@ def get_skill_progress_report(
                 LEFT JOIN bt_3_user_skill_state s
                   ON s.skill_id = k.skill_id
                  AND s.user_id = %s
+                 AND s.source_lang = COALESCE(%s, 'ru')
+                 AND s.target_lang = COALESCE(%s, 'de')
                 LEFT JOIN err_7d e ON e.skill_id = k.skill_id
                 LEFT JOIN err_prev_7d p ON p.skill_id = k.skill_id
                 WHERE k.is_active = TRUE
                 ORDER BY k.category ASC, mastery ASC, k.skill_id ASC;
                 """,
-                (int(user_id), window_days, int(user_id), window_days, window_days, int(user_id)),
+                (
+                    int(user_id),
+                    source_lang or "ru",
+                    target_lang or "de",
+                    window_days,
+                    int(user_id),
+                    source_lang or "ru",
+                    target_lang or "de",
+                    window_days,
+                    window_days,
+                    int(user_id),
+                    source_lang or "ru",
+                    target_lang or "de",
+                ),
             )
             rows = cursor.fetchall()
 
