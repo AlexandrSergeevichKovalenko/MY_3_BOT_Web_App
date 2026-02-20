@@ -112,6 +112,7 @@ function AppInner() {
   const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
   const [readerInput, setReaderInput] = useState('');
+  const [readerSelectedFile, setReaderSelectedFile] = useState(null);
   const [readerLoading, setReaderLoading] = useState(false);
   const [readerError, setReaderError] = useState('');
   const [readerContent, setReaderContent] = useState('');
@@ -123,6 +124,7 @@ function AppInner() {
   const [readerDocuments, setReaderDocuments] = useState([]);
   const [readerLibraryLoading, setReaderLibraryLoading] = useState(false);
   const [readerLibraryError, setReaderLibraryError] = useState('');
+  const [readerIncludeArchived, setReaderIncludeArchived] = useState(false);
   const [readerProgressPercent, setReaderProgressPercent] = useState(0);
   const [readerBookmarkPercent, setReaderBookmarkPercent] = useState(0);
   const [readerReadingMode, setReaderReadingMode] = useState('vertical');
@@ -2036,7 +2038,7 @@ function AppInner() {
       return;
     }
     loadReaderLibrary();
-  }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+  }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language, readerIncludeArchived]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) return;
@@ -3313,7 +3315,7 @@ function AppInner() {
       const response = await fetch('/api/webapp/reader/library', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, limit: 120 }),
+        body: JSON.stringify({ initData, limit: 120, include_archived: readerIncludeArchived }),
       });
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки библиотеки', 'Fehler beim Laden der Bibliothek'));
@@ -3326,6 +3328,30 @@ function AppInner() {
       setReaderLibraryLoading(false);
     }
   }
+
+  const handleReaderFileSelect = (event) => {
+    const file = event?.target?.files?.[0] || null;
+    setReaderSelectedFile(file);
+    if (file?.name && !readerInput.trim()) {
+      setReaderInput(file.name);
+    }
+  };
+
+  const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const marker = 'base64,';
+      const idx = result.indexOf(marker);
+      if (idx < 0) {
+        reject(new Error('Не удалось прочитать файл'));
+        return;
+      }
+      resolve(result.slice(idx + marker.length));
+    };
+    reader.onerror = () => reject(new Error('Ошибка чтения файла'));
+    reader.readAsDataURL(file);
+  });
 
   async function syncReaderState(patch = {}) {
     if (!initData || !readerDocumentId) return;
@@ -3389,10 +3415,87 @@ function AppInner() {
     }
   }
 
+  const renameReaderDocument = async (documentId, currentTitle) => {
+    if (!initData || !documentId) return;
+    const nextTitleRaw = window.prompt(
+      tr('Введите новое название книги', 'Neuen Titel eingeben'),
+      String(currentTitle || '')
+    );
+    if (nextTitleRaw === null) return;
+    const nextTitle = String(nextTitleRaw || '').trim();
+    if (!nextTitle) return;
+    try {
+      const response = await fetch('/api/webapp/reader/library/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, document_id: documentId, title: nextTitle }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка переименования', 'Fehler beim Umbenennen'));
+      }
+      const data = await response.json();
+      const doc = data?.document || {};
+      setReaderDocuments((prev) => prev.map((item) => (Number(item?.id) === Number(documentId) ? { ...item, ...doc } : item)));
+      if (Number(readerDocumentId) === Number(documentId)) {
+        setReaderTitle(String(doc?.title || nextTitle));
+      }
+    } catch (error) {
+      setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось переименовать книгу.', 'Dokument konnte nicht umbenannt werden.'));
+    }
+  };
+
+  const archiveReaderDocument = async (documentId, archived = true) => {
+    if (!initData || !documentId) return;
+    try {
+      const response = await fetch('/api/webapp/reader/library/archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, document_id: documentId, archived }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка архивации', 'Fehler bei der Archivierung'));
+      }
+      if (!readerIncludeArchived || archived) {
+        setReaderDocuments((prev) => prev.filter((item) => Number(item?.id) !== Number(documentId)));
+      } else {
+        await loadReaderLibrary();
+      }
+      if (Number(readerDocumentId) === Number(documentId) && archived) {
+        setReaderDocumentId(null);
+        setReaderContent('');
+      }
+    } catch (error) {
+      setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось архивировать книгу.', 'Dokument konnte nicht archiviert werden.'));
+    }
+  };
+
+  const deleteReaderDocument = async (documentId) => {
+    if (!initData || !documentId) return;
+    const confirmed = window.confirm(tr('Удалить книгу из библиотеки?', 'Dokument aus Bibliothek loeschen?'));
+    if (!confirmed) return;
+    try {
+      const response = await fetch('/api/webapp/reader/library/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, document_id: documentId }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка удаления', 'Fehler beim Loeschen'));
+      }
+      setReaderDocuments((prev) => prev.filter((item) => Number(item?.id) !== Number(documentId)));
+      if (Number(readerDocumentId) === Number(documentId)) {
+        setReaderDocumentId(null);
+        setReaderContent('');
+      }
+    } catch (error) {
+      setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось удалить книгу.', 'Dokument konnte nicht geloescht werden.'));
+    }
+  };
+
   async function handleReaderIngest(event) {
     event?.preventDefault?.();
     const rawInput = String(readerInput || '').trim();
-    if (!rawInput) {
+    if (!rawInput && !readerSelectedFile) {
       setReaderError(tr('Вставьте ссылку или текст.', 'Fuege einen Link oder Text ein.'));
       return;
     }
@@ -3404,13 +3507,23 @@ function AppInner() {
     setReaderError('');
     try {
       const looksLikeUrl = /^https?:\/\//i.test(rawInput) || /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawInput);
+      let filePayload = {};
+      if (readerSelectedFile) {
+        const fileBase64 = await readFileAsBase64(readerSelectedFile);
+        filePayload = {
+          file_name: readerSelectedFile.name,
+          file_mime: readerSelectedFile.type,
+          file_content_base64: fileBase64,
+        };
+      }
       const response = await fetch('/api/webapp/reader/ingest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          url: looksLikeUrl ? rawInput : '',
-          text: looksLikeUrl ? '' : rawInput,
+          url: readerSelectedFile ? '' : (looksLikeUrl ? rawInput : ''),
+          text: readerSelectedFile ? '' : (looksLikeUrl ? '' : rawInput),
+          ...filePayload,
         }),
       });
       if (!response.ok) {
@@ -3435,6 +3548,7 @@ function AppInner() {
         applyReaderProgressPercent(target);
       }, 80);
       loadReaderLibrary();
+      setReaderSelectedFile(null);
     } catch (error) {
       setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить текст в читалку.', 'Text konnte nicht in den Leser geladen werden.'));
     } finally {
@@ -6555,6 +6669,19 @@ function AppInner() {
                       )}
                     />
                   </label>
+                  <label className="webapp-field">
+                    <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
+                    <input
+                      type="file"
+                      accept=".txt,.md,.pdf,text/plain,application/pdf"
+                      onChange={handleReaderFileSelect}
+                    />
+                    {readerSelectedFile && (
+                      <small className="webapp-muted">
+                        {tr('Выбран файл', 'Datei gewaehlt')}: {readerSelectedFile.name}
+                      </small>
+                    )}
+                  </label>
                   <div className="webapp-actions">
                     <button type="submit" className="primary-button" disabled={readerLoading}>
                       {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser oeffnen')}
@@ -6604,9 +6731,19 @@ function AppInner() {
                 <section className="reader-library">
                   <div className="reader-library-head">
                     <h4>{tr('Библиотека', 'Bibliothek')}</h4>
-                    <button type="button" className="secondary-button" onClick={loadReaderLibrary} disabled={readerLibraryLoading}>
-                      {readerLibraryLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
-                    </button>
+                    <div className="reader-library-head-actions">
+                      <label className="menu-toggle-row">
+                        <input
+                          type="checkbox"
+                          checked={readerIncludeArchived}
+                          onChange={(event) => setReaderIncludeArchived(event.target.checked)}
+                        />
+                        <span>{tr('Показывать архив', 'Archiv zeigen')}</span>
+                      </label>
+                      <button type="button" className="secondary-button" onClick={loadReaderLibrary} disabled={readerLibraryLoading}>
+                        {readerLibraryLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
+                      </button>
+                    </div>
                   </div>
                   {readerLibraryError && <div className="webapp-error">{readerLibraryError}</div>}
                   {!readerLibraryError && readerDocuments.length === 0 && (
@@ -6631,6 +6768,32 @@ function AppInner() {
                             </div>
                             <div className="reader-library-progress-ring" style={badgeStyle}>
                               <span>{Math.round(progress)}%</span>
+                            </div>
+                            <div className="reader-library-actions" onClick={(event) => event.stopPropagation()}>
+                              <button
+                                type="button"
+                                className="reader-lib-action"
+                                onClick={() => renameReaderDocument(item.id, item.title)}
+                                title={tr('Переименовать', 'Umbenennen')}
+                              >
+                                ✎
+                              </button>
+                              <button
+                                type="button"
+                                className="reader-lib-action"
+                                onClick={() => archiveReaderDocument(item.id, !Boolean(item?.is_archived))}
+                                title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
+                              >
+                                {Boolean(item?.is_archived) ? '↺' : '⤓'}
+                              </button>
+                              <button
+                                type="button"
+                                className="reader-lib-action is-danger"
+                                onClick={() => deleteReaderDocument(item.id)}
+                                title={tr('Удалить', 'Loeschen')}
+                              >
+                                ×
+                              </button>
                             </div>
                           </button>
                         );

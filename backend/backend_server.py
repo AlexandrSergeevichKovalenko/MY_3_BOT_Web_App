@@ -199,6 +199,9 @@ from backend.database import (
     list_reader_library_documents,
     get_reader_library_document,
     update_reader_library_state,
+    rename_reader_library_document,
+    archive_reader_library_document,
+    delete_reader_library_document,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
 )
@@ -5906,11 +5909,14 @@ def ingest_reader_content():
     init_data = payload.get("initData")
     input_text = str(payload.get("text") or "").strip()
     input_url = str(payload.get("url") or "").strip()
+    file_name = str(payload.get("file_name") or "").strip()
+    file_mime = str(payload.get("file_mime") or "").strip().lower()
+    file_content_b64 = str(payload.get("file_content_base64") or "").strip()
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
-    if not input_text and not input_url:
-        return jsonify({"error": "Нужно передать text или url"}), 400
+    if not input_text and not input_url and not file_content_b64:
+        return jsonify({"error": "Нужно передать text, url или файл"}), 400
 
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
@@ -5927,7 +5933,24 @@ def ingest_reader_content():
     resolved_url = None
 
     try:
-        if input_text:
+        if file_content_b64:
+            try:
+                raw_bytes = base64.b64decode(file_content_b64, validate=True)
+            except Exception as exc:
+                raise ValueError(f"Некорректный файл: {exc}") from exc
+            lower_name = file_name.lower()
+            is_pdf = (
+                file_mime == "application/pdf"
+                or lower_name.endswith(".pdf")
+            )
+            if is_pdf:
+                normalized_text = _extract_text_from_pdf_bytes(raw_bytes)
+                source_type = "pdf"
+            else:
+                decoded_text = raw_bytes.decode("utf-8", errors="ignore")
+                normalized_text = _normalize_reader_text(decoded_text)
+                source_type = "file"
+        elif input_text:
             normalized_text = _normalize_reader_text(input_text)
             source_type = "text"
         else:
@@ -5945,7 +5968,7 @@ def ingest_reader_content():
 
     title = _infer_reader_title(
         input_text=normalized_text,
-        input_url=resolved_url or input_url,
+        input_url=resolved_url or input_url or file_name,
         source_type=source_type,
     )
     try:
@@ -5982,6 +6005,7 @@ def reader_library_list():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     limit = int(payload.get("limit", 100))
+    include_archived = bool(payload.get("include_archived"))
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -6000,6 +6024,7 @@ def reader_library_list():
             source_lang=source_lang,
             target_lang=target_lang,
             limit=limit,
+            include_archived=include_archived,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка загрузки библиотеки: {exc}"}), 500
@@ -6102,6 +6127,108 @@ def reader_library_state():
     if not doc:
         return jsonify({"error": "Книга не найдена"}), 404
     return jsonify({"ok": True, "document": doc})
+
+
+@app.route("/api/webapp/reader/library/rename", methods=["POST"])
+def reader_library_rename():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+    title = str(payload.get("title") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if document_id is None:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not title:
+        return jsonify({"error": "title обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        doc = rename_reader_library_document(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            title=title,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка переименования книги: {exc}"}), 500
+    if not doc:
+        return jsonify({"error": "Книга не найдена"}), 404
+    return jsonify({"ok": True, "document": doc})
+
+
+@app.route("/api/webapp/reader/library/archive", methods=["POST"])
+def reader_library_archive():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+    archived = bool(payload.get("archived", True))
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if document_id is None:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        doc = archive_reader_library_document(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            archived=archived,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка архивации книги: {exc}"}), 500
+    if not doc:
+        return jsonify({"error": "Книга не найдена"}), 404
+    return jsonify({"ok": True, "document": doc})
+
+
+@app.route("/api/webapp/reader/library/delete", methods=["POST"])
+def reader_library_delete():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if document_id is None:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        deleted = delete_reader_library_document(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка удаления книги: {exc}"}), 500
+    if not deleted:
+        return jsonify({"error": "Книга не найдена"}), 404
+    return jsonify({"ok": True, "deleted": True})
 
 
 @app.route("/api/webapp/normalize/de", methods=["POST"])

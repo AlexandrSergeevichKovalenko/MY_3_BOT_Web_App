@@ -1167,11 +1167,21 @@ def ensure_webapp_tables() -> None:
                     progress_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
                     bookmark_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
                     reading_mode TEXT NOT NULL DEFAULT 'vertical',
+                    is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+                    archived_at TIMESTAMPTZ,
                     last_opened_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE (user_id, source_lang, target_lang, text_hash)
                 );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS is_archived BOOLEAN NOT NULL DEFAULT FALSE;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_reader_library_user_pair
@@ -3806,12 +3816,14 @@ def _reader_library_row_to_dict(row: tuple, *, include_content: bool = False) ->
         "progress_percent": round(max(0.0, min(100.0, float(row[9] or 0.0))), 2),
         "bookmark_percent": round(max(0.0, min(100.0, float(row[10] or 0.0))), 2),
         "reading_mode": str(row[11] or "vertical"),
-        "last_opened_at": row[12].isoformat() if row[12] else None,
-        "created_at": row[13].isoformat() if row[13] else None,
-        "updated_at": row[14].isoformat() if row[14] else None,
+        "is_archived": bool(row[12]),
+        "archived_at": row[13].isoformat() if row[13] else None,
+        "last_opened_at": row[14].isoformat() if row[14] else None,
+        "created_at": row[15].isoformat() if row[15] else None,
+        "updated_at": row[16].isoformat() if row[16] else None,
     }
     if include_content:
-        payload["content_text"] = str(row[15] or "")
+        payload["content_text"] = str(row[17] or "")
     return payload
 
 
@@ -3859,12 +3871,14 @@ def upsert_reader_library_document(
                     source_url = COALESCE(EXCLUDED.source_url, bt_3_reader_library.source_url),
                     content_text = EXCLUDED.content_text,
                     total_chars = EXCLUDED.total_chars,
+                    is_archived = FALSE,
+                    archived_at = NULL,
                     last_opened_at = NOW(),
                     updated_at = NOW()
                 RETURNING
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
-                    last_opened_at, created_at, updated_at, content_text;
+                    is_archived, archived_at, last_opened_at, created_at, updated_at, content_text;
                 """,
                 (
                     int(user_id),
@@ -3888,6 +3902,7 @@ def list_reader_library_documents(
     source_lang: str,
     target_lang: str,
     limit: int = 100,
+    include_archived: bool = False,
 ) -> list[dict]:
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
@@ -3899,15 +3914,16 @@ def list_reader_library_documents(
                 SELECT
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
-                    last_opened_at, created_at, updated_at
+                    is_archived, archived_at, last_opened_at, created_at, updated_at
                 FROM bt_3_reader_library
                 WHERE user_id = %s
                   AND source_lang = %s
                   AND target_lang = %s
+                  AND (%s OR COALESCE(is_archived, FALSE) = FALSE)
                 ORDER BY COALESCE(last_opened_at, updated_at, created_at) DESC
                 LIMIT %s;
                 """,
-                (int(user_id), normalized_source, normalized_target, safe_limit),
+                (int(user_id), normalized_source, normalized_target, bool(include_archived), safe_limit),
             )
             rows = cursor.fetchall()
     return [_reader_library_row_to_dict(row, include_content=False) for row in rows]
@@ -3929,7 +3945,7 @@ def get_reader_library_document(
                 SELECT
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
-                    last_opened_at, created_at, updated_at, content_text
+                    is_archived, archived_at, last_opened_at, created_at, updated_at, content_text
                 FROM bt_3_reader_library
                 WHERE id = %s
                   AND user_id = %s
@@ -3989,7 +4005,7 @@ def update_reader_library_state(
                 RETURNING
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
-                    last_opened_at, created_at, updated_at;
+                    is_archived, archived_at, last_opened_at, created_at, updated_at;
                 """,
                 (
                     resolved_progress,
@@ -4005,6 +4021,103 @@ def update_reader_library_state(
     if not row:
         return None
     return _reader_library_row_to_dict(row, include_content=False)
+
+
+def rename_reader_library_document(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    title: str,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_title = str(title or "").strip()
+    if not resolved_title:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_library
+                SET title = %s, updated_at = NOW()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at;
+                """,
+                (resolved_title, int(document_id), int(user_id), normalized_source, normalized_target),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _reader_library_row_to_dict(row, include_content=False)
+
+
+def archive_reader_library_document(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    archived: bool = True,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_library
+                SET
+                    is_archived = %s,
+                    archived_at = CASE WHEN %s THEN NOW() ELSE NULL END,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at;
+                """,
+                (bool(archived), bool(archived), int(document_id), int(user_id), normalized_source, normalized_target),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _reader_library_row_to_dict(row, include_content=False)
+
+
+def delete_reader_library_document(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> bool:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_reader_library
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s;
+                """,
+                (int(document_id), int(user_id), normalized_source, normalized_target),
+            )
+            deleted = cursor.rowcount > 0
+    return bool(deleted)
 
 
 def get_daily_plan(user_id: int, plan_date: date) -> dict | None:
