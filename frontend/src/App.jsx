@@ -1104,8 +1104,9 @@ function AppInner() {
 
   const startTodayTask = async (item) => {
     if (!item?.id) return;
-    await updateTodayItemStatus(item.id, 'start');
-    const taskType = String(item?.task_type || '').toLowerCase();
+    const startedItem = await updateTodayItemStatus(item.id, 'start');
+    const effectiveItem = startedItem || item;
+    const taskType = String(effectiveItem?.task_type || '').toLowerCase();
     if (taskType === 'cards') {
       setSelectedSections(new Set(['flashcards']));
       openFlashcardsSetup(flashcardsRef);
@@ -1116,13 +1117,67 @@ function AppInner() {
       return;
     }
     if (taskType === 'video' || taskType === 'youtube') {
-      const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
-      const videoUrl = String(payload.video_url || '').trim();
-      const videoId = String(payload.video_id || '').trim();
+      const payload = effectiveItem?.payload && typeof effectiveItem.payload === 'object' ? effectiveItem.payload : {};
+      let videoUrl = String(payload.video_url || '').trim();
+      let videoId = String(payload.video_id || '').trim();
+      let videoTitle = String(payload.video_title || '').trim();
+      try {
+        if (initData) {
+          const response = await fetch('/api/today/video/recommend', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              item_id: effectiveItem.id,
+              skill_id: payload.skill_id || null,
+              skill_title: payload.skill_title || null,
+              main_category: payload.main_category || null,
+              sub_category: payload.sub_category || null,
+              lookback_days: payload.lookback_days || 7,
+            }),
+          });
+          if (response.ok) {
+            const data = await response.json();
+            const recommended = data?.video && typeof data.video === 'object' ? data.video : {};
+            const updatedItem = data?.updated_item && typeof data.updated_item === 'object' ? data.updated_item : null;
+            videoUrl = String(recommended.video_url || videoUrl).trim();
+            videoId = String(recommended.video_id || videoId).trim();
+            videoTitle = String(recommended.title || videoTitle).trim();
+            setTodayPlan((prev) => {
+              if (!prev || !Array.isArray(prev.items)) return prev;
+              return {
+                ...prev,
+                items: prev.items.map((planItem) => {
+                  if (planItem.id !== effectiveItem.id) return planItem;
+                  if (updatedItem) {
+                    return { ...planItem, ...updatedItem };
+                  }
+                  const planPayload = planItem?.payload && typeof planItem.payload === 'object' ? planItem.payload : {};
+                  return {
+                    ...planItem,
+                    payload: {
+                      ...planPayload,
+                      video_url: videoUrl || planPayload.video_url || null,
+                      video_id: videoId || planPayload.video_id || null,
+                      video_title: videoTitle || planPayload.video_title || null,
+                    },
+                  };
+                }),
+              };
+            });
+          }
+        }
+      } catch (error) {
+        console.warn('today video recommendation failed', error);
+      }
       if (videoUrl) {
+        setYoutubeError('');
         setYoutubeInput(videoUrl);
       } else if (videoId) {
+        setYoutubeError('');
         setYoutubeInput(`https://youtu.be/${videoId}`);
+      } else {
+        setYoutubeError(tr('Видео по текущему слабому навыку не найдено. Попробуйте обновить план.', 'Kein passendes Video fuer den aktuellen schwachen Skill gefunden. Bitte Plan aktualisieren.'));
       }
       openSingleSectionAndScroll('youtube', youtubeRef);
     }
@@ -1131,6 +1186,76 @@ function AppInner() {
   const completeTodayTask = async (item) => {
     if (!item?.id) return;
     await updateTodayItemStatus(item.id, 'complete');
+  };
+
+  const submitTodayVideoFeedback = async (item, vote) => {
+    if (!initData || !item?.id) return;
+    const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+    const recommendationId = Number(payload?.recommendation_id || 0);
+    if (!recommendationId) {
+      setTodayPlanError(tr(
+        'Сначала нажмите "Начать", чтобы подобрать видео для оценки.',
+        'Bitte zuerst "Starten" druecken, damit ein Video zur Bewertung gewaehlt wird.'
+      ));
+      return;
+    }
+    const actionKey = vote === 'like' ? 'vote_like' : 'vote_dislike';
+    try {
+      setTodayItemLoading((prev) => ({ ...prev, [item.id]: actionKey }));
+      setTodayPlanError('');
+      const response = await fetch('/api/today/video/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          item_id: item.id,
+          recommendation_id: recommendationId,
+          vote,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка сохранения оценки видео', 'Fehler beim Speichern der Videobewertung'));
+      }
+      const data = await response.json();
+      const updated = data?.updated_item || null;
+      const recommendation = data?.recommendation || null;
+      setTodayPlan((prev) => {
+        if (!prev || !Array.isArray(prev.items)) return prev;
+        return {
+          ...prev,
+          items: prev.items.map((planItem) => {
+            if (planItem.id !== item.id) return planItem;
+            if (updated) {
+              return { ...planItem, ...updated };
+            }
+            const planPayload = planItem?.payload && typeof planItem.payload === 'object' ? planItem.payload : {};
+            return {
+              ...planItem,
+              payload: {
+                ...planPayload,
+                video_likes: Number(recommendation?.like_count || planPayload.video_likes || 0),
+                video_dislikes: Number(recommendation?.dislike_count || planPayload.video_dislikes || 0),
+                video_score: Number(recommendation?.score || planPayload.video_score || 0),
+                video_user_vote: vote === 'like' ? 1 : -1,
+              },
+            };
+          }),
+        };
+      });
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось сохранить оценку видео.',
+        'Videobewertung konnte nicht gespeichert werden.'
+      );
+      setTodayPlanError(friendly);
+    } finally {
+      setTodayItemLoading((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+    }
   };
 
   const getTodayItemTitle = (item) => {
@@ -1148,7 +1273,19 @@ function AppInner() {
     }
     if (taskType === 'video' || taskType === 'youtube') {
       const minutes = Math.max(1, Math.round(Number(payload?.duration_sec || 300) / 60));
-      return tr(`Видео: ${minutes} минут`, `Video: ${minutes} Minuten`);
+      const focusTopic = String(
+        payload?.sub_category
+        || payload?.skill_title
+        || payload?.main_category
+        || ''
+      ).trim();
+      if (focusTopic) {
+        return tr(
+          `Видео: ${minutes} минут (тренируй мою тему: ${focusTopic})`,
+          `Video: ${minutes} Minuten (trainiere mein Thema: ${focusTopic})`
+        );
+      }
+      return tr(`Видео: ${minutes} минут (тренируй мою тему)`, `Video: ${minutes} Minuten (trainiere mein Thema)`);
     }
     if (taskType === 'dialogue') {
       const minutes = Number(item?.estimated_minutes || 3);
@@ -5930,6 +6067,12 @@ function AppInner() {
                   <div className="today-plan-items">
                     {todayPlan.items.map((item) => {
                       const loadingAction = todayItemLoading[item.id];
+                      const taskType = String(item?.task_type || '').toLowerCase();
+                      const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+                      const videoLikes = Number(payload?.video_likes || 0);
+                      const videoDislikes = Number(payload?.video_dislikes || 0);
+                      const videoScore = Number(payload?.video_score || 0);
+                      const userVote = Number(payload?.video_user_vote || 0);
                       return (
                         <div className={`today-plan-item is-${item.status || 'todo'}`} key={item.id}>
                           <div className="today-plan-item-main">
@@ -5938,6 +6081,16 @@ function AppInner() {
                               <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>
                               <span>{String(item.status || 'todo').toUpperCase()}</span>
                             </div>
+                            {taskType === 'video' && (
+                              <div className="today-video-hint">
+                                {tr(
+                                  'Если видео полезно по теме - поставьте 👍. Если не по теме - 👎.',
+                                  'Wenn das Video zum Thema passt - 👍. Wenn nicht - 👎.'
+                                )}
+                                {' '}
+                                <span>{tr('Рейтинг', 'Bewertung')}: {videoLikes}/{videoDislikes} ({videoScore >= 0 ? '+' : ''}{videoScore})</span>
+                              </div>
+                            )}
                           </div>
                           <div className="today-plan-item-actions">
                             <button
@@ -5956,6 +6109,28 @@ function AppInner() {
                             >
                               {loadingAction === 'complete' ? tr('Сохраняем...', 'Speichern...') : tr('Готово', 'Fertig')}
                             </button>
+                            {taskType === 'video' && (
+                              <>
+                                <button
+                                  type="button"
+                                  className={`secondary-button today-video-vote ${userVote === 1 ? 'is-active' : ''}`}
+                                  onClick={() => submitTodayVideoFeedback(item, 'like')}
+                                  disabled={Boolean(loadingAction)}
+                                  title={tr('Лайк: видео полезно по теме', 'Like: Video passt zum Thema')}
+                                >
+                                  {loadingAction === 'vote_like' ? '…' : '👍'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`secondary-button today-video-vote ${userVote === -1 ? 'is-active is-negative' : ''}`}
+                                  onClick={() => submitTodayVideoFeedback(item, 'dislike')}
+                                  disabled={Boolean(loadingAction)}
+                                  title={tr('Дизлайк: видео не по теме', 'Dislike: Video passt nicht zum Thema')}
+                                >
+                                  {loadingAction === 'vote_dislike' ? '…' : '👎'}
+                                </button>
+                              </>
+                            )}
                           </div>
                         </div>
                       );

@@ -1223,6 +1223,51 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_daily_plan_items (status);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_video_recommendations (
+                    id BIGSERIAL PRIMARY KEY,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    focus_key TEXT NOT NULL,
+                    skill_id TEXT,
+                    main_category TEXT,
+                    sub_category TEXT,
+                    search_query TEXT,
+                    video_id TEXT NOT NULL,
+                    video_url TEXT,
+                    video_title TEXT,
+                    like_count INTEGER NOT NULL DEFAULT 0,
+                    dislike_count INTEGER NOT NULL DEFAULT 0,
+                    score INTEGER NOT NULL DEFAULT 0,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_selected_at TIMESTAMPTZ
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_video_recommendations_focus_video
+                ON bt_3_video_recommendations (focus_key, video_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_video_recommendations_focus_active
+                ON bt_3_video_recommendations (focus_key, is_active, score DESC, updated_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_video_recommendation_votes (
+                    id BIGSERIAL PRIMARY KEY,
+                    recommendation_id BIGINT NOT NULL REFERENCES bt_3_video_recommendations(id) ON DELETE CASCADE,
+                    user_id BIGINT NOT NULL,
+                    vote SMALLINT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (recommendation_id, user_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_video_recommendation_votes_rec
+                ON bt_3_video_recommendation_votes (recommendation_id, updated_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_today_reminder_settings (
                     user_id BIGINT PRIMARY KEY,
                     enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -4287,6 +4332,286 @@ def update_daily_plan_item_status(
             if not row:
                 return None
             return _map_daily_plan_item(row)
+
+
+def update_daily_plan_item_payload(
+    *,
+    user_id: int,
+    item_id: int,
+    payload_updates: dict,
+) -> dict | None:
+    updates = payload_updates if isinstance(payload_updates, dict) else {}
+    if not updates:
+        return None
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_daily_plan_items i
+                SET payload = COALESCE(i.payload, '{}'::jsonb) || %s::jsonb
+                FROM bt_3_daily_plans p
+                WHERE i.id = %s
+                  AND i.plan_id = p.id
+                  AND p.user_id = %s
+                RETURNING
+                    i.id,
+                    i.plan_id,
+                    i.order_index,
+                    i.task_type,
+                    i.title,
+                    i.estimated_minutes,
+                    i.payload,
+                    i.status,
+                    i.completed_at;
+                """,
+                (json.dumps(updates, ensure_ascii=False), int(item_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return _map_daily_plan_item(row)
+
+
+def _normalize_focus_part(value: str | None) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _build_video_focus_key(
+    *,
+    source_lang: str,
+    target_lang: str,
+    skill_id: str | None,
+    main_category: str | None,
+    sub_category: str | None,
+) -> str:
+    src = _normalize_focus_part(source_lang) or "ru"
+    tgt = _normalize_focus_part(target_lang) or "de"
+    skill = _normalize_focus_part(skill_id) or "-"
+    main = _normalize_focus_part(main_category) or "-"
+    sub = _normalize_focus_part(sub_category) or "-"
+    return f"{src}|{tgt}|{skill}|{main}|{sub}"
+
+
+def _map_video_recommendation_row(row: tuple) -> dict:
+    return {
+        "id": int(row[0]),
+        "source_lang": str(row[1] or "ru"),
+        "target_lang": str(row[2] or "de"),
+        "focus_key": str(row[3] or ""),
+        "skill_id": str(row[4] or "") or None,
+        "main_category": str(row[5] or "") or None,
+        "sub_category": str(row[6] or "") or None,
+        "search_query": str(row[7] or "") or None,
+        "video_id": str(row[8] or ""),
+        "video_url": str(row[9] or "") or None,
+        "video_title": str(row[10] or "") or None,
+        "like_count": int(row[11] or 0),
+        "dislike_count": int(row[12] or 0),
+        "score": int(row[13] or 0),
+        "is_active": bool(row[14]),
+        "updated_at": row[15].isoformat() if row[15] else None,
+        "last_selected_at": row[16].isoformat() if row[16] else None,
+    }
+
+
+def get_best_video_recommendation_for_focus(
+    *,
+    source_lang: str,
+    target_lang: str,
+    skill_id: str | None,
+    main_category: str | None,
+    sub_category: str | None,
+) -> dict | None:
+    focus_key = _build_video_focus_key(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        skill_id=skill_id,
+        main_category=main_category,
+        sub_category=sub_category,
+    )
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id, source_lang, target_lang, focus_key, skill_id, main_category, sub_category,
+                    search_query, video_id, video_url, video_title, like_count, dislike_count,
+                    score, is_active, updated_at, last_selected_at
+                FROM bt_3_video_recommendations
+                WHERE focus_key = %s
+                  AND is_active = TRUE
+                ORDER BY score DESC, like_count DESC, updated_at DESC
+                LIMIT 1;
+                """,
+                (focus_key,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cursor.execute(
+                """
+                UPDATE bt_3_video_recommendations
+                SET last_selected_at = NOW(), updated_at = NOW()
+                WHERE id = %s;
+                """,
+                (int(row[0]),),
+            )
+    return _map_video_recommendation_row(row)
+
+
+def upsert_video_recommendation(
+    *,
+    source_lang: str,
+    target_lang: str,
+    skill_id: str | None,
+    main_category: str | None,
+    sub_category: str | None,
+    search_query: str | None,
+    video_id: str,
+    video_url: str | None,
+    video_title: str | None,
+) -> dict | None:
+    resolved_video_id = str(video_id or "").strip()
+    if not resolved_video_id:
+        return None
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    focus_key = _build_video_focus_key(
+        source_lang=normalized_source,
+        target_lang=normalized_target,
+        skill_id=skill_id,
+        main_category=main_category,
+        sub_category=sub_category,
+    )
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_video_recommendations (
+                    source_lang,
+                    target_lang,
+                    focus_key,
+                    skill_id,
+                    main_category,
+                    sub_category,
+                    search_query,
+                    video_id,
+                    video_url,
+                    video_title,
+                    is_active,
+                    last_selected_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, NOW(), NOW())
+                ON CONFLICT (focus_key, video_id) DO UPDATE
+                SET
+                    source_lang = EXCLUDED.source_lang,
+                    target_lang = EXCLUDED.target_lang,
+                    skill_id = COALESCE(EXCLUDED.skill_id, bt_3_video_recommendations.skill_id),
+                    main_category = COALESCE(EXCLUDED.main_category, bt_3_video_recommendations.main_category),
+                    sub_category = COALESCE(EXCLUDED.sub_category, bt_3_video_recommendations.sub_category),
+                    search_query = COALESCE(EXCLUDED.search_query, bt_3_video_recommendations.search_query),
+                    video_url = COALESCE(EXCLUDED.video_url, bt_3_video_recommendations.video_url),
+                    video_title = COALESCE(EXCLUDED.video_title, bt_3_video_recommendations.video_title),
+                    is_active = TRUE,
+                    last_selected_at = NOW(),
+                    updated_at = NOW()
+                RETURNING
+                    id, source_lang, target_lang, focus_key, skill_id, main_category, sub_category,
+                    search_query, video_id, video_url, video_title, like_count, dislike_count,
+                    score, is_active, updated_at, last_selected_at;
+                """,
+                (
+                    normalized_source,
+                    normalized_target,
+                    focus_key,
+                    str(skill_id or "").strip() or None,
+                    str(main_category or "").strip() or None,
+                    str(sub_category or "").strip() or None,
+                    str(search_query or "").strip() or None,
+                    resolved_video_id,
+                    str(video_url or "").strip() or None,
+                    str(video_title or "").strip() or None,
+                ),
+            )
+            row = cursor.fetchone()
+    return _map_video_recommendation_row(row) if row else None
+
+
+def get_video_recommendation_by_id(recommendation_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id, source_lang, target_lang, focus_key, skill_id, main_category, sub_category,
+                    search_query, video_id, video_url, video_title, like_count, dislike_count,
+                    score, is_active, updated_at, last_selected_at
+                FROM bt_3_video_recommendations
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(recommendation_id),),
+            )
+            row = cursor.fetchone()
+    return _map_video_recommendation_row(row) if row else None
+
+
+def vote_video_recommendation(
+    *,
+    user_id: int,
+    recommendation_id: int,
+    vote: int,
+) -> dict | None:
+    normalized_vote = 1 if int(vote) >= 0 else -1
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_video_recommendation_votes (
+                    recommendation_id, user_id, vote, updated_at
+                )
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (recommendation_id, user_id) DO UPDATE
+                SET vote = EXCLUDED.vote, updated_at = NOW();
+                """,
+                (int(recommendation_id), int(user_id), int(normalized_vote)),
+            )
+            cursor.execute(
+                """
+                WITH agg AS (
+                    SELECT
+                        recommendation_id,
+                        COUNT(*) FILTER (WHERE vote = 1) AS like_count,
+                        COUNT(*) FILTER (WHERE vote = -1) AS dislike_count
+                    FROM bt_3_video_recommendation_votes
+                    WHERE recommendation_id = %s
+                    GROUP BY recommendation_id
+                )
+                UPDATE bt_3_video_recommendations r
+                SET
+                    like_count = COALESCE(agg.like_count, 0),
+                    dislike_count = COALESCE(agg.dislike_count, 0),
+                    score = COALESCE(agg.like_count, 0) - COALESCE(agg.dislike_count, 0),
+                    is_active = (COALESCE(agg.like_count, 0) - COALESCE(agg.dislike_count, 0)) >= 0,
+                    updated_at = NOW()
+                FROM agg
+                WHERE r.id = agg.recommendation_id
+                  AND r.id = %s
+                RETURNING
+                    r.id, r.source_lang, r.target_lang, r.focus_key, r.skill_id, r.main_category, r.sub_category,
+                    r.search_query, r.video_id, r.video_url, r.video_title, r.like_count, r.dislike_count,
+                    r.score, r.is_active, r.updated_at, r.last_selected_at;
+                """,
+                (int(recommendation_id), int(recommendation_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+    result = _map_video_recommendation_row(row)
+    result["user_vote"] = int(normalized_vote)
+    return result
 
 
 def consume_today_regenerate_limit(

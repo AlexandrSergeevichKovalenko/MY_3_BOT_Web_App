@@ -4832,6 +4832,29 @@ body {
   align-items: center;
 }
 
+.today-video-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(208, 223, 249, 0.78);
+  line-height: 1.35;
+}
+
+.today-video-vote {
+  min-width: 38px;
+  padding: 0 10px;
+  font-size: 15px;
+}
+
+.today-video-vote.is-active {
+  border-color: rgba(108, 228, 171, 0.7);
+  background: rgba(56, 189, 120, 0.2);
+}
+
+.today-video-vote.is-active.is-negative {
+  border-color: rgba(255, 142, 142, 0.72);
+  background: rgba(248, 113, 113, 0.2);
+}
+
 .today-plan-mascot {
   position: absolute;
   top: 12px;

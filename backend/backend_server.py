@@ -179,6 +179,11 @@ from backend.database import (
     get_daily_plan,
     create_daily_plan,
     update_daily_plan_item_status,
+    update_daily_plan_item_payload,
+    get_best_video_recommendation_for_focus,
+    upsert_video_recommendation,
+    get_video_recommendation_by_id,
+    vote_video_recommendation,
     consume_today_regenerate_limit,
     get_lowest_mastery_skill,
     get_top_error_topic_for_skill,
@@ -4135,6 +4140,250 @@ def start_today_item(item_id: int):
     if not item:
         return jsonify({"error": "Задача не найдена"}), 404
     return jsonify({"ok": True, "item": item})
+
+
+@app.route("/api/today/video/recommend", methods=["POST"])
+def recommend_today_video():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
+    lookback_days_raw = payload.get("lookback_days", 7)
+    try:
+        lookback_days = max(1, min(30, int(lookback_days_raw)))
+    except Exception:
+        lookback_days = 7
+
+    skill_id = str(payload.get("skill_id") or "").strip()
+    skill_title = str(payload.get("skill_title") or "").strip()
+    main_category = str(payload.get("main_category") or "").strip()
+    sub_category = str(payload.get("sub_category") or "").strip()
+    resolved_skill = None
+
+    if not skill_id:
+        try:
+            weakest_skill = get_lowest_mastery_skill(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        except Exception:
+            weakest_skill = None
+        if weakest_skill:
+            skill_id = str(weakest_skill.get("skill_id") or "").strip()
+            skill_title = str(weakest_skill.get("skill_title") or "").strip()
+            resolved_skill = weakest_skill
+
+    if skill_id and (not main_category or not sub_category):
+        try:
+            focus_topic = get_top_error_topic_for_skill(
+                user_id=int(user_id),
+                skill_id=skill_id,
+                lookback_days=lookback_days,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            ) or {}
+            if not main_category:
+                main_category = str(focus_topic.get("main_category") or "").strip()
+            if not sub_category:
+                sub_category = str(focus_topic.get("sub_category") or "").strip()
+        except Exception:
+            pass
+
+    if not main_category and not sub_category:
+        try:
+            weak_topic = get_top_weak_topic(
+                user_id=int(user_id),
+                lookback_days=lookback_days,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            ) or {}
+            main_category = str(weak_topic.get("main_category") or "").strip()
+            sub_category = str(weak_topic.get("sub_category") or "").strip()
+        except Exception:
+            pass
+
+    recommended_video = None
+    recommendation_row = None
+    cache_hit = False
+
+    try:
+        recommendation_row = get_best_video_recommendation_for_focus(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            skill_id=skill_id or None,
+            main_category=main_category or None,
+            sub_category=sub_category or None,
+        )
+    except Exception:
+        recommendation_row = None
+
+    if recommendation_row and recommendation_row.get("video_id"):
+        cache_hit = True
+        recommended_video = {
+            "video_id": recommendation_row.get("video_id"),
+            "video_url": recommendation_row.get("video_url") or f"https://www.youtube.com/watch?v={recommendation_row.get('video_id')}",
+            "title": recommendation_row.get("video_title"),
+            "query": recommendation_row.get("search_query"),
+            "recommendation_id": recommendation_row.get("id"),
+            "like_count": int(recommendation_row.get("like_count") or 0),
+            "dislike_count": int(recommendation_row.get("dislike_count") or 0),
+            "score": int(recommendation_row.get("score") or 0),
+        }
+
+    if not recommended_video:
+        recommended_video = _pick_today_recommended_video(main_category or None, sub_category or None)
+        if not recommended_video and skill_title:
+            fallback_query = f"{skill_title} deutsch grammatik uebung"
+            videos = _youtube_search_videos(fallback_query, max_results=5)
+            videos = _youtube_fill_view_counts(videos)
+            videos.sort(key=lambda x: int(x.get("views") or 0), reverse=True)
+            best = videos[0] if videos else None
+            if best and best.get("video_id"):
+                video_id = str(best.get("video_id") or "").strip()
+                recommended_video = {
+                    "video_id": video_id,
+                    "video_url": f"https://www.youtube.com/watch?v={video_id}",
+                    "title": str(best.get("title") or "").strip(),
+                    "query": fallback_query,
+                    "views": int(best.get("views") or 0),
+                }
+
+        if recommended_video and recommended_video.get("video_id"):
+            try:
+                recommendation_row = upsert_video_recommendation(
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    skill_id=skill_id or None,
+                    main_category=main_category or None,
+                    sub_category=sub_category or None,
+                    search_query=(recommended_video or {}).get("query"),
+                    video_id=str((recommended_video or {}).get("video_id") or "").strip(),
+                    video_url=(recommended_video or {}).get("video_url"),
+                    video_title=(recommended_video or {}).get("title"),
+                )
+            except Exception:
+                recommendation_row = None
+            if recommendation_row:
+                recommended_video["recommendation_id"] = recommendation_row.get("id")
+                recommended_video["like_count"] = int(recommendation_row.get("like_count") or 0)
+                recommended_video["dislike_count"] = int(recommendation_row.get("dislike_count") or 0)
+                recommended_video["score"] = int(recommendation_row.get("score") or 0)
+
+    updated_item = None
+    item_id_raw = payload.get("item_id")
+    if item_id_raw is not None and str(item_id_raw).strip() != "" and recommended_video:
+        try:
+            item_id = int(item_id_raw)
+        except Exception:
+            return jsonify({"error": "item_id должен быть числом"}), 400
+        payload_updates = {
+            "video_id": (recommended_video or {}).get("video_id"),
+            "video_url": (recommended_video or {}).get("video_url"),
+            "video_title": (recommended_video or {}).get("title"),
+            "video_query": (recommended_video or {}).get("query"),
+            "recommendation_id": (recommended_video or {}).get("recommendation_id"),
+            "video_likes": int((recommended_video or {}).get("like_count") or 0),
+            "video_dislikes": int((recommended_video or {}).get("dislike_count") or 0),
+            "video_score": int((recommended_video or {}).get("score") or 0),
+        }
+        try:
+            updated_item = update_daily_plan_item_payload(
+                user_id=int(user_id),
+                item_id=item_id,
+                payload_updates=payload_updates,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка сохранения рекомендованного видео: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "focus": {
+                "skill_id": skill_id or None,
+                "skill_title": skill_title or None,
+                "main_category": main_category or None,
+                "sub_category": sub_category or None,
+            },
+            "video": recommended_video,
+            "updated_item": updated_item,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "resolved_from_mastery": bool(resolved_skill),
+            "cache_hit": cache_hit,
+        }
+    )
+
+
+@app.route("/api/today/video/feedback", methods=["POST"])
+def today_video_feedback():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    recommendation_id_raw = payload.get("recommendation_id")
+    item_id_raw = payload.get("item_id")
+    vote_raw = str(payload.get("vote") or "").strip().lower()
+
+    if vote_raw in {"like", "up", "+1", "1", "thumbs_up"}:
+        vote_value = 1
+    elif vote_raw in {"dislike", "down", "-1", "thumbs_down"}:
+        vote_value = -1
+    else:
+        return jsonify({"error": "vote должен быть like или dislike"}), 400
+
+    try:
+        recommendation_id = int(recommendation_id_raw)
+    except Exception:
+        return jsonify({"error": "recommendation_id должен быть числом"}), 400
+
+    recommendation = get_video_recommendation_by_id(recommendation_id)
+    if not recommendation:
+        return jsonify({"error": "Рекомендация не найдена"}), 404
+
+    try:
+        updated_recommendation = vote_video_recommendation(
+            user_id=int(user_id),
+            recommendation_id=recommendation_id,
+            vote=vote_value,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения оценки видео: {exc}"}), 500
+
+    updated_item = None
+    if item_id_raw is not None and str(item_id_raw).strip() != "":
+        try:
+            item_id = int(item_id_raw)
+        except Exception:
+            return jsonify({"error": "item_id должен быть числом"}), 400
+        payload_updates = {
+            "recommendation_id": recommendation_id,
+            "video_likes": int((updated_recommendation or {}).get("like_count") or 0),
+            "video_dislikes": int((updated_recommendation or {}).get("dislike_count") or 0),
+            "video_score": int((updated_recommendation or {}).get("score") or 0),
+            "video_user_vote": int(vote_value),
+        }
+        try:
+            updated_item = update_daily_plan_item_payload(
+                user_id=int(user_id),
+                item_id=item_id,
+                payload_updates=payload_updates,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка обновления задачи после оценки: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "recommendation": updated_recommendation,
+            "updated_item": updated_item,
+        }
+    )
 
 
 @app.route("/api/today/items/<int:item_id>/complete", methods=["POST"])
