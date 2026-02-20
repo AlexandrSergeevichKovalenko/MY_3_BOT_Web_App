@@ -1534,6 +1534,58 @@ body {
   border-color: rgba(255, 120, 120, 0.35);
 }
 
+.reader-audio-panel {
+  border: 1px solid rgba(143, 209, 255, 0.24);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(8, 15, 30, 0.55);
+  display: grid;
+  gap: 8px;
+}
+
+.reader-audio-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+
+.reader-pages-layout {
+  display: grid;
+  gap: 10px;
+}
+
+.reader-pages-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.reader-page-sheet {
+  background: #fdf8ec;
+  color: #1f2c3f;
+  border: 1px solid rgba(138, 109, 74, 0.22);
+  border-radius: 10px;
+  box-shadow: 0 12px 22px rgba(7, 12, 26, 0.2);
+  min-height: 55vh;
+  padding: 18px 18px 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.reader-page-sheet-inner {
+  flex: 1;
+  line-height: 1.72;
+}
+
+.reader-page-num {
+  margin-top: 10px;
+  text-align: center;
+  color: #6a5c4a;
+  font-size: 12px;
+}
+
 .reader-article p {
   margin: 0 0 12px;
 }

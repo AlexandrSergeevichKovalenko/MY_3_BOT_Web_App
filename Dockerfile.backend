@@ -31,6 +31,9 @@ RUN echo "CACHE_BUST=${CACHE_BUST}"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ffmpeg \
+    espeak-ng \
+    libespeak1 \
+    libespeak-ng1 \
   && rm -rf /var/lib/apt/lists/*
 
 # 1) Ставим зависимости backend

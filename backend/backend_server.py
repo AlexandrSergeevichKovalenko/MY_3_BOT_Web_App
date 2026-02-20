@@ -100,6 +100,10 @@ try:
     from pypdf import PdfReader
 except Exception:  # pragma: no cover - optional dependency
     PdfReader = None
+try:
+    import pyttsx3
+except Exception:  # pragma: no cover - optional dependency
+    pyttsx3 = None
 from backend.utils import prepare_google_creds_for_tts
 from pydub import AudioSegment
 try:
@@ -1294,12 +1298,18 @@ def _extract_text_from_html(html_content: str) -> str:
 
 
 def _extract_text_from_pdf_bytes(data: bytes) -> str:
+    text, _pages = _extract_pdf_content_from_bytes(data)
+    return text
+
+
+def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     if not data:
-        return ""
+        return "", []
     if PdfReader is None:
         raise RuntimeError("PDF extraction is unavailable: install pypdf")
     reader = PdfReader(BytesIO(data))
     chunks: list[str] = []
+    pages: list[dict] = []
     for idx, page in enumerate(reader.pages):
         if idx >= 250:
             break
@@ -1307,12 +1317,15 @@ def _extract_text_from_pdf_bytes(data: bytes) -> str:
             page_text = page.extract_text() or ""
         except Exception:
             page_text = ""
-        if page_text.strip():
-            chunks.append(page_text)
-    return _normalize_reader_text("\n\n".join(chunks))
+        normalized = _normalize_reader_text(page_text, max_chars=50000)
+        if not normalized:
+            continue
+        chunks.append(normalized)
+        pages.append({"page_number": idx + 1, "text": normalized})
+    return _normalize_reader_text("\n\n".join(chunks)), pages
 
 
-def _fetch_reader_text_from_url(raw_url: str) -> tuple[str, str]:
+def _fetch_reader_text_from_url(raw_url: str) -> tuple[str, str, list[dict]]:
     parsed = urlparse(str(raw_url or "").strip())
     if not parsed.scheme:
         raw_url = f"https://{str(raw_url or '').strip()}"
@@ -1331,8 +1344,33 @@ def _fetch_reader_text_from_url(raw_url: str) -> tuple[str, str]:
     final_url = response.url or raw_url
     is_pdf = "application/pdf" in content_type or final_url.lower().split("?", 1)[0].endswith(".pdf")
     if is_pdf:
-        return _extract_text_from_pdf_bytes(response.content), "pdf"
-    return _extract_text_from_html(response.text), "html"
+        text, pages = _extract_pdf_content_from_bytes(response.content)
+        return text, "pdf", pages
+    return _extract_text_from_html(response.text), "html", []
+
+
+def _synthesize_offline_audio_wav(text: str) -> bytes:
+    if pyttsx3 is None:
+        raise RuntimeError("Offline speech engine is unavailable: install pyttsx3")
+    cleaned = _normalize_reader_text(text, max_chars=300000)
+    if not cleaned:
+        raise ValueError("Нет текста для аудио")
+    if len(cleaned) > 180000:
+        raise ValueError("Слишком длинный фрагмент для офлайн-конвертации. Выберите меньший диапазон страниц.")
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        wav_path = tmp.name
+    try:
+        engine = pyttsx3.init()
+        engine.setProperty("rate", 165)
+        engine.save_to_file(cleaned, wav_path)
+        engine.runAndWait()
+        with open(wav_path, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.remove(wav_path)
+        except Exception:
+            pass
 
 
 def _infer_reader_title(
@@ -5929,6 +5967,7 @@ def ingest_reader_content():
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     normalized_text = ""
+    content_pages: list[dict] = []
     source_type = "text"
     resolved_url = None
 
@@ -5944,7 +5983,7 @@ def ingest_reader_content():
                 or lower_name.endswith(".pdf")
             )
             if is_pdf:
-                normalized_text = _extract_text_from_pdf_bytes(raw_bytes)
+                normalized_text, content_pages = _extract_pdf_content_from_bytes(raw_bytes)
                 source_type = "pdf"
             else:
                 decoded_text = raw_bytes.decode("utf-8", errors="ignore")
@@ -5954,7 +5993,7 @@ def ingest_reader_content():
             normalized_text = _normalize_reader_text(input_text)
             source_type = "text"
         else:
-            normalized_text, source_type = _fetch_reader_text_from_url(input_url)
+            normalized_text, source_type, content_pages = _fetch_reader_text_from_url(input_url)
             resolved_url = input_url
     except requests.RequestException as exc:
         return jsonify({"error": f"Не удалось загрузить ссылку: {exc}"}), 400
@@ -5980,6 +6019,7 @@ def ingest_reader_content():
             source_type=source_type,
             source_url=resolved_url or input_url or None,
             content_text=normalized_text,
+            content_pages=content_pages,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения в библиотеку: {exc}"}), 500
@@ -6229,6 +6269,77 @@ def reader_library_delete():
     if not deleted:
         return jsonify({"error": "Книга не найдена"}), 404
     return jsonify({"ok": True, "deleted": True})
+
+
+@app.route("/api/webapp/reader/audio", methods=["POST"])
+def reader_audio_export():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+    page_from = payload.get("page_from")
+    page_to = payload.get("page_to")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if document_id is None:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        document = get_reader_library_document(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка загрузки документа: {exc}"}), 500
+    if not document:
+        return jsonify({"error": "Книга не найдена"}), 404
+
+    pages = document.get("content_pages") if isinstance(document.get("content_pages"), list) else []
+    if pages:
+        try:
+            start_page = int(page_from) if page_from is not None else 1
+            end_page = int(page_to) if page_to is not None else len(pages)
+        except Exception:
+            return jsonify({"error": "page_from/page_to должны быть числами"}), 400
+        start_page = max(1, start_page)
+        end_page = max(start_page, min(len(pages), end_page))
+        selected = []
+        for page in pages:
+            try:
+                page_no = int(page.get("page_number") or 0)
+            except Exception:
+                page_no = 0
+            if start_page <= page_no <= end_page:
+                selected.append(str(page.get("text") or "").strip())
+        text_to_read = "\n\n".join([chunk for chunk in selected if chunk])
+        filename_suffix = f"p{start_page}-{end_page}"
+    else:
+        text_to_read = str(document.get("content_text") or "").strip()
+        filename_suffix = "full"
+
+    if not text_to_read:
+        return jsonify({"error": "В выбранном диапазоне нет текста"}), 422
+    try:
+        wav_bytes = _synthesize_offline_audio_wav(text_to_read)
+    except Exception as exc:
+        return jsonify({"error": f"Офлайн-аудио недоступно: {exc}"}), 500
+
+    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", str(document.get("title") or "reader"))[:60]
+    return send_file(
+        BytesIO(wav_bytes),
+        mimetype="audio/wav",
+        as_attachment=True,
+        download_name=f"{safe_title}_{filename_suffix}.wav",
+    )
 
 
 @app.route("/api/webapp/normalize/de", methods=["POST"])

@@ -1163,6 +1163,7 @@ def ensure_webapp_tables() -> None:
                     source_url TEXT,
                     text_hash TEXT NOT NULL,
                     content_text TEXT NOT NULL,
+                    content_pages JSONB NOT NULL DEFAULT '[]'::jsonb,
                     total_chars INTEGER NOT NULL DEFAULT 0,
                     progress_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
                     bookmark_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -1182,6 +1183,10 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_reader_library
                 ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS content_pages JSONB NOT NULL DEFAULT '[]'::jsonb;
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_reader_library_user_pair
@@ -3824,6 +3829,7 @@ def _reader_library_row_to_dict(row: tuple, *, include_content: bool = False) ->
     }
     if include_content:
         payload["content_text"] = str(row[17] or "")
+        payload["content_pages"] = row[18] if isinstance(row[18], list) else []
     return payload
 
 
@@ -3836,6 +3842,7 @@ def upsert_reader_library_document(
     source_type: str,
     source_url: str | None,
     content_text: str,
+    content_pages: list | None = None,
 ) -> dict:
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
@@ -3843,6 +3850,7 @@ def upsert_reader_library_document(
     resolved_source_type = str(source_type or "text").strip().lower() or "text"
     resolved_source_url = str(source_url or "").strip() or None
     resolved_content = str(content_text or "").strip()
+    resolved_pages = content_pages if isinstance(content_pages, list) else []
     text_hash = hashlib.sha256(resolved_content.encode("utf-8")).hexdigest()
     total_chars = len(resolved_content)
 
@@ -3859,17 +3867,19 @@ def upsert_reader_library_document(
                     source_url,
                     text_hash,
                     content_text,
+                    content_pages,
                     total_chars,
                     last_opened_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW(), NOW())
                 ON CONFLICT (user_id, source_lang, target_lang, text_hash) DO UPDATE
                 SET
                     title = EXCLUDED.title,
                     source_type = EXCLUDED.source_type,
                     source_url = COALESCE(EXCLUDED.source_url, bt_3_reader_library.source_url),
                     content_text = EXCLUDED.content_text,
+                    content_pages = EXCLUDED.content_pages,
                     total_chars = EXCLUDED.total_chars,
                     is_archived = FALSE,
                     archived_at = NULL,
@@ -3878,7 +3888,7 @@ def upsert_reader_library_document(
                 RETURNING
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
-                    is_archived, archived_at, last_opened_at, created_at, updated_at, content_text;
+                    is_archived, archived_at, last_opened_at, created_at, updated_at, content_text, content_pages;
                 """,
                 (
                     int(user_id),
@@ -3889,6 +3899,7 @@ def upsert_reader_library_document(
                     resolved_source_url,
                     text_hash,
                     resolved_content,
+                    json.dumps(resolved_pages, ensure_ascii=False),
                     total_chars,
                 ),
             )
@@ -3946,6 +3957,7 @@ def get_reader_library_document(
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
                     is_archived, archived_at, last_opened_at, created_at, updated_at, content_text
+                    , content_pages
                 FROM bt_3_reader_library
                 WHERE id = %s
                   AND user_id = %s

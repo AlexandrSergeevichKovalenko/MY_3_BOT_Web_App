@@ -23,5 +23,6 @@ APScheduler==3.11.0
 google-cloud-texttospeech==2.25.1
 pydub==0.25.1
 pypdf==5.2.0
+pyttsx3==2.98
 
 fsrs>=6.1.1

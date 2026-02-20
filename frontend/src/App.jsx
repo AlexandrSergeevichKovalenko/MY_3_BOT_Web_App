@@ -125,6 +125,12 @@ function AppInner() {
   const [readerLibraryLoading, setReaderLibraryLoading] = useState(false);
   const [readerLibraryError, setReaderLibraryError] = useState('');
   const [readerIncludeArchived, setReaderIncludeArchived] = useState(false);
+  const [readerPages, setReaderPages] = useState([]);
+  const [readerCurrentPage, setReaderCurrentPage] = useState(1);
+  const [readerAudioFromPage, setReaderAudioFromPage] = useState('');
+  const [readerAudioToPage, setReaderAudioToPage] = useState('');
+  const [readerAudioLoading, setReaderAudioLoading] = useState(false);
+  const [readerAudioError, setReaderAudioError] = useState('');
   const [readerProgressPercent, setReaderProgressPercent] = useState(0);
   const [readerBookmarkPercent, setReaderBookmarkPercent] = useState(0);
   const [readerReadingMode, setReaderReadingMode] = useState('vertical');
@@ -2113,6 +2119,7 @@ function AppInner() {
   useEffect(() => {
     const node = readerArticleRef.current;
     if (!node || !readerDocumentId || !readerContent) return undefined;
+    if (Array.isArray(readerPages) && readerPages.length > 0) return undefined;
     const handleScroll = () => {
       const nextPercent = computeReaderProgressPercent();
       setReaderProgressPercent(nextPercent);
@@ -2131,7 +2138,14 @@ function AppInner() {
         readerStateSaveTimeoutRef.current = null;
       }
     };
-  }, [readerDocumentId, readerReadingMode, readerContent]);
+  }, [readerDocumentId, readerReadingMode, readerContent, readerPages]);
+
+  useEffect(() => {
+    if (!readerDocumentId || !Array.isArray(readerPages) || readerPages.length === 0) return;
+    const nextPercent = computeReaderProgressPercent();
+    setReaderProgressPercent(nextPercent);
+    syncReaderState({ progress_percent: Number(nextPercent.toFixed(2)) });
+  }, [readerCurrentPage, readerDocumentId, readerPages]);
 
   useEffect(() => {
     if (!readerDocumentId || !readerContent) return;
@@ -3284,6 +3298,10 @@ function AppInner() {
   }
 
   function computeReaderProgressPercent() {
+    if (Array.isArray(readerPages) && readerPages.length > 0) {
+      const page = Math.max(1, Math.min(readerPages.length, Number(readerCurrentPage || 1)));
+      return Math.max(0, Math.min(100, (page / readerPages.length) * 100));
+    }
     const node = readerArticleRef.current;
     if (!node) return 0;
     if (readerReadingMode === 'horizontal') {
@@ -3295,6 +3313,12 @@ function AppInner() {
   }
 
   function applyReaderProgressPercent(percent) {
+    if (Array.isArray(readerPages) && readerPages.length > 0) {
+      const safe = Math.max(0, Math.min(100, Number(percent || 0)));
+      const resolved = Math.max(1, Math.min(readerPages.length, Math.round((safe / 100) * readerPages.length) || 1));
+      setReaderCurrentPage(resolved);
+      return;
+    }
     const node = readerArticleRef.current;
     if (!node) return;
     const safe = Math.max(0, Math.min(100, Number(percent || 0)));
@@ -3392,15 +3416,24 @@ function AppInner() {
       const doc = data?.document || {};
       const progress = Number(doc?.progress_percent || 0);
       const bookmark = Number(doc?.bookmark_percent || 0);
+      const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
       setReaderDocumentId(Number(doc?.id || documentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
       setReaderContent(String(data?.text || doc?.content_text || '').trim());
+      setReaderPages(pages);
       setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
       setReaderSourceUrl(String(data?.source_url || doc?.source_url || ''));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
       setReaderProgressPercent(progress);
       setReaderBookmarkPercent(bookmark);
+      const pageFromProgress = pages.length > 0
+        ? Math.max(1, Math.min(pages.length, Math.round(((bookmark > 0 ? bookmark : progress) / 100) * pages.length) || 1))
+        : 1;
+      setReaderCurrentPage(pageFromProgress);
+      setReaderAudioFromPage(pages.length > 0 ? '1' : '');
+      setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
+      setReaderAudioError('');
       ensureSectionVisible('reader');
       setTimeout(() => {
         scrollToRef(readerRef, { block: 'start' });
@@ -3463,6 +3496,7 @@ function AppInner() {
       if (Number(readerDocumentId) === Number(documentId) && archived) {
         setReaderDocumentId(null);
         setReaderContent('');
+        setReaderPages([]);
       }
     } catch (error) {
       setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось архивировать книгу.', 'Dokument konnte nicht archiviert werden.'));
@@ -3486,9 +3520,51 @@ function AppInner() {
       if (Number(readerDocumentId) === Number(documentId)) {
         setReaderDocumentId(null);
         setReaderContent('');
+        setReaderPages([]);
       }
     } catch (error) {
       setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось удалить книгу.', 'Dokument konnte nicht geloescht werden.'));
+    }
+  };
+
+  const downloadReaderAudio = async (fullDocument = false) => {
+    if (!initData || !readerDocumentId) return;
+    try {
+      setReaderAudioLoading(true);
+      setReaderAudioError('');
+      const hasPages = Array.isArray(readerPages) && readerPages.length > 0;
+      const fromPage = hasPages && !fullDocument
+        ? Math.max(1, Number.parseInt(String(readerAudioFromPage || '1'), 10) || 1)
+        : null;
+      const toPage = hasPages && !fullDocument
+        ? Math.max(fromPage || 1, Number.parseInt(String(readerAudioToPage || String(readerPages.length)), 10) || readerPages.length)
+        : null;
+      const response = await fetch('/api/webapp/reader/audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          document_id: readerDocumentId,
+          page_from: fromPage,
+          page_to: toPage,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка аудио-конвертации', 'Fehler bei Audio-Konvertierung'));
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${String(readerTitle || 'reader').replace(/[^\w.-]+/g, '_')}_${fullDocument ? 'full' : 'range'}.wav`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setReaderAudioError(normalizeNetworkErrorMessage(error, 'Не удалось создать аудио.', 'Audio konnte nicht erstellt werden.'));
+    } finally {
+      setReaderAudioLoading(false);
     }
   };
 
@@ -3532,8 +3608,10 @@ function AppInner() {
       const data = await response.json();
       const doc = data?.document || {};
       const docId = Number(doc?.id || 0) || null;
+      const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
       setReaderContent(String(data?.text || '').trim());
       setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
+      setReaderPages(pages);
       setReaderSourceType(String(data?.source_type || 'text'));
       setReaderSourceUrl(String(data?.source_url || rawInput));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
@@ -3541,6 +3619,13 @@ function AppInner() {
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
       setReaderProgressPercent(Number(doc?.progress_percent || 0));
       setReaderBookmarkPercent(Number(doc?.bookmark_percent || 0));
+      const pageFromProgress = pages.length > 0
+        ? Math.max(1, Math.min(pages.length, Math.round((Number(doc?.bookmark_percent || doc?.progress_percent || 0) / 100) * pages.length) || 1))
+        : 1;
+      setReaderCurrentPage(pageFromProgress);
+      setReaderAudioFromPage(pages.length > 0 ? '1' : '');
+      setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
+      setReaderAudioError('');
       ensureSectionVisible('reader');
       setTimeout(() => {
         scrollToRef(readerRef, { block: 'start' });
@@ -6727,6 +6812,56 @@ function AppInner() {
                     </span>
                   </div>
                 </form>
+                {readerDocumentId && (
+                  <section className="reader-audio-panel">
+                    <div className="reader-audio-head">
+                      <strong>{tr('Оффлайн-аудио документа', 'Offline-Audio des Dokuments')}</strong>
+                    </div>
+                    <div className="reader-audio-actions">
+                      {Array.isArray(readerPages) && readerPages.length > 0 && (
+                        <>
+                          <label className="webapp-field">
+                            <span>{tr('Страницы от', 'Seiten von')}</span>
+                            <input
+                              type="number"
+                              min="1"
+                              max={readerPages.length}
+                              value={readerAudioFromPage}
+                              onChange={(event) => setReaderAudioFromPage(event.target.value)}
+                            />
+                          </label>
+                          <label className="webapp-field">
+                            <span>{tr('до', 'bis')}</span>
+                            <input
+                              type="number"
+                              min="1"
+                              max={readerPages.length}
+                              value={readerAudioToPage}
+                              onChange={(event) => setReaderAudioToPage(event.target.value)}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => downloadReaderAudio(false)}
+                            disabled={readerAudioLoading}
+                          >
+                            {readerAudioLoading ? tr('Готовим...', 'Erstellen...') : tr('Скачать диапазон', 'Bereich herunterladen')}
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => downloadReaderAudio(true)}
+                        disabled={readerAudioLoading}
+                      >
+                        {readerAudioLoading ? tr('Готовим...', 'Erstellen...') : tr('Скачать весь документ', 'Ganzes Dokument herunterladen')}
+                      </button>
+                    </div>
+                    {readerAudioError && <div className="webapp-error">{readerAudioError}</div>}
+                  </section>
+                )}
                 {readerError && <div className="webapp-error">{readerError}</div>}
                 <section className="reader-library">
                   <div className="reader-library-head">
@@ -6816,15 +6951,52 @@ function AppInner() {
                         <span>{tr('Закладка', 'Lesezeichen')}: {Math.round(readerBookmarkPercent)}%</span>
                       </div>
                     )}
-                    {readerContent.split(/\n{2,}/).map((paragraph, index) => {
-                      const value = String(paragraph || '').trim();
-                      if (!value) return null;
-                      return (
-                        <p key={`reader-p-${index}`}>
-                          {renderClickableText(value, { className: 'reader-clickable-word', lookupLang: readerDetectedLanguage })}
-                        </p>
-                      );
-                    })}
+                    {Array.isArray(readerPages) && readerPages.length > 0 ? (
+                      <div className="reader-pages-layout">
+                        <div className="reader-pages-controls">
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => setReaderCurrentPage((prev) => Math.max(1, prev - 1))}
+                            disabled={readerCurrentPage <= 1}
+                          >
+                            {tr('Назад', 'Zurueck')}
+                          </button>
+                          <span>
+                            {tr('Страница', 'Seite')} {readerCurrentPage} / {readerPages.length}
+                          </span>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => setReaderCurrentPage((prev) => Math.min(readerPages.length, prev + 1))}
+                            disabled={readerCurrentPage >= readerPages.length}
+                          >
+                            {tr('Вперёд', 'Weiter')}
+                          </button>
+                        </div>
+                        <div className="reader-page-sheet">
+                          <div className="reader-page-sheet-inner">
+                            {renderClickableText(
+                              String(readerPages[readerCurrentPage - 1]?.text || ''),
+                              { className: 'reader-clickable-word', lookupLang: readerDetectedLanguage }
+                            )}
+                          </div>
+                          <div className="reader-page-num">
+                            {tr('Стр.', 'S.')}{' '}{readerCurrentPage}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      readerContent.split(/\n{2,}/).map((paragraph, index) => {
+                        const value = String(paragraph || '').trim();
+                        if (!value) return null;
+                        return (
+                          <p key={`reader-p-${index}`}>
+                            {renderClickableText(value, { className: 'reader-clickable-word', lookupLang: readerDetectedLanguage })}
+                          </p>
+                        );
+                      })
+                    )}
                   </article>
                 )}
               </section>
