@@ -5647,6 +5647,36 @@ def _format_today_plan_message(plan: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_today_group_announcement(user_label: str, plan: dict) -> str:
+    total = int(plan.get("total_minutes") or 0)
+    lines = [f"📌 Для {user_label} готов дневной план", f"Всего: {total} минут"]
+    for idx, item in enumerate(plan.get("items") or [], start=1):
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        task_type = str(item.get("task_type") or "").lower()
+        if task_type == "cards":
+            limit = int(payload.get("limit") or 0)
+            if limit > 0:
+                lines.append(f"{idx}. Карточки: {limit} повторений")
+            else:
+                lines.append(f"{idx}. Карточки")
+            continue
+        if task_type == "translation":
+            sentences = int(payload.get("sentences") or 5)
+            sub = str(payload.get("sub_category") or "").strip()
+            if sub:
+                lines.append(f"{idx}. Перевод: {sentences} предложений ({sub})")
+            else:
+                lines.append(f"{idx}. Перевод: {sentences} предложений")
+            continue
+        if task_type == "video":
+            sec = int(payload.get("duration_sec") or 300)
+            minutes = max(1, round(sec / 60))
+            lines.append(f"{idx}. Видео: {minutes} минут")
+            continue
+        lines.append(f"{idx}. {str(item.get('title') or 'Задача')}")
+    return "\n".join(lines)
+
+
 def _send_today_plan_private_message(user_id: int, plan: dict) -> None:
     button_url = _build_webapp_deeplink("today")
     reply_markup = {
@@ -5662,9 +5692,11 @@ def _send_today_plan_private_message(user_id: int, plan: dict) -> None:
 def _dispatch_today_plans(target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
     users = list_today_reminder_users(limit=5000, offset=0)
     if not users:
-        return {"ok": True, "date": target_date.isoformat(), "sent": 0, "errors": []}
+        return {"ok": True, "date": target_date.isoformat(), "sent_private": 0, "sent_group_fallback": 0, "errors": []}
 
-    sent = 0
+    group_on_private_fail = str(os.getenv("TODAY_PLAN_GROUP_ON_PRIVATE_FAIL") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    sent_private = 0
+    sent_group_fallback = 0
     errors: list[str] = []
     for row in users:
         user_id = int(row.get("user_id"))
@@ -5678,11 +5710,28 @@ def _dispatch_today_plans(target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_T
                 source_lang=source_lang,
                 target_lang=target_lang,
             )
-            _send_today_plan_private_message(user_id=user_id, plan=plan)
-            sent += 1
+            try:
+                _send_today_plan_private_message(user_id=user_id, plan=plan)
+                sent_private += 1
+            except Exception as private_exc:
+                if not group_on_private_fail:
+                    raise
+                username = str(row.get("username") or "").strip()
+                user_label = f"@{username}" if username else f"user_{user_id}"
+                fallback_text = _format_today_group_announcement(user_label, plan)
+                fallback_text += "\n\n⚠️ Личное сообщение не доставлено."
+                _send_group_message(fallback_text)
+                sent_group_fallback += 1
+                logging.warning("Today private send failed for user %s: %s", user_id, private_exc)
         except Exception as exc:
             errors.append(f"user {user_id}: {exc}")
-    return {"ok": True, "date": target_date.isoformat(), "sent": sent, "errors": errors}
+    return {
+        "ok": True,
+        "date": target_date.isoformat(),
+        "sent_private": sent_private,
+        "sent_group_fallback": sent_group_fallback,
+        "errors": errors,
+    }
 
 
 def _run_today_plan_scheduler_job() -> None:
