@@ -135,6 +135,10 @@ from backend.openai_manager import (
     run_feel_word_multilang,
     run_enrich_word,
     run_enrich_word_multilang,
+    run_theory_generation,
+    run_theory_practice_sentences,
+    run_theory_check_feedback,
+    run_beginner_topic,
     run_tts_chunk_de,
 )
 from backend.database import (
@@ -191,6 +195,9 @@ from backend.database import (
     get_skill_progress_report,
     get_top_weak_topic,
     get_weak_topic_sentences,
+    get_recent_mistake_examples_for_topic,
+    list_default_topics_for_user,
+    add_default_topic_for_user,
     get_today_reminder_settings,
     upsert_today_reminder_settings,
     list_today_reminder_users,
@@ -278,6 +285,7 @@ NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 TODAY_PLAN_DEFAULT_TZ = (os.getenv("TODAY_PLAN_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 YOUTUBE_API_KEY = (os.getenv("YOUTUBE_API_KEY") or "").strip()
+THEORY_PACKAGE_TTL_MINUTES = max(1, int((os.getenv("THEORY_PACKAGE_TTL_MINUTES") or "720").strip()))
 
 _TODAY_PREFERRED_CHANNELS = [
     "UCthmoIZKvuR1-KuwednkjHg",
@@ -1078,6 +1086,36 @@ def _pick_today_recommended_video(
     return None
 
 
+def _format_theory_mistake_examples(examples: list[dict] | None) -> list[str]:
+    rows: list[str] = []
+    for item in examples or []:
+        if not isinstance(item, dict):
+            continue
+        source_sentence = str(item.get("source_sentence") or "").strip()
+        user_translation = str(item.get("user_translation") or "").strip()
+        feedback = str(item.get("feedback") or "").strip()
+        if source_sentence and user_translation:
+            rows.append(f"RU: {source_sentence} | USER: {user_translation}")
+        elif source_sentence:
+            rows.append(f"RU: {source_sentence}")
+        elif user_translation:
+            rows.append(f"USER: {user_translation}")
+        if feedback:
+            rows.append(f"FEEDBACK: {feedback[:220]}")
+        if len(rows) >= 8:
+            break
+    return rows[:8]
+
+
+def _normalize_theory_sentences(payload: dict) -> list[str]:
+    raw = payload.get("sentences")
+    if isinstance(raw, list):
+        cleaned = [str(item or "").strip() for item in raw if str(item or "").strip()]
+        if len(cleaned) >= 5:
+            return cleaned[:5]
+    return []
+
+
 def _build_today_plan_for_user(
     *,
     user_id: int,
@@ -1199,6 +1237,31 @@ def _build_today_plan_for_user(
         }
     )
     total_minutes += 10
+
+    theory_title = "Теория"
+    if weakest_skill and weakest_skill.get("skill_title"):
+        theory_title = f"Теория ({weakest_skill.get('skill_title')})"
+    elif weak_topic and weak_topic.get("sub_category"):
+        theory_title = f"Теория ({weak_topic.get('sub_category')})"
+    items.append(
+        {
+            "task_type": "theory",
+            "title": theory_title,
+            "estimated_minutes": 12,
+            "payload": {
+                "mode": "theory_focus",
+                "focus_source": "mastery" if weakest_skill else "mistakes",
+                "skill_id": weakest_skill.get("skill_id") if weakest_skill else None,
+                "skill_title": weakest_skill.get("skill_title") if weakest_skill else None,
+                "main_category": weak_topic.get("main_category") if weak_topic else None,
+                "sub_category": weak_topic.get("sub_category") if weak_topic else None,
+                "examples": weak_sentences[:5],
+                "start_action": "theory",
+            },
+            "status": "todo",
+        }
+    )
+    total_minutes += 12
 
     include_video = str(os.getenv("TODAY_PLAN_INCLUDE_VIDEO") or "0").strip().lower() in {"1", "true", "yes", "on"}
     if include_video:
@@ -4460,6 +4523,291 @@ def today_video_feedback():
     )
 
 
+@app.route("/api/today/theory/prepare", methods=["POST"])
+def prepare_today_theory():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    force_refresh = bool(payload.get("force_refresh"))
+
+    item_id_raw = payload.get("item_id")
+    item_payload = payload.get("item_payload") if isinstance(payload.get("item_payload"), dict) else {}
+    cached_package = item_payload.get("theory_package") if isinstance(item_payload.get("theory_package"), dict) else None
+    if not force_refresh and isinstance(cached_package, dict):
+        generated_at_raw = str(cached_package.get("generated_at") or "").strip()
+        try:
+            generated_at_dt = datetime.fromisoformat(generated_at_raw.replace("Z", "+00:00"))
+            if generated_at_dt.tzinfo is None:
+                generated_at_dt = generated_at_dt.replace(tzinfo=timezone.utc)
+            age_seconds = (datetime.now(timezone.utc) - generated_at_dt).total_seconds()
+            if age_seconds >= 0 and age_seconds <= (THEORY_PACKAGE_TTL_MINUTES * 60):
+                return jsonify({"ok": True, "package": cached_package, "updated_item": None, "cached": True})
+        except Exception:
+            pass
+
+    lookback_days_raw = payload.get("lookback_days") or item_payload.get("lookback_days") or 14
+    try:
+        lookback_days = max(1, min(30, int(lookback_days_raw)))
+    except Exception:
+        lookback_days = 14
+
+    skill_id = str(item_payload.get("skill_id") or payload.get("skill_id") or "").strip()
+    skill_name = str(item_payload.get("skill_title") or payload.get("skill_title") or "").strip()
+    main_category = str(item_payload.get("main_category") or payload.get("main_category") or "").strip()
+    sub_category = str(item_payload.get("sub_category") or payload.get("sub_category") or "").strip()
+    example_strings = [str(item).strip() for item in (item_payload.get("examples") or payload.get("examples") or []) if str(item).strip()]
+
+    weakest_skill = None
+    if not skill_id:
+        try:
+            weakest_skill = get_lowest_mastery_skill(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        except Exception:
+            weakest_skill = None
+        if weakest_skill:
+            skill_id = str(weakest_skill.get("skill_id") or "").strip()
+            if not skill_name:
+                skill_name = str(weakest_skill.get("skill_title") or "").strip()
+
+    if skill_id and (not main_category or not sub_category):
+        try:
+            top_topic = get_top_error_topic_for_skill(
+                user_id=int(user_id),
+                skill_id=skill_id,
+                lookback_days=lookback_days,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            ) or {}
+            if not main_category:
+                main_category = str(top_topic.get("main_category") or "").strip()
+            if not sub_category:
+                sub_category = str(top_topic.get("sub_category") or "").strip()
+        except Exception:
+            pass
+
+    if not main_category and not sub_category:
+        try:
+            weak_topic = get_top_weak_topic(
+                user_id=int(user_id),
+                lookback_days=lookback_days,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            ) or {}
+            main_category = str(weak_topic.get("main_category") or "").strip()
+            sub_category = str(weak_topic.get("sub_category") or "").strip()
+        except Exception:
+            pass
+
+    detailed_examples: list[dict] = []
+    if main_category and sub_category:
+        try:
+            detailed_examples = get_recent_mistake_examples_for_topic(
+                user_id=int(user_id),
+                main_category=main_category,
+                sub_category=sub_category,
+                lookback_days=lookback_days,
+                limit=5,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        except Exception:
+            detailed_examples = []
+
+    formatted_examples = _format_theory_mistake_examples(detailed_examples)
+    if not formatted_examples and example_strings:
+        formatted_examples = example_strings[:5]
+
+    is_beginner = False
+    if not skill_id and not main_category and not sub_category and not formatted_examples:
+        is_beginner = True
+        excluded_topics = [str(item.get("topic_name") or "").strip() for item in list_default_topics_for_user(
+            user_id=int(user_id),
+            target_language=target_lang,
+            limit=100,
+        ) if str(item.get("topic_name") or "").strip()]
+        beginner_payload = {
+            "target_language": target_lang,
+            "native_language": source_lang,
+            "excluded_topics": excluded_topics,
+        }
+        beginner_topic = {}
+        try:
+            beginner_topic = asyncio.run(run_beginner_topic(beginner_payload))
+        except Exception as exc:
+            logging.warning("BEGINNER_TOPIC failed: %s", exc)
+            beginner_topic = {}
+        topic_name = str(beginner_topic.get("topic_name") or "").strip() or "Present tense and basic word order"
+        main_category = str(beginner_topic.get("error_category") or "").strip() or "Other mistake"
+        sub_category = str(beginner_topic.get("error_subcategory") or "").strip() or "Unclassified mistake"
+        skill_id = str(beginner_topic.get("skill_id") or "").strip()
+        skill_name = str(beginner_topic.get("develops_skill") or "").strip() or topic_name
+        formatted_examples = [
+            str(beginner_topic.get("why_important") or "").strip() or "Beginner starting point without historical mistakes."
+        ]
+        try:
+            add_default_topic_for_user(
+                user_id=int(user_id),
+                target_language=target_lang,
+                topic_name=topic_name,
+                error_category=main_category,
+                error_subcategory=sub_category,
+                skill_id=skill_id or None,
+            )
+        except Exception as exc:
+            logging.warning("Saving default topic failed: %s", exc)
+
+    if not skill_name:
+        skill_name = sub_category or main_category or "Grammar basics"
+
+    theory_payload = {
+        "target_language": target_lang,
+        "native_language": source_lang,
+        "skill_name": skill_name,
+        "error_category": main_category or "Other mistake",
+        "error_subcategory": sub_category or "Unclassified mistake",
+        "user_mistake_examples": formatted_examples[:8],
+    }
+    practice_payload = {
+        "target_language": target_lang,
+        "native_language": source_lang,
+        "skill_name": skill_name,
+        "error_category": main_category or "Other mistake",
+        "error_subcategory": sub_category or "Unclassified mistake",
+    }
+
+    try:
+        theory = asyncio.run(run_theory_generation(theory_payload))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка генерации теории: {exc}"}), 500
+
+    try:
+        practice_raw = asyncio.run(run_theory_practice_sentences(practice_payload))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка генерации практики: {exc}"}), 500
+
+    practice_sentences = _normalize_theory_sentences(practice_raw)
+    if len(practice_sentences) < 5:
+        practice_sentences = [
+            "Я живу в большом городе.",
+            "Мы часто ходим в парк по выходным.",
+            "Она хочет учить язык каждый день.",
+            "Они купили новую книгу вчера.",
+            "Ты можешь прийти сегодня вечером?"
+        ]
+
+    package = {
+        "focus": {
+            "skill_id": skill_id or None,
+            "skill_name": skill_name,
+            "error_category": main_category or "Other mistake",
+            "error_subcategory": sub_category or "Unclassified mistake",
+            "is_beginner": bool(is_beginner),
+        },
+        "theory": theory if isinstance(theory, dict) else {},
+        "practice_sentences": practice_sentences[:5],
+        "examples_used": formatted_examples[:8],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    updated_item = None
+    if item_id_raw is not None and str(item_id_raw).strip() != "":
+        try:
+            item_id = int(item_id_raw)
+        except Exception:
+            return jsonify({"error": "item_id должен быть числом"}), 400
+        try:
+            updated_item = update_daily_plan_item_payload(
+                user_id=int(user_id),
+                item_id=item_id,
+                payload_updates={
+                    "skill_id": package["focus"]["skill_id"],
+                    "skill_title": package["focus"]["skill_name"],
+                    "main_category": package["focus"]["error_category"],
+                    "sub_category": package["focus"]["error_subcategory"],
+                    "theory_package": package,
+                },
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка сохранения пакета теории: {exc}"}), 500
+
+    return jsonify({"ok": True, "package": package, "updated_item": updated_item})
+
+
+@app.route("/api/today/theory/check", methods=["POST"])
+def check_today_theory():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    item_id_raw = payload.get("item_id")
+    focus = payload.get("focus") if isinstance(payload.get("focus"), dict) else {}
+    native_sentences = payload.get("native_sentences") if isinstance(payload.get("native_sentences"), list) else []
+    translations = payload.get("translations") if isinstance(payload.get("translations"), list) else []
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
+    paired = []
+    for idx in range(5):
+        native_sentence = str(native_sentences[idx] if idx < len(native_sentences) else "").strip()
+        learner_translation = str(translations[idx] if idx < len(translations) else "").strip()
+        if not native_sentence:
+            continue
+        paired.append(
+            {
+                "native_sentence": native_sentence,
+                "learner_translation": learner_translation,
+            }
+        )
+    if len(paired) < 1:
+        return jsonify({"error": "Нет предложений для проверки"}), 400
+
+    check_payload = {
+        "target_language": target_lang,
+        "native_language": source_lang,
+        "skill_name": str(focus.get("skill_name") or "Grammar basics"),
+        "error_category": str(focus.get("error_category") or "Other mistake"),
+        "error_subcategory": str(focus.get("error_subcategory") or "Unclassified mistake"),
+        "pairs": paired,
+    }
+    try:
+        feedback = asyncio.run(run_theory_check_feedback(check_payload))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка проверки теории: {exc}"}), 500
+
+    updated_item = None
+    if item_id_raw is not None and str(item_id_raw).strip() != "":
+        try:
+            item_id = int(item_id_raw)
+        except Exception:
+            return jsonify({"error": "item_id должен быть числом"}), 400
+        try:
+            updated_item = update_daily_plan_item_payload(
+                user_id=int(user_id),
+                item_id=item_id,
+                payload_updates={
+                    "theory_last_check": {
+                        "items": (feedback or {}).get("items") if isinstance(feedback, dict) else [],
+                        "summary_good": (feedback or {}).get("summary_good") if isinstance(feedback, dict) else "",
+                        "summary_improve": (feedback or {}).get("summary_improve") if isinstance(feedback, dict) else "",
+                        "memory_secret": (feedback or {}).get("memory_secret") if isinstance(feedback, dict) else "",
+                        "checked_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                },
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка сохранения проверки теории: {exc}"}), 500
+
+    return jsonify({"ok": True, "feedback": feedback if isinstance(feedback, dict) else {}, "updated_item": updated_item})
+
+
 @app.route("/api/today/items/<int:item_id>/complete", methods=["POST"])
 def complete_today_item(item_id: int):
     user_id, _username, error = _get_authenticated_user_from_request_init_data()
@@ -7583,6 +7931,15 @@ def _format_today_plan_message(plan: dict) -> str:
             else:
                 lines.append(f"{idx}. Перевод: 5 предложений")
             continue
+        if item.get("task_type") == "theory":
+            sub = str(payload.get("sub_category") or "").strip()
+            skill = str(payload.get("skill_title") or "").strip()
+            label = sub or skill
+            if label:
+                lines.append(f"{idx}. Теория: {label}")
+            else:
+                lines.append(f"{idx}. Теория")
+            continue
         if item.get("task_type") == "video":
             lines.append(f"{idx}. Видео: 5 минут")
             continue
@@ -7612,6 +7969,15 @@ def _format_today_group_announcement(user_label: str, plan: dict) -> str:
                 lines.append(f"{idx}. Перевод: {sentences} предложений ({sub})")
             else:
                 lines.append(f"{idx}. Перевод: {sentences} предложений")
+            continue
+        if task_type == "theory":
+            sub = str(payload.get("sub_category") or "").strip()
+            skill = str(payload.get("skill_title") or "").strip()
+            label = sub or skill
+            if label:
+                lines.append(f"{idx}. Теория: {label}")
+            else:
+                lines.append(f"{idx}. Теория")
             continue
         if task_type == "video":
             sec = int(payload.get("duration_sec") or 300)

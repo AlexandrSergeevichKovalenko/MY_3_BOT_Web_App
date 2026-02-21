@@ -1305,6 +1305,26 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_today_regenerate_limits (limit_date, consumed_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_default_topics (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    target_language TEXT NOT NULL,
+                    topic_name TEXT NOT NULL,
+                    error_category TEXT,
+                    error_subcategory TEXT,
+                    skill_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_default_topics_user_lang
+                ON bt_3_default_topics (user_id, target_language, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_default_topics_user_lang_topic
+                ON bt_3_default_topics (user_id, target_language, topic_name);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_tts_chunk_cache (
                     cache_key TEXT PRIMARY KEY,
                     language TEXT NOT NULL,
@@ -4748,6 +4768,84 @@ def get_weak_topic_sentences(
     return [str(row[0]).strip() for row in rows if row and str(row[0]).strip()]
 
 
+def get_recent_mistake_examples_for_topic(
+    *,
+    user_id: int,
+    main_category: str,
+    sub_category: str,
+    lookback_days: int = 14,
+    limit: int = 5,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> list[dict]:
+    if not main_category and not sub_category:
+        return []
+    lookback_days = max(1, int(lookback_days))
+    limit = max(1, min(int(limit), 20))
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        COALESCE(ds.sentence, '') AS source_sentence,
+                        COALESCE(latest_tr.user_translation, '') AS user_translation,
+                        COALESCE(latest_tr.feedback, '') AS feedback
+                    FROM bt_3_detailed_mistakes dm
+                    JOIN bt_3_daily_sentences ds
+                      ON ds.id_for_mistake_table = dm.sentence_id
+                     AND ds.user_id = dm.user_id
+                    LEFT JOIN LATERAL (
+                        SELECT tr.user_translation, tr.feedback
+                        FROM bt_3_translations tr
+                        WHERE tr.user_id = dm.user_id
+                          AND tr.id_for_mistake_table = dm.sentence_id
+                          AND COALESCE(tr.source_lang, 'ru') = COALESCE(%s, 'ru')
+                          AND COALESCE(tr.target_lang, 'de') = COALESCE(%s, 'de')
+                        ORDER BY tr.timestamp DESC
+                        LIMIT 1
+                    ) latest_tr ON TRUE
+                    WHERE dm.user_id = %s
+                      AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
+                      AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
+                      AND COALESCE(NULLIF(dm.main_category, ''), 'Other mistake') = %s
+                      AND COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake') = %s
+                      AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                    ORDER BY COALESCE(dm.last_seen, dm.added_data, NOW()) DESC, COALESCE(dm.mistake_count, 1) DESC
+                    LIMIT %s;
+                    """,
+                    (
+                        source_lang or "ru",
+                        target_lang or "de",
+                        int(user_id),
+                        source_lang or "ru",
+                        target_lang or "de",
+                        main_category,
+                        sub_category,
+                        lookback_days,
+                        limit,
+                    ),
+                )
+                rows = cursor.fetchall()
+    except Exception:
+        return []
+    result: list[dict] = []
+    for row in rows:
+        source_sentence = str(row[0] or "").strip()
+        user_translation = str(row[1] or "").strip()
+        feedback = str(row[2] or "").strip()
+        if not source_sentence and not user_translation:
+            continue
+        result.append(
+            {
+                "source_sentence": source_sentence,
+                "user_translation": user_translation,
+                "feedback": feedback,
+            }
+        )
+    return result
+
+
 def get_lowest_mastery_skill(
     user_id: int,
     *,
@@ -4878,6 +4976,94 @@ def get_top_error_topic_for_skill(
         "sub_category": str(fallback[1] or "Unclassified mistake"),
         "mistakes": 0,
         "map_weight": float(fallback[2] or 1.0),
+    }
+
+
+def list_default_topics_for_user(
+    *,
+    user_id: int,
+    target_language: str,
+    limit: int = 100,
+) -> list[dict]:
+    normalized_target = str(target_language or "de").strip().lower() or "de"
+    safe_limit = max(1, min(int(limit or 100), 300))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT topic_name, error_category, error_subcategory, skill_id, created_at
+                FROM bt_3_default_topics
+                WHERE user_id = %s
+                  AND target_language = %s
+                ORDER BY created_at DESC
+                LIMIT %s;
+                """,
+                (int(user_id), normalized_target, safe_limit),
+            )
+            rows = cursor.fetchall()
+    return [
+        {
+            "topic_name": str(row[0] or ""),
+            "error_category": str(row[1] or "") or None,
+            "error_subcategory": str(row[2] or "") or None,
+            "skill_id": str(row[3] or "") or None,
+            "created_at": row[4].isoformat() if row[4] else None,
+        }
+        for row in rows
+    ]
+
+
+def add_default_topic_for_user(
+    *,
+    user_id: int,
+    target_language: str,
+    topic_name: str,
+    error_category: str | None = None,
+    error_subcategory: str | None = None,
+    skill_id: str | None = None,
+) -> dict | None:
+    normalized_target = str(target_language or "de").strip().lower() or "de"
+    resolved_topic = str(topic_name or "").strip()
+    if not resolved_topic:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_default_topics (
+                    user_id,
+                    target_language,
+                    topic_name,
+                    error_category,
+                    error_subcategory,
+                    skill_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, target_language, topic_name) DO UPDATE
+                SET
+                    error_category = COALESCE(EXCLUDED.error_category, bt_3_default_topics.error_category),
+                    error_subcategory = COALESCE(EXCLUDED.error_subcategory, bt_3_default_topics.error_subcategory),
+                    skill_id = COALESCE(EXCLUDED.skill_id, bt_3_default_topics.skill_id)
+                RETURNING topic_name, error_category, error_subcategory, skill_id, created_at;
+                """,
+                (
+                    int(user_id),
+                    normalized_target,
+                    resolved_topic,
+                    str(error_category or "").strip() or None,
+                    str(error_subcategory or "").strip() or None,
+                    str(skill_id or "").strip() or None,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "topic_name": str(row[0] or ""),
+        "error_category": str(row[1] or "") or None,
+        "error_subcategory": str(row[2] or "") or None,
+        "skill_id": str(row[3] or "") or None,
+        "created_at": row[4].isoformat() if row[4] else None,
     }
 
 

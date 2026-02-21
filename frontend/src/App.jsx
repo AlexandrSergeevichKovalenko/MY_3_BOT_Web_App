@@ -182,6 +182,14 @@ function AppInner() {
   const [todayPlanError, setTodayPlanError] = useState('');
   const [todayTestSending, setTodayTestSending] = useState(false);
   const [todayItemLoading, setTodayItemLoading] = useState({});
+  const [theoryLoading, setTheoryLoading] = useState(false);
+  const [theoryError, setTheoryError] = useState('');
+  const [theoryPackage, setTheoryPackage] = useState(null);
+  const [theoryPracticeOpen, setTheoryPracticeOpen] = useState(false);
+  const [theoryPracticeAnswers, setTheoryPracticeAnswers] = useState(['', '', '', '', '']);
+  const [theoryChecking, setTheoryChecking] = useState(false);
+  const [theoryFeedback, setTheoryFeedback] = useState(null);
+  const [theoryItemId, setTheoryItemId] = useState(null);
   const [audioGrammarEnabled, setAudioGrammarEnabled] = useState(false);
   const [audioGrammarLoading, setAudioGrammarLoading] = useState(false);
   const [audioGrammarSaving, setAudioGrammarSaving] = useState(false);
@@ -293,6 +301,7 @@ function AppInner() {
   const isStoryResultMode = Boolean(storyResult && isStorySession);
 
   const dictionaryRef = useRef(null);
+  const theoryRef = useRef(null);
   const readerRef = useRef(null);
   const readerArticleRef = useRef(null);
   const flashcardsRef = useRef(null);
@@ -1102,6 +1111,107 @@ function AppInner() {
     }
   };
 
+  const prepareTodayTheory = async (item, options = {}) => {
+    if (!initData || !item?.id) return;
+    const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+    try {
+      setTheoryLoading(true);
+      setTheoryError('');
+      setTheoryFeedback(null);
+      setTheoryPracticeOpen(false);
+      const response = await fetch('/api/today/theory/prepare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          item_id: item.id,
+          item_payload: payload,
+          lookback_days: payload.lookback_days || 14,
+          force_refresh: Boolean(options?.forceRefresh),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка подготовки теории', 'Fehler beim Vorbereiten der Theorie'));
+      }
+      const data = await response.json();
+      const pack = data?.package && typeof data.package === 'object' ? data.package : null;
+      const updatedItem = data?.updated_item && typeof data.updated_item === 'object' ? data.updated_item : null;
+      setTheoryPackage(pack);
+      setTheoryItemId(Number(item.id));
+      setTheoryPracticeAnswers(['', '', '', '', '']);
+      if (updatedItem) {
+        setTodayPlan((prev) => {
+          if (!prev || !Array.isArray(prev.items)) return prev;
+          return {
+            ...prev,
+            items: prev.items.map((planItem) => (planItem.id === updatedItem.id ? { ...planItem, ...updatedItem } : planItem)),
+          };
+        });
+      }
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось подготовить теорию.',
+        'Theorie konnte nicht vorbereitet werden.'
+      );
+      setTheoryError(friendly);
+    } finally {
+      setTheoryLoading(false);
+    }
+  };
+
+  const checkTodayTheory = async () => {
+    if (!initData || !theoryPackage) return;
+    const sentences = Array.isArray(theoryPackage?.practice_sentences) ? theoryPackage.practice_sentences : [];
+    if (!sentences.length) {
+      setTheoryError(tr('Нет предложений для проверки.', 'Keine Saetze zur Pruefung.'));
+      return;
+    }
+    if (theoryPracticeAnswers.some((item, index) => index < sentences.length && !String(item || '').trim())) {
+      setTheoryError(tr('Заполните переводы для всех предложений.', 'Bitte alle Uebersetzungen ausfuellen.'));
+      return;
+    }
+    try {
+      setTheoryChecking(true);
+      setTheoryError('');
+      const response = await fetch('/api/today/theory/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          item_id: theoryItemId,
+          focus: theoryPackage?.focus || {},
+          native_sentences: sentences,
+          translations: theoryPracticeAnswers.slice(0, sentences.length),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка проверки теории', 'Fehler beim Pruefen der Theorie'));
+      }
+      const data = await response.json();
+      setTheoryFeedback(data?.feedback || null);
+      const updatedItem = data?.updated_item && typeof data.updated_item === 'object' ? data.updated_item : null;
+      if (updatedItem) {
+        setTodayPlan((prev) => {
+          if (!prev || !Array.isArray(prev.items)) return prev;
+          return {
+            ...prev,
+            items: prev.items.map((planItem) => (planItem.id === updatedItem.id ? { ...planItem, ...updatedItem } : planItem)),
+          };
+        });
+      }
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось проверить теорию.',
+        'Theorie konnte nicht geprueft werden.'
+      );
+      setTheoryError(friendly);
+    } finally {
+      setTheoryChecking(false);
+    }
+  };
+
   const startTodayTask = async (item) => {
     if (!item?.id) return;
     const startedItem = await updateTodayItemStatus(item.id, 'start');
@@ -1114,6 +1224,11 @@ function AppInner() {
     }
     if (taskType === 'translation') {
       openSingleSectionAndScroll('translations', translationsRef);
+      return;
+    }
+    if (taskType === 'theory') {
+      openSingleSectionAndScroll('theory', theoryRef);
+      prepareTodayTheory(effectiveItem);
       return;
     }
     if (taskType === 'video' || taskType === 'youtube') {
@@ -1271,6 +1386,10 @@ function AppInner() {
     if (taskType === 'translation') {
       const sentences = Number(payload?.sentences || 5);
       return tr(`Перевод: ${sentences} предложений`, `Uebersetzung: ${sentences} Saetze`);
+    }
+    if (taskType === 'theory') {
+      const topic = String(payload?.sub_category || payload?.skill_title || payload?.main_category || '').trim();
+      return topic ? tr(`Теория: ${topic}`, `Theorie: ${topic}`) : tr('Теория', 'Theorie');
     }
     if (taskType === 'video' || taskType === 'youtube') {
       const focusTopic = String(
@@ -1691,7 +1810,7 @@ function AppInner() {
   };
 
   const showAllSections = () => {
-    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'analytics']));
+    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'analytics', 'theory']));
     setMoviesCollapsed(false);
   };
 
@@ -6236,6 +6355,139 @@ function AppInner() {
                         <div className="webapp-muted">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
                       )}
                     </div>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {!flashcardsOnly && isSectionVisible('theory') && (
+              <section className="webapp-section theory-section" ref={theoryRef}>
+                <div className="webapp-section-title webapp-section-title-with-logo">
+                  <h2>{tr('Теория', 'Theorie')}</h2>
+                  {isFocusedSection('theory') && (
+                    <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                      {tr('На главную', 'Startseite')}
+                    </button>
+                  )}
+                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                </div>
+                <div className="theory-actions-top">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      const theoryItem = (todayPlan?.items || []).find((entry) => String(entry?.task_type || '').toLowerCase() === 'theory');
+                      if (theoryItem) {
+                        prepareTodayTheory(theoryItem, { forceRefresh: true });
+                      }
+                    }}
+                  >
+                    {tr('Обновить', 'Aktualisieren')}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={goHomeScreen}
+                  >
+                    {tr('Закончить теорию', 'Theorie beenden')}
+                  </button>
+                </div>
+                {theoryLoading && <div className="webapp-muted">{tr('Готовим теорию...', 'Theorie wird vorbereitet...')}</div>}
+                {theoryError && <div className="webapp-error">{theoryError}</div>}
+                {!theoryLoading && !theoryError && theoryPackage && (
+                  <div className="theory-card">
+                    <div className="theory-focus-line">
+                      <strong>{tr('Фокус', 'Fokus')}:</strong>{' '}
+                      {String(theoryPackage?.focus?.skill_name || '')}
+                      {theoryPackage?.focus?.error_subcategory ? ` • ${String(theoryPackage.focus.error_subcategory)}` : ''}
+                    </div>
+                    <h3>{String(theoryPackage?.theory?.title || tr('Теория', 'Theorie'))}</h3>
+                    {theoryPackage?.theory?.core_explanation && <p>{String(theoryPackage.theory.core_explanation)}</p>}
+                    {theoryPackage?.theory?.why_mistake_happens && (
+                      <p><strong>{tr('Почему возникает ошибка', 'Warum der Fehler entsteht')}:</strong> {String(theoryPackage.theory.why_mistake_happens)}</p>
+                    )}
+                    {Array.isArray(theoryPackage?.theory?.step_by_step) && theoryPackage.theory.step_by_step.length > 0 && (
+                      <ol className="theory-steps">
+                        {theoryPackage.theory.step_by_step.map((item, index) => (
+                          <li key={`theory-step-${index}`}>{String(item || '')}</li>
+                        ))}
+                      </ol>
+                    )}
+                    {theoryPackage?.theory?.key_rule && (
+                      <div className="theory-key-rule">
+                        <strong>{tr('Главное правило', 'Wichtigste Regel')}:</strong> {String(theoryPackage.theory.key_rule)}
+                      </div>
+                    )}
+                    {Array.isArray(theoryPackage?.theory?.examples) && theoryPackage.theory.examples.length > 0 && (
+                      <div className="theory-examples">
+                        <h4>{tr('Примеры', 'Beispiele')}</h4>
+                        {theoryPackage.theory.examples.map((example, index) => (
+                          <div key={`theory-example-${index}`} className="theory-example-item">
+                            <div><strong>{String(example?.sentence || '')}</strong></div>
+                            <div>{String(example?.explanation || '')}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {theoryPackage?.theory?.memory_trick && (
+                      <div className="theory-memory-trick">
+                        <strong>{tr('Лайфхак', 'Merkhilfe')}:</strong> {String(theoryPackage.theory.memory_trick)}
+                      </div>
+                    )}
+
+                    <div className="theory-practice-toggle">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setTheoryPracticeOpen((prev) => !prev)}
+                      >
+                        {theoryPracticeOpen ? tr('Скрыть закрепление', 'Uebung verbergen') : tr('Закрепить теорию', 'Theorie festigen')}
+                      </button>
+                    </div>
+
+                    {theoryPracticeOpen && (
+                      <div className="theory-practice-block">
+                        <h4>{tr('Закрепление теории', 'Theorie-Festigung')}</h4>
+                        {(theoryPackage?.practice_sentences || []).map((sentence, index) => (
+                          <label key={`theory-practice-${index}`} className="webapp-field">
+                            <span>{index + 1}. {String(sentence || '')}</span>
+                            <textarea
+                              rows={2}
+                              value={theoryPracticeAnswers[index] || ''}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setTheoryPracticeAnswers((prev) => prev.map((item, idx) => (idx === index ? value : item)));
+                              }}
+                              placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
+                            />
+                          </label>
+                        ))}
+                        <button type="button" className="primary-button" onClick={checkTodayTheory} disabled={theoryChecking}>
+                          {theoryChecking ? tr('Проверяем...', 'Pruefen...') : tr('Проверить', 'Pruefen')}
+                        </button>
+                      </div>
+                    )}
+
+                    {theoryFeedback && (
+                      <div className="theory-feedback">
+                        <h4>{tr('Обратная связь', 'Feedback')}</h4>
+                        {(theoryFeedback?.items || []).map((row, index) => (
+                          <div className="theory-feedback-item" key={`theory-feedback-${index}`}>
+                            <div><strong>{index + 1}. {String(row?.native_sentence || '')}</strong></div>
+                            <div>{tr('Ваш перевод', 'Deine Uebersetzung')}: {String(row?.learner_translation || '')}</div>
+                            <div>{tr('Статус', 'Status')}: {row?.is_correct ? tr('Верно', 'Korrekt') : tr('Нужно исправить', 'Korrigieren')}</div>
+                            {row?.corrected_translation && <div>{tr('Исправленный вариант', 'Korrigierte Version')}: {String(row.corrected_translation)}</div>}
+                            {row?.what_is_good && <div>{tr('Что хорошо', 'Was gut ist')}: {String(row.what_is_good)}</div>}
+                            {row?.what_is_wrong && <div>{tr('Что не так', 'Was falsch ist')}: {String(row.what_is_wrong)}</div>}
+                            {row?.missed_rule && <div>{tr('Правило', 'Regel')}: {String(row.missed_rule)}</div>}
+                            {row?.tip && <div>{tr('Совет', 'Tipp')}: {String(row.tip)}</div>}
+                          </div>
+                        ))}
+                        {theoryFeedback?.summary_good && <div><strong>{tr('Вы уже умеете', 'Schon gut')}:</strong> {String(theoryFeedback.summary_good)}</div>}
+                        {theoryFeedback?.summary_improve && <div><strong>{tr('Нужно подтянуть', 'Verbessern')}:</strong> {String(theoryFeedback.summary_improve)}</div>}
+                        {theoryFeedback?.memory_secret && <div><strong>{tr('Секрет запоминания', 'Merk-Geheimnis')}:</strong> {String(theoryFeedback.memory_secret)}</div>}
+                      </div>
+                    )}
                   </div>
                 )}
               </section>

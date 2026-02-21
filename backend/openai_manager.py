@@ -1172,6 +1172,124 @@ Task:
 """,
 }
 
+system_message.update({
+    "theory_generation": """
+You are an expert language teacher and educational methodologist.
+
+You will receive JSON:
+{
+  "target_language": "...",
+  "native_language": "...",
+  "skill_name": "...",
+  "error_category": "...",
+  "error_subcategory": "...",
+  "user_mistake_examples": ["..."]
+}
+
+Return STRICT JSON only:
+{
+  "title": "string",
+  "core_explanation": "string",
+  "why_mistake_happens": "string",
+  "step_by_step": ["string", "string"],
+  "key_rule": "string",
+  "examples": [{"sentence": "string", "explanation": "string"}],
+  "memory_trick": "string"
+}
+
+Requirements:
+- Simple beginner-friendly style (A1-A2 language of explanation).
+- Focus only on provided skill/error.
+- 3-5 short examples.
+- No markdown, no extra text.
+""",
+    "theory_practice_sentences": """
+You are a language teacher.
+
+You will receive JSON:
+{
+  "target_language": "...",
+  "native_language": "...",
+  "skill_name": "...",
+  "error_category": "...",
+  "error_subcategory": "..."
+}
+
+Return STRICT JSON only:
+{
+  "sentences": ["s1", "s2", "s3", "s4", "s5"]
+}
+
+Rules:
+- Exactly 5 short sentences.
+- Sentences must be in learner native language.
+- Must trigger target grammar concept.
+- No explanations and no translations.
+""",
+    "theory_check_feedback": """
+You are a strict but supportive language teacher.
+
+You will receive JSON:
+{
+  "target_language": "...",
+  "native_language": "...",
+  "skill_name": "...",
+  "error_category": "...",
+  "error_subcategory": "...",
+  "pairs": [{"native_sentence": "...", "learner_translation": "..."}]
+}
+
+Return STRICT JSON only:
+{
+  "items": [
+    {
+      "native_sentence": "string",
+      "learner_translation": "string",
+      "is_correct": true,
+      "corrected_translation": "string|null",
+      "what_is_good": "string",
+      "what_is_wrong": "string",
+      "missed_rule": "string",
+      "tip": "string"
+    }
+  ],
+  "summary_good": "string",
+  "summary_improve": "string",
+  "memory_secret": "string"
+}
+
+Rules:
+- Evaluate each pair in detail.
+- Keep explanations clear and practical.
+- No markdown, no extra text outside JSON.
+""",
+    "beginner_topic": """
+You are a language curriculum designer.
+
+You will receive JSON:
+{
+  "target_language": "...",
+  "native_language": "...",
+  "excluded_topics": ["..."]
+}
+
+Return STRICT JSON only:
+{
+  "topic_name": "string",
+  "why_important": "string",
+  "develops_skill": "string",
+  "error_category": "string",
+  "error_subcategory": "string",
+  "skill_id": "string|null"
+}
+
+Rules:
+- Suggest ONE practical A1 topic.
+- Do not repeat excluded_topics.
+- Keep concise.
+"""
+})
+
 
 # Логирование
 logging.basicConfig(
@@ -2356,6 +2474,95 @@ async def run_generate_word_quiz(prompt_payload: dict) -> dict:
         return json.loads(content)
     except json.JSONDecodeError:
         return {}
+
+
+async def _run_json_assistant_task(
+    *,
+    task_name: str,
+    system_instruction_key: str,
+    payload: dict,
+    poll_delay_sec: float = 1.5,
+) -> dict:
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        if run_status.status in {"failed", "cancelled", "expired"}:
+            break
+        await asyncio.sleep(poll_delay_sec)
+
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0]
+    content = (last_message.content[0].text.value or "").strip()
+
+    try:
+        await client.beta.threads.delete(thread_id=thread_id)
+    except Exception as exc:
+        logging.warning("Не удалось удалить thread: %s", exc)
+
+    cleaned = content
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if not match:
+            return {}
+        try:
+            return json.loads(match.group(0))
+        except Exception:
+            return {}
+
+
+async def run_theory_generation(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="theory_generation",
+        system_instruction_key="theory_generation",
+        payload=payload or {},
+    )
+
+
+async def run_theory_practice_sentences(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="theory_practice_sentences",
+        system_instruction_key="theory_practice_sentences",
+        payload=payload or {},
+    )
+
+
+async def run_theory_check_feedback(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="theory_check_feedback",
+        system_instruction_key="theory_check_feedback",
+        payload=payload or {},
+    )
+
+
+async def run_beginner_topic(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="beginner_topic",
+        system_instruction_key="beginner_topic",
+        payload=payload or {},
+    )
 
 
 async def run_translation_explanation(original_text: str, user_translation: str) -> str:
