@@ -2224,6 +2224,11 @@ function AppInner() {
 
   useEffect(() => {
     if (!telegramApp) return;
+    let fullscreenRetryCount = 0;
+    let fullscreenRetryTimer = null;
+    let expandPulseTimer = null;
+    let stopped = false;
+
     const detectTabletLikeViewport = () => {
       const viewportWidth = window.innerWidth || 0;
       const viewportHeight = window.innerHeight || 0;
@@ -2235,6 +2240,7 @@ function AppInner() {
     };
 
     const tryEnterTelegramFullscreen = () => {
+      if (stopped) return;
       if (typeof telegramApp.requestFullscreen !== 'function') {
         setTelegramFullscreenMode(false);
         telegramApp.expand?.();
@@ -2246,11 +2252,19 @@ function AppInner() {
           setTelegramFullscreenMode(Boolean(isFullscreen));
           if (!isFullscreen) {
             telegramApp.expand?.();
+            if (fullscreenRetryCount < 6) {
+              fullscreenRetryCount += 1;
+              fullscreenRetryTimer = window.setTimeout(tryEnterTelegramFullscreen, 320);
+            }
           }
         })
         .catch(() => {
           setTelegramFullscreenMode(false);
           telegramApp.expand?.();
+          if (fullscreenRetryCount < 6) {
+            fullscreenRetryCount += 1;
+            fullscreenRetryTimer = window.setTimeout(tryEnterTelegramFullscreen, 320);
+          }
         });
     };
 
@@ -2279,6 +2293,7 @@ function AppInner() {
     const onFirstUserGesture = () => {
       if (!detectTabletLikeViewport()) return;
       try {
+        fullscreenRetryCount = 0;
         tryEnterTelegramFullscreen();
       } catch (error) {
         // ignore
@@ -2292,17 +2307,51 @@ function AppInner() {
     }
 
     const onResize = () => {
+      fullscreenRetryCount = 0;
       syncViewportMode();
     };
+    const onFocus = () => {
+      fullscreenRetryCount = 0;
+      syncViewportMode();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fullscreenRetryCount = 0;
+        syncViewportMode();
+      }
+    };
     window.addEventListener('resize', onResize);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pointerdown', onFirstUserGesture, { passive: true });
+    window.addEventListener('touchstart', onFirstUserGesture, { passive: true });
+    window.addEventListener('click', onFirstUserGesture, { passive: true });
     if (typeof telegramApp.onEvent === 'function') {
       telegramApp.onEvent('viewportChanged', syncViewportMode);
     }
+    expandPulseTimer = window.setTimeout(() => {
+      if (stopped) return;
+      syncViewportMode();
+    }, 180);
+    window.setTimeout(() => {
+      if (stopped) return;
+      syncViewportMode();
+    }, 620);
+    window.setTimeout(() => {
+      if (stopped) return;
+      syncViewportMode();
+    }, 1200);
 
     return () => {
+      stopped = true;
+      if (fullscreenRetryTimer) window.clearTimeout(fullscreenRetryTimer);
+      if (expandPulseTimer) window.clearTimeout(expandPulseTimer);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pointerdown', onFirstUserGesture);
+      window.removeEventListener('touchstart', onFirstUserGesture);
+      window.removeEventListener('click', onFirstUserGesture);
       if (typeof telegramApp.offEvent === 'function') {
         telegramApp.offEvent('viewportChanged', syncViewportMode);
       }
@@ -3595,12 +3644,15 @@ function AppInner() {
     if (!initData) return;
     const normalized = await normalizeForLookup(rawText);
     if (!normalized) return;
+    const lookupLangHint = normalizeLangCode(
+      selectionLookupLang || (hasCyrillic(normalized) ? 'ru' : getNormalizeLookupLang())
+    );
     setSelectionInlineLookup({ loading: true, word: normalized, translation: '', direction: '' });
     try {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word: normalized }),
+        body: JSON.stringify({ initData, word: normalized, lookup_lang: lookupLangHint || undefined }),
       });
       if (!response.ok) throw new Error('lookup failed');
       const data = await response.json();
@@ -3627,6 +3679,9 @@ function AppInner() {
       return;
     }
     const normalized = await normalizeForLookup(cleaned);
+    const lookupLangHint = normalizeLangCode(
+      selectionLookupLang || (hasCyrillic(normalized) ? 'ru' : getNormalizeLookupLang())
+    );
     setDictionaryLoading(true);
     setDictionaryError('');
     setDictionarySaved('');
@@ -3638,7 +3693,7 @@ function AppInner() {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word: normalized }),
+        body: JSON.stringify({ initData, word: normalized, lookup_lang: lookupLangHint || undefined }),
       });
       if (!response.ok) {
         let message = await response.text();

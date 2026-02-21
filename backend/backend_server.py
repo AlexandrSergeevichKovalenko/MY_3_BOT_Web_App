@@ -3993,6 +3993,7 @@ def lookup_webapp_dictionary():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     word_ru = (payload.get("word") or "").strip()
+    lookup_lang = _normalize_short_lang_code(payload.get("lookup_lang"), fallback="")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -4013,7 +4014,10 @@ def lookup_webapp_dictionary():
 
     try:
         if _is_legacy_ru_de_pair(source_lang, target_lang):
-            is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word_ru)
+            if lookup_lang in {"ru", "de"}:
+                is_ru = lookup_lang == "ru"
+            else:
+                is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word_ru)
             if is_ru:
                 cached = get_dictionary_cache(word_ru)
                 if cached:
@@ -4038,20 +4042,30 @@ def lookup_webapp_dictionary():
                 upsert_dictionary_cache(word_ru, result)
             direction = "ru-de" if is_ru else "de-ru"
         else:
+            # If client tells us the language of selected word, we force lookup
+            # direction to avoid ambiguous "same word" responses.
+            query_source_lang = source_lang
+            query_target_lang = target_lang
+            if lookup_lang and lookup_lang == target_lang:
+                query_source_lang = target_lang
+                query_target_lang = source_lang
+            elif lookup_lang and lookup_lang == source_lang:
+                query_source_lang = source_lang
+                query_target_lang = target_lang
             raw = asyncio.run(
                 run_dictionary_lookup_multilang(
                     word=word_ru,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
+                    source_lang=query_source_lang,
+                    target_lang=query_target_lang,
                 )
             )
             result, detected, source_value, target_value = _build_multilang_dictionary_result(
                 raw=raw,
                 query_word=word_ru,
-                source_lang=source_lang,
-                target_lang=target_lang,
+                source_lang=query_source_lang,
+                target_lang=query_target_lang,
             )
-            direction = f"{source_lang}-{target_lang}" if detected != "target" else f"{target_lang}-{source_lang}"
+            direction = f"{query_source_lang}-{query_target_lang}" if detected != "target" else f"{query_target_lang}-{query_source_lang}"
 
             # Fallback for cases where model returns identical source/target.
             # Example: RU->IT, query in Italian, but source translation is missing.
@@ -4059,8 +4073,8 @@ def lookup_webapp_dictionary():
                 reverse_raw = asyncio.run(
                     run_dictionary_lookup_multilang(
                         word=word_ru,
-                        source_lang=target_lang,
-                        target_lang=source_lang,
+                        source_lang=query_target_lang,
+                        target_lang=query_source_lang,
                     )
                 )
                 reverse_target = str(reverse_raw.get("word_target") or "").strip()
@@ -4071,8 +4085,8 @@ def lookup_webapp_dictionary():
                 else:
                     forced = _force_translate_text(
                         text=word_ru,
-                        source_lang=target_lang,
-                        target_lang=source_lang,
+                        source_lang=query_source_lang,
+                        target_lang=query_target_lang,
                     )
                     if forced and forced.casefold() != target_value.casefold():
                         result["word_ru"] = forced
