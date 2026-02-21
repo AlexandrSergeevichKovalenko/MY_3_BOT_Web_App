@@ -898,43 +898,116 @@ def _build_video_search_queries(
     *,
     skill_title: str | None = None,
     examples: list[str] | None = None,
+    target_lang: str = "de",
 ) -> list[str]:
+    target = _normalize_short_lang_code(target_lang, fallback="de")
     sub = str(sub_category or "").strip()
     main = str(main_category or "").strip()
     skill = str(skill_title or "").strip()
+
+    def _translate_term_for_video_search(raw: str) -> str:
+        cleaned = " ".join(str(raw or "").strip().split())
+        if not cleaned:
+            return ""
+        if target == "de" and re.search(r"[äöüßÄÖÜ]", cleaned):
+            return cleaned
+        if target == "ru" and re.search(r"[А-Яа-яЁё]", cleaned):
+            return cleaned
+        source_guess = _detect_reader_language(cleaned, fallback="en")
+        source_guess = _normalize_short_lang_code(source_guess, fallback="en")
+        if source_guess == target:
+            return cleaned
+        try:
+            translated = asyncio.run(
+                run_translate_subtitles_multilang(
+                    lines=[cleaned],
+                    source_lang=source_guess,
+                    target_lang=target,
+                )
+            )
+            candidate = str((translated or [""])[0] or "").strip()
+            if candidate:
+                return candidate
+        except Exception:
+            logging.debug("Video query translation failed for '%s' -> %s", cleaned, target, exc_info=True)
+        return cleaned
+
+    sub_local = _translate_term_for_video_search(sub)
+    main_local = _translate_term_for_video_search(main)
+    skill_local = _translate_term_for_video_search(skill)
+
+    phrase_map = {
+        "de": {
+            "lang_word": "deutsch",
+            "grammar_explained": "grammatik erklaert",
+            "grammar_practice": "grammatik uebung",
+            "learn": "deutsch lernen",
+            "baseline": "deutsch grammatik b1 b2",
+        },
+        "en": {
+            "lang_word": "english",
+            "grammar_explained": "grammar explained",
+            "grammar_practice": "grammar practice",
+            "learn": "learn english",
+            "baseline": "english grammar b1 b2",
+        },
+        "es": {
+            "lang_word": "espanol",
+            "grammar_explained": "gramatica explicada",
+            "grammar_practice": "ejercicios de gramatica",
+            "learn": "aprender espanol",
+            "baseline": "gramatica espanol b1 b2",
+        },
+        "it": {
+            "lang_word": "italiano",
+            "grammar_explained": "grammatica spiegata",
+            "grammar_practice": "esercizi di grammatica",
+            "learn": "imparare italiano",
+            "baseline": "grammatica italiano b1 b2",
+        },
+        "ru": {
+            "lang_word": "русский",
+            "grammar_explained": "грамматика объяснение",
+            "grammar_practice": "грамматика упражнения",
+            "learn": "учить русский",
+            "baseline": "русская грамматика b1 b2",
+        },
+    }
+    phrases = phrase_map.get(target, phrase_map["de"])
+
     sample_items = []
     if isinstance(examples, list):
         for item in examples[:3]:
             text = " ".join(str(item or "").strip().split())
             if text:
-                sample_items.append(text[:80])
+                sample_items.append(_translate_term_for_video_search(text[:80]))
 
     queries: list[str] = []
-    if sub:
+    if sub_local:
         queries.extend(
             [
-                f"{sub} deutsch grammatik erklaert",
-                f"{sub} deutsch grammatik uebung",
-                f"{sub} deutsch lernen b1 b2",
+                f"{sub_local} {phrases['lang_word']} {phrases['grammar_explained']}",
+                f"{sub_local} {phrases['lang_word']} {phrases['grammar_practice']}",
+                f"{sub_local} {phrases['learn']} b1 b2",
             ]
         )
-    if main:
+    if main_local:
         queries.extend(
             [
-                f"{main} deutsch grammatik erklaert",
-                f"{main} deutsch lernen",
+                f"{main_local} {phrases['lang_word']} {phrases['grammar_explained']}",
+                f"{main_local} {phrases['learn']}",
             ]
         )
-    if skill:
+    if skill_local:
         queries.extend(
             [
-                f"{skill} deutsch grammatik erklaert",
-                f"{skill} deutsch lernen",
+                f"{skill_local} {phrases['lang_word']} {phrases['grammar_explained']}",
+                f"{skill_local} {phrases['learn']}",
             ]
         )
     for sample in sample_items:
-        queries.append(f"{sample} deutsch grammatik erklaerung")
-    queries.append("deutsch grammatik b1 b2")
+        queries.append(f"{sample} {phrases['lang_word']} {phrases['grammar_explained']}")
+    queries.append(phrases["baseline"])
 
     unique: list[str] = []
     seen: set[str] = set()
@@ -947,7 +1020,7 @@ def _build_video_search_queries(
     return unique
 
 
-def _youtube_search_videos(query: str, *, max_results: int = 5) -> list[dict]:
+def _youtube_search_videos(query: str, *, max_results: int = 5, target_lang: str = "de") -> list[dict]:
     if not YOUTUBE_API_KEY or not query:
         logging.info("YT search skipped: query='%s' key_present=%s", query, bool(YOUTUBE_API_KEY))
         return []
@@ -977,10 +1050,18 @@ def _youtube_search_videos(query: str, *, max_results: int = 5) -> list[dict]:
                 collected.append({"video_id": video_id, "title": title})
                 preferred_hits += 1
         if not collected:
+            lang_code = _normalize_short_lang_code(target_lang, fallback="de")
+            region_map = {
+                "de": "DE",
+                "en": "US",
+                "es": "ES",
+                "it": "IT",
+                "ru": "RU",
+            }
             fallback_params = {
                 **common_params,
-                "relevanceLanguage": "de",
-                "regionCode": "DE",
+                "relevanceLanguage": lang_code,
+                "regionCode": region_map.get(lang_code, "DE"),
             }
             resp = requests.get(base_url, params=fallback_params, timeout=12)
             if resp.status_code < 400:
@@ -1058,16 +1139,18 @@ def _pick_today_recommended_video(
     *,
     skill_title: str | None = None,
     examples: list[str] | None = None,
+    target_lang: str = "de",
 ) -> dict | None:
     queries = _build_video_search_queries(
         main_category,
         sub_category,
         skill_title=skill_title,
         examples=examples,
+        target_lang=target_lang,
     )
     logging.info("YT recommendation queries: %s", queries)
     for query in queries:
-        videos = _youtube_search_videos(query, max_results=5)
+        videos = _youtube_search_videos(query, max_results=5, target_lang=target_lang)
         if not videos:
             continue
         videos = _youtube_fill_view_counts(videos)
@@ -1270,6 +1353,7 @@ def _build_today_plan_for_user(
             weak_topic.get("sub_category") if weak_topic else None,
             skill_title=weakest_skill.get("skill_title") if weakest_skill else None,
             examples=weak_sentences[:5],
+            target_lang=target_lang,
         )
         items.append(
             {
@@ -4501,6 +4585,7 @@ def recommend_today_video():
             sub_category or None,
             skill_title=skill_title or None,
             examples=examples_payload[:5],
+            target_lang=target_lang,
         )
         if not recommended_video:
             logging.warning(
@@ -5334,6 +5419,7 @@ def start_skill_practice(skill_id: str):
     recommended_video = _pick_today_recommended_video(
         str(main_category or ""),
         str(sub_category or ""),
+        target_lang=target_lang,
     )
     return jsonify(
         {
