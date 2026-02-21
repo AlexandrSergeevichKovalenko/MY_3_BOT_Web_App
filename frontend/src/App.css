@@ -4774,42 +4774,6 @@ body {
   place-items: center;
 }
 
-.weekly-plan-progress-ring svg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  transform: rotate(-90deg);
-}
-
-.weekly-plan-progress-ring .ring-track {
-  fill: none;
-  stroke: rgba(94, 117, 159, 0.35);
-}
-
-.weekly-plan-progress-ring .ring-track-outer {
-  stroke-width: 5;
-}
-
-.weekly-plan-progress-ring .ring-track-inner {
-  stroke-width: 4;
-}
-
-.weekly-plan-progress-ring .ring-progress {
-  fill: none;
-  stroke-linecap: round;
-}
-
-.weekly-plan-progress-ring .ring-progress-outer {
-  stroke: #7bf1b3;
-  stroke-width: 5;
-}
-
-.weekly-plan-progress-ring .ring-progress-inner {
-  stroke: #facc15;
-  stroke-width: 4;
-}
-
 .weekly-plan-progress-ring span {
   position: relative;
   z-index: 1;

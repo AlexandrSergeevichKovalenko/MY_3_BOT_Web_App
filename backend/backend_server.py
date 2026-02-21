@@ -4330,106 +4330,82 @@ def lookup_webapp_dictionary():
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
-        if _is_legacy_ru_de_pair(source_lang, target_lang):
-            if lookup_lang in {"ru", "de"}:
-                is_ru = lookup_lang == "ru"
-            else:
-                is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word_ru)
-            if is_ru:
-                cached = get_dictionary_cache(word_ru)
-                if cached:
-                    cached_item = _decorate_dictionary_item(
-                        cached if isinstance(cached, dict) else {},
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        direction="ru-de",
-                    )
-                    return jsonify(
-                        {
-                            "ok": True,
-                            "item": cached_item,
-                            "direction": "ru-de",
-                            "language_pair": _build_language_pair_payload(source_lang, target_lang),
-                        }
-                    )
-                result = asyncio.run(run_dictionary_lookup(word_ru))
-            else:
-                result = asyncio.run(run_dictionary_lookup_de(word_ru))
-            if result and is_ru:
-                upsert_dictionary_cache(word_ru, result)
-            direction = "ru-de" if is_ru else "de-ru"
-        else:
-            # If client tells us the language of selected word, we force lookup
-            # direction to avoid ambiguous "same word" responses.
+        # Unified multilang lookup for all language pairs (including legacy RU<->DE)
+        # to keep inline popup translation stable in reader/overlay modes.
+        query_source_lang = source_lang
+        query_target_lang = target_lang
+        if lookup_lang and lookup_lang == target_lang:
+            query_source_lang = target_lang
+            query_target_lang = source_lang
+        elif lookup_lang and lookup_lang == source_lang:
             query_source_lang = source_lang
             query_target_lang = target_lang
-            if lookup_lang and lookup_lang == target_lang:
-                query_source_lang = target_lang
-                query_target_lang = source_lang
-            elif lookup_lang and lookup_lang == source_lang:
-                query_source_lang = source_lang
-                query_target_lang = target_lang
-            raw = asyncio.run(
-                run_dictionary_lookup_multilang(
-                    word=word_ru,
-                    source_lang=query_source_lang,
-                    target_lang=query_target_lang,
-                )
-            )
-            result, detected, source_value, target_value = _build_multilang_dictionary_result(
-                raw=raw,
-                query_word=word_ru,
+        elif _is_legacy_ru_de_pair(source_lang, target_lang):
+            # Legacy fallback without explicit hint: infer by alphabet.
+            is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word_ru)
+            query_source_lang = "ru" if is_ru else "de"
+            query_target_lang = "de" if is_ru else "ru"
+
+        raw = asyncio.run(
+            run_dictionary_lookup_multilang(
+                word=word_ru,
                 source_lang=query_source_lang,
                 target_lang=query_target_lang,
             )
-            if lookup_lang and lookup_lang in {query_source_lang, query_target_lang}:
-                # Hard-fix direction from explicit UI language hint to avoid
-                # wrong reversals when model mis-detects the query language.
-                direction = f"{query_source_lang}-{query_target_lang}"
-            else:
-                direction = f"{query_source_lang}-{query_target_lang}" if detected != "target" else f"{query_target_lang}-{query_source_lang}"
+        )
+        result, detected, source_value, target_value = _build_multilang_dictionary_result(
+            raw=raw,
+            query_word=word_ru,
+            source_lang=query_source_lang,
+            target_lang=query_target_lang,
+        )
+        if lookup_lang and lookup_lang in {query_source_lang, query_target_lang}:
+            # Hard-fix direction from explicit UI language hint to avoid
+            # wrong reversals when model mis-detects the query language.
+            direction = f"{query_source_lang}-{query_target_lang}"
+        else:
+            direction = f"{query_source_lang}-{query_target_lang}" if detected != "target" else f"{query_target_lang}-{query_source_lang}"
 
-            # Fallback for cases where model returns identical source/target.
-            # Example: RU->IT, query in Italian, but source translation is missing.
-            if not source_value or source_value.casefold() == target_value.casefold():
-                reverse_raw = asyncio.run(
-                    run_dictionary_lookup_multilang(
-                        word=word_ru,
-                        source_lang=query_target_lang,
-                        target_lang=query_source_lang,
-                    )
+        # Fallback for cases where model returns identical source/target.
+        if not source_value or source_value.casefold() == target_value.casefold():
+            reverse_raw = asyncio.run(
+                run_dictionary_lookup_multilang(
+                    word=word_ru,
+                    source_lang=query_target_lang,
+                    target_lang=query_source_lang,
                 )
-                reverse_target = str(reverse_raw.get("word_target") or "").strip()
-                if reverse_target and reverse_target.casefold() != target_value.casefold():
-                    result["word_ru"] = reverse_target
-                    result["translation_ru"] = reverse_target
-                    result["source_text"] = reverse_target
-                else:
-                    forced = _force_translate_text(
-                        text=word_ru,
-                        source_lang=query_source_lang,
-                        target_lang=query_target_lang,
-                    )
-                    if forced and forced.casefold() != target_value.casefold():
-                        result["word_ru"] = forced
-                        result["translation_ru"] = forced
-                        result["source_text"] = forced
-            # If explicit lookup language is provided and selected word is from
-            # query_source_lang, ensure target side is truly translated.
-            if lookup_lang and lookup_lang == query_source_lang:
-                current_target = str(result.get("target_text") or "").strip()
-                current_source = str(result.get("source_text") or word_ru).strip()
-                if not current_target or current_target.casefold() == current_source.casefold():
-                    forced_target = _force_translate_text(
-                        text=word_ru,
-                        source_lang=query_source_lang,
-                        target_lang=query_target_lang,
-                    )
-                    if forced_target and forced_target.casefold() != current_source.casefold():
-                        result["target_text"] = forced_target
-                        result["translation_de"] = forced_target
-                        result["word_de"] = forced_target
-                        target_value = forced_target
+            )
+            reverse_target = str(reverse_raw.get("word_target") or "").strip()
+            if reverse_target and reverse_target.casefold() != target_value.casefold():
+                result["word_ru"] = reverse_target
+                result["translation_ru"] = reverse_target
+                result["source_text"] = reverse_target
+            else:
+                forced = _force_translate_text(
+                    text=word_ru,
+                    source_lang=query_source_lang,
+                    target_lang=query_target_lang,
+                )
+                if forced and forced.casefold() != target_value.casefold():
+                    result["word_ru"] = forced
+                    result["translation_ru"] = forced
+                    result["source_text"] = forced
+        # If explicit lookup language is provided and selected word is from
+        # query_source_lang, ensure target side is truly translated.
+        if lookup_lang and lookup_lang == query_source_lang:
+            current_target = str(result.get("target_text") or "").strip()
+            current_source = str(result.get("source_text") or word_ru).strip()
+            if not current_target or current_target.casefold() == current_source.casefold():
+                forced_target = _force_translate_text(
+                    text=word_ru,
+                    source_lang=query_source_lang,
+                    target_lang=query_target_lang,
+                )
+                if forced_target and forced_target.casefold() != current_source.casefold():
+                    result["target_text"] = forced_target
+                    result["translation_de"] = forced_target
+                    result["word_de"] = forced_target
+                    target_value = forced_target
     except Exception as exc:
         return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
 

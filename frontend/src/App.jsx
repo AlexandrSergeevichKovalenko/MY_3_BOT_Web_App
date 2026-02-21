@@ -3803,11 +3803,14 @@ function AppInner() {
     setDictionarySaved('');
     setDictionaryWord(normalized);
     setLastLookupScrollY(window.scrollY);
+    const lookupLangHint = normalizeLangCode(
+      selectionLookupLang || (hasCyrillic(normalized) ? 'ru' : getNormalizeLookupLang())
+    );
     try {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word: normalized }),
+        body: JSON.stringify({ initData, word: normalized, lookup_lang: lookupLangHint || undefined }),
       });
       if (!response.ok) {
         let message = await response.text();
@@ -6379,12 +6382,21 @@ function AppInner() {
                       const completionClamped = Math.max(0, Math.min(100, completion));
                       const ringExpected = expectedProgressPercent;
                       const forecastDelta = Number(item.data?.forecast_delta_vs_goal || 0);
-                      const outerRadius = 27;
-                      const innerRadius = 21;
-                      const outerLength = 2 * Math.PI * outerRadius;
-                      const innerLength = 2 * Math.PI * innerRadius;
-                      const outerOffset = outerLength * (1 - (completionClamped / 100));
-                      const innerOffset = innerLength * (1 - (ringExpected / 100));
+                      const deficit = Math.max(0, ringExpected - completionClamped);
+                      const ahead = Math.max(0, completionClamped - ringExpected);
+                      const expectedPart = Math.min(completionClamped, ringExpected);
+                      const remainder = Math.max(0, 100 - Math.max(completionClamped, ringExpected));
+                      let ringGradient = '';
+                      if (deficit > 0.01) {
+                        ringGradient = `conic-gradient(#7bf1b3 0% ${expectedPart}%, #ff6b6b ${expectedPart}% ${ringExpected}%, rgba(94, 117, 159, 0.35) ${ringExpected}% 100%)`;
+                      } else if (ahead > 0.01) {
+                        ringGradient = `conic-gradient(#7bf1b3 0% ${ringExpected}%, #60a5fa ${ringExpected}% ${completionClamped}%, rgba(94, 117, 159, 0.35) ${completionClamped}% 100%)`;
+                      } else {
+                        ringGradient = `conic-gradient(#7bf1b3 0% ${completionClamped}%, rgba(94, 117, 159, 0.35) ${completionClamped}% 100%)`;
+                      }
+                      const completionRingStyle = {
+                        background: `radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), ${ringGradient}`,
+                      };
                       const forecastClass = forecastDelta >= 0 ? 'is-good' : 'is-bad';
                       const expanded = Boolean(weeklyMetricExpanded[item.key]);
                       return (
@@ -6395,28 +6407,8 @@ function AppInner() {
                               <p>{tr('План/Факт/Прогноз', 'Plan/Ist/Prognose')}</p>
                             </div>
                             <div className="weekly-plan-metric-actions">
-                              <div className="weekly-plan-progress-ring" title={`${tr('Факт', 'Ist')}: ${formatWeeklyValue(completionClamped, 1)}% • ${tr('Должно быть к текущему дню', 'Soll bis heute sein')}: ${formatWeeklyValue(ringExpected, 1)}%`}>
-                                <svg viewBox="0 0 64 64" aria-hidden="true">
-                                  <circle className="ring-track ring-track-outer" cx="32" cy="32" r={outerRadius} />
-                                  <circle
-                                    className="ring-progress ring-progress-outer"
-                                    cx="32"
-                                    cy="32"
-                                    r={outerRadius}
-                                    strokeDasharray={outerLength}
-                                    strokeDashoffset={outerOffset}
-                                  />
-                                  <circle className="ring-track ring-track-inner" cx="32" cy="32" r={innerRadius} />
-                                  <circle
-                                    className="ring-progress ring-progress-inner"
-                                    cx="32"
-                                    cy="32"
-                                    r={innerRadius}
-                                    strokeDasharray={innerLength}
-                                    strokeDashoffset={innerOffset}
-                                  />
-                                </svg>
-                                <span>{formatWeeklyValue(completion, 1)}%</span>
+                              <div className="weekly-plan-progress-ring" style={completionRingStyle} title={`${tr('Факт', 'Ist')}: ${Math.round(completionClamped)}% • ${tr('Должно быть к текущему дню', 'Soll bis heute sein')}: ${Math.round(ringExpected)}%`}>
+                                <span>{Math.round(completionClamped)}%</span>
                               </div>
                               <button
                                 type="button"
@@ -7343,7 +7335,7 @@ function AppInner() {
                                         {renderClickableText(overlayDeText, {
                                           className: 'overlay-clickable-word',
                                           compact: true,
-                                          inlineLookup: youtubeAppFullscreen,
+                                          inlineLookup: true,
                                           lookupLang: getNormalizeLookupLang(),
                                         })}
                                       </p>
