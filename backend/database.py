@@ -1333,6 +1333,94 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_default_topics (user_id, target_language, topic_name);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_billing_price_snapshots (
+                    id BIGSERIAL PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    sku TEXT NOT NULL,
+                    unit TEXT NOT NULL,
+                    price_per_unit NUMERIC(20, 10) NOT NULL DEFAULT 0,
+                    currency TEXT NOT NULL DEFAULT 'USD',
+                    valid_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    raw_payload JSONB,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (price_per_unit >= 0)
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_billing_price_snapshots_provider_sku_unit_from
+                ON bt_3_billing_price_snapshots (provider, sku, unit, valid_from);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_billing_price_snapshots_lookup
+                ON bt_3_billing_price_snapshots (provider, sku, unit, currency, valid_from DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_billing_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    idempotency_key TEXT NOT NULL,
+                    user_id BIGINT,
+                    source_lang TEXT,
+                    target_lang TEXT,
+                    action_type TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    units_type TEXT NOT NULL,
+                    units_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    price_snapshot_id BIGINT REFERENCES bt_3_billing_price_snapshots(id) ON DELETE SET NULL,
+                    cost_amount NUMERIC(20, 10) NOT NULL DEFAULT 0,
+                    currency TEXT NOT NULL DEFAULT 'USD',
+                    status TEXT NOT NULL DEFAULT 'estimated',
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    event_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (units_value >= 0),
+                    CHECK (cost_amount >= 0),
+                    CHECK (status IN ('estimated', 'final'))
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_billing_events_idempotency
+                ON bt_3_billing_events (idempotency_key);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_billing_events_user_time
+                ON bt_3_billing_events (user_id, event_time DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_billing_events_action_provider
+                ON bt_3_billing_events (action_type, provider, event_time DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_billing_events_currency_time
+                ON bt_3_billing_events (currency, event_time DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_billing_fixed_costs (
+                    id BIGSERIAL PRIMARY KEY,
+                    category TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'infra',
+                    amount NUMERIC(20, 10) NOT NULL DEFAULT 0,
+                    currency TEXT NOT NULL DEFAULT 'USD',
+                    period_start DATE NOT NULL,
+                    period_end DATE NOT NULL,
+                    allocation_method_default TEXT NOT NULL DEFAULT 'equal',
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (amount >= 0),
+                    CHECK (period_end >= period_start),
+                    CHECK (allocation_method_default IN ('equal', 'weighted'))
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_billing_fixed_costs_period
+                ON bt_3_billing_fixed_costs (category, provider, period_start, period_end, currency);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_billing_fixed_costs_range
+                ON bt_3_billing_fixed_costs (currency, period_start, period_end);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_tts_chunk_cache (
                     cache_key TEXT PRIMARY KEY,
                     language TEXT NOT NULL,
@@ -5072,6 +5160,643 @@ def add_default_topic_for_user(
         "error_subcategory": str(row[2] or "") or None,
         "skill_id": str(row[3] or "") or None,
         "created_at": row[4].isoformat() if row[4] else None,
+    }
+
+
+def _normalize_billing_currency(value: str | None) -> str:
+    normalized = str(value or "USD").strip().upper()
+    if not normalized:
+        return "USD"
+    return normalized[:12]
+
+
+def _normalize_billing_status(value: str | None) -> str:
+    normalized = str(value or "estimated").strip().lower()
+    return normalized if normalized in {"estimated", "final"} else "estimated"
+
+
+def _normalize_allocation_method(value: str | None) -> str:
+    normalized = str(value or "equal").strip().lower()
+    return normalized if normalized in {"equal", "weighted"} else "equal"
+
+
+def _billing_period_bounds(period: str, as_of_date: date | None = None) -> tuple[date, date]:
+    normalized = str(period or "month").strip().lower()
+    if normalized == "all":
+        return date(1970, 1, 1), (as_of_date or date.today())
+    if normalized == "half_year":
+        normalized = "half-year"
+    if normalized not in {"week", "month", "quarter", "half-year", "year"}:
+        normalized = "month"
+    return _period_bounds(normalized, as_of_date)
+
+
+def _billing_event_row_to_dict(row: tuple) -> dict:
+    return {
+        "id": int(row[0]),
+        "idempotency_key": str(row[1] or ""),
+        "user_id": int(row[2]) if row[2] is not None else None,
+        "source_lang": str(row[3] or "") or None,
+        "target_lang": str(row[4] or "") or None,
+        "action_type": str(row[5] or ""),
+        "provider": str(row[6] or ""),
+        "units_type": str(row[7] or ""),
+        "units_value": float(row[8] or 0.0),
+        "price_snapshot_id": int(row[9]) if row[9] is not None else None,
+        "cost_amount": float(row[10] or 0.0),
+        "currency": str(row[11] or "USD"),
+        "status": str(row[12] or "estimated"),
+        "metadata": row[13] if isinstance(row[13], dict) else {},
+        "event_time": row[14].isoformat() if row[14] else None,
+        "created_at": row[15].isoformat() if row[15] else None,
+    }
+
+
+def upsert_billing_price_snapshot(
+    *,
+    provider: str,
+    sku: str,
+    unit: str,
+    price_per_unit: float,
+    currency: str = "USD",
+    valid_from: datetime | None = None,
+    source: str = "manual",
+    raw_payload: dict | None = None,
+) -> dict | None:
+    provider_value = str(provider or "").strip().lower()
+    sku_value = str(sku or "").strip()
+    unit_value = str(unit or "").strip().lower()
+    if not provider_value or not sku_value or not unit_value:
+        return None
+    try:
+        price_value = max(0.0, float(price_per_unit or 0.0))
+    except Exception:
+        price_value = 0.0
+    currency_value = _normalize_billing_currency(currency)
+    source_value = str(source or "manual").strip() or "manual"
+    valid_from_value = valid_from or datetime.now(timezone.utc)
+    payload_value = raw_payload if isinstance(raw_payload, dict) else None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_billing_price_snapshots (
+                    provider,
+                    sku,
+                    unit,
+                    price_per_unit,
+                    currency,
+                    valid_from,
+                    source,
+                    raw_payload
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (provider, sku, unit, valid_from) DO UPDATE
+                SET
+                    price_per_unit = EXCLUDED.price_per_unit,
+                    currency = EXCLUDED.currency,
+                    source = EXCLUDED.source,
+                    raw_payload = COALESCE(EXCLUDED.raw_payload, bt_3_billing_price_snapshots.raw_payload)
+                RETURNING
+                    id, provider, sku, unit, price_per_unit, currency, valid_from, source, raw_payload, created_at;
+                """,
+                (
+                    provider_value,
+                    sku_value,
+                    unit_value,
+                    price_value,
+                    currency_value,
+                    valid_from_value,
+                    source_value,
+                    payload_value,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "provider": str(row[1] or ""),
+        "sku": str(row[2] or ""),
+        "unit": str(row[3] or ""),
+        "price_per_unit": float(row[4] or 0.0),
+        "currency": str(row[5] or "USD"),
+        "valid_from": row[6].isoformat() if row[6] else None,
+        "source": str(row[7] or "manual"),
+        "raw_payload": row[8] if isinstance(row[8], dict) else None,
+        "created_at": row[9].isoformat() if row[9] else None,
+    }
+
+
+def get_effective_billing_price_snapshot(
+    *,
+    provider: str,
+    sku: str,
+    unit: str,
+    currency: str = "USD",
+    as_of: datetime | None = None,
+) -> dict | None:
+    provider_value = str(provider or "").strip().lower()
+    sku_value = str(sku or "").strip()
+    unit_value = str(unit or "").strip().lower()
+    if not provider_value or not sku_value or not unit_value:
+        return None
+    currency_value = _normalize_billing_currency(currency)
+    as_of_value = as_of or datetime.now(timezone.utc)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, provider, sku, unit, price_per_unit, currency, valid_from, source, raw_payload, created_at
+                FROM bt_3_billing_price_snapshots
+                WHERE provider = %s
+                  AND sku = %s
+                  AND unit = %s
+                  AND currency = %s
+                  AND valid_from <= %s
+                ORDER BY valid_from DESC
+                LIMIT 1;
+                """,
+                (
+                    provider_value,
+                    sku_value,
+                    unit_value,
+                    currency_value,
+                    as_of_value,
+                ),
+            )
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    """
+                    SELECT id, provider, sku, unit, price_per_unit, currency, valid_from, source, raw_payload, created_at
+                    FROM bt_3_billing_price_snapshots
+                    WHERE provider = %s
+                      AND sku = %s
+                      AND unit = %s
+                      AND valid_from <= %s
+                    ORDER BY valid_from DESC
+                    LIMIT 1;
+                    """,
+                    (
+                        provider_value,
+                        sku_value,
+                        unit_value,
+                        as_of_value,
+                    ),
+                )
+                row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "provider": str(row[1] or ""),
+        "sku": str(row[2] or ""),
+        "unit": str(row[3] or ""),
+        "price_per_unit": float(row[4] or 0.0),
+        "currency": str(row[5] or "USD"),
+        "valid_from": row[6].isoformat() if row[6] else None,
+        "source": str(row[7] or "manual"),
+        "raw_payload": row[8] if isinstance(row[8], dict) else None,
+        "created_at": row[9].isoformat() if row[9] else None,
+    }
+
+
+def log_billing_event(
+    *,
+    idempotency_key: str,
+    user_id: int | None,
+    action_type: str,
+    provider: str,
+    units_type: str,
+    units_value: float,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    price_snapshot_id: int | None = None,
+    price_provider: str | None = None,
+    price_sku: str | None = None,
+    price_unit: str | None = None,
+    currency: str = "USD",
+    status: str = "estimated",
+    metadata: dict | None = None,
+    event_time: datetime | None = None,
+    cost_amount: float | None = None,
+) -> dict | None:
+    key = str(idempotency_key or "").strip()
+    if not key:
+        raise ValueError("idempotency_key is required")
+    action_value = str(action_type or "").strip()
+    provider_value = str(provider or "").strip().lower()
+    unit_type_value = str(units_type or "").strip().lower()
+    if not action_value or not provider_value or not unit_type_value:
+        return None
+    try:
+        units_value_number = max(0.0, float(units_value or 0.0))
+    except Exception:
+        units_value_number = 0.0
+    event_time_value = event_time or datetime.now(timezone.utc)
+    currency_value = _normalize_billing_currency(currency)
+    status_value = _normalize_billing_status(status)
+    metadata_value = metadata if isinstance(metadata, dict) else {}
+
+    resolved_snapshot_id = int(price_snapshot_id) if price_snapshot_id else None
+    resolved_currency = currency_value
+    resolved_cost = float(cost_amount) if cost_amount is not None else None
+
+    if resolved_snapshot_id:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT price_per_unit, currency
+                    FROM bt_3_billing_price_snapshots
+                    WHERE id = %s
+                    LIMIT 1;
+                    """,
+                    (resolved_snapshot_id,),
+                )
+                row = cursor.fetchone()
+        if row:
+            resolved_currency = str(row[1] or resolved_currency)
+            if resolved_cost is None:
+                resolved_cost = units_value_number * float(row[0] or 0.0)
+    elif price_provider and price_sku and price_unit:
+        snapshot = get_effective_billing_price_snapshot(
+            provider=str(price_provider),
+            sku=str(price_sku),
+            unit=str(price_unit),
+            currency=currency_value,
+            as_of=event_time_value,
+        )
+        if snapshot:
+            resolved_snapshot_id = int(snapshot["id"])
+            resolved_currency = str(snapshot.get("currency") or resolved_currency)
+            if resolved_cost is None:
+                resolved_cost = units_value_number * float(snapshot.get("price_per_unit") or 0.0)
+
+    if resolved_cost is None:
+        resolved_cost = 0.0
+    resolved_cost = max(0.0, float(resolved_cost))
+    resolved_currency = _normalize_billing_currency(resolved_currency)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_billing_events (
+                    idempotency_key,
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    action_type,
+                    provider,
+                    units_type,
+                    units_value,
+                    price_snapshot_id,
+                    cost_amount,
+                    currency,
+                    status,
+                    metadata,
+                    event_time
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING
+                    id, idempotency_key, user_id, source_lang, target_lang, action_type, provider,
+                    units_type, units_value, price_snapshot_id, cost_amount, currency, status,
+                    metadata, event_time, created_at;
+                """,
+                (
+                    key,
+                    int(user_id) if user_id is not None else None,
+                    str(source_lang or "").strip().lower() or None,
+                    str(target_lang or "").strip().lower() or None,
+                    action_value,
+                    provider_value,
+                    unit_type_value,
+                    units_value_number,
+                    resolved_snapshot_id,
+                    resolved_cost,
+                    resolved_currency,
+                    status_value,
+                    metadata_value,
+                    event_time_value,
+                ),
+            )
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    """
+                    SELECT
+                        id, idempotency_key, user_id, source_lang, target_lang, action_type, provider,
+                        units_type, units_value, price_snapshot_id, cost_amount, currency, status,
+                        metadata, event_time, created_at
+                    FROM bt_3_billing_events
+                    WHERE idempotency_key = %s
+                    LIMIT 1;
+                    """,
+                    (key,),
+                )
+                row = cursor.fetchone()
+    return _billing_event_row_to_dict(row) if row else None
+
+
+def upsert_billing_fixed_cost(
+    *,
+    category: str,
+    provider: str,
+    amount: float,
+    currency: str = "USD",
+    period_start: date,
+    period_end: date,
+    allocation_method_default: str = "equal",
+    metadata: dict | None = None,
+) -> dict | None:
+    category_value = str(category or "").strip().lower()
+    provider_value = str(provider or "infra").strip().lower() or "infra"
+    if not category_value:
+        return None
+    try:
+        amount_value = max(0.0, float(amount or 0.0))
+    except Exception:
+        amount_value = 0.0
+    currency_value = _normalize_billing_currency(currency)
+    allocation_value = _normalize_allocation_method(allocation_method_default)
+    metadata_value = metadata if isinstance(metadata, dict) else {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_billing_fixed_costs (
+                    category,
+                    provider,
+                    amount,
+                    currency,
+                    period_start,
+                    period_end,
+                    allocation_method_default,
+                    metadata,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (category, provider, period_start, period_end, currency) DO UPDATE
+                SET
+                    amount = EXCLUDED.amount,
+                    allocation_method_default = EXCLUDED.allocation_method_default,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = NOW()
+                RETURNING id, category, provider, amount, currency, period_start, period_end,
+                          allocation_method_default, metadata, created_at, updated_at;
+                """,
+                (
+                    category_value,
+                    provider_value,
+                    amount_value,
+                    currency_value,
+                    period_start,
+                    period_end,
+                    allocation_value,
+                    metadata_value,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "category": str(row[1] or ""),
+        "provider": str(row[2] or ""),
+        "amount": float(row[3] or 0.0),
+        "currency": str(row[4] or "USD"),
+        "period_start": row[5].isoformat() if row[5] else None,
+        "period_end": row[6].isoformat() if row[6] else None,
+        "allocation_method_default": str(row[7] or "equal"),
+        "metadata": row[8] if isinstance(row[8], dict) else {},
+        "created_at": row[9].isoformat() if row[9] else None,
+        "updated_at": row[10].isoformat() if row[10] else None,
+    }
+
+
+def get_user_billing_summary(
+    *,
+    user_id: int,
+    period: str = "month",
+    allocation_method: str = "equal",
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    currency: str = "USD",
+    as_of_date: date | None = None,
+) -> dict:
+    currency_value = _normalize_billing_currency(currency)
+    period_start, period_end = _billing_period_bounds(period, as_of_date)
+    allocation = _normalize_allocation_method(allocation_method)
+    source_value = str(source_lang or "").strip().lower() or None
+    target_value = str(target_lang or "").strip().lower() or None
+
+    language_sql = ""
+    language_params: list = []
+    if source_value:
+        language_sql += " AND COALESCE(source_lang, '') = %s"
+        language_params.append(source_value)
+    if target_value:
+        language_sql += " AND COALESCE(target_lang, '') = %s"
+        language_params.append(target_value)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    COALESCE(SUM(cost_amount), 0) AS total_cost,
+                    COALESCE(SUM(units_value), 0) AS total_units,
+                    COUNT(*) AS events_count,
+                    COALESCE(SUM(CASE WHEN status = 'final' THEN cost_amount ELSE 0 END), 0) AS final_cost,
+                    COALESCE(SUM(CASE WHEN status = 'estimated' THEN cost_amount ELSE 0 END), 0) AS estimated_cost,
+                    COALESCE(SUM(CASE WHEN COALESCE(metadata->>'pricing_state', '') = 'missing_snapshot' THEN units_value ELSE 0 END), 0) AS unpriced_units,
+                    COALESCE(SUM(CASE WHEN COALESCE(metadata->>'pricing_state', '') = 'missing_snapshot' THEN 1 ELSE 0 END), 0) AS unpriced_events
+                FROM bt_3_billing_events
+                WHERE user_id = %s
+                  AND currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  {language_sql};
+                """,
+                [int(user_id), currency_value, period_start, period_end, *language_params],
+            )
+            user_totals_row = cursor.fetchone() or (0, 0, 0, 0, 0, 0, 0)
+            user_variable_cost = float(user_totals_row[0] or 0.0)
+            user_units = float(user_totals_row[1] or 0.0)
+            user_events = int(user_totals_row[2] or 0)
+            user_final_cost = float(user_totals_row[3] or 0.0)
+            user_estimated_cost = float(user_totals_row[4] or 0.0)
+            user_unpriced_units = float(user_totals_row[5] or 0.0)
+            user_unpriced_events = int(user_totals_row[6] or 0)
+
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(SUM(amount), 0) AS fixed_cost_total
+                FROM bt_3_billing_fixed_costs
+                WHERE currency = %s
+                  AND period_end >= %s
+                  AND period_start <= %s;
+                """,
+                (currency_value, period_start, period_end),
+            )
+            fixed_total = float((cursor.fetchone() or [0])[0] or 0.0)
+
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT user_id)
+                FROM bt_3_billing_events
+                WHERE user_id IS NOT NULL
+                  AND currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s;
+                """,
+                (currency_value, period_start, period_end),
+            )
+            active_users = int((cursor.fetchone() or [0])[0] or 0)
+
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(units_value), 0)
+                FROM bt_3_billing_events
+                WHERE user_id IS NOT NULL
+                  AND currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s;
+                """,
+                (currency_value, period_start, period_end),
+            )
+            all_units = float((cursor.fetchone() or [0])[0] or 0.0)
+
+            user_is_active = user_events > 0
+            fixed_allocated = 0.0
+            if allocation == "weighted":
+                if all_units > 0 and user_units > 0:
+                    fixed_allocated = fixed_total * (user_units / all_units)
+                elif active_users > 0 and user_is_active:
+                    fixed_allocated = fixed_total / active_users
+            else:
+                if active_users > 0 and user_is_active:
+                    fixed_allocated = fixed_total / active_users
+
+            cursor.execute(
+                f"""
+                SELECT provider, SUM(cost_amount) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
+                FROM bt_3_billing_events
+                WHERE user_id = %s
+                  AND currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  {language_sql}
+                GROUP BY provider
+                ORDER BY cost_total DESC, units_total DESC
+                LIMIT 12;
+                """,
+                [int(user_id), currency_value, period_start, period_end, *language_params],
+            )
+            providers = [
+                {
+                    "provider": str(row[0] or ""),
+                    "cost": float(row[1] or 0.0),
+                    "units": float(row[2] or 0.0),
+                    "events": int(row[3] or 0),
+                }
+                for row in (cursor.fetchall() or [])
+            ]
+
+            cursor.execute(
+                f"""
+                SELECT action_type, SUM(cost_amount) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
+                FROM bt_3_billing_events
+                WHERE user_id = %s
+                  AND currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  {language_sql}
+                GROUP BY action_type
+                ORDER BY cost_total DESC, units_total DESC
+                LIMIT 20;
+                """,
+                [int(user_id), currency_value, period_start, period_end, *language_params],
+            )
+            actions = [
+                {
+                    "action_type": str(row[0] or ""),
+                    "cost": float(row[1] or 0.0),
+                    "units": float(row[2] or 0.0),
+                    "events": int(row[3] or 0),
+                }
+                for row in (cursor.fetchall() or [])
+            ]
+
+            cursor.execute(
+                """
+                SELECT category, provider, amount, period_start, period_end, allocation_method_default
+                FROM bt_3_billing_fixed_costs
+                WHERE currency = %s
+                  AND period_end >= %s
+                  AND period_start <= %s
+                ORDER BY period_start DESC, category ASC;
+                """,
+                (currency_value, period_start, period_end),
+            )
+            fixed_items = [
+                {
+                    "category": str(row[0] or ""),
+                    "provider": str(row[1] or ""),
+                    "amount": float(row[2] or 0.0),
+                    "period_start": row[3].isoformat() if row[3] else None,
+                    "period_end": row[4].isoformat() if row[4] else None,
+                    "allocation_method_default": str(row[5] or "equal"),
+                }
+                for row in (cursor.fetchall() or [])
+            ]
+
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(cost_amount), 0), COUNT(*)
+                FROM bt_3_billing_events
+                WHERE user_id IS NOT NULL
+                  AND currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s;
+                """,
+                (currency_value, period_start, period_end),
+            )
+            all_variable_cost_row = cursor.fetchone() or (0, 0)
+            all_variable_cost = float(all_variable_cost_row[0] or 0.0)
+            all_events = int(all_variable_cost_row[1] or 0)
+
+    total_cost = user_variable_cost + fixed_allocated
+    avg_per_event = total_cost / user_events if user_events > 0 else 0.0
+    avg_per_active_user = (all_variable_cost + fixed_total) / active_users if active_users > 0 else 0.0
+    return {
+        "period": str(period or "month"),
+        "range": {
+            "start_date": period_start.isoformat(),
+            "end_date": period_end.isoformat(),
+        },
+        "allocation_method": allocation,
+        "currency": currency_value,
+        "totals": {
+            "user_variable_cost": round(user_variable_cost, 6),
+            "user_fixed_allocated_cost": round(fixed_allocated, 6),
+            "user_total_cost": round(total_cost, 6),
+            "user_final_cost": round(user_final_cost, 6),
+            "user_estimated_cost": round(user_estimated_cost, 6),
+            "user_unpriced_events": user_unpriced_events,
+            "user_unpriced_units": round(user_unpriced_units, 6),
+            "user_events_count": user_events,
+            "user_units_total": round(user_units, 6),
+            "avg_cost_per_user_event": round(avg_per_event, 6),
+            "period_fixed_cost_total": round(fixed_total, 6),
+            "period_variable_cost_total": round(all_variable_cost, 6),
+            "period_events_total": all_events,
+            "period_active_users": active_users,
+            "period_avg_cost_per_active_user": round(avg_per_active_user, 6),
+        },
+        "breakdown": {
+            "by_provider": providers,
+            "by_action_type": actions,
+            "fixed_costs": fixed_items,
+        },
     }
 
 

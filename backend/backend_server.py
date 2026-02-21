@@ -76,6 +76,7 @@ import re
 import html
 from zoneinfo import ZoneInfo
 from datetime import timedelta, date
+from calendar import monthrange
 import importlib.metadata as importlib_metadata
 import youtube_transcript_api as yta
 from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConfig
@@ -140,6 +141,7 @@ from backend.openai_manager import (
     run_theory_check_feedback,
     run_beginner_topic,
     run_tts_chunk_de,
+    get_last_llm_usage,
 )
 from backend.database import (
     is_telegram_user_allowed,
@@ -198,6 +200,11 @@ from backend.database import (
     get_recent_mistake_examples_for_topic,
     list_default_topics_for_user,
     add_default_topic_for_user,
+    upsert_billing_price_snapshot,
+    get_effective_billing_price_snapshot,
+    log_billing_event,
+    upsert_billing_fixed_cost,
+    get_user_billing_summary,
     get_today_reminder_settings,
     upsert_today_reminder_settings,
     list_today_reminder_users,
@@ -287,6 +294,8 @@ TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstri
 TODAY_PLAN_DEFAULT_TZ = (os.getenv("TODAY_PLAN_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 YOUTUBE_API_KEY = (os.getenv("YOUTUBE_API_KEY") or "").strip()
 THEORY_PACKAGE_TTL_MINUTES = max(1, int((os.getenv("THEORY_PACKAGE_TTL_MINUTES") or "720").strip()))
+BILLING_CURRENCY_DEFAULT = (os.getenv("BILLING_CURRENCY") or "USD").strip().upper() or "USD"
+BILLING_ALLOCATION_DEFAULT = (os.getenv("BILLING_ALLOCATION_METHOD_DEFAULT") or "weighted").strip().lower() or "weighted"
 
 _TODAY_PREFERRED_CHANNELS = [
     "UCthmoIZKvuR1-KuwednkjHg",
@@ -1021,7 +1030,15 @@ def _build_video_search_queries(
     return unique
 
 
-def _youtube_search_videos(query: str, *, max_results: int = 5, target_lang: str = "de") -> list[dict]:
+def _youtube_search_videos(
+    query: str,
+    *,
+    max_results: int = 5,
+    target_lang: str = "de",
+    billing_user_id: int | None = None,
+    billing_source_lang: str | None = None,
+    billing_target_lang: str | None = None,
+) -> list[dict]:
     if not YOUTUBE_API_KEY or not query:
         logging.info("YT search skipped: query='%s' key_present=%s", query, bool(YOUTUBE_API_KEY))
         return []
@@ -1040,6 +1057,15 @@ def _youtube_search_videos(query: str, *, max_results: int = 5, target_lang: str
         for channel_id in _TODAY_PREFERRED_CHANNELS:
             params = {**common_params, "channelId": channel_id}
             resp = requests.get(base_url, params=params, timeout=12)
+            _billing_log_youtube_quota_usage(
+                user_id=billing_user_id,
+                source_lang=billing_source_lang,
+                target_lang=billing_target_lang or target_lang,
+                action_type="youtube_api_search",
+                endpoint="search",
+                quota_units=100.0,
+                metadata={"query": query[:120], "scope": "preferred_channel"},
+            )
             if resp.status_code >= 400:
                 continue
             data = resp.json() if resp.content else {}
@@ -1065,6 +1091,15 @@ def _youtube_search_videos(query: str, *, max_results: int = 5, target_lang: str
                 "regionCode": region_map.get(lang_code, "DE"),
             }
             resp = requests.get(base_url, params=fallback_params, timeout=12)
+            _billing_log_youtube_quota_usage(
+                user_id=billing_user_id,
+                source_lang=billing_source_lang,
+                target_lang=billing_target_lang or target_lang,
+                action_type="youtube_api_search",
+                endpoint="search",
+                quota_units=100.0,
+                metadata={"query": query[:120], "scope": "fallback"},
+            )
             if resp.status_code < 400:
                 data = resp.json() if resp.content else {}
                 for item in data.get("items", []):
@@ -1093,7 +1128,13 @@ def _youtube_search_videos(query: str, *, max_results: int = 5, target_lang: str
     return list(unique.values())
 
 
-def _youtube_fill_view_counts(videos: list[dict]) -> list[dict]:
+def _youtube_fill_view_counts(
+    videos: list[dict],
+    *,
+    billing_user_id: int | None = None,
+    billing_source_lang: str | None = None,
+    billing_target_lang: str | None = None,
+) -> list[dict]:
     if not videos or not YOUTUBE_API_KEY:
         return videos
     try:
@@ -1108,6 +1149,15 @@ def _youtube_fill_view_counts(videos: list[dict]) -> list[dict]:
                 "key": YOUTUBE_API_KEY,
             },
             timeout=12,
+        )
+        _billing_log_youtube_quota_usage(
+            user_id=billing_user_id,
+            source_lang=billing_source_lang,
+            target_lang=billing_target_lang,
+            action_type="youtube_api_videos_lookup",
+            endpoint="videos",
+            quota_units=1.0,
+            metadata={"videos_count": len(videos)},
         )
         if resp.status_code >= 400:
             return videos
@@ -1141,6 +1191,9 @@ def _pick_today_recommended_video(
     skill_title: str | None = None,
     examples: list[str] | None = None,
     target_lang: str = "de",
+    billing_user_id: int | None = None,
+    billing_source_lang: str | None = None,
+    billing_target_lang: str | None = None,
 ) -> dict | None:
     queries = _build_video_search_queries(
         main_category,
@@ -1151,10 +1204,22 @@ def _pick_today_recommended_video(
     )
     logging.info("YT recommendation queries: %s", queries)
     for query in queries:
-        videos = _youtube_search_videos(query, max_results=5, target_lang=target_lang)
+        videos = _youtube_search_videos(
+            query,
+            max_results=5,
+            target_lang=target_lang,
+            billing_user_id=billing_user_id,
+            billing_source_lang=billing_source_lang,
+            billing_target_lang=billing_target_lang,
+        )
         if not videos:
             continue
-        videos = _youtube_fill_view_counts(videos)
+        videos = _youtube_fill_view_counts(
+            videos,
+            billing_user_id=billing_user_id,
+            billing_source_lang=billing_source_lang,
+            billing_target_lang=billing_target_lang,
+        )
         videos.sort(key=lambda x: int(x.get("views") or 0), reverse=True)
         best = videos[0] if videos else None
         if not best or not best.get("video_id"):
@@ -1314,6 +1379,590 @@ def _normalize_theory_resources(theory: dict, target_lang: str) -> list[dict]:
     return _default_theory_resources(target_lang)[:3]
 
 
+def _billing_env_float(name: str) -> float:
+    raw = str(os.getenv(name) or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        value = float(raw)
+    except Exception:
+        return 0.0
+    return max(0.0, value)
+
+
+def _billing_month_bounds(anchor_date: date | None = None) -> tuple[date, date]:
+    base = anchor_date or datetime.utcnow().date()
+    start = base.replace(day=1)
+    end = date(base.year, base.month, monthrange(base.year, base.month)[1])
+    return start, end
+
+
+def _sync_billing_fixed_costs_from_env(anchor_date: date | None = None) -> dict:
+    month_start, month_end = _billing_month_bounds(anchor_date)
+    currency = (os.getenv("BILLING_CURRENCY") or BILLING_CURRENCY_DEFAULT or "USD").strip().upper() or "USD"
+    allocation = (os.getenv("BILLING_ALLOCATION_METHOD_DEFAULT") or BILLING_ALLOCATION_DEFAULT or "weighted").strip().lower()
+    if allocation not in {"equal", "weighted"}:
+        allocation = "weighted"
+    spec = [
+        ("railway", "railway", "BILLING_FIXED_RAILWAY_USD_MONTH"),
+        ("static_ips", "network", "BILLING_FIXED_STATIC_IPS_USD_MONTH"),
+        ("proxy_subscription", "proxy", "BILLING_FIXED_PROXY_BASE_USD_MONTH"),
+        ("subscriptions", "subscriptions", "BILLING_FIXED_SUBSCRIPTIONS_USD_MONTH"),
+        ("other", "infra", "BILLING_FIXED_OTHER_USD_MONTH"),
+    ]
+    upserted: list[dict] = []
+    for category, provider, env_name in spec:
+        amount = _billing_env_float(env_name)
+        if amount <= 0:
+            continue
+        item = upsert_billing_fixed_cost(
+            category=category,
+            provider=provider,
+            amount=amount,
+            currency=currency,
+            period_start=month_start,
+            period_end=month_end,
+            allocation_method_default=allocation,
+            metadata={"source": "env", "env_var": env_name},
+        )
+        if item:
+            upserted.append(item)
+    return {
+        "currency": currency,
+        "allocation_method_default": allocation,
+        "period_start": month_start.isoformat(),
+        "period_end": month_end.isoformat(),
+        "upserted_count": len(upserted),
+        "upserted": upserted,
+    }
+
+
+def _openai_model_key_to_model(model_key: str) -> str:
+    key = str(model_key or "").strip().lower()
+    if not key:
+        return ""
+    parts = [p for p in key.split("_") if p]
+    if len(parts) >= 3 and parts[0] == "gpt" and parts[1].isdigit() and parts[2].isdigit():
+        suffix = "-".join(parts[3:]) if len(parts) > 3 else ""
+        base = f"gpt-{parts[1]}.{parts[2]}"
+        return f"{base}-{suffix}" if suffix else base
+    return "-".join(parts)
+
+
+def _openai_model_to_key(model_name: str) -> str:
+    value = str(model_name or "").strip().lower()
+    if not value:
+        return ""
+    value = value.replace(".", "_").replace("-", "_")
+    value = re.sub(r"[^a-z0-9_]+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    return value
+
+
+def _upsert_price_snapshot_if_changed(
+    *,
+    provider: str,
+    sku: str,
+    unit: str,
+    price_per_unit: float,
+    currency: str,
+    source: str,
+    raw_payload: dict | None = None,
+) -> tuple[str, dict]:
+    now_utc = datetime.now(timezone.utc)
+    existing = get_effective_billing_price_snapshot(
+        provider=provider,
+        sku=sku,
+        unit=unit,
+        currency=currency,
+        as_of=now_utc,
+    )
+    if existing:
+        existing_price = float(existing.get("price_per_unit") or 0.0)
+        if abs(existing_price - price_per_unit) <= 1e-12:
+            return (
+                "unchanged",
+                {
+                    "sku": sku,
+                    "unit": unit,
+                    "price_per_unit": price_per_unit,
+                    "snapshot_id": int(existing.get("id") or 0),
+                },
+            )
+    item = upsert_billing_price_snapshot(
+        provider=provider,
+        sku=sku,
+        unit=unit,
+        price_per_unit=price_per_unit,
+        currency=currency,
+        valid_from=now_utc,
+        source=source,
+        raw_payload=raw_payload,
+    )
+    if not item:
+        return ("error", {"sku": sku, "unit": unit, "price_per_unit": price_per_unit, "error": "upsert_failed"})
+    return (
+        "created",
+        {
+            "sku": sku,
+            "unit": unit,
+            "price_per_unit": price_per_unit,
+            "snapshot_id": int(item.get("id") or 0),
+        },
+    )
+
+
+def _sync_openai_price_snapshots_from_env() -> dict:
+    currency = (os.getenv("BILLING_CURRENCY") or BILLING_CURRENCY_DEFAULT or "USD").strip().upper() or "USD"
+    pattern = re.compile(r"^OPENAI_PRICE_(.+)_(INPUT|OUTPUT)_PER_1M$")
+    created: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+    considered = 0
+    for env_name, raw_value in sorted(os.environ.items()):
+        match = pattern.match(str(env_name or "").strip())
+        if not match:
+            continue
+        considered += 1
+        model_key = match.group(1)
+        side = match.group(2).lower()
+        value_raw = str(raw_value or "").strip()
+        try:
+            per_1m = float(value_raw)
+        except Exception:
+            errors.append({"env": env_name, "error": "not_a_number"})
+            continue
+        if not per_1m or per_1m <= 0:
+            errors.append({"env": env_name, "error": "must_be_positive"})
+            continue
+        model_name = _openai_model_key_to_model(model_key)
+        if not model_name:
+            errors.append({"env": env_name, "error": "invalid_model_key"})
+            continue
+        sku = f"{model_name}_{'input' if side == 'input' else 'output'}"
+        unit = "tokens_in" if side == "input" else "tokens_out"
+        price_per_unit = per_1m / 1_000_000.0
+        status, payload = _upsert_price_snapshot_if_changed(
+            provider="openai",
+            sku=sku,
+            unit=unit,
+            price_per_unit=price_per_unit,
+            currency=currency,
+            source="env",
+            raw_payload={"env_var": env_name, "price_per_1m": per_1m},
+        )
+        if status == "created":
+            created.append({"env": env_name, **payload})
+        elif status == "unchanged":
+            skipped.append({"env": env_name, **payload, "reason": "unchanged"})
+        else:
+            errors.append({"env": env_name, **payload})
+    return {
+        "currency": currency,
+        "considered": considered,
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "errors_count": len(errors),
+        "created": created,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+def _extract_openai_public_prices_from_text(text: str, model: str) -> dict[str, float]:
+    if not text or not model:
+        return {}
+    normalized_text = str(text)
+    model_lc = model.lower()
+    idx = normalized_text.lower().find(model_lc)
+    if idx < 0:
+        model_alt = model_lc.replace("-", " ")
+        idx = normalized_text.lower().find(model_alt)
+    if idx < 0:
+        return {}
+    start = max(0, idx - 500)
+    end = min(len(normalized_text), idx + 2500)
+    chunk = normalized_text[start:end]
+    lower_chunk = chunk.lower()
+    result: dict[str, float] = {}
+
+    in_match = re.search(r"(?:input|prompt)[^$0-9]{0,40}\$?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|per)\s*1m", lower_chunk)
+    out_match = re.search(r"(?:output|completion)[^$0-9]{0,40}\$?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|per)\s*1m", lower_chunk)
+    if in_match:
+        try:
+            result["input_per_1m"] = float(in_match.group(1))
+        except Exception:
+            pass
+    if out_match:
+        try:
+            result["output_per_1m"] = float(out_match.group(1))
+        except Exception:
+            pass
+    return result
+
+
+def _sync_openai_price_snapshots_from_public() -> dict:
+    currency = (os.getenv("BILLING_CURRENCY") or BILLING_CURRENCY_DEFAULT or "USD").strip().upper() or "USD"
+    models_raw = str(os.getenv("OPENAI_PUBLIC_PRICING_MODELS") or "gpt-4.1-2025-04-14,gpt-4.1-mini").strip()
+    models = [m.strip() for m in models_raw.split(",") if m.strip()]
+    url = str(os.getenv("OPENAI_PUBLIC_PRICING_URL") or "https://openai.com/api/pricing").strip()
+    timeout_sec = max(3, min(25, int(str(os.getenv("OPENAI_PUBLIC_PRICING_TIMEOUT_SEC") or "12").strip() or "12")))
+
+    created: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+    considered = 0
+    fetched_text = ""
+    try:
+        response = requests.get(url, timeout=timeout_sec)
+        response.raise_for_status()
+        fetched_text = response.text or ""
+    except Exception as exc:
+        return {
+            "currency": currency,
+            "source_url": url,
+            "considered": 0,
+            "created_count": 0,
+            "skipped_count": 0,
+            "errors_count": 1,
+            "created": [],
+            "skipped": [],
+            "errors": [{"source_url": url, "error": f"fetch_failed: {exc}"}],
+        }
+
+    for model in models:
+        pricing = _extract_openai_public_prices_from_text(fetched_text, model)
+        for side in ("input", "output"):
+            considered += 1
+            key_name = f"{side}_per_1m"
+            value = pricing.get(key_name)
+            if value is None or value <= 0:
+                errors.append({"model": model, "side": side, "error": "price_not_found"})
+                continue
+            sku = f"{model}_{side}"
+            unit = "tokens_in" if side == "input" else "tokens_out"
+            price_per_unit = float(value) / 1_000_000.0
+            status, payload = _upsert_price_snapshot_if_changed(
+                provider="openai",
+                sku=sku,
+                unit=unit,
+                price_per_unit=price_per_unit,
+                currency=currency,
+                source="public_openai",
+                raw_payload={"source_url": url, "price_per_1m": value},
+            )
+            if status == "created":
+                created.append({"model": model, "side": side, **payload})
+            elif status == "unchanged":
+                skipped.append({"model": model, "side": side, **payload, "reason": "unchanged"})
+            else:
+                errors.append({"model": model, "side": side, **payload})
+    return {
+        "currency": currency,
+        "source_url": url,
+        "considered": considered,
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "errors_count": len(errors),
+        "created": created,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+def _sync_aux_price_snapshots_from_env() -> dict:
+    currency = (os.getenv("BILLING_CURRENCY") or BILLING_CURRENCY_DEFAULT or "USD").strip().upper() or "USD"
+    specs = [
+        ("WHISPER_PRICE_PER_MINUTE_USD", "openai", "whisper_input", "audio_minutes", "per_minute"),
+        ("AGENT_TTS_PRICE_PER_MINUTE_USD", "agent_tts", "agent_tts_output", "audio_minutes", "per_minute"),
+        ("LIVEKIT_PRICE_PER_MINUTE_USD", "livekit", "room_minute", "audio_minutes", "per_minute"),
+        ("GOOGLE_TTS_PRICE_PER_1M_CHARS_USD", "google_tts", "google_tts_chars", "chars", "per_1m_chars"),
+        ("YOUTUBE_API_PRICE_PER_1000_UNITS_USD", "youtube_api", "youtube_api_quota", "youtube_quota_units", "per_1000_units"),
+    ]
+    created: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+    considered = 0
+    for env_name, provider, sku, unit, mode in specs:
+        raw = str(os.getenv(env_name) or "").strip()
+        if not raw:
+            continue
+        considered += 1
+        try:
+            val = float(raw)
+        except Exception:
+            errors.append({"env": env_name, "error": "not_a_number"})
+            continue
+        if val <= 0:
+            errors.append({"env": env_name, "error": "must_be_positive"})
+            continue
+        if mode == "per_1m_chars":
+            price_per_unit = val / 1_000_000.0
+        elif mode == "per_1000_units":
+            price_per_unit = val / 1000.0
+        else:
+            price_per_unit = val
+        status, payload = _upsert_price_snapshot_if_changed(
+            provider=provider,
+            sku=sku,
+            unit=unit,
+            price_per_unit=price_per_unit,
+            currency=currency,
+            source="env",
+            raw_payload={"env_var": env_name, "raw_value": val, "mode": mode},
+        )
+        if status == "created":
+            created.append({"env": env_name, **payload})
+        elif status == "unchanged":
+            skipped.append({"env": env_name, **payload, "reason": "unchanged"})
+        else:
+            errors.append({"env": env_name, **payload})
+    return {
+        "currency": currency,
+        "considered": considered,
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "errors_count": len(errors),
+        "created": created,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+def _sync_openai_price_snapshots_public_then_env() -> dict:
+    public_enabled = str(os.getenv("BILLING_OPENAI_PUBLIC_PRICING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    public_result = {"enabled": False}
+    if public_enabled:
+        public_result = _sync_openai_price_snapshots_from_public()
+        public_result["enabled"] = True
+    env_result = _sync_openai_price_snapshots_from_env()
+    aux_env_result = _sync_aux_price_snapshots_from_env()
+    return {
+        "public": public_result,
+        "env": env_result,
+        "aux_env": aux_env_result,
+        "summary": {
+            "created_count": int((public_result.get("created_count") or 0) + (env_result.get("created_count") or 0) + (aux_env_result.get("created_count") or 0)),
+            "skipped_count": int((public_result.get("skipped_count") or 0) + (env_result.get("skipped_count") or 0) + (aux_env_result.get("skipped_count") or 0)),
+            "errors_count": int((public_result.get("errors_count") or 0) + (env_result.get("errors_count") or 0) + (aux_env_result.get("errors_count") or 0)),
+        },
+    }
+
+
+def _billing_log_event_safe(
+    *,
+    user_id: int | None,
+    action_type: str,
+    provider: str,
+    units_type: str,
+    units_value: float,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    idempotency_seed: str | None = None,
+    status: str = "estimated",
+    metadata: dict | None = None,
+) -> None:
+    try:
+        seed = str(idempotency_seed or "").strip() or f"{user_id}:{action_type}:{provider}:{units_type}:{units_value}:{time.time_ns()}"
+        digest = hashlib.sha1(seed.encode("utf-8", "ignore")).hexdigest()[:28]
+        key = f"ev_{action_type}_{digest}"
+        log_billing_event(
+            idempotency_key=key,
+            user_id=int(user_id) if user_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            action_type=action_type,
+            provider=provider,
+            units_type=units_type,
+            units_value=float(units_value or 0.0),
+            currency=BILLING_CURRENCY_DEFAULT,
+            status=status,
+            metadata=metadata or {},
+        )
+    except Exception as exc:
+        logging.debug("billing event skipped: %s", exc)
+
+
+def _billing_log_openai_usage(
+    *,
+    user_id: int | None,
+    action_type: str,
+    source_lang: str | None,
+    target_lang: str | None,
+    usage: dict | None,
+    seed: str,
+    metadata: dict | None = None,
+) -> None:
+    if not isinstance(usage, dict):
+        return
+    model = str(usage.get("model") or "unknown").strip() or "unknown"
+    prompt_tokens = max(0, int(usage.get("prompt_tokens") or 0))
+    completion_tokens = max(0, int(usage.get("completion_tokens") or 0))
+    extra = metadata if isinstance(metadata, dict) else {}
+    base_meta = {
+        "model": model,
+        "task_name": usage.get("task_name"),
+        "total_tokens": max(0, int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))),
+        **extra,
+    }
+    if prompt_tokens > 0:
+        try:
+            sku_in = f"{model}_input"
+            snapshot_in = get_effective_billing_price_snapshot(
+                provider="openai",
+                sku=sku_in,
+                unit="tokens_in",
+                currency=BILLING_CURRENCY_DEFAULT,
+            )
+            meta_in = dict(base_meta)
+            meta_in["price_sku"] = sku_in
+            if snapshot_in:
+                meta_in["pricing_state"] = "priced"
+            else:
+                meta_in["pricing_state"] = "missing_snapshot"
+            log_billing_event(
+                idempotency_key=f"tok_in_{hashlib.sha1((seed + ':in').encode('utf-8', 'ignore')).hexdigest()[:30]}",
+                user_id=int(user_id) if user_id is not None else None,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                action_type=action_type,
+                provider="openai",
+                units_type="tokens_in",
+                units_value=float(prompt_tokens),
+                price_provider="openai" if snapshot_in else None,
+                price_sku=sku_in if snapshot_in else None,
+                price_unit="tokens_in" if snapshot_in else None,
+                currency=BILLING_CURRENCY_DEFAULT,
+                status="estimated",
+                metadata=meta_in,
+            )
+        except Exception as exc:
+            logging.debug("billing tokens_in skipped: %s", exc)
+    if completion_tokens > 0:
+        try:
+            sku_out = f"{model}_output"
+            snapshot_out = get_effective_billing_price_snapshot(
+                provider="openai",
+                sku=sku_out,
+                unit="tokens_out",
+                currency=BILLING_CURRENCY_DEFAULT,
+            )
+            meta_out = dict(base_meta)
+            meta_out["price_sku"] = sku_out
+            if snapshot_out:
+                meta_out["pricing_state"] = "priced"
+            else:
+                meta_out["pricing_state"] = "missing_snapshot"
+            log_billing_event(
+                idempotency_key=f"tok_out_{hashlib.sha1((seed + ':out').encode('utf-8', 'ignore')).hexdigest()[:29]}",
+                user_id=int(user_id) if user_id is not None else None,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                action_type=action_type,
+                provider="openai",
+                units_type="tokens_out",
+                units_value=float(completion_tokens),
+                price_provider="openai" if snapshot_out else None,
+                price_sku=sku_out if snapshot_out else None,
+                price_unit="tokens_out" if snapshot_out else None,
+                currency=BILLING_CURRENCY_DEFAULT,
+                status="estimated",
+                metadata=meta_out,
+            )
+        except Exception as exc:
+            logging.debug("billing tokens_out skipped: %s", exc)
+
+
+def _billing_log_youtube_quota_usage(
+    *,
+    user_id: int | None,
+    source_lang: str | None,
+    target_lang: str | None,
+    action_type: str,
+    endpoint: str,
+    quota_units: float,
+    metadata: dict | None = None,
+) -> None:
+    units = max(0.0, float(quota_units or 0.0))
+    if units <= 0:
+        return
+    meta = metadata if isinstance(metadata, dict) else {}
+    snapshot = get_effective_billing_price_snapshot(
+        provider="youtube_api",
+        sku="youtube_api_quota",
+        unit="youtube_quota_units",
+        currency=BILLING_CURRENCY_DEFAULT,
+    )
+    seed = f"yt_quota:{user_id}:{action_type}:{endpoint}:{units}:{time.time_ns()}"
+    try:
+        log_billing_event(
+            idempotency_key=f"ytq_{hashlib.sha1(seed.encode('utf-8', 'ignore')).hexdigest()[:32]}",
+            user_id=int(user_id) if user_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            action_type=action_type,
+            provider="youtube_api",
+            units_type="youtube_quota_units",
+            units_value=units,
+            price_provider="youtube_api" if snapshot else None,
+            price_sku="youtube_api_quota" if snapshot else None,
+            price_unit="youtube_quota_units" if snapshot else None,
+            currency=BILLING_CURRENCY_DEFAULT,
+            status="estimated",
+            metadata={
+                "endpoint": endpoint,
+                "pricing_state": "priced" if snapshot else "missing_snapshot",
+                **meta,
+            },
+        )
+    except Exception as exc:
+        logging.debug("billing youtube quota skipped: %s", exc)
+
+
+def _compute_livekit_session_cost(session_minutes: float, *, currency: str) -> tuple[float, dict]:
+    minutes = max(0.0, float(session_minutes or 0.0))
+    free_minutes = max(0.0, _billing_env_float("LIVEKIT_FREE_MINUTES_MONTH"))
+    price_per_minute = max(0.0, _billing_env_float("LIVEKIT_PRICE_PER_MINUTE_USD"))
+    if minutes <= 0 or price_per_minute <= 0:
+        return 0.0, {
+            "free_minutes_month": free_minutes,
+            "price_per_minute": price_per_minute,
+            "consumed_before": 0.0,
+            "charged_minutes": 0.0,
+            "currency": currency,
+        }
+    month_start, month_end = _billing_month_bounds()
+    consumed_before = 0.0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(SUM(units_value), 0)
+                    FROM bt_3_billing_events
+                    WHERE provider = 'livekit'
+                      AND action_type = 'livekit_room_minutes'
+                      AND units_type = 'audio_minutes'
+                      AND currency = %s
+                      AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s;
+                    """,
+                    (currency, month_start, month_end),
+                )
+                consumed_before = float((cursor.fetchone() or [0])[0] or 0.0)
+    except Exception as exc:
+        logging.debug("LiveKit consumed_before query failed: %s", exc)
+    chargeable_before = max(0.0, consumed_before - free_minutes)
+    chargeable_after = max(0.0, consumed_before + minutes - free_minutes)
+    charged_minutes = max(0.0, chargeable_after - chargeable_before)
+    return charged_minutes * price_per_minute, {
+        "free_minutes_month": free_minutes,
+        "price_per_minute": price_per_minute,
+        "consumed_before": consumed_before,
+        "charged_minutes": charged_minutes,
+        "currency": currency,
+    }
+
+
 def _build_today_plan_for_user(
     *,
     user_id: int,
@@ -1469,6 +2118,9 @@ def _build_today_plan_for_user(
             skill_title=weakest_skill.get("skill_title") if weakest_skill else None,
             examples=weak_sentences[:5],
             target_lang=target_lang,
+            billing_user_id=int(user_id),
+            billing_source_lang=source_lang,
+            billing_target_lang=target_lang,
         )
         items.append(
             {
@@ -4305,6 +4957,266 @@ def get_webapp_analytics_compare():
         }
     )
 
+@app.route("/api/economics/summary", methods=["GET"])
+def get_economics_summary():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    period = str(request.args.get("period") or "month").strip().lower()
+    if period == "half_year":
+        period = "half-year"
+    if period not in {"week", "month", "quarter", "half-year", "year", "all"}:
+        return jsonify({"error": "period must be one of: week, month, quarter, half-year, year, all"}), 400
+    allocation = str(request.args.get("allocation") or BILLING_ALLOCATION_DEFAULT or "weighted").strip().lower()
+    if allocation not in {"equal", "weighted"}:
+        return jsonify({"error": "allocation must be one of: equal, weighted"}), 400
+    sync_fixed = str(request.args.get("sync_fixed") or "1").strip().lower() in {"1", "true", "yes", "on"}
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    sync_result = None
+    if sync_fixed:
+        try:
+            sync_result = _sync_billing_fixed_costs_from_env()
+        except Exception as exc:
+            logging.warning("billing fixed cost env sync failed: %s", exc)
+            sync_result = {"error": str(exc)}
+
+    try:
+        summary = get_user_billing_summary(
+            user_id=int(user_id),
+            period=period,
+            allocation_method=allocation,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            currency=BILLING_CURRENCY_DEFAULT,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка расчёта экономики: {exc}"}), 500
+
+    try:
+        livekit_free_minutes_month = max(0.0, _billing_env_float("LIVEKIT_FREE_MINUTES_MONTH"))
+        livekit_price_per_minute = max(0.0, _billing_env_float("LIVEKIT_PRICE_PER_MINUTE_USD"))
+        month_start, month_end = _billing_month_bounds()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(SUM(units_value), 0)
+                    FROM bt_3_billing_events
+                    WHERE user_id = %s
+                      AND action_type = 'livekit_room_minutes'
+                      AND provider = 'livekit'
+                      AND units_type = 'audio_minutes'
+                      AND currency = %s
+                      AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s;
+                    """,
+                    (int(user_id), BILLING_CURRENCY_DEFAULT, month_start, month_end),
+                )
+                user_month_minutes = float((cursor.fetchone() or [0])[0] or 0.0)
+        livekit_color = "green"
+        livekit_ratio = None
+        if livekit_free_minutes_month > 0:
+            livekit_ratio = user_month_minutes / livekit_free_minutes_month
+            if livekit_ratio >= 1.0:
+                livekit_color = "red"
+            elif livekit_ratio >= 0.8:
+                livekit_color = "yellow"
+            else:
+                livekit_color = "green"
+        else:
+            # No free tier configured: any usage is effectively paid.
+            livekit_color = "red" if user_month_minutes > 0 else "green"
+        summary["livekit_status"] = {
+            "color": livekit_color,
+            "free_minutes_month": round(livekit_free_minutes_month, 3),
+            "user_month_minutes": round(user_month_minutes, 3),
+            "ratio_to_free_tier": round(livekit_ratio, 4) if livekit_ratio is not None else None,
+            "price_per_minute": round(livekit_price_per_minute, 8),
+            "month_start": month_start.isoformat(),
+            "month_end": month_end.isoformat(),
+        }
+    except Exception as exc:
+        logging.warning("LiveKit status compute failed: %s", exc)
+
+    return jsonify(
+        {
+            "ok": True,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "summary": summary,
+            "fixed_cost_sync": sync_result,
+        }
+    )
+
+
+@app.route("/api/admin/economics/fixed-costs/sync", methods=["POST"])
+def sync_economics_fixed_costs():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+    try:
+        result = _sync_billing_fixed_costs_from_env()
+    except Exception as exc:
+        return jsonify({"error": f"Не удалось синхронизировать fixed costs: {exc}"}), 500
+    return jsonify({"ok": True, "result": result})
+
+
+@app.route("/api/admin/economics/price-snapshot", methods=["POST"])
+def upsert_economics_price_snapshot():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    provider = str(payload.get("provider") or "").strip().lower()
+    sku = str(payload.get("sku") or "").strip()
+    unit = str(payload.get("unit") or "").strip().lower()
+    if not provider or not sku or not unit:
+        return jsonify({"error": "provider, sku и unit обязательны"}), 400
+    try:
+        price_per_unit = float(payload.get("price_per_unit"))
+    except Exception:
+        return jsonify({"error": "price_per_unit должен быть числом"}), 400
+    valid_from_raw = str(payload.get("valid_from") or "").strip()
+    valid_from = None
+    if valid_from_raw:
+        try:
+            valid_from = datetime.fromisoformat(valid_from_raw.replace("Z", "+00:00"))
+        except Exception:
+            return jsonify({"error": "valid_from должен быть в ISO-формате"}), 400
+    item = upsert_billing_price_snapshot(
+        provider=provider,
+        sku=sku,
+        unit=unit,
+        price_per_unit=price_per_unit,
+        currency=str(payload.get("currency") or BILLING_CURRENCY_DEFAULT),
+        valid_from=valid_from,
+        source=str(payload.get("source") or "manual"),
+        raw_payload=payload.get("raw_payload") if isinstance(payload.get("raw_payload"), dict) else None,
+    )
+    if not item:
+        return jsonify({"error": "Не удалось сохранить price snapshot"}), 500
+    return jsonify({"ok": True, "snapshot": item})
+
+
+@app.route("/api/admin/economics/price-snapshots/active", methods=["GET"])
+def list_active_economics_price_snapshots():
+    token = request.args.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+    provider_filter = str(request.args.get("provider") or "").strip().lower()
+    currency = str(request.args.get("currency") or BILLING_CURRENCY_DEFAULT).strip().upper() or BILLING_CURRENCY_DEFAULT
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                provider_sql = " AND provider = %s" if provider_filter else ""
+                params = [currency]
+                if provider_filter:
+                    params.append(provider_filter)
+                cursor.execute(
+                    f"""
+                    SELECT DISTINCT ON (provider, sku, unit, currency)
+                        id, provider, sku, unit, price_per_unit, currency, valid_from, source, raw_payload, created_at
+                    FROM bt_3_billing_price_snapshots
+                    WHERE currency = %s
+                      {provider_sql}
+                    ORDER BY provider, sku, unit, currency, valid_from DESC;
+                    """,
+                    params,
+                )
+                rows = cursor.fetchall() or []
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка чтения активных price snapshots: {exc}"}), 500
+    items = [
+        {
+            "id": int(row[0]),
+            "provider": str(row[1] or ""),
+            "sku": str(row[2] or ""),
+            "unit": str(row[3] or ""),
+            "price_per_unit": float(row[4] or 0.0),
+            "currency": str(row[5] or currency),
+            "price_per_1m": float(row[4] or 0.0) * 1_000_000 if str(row[3] or "").startswith("tokens_") else None,
+            "valid_from": row[6].isoformat() if row[6] else None,
+            "source": str(row[7] or "manual"),
+            "raw_payload": row[8] if isinstance(row[8], dict) else None,
+            "created_at": row[9].isoformat() if row[9] else None,
+        }
+        for row in rows
+    ]
+    return jsonify({"ok": True, "currency": currency, "count": len(items), "items": items})
+
+
+@app.route("/api/admin/economics/event", methods=["POST"])
+def log_economics_event():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    idempotency_key = str(payload.get("idempotency_key") or "").strip()
+    action_type = str(payload.get("action_type") or "").strip()
+    provider = str(payload.get("provider") or "").strip().lower()
+    units_type = str(payload.get("units_type") or "").strip().lower()
+    if not idempotency_key or not action_type or not provider or not units_type:
+        return jsonify({"error": "idempotency_key, action_type, provider, units_type обязательны"}), 400
+    try:
+        units_value = float(payload.get("units_value", 0))
+    except Exception:
+        return jsonify({"error": "units_value должен быть числом"}), 400
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    item = log_billing_event(
+        idempotency_key=idempotency_key,
+        user_id=int(payload["user_id"]) if payload.get("user_id") is not None else None,
+        source_lang=str(payload.get("source_lang") or "").strip().lower() or None,
+        target_lang=str(payload.get("target_lang") or "").strip().lower() or None,
+        action_type=action_type,
+        provider=provider,
+        units_type=units_type,
+        units_value=units_value,
+        currency=str(payload.get("currency") or BILLING_CURRENCY_DEFAULT),
+        status=str(payload.get("status") or "estimated"),
+        metadata=metadata,
+        price_snapshot_id=int(payload["price_snapshot_id"]) if payload.get("price_snapshot_id") is not None else None,
+        price_provider=str(payload.get("price_provider") or "").strip().lower() or None,
+        price_sku=str(payload.get("price_sku") or "").strip() or None,
+        price_unit=str(payload.get("price_unit") or "").strip().lower() or None,
+        cost_amount=float(payload["cost_amount"]) if payload.get("cost_amount") is not None else None,
+    )
+    if not item:
+        return jsonify({"error": "Не удалось записать billing event"}), 500
+    return jsonify({"ok": True, "event": item})
+
+
+@app.route("/api/admin/economics/price-snapshots/sync-env", methods=["POST"])
+def sync_economics_price_snapshots_from_env():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+    try:
+        result = _sync_openai_price_snapshots_public_then_env()
+    except Exception as exc:
+        return jsonify({"error": f"Не удалось синхронизировать price snapshots: {exc}"}), 500
+    return jsonify({"ok": True, "result": result})
+
+
 @app.route("/api/webapp/dictionary", methods=["POST"])
 def lookup_webapp_dictionary():
     payload = request.get_json(silent=True) or {}
@@ -4353,6 +5265,7 @@ def lookup_webapp_dictionary():
                 target_lang=query_target_lang,
             )
         )
+        usage_main = get_last_llm_usage(reset=True)
         result, detected, source_value, target_value = _build_multilang_dictionary_result(
             raw=raw,
             query_word=word_ru,
@@ -4374,6 +5287,16 @@ def lookup_webapp_dictionary():
                     source_lang=query_target_lang,
                     target_lang=query_source_lang,
                 )
+            )
+            usage_reverse = get_last_llm_usage(reset=True)
+            _billing_log_openai_usage(
+                user_id=int(user_id),
+                action_type="dictionary_lookup_fallback",
+                source_lang=source_lang,
+                target_lang=target_lang,
+                usage=usage_reverse,
+                seed=f"dict_lookup_fallback:{user_id}:{word_ru}:{direction}:{time.time_ns()}",
+                metadata={"word": word_ru, "direction": direction},
             )
             reverse_target = str(reverse_raw.get("word_target") or "").strip()
             if reverse_target and reverse_target.casefold() != target_value.casefold():
@@ -4414,6 +5337,35 @@ def lookup_webapp_dictionary():
         source_lang=source_lang,
         target_lang=target_lang,
         direction=direction,
+    )
+    _billing_log_event_safe(
+        user_id=int(user_id),
+        action_type="dictionary_lookup",
+        provider="openai",
+        units_type="requests",
+        units_value=1.0,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        idempotency_seed=f"dict_lookup:{user_id}:{source_lang}:{target_lang}:{word_ru.lower()}:{direction}:{time.time_ns()}",
+        status="estimated",
+        metadata={
+            "word": word_ru,
+            "direction": direction,
+            "lookup_lang": lookup_lang or None,
+        },
+    )
+    _billing_log_openai_usage(
+        user_id=int(user_id),
+        action_type="dictionary_lookup",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        usage=locals().get("usage_main"),
+        seed=f"dict_lookup_tokens:{user_id}:{word_ru}:{direction}:{time.time_ns()}",
+        metadata={
+            "word": word_ru,
+            "direction": direction,
+            "lookup_lang": lookup_lang or None,
+        },
     )
     return jsonify(
         {
@@ -4816,6 +5768,9 @@ def recommend_today_video():
             skill_title=skill_title or None,
             examples=examples_payload[:5],
             target_lang=target_lang,
+            billing_user_id=int(user_id),
+            billing_source_lang=source_lang,
+            billing_target_lang=target_lang,
         )
         if not recommended_video:
             logging.warning(
@@ -5123,6 +6078,7 @@ def prepare_today_theory():
         theory = asyncio.run(run_theory_generation(theory_payload))
     except Exception as exc:
         return jsonify({"error": f"Ошибка генерации теории: {exc}"}), 500
+    usage_theory = get_last_llm_usage(reset=True)
     if not isinstance(theory, dict):
         theory = {}
     theory["resources"] = _normalize_theory_resources(theory, target_lang)
@@ -5131,6 +6087,7 @@ def prepare_today_theory():
         practice_raw = asyncio.run(run_theory_practice_sentences(practice_payload))
     except Exception as exc:
         return jsonify({"error": f"Ошибка генерации практики: {exc}"}), 500
+    usage_practice = get_last_llm_usage(reset=True)
 
     practice_sentences = _normalize_theory_sentences(practice_raw)
     if len(practice_sentences) < 5:
@@ -5155,6 +6112,43 @@ def prepare_today_theory():
         "examples_used": formatted_examples[:8],
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+    _billing_log_event_safe(
+        user_id=int(user_id),
+        action_type="theory_package_prepare",
+        provider="openai",
+        units_type="requests",
+        units_value=2.0,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        idempotency_seed=(
+            f"theory_prepare:{user_id}:{skill_id or ''}:{main_category or ''}:"
+            f"{sub_category or ''}:{package['generated_at']}"
+        ),
+        status="estimated",
+        metadata={
+            "skill_id": skill_id or None,
+            "skill_name": skill_name,
+            "is_beginner": bool(is_beginner),
+        },
+    )
+    _billing_log_openai_usage(
+        user_id=int(user_id),
+        action_type="theory_generation",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        usage=usage_theory,
+        seed=f"theory_generation:{user_id}:{skill_id or ''}:{main_category or ''}:{sub_category or ''}:{time.time_ns()}",
+        metadata={"skill_id": skill_id or None, "skill_name": skill_name},
+    )
+    _billing_log_openai_usage(
+        user_id=int(user_id),
+        action_type="theory_practice_sentences",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        usage=usage_practice,
+        seed=f"theory_practice:{user_id}:{skill_id or ''}:{main_category or ''}:{sub_category or ''}:{time.time_ns()}",
+        metadata={"skill_id": skill_id or None, "skill_name": skill_name},
+    )
 
     updated_item = None
     if item_id_raw is not None and str(item_id_raw).strip() != "":
@@ -5221,6 +6215,31 @@ def check_today_theory():
         feedback = asyncio.run(run_theory_check_feedback(check_payload))
     except Exception as exc:
         return jsonify({"error": f"Ошибка проверки теории: {exc}"}), 500
+    usage_check = get_last_llm_usage(reset=True)
+    _billing_log_event_safe(
+        user_id=int(user_id),
+        action_type="theory_check_feedback",
+        provider="openai",
+        units_type="requests",
+        units_value=1.0,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        idempotency_seed=f"theory_check:{user_id}:{len(paired)}:{str(item_id_raw or '')}:{time.time_ns()}",
+        status="estimated",
+        metadata={
+            "pairs_count": len(paired),
+            "item_id": int(item_id_raw) if str(item_id_raw or "").strip().isdigit() else None,
+        },
+    )
+    _billing_log_openai_usage(
+        user_id=int(user_id),
+        action_type="theory_check_feedback",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        usage=usage_check,
+        seed=f"theory_check_tokens:{user_id}:{len(paired)}:{time.time_ns()}",
+        metadata={"pairs_count": len(paired)},
+    )
 
     updated_item = None
     if item_id_raw is not None and str(item_id_raw).strip() != "":
@@ -5427,6 +6446,94 @@ def complete_assistant_session():
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка завершения голосовой сессии: {exc}"}), 500
+    if isinstance(session, dict):
+        duration_seconds = max(0, int(session.get("duration_seconds") or 0))
+        session_minutes = duration_seconds / 60.0
+        resolved_session_id = int(session.get("session_id") or (session_id or 0))
+        if session_minutes > 0 and resolved_session_id > 0:
+            whisper_snapshot = get_effective_billing_price_snapshot(
+                provider="openai",
+                sku="whisper_input",
+                unit="audio_minutes",
+                currency=BILLING_CURRENCY_DEFAULT,
+            )
+            try:
+                log_billing_event(
+                    idempotency_key=f"voice_stt_whisper_priced_{resolved_session_id}_{int(user_id)}",
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    action_type="voice_stt_whisper",
+                    provider="openai",
+                    units_type="audio_minutes",
+                    units_value=session_minutes,
+                    price_provider="openai" if whisper_snapshot else None,
+                    price_sku="whisper_input" if whisper_snapshot else None,
+                    price_unit="audio_minutes" if whisper_snapshot else None,
+                    currency=BILLING_CURRENCY_DEFAULT,
+                    status="estimated",
+                    metadata={
+                        "session_id": resolved_session_id,
+                        "duration_seconds": duration_seconds,
+                        "pricing_state": "priced" if whisper_snapshot else "missing_snapshot",
+                    },
+                )
+            except Exception:
+                pass
+            tts_snapshot = get_effective_billing_price_snapshot(
+                provider="agent_tts",
+                sku="agent_tts_output",
+                unit="audio_minutes",
+                currency=BILLING_CURRENCY_DEFAULT,
+            )
+            try:
+                log_billing_event(
+                    idempotency_key=f"voice_tts_agent_priced_{resolved_session_id}_{int(user_id)}",
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    action_type="voice_tts_agent",
+                    provider="agent_tts",
+                    units_type="audio_minutes",
+                    units_value=session_minutes,
+                    price_provider="agent_tts" if tts_snapshot else None,
+                    price_sku="agent_tts_output" if tts_snapshot else None,
+                    price_unit="audio_minutes" if tts_snapshot else None,
+                    currency=BILLING_CURRENCY_DEFAULT,
+                    status="estimated",
+                    metadata={
+                        "session_id": resolved_session_id,
+                        "duration_seconds": duration_seconds,
+                        "pricing_state": "priced" if tts_snapshot else "missing_snapshot",
+                    },
+                )
+            except Exception:
+                pass
+            livekit_cost, livekit_meta = _compute_livekit_session_cost(
+                session_minutes,
+                currency=BILLING_CURRENCY_DEFAULT,
+            )
+            try:
+                log_billing_event(
+                    idempotency_key=f"livekit_room_minutes_{resolved_session_id}",
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    action_type="livekit_room_minutes",
+                    provider="livekit",
+                    units_type="audio_minutes",
+                    units_value=session_minutes,
+                    cost_amount=livekit_cost,
+                    currency=BILLING_CURRENCY_DEFAULT,
+                    status="final",
+                    metadata={
+                        "session_id": resolved_session_id,
+                        "duration_seconds": duration_seconds,
+                        **(livekit_meta if isinstance(livekit_meta, dict) else {}),
+                    },
+                )
+            except Exception:
+                pass
     return jsonify({"ok": True, "session": session})
 
 
@@ -5683,6 +6790,9 @@ def start_skill_practice(skill_id: str):
         str(main_category or ""),
         str(sub_category or ""),
         target_lang=target_lang,
+        billing_user_id=int(user_id),
+        billing_source_lang=source_lang,
+        billing_target_lang=target_lang,
     )
     return jsonify(
         {
@@ -6826,6 +7936,24 @@ def get_youtube_transcript():
         _yt_transcript_errors[video_id] = {"ts": now, "error": str(exc)}
         return jsonify({"error": f"Не удалось получить субтитры: {exc}"}), 404
 
+    _billing_log_event_safe(
+        user_id=int(user_id),
+        action_type="youtube_transcript_fetch",
+        provider="youtube_proxy",
+        units_type="requests",
+        units_value=1.0,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        idempotency_seed=f"yt_fetch:{user_id}:{video_id}:{int(now)}",
+        status="estimated",
+        metadata={
+            "video_id": video_id,
+            "requested_lang": lang,
+            "detected_language": data.get("language"),
+            "source": data.get("source"),
+        },
+    )
+
     try:
         upsert_youtube_transcript_cache(
             video_id,
@@ -7057,6 +8185,21 @@ def translate_youtube_subtitles():
                 )
         except Exception as exc:
             return jsonify({"error": f"translation error: {exc}"}), 500
+        usage_subtitles = get_last_llm_usage(reset=True)
+        _billing_log_openai_usage(
+            user_id=int(user_id),
+            action_type="youtube_subtitles_translate",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            usage=usage_subtitles,
+            seed=f"yt_subtitles:{user_id}:{video_id}:{start_index}:{len(missing_lines)}:{time.time_ns()}",
+            metadata={
+                "video_id": video_id,
+                "source_subtitle_lang": detected_source_lang,
+                "target_subtitle_lang": subtitle_target_lang,
+                "lines_count": len(missing_lines),
+            },
+        )
         update_map = {}
         for idx_int, text in zip(missing_indices, translated):
             idx = str(idx_int)
@@ -7485,6 +8628,23 @@ def reader_audio_export():
             voice=google_voice,
             speed=_TTS_SPEED_DEFAULT,
         )
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="reader_audio_tts",
+            provider="google_tts",
+            units_type="chars",
+            units_value=float(len(text_to_read)),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"reader_audio:{user_id}:{document_id}:{filename_suffix}:{len(text_to_read)}:{time.time_ns()}",
+            status="estimated",
+            metadata={
+                "document_id": int(document_id),
+                "language": language_for_tts,
+                "voice": google_voice,
+                "format": "mp3",
+            },
+        )
         return send_file(
             BytesIO(mp3_bytes),
             mimetype="audio/mpeg",
@@ -7495,6 +8655,22 @@ def reader_audio_export():
         logging.warning("Reader audio Google TTS failed, fallback to offline: %s", google_exc)
         try:
             wav_bytes = _synthesize_offline_audio_wav(text_to_read, language=language_for_tts)
+            _billing_log_event_safe(
+                user_id=int(user_id),
+                action_type="reader_audio_tts_fallback",
+                provider="offline_tts",
+                units_type="chars",
+                units_value=float(len(text_to_read)),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                idempotency_seed=f"reader_audio_fallback:{user_id}:{document_id}:{filename_suffix}:{len(text_to_read)}:{time.time_ns()}",
+                status="final",
+                metadata={
+                    "document_id": int(document_id),
+                    "language": language_for_tts,
+                    "format": "wav",
+                },
+            )
             return send_file(
                 BytesIO(wav_bytes),
                 mimetype="audio/wav",
@@ -9031,6 +10207,18 @@ def finish_webapp_translation():
         response_payload["group_warning"] = group_warning
     return jsonify(response_payload)
 
+
+try:
+    if str(os.getenv("BILLING_OPENAI_SNAPSHOT_SYNC_ON_STARTUP") or "1").strip().lower() in {"1", "true", "yes", "on"}:
+        snapshot_sync_result = _sync_openai_price_snapshots_public_then_env()
+        logging.info(
+            "Billing OpenAI snapshot sync: created=%s skipped=%s errors=%s",
+            (snapshot_sync_result.get("summary") or {}).get("created_count"),
+            (snapshot_sync_result.get("summary") or {}).get("skipped_count"),
+            (snapshot_sync_result.get("summary") or {}).get("errors_count"),
+        )
+except Exception as exc:
+    logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 
 _start_audio_scheduler()
 

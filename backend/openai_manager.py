@@ -4,6 +4,7 @@ import logging
 import asyncio
 import re
 import json
+import contextvars
 #from openai import OpenAI
 from openai import AsyncOpenAI
 import psycopg2
@@ -1511,6 +1512,57 @@ def get_db_connection_context():
 # === Настройка Open AI API ===
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=60)
+_LAST_LLM_USAGE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("last_llm_usage", default=None)
+
+
+def _extract_usage_dict(run_status, *, task_name: str | None = None) -> dict | None:
+    if run_status is None:
+        return None
+    usage_obj = getattr(run_status, "usage", None)
+    if usage_obj is None and isinstance(run_status, dict):
+        usage_obj = run_status.get("usage")
+    if usage_obj is None:
+        return None
+    if hasattr(usage_obj, "model_dump"):
+        usage_data = usage_obj.model_dump()
+    elif isinstance(usage_obj, dict):
+        usage_data = dict(usage_obj)
+    else:
+        usage_data = {
+            "prompt_tokens": getattr(usage_obj, "prompt_tokens", None),
+            "completion_tokens": getattr(usage_obj, "completion_tokens", None),
+            "total_tokens": getattr(usage_obj, "total_tokens", None),
+        }
+    prompt_tokens = int(usage_data.get("prompt_tokens") or 0)
+    completion_tokens = int(usage_data.get("completion_tokens") or 0)
+    total_tokens = int(usage_data.get("total_tokens") or (prompt_tokens + completion_tokens))
+    if prompt_tokens <= 0 and completion_tokens <= 0 and total_tokens <= 0:
+        return None
+    model = str(
+        getattr(run_status, "model", None)
+        or (run_status.get("model") if isinstance(run_status, dict) else "")
+        or ""
+    ).strip()
+    return {
+        "task_name": task_name or "",
+        "model": model,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _store_last_usage(run_status, *, task_name: str | None = None) -> dict | None:
+    usage = _extract_usage_dict(run_status, task_name=task_name)
+    _LAST_LLM_USAGE.set(usage)
+    return usage
+
+
+def get_last_llm_usage(reset: bool = True) -> dict | None:
+    usage = _LAST_LLM_USAGE.get()
+    if reset:
+        _LAST_LLM_USAGE.set(None)
+    return dict(usage) if isinstance(usage, dict) else None
 
 if not os.getenv("OPENAI_API_KEY"):
     logging.error("❌ Ошибка: OPENAI_API_KEY не задан в .env-файле или переменных окружения!")
@@ -2230,6 +2282,7 @@ async def run_dictionary_lookup_multilang(
     source_lang: str,
     target_lang: str,
 ) -> dict:
+    _LAST_LLM_USAGE.set(None)
     task_name = "dictionary_assistant_multilang"
     system_instruction_key = "dictionary_assistant_multilang"
     assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
@@ -2262,6 +2315,7 @@ async def run_dictionary_lookup_multilang(
         if run_status.status == "completed":
             break
         await asyncio.sleep(2)
+    _store_last_usage(run_status, task_name=task_name)
 
     messages = await client.beta.threads.messages.list(thread_id=thread_id)
     last_message = messages.data[0]
@@ -2512,6 +2566,7 @@ async def run_dictionary_collocations_multilang(
 
 
 async def run_translate_subtitles_ru(lines: list[str]) -> list[str]:
+    _LAST_LLM_USAGE.set(None)
     task_name = "translate_subtitles_ru"
     system_instruction_key = "translate_subtitles_ru"
     assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
@@ -2540,6 +2595,7 @@ async def run_translate_subtitles_ru(lines: list[str]) -> list[str]:
         if run_status.status == "completed":
             break
         await asyncio.sleep(2)
+    _store_last_usage(run_status, task_name=task_name)
 
     messages = await client.beta.threads.messages.list(thread_id=thread_id)
     last_message = messages.data[0]
@@ -2565,6 +2621,7 @@ async def run_translate_subtitles_multilang(
     source_lang: str,
     target_lang: str,
 ) -> list[str]:
+    _LAST_LLM_USAGE.set(None)
     task_name = "translate_subtitles_multilang"
     system_instruction_key = "translate_subtitles_multilang"
     assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
@@ -2597,6 +2654,7 @@ async def run_translate_subtitles_multilang(
         if run_status.status == "completed":
             break
         await asyncio.sleep(2)
+    _store_last_usage(run_status, task_name=task_name)
 
     messages = await client.beta.threads.messages.list(thread_id=thread_id)
     last_message = messages.data[0]
@@ -2667,6 +2725,7 @@ async def _run_json_assistant_task(
     payload: dict,
     poll_delay_sec: float = 1.5,
 ) -> dict:
+    _LAST_LLM_USAGE.set(None)
     assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
     thread = await client.beta.threads.create()
     thread_id = thread.id
@@ -2692,6 +2751,7 @@ async def _run_json_assistant_task(
         if run_status.status in {"failed", "cancelled", "expired"}:
             break
         await asyncio.sleep(poll_delay_sec)
+    _store_last_usage(run_status, task_name=task_name)
 
     messages = await client.beta.threads.messages.list(thread_id=thread_id)
     last_message = messages.data[0]

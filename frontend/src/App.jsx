@@ -298,6 +298,11 @@ function AppInner() {
   const [analyticsPoints, setAnalyticsPoints] = useState([]);
   const [analyticsCompare, setAnalyticsCompare] = useState([]);
   const [analyticsRank, setAnalyticsRank] = useState(null);
+  const [economicsPeriod, setEconomicsPeriod] = useState('month');
+  const [economicsAllocation, setEconomicsAllocation] = useState('weighted');
+  const [economicsLoading, setEconomicsLoading] = useState(false);
+  const [economicsError, setEconomicsError] = useState('');
+  const [economicsSummary, setEconomicsSummary] = useState(null);
   const [languageProfile, setLanguageProfile] = useState(null);
   const [languageProfileDraft, setLanguageProfileDraft] = useState({ learning_language: 'de', native_language: 'ru' });
   const [languageProfileLoading, setLanguageProfileLoading] = useState(false);
@@ -342,6 +347,7 @@ function AppInner() {
   const timeoutAudioRef = useRef(null);
   const avatarInputRef = useRef(null);
   const analyticsRef = useRef(null);
+  const economicsRef = useRef(null);
   const assistantRef = useRef(null);
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
@@ -1666,6 +1672,39 @@ function AppInner() {
     .map((item) => ({ ...item, ring_type: 'best' }));
   const ringSkills = [...weakestSkills, ...strongestSkills];
   const ringPalette = ['#ff5d7a', '#ff9d57', '#ffd84d', '#46dca0', '#53c7ff', '#7c9dff'];
+  const economicsActionMap = useMemo(() => {
+    const rows = Array.isArray(economicsSummary?.breakdown?.by_action_type)
+      ? economicsSummary.breakdown.by_action_type
+      : [];
+    const map = new Map();
+    rows.forEach((item) => {
+      const key = String(item?.action_type || '').trim();
+      if (!key) return;
+      map.set(key, item);
+    });
+    return map;
+  }, [economicsSummary]);
+  const economicsVoiceRows = useMemo(() => ([
+    {
+      key: 'voice_stt_whisper',
+      title: 'Whisper STT',
+      item: economicsActionMap.get('voice_stt_whisper'),
+      unit: tr('мин', 'Min'),
+    },
+    {
+      key: 'voice_tts_agent',
+      title: 'Agent TTS',
+      item: economicsActionMap.get('voice_tts_agent'),
+      unit: tr('мин', 'Min'),
+    },
+    {
+      key: 'livekit_room_minutes',
+      title: 'LiveKit',
+      item: economicsActionMap.get('livekit_room_minutes'),
+      unit: tr('мин', 'Min'),
+    },
+  ]), [economicsActionMap, uiLang]);
+  const livekitStatusColor = String(economicsSummary?.livekit_status?.color || '').toLowerCase();
   const ringSize = 264;
   const ringCenter = ringSize / 2;
   const ringStartRadius = 118;
@@ -1818,7 +1857,7 @@ function AppInner() {
   };
 
   const showAllSections = () => {
-    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'analytics', 'theory']));
+    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'analytics', 'economics', 'theory']));
     setMoviesCollapsed(false);
   };
 
@@ -1987,6 +2026,14 @@ function AppInner() {
           <circle cx="9" cy="11" r="1.2" fill="currentColor" />
           <circle cx="15" cy="11" r="1.2" fill="currentColor" />
           <path d="M9 14.5h6M12 2.5v2.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+        </svg>
+      );
+    }
+    if (kind === 'economics') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M9.2 9.3h4.4a1.7 1.7 0 0 1 0 3.4H10.7a1.7 1.7 0 0 0 0 3.4h4.2M12 7v10" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
         </svg>
       );
     }
@@ -5675,6 +5722,31 @@ function AppInner() {
     }
   };
 
+  const loadEconomics = async (overridePeriod, overrideAllocation) => {
+    if (!initData) {
+      setEconomicsError(initDataMissingMsg);
+      return;
+    }
+    const period = overridePeriod || economicsPeriod;
+    const allocation = overrideAllocation || economicsAllocation;
+    setEconomicsLoading(true);
+    setEconomicsError('');
+    try {
+      const response = await fetch(
+        `/api/economics/summary?initData=${encodeURIComponent(initData)}&period=${encodeURIComponent(period)}&allocation=${encodeURIComponent(allocation)}&sync_fixed=1`,
+      );
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки экономики', 'Fehler beim Laden der Kosten'));
+      }
+      const data = await response.json();
+      setEconomicsSummary(data?.summary || null);
+    } catch (error) {
+      setEconomicsError(`${tr('Ошибка экономики', 'Kostenfehler')}: ${error.message}`);
+    } finally {
+      setEconomicsLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!isWebAppMode || !initData) {
       return;
@@ -5683,6 +5755,15 @@ function AppInner() {
       loadAnalytics();
     }
   }, [initData, isWebAppMode, analyticsPeriod, selectedSections, flashcardsOnly]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      return;
+    }
+    if (!flashcardsOnly && isSectionVisible('economics')) {
+      loadEconomics();
+    }
+  }, [initData, isWebAppMode, economicsPeriod, economicsAllocation, selectedSections, flashcardsOnly]);
 
   useEffect(() => {
     if (!analyticsTrendRef.current) {
@@ -5936,6 +6017,15 @@ function AppInner() {
                 <span className="menu-icon menu-icon-analytics">{renderMenuIcon('analytics')}</span>
                 <span>{t('menu_analytics')}</span>
               </button>
+              <button
+                type="button"
+                className={`menu-item menu-item-economics ${selectedSections.has('economics') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('economics')}
+                disabled={flashcardsOnly}
+              >
+                <span className="menu-icon menu-icon-economics">{renderMenuIcon('economics')}</span>
+                <span>{t('menu_economics')}</span>
+              </button>
             </div>
             <div className="webapp-menu-actions">
               <div className="language-toggle-wrap">
@@ -6122,6 +6212,15 @@ function AppInner() {
                     >
                       <span className="menu-icon menu-icon-analytics">{renderMenuIcon('analytics')}</span>
                       <span>{t('menu_analytics')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item menu-item-economics ${selectedSections.has('economics') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('economics', economicsRef)}
+                      disabled={flashcardsOnly}
+                    >
+                      <span className="menu-icon menu-icon-economics">{renderMenuIcon('economics')}</span>
+                      <span>{t('menu_economics')}</span>
                     </button>
                   </div>
                   <div className="overlay-actions">
@@ -9294,6 +9393,139 @@ function AppInner() {
 
                 <div className="analytics-chart" ref={analyticsTrendRef} />
                 <div className="analytics-chart analytics-compare" ref={analyticsCompareRef} />
+              </section>
+            )}
+
+            {!flashcardsOnly && isSectionVisible('economics') && (
+              <section className="webapp-section webapp-economics" ref={economicsRef}>
+                <div className="webapp-section-title webapp-section-title-with-logo">
+                  <h2>{tr('Экономика', 'Kosten')}</h2>
+                  <p className="webapp-muted">{tr('Учёт переменных и фиксированных затрат по пользователю.', 'Tracking von variablen und fixen Kosten pro Nutzer.')}</p>
+                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                </div>
+                <div className="analytics-controls economics-controls">
+                  <label className="webapp-field">
+                    <span>{tr('Период', 'Zeitraum')}</span>
+                    <select value={economicsPeriod} onChange={(event) => setEconomicsPeriod(event.target.value)}>
+                      <option value="week">{tr('Неделя', 'Woche')}</option>
+                      <option value="month">{tr('Месяц', 'Monat')}</option>
+                      <option value="quarter">{tr('Квартал', 'Quartal')}</option>
+                      <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
+                      <option value="year">{tr('Год', 'Jahr')}</option>
+                      <option value="all">{tr('Все время', 'Gesamt')}</option>
+                    </select>
+                  </label>
+                  <label className="webapp-field">
+                    <span>{tr('Аллокация fixed', 'Fixed-Allokation')}</span>
+                    <select value={economicsAllocation} onChange={(event) => setEconomicsAllocation(event.target.value)}>
+                      <option value="weighted">{tr('По весу активности', 'Gewichtet')}</option>
+                      <option value="equal">{tr('Поровну на активных', 'Gleich verteilt')}</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => loadEconomics(economicsPeriod, economicsAllocation)}
+                    disabled={economicsLoading}
+                  >
+                    {economicsLoading ? tr('Считаем...', 'Berechnen...') : tr('Обновить', 'Aktualisieren')}
+                  </button>
+                </div>
+
+                {economicsError && <div className="webapp-error">{economicsError}</div>}
+                {!economicsError && economicsLoading && <div className="webapp-muted">{tr('Считаем расходы...', 'Kosten werden berechnet...')}</div>}
+
+                {economicsSummary && (
+                  <>
+                    <div className="analytics-cards economics-cards">
+                      <div className="analytics-card">
+                        <span>{tr('Переменные', 'Variabel')}</span>
+                        <strong>{Number(economicsSummary?.totals?.user_variable_cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('Fixed (аллокация)', 'Fixed (allokiert)')}</span>
+                        <strong>{Number(economicsSummary?.totals?.user_fixed_allocated_cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('Итого', 'Gesamt')}</span>
+                        <strong>{Number(economicsSummary?.totals?.user_total_cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('События', 'Ereignisse')}</span>
+                        <strong>{Number(economicsSummary?.totals?.user_events_count || 0)}</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('Без цены (events)', 'Ohne Preis (Events)')}</span>
+                        <strong>{Number(economicsSummary?.totals?.user_unpriced_events || 0)}</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('Ср. цена события', 'Ø Kosten/Ereignis')}</span>
+                        <strong>{Number(economicsSummary?.totals?.avg_cost_per_user_event || 0).toFixed(4)} {economicsSummary?.currency || 'USD'}</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('Активных пользователей', 'Aktive Nutzer')}</span>
+                        <strong>{Number(economicsSummary?.totals?.period_active_users || 0)}</strong>
+                      </div>
+                    </div>
+
+                    <div className="economics-meta-row">
+                      <span>{tr('Диапазон', 'Zeitraum')}: {economicsSummary?.range?.start_date} — {economicsSummary?.range?.end_date}</span>
+                      <span>{tr('Метод аллокации', 'Allokation')}: {economicsSummary?.allocation_method === 'weighted' ? tr('взвешенный', 'gewichtet') : tr('равный', 'gleich')}</span>
+                    </div>
+
+                    <div className="analytics-cards economics-voice-cards">
+                      {economicsVoiceRows.map((row) => {
+                        const cost = Number(row?.item?.cost || 0);
+                        const units = Number(row?.item?.units || 0);
+                        const cardTone =
+                          row.key === 'livekit_room_minutes'
+                            ? `is-${livekitStatusColor || 'green'}`
+                            : (cost > 0 ? 'is-red' : 'is-green');
+                        return (
+                          <div className={`analytics-card economics-voice-card ${cardTone}`} key={`voice-cost-${row.key}`}>
+                            <span>{row.title}</span>
+                            <strong>{cost.toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            <small className="webapp-muted">
+                              {units.toFixed(2)} {row.unit}
+                              {row.key === 'livekit_room_minutes' && economicsSummary?.livekit_status?.free_minutes_month > 0 ? (
+                                ` • ${Number(economicsSummary.livekit_status.user_month_minutes || 0).toFixed(1)} / `
+                                + `${Number(economicsSummary.livekit_status.free_minutes_month).toFixed(1)} ${tr('мин', 'Min')}`
+                                + ` (${Math.round(Number(economicsSummary.livekit_status.ratio_to_free_tier || 0) * 100)}%)`
+                              ) : ''}
+                            </small>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="economics-breakdown-grid">
+                      <div className="economics-breakdown-card">
+                        <h4>{tr('По провайдерам', 'Nach Providern')}</h4>
+                        {(economicsSummary?.breakdown?.by_provider || []).slice(0, 8).map((item) => (
+                          <div className="economics-breakdown-row" key={`provider-${item.provider}`}>
+                            <span>{item.provider || 'n/a'}</span>
+                            <strong>{Number(item.cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                          </div>
+                        ))}
+                        {(!economicsSummary?.breakdown?.by_provider || economicsSummary.breakdown.by_provider.length === 0) && (
+                          <div className="webapp-muted">{tr('Пока нет данных.', 'Noch keine Daten.')}</div>
+                        )}
+                      </div>
+                      <div className="economics-breakdown-card">
+                        <h4>{tr('По действиям', 'Nach Aktionen')}</h4>
+                        {(economicsSummary?.breakdown?.by_action_type || []).slice(0, 8).map((item) => (
+                          <div className="economics-breakdown-row" key={`action-${item.action_type}`}>
+                            <span>{item.action_type || 'n/a'}</span>
+                            <strong>{Number(item.cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                          </div>
+                        ))}
+                        {(!economicsSummary?.breakdown?.by_action_type || economicsSummary.breakdown.by_action_type.length === 0) && (
+                          <div className="webapp-muted">{tr('Пока нет данных.', 'Noch keine Daten.')}</div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
               </section>
             )}
 
