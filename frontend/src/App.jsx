@@ -4103,6 +4103,7 @@ function AppInner() {
           document_id: readerDocumentId,
           page_from: fromPage,
           page_to: toPage,
+          language: readerDetectedLanguage || undefined,
         }),
       });
       if (!response.ok) {

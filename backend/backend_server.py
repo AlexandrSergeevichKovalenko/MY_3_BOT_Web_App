@@ -1500,13 +1500,31 @@ def _fetch_reader_text_from_url(raw_url: str) -> tuple[str, str, list[dict]]:
     return _extract_text_from_html(response.text), "html", []
 
 
-def _synthesize_offline_audio_wav(text: str) -> bytes:
+def _resolve_offline_espeak_voice(lang_hint: str | None, text: str) -> str:
+    lang = _normalize_short_lang_code(lang_hint, fallback="")
+    if not lang:
+        lang = _detect_reader_language(text, fallback="de")
+    # espeak/espeak-ng voice ids
+    voice_map = {
+        "de": "de",
+        "ru": "ru",
+        "en": "en",
+        "es": "es",
+        "it": "it",
+        "fr": "fr",
+        "pt": "pt",
+    }
+    return voice_map.get(lang, "de")
+
+
+def _synthesize_offline_audio_wav(text: str, language: str | None = None) -> bytes:
     cleaned = _normalize_reader_text(text, max_chars=300000)
     if not cleaned:
         raise ValueError("Нет текста для аудио")
     if len(cleaned) > 180000:
         raise ValueError("Слишком длинный фрагмент для офлайн-конвертации. Выберите меньший диапазон страниц.")
     errors: list[str] = []
+    voice = _resolve_offline_espeak_voice(language, cleaned)
 
     # Primary path: pyttsx3 (offline python engine).
     if pyttsx3 is not None:
@@ -1515,6 +1533,35 @@ def _synthesize_offline_audio_wav(text: str) -> bytes:
         try:
             engine = pyttsx3.init()
             engine.setProperty("rate", 165)
+            try:
+                voices = engine.getProperty("voices") or []
+                normalized_voice = _normalize_short_lang_code(language, fallback="")
+                if normalized_voice:
+                    matched_voice = None
+                    for voice_info in voices:
+                        voice_id = str(getattr(voice_info, "id", "") or "").lower()
+                        voice_name = str(getattr(voice_info, "name", "") or "").lower()
+                        langs_raw = getattr(voice_info, "languages", None)
+                        langs: list[str] = []
+                        if isinstance(langs_raw, (list, tuple)):
+                            for raw_item in langs_raw:
+                                try:
+                                    decoded = raw_item.decode("utf-8", errors="ignore") if isinstance(raw_item, (bytes, bytearray)) else str(raw_item)
+                                except Exception:
+                                    decoded = str(raw_item)
+                                langs.append(decoded.lower())
+                        if (
+                            normalized_voice in voice_id
+                            or normalized_voice in voice_name
+                            or any(normalized_voice in item for item in langs)
+                        ):
+                            matched_voice = getattr(voice_info, "id", None)
+                            break
+                    if matched_voice:
+                        engine.setProperty("voice", matched_voice)
+            except Exception:
+                # Best-effort voice selection; ignore if current runtime doesn't expose voices.
+                pass
             engine.save_to_file(cleaned, wav_path)
             engine.runAndWait()
             with open(wav_path, "rb") as fh:
@@ -1541,7 +1588,7 @@ def _synthesize_offline_audio_wav(text: str) -> bytes:
             wav_path = tmp_wav.name
         try:
             proc = subprocess.run(
-                [cli_name, "-w", wav_path, "-s", "165", "-f", text_path],
+                [cli_name, "-v", voice, "-w", wav_path, "-s", "165", "-f", text_path],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -1572,7 +1619,7 @@ def _synthesize_offline_audio_wav(text: str) -> bytes:
     raise RuntimeError(
         "Offline speech engine is unavailable. "
         "Install pyttsx3 with espeak support (or espeak-ng/espeak binary). "
-        f"Details: {'; '.join(errors)}"
+        f"Voice: {voice}. Details: {'; '.join(errors)}"
     )
 
 
@@ -7010,6 +7057,7 @@ def reader_audio_export():
     document_id = payload.get("document_id")
     page_from = payload.get("page_from")
     page_to = payload.get("page_to")
+    requested_language = str(payload.get("language") or "").strip()
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -7061,7 +7109,11 @@ def reader_audio_export():
     if not text_to_read:
         return jsonify({"error": "В выбранном диапазоне нет текста"}), 422
     try:
-        wav_bytes = _synthesize_offline_audio_wav(text_to_read)
+        language_for_tts = _normalize_short_lang_code(
+            requested_language or _detect_reader_language(text_to_read, fallback=target_lang),
+            fallback=_normalize_short_lang_code(target_lang, fallback="de"),
+        )
+        wav_bytes = _synthesize_offline_audio_wav(text_to_read, language=language_for_tts)
     except Exception as exc:
         return jsonify({"error": f"Офлайн-аудио недоступно: {exc}"}), 500
 
