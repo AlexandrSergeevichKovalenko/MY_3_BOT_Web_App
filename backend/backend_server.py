@@ -1317,9 +1317,19 @@ def _get_or_create_today_plan(
 ) -> dict:
     existing = get_daily_plan(user_id=user_id, plan_date=plan_date)
     if existing:
+        items = existing.get("items") or []
+        has_theory_item = any(str(item.get("task_type") or "").lower() == "theory" for item in items)
+        has_non_todo = any(str(item.get("status") or "").lower() in {"doing", "done"} for item in items)
+        if not has_theory_item and not has_non_todo:
+            return _build_today_plan_for_user(
+                user_id=user_id,
+                plan_date=plan_date,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+
         include_video = str(os.getenv("TODAY_PLAN_INCLUDE_VIDEO") or "0").strip().lower() in {"1", "true", "yes", "on"}
         if include_video:
-            items = existing.get("items") or []
             has_video_item = any(str(item.get("task_type") or "").lower() == "video" for item in items)
             video_missing_link = any(
                 str(item.get("task_type") or "").lower() == "video"
@@ -1328,7 +1338,6 @@ def _get_or_create_today_plan(
                 and not (item.get("payload") or {}).get("video_url")
                 for item in items
             )
-            has_non_todo = any(str(item.get("status") or "").lower() in {"doing", "done"} for item in items)
             if has_video_item and video_missing_link and not has_non_todo:
                 return _build_today_plan_for_user(
                     user_id=user_id,

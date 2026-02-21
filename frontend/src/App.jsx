@@ -6173,7 +6173,6 @@ function AppInner() {
                     disabled={audioGrammarLoading || audioGrammarSaving}
                   />
                 </label>
-                <img src={heroStickerSrc} alt="" aria-hidden="true" className="today-plan-mascot" />
                 {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
                 {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
                 {!todayPlanLoading && !todayPlanError && (!todayPlan?.items || todayPlan.items.length === 0) && (
