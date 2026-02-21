@@ -2190,25 +2190,41 @@ function AppInner() {
 
   useEffect(() => {
     if (!telegramApp) return;
+    const syncViewportMode = () => {
+      try {
+        telegramApp.ready?.();
+        if (typeof telegramApp.requestFullscreen === 'function') {
+          Promise.resolve(telegramApp.requestFullscreen()).catch(() => {
+            telegramApp.expand?.();
+          });
+        } else {
+          telegramApp.expand?.();
+        }
+        telegramApp.disableVerticalSwipes?.();
+      } catch (error) {
+        // Telegram API may be partially unavailable in browser mode.
+      }
+    };
+
     try {
-      telegramApp.ready?.();
-      telegramApp.expand?.();
-      telegramApp.disableVerticalSwipes?.();
+      syncViewportMode();
     } catch (error) {
       // Telegram API may be partially unavailable in browser mode.
     }
 
     const onResize = () => {
-      try {
-        telegramApp.expand?.();
-      } catch (error) {
-        // ignore
-      }
+      syncViewportMode();
     };
     window.addEventListener('resize', onResize);
+    if (typeof telegramApp.onEvent === 'function') {
+      telegramApp.onEvent('viewportChanged', syncViewportMode);
+    }
 
     return () => {
       window.removeEventListener('resize', onResize);
+      if (typeof telegramApp.offEvent === 'function') {
+        telegramApp.offEvent('viewportChanged', syncViewportMode);
+      }
     };
   }, [telegramApp]);
 
