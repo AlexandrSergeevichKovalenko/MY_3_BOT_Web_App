@@ -313,6 +313,10 @@ body {
   overflow-x: hidden;
 }
 
+.webapp-page.is-telegram-fullscreen {
+  padding-top: calc(env(safe-area-inset-top, 0px) + 64px);
+}
+
 .webapp-page.is-flashcards {
   padding: 0;
 }

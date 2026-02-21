@@ -151,6 +151,7 @@ function AppInner() {
   const [selectionLookupLoading, setSelectionLookupLoading] = useState(false);
   const [inlineToast, setInlineToast] = useState('');
   const [lastLookupScrollY, setLastLookupScrollY] = useState(null);
+  const [telegramFullscreenMode, setTelegramFullscreenMode] = useState(false);
   const [historyItems, setHistoryItems] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
@@ -2193,11 +2194,15 @@ function AppInner() {
     const syncViewportMode = () => {
       try {
         telegramApp.ready?.();
-        if (typeof telegramApp.requestFullscreen === 'function') {
+        const minSide = Math.min(window.innerWidth || 0, window.innerHeight || 0);
+        const shouldUseFullscreen = minSide >= 700;
+        if (shouldUseFullscreen && typeof telegramApp.requestFullscreen === 'function') {
+          setTelegramFullscreenMode(true);
           Promise.resolve(telegramApp.requestFullscreen()).catch(() => {
             telegramApp.expand?.();
           });
         } else {
+          setTelegramFullscreenMode(false);
           telegramApp.expand?.();
         }
         telegramApp.disableVerticalSwipes?.();
@@ -5554,7 +5559,7 @@ function AppInner() {
 
   if (isWebAppMode) {
     return (
-      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''}`}>
+      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''}`}>
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
             <div className="webapp-brand">
