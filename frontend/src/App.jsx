@@ -4179,7 +4179,13 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка аудио-конвертации', 'Fehler bei Audio-Konvertierung'));
       }
       const blob = await response.blob();
-      const fileName = `${String(readerTitle || 'reader').replace(/[^\w.-]+/g, '_')}_${fullDocument ? 'full' : 'range'}.wav`;
+      const contentDisposition = String(response.headers.get('content-disposition') || '');
+      const fileNameMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)|filename=\"?([^\";]+)\"?/i);
+      const decodedNameRaw = fileNameMatch?.[1] || fileNameMatch?.[2] || '';
+      const decodedName = decodedNameRaw ? decodeURIComponent(decodedNameRaw) : '';
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      const ext = contentType.includes('mpeg') ? 'mp3' : 'wav';
+      const fileName = decodedName || `${String(readerTitle || 'reader').replace(/[^\w.-]+/g, '_')}_${fullDocument ? 'full' : 'range'}.${ext}`;
       const url = URL.createObjectURL(blob);
       const ua = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
       const isIOS = /iPad|iPhone|iPod/i.test(ua)

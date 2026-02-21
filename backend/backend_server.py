@@ -7122,22 +7122,45 @@ def reader_audio_export():
 
     if not text_to_read:
         return jsonify({"error": "В выбранном диапазоне нет текста"}), 422
-    try:
-        language_for_tts = _normalize_short_lang_code(
-            requested_language or _detect_reader_language(text_to_read, fallback=target_lang),
-            fallback=_normalize_short_lang_code(target_lang, fallback="de"),
-        )
-        wav_bytes = _synthesize_offline_audio_wav(text_to_read, language=language_for_tts)
-    except Exception as exc:
-        return jsonify({"error": f"Офлайн-аудио недоступно: {exc}"}), 500
-
-    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", str(document.get("title") or "reader"))[:60]
-    return send_file(
-        BytesIO(wav_bytes),
-        mimetype="audio/wav",
-        as_attachment=True,
-        download_name=f"{safe_title}_{filename_suffix}.wav",
+    language_for_tts = _normalize_short_lang_code(
+        requested_language or _detect_reader_language(text_to_read, fallback=target_lang),
+        fallback=_normalize_short_lang_code(target_lang, fallback="de"),
     )
+    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", str(document.get("title") or "reader"))[:60]
+    try:
+        google_voice = _TTS_VOICES.get(language_for_tts, _TTS_VOICES["de"])
+        google_lang_code = _TTS_LANG_CODES.get(language_for_tts, "de-DE")
+        mp3_bytes = _synthesize_mp3(
+            text_to_read,
+            language=google_lang_code,
+            voice=google_voice,
+            speed=_TTS_SPEED_DEFAULT,
+        )
+        return send_file(
+            BytesIO(mp3_bytes),
+            mimetype="audio/mpeg",
+            as_attachment=True,
+            download_name=f"{safe_title}_{filename_suffix}.mp3",
+        )
+    except Exception as google_exc:
+        logging.warning("Reader audio Google TTS failed, fallback to offline: %s", google_exc)
+        try:
+            wav_bytes = _synthesize_offline_audio_wav(text_to_read, language=language_for_tts)
+            return send_file(
+                BytesIO(wav_bytes),
+                mimetype="audio/wav",
+                as_attachment=True,
+                download_name=f"{safe_title}_{filename_suffix}.wav",
+            )
+        except Exception as offline_exc:
+            return jsonify(
+                {
+                    "error": (
+                        f"TTS недоступен. Google: {google_exc}. "
+                        f"Offline: {offline_exc}"
+                    )
+                }
+            ), 500
 
 
 @app.route("/api/webapp/normalize/de", methods=["POST"])
