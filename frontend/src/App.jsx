@@ -2194,19 +2194,37 @@ function AppInner() {
     const syncViewportMode = () => {
       try {
         telegramApp.ready?.();
-        const minSide = Math.min(window.innerWidth || 0, window.innerHeight || 0);
-        const shouldUseFullscreen = minSide >= 700;
+        const viewportWidth = window.innerWidth || 0;
+        const viewportHeight = window.innerHeight || 0;
+        const minSide = Math.min(viewportWidth, viewportHeight);
+        const maxSide = Math.max(viewportWidth, viewportHeight);
+        const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
+        const isTabletUserAgent = /iPad|Tablet|PlayBook|Silk|Android(?!.*Mobile)/i.test(userAgent);
+        const shouldUseFullscreen =
+          isTabletUserAgent ||
+          viewportWidth >= 700 ||
+          (maxSide >= 1000 && minSide >= 600);
         if (shouldUseFullscreen && typeof telegramApp.requestFullscreen === 'function') {
-          setTelegramFullscreenMode(true);
-          Promise.resolve(telegramApp.requestFullscreen()).catch(() => {
-            telegramApp.expand?.();
-          });
+          Promise.resolve(telegramApp.requestFullscreen())
+            .then(() => {
+              setTelegramFullscreenMode(true);
+            })
+            .catch(() => {
+              setTelegramFullscreenMode(false);
+              telegramApp.expand?.();
+            });
         } else {
           setTelegramFullscreenMode(false);
           telegramApp.expand?.();
         }
         telegramApp.disableVerticalSwipes?.();
       } catch (error) {
+        setTelegramFullscreenMode(false);
+        try {
+          telegramApp.expand?.();
+        } catch (expandError) {
+          // ignore
+        }
         // Telegram API may be partially unavailable in browser mode.
       }
     };
