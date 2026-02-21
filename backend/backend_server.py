@@ -2668,9 +2668,127 @@ def build_full_script(
             chunks = [target_text.strip()] if target_text.strip() else []
         script.extend(build_target_script(chunks, target_lang=tgt))
         if explanation_text:
-            script.extend(build_source_script(explanation_text, source_lang=src))
+            script.extend(
+                build_explanation_mixed_script(
+                    explanation_text=explanation_text,
+                    source_lang=src,
+                    target_lang=tgt,
+                )
+            )
         if script:
             script[-1]["pause_ms_after"] = _PAUSE_BETWEEN_MISTAKES_MS
+    return script
+
+
+def _guess_fragment_lang_for_audio(
+    fragment: str,
+    source_lang: str,
+    target_lang: str,
+    *,
+    prefer_target: bool = False,
+) -> str:
+    text = _normalize_utterance_text(fragment)
+    src = _normalize_short_lang_code(source_lang, fallback="ru")
+    tgt = _normalize_short_lang_code(target_lang, fallback="de")
+    if not text:
+        return src
+    if src == tgt:
+        return src
+
+    cyr_count = len(re.findall(r"[А-Яа-яЁё]", text))
+    latin_count = len(re.findall(r"[A-Za-zÀ-ÿ]", text))
+
+    if cyr_count > 0 and latin_count == 0:
+        if "ru" == src or "ru" == tgt:
+            return "ru"
+        return src
+    if latin_count > 0 and cyr_count == 0:
+        if "ru" == src and tgt != "ru":
+            return tgt
+        if "ru" == tgt and src != "ru":
+            return src
+
+    detected = _normalize_short_lang_code(_detect_reader_language(text, fallback=src), fallback=src)
+    if detected == tgt:
+        return tgt
+    if detected == src:
+        return src
+    return tgt if prefer_target else src
+
+
+def _split_explanation_fragments_with_lang(
+    text: str,
+    source_lang: str,
+    target_lang: str,
+) -> list[tuple[str, str]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    src = _normalize_short_lang_code(source_lang, fallback="ru")
+    tgt = _normalize_short_lang_code(target_lang, fallback="de")
+
+    tagged_pattern = re.compile(r"\[TARGET\](.*?)\[/TARGET\]", re.IGNORECASE | re.DOTALL)
+    has_target_tags = bool(tagged_pattern.search(raw))
+    segments: list[tuple[str, str]] = []
+    cursor = 0
+
+    for match in tagged_pattern.finditer(raw):
+        before = raw[cursor:match.start()].strip()
+        if before:
+            segments.extend(_split_explanation_fragments_with_lang(before, src, tgt))
+        inside = _normalize_utterance_text(match.group(1))
+        if inside:
+            segments.append((inside, tgt))
+        cursor = match.end()
+
+    if has_target_tags:
+        tail = raw[cursor:].strip()
+        if tail:
+            segments.extend(_split_explanation_fragments_with_lang(tail, src, tgt))
+        return segments
+
+    quote_pattern = r"(\"[^\"]+\"|“[^”]+”|«[^»]+»)"
+    parts = re.split(quote_pattern, raw)
+    for part in parts:
+        piece = str(part or "").strip()
+        if not piece:
+            continue
+        quoted = (
+            (piece.startswith('"') and piece.endswith('"'))
+            or (piece.startswith("“") and piece.endswith("”"))
+            or (piece.startswith("«") and piece.endswith("»"))
+        )
+        if quoted:
+            piece = piece[1:-1].strip()
+        if not piece:
+            continue
+        lang = _guess_fragment_lang_for_audio(
+            piece,
+            source_lang=src,
+            target_lang=tgt,
+            prefer_target=quoted,
+        )
+        segments.append((piece, lang))
+    return segments
+
+
+def build_explanation_mixed_script(
+    explanation_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> list[dict]:
+    segments = _split_explanation_fragments_with_lang(
+        text=explanation_text,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if not segments:
+        return []
+    script: list[dict] = []
+    for text, lang in segments[:20]:
+        script.extend(build_source_script(text, source_lang=lang))
+    if script:
+        script[-1]["pause_ms_after"] = 800
     return script
 
 

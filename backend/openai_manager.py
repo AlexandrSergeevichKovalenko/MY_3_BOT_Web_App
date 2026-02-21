@@ -778,6 +778,8 @@ Output rules:
 - Focus ONLY on grammar actually present in the sentence.
 - Keep it concise and suitable for audio playback.
 - No markdown, no tables, no bullet chaos, no long theory.
+- If you include words/phrases/examples in the target sentence language, wrap ONLY those fragments with [TARGET]...[/TARGET].
+- Keep all other text in explanation_language.
 
 Your explanation must include:
 1) Main grammatical structure.
@@ -788,6 +790,9 @@ Your explanation must include:
 6) Prepositions explanation (if applicable).
 7) Verb forms (conjugation / irregular / auxiliary if present).
 8) Any key beginner-relevant detail actually present in this sentence.
+
+Example fragment format:
+In explanation_language: "Здесь используется конструкция [TARGET]weil ich heute arbeiten muss[/TARGET], где глагол уходит в конец."
 """,
 "sales_assistant_instructions": """
     Ти - привітний та професійний асистент з продажів, що представляє компанію. 
