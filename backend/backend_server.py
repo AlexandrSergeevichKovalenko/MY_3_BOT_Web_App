@@ -203,6 +203,7 @@ from backend.database import (
     list_today_reminder_users,
     get_audio_grammar_settings,
     upsert_audio_grammar_settings,
+    update_translation_audio_grammar_opt_in,
     get_weekly_goals,
     upsert_weekly_goals,
     get_weekly_plan_progress,
@@ -1197,6 +1198,120 @@ def _normalize_theory_sentences(payload: dict) -> list[str]:
         if len(cleaned) >= 5:
             return cleaned[:5]
     return []
+
+
+def _default_theory_resources(target_lang: str) -> list[dict]:
+    lang = _normalize_short_lang_code(target_lang, fallback="de")
+    if lang == "de":
+        return [
+            {
+                "title": "Duden Grammatik",
+                "url": "https://www.duden.de/sprachwissen/grammatik",
+                "type": "article",
+                "why": "Справочник по грамматике немецкого языка.",
+            },
+            {
+                "title": "Canoonet",
+                "url": "https://www.canoonet.eu/",
+                "type": "article",
+                "why": "Подробные правила и формы немецкой грамматики.",
+            },
+            {
+                "title": "Deutsch lernen (DW)",
+                "url": "https://www.youtube.com/@dwlearngerman",
+                "type": "video",
+                "why": "Известный учебный канал с объяснениями по темам.",
+            },
+        ]
+    if lang == "en":
+        return [
+            {
+                "title": "Cambridge Grammar",
+                "url": "https://dictionary.cambridge.org/grammar/",
+                "type": "article",
+                "why": "Авторитетные объяснения английской грамматики.",
+            },
+            {
+                "title": "BBC Learning English",
+                "url": "https://www.youtube.com/@bbclearningenglish",
+                "type": "video",
+                "why": "Популярный канал с практичной грамматикой.",
+            },
+        ]
+    if lang == "es":
+        return [
+            {
+                "title": "RAE - Diccionario Panhispánico de Dudas",
+                "url": "https://www.rae.es/dpd/",
+                "type": "article",
+                "why": "Официальный источник по нормам испанского.",
+            },
+            {
+                "title": "Butterfly Spanish",
+                "url": "https://www.youtube.com/@ButterflySpanish",
+                "type": "video",
+                "why": "Понятные объяснения испанской грамматики.",
+            },
+        ]
+    if lang == "it":
+        return [
+            {
+                "title": "Treccani - Grammatica italiana",
+                "url": "https://www.treccani.it/enciclopedia/grammatica-italiana/",
+                "type": "article",
+                "why": "Надежные материалы по итальянской грамматике.",
+            },
+            {
+                "title": "Learn Italian with Lucrezia",
+                "url": "https://www.youtube.com/@lucreziaoddone",
+                "type": "video",
+                "why": "Популярный канал с объяснениями по грамматике.",
+            },
+        ]
+    return [
+        {
+            "title": "Wikipedia - Grammar",
+            "url": "https://en.wikipedia.org/wiki/Grammar",
+            "type": "article",
+            "why": "Базовое введение в грамматику.",
+        }
+    ]
+
+
+def _normalize_theory_resources(theory: dict, target_lang: str) -> list[dict]:
+    raw = theory.get("resources") if isinstance(theory, dict) else None
+    resources: list[dict] = []
+    if isinstance(raw, list):
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            title = str(entry.get("title") or "").strip()
+            url = str(entry.get("url") or "").strip()
+            kind = str(entry.get("type") or "").strip().lower()
+            why = str(entry.get("why") or "").strip()
+            if not title or not url:
+                continue
+            try:
+                parsed = urlparse(url)
+            except Exception:
+                continue
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                continue
+            if kind not in {"article", "video"}:
+                kind = "article"
+            resources.append(
+                {
+                    "title": title[:160],
+                    "url": url,
+                    "type": kind,
+                    "why": why[:220],
+                }
+            )
+            if len(resources) >= 3:
+                break
+    if resources:
+        return resources
+    return _default_theory_resources(target_lang)[:3]
 
 
 def _build_today_plan_for_user(
@@ -4267,7 +4382,12 @@ def lookup_webapp_dictionary():
                 source_lang=query_source_lang,
                 target_lang=query_target_lang,
             )
-            direction = f"{query_source_lang}-{query_target_lang}" if detected != "target" else f"{query_target_lang}-{query_source_lang}"
+            if lookup_lang and lookup_lang in {query_source_lang, query_target_lang}:
+                # Hard-fix direction from explicit UI language hint to avoid
+                # wrong reversals when model mis-detects the query language.
+                direction = f"{query_source_lang}-{query_target_lang}"
+            else:
+                direction = f"{query_source_lang}-{query_target_lang}" if detected != "target" else f"{query_target_lang}-{query_source_lang}"
 
             # Fallback for cases where model returns identical source/target.
             # Example: RU->IT, query in Italian, but source translation is missing.
@@ -4294,6 +4414,22 @@ def lookup_webapp_dictionary():
                         result["word_ru"] = forced
                         result["translation_ru"] = forced
                         result["source_text"] = forced
+            # If explicit lookup language is provided and selected word is from
+            # query_source_lang, ensure target side is truly translated.
+            if lookup_lang and lookup_lang == query_source_lang:
+                current_target = str(result.get("target_text") or "").strip()
+                current_source = str(result.get("source_text") or word_ru).strip()
+                if not current_target or current_target.casefold() == current_source.casefold():
+                    forced_target = _force_translate_text(
+                        text=word_ru,
+                        source_lang=query_source_lang,
+                        target_lang=query_target_lang,
+                    )
+                    if forced_target and forced_target.casefold() != current_source.casefold():
+                        result["target_text"] = forced_target
+                        result["translation_de"] = forced_target
+                        result["word_de"] = forced_target
+                        target_value = forced_target
     except Exception as exc:
         return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
 
@@ -5011,6 +5147,9 @@ def prepare_today_theory():
         theory = asyncio.run(run_theory_generation(theory_payload))
     except Exception as exc:
         return jsonify({"error": f"Ошибка генерации теории: {exc}"}), 500
+    if not isinstance(theory, dict):
+        theory = {}
+    theory["resources"] = _normalize_theory_resources(theory, target_lang)
 
     try:
         practice_raw = asyncio.run(run_theory_practice_sentences(practice_payload))
@@ -5035,7 +5174,7 @@ def prepare_today_theory():
             "error_subcategory": sub_category or "Unclassified mistake",
             "is_beginner": bool(is_beginner),
         },
-        "theory": theory if isinstance(theory, dict) else {},
+        "theory": theory,
         "practice_sentences": practice_sentences[:5],
         "examples_used": formatted_examples[:8],
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -5238,6 +5377,36 @@ def audio_grammar_settings():
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения audio grammar settings: {exc}"}), 500
     return jsonify({"ok": True, "settings": settings})
+
+
+@app.route("/api/audio/grammar-optin", methods=["POST"])
+def audio_grammar_optin():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    translation_id_raw = payload.get("translation_id")
+    if translation_id_raw is None:
+        return jsonify({"error": "translation_id обязателен"}), 400
+    try:
+        translation_id = int(translation_id_raw)
+    except Exception:
+        return jsonify({"error": "translation_id должен быть числом"}), 400
+    enabled = bool(payload.get("enabled"))
+    try:
+        result = update_translation_audio_grammar_opt_in(
+            int(user_id),
+            translation_id=translation_id,
+            enabled=enabled,
+        )
+    except ValueError:
+        return jsonify({"error": "Перевод не найден"}), 404
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения opt-in: {exc}"}), 500
+
+    return jsonify({"ok": True, "item": result})
 
 
 @app.route("/api/assistant/session/start", methods=["POST"])
@@ -7724,8 +7893,10 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                     SELECT
                         t.user_id,
                         t.username,
+                        t.id AS translation_id,
                         t.feedback,
                         t.user_translation,
+                        COALESCE(t.audio_grammar_opt_in, FALSE) AS audio_grammar_opt_in,
                         ds.sentence,
                         ds.unique_id,
                         t.session_id,
@@ -7746,8 +7917,10 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                     SELECT
                         t.user_id,
                         t.username,
+                        t.id AS translation_id,
                         t.feedback,
                         t.user_translation,
+                        COALESCE(t.audio_grammar_opt_in, FALSE) AS audio_grammar_opt_in,
                         ds.sentence,
                         ds.unique_id,
                         t.session_id,
@@ -7765,7 +7938,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
 
     daily_by_user_pair: dict[tuple[int, str, str], list[dict]] = {}
     daily_names: dict[int, str] = {}
-    for user_id, username, feedback, user_translation, _sentence, _unique_id, _session_id, source_lang, target_lang in daily_rows:
+    for user_id, username, _translation_id, feedback, user_translation, audio_grammar_opt_in, _sentence, _unique_id, _session_id, source_lang, target_lang in daily_rows:
         user_id = int(user_id)
         src = str(source_lang or "ru").strip().lower() or "ru"
         tgt = str(target_lang or "de").strip().lower() or "de"
@@ -7781,6 +7954,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
             {
                 "source_text": ru_original,
                 "target_text": de_correct,
+                "audio_grammar_opt_in": bool(audio_grammar_opt_in),
             }
         )
 
@@ -7795,8 +7969,10 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                         SELECT
                             t.user_id,
                             t.username,
+                            t.id AS translation_id,
                             t.feedback,
                             t.user_translation,
+                            COALESCE(t.audio_grammar_opt_in, FALSE) AS audio_grammar_opt_in,
                             ds.sentence,
                             ds.unique_id,
                             COALESCE(t.source_lang, 'ru') AS source_lang,
@@ -7811,7 +7987,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                         (user_id, session_id, target_date),
                     )
                     rows = cursor.fetchall()
-                    for uid, username, feedback, user_translation, _sentence, _unique_id, source_lang, target_lang in rows:
+                    for uid, username, _translation_id, feedback, user_translation, audio_grammar_opt_in, _sentence, _unique_id, source_lang, target_lang in rows:
                         uid = int(uid)
                         src = str(source_lang or "ru").strip().lower() or "ru"
                         tgt = str(target_lang or "de").strip().lower() or "de"
@@ -7827,6 +8003,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                             {
                                 "source_text": ru_original,
                                 "target_text": de_correct,
+                                "audio_grammar_opt_in": bool(audio_grammar_opt_in),
                             }
                         )
 
@@ -7838,12 +8015,10 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         if not mistakes:
             continue
         try:
-            audio_settings = get_audio_grammar_settings(user_id)
-            explain_enabled = bool(audio_settings.get("enabled"))
-            if explain_enabled:
-                enriched: list[dict] = []
-                for item in mistakes:
-                    enriched_item = dict(item)
+            enriched: list[dict] = []
+            for item in mistakes:
+                enriched_item = dict(item)
+                if bool(item.get("audio_grammar_opt_in")):
                     explanation_text = _generate_audio_grammar_explanation(
                         sentence=str(item.get("target_text") or ""),
                         source_lang=source_lang,
@@ -7851,8 +8026,8 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                     )
                     if explanation_text:
                         enriched_item["explanation_text"] = explanation_text
-                    enriched.append(enriched_item)
-                mistakes = enriched
+                enriched.append(enriched_item)
+            mistakes = enriched
             script = build_full_script(mistakes, source_lang=source_lang, target_lang=target_lang)
             audio = render_script_to_audio(script)
             name = daily_names.get(user_id) or f"user_{user_id}"
@@ -7868,12 +8043,10 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         if not mistakes:
             continue
         try:
-            audio_settings = get_audio_grammar_settings(user_id)
-            explain_enabled = bool(audio_settings.get("enabled"))
-            if explain_enabled:
-                enriched: list[dict] = []
-                for item in mistakes:
-                    enriched_item = dict(item)
+            enriched: list[dict] = []
+            for item in mistakes:
+                enriched_item = dict(item)
+                if bool(item.get("audio_grammar_opt_in")):
                     explanation_text = _generate_audio_grammar_explanation(
                         sentence=str(item.get("target_text") or ""),
                         source_lang=source_lang,
@@ -7881,8 +8054,8 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                     )
                     if explanation_text:
                         enriched_item["explanation_text"] = explanation_text
-                    enriched.append(enriched_item)
-                mistakes = enriched
+                enriched.append(enriched_item)
+            mistakes = enriched
             script = build_full_script(mistakes, source_lang=source_lang, target_lang=target_lang)
             audio = render_script_to_audio(script)
             name = story_names.get(user_id) or f"user_{user_id}"

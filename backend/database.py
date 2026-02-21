@@ -928,8 +928,16 @@ def ensure_webapp_tables() -> None:
                     IF to_regclass('public.bt_3_translations') IS NOT NULL THEN
                         ALTER TABLE bt_3_translations ADD COLUMN IF NOT EXISTS source_lang TEXT;
                         ALTER TABLE bt_3_translations ADD COLUMN IF NOT EXISTS target_lang TEXT;
+                        ALTER TABLE bt_3_translations ADD COLUMN IF NOT EXISTS audio_grammar_opt_in BOOLEAN DEFAULT FALSE;
+                        UPDATE bt_3_translations
+                        SET audio_grammar_opt_in = FALSE
+                        WHERE audio_grammar_opt_in IS NULL;
+                        ALTER TABLE bt_3_translations ALTER COLUMN audio_grammar_opt_in SET DEFAULT FALSE;
+                        ALTER TABLE bt_3_translations ALTER COLUMN audio_grammar_opt_in SET NOT NULL;
                         CREATE INDEX IF NOT EXISTS idx_bt_3_translations_user_lang_ts
                         ON bt_3_translations (user_id, source_lang, target_lang, timestamp DESC);
+                        CREATE INDEX IF NOT EXISTS idx_bt_3_translations_user_audio_grammar
+                        ON bt_3_translations (user_id, audio_grammar_opt_in, timestamp DESC);
                     END IF;
                 END $$;
                 """
@@ -5227,6 +5235,28 @@ def upsert_audio_grammar_settings(user_id: int, *, enabled: bool) -> dict:
         "user_id": int(user_id),
         "enabled": bool(row[0]),
         "updated_at": row[1].isoformat() if row[1] else None,
+    }
+
+
+def update_translation_audio_grammar_opt_in(user_id: int, translation_id: int, *, enabled: bool) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translations
+                SET audio_grammar_opt_in = %s
+                WHERE id = %s AND user_id = %s
+                RETURNING id, audio_grammar_opt_in, timestamp;
+                """,
+                (bool(enabled), int(translation_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        raise ValueError("translation not found")
+    return {
+        "translation_id": int(row[0]),
+        "enabled": bool(row[1]),
+        "timestamp": row[2].isoformat() if row[2] else None,
     }
 
 

@@ -359,6 +359,14 @@ body {
   gap: 0;
 }
 
+.webapp-page.is-youtube-watch-focus .webapp-topbar {
+  display: none;
+}
+
+.webapp-page.is-youtube-watch-focus .webapp-main {
+  gap: 8px;
+}
+
 .webapp-shell {
   width: min(1200px, 100%);
   display: grid;
@@ -1341,6 +1349,19 @@ body {
   align-self: flex-start;
 }
 
+.result-audio-optin {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+  color: rgba(224, 240, 255, 0.9);
+}
+
+.result-audio-optin input {
+  width: 16px;
+  height: 16px;
+}
+
 .status-done {
   background: #dcfce7;
   color: #166534;
@@ -1962,6 +1983,27 @@ body {
   margin: 0;
 }
 
+.webapp-video.is-watch-focus {
+  padding: 10px;
+  gap: 8px;
+}
+
+.youtube-focus-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.youtube-restore-panel-btn {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+}
+
+.webapp-video.is-watch-focus .webapp-video-player-shell {
+  margin-top: 0;
+}
+
 .webapp-video-frame.is-expanded {
   padding-top: 48%;
 }
@@ -2056,6 +2098,14 @@ body {
 
 .webapp-video .webapp-subtitles.is-translation .webapp-subtitles-list {
   max-height: min(15vh, 130px);
+}
+
+.webapp-video.is-watch-focus .webapp-subtitles:first-of-type .webapp-subtitles-list {
+  max-height: min(22vh, 210px);
+}
+
+.webapp-video.is-watch-focus .webapp-subtitles.is-translation .webapp-subtitles-list {
+  max-height: min(22vh, 210px);
 }
 
 .webapp-video .webapp-subtitles:not(.is-translation) .webapp-subtitles-list {
@@ -4715,18 +4765,54 @@ body {
 }
 
 .weekly-plan-progress-ring {
-  --weekly-progress: 0%;
+  position: relative;
   width: 64px;
   height: 64px;
   border-radius: 50%;
-  background:
-    radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%),
-    conic-gradient(#7bf1b3 var(--weekly-progress), rgba(94, 117, 159, 0.35) 0);
+  background: radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%);
   display: grid;
   place-items: center;
 }
 
+.weekly-plan-progress-ring svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.weekly-plan-progress-ring .ring-track {
+  fill: none;
+  stroke: rgba(94, 117, 159, 0.35);
+}
+
+.weekly-plan-progress-ring .ring-track-outer {
+  stroke-width: 5;
+}
+
+.weekly-plan-progress-ring .ring-track-inner {
+  stroke-width: 4;
+}
+
+.weekly-plan-progress-ring .ring-progress {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.weekly-plan-progress-ring .ring-progress-outer {
+  stroke: #7bf1b3;
+  stroke-width: 5;
+}
+
+.weekly-plan-progress-ring .ring-progress-inner {
+  stroke: #facc15;
+  stroke-width: 4;
+}
+
 .weekly-plan-progress-ring span {
+  position: relative;
+  z-index: 1;
   font-size: 0.72rem;
   color: #e7f2ff;
   font-weight: 700;
@@ -4965,6 +5051,42 @@ body {
   border-radius: 10px;
   padding: 8px 10px;
   background: rgba(9, 16, 33, 0.6);
+}
+
+.theory-resources {
+  display: grid;
+  gap: 8px;
+}
+
+.theory-resource-item {
+  border: 1px solid rgba(111, 188, 255, 0.3);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(10, 28, 52, 0.52);
+  color: #dbe8ff;
+  text-decoration: none;
+  display: grid;
+  gap: 4px;
+}
+
+.theory-resource-item:hover {
+  border-color: rgba(139, 211, 255, 0.56);
+  background: rgba(14, 35, 62, 0.66);
+}
+
+.theory-resource-title {
+  font-weight: 600;
+}
+
+.theory-resource-why {
+  font-size: 0.86rem;
+  color: #bdd3ff;
+}
+
+.theory-resource-url {
+  font-size: 0.78rem;
+  color: #89b4ff;
+  word-break: break-all;
 }
 
 .theory-practice-toggle {

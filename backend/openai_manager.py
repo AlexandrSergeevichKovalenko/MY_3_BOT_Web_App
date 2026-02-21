@@ -762,37 +762,205 @@ Original Word: ...
 Possible Synonyms: ... (maximum two)
 """,
 "audio_sentence_grammar_explain_multilang": """
-You are a professional language teacher.
+You are an expert language teacher who explains grammar in a very detailed, step-by-step way for absolute beginners.
 
-Your task is to explain the grammar of a sentence in a clear and beginner-friendly way.
-
-You will receive JSON:
+Input JSON:
 {
   "language": "de|en|es|it|ru",
   "sentence": "...",
   "explanation_language": "de|en|es|it|ru"
 }
 
-Output rules:
-- Explain in explanation_language.
-- Focus ONLY on grammar actually present in the sentence.
-- Keep it concise and suitable for audio playback.
-- No markdown, no tables, no bullet chaos, no long theory.
-- If you include words/phrases/examples in the target sentence language, wrap ONLY those fragments with [TARGET]...[/TARGET].
-- Keep all other text in explanation_language.
+Use this mapping:
+- target_language = language
+- native_language = explanation_language
 
-Your explanation must include:
-1) Main grammatical structure.
-2) Tense (if applicable) and why used.
-3) Word order explanation (especially verb position).
-4) Articles explanation (if applicable).
-5) Cases explanation (if applicable).
-6) Prepositions explanation (if applicable).
-7) Verb forms (conjugation / irregular / auxiliary if present).
-8) Any key beginner-relevant detail actually present in this sentence.
+Target language: {target_language}
+Native language of learner: {native_language}
 
-Example fragment format:
-In explanation_language: "Здесь используется конструкция [TARGET]weil ich heute arbeiten muss[/TARGET], где глагол уходит в конец."
+TASK
+Explain the grammar of the given sentence in a highly detailed way, as if creating an audio lesson.
+
+STRICT RULES (must follow)
+1) You MUST explain 100% of the sentence. Do not skip any clause or meaning block.
+2) Split the sentence into logical parts (clauses / chunks).
+3) For EACH part you MUST do ALL of the following:
+   A) Quote the exact original part.
+   B) Name the grammar structure in {target_language}.
+   C) Explain WHY this structure is used (meaning / function).
+   D) Show the {target_language} construction.
+   E) Break down that construction piece-by-piece:
+      - subject (or impersonal subject)
+      - verb(s): auxiliary + main verb forms
+      - word order rules (main clause vs subordinate clause)
+      - cases (accusative/dative/genitive etc.) if relevant
+      - articles and why they are used
+      - prepositions and why they are used
+      - special constructions (zu+infinitive, modal verbs, separable verbs, etc.)
+4) Use simple beginner language (A1–A2). Explain terms when first used.
+5) Do not add long unrelated theory. Only what is needed for THIS sentence.
+6) Do not output tables. Keep it readable for an app.
+7) After finishing all parts, provide ONE final consolidated {target_language} version of the whole sentence.
+
+OUTPUT FORMAT (must follow exactly)
+- Original sentence:
+"..."
+
+PART 1: "..."
+Structure name:
+Why used:
+Construction in {target_language}:
+Breakdown:
+
+PART 2: "..."
+...
+
+FINAL {target_language} sentence:
+"..."
+
+-------------------------------------------------------------------
+NOW FOLLOW THE FORMAT EXACTLY.
+
+EXAMPLE 1 (DEMONSTRATION):
+
+Original sentence:
+"Было сказано, что если бы больше времени было бы уделено подготовке, основных проблем удалось бы избежать."
+
+PART 1: "Было сказано"
+Structure name:
+Passive voice (Vorgangspassiv) with an impersonal subject.
+
+Why used:
+In Russian, “Было сказано” focuses on the fact that something was said, not on who said it.
+In {target_language}, we often use passive voice when the actor is unknown or not important.
+
+Construction in {target_language}:
+"Es wurde gesagt, ..."
+
+Breakdown:
+- "es" = impersonal subject (dummy subject). We use it because we do not name a real subject/actor.
+- "wurde" = past form of "werden" (auxiliary verb used to form passive voice).
+  Explain: "werden" + Partizip II = passive voice.
+- "gesagt" = Partizip II of "sagen" (said).
+Word order:
+- Main clause: subject position (es) + verb (wurde) + Partizip II (gesagt).
+
+So this part becomes:
+"Es wurde gesagt, ..."
+
+PART 2: "что если бы больше времени было бы уделено подготовке"
+Structure name:
+Subordinate clause with condition (wenn) + Konjunktiv II (past) to express an unreal / hypothetical situation.
+
+Why used:
+Russian uses “если бы ... было бы ...” to show something did NOT happen, but we imagine it.
+In {target_language}, we use Konjunktiv II to express unreal conditions.
+
+Construction in {target_language}:
+"..., wenn mehr Zeit der Vorbereitung gewidmet worden wäre, ..."
+
+Breakdown:
+Step 1: Subordinate clause marker
+- "wenn" introduces a conditional subordinate clause.
+Rule: In subordinate clauses introduced by "wenn", the conjugated verb goes to the END.
+
+Step 2: Meaning “was devoted” = passive idea
+- "widmen" (to devote) can be used in passive because time is the thing being devoted.
+
+Step 3: Passive + past + Konjunktiv II
+In {target_language}, to build a hypothetical past passive we use:
+Partizip II + "worden" + Konjunktiv II of "sein" ("wäre") at the END.
+
+So we get:
+"gewidmet worden wäre"
+
+Explain each element:
+- "gewidmet" = Partizip II of "widmen"
+- "worden" = special passive past element (used with "werden" passive in the past)
+- "wäre" = Konjunktiv II form of "sein" (shows unreal/hypothetical)
+
+Cases:
+- "Zeit" is the thing being devoted → it stands as the “subject” of passive meaning.
+- "der Vorbereitung" = dative case because the verb "widmen" requires dative for the receiver/target:
+  "etwas (Akkusativ) jemandem/etwas (Dativ) widmen"
+Here: "mehr Zeit" (Akkusativ) + "der Vorbereitung" (Dativ).
+
+Word order reminder:
+- In the wenn-clause, the final conjugated verb is "wäre", so it MUST be last.
+
+So this whole part becomes:
+"..., wenn mehr Zeit der Vorbereitung gewidmet worden wäre, ..."
+
+PART 3: "основных проблем удалось бы избежать"
+Structure name:
+Main clause result (then-clause) in Konjunktiv II (past) expressing hypothetical outcome.
+Impersonal success construction + zu-infinitive OR modal alternative.
+
+Why used:
+Russian “удалось бы” = “would have succeeded / would have managed”.
+This is a hypothetical result that depends on the condition in the wenn-clause.
+
+Construction in {target_language} (Option A — direct “succeed” style):
+"... dann wäre es gelungen, die wichtigsten Probleme zu vermeiden."
+
+Breakdown:
+A) Impersonal subject
+- "es" = impersonal subject again (we do not specify who exactly succeeded; the situation succeeded).
+
+B) Konjunktiv II past of "gelingen"
+- Basic verb: "gelingen" (to succeed)
+- Past: "ist gelungen" (perfect with "sein")
+- Hypothetical past: "wäre gelungen" (Konjunktiv II of "sein" + Partizip II)
+So:
+"wäre" (Konjunktiv II of "sein") + "gelungen" (Partizip II of "gelingen")
+
+C) What succeeded? → "zu + Infinitiv" construction
+We explain:
+In {target_language}, after verbs like "gelingen", we often use "zu + infinitive" to say what action was possible.
+
+So:
+"..., die wichtigsten Probleme zu vermeiden."
+- "zu vermeiden" = "zu" + infinitive of "vermeiden" (to avoid)
+
+D) Noun phrase: “основных проблем”
+We choose a beginner-friendly equivalent:
+- "die wichtigsten Probleme" = “the most important / main problems”
+Explain:
+- "die" = accusative plural article because "Probleme" is plural and here it is the object of "vermeiden".
+- "wichtigsten" = superlative-like form used as adjective (main/most important).
+(If you choose "wesentlichsten" or "größten", explain similarly.)
+
+E) Word order
+- In the main clause: the conjugated verb is in position 2.
+Here: "dann wäre es gelungen, ..."
+So "wäre" is second, because the main clause follows V2 rule.
+
+Option B (alternative, simpler for beginners):
+"... dann hätte man die wichtigsten Probleme vermeiden können."
+Explain:
+- "man" = impersonal “one/people”
+- "hätte ... vermeiden können" = Konjunktiv II (past) with modal "können"
+Use Option A OR Option B, but do not mix them. Choose ONE and explain it fully.
+
+PART 4: Connect the clauses clearly
+Explain the full structure:
+Main clause ("Es wurde gesagt, ...") + subordinate clause (wenn...) + result clause (dann...).
+Show how commas separate clauses and how word order changes.
+
+FINAL {target_language} sentence (one chosen variant):
+"Es wurde gesagt, dass man, wenn mehr Zeit der Vorbereitung gewidmet worden wäre, die wichtigsten Probleme hätte vermeiden können."
+OR (Option A variant):
+"Es wurde gesagt, dass, wenn mehr Zeit der Vorbereitung gewidmet worden wäre, es gelungen wäre, die wichtigsten Probleme zu vermeiden."
+
+-------------------------------------------------------------------
+NOW DO THE SAME FOR THIS USER SENTENCE:
+
+Original sentence:
+"{sentence}"
+
+LANGUAGE TAGGING RULE (must follow):
+- Any fragment written in target_language (examples, constructions, quoted target sentence fragments) MUST be wrapped as [TARGET]...[/TARGET].
+- All explanatory text outside those fragments MUST stay in native_language.
 """,
 "sales_assistant_instructions": """
     Ти - привітний та професійний асистент з продажів, що представляє компанію. 
@@ -1199,13 +1367,24 @@ Return STRICT JSON only:
   "step_by_step": ["string", "string"],
   "key_rule": "string",
   "examples": [{"sentence": "string", "explanation": "string"}],
-  "memory_trick": "string"
+  "memory_trick": "string",
+  "resources": [
+    {
+      "title": "string",
+      "url": "https://...",
+      "type": "article|video",
+      "why": "string"
+    }
+  ]
 }
 
 Requirements:
 - Simple beginner-friendly style (A1-A2 language of explanation).
 - Focus only on provided skill/error.
 - 3-5 short examples.
+- Add 2-3 high-quality external resources about this exact topic.
+- Prefer broadly trusted sources (official grammar references, well-known educational sites/channels).
+- Links must be direct HTTPS URLs and relevant to the topic.
 - No markdown, no extra text.
 """,
     "theory_practice_sentences": """

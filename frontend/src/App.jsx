@@ -103,6 +103,8 @@ function AppInner() {
   const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
   const [youtubeAppFullscreen, setYoutubeAppFullscreen] = useState(false);
   const [youtubeIsPaused, setYoutubeIsPaused] = useState(false);
+  const [youtubePlaybackStarted, setYoutubePlaybackStarted] = useState(false);
+  const [youtubeForceShowPanel, setYoutubeForceShowPanel] = useState(false);
   const [youtubeManualOverride, setYoutubeManualOverride] = useState(false);
   const [youtubeTranscriptHasTiming, setYoutubeTranscriptHasTiming] = useState(true);
   const [movies, setMovies] = useState([]);
@@ -194,9 +196,8 @@ function AppInner() {
   const [theoryChecking, setTheoryChecking] = useState(false);
   const [theoryFeedback, setTheoryFeedback] = useState(null);
   const [theoryItemId, setTheoryItemId] = useState(null);
-  const [audioGrammarEnabled, setAudioGrammarEnabled] = useState(false);
-  const [audioGrammarLoading, setAudioGrammarLoading] = useState(false);
-  const [audioGrammarSaving, setAudioGrammarSaving] = useState(false);
+  const [translationAudioGrammarOptIn, setTranslationAudioGrammarOptIn] = useState({});
+  const [translationAudioGrammarSaving, setTranslationAudioGrammarSaving] = useState({});
   const [skillReport, setSkillReport] = useState(null);
   const [skillReportLoading, setSkillReportLoading] = useState(false);
   const [skillReportError, setSkillReportError] = useState('');
@@ -787,54 +788,6 @@ function AppInner() {
       setTodayPlanError(friendly);
     } finally {
       setTodayPlanLoading(false);
-    }
-  };
-
-  const loadAudioGrammarSettings = async () => {
-    if (!initData) return;
-    try {
-      setAudioGrammarLoading(true);
-      const response = await fetch(`/api/audio/grammar-settings?initData=${encodeURIComponent(initData)}`);
-      if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки audio-настроек', 'Fehler beim Laden der Audio-Einstellungen'));
-      }
-      const data = await response.json();
-      setAudioGrammarEnabled(Boolean(data?.settings?.enabled));
-    } catch (error) {
-      const friendly = normalizeNetworkErrorMessage(
-        error,
-        'Не удалось загрузить настройку grammar audio.',
-        'Grammar-Audio-Einstellung konnte nicht geladen werden.'
-      );
-      setTodayPlanError(friendly);
-    } finally {
-      setAudioGrammarLoading(false);
-    }
-  };
-
-  const toggleAudioGrammarSettings = async (nextEnabled) => {
-    if (!initData) return;
-    try {
-      setAudioGrammarSaving(true);
-      const response = await fetch('/api/audio/grammar-settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, enabled: Boolean(nextEnabled) }),
-      });
-      if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка сохранения audio-настроек', 'Fehler beim Speichern der Audio-Einstellungen'));
-      }
-      const data = await response.json();
-      setAudioGrammarEnabled(Boolean(data?.settings?.enabled));
-    } catch (error) {
-      const friendly = normalizeNetworkErrorMessage(
-        error,
-        'Не удалось сохранить настройку grammar audio.',
-        'Grammar-Audio-Einstellung konnte nicht gespeichert werden.'
-      );
-      setTodayPlanError(friendly);
-    } finally {
-      setAudioGrammarSaving(false);
     }
   };
 
@@ -1579,6 +1532,8 @@ function AppInner() {
           setSessionType('none');
           setSentences([]);
           setResults([]);
+          setTranslationAudioGrammarOptIn({});
+          setTranslationAudioGrammarSaving({});
           setExplanations({});
           setTranslationDrafts({});
           if (webappUser?.id) {
@@ -1678,6 +1633,14 @@ function AppInner() {
   const readerElapsedTotalSeconds = Math.max(0, Number(readerAccumulatedSeconds || 0) + Number(readerLiveSeconds || 0));
   const readerSwipeThreshold = readerSwipeSensitivity === 'high' ? 24 : readerSwipeSensitivity === 'low' ? 52 : 36;
   const readerSwipeLockMs = readerSwipeSensitivity === 'high' ? 180 : readerSwipeSensitivity === 'low' ? 340 : 260;
+  const youtubeWatchFocusMode = Boolean(
+    youtubeId
+    && youtubePlaybackStarted
+    && !youtubeForceShowPanel
+    && !youtubeIsPaused
+    && !youtubeOverlayEnabled
+    && !youtubeAppFullscreen
+  );
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
   const uniqueSkills = (() => {
@@ -1741,6 +1704,15 @@ function AppInner() {
     : (weeklyPlan?.week?.start_date && weeklyPlan?.week?.end_date
       ? `${weeklyPlan.week.start_date} — ${weeklyPlan.week.end_date}`
       : '');
+  const periodDaysElapsed = Math.max(
+    0,
+    Number(planAnalyticsRange?.days_elapsed ?? weeklyPlan?.week?.days_elapsed ?? 0) || 0
+  );
+  const periodDaysTotal = Math.max(
+    1,
+    Number(planAnalyticsRange?.days_total ?? weeklyPlan?.week?.days_total ?? 7) || 1
+  );
+  const expectedProgressPercent = Math.max(0, Math.min(100, (periodDaysElapsed / periodDaysTotal) * 100));
   const planPeriodLabel = {
     week: tr('Неделя', 'Woche'),
     month: tr('Месяц', 'Monat'),
@@ -2474,11 +2446,9 @@ function AppInner() {
     if (!isWebAppMode || !initData) {
       setTodayPlan(null);
       setTodayPlanError('');
-      setAudioGrammarEnabled(false);
       return;
     }
     loadTodayPlan();
-    loadAudioGrammarSettings();
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
@@ -2925,6 +2895,8 @@ function AppInner() {
       const data = await response.json();
       setSentences(data.items || []);
       setResults([]);
+      setTranslationAudioGrammarOptIn({});
+      setTranslationAudioGrammarSaving({});
       setFinishStatus('idle');
     } catch (error) {
       setWebappError(`${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Saetze')}: ${error.message}`);
@@ -3049,6 +3021,8 @@ function AppInner() {
     setWebappLoading(true);
     setWebappError('');
     setResults([]);
+    setTranslationAudioGrammarOptIn({});
+    setTranslationAudioGrammarSaving({});
     setExplanations({});
     setExplanationLoading({});
     setTranslationCheckProgress({ active: false, done: 0, total: 0 });
@@ -3066,6 +3040,13 @@ function AppInner() {
         sentences.map((item, idx) => [Number(item.id_for_mistake_table), Number(item.unique_id ?? idx + 1)])
       );
       const upsertResultItem = (item) => {
+        const translationId = Number(item?.translation_id || 0);
+        if (translationId > 0) {
+          setTranslationAudioGrammarOptIn((prev) => ({
+            ...prev,
+            [translationId]: Boolean(item?.audio_grammar_opt_in),
+          }));
+        }
         setResults((prev) => {
           const indexByKey = new Map();
           const merged = [...prev];
@@ -3244,6 +3225,8 @@ function AppInner() {
     setTranslationCheckProgress({ active: false, done: 0, total: 0 });
     setStoryResult(null);
     setResults([]);
+    setTranslationAudioGrammarOptIn({});
+    setTranslationAudioGrammarSaving({});
     setExplanations({});
     try {
       const response = await fetch('/api/webapp/story/start', {
@@ -3295,6 +3278,8 @@ function AppInner() {
     setFinishMessage('');
     setTranslationCheckProgress({ active: false, done: 0, total: 0 });
     setResults([]);
+    setTranslationAudioGrammarOptIn({});
+    setTranslationAudioGrammarSaving({});
     setExplanations({});
     try {
       const response = await fetch('/api/webapp/story/submit', {
@@ -4671,7 +4656,10 @@ function AppInner() {
     });
   };
 
-  const renderSubtitleText = (text) => renderClickableText(normalizeSubtitleText(text));
+  const renderSubtitleText = (text) => renderClickableText(
+    normalizeSubtitleText(text),
+    { lookupLang: getNormalizeLookupLang(), compact: true, inlineLookup: youtubeAppFullscreen }
+  );
 
   const getActiveSubtitleIndex = () => {
     const hasTiming = youtubeTranscriptHasTiming || youtubeTranscript.some((item) => Number(item?.start) > 0);
@@ -4882,6 +4870,8 @@ function AppInner() {
       setStoryGuess('');
       setStoryResult(null);
       setResults([]);
+      setTranslationAudioGrammarOptIn({});
+      setTranslationAudioGrammarSaving({});
       setSelectedTopic('💼 Business');
       await loadSentences();
     } catch (error) {
@@ -4924,6 +4914,42 @@ function AppInner() {
       setWebappError(`${tr('Ошибка объяснения', 'Erklaerungsfehler')}: ${error.message}`);
     } finally {
       setExplanationLoading((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const handleToggleResultAudioGrammar = async (item, enabled) => {
+    if (!initData) {
+      setWebappError(initDataMissingMsg);
+      return;
+    }
+    const translationId = Number(item?.translation_id || 0);
+    if (!translationId) {
+      return;
+    }
+    setTranslationAudioGrammarSaving((prev) => ({ ...prev, [translationId]: true }));
+    try {
+      const response = await fetch('/api/audio/grammar-optin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          translation_id: translationId,
+          enabled: Boolean(enabled),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка сохранения аудио-галочки', 'Fehler beim Speichern der Audio-Markierung'));
+      }
+      setTranslationAudioGrammarOptIn((prev) => ({ ...prev, [translationId]: Boolean(enabled) }));
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось сохранить настройку аудио-объяснения.',
+        'Audio-Erklaerungsoption konnte nicht gespeichert werden.'
+      );
+      setWebappError(friendly);
+    } finally {
+      setTranslationAudioGrammarSaving((prev) => ({ ...prev, [translationId]: false }));
     }
   };
 
@@ -5308,6 +5334,9 @@ function AppInner() {
     if (!youtubeId) {
       setYoutubePlayerReady(false);
       setYoutubeCurrentTime(0);
+      setYoutubePlaybackStarted(false);
+      setYoutubeIsPaused(true);
+      setYoutubeForceShowPanel(false);
       if (youtubeTimeIntervalRef.current) {
         clearInterval(youtubeTimeIntervalRef.current);
         youtubeTimeIntervalRef.current = null;
@@ -5354,7 +5383,8 @@ function AppInner() {
         events: {
           onReady: () => {
             setYoutubePlayerReady(true);
-            setYoutubeIsPaused(false);
+            setYoutubeIsPaused(true);
+            setYoutubePlaybackStarted(false);
             if (youtubeTimeIntervalRef.current) {
               clearInterval(youtubeTimeIntervalRef.current);
             }
@@ -5382,8 +5412,14 @@ function AppInner() {
               } catch (error) {
                 // ignore
               }
-            } else if (state === 1 || state === 3 || state === 0 || state === 5 || state === -1) {
+            } else if (state === 1) {
               setYoutubeIsPaused(false);
+              setYoutubePlaybackStarted(true);
+              setYoutubeForceShowPanel(false);
+            } else if (state === 3) {
+              setYoutubeIsPaused(false);
+            } else if (state === 0 || state === 5 || state === -1) {
+              setYoutubeIsPaused(true);
             }
           },
         },
@@ -5801,7 +5837,7 @@ function AppInner() {
 
   if (isWebAppMode) {
     return (
-      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''}`}>
+      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''}`}>
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
             <div className="webapp-brand">
@@ -6341,8 +6377,14 @@ function AppInner() {
                       const forecast = Number(item.data?.forecast || 0);
                       const completion = Number(item.data?.completion_percent || 0);
                       const completionClamped = Math.max(0, Math.min(100, completion));
+                      const ringExpected = expectedProgressPercent;
                       const forecastDelta = Number(item.data?.forecast_delta_vs_goal || 0);
-                      const completionRingStyle = { '--weekly-progress': `${completionClamped}%` };
+                      const outerRadius = 27;
+                      const innerRadius = 21;
+                      const outerLength = 2 * Math.PI * outerRadius;
+                      const innerLength = 2 * Math.PI * innerRadius;
+                      const outerOffset = outerLength * (1 - (completionClamped / 100));
+                      const innerOffset = innerLength * (1 - (ringExpected / 100));
                       const forecastClass = forecastDelta >= 0 ? 'is-good' : 'is-bad';
                       const expanded = Boolean(weeklyMetricExpanded[item.key]);
                       return (
@@ -6353,7 +6395,27 @@ function AppInner() {
                               <p>{tr('План/Факт/Прогноз', 'Plan/Ist/Prognose')}</p>
                             </div>
                             <div className="weekly-plan-metric-actions">
-                              <div className="weekly-plan-progress-ring" style={completionRingStyle}>
+                              <div className="weekly-plan-progress-ring" title={`${tr('Факт', 'Ist')}: ${formatWeeklyValue(completionClamped, 1)}% • ${tr('Должно быть к текущему дню', 'Soll bis heute sein')}: ${formatWeeklyValue(ringExpected, 1)}%`}>
+                                <svg viewBox="0 0 64 64" aria-hidden="true">
+                                  <circle className="ring-track ring-track-outer" cx="32" cy="32" r={outerRadius} />
+                                  <circle
+                                    className="ring-progress ring-progress-outer"
+                                    cx="32"
+                                    cy="32"
+                                    r={outerRadius}
+                                    strokeDasharray={outerLength}
+                                    strokeDashoffset={outerOffset}
+                                  />
+                                  <circle className="ring-track ring-track-inner" cx="32" cy="32" r={innerRadius} />
+                                  <circle
+                                    className="ring-progress ring-progress-inner"
+                                    cx="32"
+                                    cy="32"
+                                    r={innerRadius}
+                                    strokeDasharray={innerLength}
+                                    strokeDashoffset={innerOffset}
+                                  />
+                                </svg>
                                 <span>{formatWeeklyValue(completion, 1)}%</span>
                               </div>
                               <button
@@ -6427,15 +6489,6 @@ function AppInner() {
                     {todayTestSending ? tr('Отправка...', 'Senden...') : tr('Проверить личку', 'Privat testen')}
                   </button>
                 </div>
-                <label className="today-plan-toggle">
-                  <span>{tr('Грамматика в аудио (LLM)', 'Grammatik im Audio (LLM)')}</span>
-                  <input
-                    type="checkbox"
-                    checked={audioGrammarEnabled}
-                    onChange={(event) => toggleAudioGrammarSettings(event.target.checked)}
-                    disabled={audioGrammarLoading || audioGrammarSaving}
-                  />
-                </label>
                 {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
                 {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
                 {!todayPlanLoading && !todayPlanError && (!todayPlan?.items || todayPlan.items.length === 0) && (
@@ -6694,6 +6747,34 @@ function AppInner() {
                     {theoryPackage?.theory?.memory_trick && (
                       <div className="theory-memory-trick">
                         <strong>{tr('Лайфхак', 'Merkhilfe')}:</strong> {String(theoryPackage.theory.memory_trick)}
+                      </div>
+                    )}
+                    {Array.isArray(theoryPackage?.theory?.resources) && theoryPackage.theory.resources.length > 0 && (
+                      <div className="theory-resources">
+                        <h4>{tr('Полезные источники', 'Nuetzliche Quellen')}</h4>
+                        {theoryPackage.theory.resources.map((item, index) => {
+                          const title = String(item?.title || '').trim();
+                          const url = String(item?.url || '').trim();
+                          const why = String(item?.why || '').trim();
+                          const type = String(item?.type || '').trim().toLowerCase();
+                          if (!title || !url) return null;
+                          return (
+                            <a
+                              key={`theory-resource-${index}`}
+                              className="theory-resource-item"
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <div className="theory-resource-title">
+                                🔗 {title}
+                                {type === 'video' ? ` (${tr('видео', 'Video')})` : ` (${tr('статья', 'Artikel')})`}
+                              </div>
+                              {why && <div className="theory-resource-why">{why}</div>}
+                              <div className="theory-resource-url">{url}</div>
+                            </a>
+                          );
+                        })}
                       </div>
                     )}
 
@@ -6999,6 +7080,19 @@ function AppInner() {
                             <div className="webapp-error">{item.error}</div>
                           ) : (
                             <>
+                              {Number(item?.translation_id || 0) > 0 && (
+                                <label className="result-audio-optin">
+                                  <span>{tr('Аудио-объяснение для этого предложения', 'Audio-Erklaerung fuer diesen Satz')}</span>
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(
+                                      translationAudioGrammarOptIn[Number(item.translation_id)] ?? item?.audio_grammar_opt_in
+                                    )}
+                                    onChange={(event) => handleToggleResultAudioGrammar(item, event.target.checked)}
+                                    disabled={Boolean(translationAudioGrammarSaving[Number(item.translation_id)])}
+                                  />
+                                </label>
+                              )}
                               <div
                                 className="webapp-result-text"
                                 onMouseUp={handleSelection}
@@ -7092,7 +7186,19 @@ function AppInner() {
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
                 {isSectionVisible('youtube') && (
-                  <section className="webapp-video" ref={youtubeRef}>
+                  <section className={`webapp-video ${youtubeWatchFocusMode ? 'is-watch-focus' : ''}`} ref={youtubeRef}>
+                    {youtubeWatchFocusMode && (
+                      <div className="youtube-focus-actions">
+                        <button
+                          type="button"
+                          className="secondary-button youtube-restore-panel-btn"
+                          onClick={() => setYoutubeForceShowPanel(true)}
+                        >
+                          {tr('Вернуть панель', 'Panel anzeigen')}
+                        </button>
+                      </div>
+                    )}
+                    {!youtubeWatchFocusMode && (
                     <div className="webapp-local-section-head">
                       <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
                       {isFocusedSection('youtube') && (
@@ -7102,6 +7208,8 @@ function AppInner() {
                       )}
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
+                    )}
+                    {!youtubeWatchFocusMode && (
                     <div className="webapp-video-form">
                       <label className="webapp-field">
                         <span>{tr('Ссылка или ID видео', 'Link oder Video-ID')}</span>
@@ -7136,6 +7244,8 @@ function AppInner() {
                         </button>
                       </div>
                     </div>
+                    )}
+                    {!youtubeWatchFocusMode && (
                     <div className="webapp-video-actions is-subtitle-toolbar">
                       <button
                         type="button"
@@ -7179,6 +7289,7 @@ function AppInner() {
                         {youtubeAppFullscreen ? tr('Свернуть', 'Minimieren') : tr('Развернуть', 'Erweitern')}
                       </button>
                     </div>
+                    )}
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
                     {youtubeId ? (
                       <div
@@ -7229,7 +7340,12 @@ function AppInner() {
                                   <div key={`overlay-line-${idx}`} className={`youtube-subtitles-overlay-row ${isCurrent ? 'is-current' : 'is-history'}`}>
                                     {overlayDeText && (
                                       <p className="youtube-subtitles-overlay-line is-de">
-                                        {renderClickableText(overlayDeText, { className: 'overlay-clickable-word', compact: true, inlineLookup: youtubeAppFullscreen })}
+                                        {renderClickableText(overlayDeText, {
+                                          className: 'overlay-clickable-word',
+                                          compact: true,
+                                          inlineLookup: youtubeAppFullscreen,
+                                          lookupLang: getNormalizeLookupLang(),
+                                        })}
                                       </p>
                                     )}
                                     {youtubeTranslationEnabled && overlayTranslationText && (
@@ -7246,7 +7362,7 @@ function AppInner() {
                     ) : (
                       <p className="webapp-muted">{tr('Вставьте ссылку на видео, чтобы смотреть прямо здесь.', 'Fuege einen Videolink ein, um hier direkt zu schauen.')}</p>
                     )}
-                    {showManualTranscript && (
+                    {showManualTranscript && !youtubeWatchFocusMode && (
                       <div className="webapp-subtitles-manual">
                         <textarea
                           rows={6}
@@ -7932,7 +8048,7 @@ function AppInner() {
                   <article
                     ref={readerArticleRef}
                     className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${readerPageCount > 0 ? 'has-pages' : ''}`}
-                    onMouseUp={(event) => handleSelection(event, '', { lookupLang: readerDetectedLanguage })}
+                    onMouseUp={(event) => handleSelection(event, '', { lookupLang: getNormalizeLookupLang() })}
                     onWheel={handleReaderPageWheel}
                     onTouchStart={handleReaderPageTouchStart}
                     onTouchEnd={handleReaderPageTouchEnd}
@@ -7984,7 +8100,7 @@ function AppInner() {
                           <div className="reader-page-sheet-inner">
                             {renderClickableText(
                               String(readerDisplayPages[readerCurrentPage - 1]?.text || ''),
-                              { className: 'reader-clickable-word', lookupLang: readerDetectedLanguage, inlineLookup: true, compact: true }
+                              { className: 'reader-clickable-word', lookupLang: getNormalizeLookupLang(), inlineLookup: true, compact: true }
                             )}
                           </div>
                           <div className="reader-page-num">
@@ -7998,7 +8114,7 @@ function AppInner() {
                         if (!value) return null;
                         return (
                           <p key={`reader-p-${index}`}>
-                            {renderClickableText(value, { className: 'reader-clickable-word', lookupLang: readerDetectedLanguage, inlineLookup: true, compact: true })}
+                            {renderClickableText(value, { className: 'reader-clickable-word', lookupLang: getNormalizeLookupLang(), inlineLookup: true, compact: true })}
                           </p>
                         );
                       })

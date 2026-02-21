@@ -47,6 +47,7 @@ from backend.openai_manager import (
     system_message,
     run_dictionary_lookup,
     run_dictionary_lookup_de,
+    run_dictionary_lookup_multilang,
     run_dictionary_collocations,
     run_generate_word_quiz,
     run_translate_subtitles_ru,
@@ -1734,6 +1735,42 @@ def _detect_dictionary_direction(text: str) -> str | None:
     return None
 
 
+async def _detect_latin_source_language(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return "de"
+    if re.search(r"[ÄÖÜäöüßẞ]", cleaned):
+        return "de"
+    candidates = ["de", "en", "es", "it"]
+    best_lang = "de"
+    best_score = -1
+    for lang in candidates:
+        try:
+            raw = await run_dictionary_lookup_multilang(
+                word=cleaned,
+                source_lang=lang,
+                target_lang="ru",
+            )
+        except Exception:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        detected = str(raw.get("detected_language") or "").strip().lower()
+        word_source = str(raw.get("word_source") or "").strip()
+        word_target = str(raw.get("word_target") or "").strip()
+        score = 0
+        if detected == "source":
+            score += 2
+        if word_target and word_target.lower() != cleaned.lower():
+            score += 2
+        if word_source and word_source.lower() == cleaned.lower():
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_lang = lang
+    return best_lang
+
+
 def _format_forms_block(forms: dict | None) -> list[str]:
     if not isinstance(forms, dict):
         return []
@@ -1818,7 +1855,7 @@ def _build_dictionary_card_text(direction: str, source_text: str, lookup: dict) 
     return "\n".join(lines)
 
 
-def _store_pending_dictionary_card(user_id: int, direction: str, source_text: str, lookup: dict) -> str:
+def _store_pending_dictionary_card(user_id: int, direction: str, source_text: str, lookup: dict, original_query: str = "") -> str:
     key = hashlib.sha1(
         f"{user_id}:{direction}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
     ).hexdigest()[:20]
@@ -1827,6 +1864,7 @@ def _store_pending_dictionary_card(user_id: int, direction: str, source_text: st
         "direction": direction,
         "source_text": source_text,
         "lookup": lookup,
+        "original_query": (original_query or source_text or "").strip(),
         "saved": False,
     }
     if len(pending_dictionary_cards) > 500:
@@ -1845,6 +1883,7 @@ def _store_pending_dictionary_save_options(user_id: int, card_key: str, options:
         "direction": direction,
         "lookup": lookup,
         "options": options[:3],
+        "selected": [],
     }
     if len(pending_dictionary_save_options) > 500:
         oldest_key = next(iter(pending_dictionary_save_options))
@@ -1865,10 +1904,14 @@ def _resolve_default_dictionary_option(payload: dict) -> dict:
     return {"source": source, "target": target}
 
 
-def _build_save_variant_keyboard(option_key: str, options: list[dict]) -> InlineKeyboardMarkup:
+def _build_save_variant_keyboard(option_key: str, options: list[dict], selected: list[int] | None = None) -> InlineKeyboardMarkup:
+    selected_set = set(int(item) for item in (selected or []) if isinstance(item, int) or str(item).isdigit())
     rows = []
     for idx, _opt in enumerate(options[:3], start=1):
-        rows.append([InlineKeyboardButton(f"💾 Сохранить вариант {idx}", callback_data=f"dictsaveopt:{option_key}:{idx-1}")])
+        mark = "✅" if (idx - 1) in selected_set else "☐"
+        rows.append([InlineKeyboardButton(f"{mark} Вариант {idx}", callback_data=f"dictseltoggle:{option_key}:{idx-1}")])
+    rows.append([InlineKeyboardButton("✅ Сохранить выбранные", callback_data=f"dictsaveconfirm:{option_key}")])
+    rows.append([InlineKeyboardButton("☑️ Выбрать все", callback_data=f"dictselall:{option_key}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1877,13 +1920,14 @@ def _build_save_variants_text(direction: str, options: list[dict]) -> str:
     for idx, opt in enumerate(options[:3], start=1):
         source = (opt.get("source") or "").strip() or "—"
         target = (opt.get("target") or "").strip() or "—"
+        suffix = " (оригинальный запрос)" if bool(opt.get("is_original")) else ""
         if direction == "ru-de":
             de_text = target
             ru_text = source
         else:
             de_text = source
             ru_text = target
-        lines.append(f"{idx}. DE: {de_text}")
+        lines.append(f"{idx}. DE: {de_text}{suffix}")
         lines.append(f"   RU: {ru_text}")
         lines.append("")
     return "\n".join(lines)
@@ -1902,7 +1946,7 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
     unique: set[tuple[str, str]] = set()
     options: list[dict] = []
 
-    def _add_option(source_value: str, target_value: str) -> None:
+    def _add_option(source_value: str, target_value: str, is_original: bool = False) -> None:
         s = source_value.strip()
         t = target_value.strip()
         if not s or not t:
@@ -1911,15 +1955,19 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
         if key in unique:
             return
         unique.add(key)
-        options.append({"source": s, "target": t})
+        options.append({"source": s, "target": t, "is_original": bool(is_original)})
 
-    _add_option(default_option.get("source") or "", default_option.get("target") or "")
+    original_query = str(payload.get("original_query") or "").strip()
+    if original_query:
+        _add_option(original_query, default_option.get("target") or "", is_original=True)
+
+    _add_option(default_option.get("source") or "", default_option.get("target") or "", is_original=False)
 
     if isinstance(items, list):
         for item in items:
             if not isinstance(item, dict):
                 continue
-            _add_option(item.get("source") or "", item.get("target") or "")
+            _add_option(item.get("source") or "", item.get("target") or "", is_original=False)
             if len(options) >= 3:
                 break
 
@@ -1928,15 +1976,36 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
 
 async def _handle_private_dictionary_lookup(update: Update, context: CallbackContext, text: str) -> None:
     direction = _detect_dictionary_direction(text)
-    if not direction:
-        await update.message.reply_text(
-            "Не удалось определить язык. Отправьте слово только на русском или только на немецком."
-        )
-        return
 
     lookup_input = text.strip()
     try:
-        lookup = await run_dictionary_lookup(lookup_input) if direction == "ru-de" else await run_dictionary_lookup_de(lookup_input)
+        if direction == "ru-de":
+            lookup = await run_dictionary_lookup(lookup_input)
+        elif direction == "de-ru":
+            latin_source = await _detect_latin_source_language(lookup_input)
+            if latin_source == "de":
+                lookup = await run_dictionary_lookup_de(lookup_input)
+                direction = "de-ru"
+            else:
+                raw = await run_dictionary_lookup_multilang(
+                    word=lookup_input,
+                    source_lang=latin_source,
+                    target_lang="ru",
+                )
+                lookup = {
+                    "word_de": (raw.get("word_source") or lookup_input),
+                    "translation_ru": (raw.get("word_target") or ""),
+                    "word_ru": (raw.get("word_target") or ""),
+                    "translation_de": (raw.get("word_source") or lookup_input),
+                    "part_of_speech": raw.get("part_of_speech"),
+                    "raw_text": raw.get("raw_text"),
+                }
+                direction = "de-ru"
+        else:
+            await update.message.reply_text(
+                "Не удалось определить язык. Отправьте слово только на русском или только на латинице."
+            )
+            return
     except Exception as exc:
         logging.exception(f"❌ Ошибка словарного поиска для '{lookup_input}': {exc}")
         await update.message.reply_text("Не удалось получить перевод. Попробуйте снова через несколько секунд.")
@@ -1947,7 +2016,13 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
         return
 
     source_text = (lookup.get("word_ru") or lookup.get("word_de") or lookup_input).strip()
-    card_key = _store_pending_dictionary_card(update.message.from_user.id, direction, source_text, lookup)
+    card_key = _store_pending_dictionary_card(
+        update.message.from_user.id,
+        direction,
+        source_text,
+        lookup,
+        original_query=lookup_input,
+    )
 
     try:
         options = await _generate_dictionary_save_options(
@@ -1955,6 +2030,7 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
                 "direction": direction,
                 "source_text": source_text,
                 "lookup": lookup,
+                "original_query": lookup_input,
             }
         )
     except Exception as exc:
@@ -1975,7 +2051,7 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
     card_text = _build_dictionary_card_text(direction, source_text, lookup)
     variants_text = _build_save_variants_text(direction, options)
     full_text = f"{card_text}\n\n{variants_text}"
-    keyboard = _build_save_variant_keyboard(option_key, options)
+    keyboard = _build_save_variant_keyboard(option_key, options, selected=[])
     msg = await update.message.reply_text(full_text, reply_markup=keyboard)
     add_service_msg_id(context, msg.message_id)
 
@@ -2023,7 +2099,7 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
         direction=payload.get("direction") or "",
     )
     variants_text = _build_save_variants_text(payload.get("direction") or "", options)
-    keyboard = _build_save_variant_keyboard(option_key, options)
+    keyboard = _build_save_variant_keyboard(option_key, options, selected=[])
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
@@ -2065,15 +2141,36 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
         return
 
     chosen = options[option_idx]
+    save_ok, save_msg = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+    if not save_ok:
+        await query.answer(save_msg or "Ошибка сохранения. Попробуйте позже.", show_alert=True)
+        return
+
+    card_key = payload.get("card_key")
+    card_payload = pending_dictionary_cards.get(card_key or "")
+    if isinstance(card_payload, dict):
+        card_payload["saved"] = True
+        pending_dictionary_cards[card_key] = card_payload
+
+    pending_dictionary_save_options.pop(option_key, None)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await query.answer("✅ Сохранено")
+    source = (chosen.get("source") or "").strip()
+    target = (chosen.get("target") or "").strip()
+    await query.message.reply_text(f"✅ Сохранён вариант: {source} -> {target}")
+
+
+def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) -> tuple[bool, str]:
     source = (chosen.get("source") or "").strip()
     target = (chosen.get("target") or "").strip()
     direction = (payload.get("direction") or "").strip()
     lookup = payload.get("lookup") or {}
-    user_id = int(user.id)
 
     if not source or not target:
-        await query.answer("Вариант неполный, выберите другой.", show_alert=True)
-        return
+        return False, "Вариант неполный, выберите другой."
 
     response_json = dict(lookup) if isinstance(lookup, dict) else {}
     if direction == "ru-de":
@@ -2114,7 +2211,125 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
         )
     except Exception as exc:
         logging.exception(f"❌ Ошибка сохранения выбранного варианта user_id={user_id}: {exc}")
-        await query.answer("Ошибка сохранения. Попробуйте позже.", show_alert=True)
+        return False, "Ошибка сохранения. Попробуйте позже."
+    return True, "ok"
+
+
+async def handle_dictionary_select_toggle_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) != 3:
+        await query.answer("Неверный формат выбора.", show_alert=True)
+        return
+    option_key = parts[1].strip()
+    try:
+        option_idx = int(parts[2].strip())
+    except ValueError:
+        await query.answer("Неверный индекс варианта.", show_alert=True)
+        return
+
+    payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
+        return
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Доступно только автору карточки.", show_alert=True)
+        return
+
+    options = payload.get("options") or []
+    if option_idx < 0 or option_idx >= len(options):
+        await query.answer("Выбранный вариант не найден.", show_alert=True)
+        return
+
+    selected = payload.get("selected") or []
+    selected_set = set(int(item) for item in selected if isinstance(item, int) or str(item).isdigit())
+    if option_idx in selected_set:
+        selected_set.remove(option_idx)
+    else:
+        selected_set.add(option_idx)
+    payload["selected"] = sorted(selected_set)
+    pending_dictionary_save_options[option_key] = payload
+    keyboard = _build_save_variant_keyboard(option_key, options, selected=payload["selected"])
+    try:
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+    except Exception:
+        pass
+    await query.answer("Выбор обновлён")
+
+
+async def handle_dictionary_select_all_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат.", show_alert=True)
+        return
+    option_key = parts[1].strip()
+    payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
+        return
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Доступно только автору карточки.", show_alert=True)
+        return
+    options = payload.get("options") or []
+    payload["selected"] = list(range(len(options)))
+    pending_dictionary_save_options[option_key] = payload
+    keyboard = _build_save_variant_keyboard(option_key, options, selected=payload["selected"])
+    try:
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+    except Exception:
+        pass
+    await query.answer("Выбраны все варианты")
+
+
+async def handle_dictionary_save_confirm_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат.", show_alert=True)
+        return
+    option_key = parts[1].strip()
+    payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
+        return
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Доступно только автору карточки.", show_alert=True)
+        return
+    options = payload.get("options") or []
+    selected = payload.get("selected") or []
+    selected_idxs = sorted(set(int(item) for item in selected if isinstance(item, int) or str(item).isdigit()))
+    if not selected_idxs:
+        await query.answer("Выберите минимум один вариант.", show_alert=True)
+        return
+
+    saved_lines: list[str] = []
+    for idx in selected_idxs:
+        if idx < 0 or idx >= len(options):
+            continue
+        chosen = options[idx]
+        save_ok, save_msg = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+        if save_ok:
+            source = (chosen.get("source") or "").strip()
+            target = (chosen.get("target") or "").strip()
+            saved_lines.append(f"• {source} -> {target}")
+        else:
+            logging.warning("Dictionary multi-save skipped idx=%s: %s", idx, save_msg)
+
+    if not saved_lines:
+        await query.answer("Не удалось сохранить выбранные варианты.", show_alert=True)
         return
 
     card_key = payload.get("card_key")
@@ -2122,14 +2337,13 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
     if isinstance(card_payload, dict):
         card_payload["saved"] = True
         pending_dictionary_cards[card_key] = card_payload
-
     pending_dictionary_save_options.pop(option_key, None)
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
         pass
     await query.answer("✅ Сохранено")
-    await query.message.reply_text(f"✅ Сохранён вариант: {source} -> {target}")
+    await query.message.reply_text("✅ Сохранены варианты:\n" + "\n".join(saved_lines))
 
 
 async def delete_message_with_retry(bot, chat_id, message_id, retries=3, delay=2):
@@ -5655,6 +5869,9 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_explain_request, pattern=r"^explain:"))
     application.add_handler(CallbackQueryHandler(handle_pending_access_list, pattern=r"^access:pending:list$"))
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_select_toggle_callback, pattern=r"^dictseltoggle:"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_select_all_callback, pattern=r"^dictselall:"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_save_confirm_callback, pattern=r"^dictsaveconfirm:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_option_callback, pattern=r"^dictsaveopt:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
 

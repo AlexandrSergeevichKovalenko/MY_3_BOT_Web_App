@@ -715,7 +715,8 @@ async def submit_story_translation_webapp(
                 """
                 INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
                 user_translation, score, feedback, source_lang, target_lang)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
                 """,
                 (
                     user_id,
@@ -1596,6 +1597,8 @@ async def check_user_translation_webapp(
                     (target_lang or "de"),
                 ),
             )
+            created_translation = cursor.fetchone()
+            translation_id = int(created_translation[0]) if created_translation and created_translation[0] else None
             conn.commit()
 
             cursor.execute(
@@ -1756,6 +1759,8 @@ async def check_user_translation_webapp(
 
             results.append(
                 {
+                    "translation_id": translation_id,
+                    "audio_grammar_opt_in": False,
                     "sentence_number": sentence_number,
                     "score": score_value,
                     "original_text": original_text,
