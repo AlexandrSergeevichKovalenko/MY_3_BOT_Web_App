@@ -72,6 +72,7 @@ function AppInner() {
   const [sentences, setSentences] = useState([]);
   const [webappError, setWebappError] = useState('');
   const [webappLoading, setWebappLoading] = useState(false);
+  const [translationCheckProgress, setTranslationCheckProgress] = useState({ active: false, done: 0, total: 0 });
   const [translationDrafts, setTranslationDrafts] = useState({});
   const [finishMessage, setFinishMessage] = useState('');
   const [dictionaryWord, setDictionaryWord] = useState('');
@@ -219,6 +220,8 @@ function AppInner() {
   const [srsSubmitting, setSrsSubmitting] = useState(false);
   const [srsSubmittingRating, setSrsSubmittingRating] = useState(null);
   const [srsRevealAnswer, setSrsRevealAnswer] = useState(false);
+  const [srsRevealStartedAt, setSrsRevealStartedAt] = useState(0);
+  const [srsRevealElapsedSec, setSrsRevealElapsedSec] = useState(0);
   const [srsError, setSrsError] = useState('');
   const [flashcardFeelMap, setFlashcardFeelMap] = useState({});
   const [flashcardFeelVisibleMap, setFlashcardFeelVisibleMap] = useState({});
@@ -300,6 +303,10 @@ function AppInner() {
   const [languageProfileModalOpen, setLanguageProfileModalOpen] = useState(false);
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
+  const SRS_EASY_LOCK_AFTER_SEC = 5;
+  const SRS_GOOD_LOCK_AFTER_SEC = 7;
+  const srsEasyLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_EASY_LOCK_AFTER_SEC;
+  const srsGoodLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_GOOD_LOCK_AFTER_SEC;
 
   const dictionaryRef = useRef(null);
   const theoryRef = useRef(null);
@@ -1423,6 +1430,8 @@ function AppInner() {
     }
     const startedAt = srsShownAtRef.current || Date.now();
     const responseMs = Math.max(0, Date.now() - startedAt);
+    if (ratingValue === 'EASY' && srsEasyLocked) return;
+    if (ratingValue === 'GOOD' && srsGoodLocked) return;
     try {
       setSrsError('');
       setSrsSubmitting(true);
@@ -1455,6 +1464,8 @@ function AppInner() {
       }
       const data = await response.json();
       setSrsRevealAnswer(false);
+      setSrsRevealStartedAt(0);
+      setSrsRevealElapsedSec(0);
       if (data?.next && typeof data.next === 'object') {
         setSrsCard(data.next.card || null);
         setSrsState(data.next.srs || null);
@@ -1472,6 +1483,24 @@ function AppInner() {
       setSrsSubmittingRating(null);
     }
   };
+
+  useEffect(() => {
+    if (!srsRevealAnswer || !srsCard) {
+      setSrsRevealElapsedSec(0);
+      return undefined;
+    }
+    const startedAt = srsRevealStartedAt || Date.now();
+    if (!srsRevealStartedAt) {
+      setSrsRevealStartedAt(startedAt);
+    }
+    setSrsRevealElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    const intervalId = window.setInterval(() => {
+      setSrsRevealElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    }, 250);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [srsRevealAnswer, srsCard, srsRevealStartedAt]);
 
   const loadLanguageProfile = async () => {
     if (!initData) return;
@@ -1640,6 +1669,10 @@ function AppInner() {
     return pages.map((text, index) => ({ page_number: index + 1, text }));
   }, [readerPages, readerContent]);
   const readerPageCount = readerDisplayPages.length;
+  const readerBookmarkPage = readerPageCount > 0
+    ? Math.max(1, Math.min(readerPageCount, Math.round((Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0))) / 100) * readerPageCount) || 1))
+    : 0;
+  const isCurrentReaderPageBookmarked = readerPageCount > 0 && readerBookmarkPage === Math.max(1, Math.min(readerPageCount, Number(readerCurrentPage || 1)));
   const readerElapsedTotalSeconds = Math.max(0, Number(readerAccumulatedSeconds || 0) + Number(readerLiveSeconds || 0));
   const readerSwipeThreshold = readerSwipeSensitivity === 'high' ? 24 : readerSwipeSensitivity === 'low' ? 52 : 36;
   const readerSwipeLockMs = readerSwipeSensitivity === 'high' ? 180 : readerSwipeSensitivity === 'low' ? 340 : 260;
@@ -2191,31 +2224,45 @@ function AppInner() {
 
   useEffect(() => {
     if (!telegramApp) return;
+    const detectTabletLikeViewport = () => {
+      const viewportWidth = window.innerWidth || 0;
+      const viewportHeight = window.innerHeight || 0;
+      const minSide = Math.min(viewportWidth, viewportHeight);
+      const maxSide = Math.max(viewportWidth, viewportHeight);
+      const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
+      const isTabletUserAgent = /iPad|Tablet|PlayBook|Silk|Android(?!.*Mobile)/i.test(userAgent);
+      return isTabletUserAgent || viewportWidth >= 700 || (maxSide >= 1000 && minSide >= 600);
+    };
+
+    const tryEnterTelegramFullscreen = () => {
+      if (typeof telegramApp.requestFullscreen !== 'function') {
+        setTelegramFullscreenMode(false);
+        telegramApp.expand?.();
+        return;
+      }
+      Promise.resolve(telegramApp.requestFullscreen())
+        .then(() => {
+          const isFullscreen = typeof telegramApp.isFullscreen === 'boolean' ? telegramApp.isFullscreen : true;
+          setTelegramFullscreenMode(Boolean(isFullscreen));
+          if (!isFullscreen) {
+            telegramApp.expand?.();
+          }
+        })
+        .catch(() => {
+          setTelegramFullscreenMode(false);
+          telegramApp.expand?.();
+        });
+    };
+
     const syncViewportMode = () => {
       try {
         telegramApp.ready?.();
-        const viewportWidth = window.innerWidth || 0;
-        const viewportHeight = window.innerHeight || 0;
-        const minSide = Math.min(viewportWidth, viewportHeight);
-        const maxSide = Math.max(viewportWidth, viewportHeight);
-        const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
-        const isTabletUserAgent = /iPad|Tablet|PlayBook|Silk|Android(?!.*Mobile)/i.test(userAgent);
-        const shouldUseFullscreen =
-          isTabletUserAgent ||
-          viewportWidth >= 700 ||
-          (maxSide >= 1000 && minSide >= 600);
-        if (shouldUseFullscreen && typeof telegramApp.requestFullscreen === 'function') {
-          Promise.resolve(telegramApp.requestFullscreen())
-            .then(() => {
-              setTelegramFullscreenMode(true);
-            })
-            .catch(() => {
-              setTelegramFullscreenMode(false);
-              telegramApp.expand?.();
-            });
+        telegramApp.expand?.();
+        const shouldUseFullscreen = detectTabletLikeViewport();
+        if (shouldUseFullscreen) {
+          tryEnterTelegramFullscreen();
         } else {
           setTelegramFullscreenMode(false);
-          telegramApp.expand?.();
         }
         telegramApp.disableVerticalSwipes?.();
       } catch (error) {
@@ -2229,6 +2276,15 @@ function AppInner() {
       }
     };
 
+    const onFirstUserGesture = () => {
+      if (!detectTabletLikeViewport()) return;
+      try {
+        tryEnterTelegramFullscreen();
+      } catch (error) {
+        // ignore
+      }
+    };
+
     try {
       syncViewportMode();
     } catch (error) {
@@ -2239,12 +2295,14 @@ function AppInner() {
       syncViewportMode();
     };
     window.addEventListener('resize', onResize);
+    window.addEventListener('pointerdown', onFirstUserGesture, { passive: true });
     if (typeof telegramApp.onEvent === 'function') {
       telegramApp.onEvent('viewportChanged', syncViewportMode);
     }
 
     return () => {
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('pointerdown', onFirstUserGesture);
       if (typeof telegramApp.offEvent === 'function') {
         telegramApp.offEvent('viewportChanged', syncViewportMode);
       }
@@ -2930,51 +2988,95 @@ function AppInner() {
     setResults([]);
     setExplanations({});
     setExplanationLoading({});
+    setTranslationCheckProgress({ active: false, done: 0, total: 0 });
 
     try {
       const submittedEntries = Object.entries(translationDrafts)
         .map(([id, translation]) => ({ id: Number(id), translation: String(translation || '').trim() }))
         .filter((item) => item.translation);
-      const response = await fetch('/api/message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          session_id: sessionId,
-          translations: submittedEntries.map((item) => ({
-            id_for_mistake_table: item.id,
-            translation: item.translation,
-          })),
-          original_text: numberedOriginal,
-          user_translation: numberedTranslations,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error(await response.text());
+      if (!submittedEntries.length) {
+        throw new Error(tr('Нет переводов для проверки.', 'Keine Uebersetzungen zur Pruefung.'));
       }
-      const data = await response.json();
-      setResults((prev) => {
-        const indexByKey = new Map();
-        const merged = [...prev];
-        merged.forEach((item, idx) => {
-          const key = String(item?.sentence_number ?? item?.id_for_mistake_table ?? item?.original_text ?? idx);
-          indexByKey.set(key, idx);
-        });
-        (data.results || []).forEach((item, idx) => {
-          const key = String(item?.sentence_number ?? item?.id_for_mistake_table ?? item?.original_text ?? `new-${idx}`);
+      setTranslationCheckProgress({ active: true, done: 0, total: submittedEntries.length });
+
+      const sentenceNumberById = new Map(
+        sentences.map((item, idx) => [Number(item.id_for_mistake_table), Number(item.unique_id ?? idx + 1)])
+      );
+      const upsertResultItem = (item) => {
+        setResults((prev) => {
+          const indexByKey = new Map();
+          const merged = [...prev];
+          merged.forEach((entry, idx) => {
+            const key = String(entry?.sentence_number ?? entry?.id_for_mistake_table ?? entry?.original_text ?? idx);
+            indexByKey.set(key, idx);
+          });
+          const key = String(item?.sentence_number ?? item?.id_for_mistake_table ?? item?.original_text ?? `new-${merged.length}`);
           if (indexByKey.has(key)) {
             merged[indexByKey.get(key)] = item;
           } else {
-            indexByKey.set(key, merged.length);
             merged.push(item);
           }
+          merged.sort((a, b) => (Number(a?.sentence_number || 0) - Number(b?.sentence_number || 0)));
+          return merged;
         });
-        return merged;
-      });
+      };
+
+      let nextIndex = 0;
+      const concurrency = Math.min(2, submittedEntries.length);
+      const worker = async () => {
+        while (nextIndex < submittedEntries.length) {
+          const current = submittedEntries[nextIndex];
+          nextIndex += 1;
+          const sentenceNumber = Number(sentenceNumberById.get(Number(current.id)) || 0) || null;
+          try {
+            const response = await fetch('/api/message', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                initData,
+                session_id: sessionId,
+                translations: [
+                  {
+                    id_for_mistake_table: current.id,
+                    translation: current.translation,
+                  },
+                ],
+                original_text: numberedOriginal,
+                user_translation: numberedTranslations,
+              }),
+            });
+            if (!response.ok) {
+              throw new Error(await response.text());
+            }
+            const data = await response.json();
+            const resultItem = Array.isArray(data?.results) && data.results.length > 0
+              ? data.results[0]
+              : {
+                  sentence_number: sentenceNumber,
+                  error: tr('Пустой ответ проверки.', 'Leere Pruefungsantwort.'),
+                };
+            upsertResultItem(resultItem);
+          } catch (error) {
+            upsertResultItem({
+              sentence_number: sentenceNumber,
+              error: `${tr('Ошибка проверки', 'Pruefungsfehler')}: ${String(error?.message || error)}`,
+            });
+          } finally {
+            setTranslationCheckProgress((prev) => ({
+              active: true,
+              done: Math.min(prev.total || submittedEntries.length, (prev.done || 0) + 1),
+              total: prev.total || submittedEntries.length,
+            }));
+          }
+        }
+      };
+
+      await Promise.all(Array.from({ length: concurrency }, () => worker()));
     } catch (error) {
       setWebappError(`${tr('Ошибка проверки', 'Pruefungsfehler')}: ${error.message}`);
     } finally {
       setWebappLoading(false);
+      setTranslationCheckProgress((prev) => ({ ...prev, active: false }));
     }
   };
 
@@ -2996,6 +3098,7 @@ function AppInner() {
     setWebappError('');
     setFinishMessage('');
     setFinishStatus('idle');
+    setTranslationCheckProgress({ active: false, done: 0, total: 0 });
     try {
       const response = await fetch('/api/webapp/start', {
         method: 'POST',
@@ -3075,6 +3178,7 @@ function AppInner() {
     setWebappError('');
     setFinishMessage('');
     setFinishStatus('idle');
+    setTranslationCheckProgress({ active: false, done: 0, total: 0 });
     setStoryResult(null);
     setResults([]);
     setExplanations({});
@@ -3126,6 +3230,7 @@ function AppInner() {
     setWebappLoading(true);
     setWebappError('');
     setFinishMessage('');
+    setTranslationCheckProgress({ active: false, done: 0, total: 0 });
     setResults([]);
     setExplanations({});
     try {
@@ -6697,11 +6802,24 @@ function AppInner() {
 
                   <button className="primary-button" type="submit" disabled={webappLoading}>
                     {webappLoading
-                      ? tr('Проверяем...', 'Pruefen...')
+                      ? (translationCheckProgress.total > 0
+                          ? tr(
+                              `Проверяем... ${translationCheckProgress.done}/${translationCheckProgress.total}`,
+                              `Pruefen... ${translationCheckProgress.done}/${translationCheckProgress.total}`
+                            )
+                          : tr('Проверяем...', 'Pruefen...'))
                       : isStorySession
                         ? tr('Проверить историю', 'Story pruefen')
                         : tr('Проверить перевод', 'Uebersetzung pruefen')}
                   </button>
+                  {webappLoading && translationCheckProgress.total > 0 && (
+                    <div className="webapp-muted">
+                      {tr(
+                        `Готово ${translationCheckProgress.done} из ${translationCheckProgress.total}`,
+                        `${translationCheckProgress.done} von ${translationCheckProgress.total} fertig`
+                      )}
+                    </div>
+                  )}
                 </form>
                 )}
 
@@ -7396,7 +7514,7 @@ function AppInner() {
                     </button>
                     <button
                       type="button"
-                      className="reader-bookmark-btn"
+                      className={`reader-bookmark-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
                       onClick={() => {
                         const mark = computeReaderProgressPercent();
                         setReaderBookmarkPercent(mark);
@@ -7478,7 +7596,7 @@ function AppInner() {
                     </button>
                     <button
                       type="button"
-                      className="reader-bookmark-btn"
+                      className={`reader-bookmark-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
                       onClick={() => {
                         const mark = computeReaderProgressPercent();
                         setReaderBookmarkPercent(mark);
@@ -7724,6 +7842,9 @@ function AppInner() {
                             '--reader-font-weight': readerFontWeight,
                           }}
                         >
+                          {isCurrentReaderPageBookmarked && (
+                            <span className="reader-page-bookmark-indicator" aria-hidden="true" />
+                          )}
                           <div className="reader-page-sheet-inner">
                             {renderClickableText(
                               String(readerDisplayPages[readerCurrentPage - 1]?.text || ''),
@@ -7893,27 +8014,36 @@ function AppInner() {
                                   <button
                                     type="button"
                                     className="secondary-button"
-                                    onClick={() => setSrsRevealAnswer(true)}
+                                    onClick={() => {
+                                      setSrsRevealStartedAt(Date.now());
+                                      setSrsRevealElapsedSec(0);
+                                      setSrsRevealAnswer(true);
+                                    }}
                                     disabled={srsSubmitting}
                                   >
                                     {t('show_answer')}
                                   </button>
                                 </div>
                               ) : (
-                                <div className="srs-rating-grid">
-                                  <button type="button" className="srs-rate again" onClick={() => submitSrsReview('AGAIN')} disabled={srsSubmitting}>
-                                    {srsSubmitting && srsSubmittingRating === 'AGAIN' ? tr('Сохраняем...', 'Speichern...') : 'AGAIN'}
-                                  </button>
-                                  <button type="button" className="srs-rate hard" onClick={() => submitSrsReview('HARD')} disabled={srsSubmitting}>
-                                    {srsSubmitting && srsSubmittingRating === 'HARD' ? tr('Сохраняем...', 'Speichern...') : 'HARD'}
-                                  </button>
-                                  <button type="button" className="srs-rate good" onClick={() => submitSrsReview('GOOD')} disabled={srsSubmitting}>
-                                    {srsSubmitting && srsSubmittingRating === 'GOOD' ? tr('Сохраняем...', 'Speichern...') : 'GOOD'}
-                                  </button>
-                                  <button type="button" className="srs-rate easy" onClick={() => submitSrsReview('EASY')} disabled={srsSubmitting}>
-                                    {srsSubmitting && srsSubmittingRating === 'EASY' ? tr('Сохраняем...', 'Speichern...') : 'EASY'}
-                                  </button>
-                                </div>
+                                <>
+                                  <div className="srs-timer-line">
+                                    {tr('Таймер', 'Timer')}: {srsRevealElapsedSec}s
+                                  </div>
+                                  <div className="srs-rating-grid">
+                                    <button type="button" className="srs-rate again" onClick={() => submitSrsReview('AGAIN')} disabled={srsSubmitting}>
+                                      {srsSubmitting && srsSubmittingRating === 'AGAIN' ? tr('Сохраняем...', 'Speichern...') : 'AGAIN'}
+                                    </button>
+                                    <button type="button" className="srs-rate hard" onClick={() => submitSrsReview('HARD')} disabled={srsSubmitting}>
+                                      {srsSubmitting && srsSubmittingRating === 'HARD' ? tr('Сохраняем...', 'Speichern...') : 'HARD'}
+                                    </button>
+                                    <button type="button" className="srs-rate good" onClick={() => submitSrsReview('GOOD')} disabled={srsSubmitting || srsGoodLocked}>
+                                      {srsSubmitting && srsSubmittingRating === 'GOOD' ? tr('Сохраняем...', 'Speichern...') : 'GOOD'}
+                                    </button>
+                                    <button type="button" className="srs-rate easy" onClick={() => submitSrsReview('EASY')} disabled={srsSubmitting || srsEasyLocked}>
+                                      {srsSubmitting && srsSubmittingRating === 'EASY' ? tr('Сохраняем...', 'Speichern...') : 'EASY'}
+                                    </button>
+                                  </div>
+                                </>
                               )}
                             </div>
                           )}

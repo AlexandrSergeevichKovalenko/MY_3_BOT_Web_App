@@ -1501,27 +1501,79 @@ def _fetch_reader_text_from_url(raw_url: str) -> tuple[str, str, list[dict]]:
 
 
 def _synthesize_offline_audio_wav(text: str) -> bytes:
-    if pyttsx3 is None:
-        raise RuntimeError("Offline speech engine is unavailable: install pyttsx3")
     cleaned = _normalize_reader_text(text, max_chars=300000)
     if not cleaned:
         raise ValueError("Нет текста для аудио")
     if len(cleaned) > 180000:
         raise ValueError("Слишком длинный фрагмент для офлайн-конвертации. Выберите меньший диапазон страниц.")
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        wav_path = tmp.name
-    try:
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 165)
-        engine.save_to_file(cleaned, wav_path)
-        engine.runAndWait()
-        with open(wav_path, "rb") as fh:
-            return fh.read()
-    finally:
+    errors: list[str] = []
+
+    # Primary path: pyttsx3 (offline python engine).
+    if pyttsx3 is not None:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            wav_path = tmp.name
         try:
-            os.remove(wav_path)
-        except Exception:
-            pass
+            engine = pyttsx3.init()
+            engine.setProperty("rate", 165)
+            engine.save_to_file(cleaned, wav_path)
+            engine.runAndWait()
+            with open(wav_path, "rb") as fh:
+                payload = fh.read()
+            if payload:
+                return payload
+            errors.append("pyttsx3 returned empty audio payload")
+        except Exception as exc:
+            errors.append(f"pyttsx3 failed: {exc}")
+        finally:
+            try:
+                os.remove(wav_path)
+            except Exception:
+                pass
+    else:
+        errors.append("pyttsx3 module is not installed")
+
+    # Fallback path: espeak-ng/espeak CLI (still fully offline/local).
+    for cli_name in ("espeak-ng", "espeak"):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tmp_text:
+            text_path = tmp_text.name
+            tmp_text.write(cleaned)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+            wav_path = tmp_wav.name
+        try:
+            proc = subprocess.run(
+                [cli_name, "-w", wav_path, "-s", "165", "-f", text_path],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode != 0:
+                stderr = (proc.stderr or proc.stdout or "").strip()
+                errors.append(f"{cli_name} exited with code {proc.returncode}: {stderr}")
+                continue
+            with open(wav_path, "rb") as fh:
+                payload = fh.read()
+            if payload:
+                return payload
+            errors.append(f"{cli_name} returned empty audio payload")
+        except FileNotFoundError:
+            errors.append(f"{cli_name} binary is not installed")
+        except Exception as exc:
+            errors.append(f"{cli_name} failed: {exc}")
+        finally:
+            try:
+                os.remove(text_path)
+            except Exception:
+                pass
+            try:
+                os.remove(wav_path)
+            except Exception:
+                pass
+
+    raise RuntimeError(
+        "Offline speech engine is unavailable. "
+        "Install pyttsx3 with espeak support (or espeak-ng/espeak binary). "
+        f"Details: {'; '.join(errors)}"
+    )
 
 
 def _infer_reader_title(
