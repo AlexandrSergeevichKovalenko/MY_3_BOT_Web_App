@@ -132,6 +132,8 @@ function AppInner() {
   const [readerAudioToPage, setReaderAudioToPage] = useState('');
   const [readerAudioLoading, setReaderAudioLoading] = useState(false);
   const [readerAudioError, setReaderAudioError] = useState('');
+  const [readerAudioPreviewUrl, setReaderAudioPreviewUrl] = useState('');
+  const [readerAudioPreviewName, setReaderAudioPreviewName] = useState('');
   const [readerProgressPercent, setReaderProgressPercent] = useState(0);
   const [readerBookmarkPercent, setReaderBookmarkPercent] = useState(0);
   const [readerReadingMode, setReaderReadingMode] = useState('vertical');
@@ -2229,6 +2231,11 @@ function AppInner() {
     let expandPulseTimer = null;
     let stopped = false;
 
+    const isHandsetDevice = () => {
+      const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
+      return /iPhone|iPod|Windows Phone|Android.*Mobile/i.test(userAgent);
+    };
+
     const detectTabletLikeViewport = () => {
       const viewportWidth = window.innerWidth || 0;
       const viewportHeight = window.innerHeight || 0;
@@ -2236,6 +2243,7 @@ function AppInner() {
       const maxSide = Math.max(viewportWidth, viewportHeight);
       const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
       const isTabletUserAgent = /iPad|Tablet|PlayBook|Silk|Android(?!.*Mobile)/i.test(userAgent);
+      if (isHandsetDevice()) return false;
       return isTabletUserAgent || viewportWidth >= 700 || (maxSide >= 1000 && minSide >= 600);
     };
 
@@ -2277,6 +2285,12 @@ function AppInner() {
           tryEnterTelegramFullscreen();
         } else {
           setTelegramFullscreenMode(false);
+          try {
+            telegramApp.exitFullscreen?.();
+          } catch (error) {
+            // ignore
+          }
+          telegramApp.expand?.();
         }
         telegramApp.disableVerticalSwipes?.();
       } catch (error) {
@@ -4165,10 +4179,30 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка аудио-конвертации', 'Fehler bei Audio-Konvertierung'));
       }
       const blob = await response.blob();
+      const fileName = `${String(readerTitle || 'reader').replace(/[^\w.-]+/g, '_')}_${fullDocument ? 'full' : 'range'}.wav`;
       const url = URL.createObjectURL(blob);
+      const ua = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
+      const isIOS = /iPad|iPhone|iPod/i.test(ua)
+        || (typeof navigator !== 'undefined'
+          && navigator.platform === 'MacIntel'
+          && Number(navigator.maxTouchPoints || 0) > 1);
+      if (isIOS) {
+        setReaderAudioPreviewUrl((prev) => {
+          if (prev && prev !== url) {
+            try {
+              URL.revokeObjectURL(prev);
+            } catch (error) {
+              // ignore
+            }
+          }
+          return url;
+        });
+        setReaderAudioPreviewName(fileName);
+        return;
+      }
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${String(readerTitle || 'reader').replace(/[^\w.-]+/g, '_')}_${fullDocument ? 'full' : 'range'}.wav`;
+      a.download = fileName;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -4179,6 +4213,29 @@ function AppInner() {
       setReaderAudioLoading(false);
     }
   };
+
+  const closeReaderAudioPreview = () => {
+    setReaderAudioPreviewUrl((prev) => {
+      if (prev) {
+        try {
+          URL.revokeObjectURL(prev);
+        } catch (error) {
+          // ignore
+        }
+      }
+      return '';
+    });
+    setReaderAudioPreviewName('');
+  };
+
+  useEffect(() => () => {
+    if (!readerAudioPreviewUrl) return;
+    try {
+      URL.revokeObjectURL(readerAudioPreviewUrl);
+    } catch (error) {
+      // ignore
+    }
+  }, [readerAudioPreviewUrl]);
 
   async function handleReaderIngest(event) {
     event?.preventDefault?.();
@@ -7770,6 +7827,23 @@ function AppInner() {
                       </button>
                     </div>
                     {readerAudioError && <div className="webapp-error">{readerAudioError}</div>}
+                    {readerAudioPreviewUrl && (
+                      <div className="reader-audio-preview">
+                        <audio controls preload="metadata" src={readerAudioPreviewUrl} className="reader-audio-player" />
+                        <div className="reader-audio-preview-actions">
+                          <a
+                            href={readerAudioPreviewUrl}
+                            download={readerAudioPreviewName || 'reader_audio.wav'}
+                            className="secondary-button"
+                          >
+                            {tr('Скачать файл', 'Datei herunterladen')}
+                          </a>
+                          <button type="button" className="secondary-button" onClick={closeReaderAudioPreview}>
+                            {tr('Назад', 'Zurueck')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </section>
                 )}
                 {!readerImmersive && readerError && <div className="webapp-error">{readerError}</div>}

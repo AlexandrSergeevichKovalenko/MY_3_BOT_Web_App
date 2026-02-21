@@ -1659,6 +1659,26 @@ body {
   align-items: end;
 }
 
+.reader-audio-preview {
+  margin-top: 8px;
+  border: 1px solid rgba(120, 174, 237, 0.28);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(7, 16, 34, 0.72);
+  display: grid;
+  gap: 8px;
+}
+
+.reader-audio-player {
+  width: 100%;
+}
+
+.reader-audio-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .reader-pages-layout {
   display: grid;
   gap: 10px;
