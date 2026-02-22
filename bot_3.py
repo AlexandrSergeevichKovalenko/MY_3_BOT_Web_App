@@ -2055,6 +2055,9 @@ def _extract_learning_notes(lookup: dict) -> dict:
 
 
 def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text: str, lookup: dict) -> str:
+    def _esc(value: str) -> str:
+        return html.escape(str(value or "").strip())
+
     source_text = source_text.strip()
     translation = (lookup.get("word_target") or "").strip()
     meanings = _extract_lookup_meanings(lookup)
@@ -2066,69 +2069,73 @@ def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text:
     stress = str(pronunciation.get("stress") or "").strip()
     forms = _format_forms_block(lookup.get("forms"))
 
-    lines = [
-        "Запрос",
-        f"{source_text}",
-        "",
-    ]
+    lines: list[str] = []
+    lines.append("🔹 <b>Запрос</b>")
+    lines.append(f"• <code>{_esc(source_text or '—')}</code>")
+
     if meanings:
         primary = meanings[0]
-        lines.extend(
-            [
-                "Основной перевод",
-                f"{_apply_article_for_display(str(primary.get('value') or translation or '—'), lookup, target_lang)}",
-            ]
-        )
+        primary_value = _apply_article_for_display(str(primary.get("value") or translation or "—"), lookup, target_lang)
+        lines.append("")
+        lines.append("🎯 <b>Основной перевод</b>")
+        lines.append(f"• <b>{_esc(primary_value)}</b>")
         primary_context = str(primary.get("context") or "").strip()
-        if primary_context:
-            lines.append(f"Контекст: {primary_context}")
         primary_source = str(primary.get("example_source") or "").strip()
         primary_target = str(primary.get("example_target") or "").strip()
+        if primary_context:
+            lines.append(f"• Контекст: {_esc(primary_context)}")
         if primary_source:
-            lines.append(f"Пример: {primary_source}")
+            lines.append(f"• Пример: {_esc(primary_source)}")
         if primary_target:
-            lines.append(f"↳ {primary_target}")
-        lines.append("")
+            lines.append(f"  ↳ {_esc(primary_target)}")
 
         secondary = meanings[1:3]
         if secondary:
-            lines.append("Дополнительные значения")
+            lines.append("")
+            lines.append("🧩 <b>Дополнительные значения</b>")
             for idx, item in enumerate(secondary, start=1):
-                lines.append(f"{idx}. {_apply_article_for_display(str(item.get('value') or '—'), lookup, target_lang)}")
+                sec_value = _apply_article_for_display(str(item.get("value") or "—"), lookup, target_lang)
+                lines.append(f"{idx}. <b>{_esc(sec_value)}</b>")
                 item_context = str(item.get("context") or "").strip()
-                if item_context:
-                    lines.append(f"   Контекст: {item_context}")
                 item_source = str(item.get("example_source") or "").strip()
                 item_target = str(item.get("example_target") or "").strip()
+                if item_context:
+                    lines.append(f"   • Контекст: {_esc(item_context)}")
                 if item_source:
-                    lines.append(f"   Пример: {item_source}")
+                    lines.append(f"   • Пример: {_esc(item_source)}")
                 if item_target:
-                    lines.append(f"   ↳ {item_target}")
-                lines.append("")
+                    lines.append(f"     ↳ {_esc(item_target)}")
     else:
-        lines.extend(["Основной перевод", f"{_apply_article_for_display(translation or '—', lookup, target_lang)}", ""])
-
-    lines.append("Грамматика и произношение")
-    lines.append(f"Часть речи: {part_of_speech or '—'}")
-    if article:
-        lines.append(f"Артикль: {article}")
-    if ipa or stress:
-        lines.append(f"Произношение: {ipa or '—'}{f' | ударение: {stress}' if stress else ''}")
-    if forms:
         lines.append("")
-        lines.append("Формы:")
-        lines.extend(forms)
+        lines.append("🎯 <b>Основной перевод</b>")
+        lines.append(f"• <b>{_esc(_apply_article_for_display(translation or '—', lookup, target_lang))}</b>")
+
+    lines.append("")
+    lines.append("🗂 <b>Грамматика и произношение</b>")
+    lines.append(f"• Часть речи: {_esc(part_of_speech or '—')}")
+    if article:
+        lines.append(f"• Артикль: <b>{_esc(article)}</b>")
+    if ipa or stress:
+        pron = f"{ipa or '—'}{f' | ударение: {stress}' if stress else ''}"
+        lines.append(f"• Произношение: {_esc(pron)}")
+    if forms:
+        lines.append("• Формы:")
+        for form_line in forms:
+            cleaned = form_line.replace("- ", "", 1)
+            lines.append(f"   - {_esc(cleaned)}")
+
     note_lines = []
     if notes["etymology_note"]:
-        note_lines.append(f"Происхождение: {notes['etymology_note']}")
+        note_lines.append(f"• Происхождение: {_esc(notes['etymology_note'])}")
     if notes["usage_note"]:
-        note_lines.append(f"Где используется: {notes['usage_note']}")
+        note_lines.append(f"• Где используется: {_esc(notes['usage_note'])}")
     if notes["memory_tip"]:
-        note_lines.append(f"Фишка запоминания: {notes['memory_tip']}")
+        note_lines.append(f"• Фишка запоминания: {_esc(notes['memory_tip'])}")
     if note_lines:
         lines.append("")
-        lines.append("Как запомнить")
+        lines.append("💡 <b>Как запомнить</b>")
         lines.extend(note_lines)
+
     return "\n".join(lines)
 
 
@@ -2208,12 +2215,15 @@ def _build_save_variant_keyboard(option_key: str, options: list[dict], selected:
 
 
 def _build_save_variants_text(source_lang: str, target_lang: str, options: list[dict]) -> str:
-    lines = ["Варианты для сохранения (с переводом):", ""]
+    def _esc(value: str) -> str:
+        return html.escape(str(value or "").strip())
+
+    lines = ["📌 <b>Варианты для сохранения</b>", ""]
     for idx, opt in enumerate(options[:3], start=1):
         source = (opt.get("source") or "").strip() or "—"
         target = (opt.get("target") or "").strip() or "—"
-        lines.append(f"{idx}. {source_lang.upper()}: {source}")
-        lines.append(f"   {target_lang.upper()}: {target}")
+        lines.append(f"{idx}. <b>{source_lang.upper()}:</b> {_esc(source)}")
+        lines.append(f"   <b>{target_lang.upper()}:</b> {_esc(target)}")
         lines.append("")
     return "\n".join(lines)
 
@@ -2748,34 +2758,13 @@ async def _send_dictionary_lookup_result(
     variants_text = _build_save_variants_text(source_lang, target_lang, options)
     full_text = f"{card_text}\n\n{variants_text}"
     keyboard = _build_save_variant_keyboard(option_key, options, selected=[])
-    image_path = _render_dictionary_card_png(
-        source_lang=source_lang,
-        target_lang=target_lang,
-        source_text=source_text,
-        lookup=lookup,
-        options=options,
+    msg = await message.reply_text(
+        full_text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )
-    if image_path:
-        try:
-            with open(image_path, "rb") as photo:
-                msg = await message.reply_photo(
-                    photo=photo,
-                    caption="Выберите варианты для сохранения:",
-                    reply_markup=keyboard,
-                )
-            add_service_msg_id(context, msg.message_id)
-        except Exception:
-            logging.debug("Failed to send dictionary PNG card, fallback to text", exc_info=True)
-            msg = await message.reply_text(full_text, reply_markup=keyboard)
-            add_service_msg_id(context, msg.message_id)
-        finally:
-            try:
-                Path(image_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-    else:
-        msg = await message.reply_text(full_text, reply_markup=keyboard)
-        add_service_msg_id(context, msg.message_id)
+    add_service_msg_id(context, msg.message_id)
     pronunciation_text = str(
         (lookup.get("pronunciation") or {}).get("audio_text")
         if isinstance(lookup.get("pronunciation"), dict)
