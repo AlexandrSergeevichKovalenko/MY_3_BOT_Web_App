@@ -3489,6 +3489,44 @@ function AppInner() {
   };
 
   const normalizeLangCode = (value) => String(value || '').trim().toLowerCase();
+  const prependArticleIfNeeded = (text, article, partOfSpeech) => {
+    const base = String(text || '').trim();
+    const articleText = String(article || '').trim();
+    if (!base || !articleText) return base;
+    const pos = String(partOfSpeech || '').trim().toLowerCase();
+    if (pos && !/(noun|substantiv|nomen|sostantiv|sustantiv)/.test(pos)) {
+      return base;
+    }
+    const firstToken = String(base.split(/\s+/, 1)[0] || '')
+      .toLowerCase()
+      .replace(/[.,;:!?]+$/g, '');
+    const normalizedArticle = articleText.toLowerCase().replace(/[.,;:!?]+$/g, '');
+    if (firstToken === normalizedArticle) return base;
+    return `${articleText} ${base}`.replace(/\s+/g, ' ').trim();
+  };
+  const applyArticleForDirection = (sourceText, targetText, direction, item) => {
+    let source = String(sourceText || '').trim();
+    let target = String(targetText || '').trim();
+    const article = String(item?.article || '').trim();
+    if (!article) return { sourceText: source, targetText: target };
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const normalizedDirection = String(direction || '').trim().toLowerCase();
+    let sourceLang = pair.source_lang;
+    let targetLang = pair.target_lang;
+    if (normalizedDirection.includes('-')) {
+      const [src, tgt] = normalizedDirection.split('-', 2);
+      sourceLang = src || sourceLang;
+      targetLang = tgt || targetLang;
+    }
+    const langsWithArticles = new Set(['de', 'it', 'es', 'en']);
+    if (langsWithArticles.has(sourceLang)) {
+      source = prependArticleIfNeeded(source, article, item?.part_of_speech);
+    }
+    if (langsWithArticles.has(targetLang)) {
+      target = prependArticleIfNeeded(target, article, item?.part_of_speech);
+    }
+    return { sourceText: source, targetText: target };
+  };
   const getMovieLanguageCode = (item) => normalizeLangCode(item?.language || '').slice(0, 2) || 'unknown';
   const resolveLanguagePairForUI = (pair) => {
     const source = normalizeLangCode(pair?.source_lang);
@@ -3534,34 +3572,24 @@ function AppInner() {
   }, [movies, moviesLanguageFilter]);
   const getDictionarySourceTarget = (item, direction = dictionaryDirection) => {
     if (!item) return { sourceText: '', targetText: '' };
-    const sourceText = String(
+    const sourceTextRaw = String(
       item.source_text
       || (direction === 'de-ru'
-        ? (item.translation_ru || item.word_ru || '')
+        ? (item.word_de || item.translation_de || '')
         : (item.word_ru || item.translation_ru || ''))
       || ''
     ).trim();
-    const targetText = String(
+    const targetTextRaw = String(
       item.target_text
       || (direction === 'de-ru'
-        ? (item.word_de || item.translation_de || '')
+        ? (item.translation_ru || item.word_ru || '')
         : (item.translation_de || item.word_de || ''))
       || ''
     ).trim();
-    return { sourceText, targetText };
+    return applyArticleForDirection(sourceTextRaw, targetTextRaw, direction, item);
   };
   const getDictionaryDisplayedTranslation = (item, direction = dictionaryDirection) => {
-    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
-    const normalizedDirection = String(direction || '').trim().toLowerCase();
-    const forward = `${pair.source_lang}-${pair.target_lang}`;
-    const reverse = `${pair.target_lang}-${pair.source_lang}`;
     const { sourceText, targetText } = getDictionarySourceTarget(item, direction);
-    if (normalizedDirection === reverse) {
-      return sourceText || '';
-    }
-    if (normalizedDirection === forward) {
-      return targetText || '';
-    }
     return targetText || sourceText || '';
   };
   const getFormValue = (forms, keys) => {
@@ -5142,8 +5170,15 @@ function AppInner() {
       const options = [
         { source: baseSource, target: baseTarget, isBase: true },
         ...(data.items || []).map((item) => ({
-          source: item.source,
-          target: item.target,
+          ...(() => {
+            const normalized = applyArticleForDirection(
+              item.source,
+              item.target,
+              dictionaryDirection,
+              dictionaryResult,
+            );
+            return { source: normalized.sourceText, target: normalized.targetText };
+          })(),
           isBase: false,
         })),
       ].filter((item) => item.source && item.target);

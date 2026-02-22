@@ -2547,8 +2547,8 @@ def _decorate_dictionary_item(
         reverse_direction_code = f"{target_lang}-{source_lang}"
         is_reverse = direction == reverse_direction_code or direction == "de-ru"
         if is_reverse:
-            source_text = data.get("translation_ru") or data.get("word_ru") or ""
-            target_text = data.get("word_de") or data.get("translation_de") or ""
+            source_text = data.get("word_de") or data.get("translation_de") or ""
+            target_text = data.get("translation_ru") or data.get("word_ru") or ""
         else:
             source_text = data.get("word_ru") or data.get("translation_ru") or ""
             target_text = data.get("translation_de") or data.get("word_de") or ""

@@ -49,6 +49,7 @@ from backend.openai_manager import (
     run_dictionary_lookup_de,
     run_dictionary_lookup_multilang,
     run_dictionary_collocations,
+    run_dictionary_collocations_multilang,
     run_generate_word_quiz,
     run_translate_subtitles_ru,
 )
@@ -101,6 +102,7 @@ pending_quiz_freeform = {}
 quiz_ru_translation_cache = {}
 pending_dictionary_cards = {}
 pending_dictionary_save_options = {}
+pending_dictionary_lookup_requests = {}
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
 SYSTEM_MESSAGE_CLEANUP_TZ = (os.getenv("SYSTEM_MESSAGE_CLEANUP_TZ") or os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
 SYSTEM_MESSAGE_CLEANUP_HOUR = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "23").strip())
@@ -1724,6 +1726,68 @@ def _is_dictionary_lookup_candidate(text: str) -> bool:
     return 1 <= len(words) <= 15
 
 
+def _dictionary_language_pairs() -> list[tuple[str, str]]:
+    return [
+        ("ru", "de"),
+        ("de", "ru"),
+        ("en", "ru"),
+        ("ru", "en"),
+        ("it", "ru"),
+        ("ru", "it"),
+        ("es", "ru"),
+        ("ru", "es"),
+    ]
+
+
+def _build_dictionary_pair_keyboard(request_key: str) -> InlineKeyboardMarkup:
+    flag_by_lang = {
+        "ru": "🇷🇺",
+        "de": "🇩🇪",
+        "en": "🇬🇧",
+        "it": "🇮🇹",
+        "es": "🇪🇸",
+    }
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for source_lang, target_lang in _dictionary_language_pairs():
+        source_flag = flag_by_lang.get(source_lang, "🏳️")
+        target_flag = flag_by_lang.get(target_lang, "🏳️")
+        label = f"{source_flag} {source_lang.upper()} -> {target_flag} {target_lang.upper()}"
+        row.append(
+            InlineKeyboardButton(
+                label,
+                callback_data=f"dictpair:{request_key}:{source_lang}-{target_lang}",
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+def _store_pending_dictionary_lookup_request(user_id: int, text: str) -> str:
+    key = hashlib.sha1(
+        f"{user_id}:{text}:{datetime.utcnow().isoformat()}".encode("utf-8")
+    ).hexdigest()[:20]
+    pending_dictionary_lookup_requests[key] = {
+        "user_id": int(user_id),
+        "text": (text or "").strip(),
+    }
+    if len(pending_dictionary_lookup_requests) > 500:
+        oldest_key = next(iter(pending_dictionary_lookup_requests))
+        pending_dictionary_lookup_requests.pop(oldest_key, None)
+    return key
+
+
+def _build_dictionary_pair_selection_text(source_text: str) -> str:
+    return (
+        f"Запрос: {source_text.strip()}\n\n"
+        "Выберите языковую пару для перевода:"
+    )
+
+
 def _detect_dictionary_direction(text: str) -> str | None:
     normalized = re.sub(r"[.,!?;:()\"]", " ", text)
     has_cyr = bool(re.search(r"[А-Яа-яЁё]", normalized))
@@ -1819,13 +1883,9 @@ def _format_examples_block(examples: list | None) -> list[str]:
     return result
 
 
-def _build_dictionary_card_text(direction: str, source_text: str, lookup: dict) -> str:
+def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text: str, lookup: dict) -> str:
     source_text = source_text.strip()
-    translation = (
-        (lookup.get("translation_de") or "").strip()
-        if direction == "ru-de"
-        else (lookup.get("translation_ru") or "").strip()
-    )
+    translation = (lookup.get("word_target") or "").strip()
     part_of_speech = (lookup.get("part_of_speech") or "").strip()
     article = (lookup.get("article") or "").strip()
     forms = _format_forms_block(lookup.get("forms"))
@@ -1834,7 +1894,7 @@ def _build_dictionary_card_text(direction: str, source_text: str, lookup: dict) 
 
     lines = [
         f"Слово: {source_text}",
-        f"Направление: {'RU -> DE' if direction == 'ru-de' else 'DE -> RU'}",
+        f"Направление: {source_lang.upper()} -> {target_lang.upper()}",
         f"Перевод: {translation or '—'}",
         f"Часть речи: {part_of_speech or '—'}",
     ]
@@ -1855,13 +1915,23 @@ def _build_dictionary_card_text(direction: str, source_text: str, lookup: dict) 
     return "\n".join(lines)
 
 
-def _store_pending_dictionary_card(user_id: int, direction: str, source_text: str, lookup: dict, original_query: str = "") -> str:
+def _store_pending_dictionary_card(
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+    lookup: dict,
+    original_query: str = "",
+) -> str:
+    direction = f"{source_lang}-{target_lang}"
     key = hashlib.sha1(
         f"{user_id}:{direction}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
     ).hexdigest()[:20]
     pending_dictionary_cards[key] = {
         "user_id": user_id,
         "direction": direction,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
         "source_text": source_text,
         "lookup": lookup,
         "original_query": (original_query or source_text or "").strip(),
@@ -1873,7 +1943,15 @@ def _store_pending_dictionary_card(user_id: int, direction: str, source_text: st
     return key
 
 
-def _store_pending_dictionary_save_options(user_id: int, card_key: str, options: list[dict], lookup: dict, direction: str) -> str:
+def _store_pending_dictionary_save_options(
+    user_id: int,
+    card_key: str,
+    options: list[dict],
+    lookup: dict,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    direction = f"{source_lang}-{target_lang}"
     key = hashlib.sha1(
         f"{user_id}:{card_key}:{datetime.utcnow().isoformat()}".encode("utf-8")
     ).hexdigest()[:20]
@@ -1881,6 +1959,8 @@ def _store_pending_dictionary_save_options(user_id: int, card_key: str, options:
         "user_id": user_id,
         "card_key": card_key,
         "direction": direction,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
         "lookup": lookup,
         "options": options[:3],
         "selected": [],
@@ -1893,14 +1973,9 @@ def _store_pending_dictionary_save_options(user_id: int, card_key: str, options:
 
 def _resolve_default_dictionary_option(payload: dict) -> dict:
     lookup = payload.get("lookup") or {}
-    direction = payload.get("direction")
-    source_text = (payload.get("source_text") or "").strip()
-    if direction == "ru-de":
-        source = (lookup.get("word_ru") or source_text).strip()
-        target = (lookup.get("translation_de") or "").strip()
-    else:
-        source = (lookup.get("word_de") or source_text).strip()
-        target = (lookup.get("translation_ru") or "").strip()
+    source_text = (payload.get("source_text") or lookup.get("word_source") or "").strip()
+    source = (lookup.get("word_source") or source_text).strip()
+    target = (lookup.get("word_target") or "").strip()
     return {"source": source, "target": target}
 
 
@@ -1915,32 +1990,37 @@ def _build_save_variant_keyboard(option_key: str, options: list[dict], selected:
     return InlineKeyboardMarkup(rows)
 
 
-def _build_save_variants_text(direction: str, options: list[dict]) -> str:
+def _build_save_variants_text(source_lang: str, target_lang: str, options: list[dict]) -> str:
     lines = ["Варианты для сохранения (с переводом):", ""]
     for idx, opt in enumerate(options[:3], start=1):
         source = (opt.get("source") or "").strip() or "—"
         target = (opt.get("target") or "").strip() or "—"
-        suffix = " (оригинальный запрос)" if bool(opt.get("is_original")) else ""
-        if direction == "ru-de":
-            de_text = target
-            ru_text = source
-        else:
-            de_text = source
-            ru_text = target
-        lines.append(f"{idx}. DE: {de_text}{suffix}")
-        lines.append(f"   RU: {ru_text}")
+        lines.append(f"{idx}. {source_lang.upper()}: {source}")
+        lines.append(f"   {target_lang.upper()}: {target}")
         lines.append("")
     return "\n".join(lines)
 
 
 async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
     lookup = payload.get("lookup") or {}
-    direction = (payload.get("direction") or "").strip()
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    if (not source_lang or not target_lang) and "-" in str(payload.get("direction") or ""):
+        source_lang, target_lang = [x.strip().lower() for x in str(payload.get("direction")).split("-", 1)]
     source_text = (payload.get("source_text") or "").strip()
     default_option = _resolve_default_dictionary_option(payload)
     base_translation = (default_option.get("target") or "").strip()
 
-    generated = await run_dictionary_collocations(direction, source_text, base_translation)
+    direction = f"{source_lang}-{target_lang}"
+    if direction in {"ru-de", "de-ru"}:
+        generated = await run_dictionary_collocations(direction, source_text, base_translation)
+    else:
+        generated = await run_dictionary_collocations_multilang(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            word_source=source_text,
+            word_target=base_translation,
+        )
     items = generated.get("items") if isinstance(generated, dict) else []
 
     unique: set[tuple[str, str]] = set()
@@ -1967,58 +2047,80 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            _add_option(item.get("source") or "", item.get("target") or "", is_original=False)
+            _add_option(
+                item.get("source") or item.get("word_source") or "",
+                item.get("target") or item.get("word_target") or "",
+                is_original=False,
+            )
             if len(options) >= 3:
                 break
 
     return options[:3]
 
 
-async def _handle_private_dictionary_lookup(update: Update, context: CallbackContext, text: str) -> None:
-    direction = _detect_dictionary_direction(text)
+async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, target_lang: str) -> dict:
+    source_lang = (source_lang or "").strip().lower()
+    target_lang = (target_lang or "").strip().lower()
+    direction = f"{source_lang}-{target_lang}"
+    if direction == "ru-de":
+        raw = await run_dictionary_lookup(lookup_input)
+        return {
+            **(raw if isinstance(raw, dict) else {}),
+            "word_source": str((raw or {}).get("word_ru") or lookup_input).strip(),
+            "word_target": str((raw or {}).get("translation_de") or "").strip(),
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+        }
+    if direction == "de-ru":
+        raw = await run_dictionary_lookup_de(lookup_input)
+        return {
+            **(raw if isinstance(raw, dict) else {}),
+            "word_source": str((raw or {}).get("word_de") or lookup_input).strip(),
+            "word_target": str((raw or {}).get("translation_ru") or "").strip(),
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+        }
+    raw = await run_dictionary_lookup_multilang(
+        word=lookup_input,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        **raw,
+        "word_source": str(raw.get("word_source") or lookup_input).strip(),
+        "word_target": str(raw.get("word_target") or "").strip(),
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+    }
 
-    lookup_input = text.strip()
+
+async def _send_dictionary_lookup_result(
+    message,
+    context: CallbackContext,
+    user_id: int,
+    lookup_input: str,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    lookup_input = (lookup_input or "").strip()
     try:
-        if direction == "ru-de":
-            lookup = await run_dictionary_lookup(lookup_input)
-        elif direction == "de-ru":
-            latin_source = await _detect_latin_source_language(lookup_input)
-            if latin_source == "de":
-                lookup = await run_dictionary_lookup_de(lookup_input)
-                direction = "de-ru"
-            else:
-                raw = await run_dictionary_lookup_multilang(
-                    word=lookup_input,
-                    source_lang=latin_source,
-                    target_lang="ru",
-                )
-                lookup = {
-                    "word_de": (raw.get("word_source") or lookup_input),
-                    "translation_ru": (raw.get("word_target") or ""),
-                    "word_ru": (raw.get("word_target") or ""),
-                    "translation_de": (raw.get("word_source") or lookup_input),
-                    "part_of_speech": raw.get("part_of_speech"),
-                    "raw_text": raw.get("raw_text"),
-                }
-                direction = "de-ru"
-        else:
-            await update.message.reply_text(
-                "Не удалось определить язык. Отправьте слово только на русском или только на латинице."
-            )
-            return
+        lookup = await _run_dictionary_lookup_for_pair(lookup_input, source_lang, target_lang)
     except Exception as exc:
         logging.exception(f"❌ Ошибка словарного поиска для '{lookup_input}': {exc}")
-        await update.message.reply_text("Не удалось получить перевод. Попробуйте снова через несколько секунд.")
+        await message.reply_text("Не удалось получить перевод. Попробуйте снова через несколько секунд.")
         return
 
     if not isinstance(lookup, dict):
-        await update.message.reply_text("Не удалось разобрать ответ словаря. Попробуйте ещё раз.")
+        await message.reply_text("Не удалось разобрать ответ словаря. Попробуйте ещё раз.")
         return
 
-    source_text = (lookup.get("word_ru") or lookup.get("word_de") or lookup_input).strip()
+    source_text = (lookup.get("word_source") or lookup_input).strip()
     card_key = _store_pending_dictionary_card(
-        update.message.from_user.id,
-        direction,
+        user_id,
+        source_lang,
+        target_lang,
         source_text,
         lookup,
         original_query=lookup_input,
@@ -2027,7 +2129,8 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
     try:
         options = await _generate_dictionary_save_options(
             {
-                "direction": direction,
+                "source_lang": source_lang,
+                "target_lang": target_lang,
                 "source_text": source_text,
                 "lookup": lookup,
                 "original_query": lookup_input,
@@ -2038,22 +2141,93 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
         options = []
 
     if not options:
-        options = [_resolve_default_dictionary_option({"direction": direction, "source_text": source_text, "lookup": lookup})]
+        options = [_resolve_default_dictionary_option({"source_text": source_text, "lookup": lookup})]
 
     option_key = _store_pending_dictionary_save_options(
-        user_id=int(update.message.from_user.id),
+        user_id=int(user_id),
         card_key=card_key,
         options=options,
         lookup=lookup,
-        direction=direction,
+        source_lang=source_lang,
+        target_lang=target_lang,
     )
 
-    card_text = _build_dictionary_card_text(direction, source_text, lookup)
-    variants_text = _build_save_variants_text(direction, options)
+    card_text = _build_dictionary_card_text(source_lang, target_lang, source_text, lookup)
+    variants_text = _build_save_variants_text(source_lang, target_lang, options)
     full_text = f"{card_text}\n\n{variants_text}"
     keyboard = _build_save_variant_keyboard(option_key, options, selected=[])
-    msg = await update.message.reply_text(full_text, reply_markup=keyboard)
+    msg = await message.reply_text(full_text, reply_markup=keyboard)
     add_service_msg_id(context, msg.message_id)
+
+
+async def _handle_private_dictionary_lookup(update: Update, context: CallbackContext, text: str) -> None:
+    if not update.message or not update.message.from_user:
+        return
+    lookup_input = (text or "").strip()
+    if not lookup_input:
+        await update.message.reply_text("Пустой запрос. Отправьте слово или короткую фразу.")
+        return
+    request_key = _store_pending_dictionary_lookup_request(int(update.message.from_user.id), lookup_input)
+    keyboard = _build_dictionary_pair_keyboard(request_key)
+    msg = await update.message.reply_text(
+        _build_dictionary_pair_selection_text(lookup_input),
+        reply_markup=keyboard,
+    )
+    add_service_msg_id(context, msg.message_id)
+
+
+async def handle_dictionary_pair_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    if not query.message:
+        await query.answer("Сообщение недоступно. Отправьте запрос снова.", show_alert=True)
+        return
+
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) != 3:
+        await query.answer("Неверный формат языковой пары.", show_alert=True)
+        return
+    request_key = parts[1].strip()
+    pair = parts[2].strip().lower()
+    if "-" not in pair:
+        await query.answer("Неверный формат языковой пары.", show_alert=True)
+        return
+    source_lang, target_lang = [chunk.strip() for chunk in pair.split("-", 1)]
+    if (source_lang, target_lang) not in _dictionary_language_pairs():
+        await query.answer("Эта языковая пара не поддерживается.", show_alert=True)
+        return
+
+    payload = pending_dictionary_lookup_requests.get(request_key)
+    if not payload:
+        await query.answer("Запрос устарел. Отправьте слово ещё раз.", show_alert=True)
+        return
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Выбор доступен только автору запроса.", show_alert=True)
+        return
+
+    lookup_input = str(payload.get("text") or "").strip()
+    if not lookup_input:
+        await query.answer("Запрос пустой. Отправьте слово снова.", show_alert=True)
+        return
+
+    await query.answer(f"Перевожу ({source_lang.upper()} -> {target_lang.upper()})")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    await _send_dictionary_lookup_result(
+        message=query.message,
+        context=context,
+        user_id=int(user.id),
+        lookup_input=lookup_input,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    pending_dictionary_lookup_requests.pop(request_key, None)
 
 
 async def handle_dictionary_save_callback(update: Update, context: CallbackContext) -> None:
@@ -2091,14 +2265,20 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
         await query.answer("Ошибка подготовки вариантов. Попробуйте позже.", show_alert=True)
         return
 
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    if (not source_lang or not target_lang) and "-" in str(payload.get("direction") or ""):
+        source_lang, target_lang = [x.strip().lower() for x in str(payload.get("direction")).split("-", 1)]
+
     option_key = _store_pending_dictionary_save_options(
         user_id=int(user.id),
         card_key=key,
         options=options,
         lookup=lookup,
-        direction=payload.get("direction") or "",
+        source_lang=source_lang,
+        target_lang=target_lang,
     )
-    variants_text = _build_save_variants_text(payload.get("direction") or "", options)
+    variants_text = _build_save_variants_text(source_lang, target_lang, options)
     keyboard = _build_save_variant_keyboard(option_key, options, selected=[])
     try:
         await query.edit_message_reply_markup(reply_markup=None)
@@ -2166,27 +2346,29 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
 def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) -> tuple[bool, str]:
     source = (chosen.get("source") or "").strip()
     target = (chosen.get("target") or "").strip()
-    direction = (payload.get("direction") or "").strip()
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    if (not source_lang or not target_lang) and "-" in str(payload.get("direction") or ""):
+        source_lang, target_lang = [x.strip().lower() for x in str(payload.get("direction")).split("-", 1)]
     lookup = payload.get("lookup") or {}
 
     if not source or not target:
         return False, "Вариант неполный, выберите другой."
 
     response_json = dict(lookup) if isinstance(lookup, dict) else {}
-    if direction == "ru-de":
-        response_json["word_ru"] = source
-        response_json["translation_de"] = target
-        word_ru = source
-        word_de = (response_json.get("word_de") or "").strip() or None
-        translation_de = target
-        translation_ru = (response_json.get("translation_ru") or "").strip() or None
-    else:
-        response_json["word_de"] = source
-        response_json["translation_ru"] = target
-        word_ru = (response_json.get("word_ru") or "").strip() or None
-        word_de = source
-        translation_de = (response_json.get("translation_de") or "").strip() or None
-        translation_ru = target
+    response_json["word_source"] = source
+    response_json["word_target"] = target
+    response_json["source_lang"] = source_lang
+    response_json["target_lang"] = target_lang
+    response_json["language_pair"] = {
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+    }
+
+    word_ru = source if source_lang == "ru" else (response_json.get("word_ru") or "").strip() or None
+    word_de = source if source_lang == "de" else (response_json.get("word_de") or "").strip() or None
+    translation_de = target if target_lang == "de" else (response_json.get("translation_de") or "").strip() or None
+    translation_ru = target if target_lang == "ru" else (response_json.get("translation_ru") or "").strip() or None
 
     try:
         try:
@@ -2208,6 +2390,8 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
             translation_ru=translation_ru,
             response_json=response_json,
             folder_id=int(folder_id) if folder_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
     except Exception as exc:
         logging.exception(f"❌ Ошибка сохранения выбранного варианта user_id={user_id}: {exc}")
@@ -5869,6 +6053,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_explain_request, pattern=r"^explain:"))
     application.add_handler(CallbackQueryHandler(handle_pending_access_list, pattern=r"^access:pending:list$"))
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_pair_callback, pattern=r"^dictpair:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_toggle_callback, pattern=r"^dictseltoggle:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_all_callback, pattern=r"^dictselall:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_confirm_callback, pattern=r"^dictsaveconfirm:"))
