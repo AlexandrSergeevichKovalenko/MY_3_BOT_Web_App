@@ -1169,12 +1169,19 @@ Return a STRICT JSON object with the following fields:
 word_ru: string (original input or adjusted collocation when needed)
 part_of_speech: string (noun/verb/adjective/adverb/phrase/other)
 translation_de: string
+translations: array of 1-4 objects with keys value, context, is_primary
 article: string or null (der/die/das only if noun)
 forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2 (use null if not applicable)
 prefixes: array of objects with keys variant, translation_de, explanation, example_de
   (include common prefix variants if applicable; provide ONE example sentence per variant)
-usage_examples: array of strings with 2-3 German example sentences for the base word/phrase.
+pronunciation: object with keys ipa, stress, audio_text
+usage_examples: array of 2-3 objects with keys source, target
+  source: example in German
+  target: translation of the same example into Russian
 If none are known, create natural examples.
+Card style requirement:
+- Professional but compact: no long theory, no academic paragraphs.
+- Prefer everyday vocabulary and clear contexts.
 Respond ONLY with JSON, no markdown, no extra text.
 """,
 "dictionary_assistant_de": """
@@ -1183,10 +1190,17 @@ Return a STRICT JSON object with the following fields:
 word_de: string (original German input)
 part_of_speech: string (noun/verb/adjective/adverb/phrase/other)
 translation_ru: string (natural Russian translation)
+translations: array of 1-4 objects with keys value, context, is_primary
 article: string or null (der/die/das only if noun)
 forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2 (use null if not applicable)
-usage_examples: array of strings with 2-3 German example sentences for the base word/phrase.
+pronunciation: object with keys ipa, stress, audio_text
+usage_examples: array of 2-3 objects with keys source, target
+  source: example in German
+  target: translation of the same example into Russian
 If none are known, create natural examples.
+Card style requirement:
+- Professional but compact: no long theory, no academic paragraphs.
+- Prefer everyday vocabulary and clear contexts.
 Respond ONLY with JSON, no markdown, no extra text.
 """,
 "dictionary_collocations": """
@@ -1253,8 +1267,16 @@ Return STRICT JSON with keys:
   "detected_language": "source" | "target",
   "word_source": "<normalized word/phrase in source_language>",
   "word_target": "<normalized word/phrase in target_language>",
+  "translations": [
+    {"value": "...", "context": "...", "is_primary": true}
+  ],
   "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
-  "article": "<der|die|das|null>",
+  "article": "<language-appropriate article or null>",
+  "pronunciation": {
+    "ipa": "string|null",
+    "stress": "string|null",
+    "audio_text": "string|null"
+  },
   "forms": {
     "plural": string|null,
     "praeteritum": string|null,
@@ -1262,13 +1284,21 @@ Return STRICT JSON with keys:
     "konjunktiv1": string|null,
     "konjunktiv2": string|null
   },
-  "usage_examples": ["...", "..."],
+  "usage_examples": [
+    {"source": "...", "target": "..."},
+    {"source": "...", "target": "..."}
+  ],
   "raw_text": "<optional short note>"
 }
 
 Rules:
 - Output ONLY JSON.
-- Keep examples short and natural.
+- Provide 2-3 short natural examples in source language and translate each to target language.
+- Provide 1-4 translation variants in "translations":
+  - first item must be the default/most frequent meaning (is_primary=true),
+  - others are context alternatives (is_primary=false).
+- If target language uses articles with nouns (e.g., de/es/it/en), include article for noun when possible.
+- Keep the card professional but compact: no long essays.
 - If data is unknown, use nulls or empty arrays.
 """,
 "translate_subtitles_ru": """
@@ -2206,7 +2236,9 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
             "word_ru": word_ru,
             "part_of_speech": "other",
             "translation_de": "",
+            "translations": [],
             "article": None,
+            "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
             "forms": {
                 "plural": None,
                 "praeteritum": None,
@@ -2264,7 +2296,9 @@ async def run_dictionary_lookup_de(word_de: str) -> dict:
             "word_de": word_de,
             "part_of_speech": "other",
             "translation_ru": "",
+            "translations": [],
             "article": None,
+            "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
             "forms": {
                 "plural": None,
                 "praeteritum": None,
@@ -2340,8 +2374,10 @@ async def run_dictionary_lookup_multilang(
         "detected_language": "source",
         "word_source": word,
         "word_target": "",
+        "translations": [],
         "part_of_speech": "other",
         "article": None,
+        "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
         "forms": {
             "plural": None,
             "praeteritum": None,

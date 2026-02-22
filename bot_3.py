@@ -24,6 +24,7 @@ import random
 import requests
 import aiohttp
 from telegram.ext import CallbackContext
+import textwrap
 from googleapiclient.discovery import build
 from telegram.error import TelegramError
 from telegram.helpers import escape_markdown
@@ -109,6 +110,7 @@ SYSTEM_MESSAGE_CLEANUP_HOUR = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "
 SYSTEM_MESSAGE_CLEANUP_MINUTE = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MINUTE") or "59").strip())
 SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK") or "2").strip())
 ENABLE_LEGACY_REPLY_KEYBOARD = (os.getenv("ENABLE_LEGACY_REPLY_KEYBOARD") or "0").strip().lower() in {"1", "true", "yes", "on"}
+DICTIONARY_CARD_THEME = (os.getenv("DICTIONARY_CARD_THEME") or "classic").strip().lower()
 
 
 # === Логирование ===
@@ -1728,14 +1730,14 @@ def _is_dictionary_lookup_candidate(text: str) -> bool:
 
 def _dictionary_language_pairs() -> list[tuple[str, str]]:
     return [
+        ("ru", "en"),
+        ("en", "ru"),
         ("ru", "de"),
         ("de", "ru"),
-        ("en", "ru"),
-        ("ru", "en"),
-        ("it", "ru"),
-        ("ru", "it"),
-        ("es", "ru"),
         ("ru", "es"),
+        ("es", "ru"),
+        ("ru", "it"),
+        ("it", "ru"),
     ]
 
 
@@ -1875,19 +1877,33 @@ def _format_examples_block(examples: list | None) -> list[str]:
         return []
     result = []
     for idx, ex in enumerate(examples[:3], start=1):
-        if not isinstance(ex, str):
-            continue
-        cleaned = ex.strip()
-        if cleaned:
-            result.append(f"{idx}. {cleaned}")
+        if isinstance(ex, dict):
+            source = str(ex.get("source") or "").strip()
+            target = str(ex.get("target") or "").strip()
+            if source and target:
+                result.append(f"{idx}. {source}")
+                result.append(f"   ↳ {target}")
+                continue
+            cleaned_obj = str(ex.get("text") or source or target).strip()
+            if cleaned_obj:
+                result.append(f"{idx}. {cleaned_obj}")
+                continue
+        elif isinstance(ex, str):
+            cleaned = ex.strip()
+            if cleaned:
+                result.append(f"{idx}. {cleaned}")
     return result
 
 
 def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text: str, lookup: dict) -> str:
     source_text = source_text.strip()
     translation = (lookup.get("word_target") or "").strip()
+    variants = lookup.get("translations") if isinstance(lookup.get("translations"), list) else []
     part_of_speech = (lookup.get("part_of_speech") or "").strip()
     article = (lookup.get("article") or "").strip()
+    pronunciation = lookup.get("pronunciation") if isinstance(lookup.get("pronunciation"), dict) else {}
+    ipa = str(pronunciation.get("ipa") or "").strip()
+    stress = str(pronunciation.get("stress") or "").strip()
     forms = _format_forms_block(lookup.get("forms"))
     prefixes = _format_prefixes_block(lookup.get("prefixes"))
     examples = _format_examples_block(lookup.get("usage_examples"))
@@ -1900,6 +1916,28 @@ def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text:
     ]
     if article:
         lines.append(f"Артикль: {article}")
+    if ipa or stress:
+        lines.append(f"Произношение: {ipa or '—'}{f' | ударение: {stress}' if stress else ''}")
+    if variants:
+        lines.append("")
+        lines.append("Варианты перевода:")
+        seen: set[str] = set()
+        idx = 1
+        for item in variants:
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get("value") or "").strip()
+            if not value:
+                continue
+            key = value.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            context = str(item.get("context") or "").strip()
+            lines.append(f"- {idx}) {value}{f' — {context}' if context else ''}")
+            idx += 1
+            if idx > 4:
+                break
     if forms:
         lines.append("")
         lines.append("Формы:")
@@ -2001,6 +2039,142 @@ def _build_save_variants_text(source_lang: str, target_lang: str, options: list[
     return "\n".join(lines)
 
 
+def _render_dictionary_card_png(
+    source_lang: str,
+    target_lang: str,
+    card_text: str,
+    variants_text: str,
+) -> str | None:
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        return None
+
+    try:
+        base_dir = Path(__file__).resolve().parent
+        font_regular_path = base_dir / "backend" / "assets" / "fonts" / "DejaVuSans.ttf"
+        font_bold_path = base_dir / "backend" / "assets" / "fonts" / "DejaVuSans-Bold.ttf"
+
+        def _font(size: int, bold: bool = False):
+            candidate = font_bold_path if bold else font_regular_path
+            if candidate.exists():
+                try:
+                    return ImageFont.truetype(str(candidate), size=size)
+                except Exception:
+                    pass
+            return ImageFont.load_default()
+
+        title_font = _font(46, bold=True)
+        section_font = _font(31, bold=True)
+        body_font = _font(27, bold=False)
+        small_font = _font(24, bold=False)
+
+        theme = DICTIONARY_CARD_THEME if DICTIONARY_CARD_THEME in {"classic", "minimal"} else "classic"
+        width = 1080
+        outer_pad = 34
+        inner_pad = 42
+        panel_width = width - (outer_pad * 2)
+        max_text_width = panel_width - (inner_pad * 2)
+
+        lines: list[tuple[str, str]] = []
+        lines.append((f"Dictionary Card {source_lang.upper()} -> {target_lang.upper()}", "title"))
+
+        combined_sections = [("Карточка", card_text), ("Варианты сохранения", variants_text)]
+        for header, body in combined_sections:
+            lines.append((header, "section"))
+            for raw in str(body or "").splitlines():
+                cleaned = raw.rstrip()
+                if not cleaned:
+                    lines.append(("", "spacer"))
+                    continue
+                wrap_width = 56 if len(cleaned) > 40 else 70
+                wrapped = textwrap.wrap(cleaned, width=wrap_width, break_long_words=False, break_on_hyphens=False)
+                if not wrapped:
+                    lines.append((cleaned, "body"))
+                    continue
+                for piece in wrapped:
+                    style = "small" if piece.startswith("↳") else "body"
+                    lines.append((piece, style))
+
+        line_heights = {
+            "title": 58,
+            "section": 44,
+            "body": 36,
+            "small": 32,
+            "spacer": 18,
+        }
+        content_height = sum(line_heights.get(style, 34) for _, style in lines)
+        panel_height = content_height + (inner_pad * 2) + 10
+        height = panel_height + (outer_pad * 2)
+
+        if theme == "minimal":
+            bg_top = (244, 247, 252)
+            bg_bottom = (232, 238, 248)
+            panel_fill = (255, 255, 255)
+            panel_outline = (186, 202, 226)
+            title_color = (32, 51, 82)
+            section_color = (55, 95, 147)
+            body_color = (28, 36, 52)
+            small_color = (60, 72, 95)
+        else:
+            bg_top = (10, 22, 62)
+            bg_bottom = (8, 16, 45)
+            panel_fill = (17, 31, 77)
+            panel_outline = (82, 118, 203)
+            title_color = (255, 224, 120)
+            section_color = (125, 200, 255)
+            body_color = (245, 248, 255)
+            small_color = (220, 232, 255)
+
+        image = Image.new("RGB", (width, height), color=bg_bottom)
+        draw = ImageDraw.Draw(image)
+
+        # Subtle background bands
+        draw.rectangle([(0, 0), (width, int(height * 0.42))], fill=bg_top)
+        draw.rectangle([(0, int(height * 0.42)), (width, height)], fill=bg_bottom)
+
+        panel_x0 = outer_pad
+        panel_y0 = outer_pad
+        panel_x1 = width - outer_pad
+        panel_y1 = height - outer_pad
+        draw.rounded_rectangle(
+            [(panel_x0, panel_y0), (panel_x1, panel_y1)],
+            radius=30,
+            fill=panel_fill,
+            outline=panel_outline,
+            width=3,
+        )
+
+        y = panel_y0 + inner_pad
+        x = panel_x0 + inner_pad
+        for text, style in lines:
+            if style == "spacer":
+                y += line_heights["spacer"]
+                continue
+            if style == "title":
+                color = title_color
+                font = title_font
+            elif style == "section":
+                color = section_color
+                font = section_font
+            elif style == "small":
+                color = small_color
+                font = small_font
+            else:
+                color = body_color
+                font = body_font
+
+            draw.text((x, y), text, fill=color, font=font)
+            y += line_heights.get(style, 34)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            image.save(tmp.name, format="PNG", optimize=True)
+            return tmp.name
+    except Exception:
+        logging.debug("Dictionary PNG card render failed", exc_info=True)
+        return None
+
+
 async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
     lookup = payload.get("lookup") or {}
     source_lang = str(payload.get("source_lang") or "").strip().lower()
@@ -2064,19 +2238,33 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
     direction = f"{source_lang}-{target_lang}"
     if direction == "ru-de":
         raw = await run_dictionary_lookup(lookup_input)
+        translations = raw.get("translations") if isinstance(raw, dict) else []
+        if not isinstance(translations, list):
+            translations = []
+        target_value = str((raw or {}).get("translation_de") or "").strip()
+        if target_value and not translations:
+            translations = [{"value": target_value, "context": "base", "is_primary": True}]
         return {
             **(raw if isinstance(raw, dict) else {}),
             "word_source": str((raw or {}).get("word_ru") or lookup_input).strip(),
-            "word_target": str((raw or {}).get("translation_de") or "").strip(),
+            "word_target": target_value,
+            "translations": translations,
             "source_lang": source_lang,
             "target_lang": target_lang,
         }
     if direction == "de-ru":
         raw = await run_dictionary_lookup_de(lookup_input)
+        translations = raw.get("translations") if isinstance(raw, dict) else []
+        if not isinstance(translations, list):
+            translations = []
+        target_value = str((raw or {}).get("translation_ru") or "").strip()
+        if target_value and not translations:
+            translations = [{"value": target_value, "context": "base", "is_primary": True}]
         return {
             **(raw if isinstance(raw, dict) else {}),
             "word_source": str((raw or {}).get("word_de") or lookup_input).strip(),
-            "word_target": str((raw or {}).get("translation_ru") or "").strip(),
+            "word_target": target_value,
+            "translations": translations,
             "source_lang": source_lang,
             "target_lang": target_lang,
         }
@@ -2091,9 +2279,77 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
         **raw,
         "word_source": str(raw.get("word_source") or lookup_input).strip(),
         "word_target": str(raw.get("word_target") or "").strip(),
+        "translations": (
+            raw.get("translations")
+            if isinstance(raw.get("translations"), list)
+            else (
+                [{"value": str(raw.get("word_target") or "").strip(), "context": "base", "is_primary": True}]
+                if str(raw.get("word_target") or "").strip()
+                else []
+            )
+        ),
         "source_lang": source_lang,
         "target_lang": target_lang,
     }
+
+
+def _lookup_tts_lang(lang_code: str) -> str:
+    mapping = {
+        "de": "de-DE",
+        "ru": "ru-RU",
+        "en": "en-US",
+        "es": "es-ES",
+        "it": "it-IT",
+    }
+    return mapping.get((lang_code or "").strip().lower(), "en-US")
+
+
+def _should_send_lookup_audio(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    words = [w for w in re.split(r"\s+", cleaned) if w]
+    return len(words) <= 6 and len(cleaned) <= 80
+
+
+async def _send_lookup_pronunciation_audio(
+    message,
+    context: CallbackContext,
+    text: str,
+    lang_code: str,
+) -> None:
+    if not _should_send_lookup_audio(text):
+        return
+    try:
+        tts_client = texttospeech.TextToSpeechClient()
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+        voice = texttospeech.VoiceSelectionParams(
+            language_code=_lookup_tts_lang(lang_code),
+            ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL,
+        )
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=0.95,
+        )
+        response = await asyncio.to_thread(
+            tts_client.synthesize_speech,
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config,
+        )
+        audio_content = response.audio_content if response else b""
+        if not audio_content:
+            return
+        bio = io.BytesIO(audio_content)
+        bio.name = f"pronunciation_{lang_code or 'audio'}.mp3"
+        msg = await message.reply_audio(
+            audio=bio,
+            title=f"Произношение ({str(lang_code or '').upper()})",
+            caption=f"🔊 {text}",
+        )
+        add_service_msg_id(context, msg.message_id)
+    except Exception as exc:
+        logging.debug("Failed to send lookup pronunciation audio: %s", exc, exc_info=True)
 
 
 async def _send_dictionary_lookup_result(
@@ -2156,8 +2412,44 @@ async def _send_dictionary_lookup_result(
     variants_text = _build_save_variants_text(source_lang, target_lang, options)
     full_text = f"{card_text}\n\n{variants_text}"
     keyboard = _build_save_variant_keyboard(option_key, options, selected=[])
-    msg = await message.reply_text(full_text, reply_markup=keyboard)
-    add_service_msg_id(context, msg.message_id)
+    image_path = _render_dictionary_card_png(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        card_text=card_text,
+        variants_text=variants_text,
+    )
+    if image_path:
+        try:
+            with open(image_path, "rb") as photo:
+                msg = await message.reply_photo(
+                    photo=photo,
+                    caption="Выберите варианты для сохранения:",
+                    reply_markup=keyboard,
+                )
+            add_service_msg_id(context, msg.message_id)
+        except Exception:
+            logging.debug("Failed to send dictionary PNG card, fallback to text", exc_info=True)
+            msg = await message.reply_text(full_text, reply_markup=keyboard)
+            add_service_msg_id(context, msg.message_id)
+        finally:
+            try:
+                Path(image_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+    else:
+        msg = await message.reply_text(full_text, reply_markup=keyboard)
+        add_service_msg_id(context, msg.message_id)
+    pronunciation_text = str(
+        (lookup.get("pronunciation") or {}).get("audio_text")
+        if isinstance(lookup.get("pronunciation"), dict)
+        else ""
+    ).strip() or source_text
+    await _send_lookup_pronunciation_audio(
+        message=message,
+        context=context,
+        text=pronunciation_text,
+        lang_code=source_lang,
+    )
 
 
 async def _handle_private_dictionary_lookup(update: Update, context: CallbackContext, text: str) -> None:
@@ -5590,7 +5882,14 @@ def _short_ru_prompt(word_ru: str) -> str | None:
 def _build_anagram_question(word_ru: str, correct_word: str, response_json: dict) -> str:
     usage_examples = response_json.get("usage_examples") if response_json else []
     if usage_examples:
-        example = next((ex for ex in usage_examples if isinstance(ex, str)), "")
+        example = next(
+            (
+                ex if isinstance(ex, str) else str(ex.get("source") or ex.get("text") or "").strip()
+                for ex in usage_examples
+                if (isinstance(ex, str) and ex.strip()) or (isinstance(ex, dict) and (ex.get("source") or ex.get("text")))
+            ),
+            "",
+        )
         if example:
             pattern = re.compile(rf"\\b{re.escape(correct_word)}\\b", re.IGNORECASE)
             scrambled = _scramble_word_preserve_ends(correct_word) or correct_word
@@ -5698,7 +5997,15 @@ async def generate_word_order_quiz(entry: dict) -> dict | None:
     word_ru = (entry.get("word_ru") or "").strip()
     response_json = _coerce_response_json(entry.get("response_json"))
     usage_examples = response_json.get("usage_examples") if response_json else []
-    usage_examples = [ex for ex in usage_examples if isinstance(ex, str) and ex.strip()]
+    usage_examples = [
+        ex.strip()
+        for ex in usage_examples
+        if isinstance(ex, str) and ex.strip()
+    ] + [
+        str(ex.get("source") or ex.get("text") or "").strip()
+        for ex in usage_examples
+        if isinstance(ex, dict) and str(ex.get("source") or ex.get("text") or "").strip()
+    ]
     if not usage_examples:
         return None
 

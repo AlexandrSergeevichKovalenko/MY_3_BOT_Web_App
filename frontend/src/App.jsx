@@ -1593,6 +1593,7 @@ function AppInner() {
     }
     return selectedSections.has(key);
   };
+  const youtubeSectionVisible = isSectionVisible('youtube');
 
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
   const readerHasContent = Boolean(String(readerContent || '').trim());
@@ -5469,6 +5470,13 @@ function AppInner() {
       }
       return;
     }
+    if (!youtubeSectionVisible) {
+      if (youtubeTimeIntervalRef.current) {
+        clearInterval(youtubeTimeIntervalRef.current);
+        youtubeTimeIntervalRef.current = null;
+      }
+      return;
+    }
 
     const ensureApiReady = () => new Promise((resolve) => {
       if (window.YT && window.YT.Player) {
@@ -5554,7 +5562,7 @@ function AppInner() {
         youtubeTimeIntervalRef.current = null;
       }
     };
-  }, [youtubeId]);
+  }, [youtubeId, youtubeSectionVisible]);
 
   useEffect(() => {
     if (youtubeTranscript.length > 0 && youtubeSubtitlesRef.current) {
@@ -5624,6 +5632,22 @@ function AppInner() {
       listEl.scrollTop += offset;
     }
   }, [youtubeCurrentTime, youtubeTranscript.length]);
+
+  useEffect(() => {
+    if (!youtubeSectionVisible) return;
+    if (!youtubeSubtitlesRef.current || !youtubeTranscript.length) return;
+    const raf = requestAnimationFrame(() => {
+      const listEl = youtubeSubtitlesRef.current?.querySelector('.webapp-subtitles-list');
+      const activeEl = youtubeSubtitlesRef.current?.querySelector('.webapp-subtitles-list .is-active');
+      if (listEl && activeEl) {
+        const listRect = listEl.getBoundingClientRect();
+        const activeRect = activeEl.getBoundingClientRect();
+        const offset = activeRect.top - listRect.top - listRect.height / 2 + activeRect.height / 2;
+        listEl.scrollTop += offset;
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [youtubeSectionVisible, youtubeTranscript.length, youtubeTranslationEnabled, youtubeOverlayEnabled]);
 
   useEffect(() => {
     const translationListRef = document.querySelector('.webapp-subtitles.is-translation .webapp-subtitles-list');
