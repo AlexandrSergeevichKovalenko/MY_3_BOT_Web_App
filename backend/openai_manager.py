@@ -1170,6 +1170,9 @@ word_ru: string (original input or adjusted collocation when needed)
 part_of_speech: string (noun/verb/adjective/adverb/phrase/other)
 translation_de: string
 translations: array of 1-4 objects with keys value, context, is_primary
+meanings: object with keys:
+  primary: object { value, priority, context, example_source, example_target }
+  secondary: array of up to 2 objects { value, priority, context, example_source, example_target }
 article: string or null (der/die/das only if noun)
 forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2 (use null if not applicable)
 prefixes: array of objects with keys variant, translation_de, explanation, example_de
@@ -1182,6 +1185,11 @@ If none are known, create natural examples.
 Card style requirement:
 - Professional but compact: no long theory, no academic paragraphs.
 - Prefer everyday vocabulary and clear contexts.
+- Meanings policy:
+  - Always return exactly one primary meaning and up to two secondary meanings.
+  - Rank by real usage frequency (priority: 1 for primary, then 2 and 3).
+  - For each meaning, provide one short example in German + its Russian translation.
+  - Keep examples practical and different from each other.
 Respond ONLY with JSON, no markdown, no extra text.
 """,
 "dictionary_assistant_de": """
@@ -1191,6 +1199,9 @@ word_de: string (original German input)
 part_of_speech: string (noun/verb/adjective/adverb/phrase/other)
 translation_ru: string (natural Russian translation)
 translations: array of 1-4 objects with keys value, context, is_primary
+meanings: object with keys:
+  primary: object { value, priority, context, example_source, example_target }
+  secondary: array of up to 2 objects { value, priority, context, example_source, example_target }
 article: string or null (der/die/das only if noun)
 forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2 (use null if not applicable)
 pronunciation: object with keys ipa, stress, audio_text
@@ -1201,6 +1212,11 @@ If none are known, create natural examples.
 Card style requirement:
 - Professional but compact: no long theory, no academic paragraphs.
 - Prefer everyday vocabulary and clear contexts.
+- Meanings policy:
+  - Always return exactly one primary meaning and up to two secondary meanings.
+  - Rank by real usage frequency (priority: 1 for primary, then 2 and 3).
+  - For each meaning, provide one short example in German + its Russian translation.
+  - Keep examples practical and different from each other.
 Respond ONLY with JSON, no markdown, no extra text.
 """,
 "dictionary_collocations": """
@@ -1270,6 +1286,24 @@ Return STRICT JSON with keys:
   "translations": [
     {"value": "...", "context": "...", "is_primary": true}
   ],
+  "meanings": {
+    "primary": {
+      "value": "...",
+      "priority": 1,
+      "context": "...",
+      "example_source": "...",
+      "example_target": "..."
+    },
+    "secondary": [
+      {
+        "value": "...",
+        "priority": 2,
+        "context": "...",
+        "example_source": "...",
+        "example_target": "..."
+      }
+    ]
+  },
   "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
   "article": "<language-appropriate article or null>",
   "pronunciation": {
@@ -1297,6 +1331,12 @@ Rules:
 - Provide 1-4 translation variants in "translations":
   - first item must be the default/most frequent meaning (is_primary=true),
   - others are context alternatives (is_primary=false).
+- Meanings policy:
+  - Return one primary meaning and at most two secondary meanings in "meanings".
+  - Priority must reflect frequency of use: 1 -> most common, then 2 and 3.
+  - For each meaning provide one concise example pair:
+    - example_source in source_language,
+    - example_target in target_language.
 - If target language uses articles with nouns (e.g., de/es/it/en), include article for noun when possible.
 - Keep the card professional but compact: no long essays.
 - If data is unknown, use nulls or empty arrays.
@@ -2237,6 +2277,7 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
             "part_of_speech": "other",
             "translation_de": "",
             "translations": [],
+            "meanings": {"primary": {}, "secondary": []},
             "article": None,
             "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
             "forms": {
@@ -2297,6 +2338,7 @@ async def run_dictionary_lookup_de(word_de: str) -> dict:
             "part_of_speech": "other",
             "translation_ru": "",
             "translations": [],
+            "meanings": {"primary": {}, "secondary": []},
             "article": None,
             "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
             "forms": {
@@ -2375,6 +2417,7 @@ async def run_dictionary_lookup_multilang(
         "word_source": word,
         "word_target": "",
         "translations": [],
+        "meanings": {"primary": {}, "secondary": []},
         "part_of_speech": "other",
         "article": None,
         "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
