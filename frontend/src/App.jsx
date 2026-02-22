@@ -3120,24 +3120,51 @@ function AppInner() {
           nextIndex += 1;
           const sentenceNumber = Number(sentenceNumberById.get(Number(current.id)) || 0) || null;
           try {
-            const response = await fetch('/api/message', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                initData,
-                session_id: sessionId,
-                translations: [
-                  {
-                    id_for_mistake_table: current.id,
-                    translation: current.translation,
-                  },
-                ],
-                original_text: numberedOriginal,
-                user_translation: numberedTranslations,
-              }),
-            });
+            const requestBody = {
+              initData,
+              session_id: sessionId,
+              translations: [
+                {
+                  id_for_mistake_table: current.id,
+                  translation: current.translation,
+                },
+              ],
+              original_text: numberedOriginal,
+              user_translation: numberedTranslations,
+            };
+            let response = null;
+            let lastError = null;
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+              try {
+                response = await fetch('/api/message', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(requestBody),
+                });
+                if (response.status >= 500 && attempt === 0) {
+                  await new Promise((resolve) => setTimeout(resolve, 400));
+                  continue;
+                }
+                break;
+              } catch (fetchError) {
+                lastError = fetchError;
+                if (attempt === 0) {
+                  await new Promise((resolve) => setTimeout(resolve, 400));
+                  continue;
+                }
+                throw fetchError;
+              }
+            }
+            if (!response && lastError) {
+              throw lastError;
+            }
             if (!response.ok) {
-              throw new Error(await response.text());
+              const apiMessage = await readApiError(
+                response,
+                'Не удалось проверить перевод.',
+                'Uebersetzung konnte nicht geprueft werden.'
+              );
+              throw new Error(apiMessage);
             }
             const data = await response.json();
             const resultItem = Array.isArray(data?.results) && data.results.length > 0
@@ -3148,9 +3175,14 @@ function AppInner() {
                 };
             upsertResultItem(resultItem);
           } catch (error) {
+            const friendly = normalizeNetworkErrorMessage(
+              error,
+              'Не удалось проверить перевод. Повторите позже.',
+              'Uebersetzung konnte nicht geprueft werden. Bitte spaeter erneut versuchen.'
+            );
             upsertResultItem({
               sentence_number: sentenceNumber,
-              error: `${tr('Ошибка проверки', 'Pruefungsfehler')}: ${String(error?.message || error)}`,
+              error: `${tr('Ошибка проверки', 'Pruefungsfehler')}: ${friendly}`,
             });
           } finally {
             setTranslationCheckProgress((prev) => ({
@@ -3164,7 +3196,12 @@ function AppInner() {
 
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
     } catch (error) {
-      setWebappError(`${tr('Ошибка проверки', 'Pruefungsfehler')}: ${error.message}`);
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось проверить переводы.',
+        'Uebersetzungen konnten nicht geprueft werden.'
+      );
+      setWebappError(`${tr('Ошибка проверки', 'Pruefungsfehler')}: ${friendly}`);
     } finally {
       setWebappLoading(false);
       setTranslationCheckProgress((prev) => ({ ...prev, active: false }));
