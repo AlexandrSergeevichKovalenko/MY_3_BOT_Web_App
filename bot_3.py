@@ -1719,9 +1719,8 @@ def _is_menu_button_text(text: str) -> bool:
 def _is_dictionary_lookup_candidate(text: str) -> bool:
     if not text or text.startswith("/") or len(text) > 120:
         return False
-    if any(ch.isdigit() for ch in text):
-        return False
-    if re.search(r"[^A-Za-zА-Яа-яЁёÄÖÜäöüßẞ'\-\s.,!?;:()\"]", text):
+    # Allow numbers in dictionary/phrase lookup (e.g. "Top 10", "B2 level", "5 минут").
+    if re.search(r"[^0-9A-Za-zА-Яа-яЁёÄÖÜäöüßẞ'\-\s.,!?;:()\"]", text):
         return False
     normalized = re.sub(r"[.,!?;:()\"]", " ", text)
     words = [part for part in re.split(r"\s+", normalized.strip()) if part]
