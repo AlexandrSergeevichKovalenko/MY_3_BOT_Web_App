@@ -1173,6 +1173,9 @@ translations: array of 1-4 objects with keys value, context, is_primary
 meanings: object with keys:
   primary: object { value, priority, context, example_source, example_target }
   secondary: array of up to 2 objects { value, priority, context, example_source, example_target }
+etymology_note: string (short origin note, 1 sentence, plain language) or null
+usage_note: string (where/when this word is normally used, 1 sentence) or null
+memory_tip: string (easy mnemonic/association to remember the word, 1 sentence) or null
 article: string or null (der/die/das only if noun)
 forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2 (use null if not applicable)
 prefixes: array of objects with keys variant, translation_de, explanation, example_de
@@ -1202,6 +1205,9 @@ translations: array of 1-4 objects with keys value, context, is_primary
 meanings: object with keys:
   primary: object { value, priority, context, example_source, example_target }
   secondary: array of up to 2 objects { value, priority, context, example_source, example_target }
+etymology_note: string (short origin note, 1 sentence, plain language) or null
+usage_note: string (where/when this word is normally used, 1 sentence) or null
+memory_tip: string (easy mnemonic/association to remember the word, 1 sentence) or null
 article: string or null (der/die/das only if noun)
 forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2 (use null if not applicable)
 pronunciation: object with keys ipa, stress, audio_text
@@ -1304,6 +1310,9 @@ Return STRICT JSON with keys:
       }
     ]
   },
+  "etymology_note": "string|null",
+  "usage_note": "string|null",
+  "memory_tip": "string|null",
   "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
   "article": "<language-appropriate article or null>",
   "pronunciation": {
@@ -1338,6 +1347,10 @@ Rules:
     - example_source in source_language,
     - example_target in target_language.
 - If target language uses articles with nouns (e.g., de/es/it/en), include article for noun when possible.
+- Add short learning notes:
+  - etymology_note: origin in very simple wording;
+  - usage_note: practical usage context;
+  - memory_tip: one memorable association to learn faster.
 - Keep the card professional but compact: no long essays.
 - If data is unknown, use nulls or empty arrays.
 """,
@@ -2278,6 +2291,9 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
             "translation_de": "",
             "translations": [],
             "meanings": {"primary": {}, "secondary": []},
+            "etymology_note": None,
+            "usage_note": None,
+            "memory_tip": None,
             "article": None,
             "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
             "forms": {
@@ -2339,6 +2355,9 @@ async def run_dictionary_lookup_de(word_de: str) -> dict:
             "translation_ru": "",
             "translations": [],
             "meanings": {"primary": {}, "secondary": []},
+            "etymology_note": None,
+            "usage_note": None,
+            "memory_tip": None,
             "article": None,
             "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
             "forms": {
@@ -2418,6 +2437,9 @@ async def run_dictionary_lookup_multilang(
         "word_target": "",
         "translations": [],
         "meanings": {"primary": {}, "secondary": []},
+        "etymology_note": None,
+        "usage_note": None,
+        "memory_tip": None,
         "part_of_speech": "other",
         "article": None,
         "pronunciation": {"ipa": None, "stress": None, "audio_text": None},

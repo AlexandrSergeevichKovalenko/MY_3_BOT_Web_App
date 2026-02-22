@@ -2045,31 +2045,39 @@ def _apply_article_for_display(value: str, lookup: dict, target_lang: str) -> st
     return f"{article} {text}".strip()
 
 
+def _extract_learning_notes(lookup: dict) -> dict:
+    if not isinstance(lookup, dict):
+        return {"etymology_note": "", "usage_note": "", "memory_tip": ""}
+    return {
+        "etymology_note": str(lookup.get("etymology_note") or "").strip(),
+        "usage_note": str(lookup.get("usage_note") or "").strip(),
+        "memory_tip": str(lookup.get("memory_tip") or "").strip(),
+    }
+
+
 def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text: str, lookup: dict) -> str:
     source_text = source_text.strip()
     translation = (lookup.get("word_target") or "").strip()
     meanings = _extract_lookup_meanings(lookup)
+    notes = _extract_learning_notes(lookup)
     part_of_speech = (lookup.get("part_of_speech") or "").strip()
     article = (lookup.get("article") or "").strip()
     pronunciation = lookup.get("pronunciation") if isinstance(lookup.get("pronunciation"), dict) else {}
     ipa = str(pronunciation.get("ipa") or "").strip()
     stress = str(pronunciation.get("stress") or "").strip()
     forms = _format_forms_block(lookup.get("forms"))
-    source_flag = _dictionary_lang_flag(source_lang)
-    target_flag = _dictionary_lang_flag(target_lang)
 
     lines = [
-        "🔎 Запрос",
-        f"{source_flag} {source_text}",
-        f"Направление: {source_lang.upper()} -> {target_lang.upper()}",
+        "Запрос",
+        f"{source_text}",
         "",
     ]
     if meanings:
         primary = meanings[0]
         lines.extend(
             [
-                "🎯 Основное значение",
-                f"{target_flag} {_apply_article_for_display(str(primary.get('value') or translation or '—'), lookup, target_lang)}",
+                "Основной перевод",
+                f"{_apply_article_for_display(str(primary.get('value') or translation or '—'), lookup, target_lang)}",
             ]
         )
         primary_context = str(primary.get("context") or "").strip()
@@ -2085,7 +2093,7 @@ def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text:
 
         secondary = meanings[1:3]
         if secondary:
-            lines.append("🧩 Второстепенные значения")
+            lines.append("Дополнительные значения")
             for idx, item in enumerate(secondary, start=1):
                 lines.append(f"{idx}. {_apply_article_for_display(str(item.get('value') or '—'), lookup, target_lang)}")
                 item_context = str(item.get("context") or "").strip()
@@ -2099,9 +2107,9 @@ def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text:
                     lines.append(f"   ↳ {item_target}")
                 lines.append("")
     else:
-        lines.extend(["🎯 Основное значение", f"{target_flag} {_apply_article_for_display(translation or '—', lookup, target_lang)}", ""])
+        lines.extend(["Основной перевод", f"{_apply_article_for_display(translation or '—', lookup, target_lang)}", ""])
 
-    lines.append("🗂 Грамматика и произношение")
+    lines.append("Грамматика и произношение")
     lines.append(f"Часть речи: {part_of_speech or '—'}")
     if article:
         lines.append(f"Артикль: {article}")
@@ -2111,6 +2119,17 @@ def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text:
         lines.append("")
         lines.append("Формы:")
         lines.extend(forms)
+    note_lines = []
+    if notes["etymology_note"]:
+        note_lines.append(f"Происхождение: {notes['etymology_note']}")
+    if notes["usage_note"]:
+        note_lines.append(f"Где используется: {notes['usage_note']}")
+    if notes["memory_tip"]:
+        note_lines.append(f"Фишка запоминания: {notes['memory_tip']}")
+    if note_lines:
+        lines.append("")
+        lines.append("Как запомнить")
+        lines.extend(note_lines)
     return "\n".join(lines)
 
 
@@ -2226,18 +2245,18 @@ def _render_dictionary_card_png(
                     pass
             return ImageFont.load_default()
 
-        title_font = _font(48, bold=True)
-        section_font = _font(33, bold=True)
-        body_font = _font(27, bold=False)
-        body_bold_font = _font(29, bold=True)
-        small_font = _font(23, bold=False)
+        title_font = _font(56, bold=True)
+        section_font = _font(40, bold=True)
+        body_font = _font(34, bold=False)
+        body_bold_font = _font(38, bold=True)
+        small_font = _font(30, bold=False)
 
         theme = DICTIONARY_CARD_THEME if DICTIONARY_CARD_THEME in {"classic", "minimal"} else "classic"
         width = 1080
-        outer_pad = 30
-        section_gap = 20
-        block_pad_x = 30
-        block_pad_y = 22
+        outer_pad = 34
+        section_gap = 22
+        block_pad_x = 34
+        block_pad_y = 24
         content_width = width - (outer_pad * 2)
         text_width = content_width - (block_pad_x * 2)
 
@@ -2247,15 +2266,18 @@ def _render_dictionary_card_png(
         meanings = _extract_lookup_meanings(lookup)
         primary = meanings[0] if meanings else {}
         secondary = meanings[1:3] if len(meanings) > 1 else []
+        notes = _extract_learning_notes(lookup)
         part_of_speech = str(lookup.get("part_of_speech") or "").strip() or "—"
         article = str(lookup.get("article") or "").strip()
         pronunciation = lookup.get("pronunciation") if isinstance(lookup.get("pronunciation"), dict) else {}
         ipa = str(pronunciation.get("ipa") or "").strip()
         stress = str(pronunciation.get("stress") or "").strip()
         forms = _format_forms_block(lookup.get("forms"))
-
-        source_flag = _dictionary_lang_flag(source_lang)
-        target_flag = _dictionary_lang_flag(target_lang)
+        primary_value = _apply_article_for_display(
+            str(primary.get("value") or lookup.get("word_target") or "—").strip(),
+            lookup,
+            target_lang,
+        )
 
         def _wrap(draw_ctx, text: str, font, max_width: int) -> list[str]:
             cleaned = (text or "").strip()
@@ -2279,114 +2301,122 @@ def _render_dictionary_card_png(
         blocks: list[dict] = []
         blocks.append(
             {
-                "title": "🔎 Запрос",
+                "title": "Запрос",
                 "tone": "query",
-                "rows": [
-                    ("headline", f"{source_flag} {source_text or '—'}"),
-                    ("body", f"Пара: {source_lang.upper()} -> {target_lang.upper()}"),
-                ],
+                "rows": [("headline", source_text or "—")],
             }
         )
-
-        primary_rows = [
-            (
-                "headline",
-                f"{target_flag} {_apply_article_for_display(str(primary.get('value') or lookup.get('word_target') or '—').strip(), lookup, target_lang)}",
-            ),
-        ]
+        primary_rows: list[tuple[str, str]] = [("headline", primary_value)]
         if str(primary.get("context") or "").strip():
             primary_rows.append(("muted", f"Контекст: {str(primary.get('context') or '').strip()}"))
         if str(primary.get("example_source") or "").strip():
             primary_rows.append(("body", f"Пример: {str(primary.get('example_source') or '').strip()}"))
         if str(primary.get("example_target") or "").strip():
-            primary_rows.append(("small", f"↳ {str(primary.get('example_target') or '').strip()}"))
-        blocks.append({"title": "🎯 Основное значение", "tone": "primary", "rows": primary_rows})
+            primary_rows.append(("small", f"Перевод примера: {str(primary.get('example_target') or '').strip()}"))
+        blocks.append({"title": "Основной перевод", "tone": "primary", "rows": primary_rows})
 
+        secondary_rows: list[tuple[str, str]] = []
         if secondary:
-            secondary_rows: list[tuple[str, str]] = []
             for idx, item in enumerate(secondary, start=1):
                 secondary_rows.append(
                     (
                         "headline",
-                        f"{idx}. {_apply_article_for_display(str(item.get('value') or '—').strip(), lookup, target_lang)}",
+                        f"{idx}) {_apply_article_for_display(str(item.get('value') or '—').strip(), lookup, target_lang)}",
                     )
                 )
-                if str(item.get("context") or "").strip():
-                    secondary_rows.append(("muted", f"Контекст: {str(item.get('context') or '').strip()}"))
                 if str(item.get("example_source") or "").strip():
                     secondary_rows.append(("body", f"Пример: {str(item.get('example_source') or '').strip()}"))
                 if str(item.get("example_target") or "").strip():
-                    secondary_rows.append(("small", f"↳ {str(item.get('example_target') or '').strip()}"))
-            blocks.append({"title": "🧩 Второстепенные значения", "tone": "secondary", "rows": secondary_rows})
+                    secondary_rows.append(("small", f"Перевод примера: {str(item.get('example_target') or '').strip()}"))
+                if str(item.get("context") or "").strip():
+                    secondary_rows.append(("muted", f"Контекст: {str(item.get('context') or '').strip()}"))
+        else:
+            secondary_rows = [("body", "Дополнительные значения не найдены")]
+        blocks.append({"title": "Дополнительные значения", "tone": "secondary", "rows": secondary_rows})
 
         save_rows: list[tuple[str, str]] = []
         for idx, item in enumerate((options or [])[:3], start=1):
             src = str((item or {}).get("source") or "").strip() or "—"
             tgt = str((item or {}).get("target") or "").strip() or "—"
-            save_rows.append(("body", f"{idx}) {source_lang.upper()}: {src}"))
-            save_rows.append(("small", f"   {target_lang.upper()}: {tgt}"))
+            save_rows.append(("body", f"{idx}) {src}"))
+            save_rows.append(("small", f"   {tgt}"))
         if save_rows:
-            blocks.append({"title": "📝 Варианты для сохранения", "tone": "save", "rows": save_rows})
+            blocks.append({"title": "Варианты для сохранения", "tone": "save", "rows": save_rows})
+
+        tip_rows: list[tuple[str, str]] = []
+        if notes["etymology_note"]:
+            tip_rows.append(("body", f"Происхождение: {notes['etymology_note']}"))
+        if notes["usage_note"]:
+            tip_rows.append(("body", f"Контекст использования: {notes['usage_note']}"))
+        if notes["memory_tip"]:
+            tip_rows.append(("body", f"Фишка запоминания: {notes['memory_tip']}"))
+        if not tip_rows:
+            tip_rows = [("body", "Свяжите слово с личной ситуацией и повторите в своей фразе 3 раза.")]
+        blocks.append({"title": "Как запомнить", "tone": "tips", "rows": tip_rows})
 
         meta_rows = [("body", f"Часть речи: {part_of_speech}")]
         if article:
             meta_rows.append(("body", f"Артикль: {article}"))
         if ipa or stress:
-            meta_rows.append(("body", f"Произношение: {ipa or '—'}{f' | ударение: {stress}' if stress else ''}"))
+            meta_rows.append(("small", f"Произношение: {ipa or '—'}{f' | ударение: {stress}' if stress else ''}"))
         for line in forms[:3]:
             meta_rows.append(("small", line.replace("- ", "")))
-        blocks.append({"title": "🗂 Лингвистика", "tone": "meta", "rows": meta_rows})
+        blocks.append({"title": "Лингвистика", "tone": "meta", "rows": meta_rows})
 
         if theme == "minimal":
-            bg_top = (244, 247, 252)
+            bg_top = (245, 248, 252)
             bg_bottom = (232, 238, 248)
             header_fill = (255, 255, 255)
-            header_outline = (190, 206, 228)
-            title_color = (28, 45, 74)
-            subtitle_color = (73, 98, 136)
-            body_color = (27, 36, 51)
-            small_color = (63, 78, 103)
+            header_outline = (184, 198, 222)
+            title_color = (24, 42, 70)
+            subtitle_color = (76, 101, 140)
+            body_color = (26, 36, 53)
+            small_color = (66, 82, 110)
             tone_fills = {
                 "query": (255, 255, 255),
-                "primary": (241, 250, 255),
-                "secondary": (249, 245, 255),
-                "save": (242, 251, 244),
-                "meta": (248, 249, 253),
+                "primary": (239, 247, 255),
+                "secondary": (246, 241, 255),
+                "save": (239, 250, 244),
+                "tips": (255, 248, 236),
+                "meta": (247, 248, 252),
             }
             tone_outlines = {
-                "query": (188, 205, 230),
-                "primary": (148, 191, 230),
-                "secondary": (193, 171, 232),
-                "save": (162, 204, 168),
-                "meta": (193, 202, 220),
+                "query": (186, 201, 225),
+                "primary": (140, 184, 225),
+                "secondary": (184, 163, 225),
+                "save": (151, 194, 163),
+                "tips": (219, 184, 130),
+                "meta": (188, 198, 216),
             }
         else:
-            bg_top = (10, 22, 62)
-            bg_bottom = (8, 16, 45)
-            header_fill = (16, 30, 73)
-            header_outline = (95, 130, 210)
-            title_color = (255, 227, 126)
-            subtitle_color = (164, 214, 255)
-            body_color = (243, 248, 255)
-            small_color = (206, 223, 255)
+            bg_top = (9, 24, 64)
+            bg_bottom = (8, 16, 46)
+            header_fill = (15, 31, 78)
+            header_outline = (92, 128, 210)
+            title_color = (255, 229, 142)
+            subtitle_color = (170, 214, 255)
+            body_color = (244, 248, 255)
+            small_color = (210, 224, 255)
             tone_fills = {
-                "query": (20, 38, 92),
-                "primary": (27, 50, 111),
-                "secondary": (38, 43, 101),
-                "save": (24, 64, 83),
-                "meta": (22, 33, 80),
+                "query": (18, 39, 95),
+                "primary": (25, 55, 120),
+                "secondary": (39, 47, 111),
+                "save": (20, 67, 88),
+                "tips": (76, 57, 26),
+                "meta": (20, 34, 83),
             }
             tone_outlines = {
-                "query": (106, 137, 214),
-                "primary": (121, 181, 240),
-                "secondary": (154, 133, 219),
-                "save": (102, 176, 151),
-                "meta": (117, 143, 204),
+                "query": (108, 140, 220),
+                "primary": (118, 181, 246),
+                "secondary": (152, 132, 221),
+                "save": (94, 174, 150),
+                "tips": (214, 174, 113),
+                "meta": (117, 145, 210),
             }
 
         draw_probe = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-        header_height = 140
-        line_height = {"headline": 38, "body": 34, "small": 30, "muted": 30}
+        header_height = 130
+        line_height = {"headline": 46, "body": 40, "small": 36, "muted": 36}
         total_height = outer_pad + header_height + section_gap
         block_heights: list[int] = []
         wrapped_cache: list[list[tuple[str, str]]] = []
@@ -2394,25 +2424,22 @@ def _render_dictionary_card_png(
             wrapped_rows: list[tuple[str, str]] = []
             for style, raw_text in block["rows"]:
                 font = body_bold_font if style == "headline" else (small_font if style in {"small", "muted"} else body_font)
-                row_lines = _wrap(draw_probe, raw_text, font, text_width)
-                for ln in row_lines:
+                for ln in _wrap(draw_probe, raw_text, font, text_width):
                     wrapped_rows.append((style, ln))
             if not wrapped_rows:
                 wrapped_rows = [("body", "—")]
             wrapped_cache.append(wrapped_rows)
-            block_height = block_pad_y * 2 + 44
-            block_height += sum(line_height.get(st, 34) for st, _ in wrapped_rows)
-            block_height += 6
+            block_height = block_pad_y * 2 + 48
+            block_height += sum(line_height.get(st, 40) for st, _ in wrapped_rows)
+            block_height += 8
             block_heights.append(block_height)
             total_height += block_height + section_gap
 
         height = total_height + outer_pad
-
         image = Image.new("RGB", (width, height), color=bg_bottom)
         draw = ImageDraw.Draw(image)
-
-        draw.rectangle([(0, 0), (width, int(height * 0.45))], fill=bg_top)
-        draw.rectangle([(0, int(height * 0.45)), (width, height)], fill=bg_bottom)
+        draw.rectangle([(0, 0), (width, int(height * 0.44))], fill=bg_top)
+        draw.rectangle([(0, int(height * 0.44)), (width, height)], fill=bg_bottom)
 
         header_x0 = outer_pad
         header_y0 = outer_pad
@@ -2425,11 +2452,7 @@ def _render_dictionary_card_png(
             outline=header_outline,
             width=3,
         )
-
-        title_text = f"📘 Словарная карточка"
-        subtitle_text = f"{source_flag} {source_lang.upper()} -> {target_flag} {target_lang.upper()}"
-        draw.text((header_x0 + 28, header_y0 + 24), title_text, fill=title_color, font=title_font)
-        draw.text((header_x0 + 30, header_y0 + 84), subtitle_text, fill=subtitle_color, font=section_font)
+        draw.text((header_x0 + 30, header_y0 + 30), "Словарная карточка", fill=title_color, font=title_font)
 
         y = header_y1 + section_gap
         for idx, block in enumerate(blocks):
@@ -2438,19 +2461,16 @@ def _render_dictionary_card_png(
             b_y0 = y
             b_x1 = width - outer_pad
             b_y1 = y + block_h
-            tone = block.get("tone") or "meta"
-            fill = tone_fills.get(tone, tone_fills["meta"])
-            outline = tone_outlines.get(tone, tone_outlines["meta"])
+            tone = str(block.get("tone") or "meta")
             draw.rounded_rectangle(
                 [(b_x0, b_y0), (b_x1, b_y1)],
                 radius=24,
-                fill=fill,
-                outline=outline,
+                fill=tone_fills.get(tone, tone_fills["meta"]),
+                outline=tone_outlines.get(tone, tone_outlines["meta"]),
                 width=3,
             )
-            draw.text((b_x0 + block_pad_x, b_y0 + block_pad_y - 2), str(block.get("title") or ""), fill=subtitle_color, font=section_font)
-
-            row_y = b_y0 + block_pad_y + 44
+            draw.text((b_x0 + block_pad_x, b_y0 + block_pad_y - 1), str(block.get("title") or ""), fill=subtitle_color, font=section_font)
+            row_y = b_y0 + block_pad_y + 50
             for style, text in wrapped_cache[idx]:
                 if style == "headline":
                     font = body_bold_font
@@ -2465,7 +2485,7 @@ def _render_dictionary_card_png(
                     font = body_font
                     color = body_color
                 draw.text((b_x0 + block_pad_x, row_y), text, fill=color, font=font)
-                row_y += line_height.get(style, 34)
+                row_y += line_height.get(style, 40)
             y += block_h + section_gap
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
@@ -2551,6 +2571,9 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
             "word_target": target_value,
             "translations": translations,
             "meanings": (raw.get("meanings") if isinstance(raw, dict) and isinstance(raw.get("meanings"), dict) else {"primary": {}, "secondary": []}),
+            "etymology_note": str((raw or {}).get("etymology_note") or "").strip() or None,
+            "usage_note": str((raw or {}).get("usage_note") or "").strip() or None,
+            "memory_tip": str((raw or {}).get("memory_tip") or "").strip() or None,
             "source_lang": source_lang,
             "target_lang": target_lang,
         }
@@ -2568,6 +2591,9 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
             "word_target": target_value,
             "translations": translations,
             "meanings": (raw.get("meanings") if isinstance(raw, dict) and isinstance(raw.get("meanings"), dict) else {"primary": {}, "secondary": []}),
+            "etymology_note": str((raw or {}).get("etymology_note") or "").strip() or None,
+            "usage_note": str((raw or {}).get("usage_note") or "").strip() or None,
+            "memory_tip": str((raw or {}).get("memory_tip") or "").strip() or None,
             "source_lang": source_lang,
             "target_lang": target_lang,
         }
@@ -2596,6 +2622,9 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
             if isinstance(raw.get("meanings"), dict)
             else {"primary": {}, "secondary": []}
         ),
+        "etymology_note": str(raw.get("etymology_note") or "").strip() or None,
+        "usage_note": str(raw.get("usage_note") or "").strip() or None,
+        "memory_tip": str(raw.get("memory_tip") or "").strip() or None,
         "source_lang": source_lang,
         "target_lang": target_lang,
     }
