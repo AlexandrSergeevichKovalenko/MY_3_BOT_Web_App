@@ -3599,23 +3599,13 @@ def get_plan_progress(
 
             cursor.execute(
                 """
-                WITH base AS (
-                    SELECT
-                        t.id_for_mistake_table,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY t.user_id, t.id_for_mistake_table
-                            ORDER BY t.timestamp DESC
-                        ) AS rn_range
-                    FROM bt_3_translations t
-                    JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
-                    WHERE t.user_id = %s
-                      AND COALESCE(t.source_lang, 'ru') = %s
-                      AND COALESCE(t.target_lang, 'de') = %s
-                      AND ds.date BETWEEN %s AND %s
-                )
                 SELECT COUNT(*)
-                FROM base
-                WHERE rn_range = 1;
+                FROM bt_3_translations t
+                JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                WHERE t.user_id = %s
+                  AND COALESCE(t.source_lang, 'ru') = %s
+                  AND COALESCE(t.target_lang, 'de') = %s
+                  AND ds.date BETWEEN %s AND %s;
                 """,
                 (
                     int(user_id),

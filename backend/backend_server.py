@@ -9982,13 +9982,7 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                 score_base AS (
                     SELECT
                         t.user_id,
-                        t.id_for_mistake_table,
-                        t.score,
-                        t.timestamp,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY t.user_id, t.id_for_mistake_table
-                            ORDER BY t.timestamp DESC
-                        ) AS rn
+                        t.score
                     FROM bt_3_translations t
                     JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
                     WHERE ds.date BETWEEN %s AND %s
@@ -9999,7 +9993,6 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                         COUNT(*) AS translations_count,
                         AVG(score) AS avg_score
                     FROM score_base
-                    WHERE rn = 1
                     GROUP BY user_id
                 ),
                 plan_days AS (

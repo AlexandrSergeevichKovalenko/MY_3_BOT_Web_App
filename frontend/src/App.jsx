@@ -2871,6 +2871,25 @@ function AppInner() {
   }, [telegramApp, initData]);
 
   useEffect(() => {
+    if (!isWebAppMode) return;
+    const lockHorizontalScroll = () => {
+      if (Math.abs(window.scrollX) > 0) {
+        window.scrollTo(0, window.scrollY);
+      }
+    };
+    const onScroll = () => {
+      lockHorizontalScroll();
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', lockHorizontalScroll);
+    lockHorizontalScroll();
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', lockHorizontalScroll);
+    };
+  }, [isWebAppMode]);
+
+  useEffect(() => {
     if (telegramApp?.initData) return;
     let cancelled = false;
     fetch('/api/web/auth/config')

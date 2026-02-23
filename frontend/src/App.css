@@ -8,7 +8,10 @@ html,
 body,
 #root {
   overscroll-behavior-y: contain;
+  overscroll-behavior-x: none;
   overflow-x: hidden;
+  width: 100%;
+  max-width: 100%;
 }
 
 * {
@@ -310,7 +313,9 @@ body {
   justify-content: center;
   align-items: flex-start;
   overscroll-behavior-y: contain;
-  overflow-x: hidden;
+  overscroll-behavior-x: none;
+  overflow-x: clip;
+  max-width: 100%;
 }
 
 .webapp-page.is-telegram-fullscreen {
@@ -369,6 +374,7 @@ body {
 
 .webapp-shell {
   width: min(1200px, 100%);
+  max-width: 100%;
   display: grid;
   grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
   gap: 24px;

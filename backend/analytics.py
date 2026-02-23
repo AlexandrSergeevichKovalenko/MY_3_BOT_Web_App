@@ -174,11 +174,7 @@ def fetch_user_timeseries(
                 ROW_NUMBER() OVER (
                     PARTITION BY t.user_id, t.id_for_mistake_table
                     ORDER BY t.timestamp
-                ) AS attempt_index,
-                ROW_NUMBER() OVER (
-                    PARTITION BY t.user_id, t.id_for_mistake_table, {period_expr_t}
-                    ORDER BY t.timestamp DESC
-                ) AS rn_period
+                ) AS attempt_index
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
             WHERE t.user_id = %s
@@ -193,7 +189,6 @@ def fetch_user_timeseries(
                     ELSE (score >= 85)
                 END AS is_success
             FROM base
-            WHERE rn_period = 1
         ),
         translations_agg AS (
             SELECT
@@ -310,10 +305,6 @@ def fetch_user_summary(
                 t.timestamp,
                 ROW_NUMBER() OVER (
                     PARTITION BY t.user_id, t.id_for_mistake_table
-                    ORDER BY t.timestamp DESC
-                ) AS rn_range,
-                ROW_NUMBER() OVER (
-                    PARTITION BY t.user_id, t.id_for_mistake_table
                     ORDER BY t.timestamp
                 ) AS attempt_index
             FROM bt_3_translations t
@@ -330,7 +321,6 @@ def fetch_user_summary(
                     ELSE (score >= 85)
                 END AS is_success
             FROM base
-            WHERE rn_range = 1
         ),
         translations_agg AS (
             SELECT
@@ -460,10 +450,6 @@ def fetch_comparison_leaderboard(
                 t.timestamp,
                 ROW_NUMBER() OVER (
                     PARTITION BY t.user_id, t.id_for_mistake_table
-                    ORDER BY t.timestamp DESC
-                ) AS rn_range,
-                ROW_NUMBER() OVER (
-                    PARTITION BY t.user_id, t.id_for_mistake_table
                     ORDER BY t.timestamp
                 ) AS attempt_index
             FROM bt_3_translations t
@@ -479,7 +465,6 @@ def fetch_comparison_leaderboard(
                     ELSE (score >= 85)
                 END AS is_success
             FROM base
-            WHERE rn_range = 1
         ),
         translations_agg AS (
             SELECT
