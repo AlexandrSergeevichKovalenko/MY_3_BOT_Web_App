@@ -27,3 +27,6 @@ pyttsx3==2.98
 
 fsrs>=6.1.1
 stripe>=11.0.0
+requests>=2.32.3,<3
+urllib3>=2,<3
+chardet<6
