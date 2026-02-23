@@ -275,6 +275,7 @@ function AppInner() {
   const [flashcardTimedOut, setFlashcardTimedOut] = useState(false);
   const [flashcardOutcome, setFlashcardOutcome] = useState(null);
   const [globalTimerSuspended, setGlobalTimerSuspended] = useState(false);
+  const [globalPauseReason, setGlobalPauseReason] = useState('');
   const [blocksResetNonce, setBlocksResetNonce] = useState(0);
   const [blocksMenuOpen, setBlocksMenuOpen] = useState(false);
   const [blocksMenuSettingsOpen, setBlocksMenuSettingsOpen] = useState(false);
@@ -365,6 +366,9 @@ function AppInner() {
   const readerPageNavLockRef = useRef(false);
   const todayTimerCompletionLockRef = useRef(new Set());
   const globalTimerAutoPauseInFlightRef = useRef(false);
+  const sectionVisibilitySnapshotRef = useRef(null);
+  const autoPausedTodayTimerIdsRef = useRef(new Set());
+  const readerAutoPausedByNavigationRef = useRef(false);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
@@ -2476,6 +2480,11 @@ function AppInner() {
     if (globalTimerAutoPauseInFlightRef.current) return;
     globalTimerAutoPauseInFlightRef.current = true;
     setGlobalTimerSuspended(true);
+    setGlobalPauseReason(
+      reason === 'lifecycle'
+        ? tr('Поставлено на паузу: приложение не в фокусе', 'Pausiert: App ist nicht im Fokus')
+        : tr('Поставлено на паузу: приложение закрывается', 'Pausiert: App wird geschlossen')
+    );
     try {
       const nowMs = Date.now();
       const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
@@ -2686,6 +2695,7 @@ function AppInner() {
         pauseNow();
       } else if (document.visibilityState === 'visible') {
         setGlobalTimerSuspended(false);
+        setGlobalPauseReason('');
       }
     };
     const onWindowBlur = () => {
@@ -2693,6 +2703,7 @@ function AppInner() {
     };
     const onWindowFocus = () => {
       setGlobalTimerSuspended(false);
+      setGlobalPauseReason('');
     };
     const onPageHide = () => {
       void pauseAllActiveTimers('pagehide');
@@ -2715,6 +2726,141 @@ function AppInner() {
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
   }, [pauseAllActiveTimers]);
+
+  useEffect(() => {
+    if (!flashcardSessionActive) return;
+    const flashcardsVisible = flashcardsOnly || selectedSections.has('flashcards');
+    if (!flashcardsVisible) {
+      setGlobalTimerSuspended(true);
+      setGlobalPauseReason(tr('Поставлено на паузу: переход в другой раздел', 'Pausiert: Wechsel in einen anderen Bereich'));
+      return;
+    }
+    setGlobalTimerSuspended(false);
+    setGlobalPauseReason('');
+  }, [flashcardSessionActive, flashcardsOnly, selectedSections]);
+
+  useEffect(() => {
+    const sectionVisibility = {
+      flashcards: flashcardsOnly || selectedSections.has('flashcards'),
+      translations: !flashcardsOnly && selectedSections.has('translations'),
+      theory: !flashcardsOnly && selectedSections.has('theory'),
+      youtube: !flashcardsOnly && selectedSections.has('youtube'),
+      reader: !flashcardsOnly && selectedSections.has('reader'),
+    };
+
+    const prevVisibility = sectionVisibilitySnapshotRef.current;
+    sectionVisibilitySnapshotRef.current = sectionVisibility;
+    if (!prevVisibility) return;
+
+    const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
+    const findTodayTaskByTypesLocal = (types = []) => {
+      const normalizedTypes = new Set(types.map((entry) => String(entry || '').toLowerCase()));
+      const active = items.find((entry) => normalizedTypes.has(String(entry?.task_type || '').toLowerCase()) && String(entry?.status || '').toLowerCase() !== 'done');
+      if (active) return active;
+      return items.find((entry) => normalizedTypes.has(String(entry?.task_type || '').toLowerCase())) || null;
+    };
+    const getSectionTask = (key) => {
+      if (key === 'flashcards') return findTodayTaskByTypesLocal(['cards']);
+      if (key === 'translations') return findTodayTaskByTypesLocal(['translation']);
+      if (key === 'theory') return findTodayTaskByTypesLocal(['theory']);
+      if (key === 'youtube') return findTodayTaskByTypesLocal(['video', 'youtube']);
+      return null;
+    };
+
+    const nowMs = Date.now();
+    const timerSyncCalls = [];
+    const managedSections = ['flashcards', 'translations', 'theory', 'youtube'];
+    let pausedByNavigation = false;
+    let resumedByNavigation = false;
+
+    managedSections.forEach((sectionKey) => {
+      const wasVisible = Boolean(prevVisibility[sectionKey]);
+      const isVisible = Boolean(sectionVisibility[sectionKey]);
+      if (wasVisible === isVisible) return;
+      const item = getSectionTask(sectionKey);
+      if (!item?.id) return;
+      const status = String(item?.status || '').toLowerCase();
+      if (status === 'done') {
+        autoPausedTodayTimerIdsRef.current.delete(item.id);
+        return;
+      }
+      const elapsedSeconds = getTodayItemElapsedSeconds(item, nowMs);
+      if (wasVisible && !isVisible && isTodayItemTimerRunning(item)) {
+        pausedByNavigation = true;
+        autoPausedTodayTimerIdsRef.current.add(item.id);
+        timerSyncCalls.push(
+          syncTodayItemTimer(item, 'pause', { elapsedSeconds, running: false })
+        );
+        return;
+      }
+      if (!wasVisible && isVisible && autoPausedTodayTimerIdsRef.current.has(item.id) && !isTodayItemTimerRunning(item)) {
+        resumedByNavigation = true;
+        const hasStartedBefore = elapsedSeconds > 0 || status === 'doing';
+        timerSyncCalls.push(
+          syncTodayItemTimer(
+            item,
+            hasStartedBefore ? 'resume' : 'start',
+            { elapsedSeconds, running: true }
+          ).then(() => {
+            autoPausedTodayTimerIdsRef.current.delete(item.id);
+          })
+        );
+      }
+    });
+
+    if (timerSyncCalls.length > 0) {
+      void Promise.allSettled(timerSyncCalls);
+    }
+    if (pausedByNavigation) {
+      setGlobalPauseReason(tr('Поставлено на паузу: переход в другой раздел', 'Pausiert: Wechsel in einen anderen Bereich'));
+    } else if (resumedByNavigation) {
+      setGlobalPauseReason('');
+    }
+
+    const readerWasVisible = Boolean(prevVisibility.reader);
+    const readerIsVisible = Boolean(sectionVisibility.reader);
+    if (readerWasVisible && !readerIsVisible && readerHasContent && !readerTimerPaused) {
+      const startedTs = Date.parse(String(readerSessionStartedAt || ''));
+      const segmentSeconds = Number.isFinite(startedTs)
+        ? Math.max(0, Math.floor((nowMs - startedTs) / 1000))
+        : 0;
+      if (segmentSeconds > 0) {
+        setReaderAccumulatedSeconds((prev) => prev + segmentSeconds);
+      }
+      setReaderTimerPaused(true);
+      setGlobalPauseReason(tr('Поставлено на паузу: переход в другой раздел', 'Pausiert: Wechsel in einen anderen Bereich'));
+      readerAutoPausedByNavigationRef.current = true;
+      if (readerSessionId) {
+        void stopReaderSessionTracking(readerSessionId);
+      }
+      return;
+    }
+    if (
+      !readerWasVisible
+      && readerIsVisible
+      && readerHasContent
+      && readerTimerPaused
+      && readerAutoPausedByNavigationRef.current
+    ) {
+      setReaderTimerPaused(false);
+      void startReaderSessionTracking();
+      setGlobalPauseReason('');
+      readerAutoPausedByNavigationRef.current = false;
+    }
+  }, [
+    flashcardsOnly,
+    selectedSections,
+    todayPlan,
+    readerHasContent,
+    readerTimerPaused,
+    readerSessionStartedAt,
+    readerSessionId,
+    getTodayItemElapsedSeconds,
+    isTodayItemTimerRunning,
+    syncTodayItemTimer,
+    stopReaderSessionTracking,
+    startReaderSessionTracking,
+  ]);
 
   useEffect(() => {
     if (telegramApp?.initData) return;
@@ -6531,6 +6677,12 @@ function AppInner() {
                 </div>
               </div>
             </div>
+
+            {globalPauseReason && (
+              <div className="timer-pause-reason-banner">
+                {globalPauseReason}
+              </div>
+            )}
 
             {menuOpen && (
               <div className="webapp-overlay">

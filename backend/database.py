@@ -921,6 +921,75 @@ def ensure_webapp_tables() -> None:
                 END $$;
                 """
             )
+            # One-time repair for DE->RU dictionary rows created via private bot saves
+            # where legacy RU/DE columns could be swapped.
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM bt_3_schema_migrations
+                        WHERE migration_key = '2026_02_23_dictionary_de_ru_legacy_fix_once'
+                    ) THEN
+                        WITH fixed AS (
+                            SELECT
+                                id,
+                                COALESCE(
+                                    NULLIF(response_json->>'word_source', ''),
+                                    NULLIF(response_json->>'source_text', ''),
+                                    NULLIF(word_de, ''),
+                                    NULLIF(translation_de, ''),
+                                    NULLIF(word_ru, '')
+                                ) AS fixed_word_de,
+                                COALESCE(
+                                    NULLIF(response_json->>'word_target', ''),
+                                    NULLIF(response_json->>'target_text', ''),
+                                    NULLIF(translation_ru, ''),
+                                    NULLIF(word_ru, ''),
+                                    NULLIF(translation_de, '')
+                                ) AS fixed_translation_ru
+                            FROM bt_3_webapp_dictionary_queries
+                            WHERE COALESCE(source_lang, '') = 'de'
+                              AND COALESCE(target_lang, '') = 'ru'
+                        )
+                        UPDATE bt_3_webapp_dictionary_queries q
+                        SET
+                            word_de = COALESCE(f.fixed_word_de, q.word_de),
+                            translation_ru = COALESCE(f.fixed_translation_ru, q.translation_ru),
+                            word_ru = COALESCE(f.fixed_translation_ru, q.word_ru),
+                            translation_de = COALESCE(f.fixed_word_de, q.translation_de),
+                            response_json = jsonb_set(
+                                jsonb_set(
+                                    jsonb_set(
+                                        jsonb_set(
+                                            COALESCE(q.response_json, '{}'::jsonb),
+                                            '{word_de}',
+                                            to_jsonb(COALESCE(f.fixed_word_de, q.word_de, '')::text),
+                                            true
+                                        ),
+                                        '{translation_ru}',
+                                        to_jsonb(COALESCE(f.fixed_translation_ru, q.translation_ru, '')::text),
+                                        true
+                                    ),
+                                    '{word_ru}',
+                                    to_jsonb(COALESCE(f.fixed_translation_ru, q.word_ru, '')::text),
+                                    true
+                                ),
+                                '{translation_de}',
+                                to_jsonb(COALESCE(f.fixed_word_de, q.translation_de, '')::text),
+                                true
+                            )
+                        FROM fixed f
+                        WHERE q.id = f.id;
+
+                        INSERT INTO bt_3_schema_migrations (migration_key)
+                        VALUES ('2026_02_23_dictionary_de_ru_legacy_fix_once')
+                        ON CONFLICT (migration_key) DO NOTHING;
+                    END IF;
+                END $$;
+                """
+            )
             cursor.execute(
                 """
                 DO $$

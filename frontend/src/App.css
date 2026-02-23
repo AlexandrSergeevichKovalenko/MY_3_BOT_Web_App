@@ -613,6 +613,16 @@ body {
   box-shadow: 0 8px 18px rgba(8, 11, 26, 0.28);
 }
 
+.timer-pause-reason-banner {
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 209, 102, 0.36);
+  background: rgba(255, 209, 102, 0.14);
+  color: #ffe29a;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 .topbar-left {
   display: flex;
   align-items: center;

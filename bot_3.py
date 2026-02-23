@@ -2976,6 +2976,8 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
     response_json = dict(lookup) if isinstance(lookup, dict) else {}
     response_json["word_source"] = source
     response_json["word_target"] = target
+    response_json["source_text"] = source
+    response_json["target_text"] = target
     response_json["source_lang"] = source_lang
     response_json["target_lang"] = target_lang
     response_json["language_pair"] = {
@@ -2983,10 +2985,33 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
         "target_lang": target_lang,
     }
 
-    word_ru = source if source_lang == "ru" else (response_json.get("word_ru") or "").strip() or None
-    word_de = source if source_lang == "de" else (response_json.get("word_de") or "").strip() or None
-    translation_de = target if target_lang == "de" else (response_json.get("translation_de") or "").strip() or None
-    translation_ru = target if target_lang == "ru" else (response_json.get("translation_ru") or "").strip() or None
+    # Canonical language-aware mapping.
+    # For RU<->DE, we additionally keep legacy columns in RU->DE orientation
+    # so existing consumers (quiz/statistics/admin views) stay consistent.
+    if source_lang == "ru" and target_lang == "de":
+        word_ru = source
+        word_de = target
+        translation_de = target
+        translation_ru = source
+    elif source_lang == "de" and target_lang == "ru":
+        word_ru = target
+        word_de = source
+        translation_de = source
+        translation_ru = target
+    else:
+        word_ru = source if source_lang == "ru" else (target if target_lang == "ru" else None)
+        word_de = source if source_lang == "de" else (target if target_lang == "de" else None)
+        translation_de = target if target_lang == "de" else (source if source_lang == "de" else None)
+        translation_ru = target if target_lang == "ru" else (source if source_lang == "ru" else None)
+
+    if word_ru:
+        response_json["word_ru"] = word_ru
+    if word_de:
+        response_json["word_de"] = word_de
+    if translation_de:
+        response_json["translation_de"] = translation_de
+    if translation_ru:
+        response_json["translation_ru"] = translation_ru
 
     try:
         try:
