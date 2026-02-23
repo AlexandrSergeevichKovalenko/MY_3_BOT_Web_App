@@ -1301,6 +1301,20 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_audio_grammar_settings (enabled, updated_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_youtube_proxy_subtitles_access (
+                    user_id BIGINT PRIMARY KEY,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    granted_by BIGINT,
+                    note TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_proxy_subtitles_access_enabled
+                ON bt_3_youtube_proxy_subtitles_access (enabled, updated_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_today_regenerate_limits (
                     user_id BIGINT NOT NULL,
                     limit_date DATE NOT NULL,
@@ -6155,6 +6169,101 @@ def update_translation_audio_grammar_opt_in(user_id: int, translation_id: int, *
         "enabled": bool(row[1]),
         "timestamp": row[2].isoformat() if row[2] else None,
     }
+
+
+def has_youtube_proxy_subtitles_access(user_id: int) -> bool:
+    if not user_id:
+        return False
+    if int(user_id) in get_admin_telegram_ids():
+        return True
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT enabled
+                FROM bt_3_youtube_proxy_subtitles_access
+                WHERE user_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return bool(row and bool(row[0]))
+
+
+def upsert_youtube_proxy_subtitles_access(
+    *,
+    user_id: int,
+    enabled: bool = True,
+    granted_by: int | None = None,
+    note: str | None = None,
+) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_youtube_proxy_subtitles_access (
+                    user_id,
+                    enabled,
+                    granted_by,
+                    note,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET
+                    enabled = EXCLUDED.enabled,
+                    granted_by = COALESCE(EXCLUDED.granted_by, bt_3_youtube_proxy_subtitles_access.granted_by),
+                    note = COALESCE(EXCLUDED.note, bt_3_youtube_proxy_subtitles_access.note),
+                    updated_at = NOW()
+                RETURNING user_id, enabled, granted_by, note, created_at, updated_at;
+                """,
+                (int(user_id), bool(enabled), granted_by, note),
+            )
+            row = cursor.fetchone()
+    return {
+        "user_id": int(row[0]),
+        "enabled": bool(row[1]),
+        "granted_by": int(row[2]) if row[2] is not None else None,
+        "note": row[3] if row[3] is not None else None,
+        "created_at": row[4].isoformat() if row[4] else None,
+        "updated_at": row[5].isoformat() if row[5] else None,
+    }
+
+
+def list_youtube_proxy_subtitles_access(
+    *,
+    limit: int = 200,
+    offset: int = 0,
+    enabled_only: bool = False,
+) -> list[dict]:
+    safe_limit = max(1, min(int(limit or 200), 1000))
+    safe_offset = max(0, int(offset or 0))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, enabled, granted_by, note, created_at, updated_at
+                FROM bt_3_youtube_proxy_subtitles_access
+                WHERE (%s = FALSE OR enabled = TRUE)
+                ORDER BY updated_at DESC, user_id DESC
+                LIMIT %s OFFSET %s;
+                """,
+                (bool(enabled_only), safe_limit, safe_offset),
+            )
+            rows = cursor.fetchall()
+    return [
+        {
+            "user_id": int(row[0]),
+            "enabled": bool(row[1]),
+            "granted_by": int(row[2]) if row[2] is not None else None,
+            "note": row[3] if row[3] is not None else None,
+            "created_at": row[4].isoformat() if row[4] else None,
+            "updated_at": row[5].isoformat() if row[5] else None,
+        }
+        for row in rows
+    ]
 
 
 def upsert_active_quiz(

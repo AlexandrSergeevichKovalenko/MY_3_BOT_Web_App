@@ -212,6 +212,9 @@ from backend.database import (
     get_audio_grammar_settings,
     upsert_audio_grammar_settings,
     update_translation_audio_grammar_opt_in,
+    has_youtube_proxy_subtitles_access,
+    upsert_youtube_proxy_subtitles_access,
+    list_youtube_proxy_subtitles_access,
     get_weekly_goals,
     upsert_weekly_goals,
     get_weekly_plan_progress,
@@ -3989,13 +3992,18 @@ def _fetch_with_ytdlp(video_id: str, proxy_url: str | None, lang: str | None) ->
     raise RuntimeError("yt-dlp fallback failed to obtain VTT subtitles")
 
 
-def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
+def _fetch_youtube_transcript(
+    video_id: str,
+    lang: str | None = None,
+    *,
+    allow_proxy: bool = True,
+) -> dict:
     """
     Production pipeline:
-    1) Webshare rotation + DE/AT filter
-    2) Generic proxy (если есть) + DE/AT filter
+    1) Webshare rotation + DE/AT filter (only if allow_proxy=True)
+    2) Generic proxy + DE/AT filter (only if allow_proxy=True)
     3) Direct
-    4) yt-dlp fallback (через webshare/generic proxy если есть)
+    4) yt-dlp fallback (proxy only when allow_proxy=True)
     """
 
     errors: list[str] = []
@@ -4015,7 +4023,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
     # ----------------------------
     # 1) Webshare rotation (DE/AT)
     # ----------------------------
-    if webshare_proxy:
+    if allow_proxy and webshare_proxy:
         p = urlparse(webshare_proxy)
         ws_user = p.username or ""
         ws_pass = p.password or ""
@@ -4052,7 +4060,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
     # ----------------------------
     # 2) Generic proxy (DE/AT)
     # ----------------------------
-    if generic_proxy:
+    if allow_proxy and generic_proxy:
         country = _check_ip_country(generic_proxy)
         if country in ALLOWED_COUNTRIES:
             try:
@@ -4106,7 +4114,7 @@ def _fetch_youtube_transcript(video_id: str, lang: str | None = None) -> dict:
     # 4) yt-dlp fallback
     # ----------------------------
     try:
-        proxy_for_ytdlp = webshare_proxy or generic_proxy
+        proxy_for_ytdlp = (webshare_proxy or generic_proxy) if allow_proxy else None
         items, detected_lang, is_generated = _fetch_with_ytdlp(video_id, proxy_for_ytdlp, lang)
         return {
             "success": True,
@@ -8008,6 +8016,7 @@ def get_youtube_transcript():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    proxy_allowed = has_youtube_proxy_subtitles_access(int(user_id))
     subtitle_target_lang = _normalize_short_lang_code(source_lang, fallback="ru")
 
     now = time.time()
@@ -8029,6 +8038,7 @@ def get_youtube_transcript():
                 "translation_lang": subtitle_target_lang,
                 "source": data.get("source"),
                 "cached": True,
+                "proxy_allowed": bool(proxy_allowed),
             }
         )
     cached_db = None
@@ -8058,6 +8068,7 @@ def get_youtube_transcript():
                 "translation_lang": subtitle_target_lang,
                 "source": data.get("source"),
                 "cached_db": True,
+                "proxy_allowed": bool(proxy_allowed),
             }
         )
 
@@ -8066,7 +8077,7 @@ def get_youtube_transcript():
         return jsonify({"error": err.get("error", "Субтитры временно недоступны")}), 429
 
     try:
-        data = _fetch_youtube_transcript(video_id, lang=lang)
+        data = _fetch_youtube_transcript(video_id, lang=lang, allow_proxy=proxy_allowed)
     except Exception as exc:
         logging.warning("YouTube transcript error for %s: %s", video_id, exc)
         _yt_transcript_errors[video_id] = {"ts": now, "error": str(exc)}
@@ -8087,6 +8098,7 @@ def get_youtube_transcript():
             "requested_lang": lang,
             "detected_language": data.get("language"),
             "source": data.get("source"),
+            "proxy_allowed": bool(proxy_allowed),
         },
     )
 
@@ -8114,6 +8126,7 @@ def get_youtube_transcript():
             ),
             "translation_lang": subtitle_target_lang,
             "source": data.get("source"),
+            "proxy_allowed": bool(proxy_allowed),
         }
     )
 
@@ -10192,6 +10205,110 @@ def send_today_plans_now():
 
     result = _dispatch_today_plans(target_date=target_date, tz_name=tz_name)
     return jsonify(result)
+
+
+@app.route("/api/admin/youtube-proxy-subtitles-access", methods=["GET"])
+def admin_list_youtube_proxy_subtitles_access():
+    token = request.args.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    try:
+        limit = int(request.args.get("limit", 200))
+    except Exception:
+        limit = 200
+    try:
+        offset = int(request.args.get("offset", 0))
+    except Exception:
+        offset = 0
+    enabled_only_raw = str(request.args.get("enabled_only", "0")).strip().lower()
+    enabled_only = enabled_only_raw in {"1", "true", "yes", "on"}
+    items = list_youtube_proxy_subtitles_access(
+        limit=limit,
+        offset=offset,
+        enabled_only=enabled_only,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "items": items,
+            "count": len(items),
+            "enabled_only": bool(enabled_only),
+        }
+    )
+
+
+@app.route("/api/admin/youtube-proxy-subtitles-access/grant", methods=["POST"])
+def admin_grant_youtube_proxy_subtitles_access():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    user_id_raw = payload.get("user_id")
+    if user_id_raw is None or str(user_id_raw).strip() == "":
+        return jsonify({"error": "user_id обязателен"}), 400
+    try:
+        managed_user_id = int(user_id_raw)
+    except Exception:
+        return jsonify({"error": "user_id должен быть числом"}), 400
+
+    granted_by_raw = payload.get("granted_by")
+    granted_by = None
+    if granted_by_raw is not None and str(granted_by_raw).strip() != "":
+        try:
+            granted_by = int(granted_by_raw)
+        except Exception:
+            return jsonify({"error": "granted_by должен быть числом"}), 400
+    note = (payload.get("note") or "").strip() or None
+    item = upsert_youtube_proxy_subtitles_access(
+        user_id=managed_user_id,
+        enabled=True,
+        granted_by=granted_by,
+        note=note,
+    )
+    return jsonify({"ok": True, "item": item})
+
+
+@app.route("/api/admin/youtube-proxy-subtitles-access/revoke", methods=["POST"])
+def admin_revoke_youtube_proxy_subtitles_access():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    user_id_raw = payload.get("user_id")
+    if user_id_raw is None or str(user_id_raw).strip() == "":
+        return jsonify({"error": "user_id обязателен"}), 400
+    try:
+        managed_user_id = int(user_id_raw)
+    except Exception:
+        return jsonify({"error": "user_id должен быть числом"}), 400
+
+    granted_by_raw = payload.get("granted_by")
+    granted_by = None
+    if granted_by_raw is not None and str(granted_by_raw).strip() != "":
+        try:
+            granted_by = int(granted_by_raw)
+        except Exception:
+            return jsonify({"error": "granted_by должен быть числом"}), 400
+    note = (payload.get("note") or "").strip() or None
+    item = upsert_youtube_proxy_subtitles_access(
+        user_id=managed_user_id,
+        enabled=False,
+        granted_by=granted_by,
+        note=note,
+    )
+    return jsonify({"ok": True, "item": item})
 
 
 @app.route("/api/admin/youtube-debug", methods=["POST"])
