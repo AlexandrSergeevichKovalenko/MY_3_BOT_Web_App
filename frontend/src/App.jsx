@@ -4295,6 +4295,11 @@ function AppInner() {
       const detectedDirection = data.direction || resolveDictionaryDirection(data.item);
       setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
       const pair = resolveLanguagePairForUI(data.language_pair);
+      const directionPair = String(detectedDirection || '').includes('-')
+        ? String(detectedDirection).toLowerCase().split('-', 2)
+        : [];
+      const saveSourceLang = normalizeLangCode(directionPair[0] || pair.source_lang);
+      const saveTargetLang = normalizeLangCode(directionPair[1] || pair.target_lang);
       const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(detectedDirection);
       const canonicalWordDe = normalizeSelectionText(data.item?.word_de || '');
       const canonicalWordRu = normalizeSelectionText(data.item?.word_ru || '');
@@ -4325,6 +4330,9 @@ function AppInner() {
           translation_ru: data.item?.translation_ru || '',
           source_text: getDictionarySourceTarget(data.item, detectedDirection).sourceText || normalized,
           target_text: getDictionarySourceTarget(data.item, detectedDirection).targetText || '',
+          source_lang: saveSourceLang || undefined,
+          target_lang: saveTargetLang || undefined,
+          direction: detectedDirection || undefined,
           response_json: data.item || {},
           folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
         }),
@@ -5713,6 +5721,11 @@ function AppInner() {
     setDictionarySaved('');
     try {
       const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+      const directionPair = String(dictionaryDirection || '').includes('-')
+        ? String(dictionaryDirection).toLowerCase().split('-', 2)
+        : [];
+      const saveSourceLang = normalizeLangCode(directionPair[0] || pair.source_lang);
+      const saveTargetLang = normalizeLangCode(directionPair[1] || pair.target_lang);
       const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(dictionaryDirection);
       const response = await fetch('/api/webapp/dictionary/save', {
         method: 'POST',
@@ -5729,10 +5742,16 @@ function AppInner() {
             ...(dictionaryResult || {}),
             source_text: selectedCollocation.source,
             target_text: selectedCollocation.target,
-            source_lang: pair.source_lang,
-            target_lang: pair.target_lang,
-            language_pair: pair,
+            source_lang: saveSourceLang || pair.source_lang,
+            target_lang: saveTargetLang || pair.target_lang,
+            language_pair: {
+              source_lang: saveSourceLang || pair.source_lang,
+              target_lang: saveTargetLang || pair.target_lang,
+            },
           },
+          source_lang: saveSourceLang || undefined,
+          target_lang: saveTargetLang || undefined,
+          direction: dictionaryDirection || undefined,
           folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
         }),
       });

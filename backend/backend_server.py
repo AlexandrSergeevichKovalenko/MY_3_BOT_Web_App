@@ -741,6 +741,54 @@ def _build_language_pair_payload(source_lang: str, target_lang: str) -> dict:
     }
 
 
+def _parse_direction_pair(direction: str | None) -> tuple[str, str] | None:
+    raw = str(direction or "").strip().lower()
+    if "-" not in raw:
+        return None
+    src, tgt = [chunk.strip() for chunk in raw.split("-", 1)]
+    src = _normalize_short_lang_code(src, fallback="")
+    tgt = _normalize_short_lang_code(tgt, fallback="")
+    if not src or not tgt or src == tgt:
+        return None
+    return src, tgt
+
+
+def _resolve_dictionary_save_pair(
+    profile_source_lang: str,
+    profile_target_lang: str,
+    payload_source_lang: str | None,
+    payload_target_lang: str | None,
+    payload_direction: str | None,
+    response_json: dict | None = None,
+) -> tuple[str, str]:
+    profile_forward = (profile_source_lang, profile_target_lang)
+    profile_reverse = (profile_target_lang, profile_source_lang)
+
+    payload_src = _normalize_short_lang_code(payload_source_lang, fallback="")
+    payload_tgt = _normalize_short_lang_code(payload_target_lang, fallback="")
+    if payload_src and payload_tgt and payload_src != payload_tgt:
+        candidate = (payload_src, payload_tgt)
+        if candidate in {profile_forward, profile_reverse}:
+            return candidate
+
+    dir_pair = _parse_direction_pair(payload_direction)
+    if dir_pair and dir_pair in {profile_forward, profile_reverse}:
+        return dir_pair
+
+    if isinstance(response_json, dict):
+        rj_src = _normalize_short_lang_code(response_json.get("source_lang"), fallback="")
+        rj_tgt = _normalize_short_lang_code(response_json.get("target_lang"), fallback="")
+        if rj_src and rj_tgt and rj_src != rj_tgt:
+            candidate = (rj_src, rj_tgt)
+            if candidate in {profile_forward, profile_reverse}:
+                return candidate
+        rj_dir_pair = _parse_direction_pair(response_json.get("direction"))
+        if rj_dir_pair and rj_dir_pair in {profile_forward, profile_reverse}:
+            return rj_dir_pair
+
+    return profile_forward
+
+
 def _is_legacy_ru_de_pair(source_lang: str, target_lang: str) -> bool:
     return source_lang == "ru" and target_lang == "de"
 
@@ -7271,6 +7319,9 @@ def save_webapp_dictionary_entry():
     translation_ru = (payload.get("translation_ru") or "").strip()
     source_text = (payload.get("source_text") or "").strip()
     target_text = (payload.get("target_text") or "").strip()
+    payload_source_lang = payload.get("source_lang")
+    payload_target_lang = payload.get("target_lang")
+    payload_direction = payload.get("direction")
     response_json = payload.get("response_json") or {}
     folder_id = payload.get("folder_id")
 
@@ -7289,15 +7340,43 @@ def save_webapp_dictionary_entry():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    if source_text and not word_ru and source_lang != "de":
-        word_ru = source_text
-    if source_text and not word_de and source_lang == "de":
-        word_de = source_text
-    if target_text and not translation_de and target_lang == "de":
-        translation_de = target_text
-    if target_text and not translation_ru and target_lang != "de":
-        translation_ru = target_text
+    profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
+    source_lang, target_lang = _resolve_dictionary_save_pair(
+        profile_source_lang=profile_source_lang,
+        profile_target_lang=profile_target_lang,
+        payload_source_lang=payload_source_lang,
+        payload_target_lang=payload_target_lang,
+        payload_direction=payload_direction,
+        response_json=response_json if isinstance(response_json, dict) else None,
+    )
+
+    if source_lang == "ru" and target_lang == "de":
+        if source_text and not word_ru:
+            word_ru = source_text
+        if target_text and not translation_de:
+            translation_de = target_text
+        if target_text and not word_de:
+            word_de = target_text
+        if source_text and not translation_ru:
+            translation_ru = source_text
+    elif source_lang == "de" and target_lang == "ru":
+        if source_text and not word_de:
+            word_de = source_text
+        if target_text and not translation_ru:
+            translation_ru = target_text
+        if target_text and not word_ru:
+            word_ru = target_text
+        if source_text and not translation_de:
+            translation_de = source_text
+    else:
+        if source_text and source_lang == "ru" and not word_ru:
+            word_ru = source_text
+        if source_text and source_lang == "de" and not word_de:
+            word_de = source_text
+        if target_text and target_lang == "de" and not translation_de:
+            translation_de = target_text
+        if target_text and target_lang == "ru" and not translation_ru:
+            translation_ru = target_text
 
     if folder_id is None:
         try:
@@ -7318,12 +7397,9 @@ def save_webapp_dictionary_entry():
             response_json = dict(response_json)
             response_json.setdefault("source_text", source_text or word_ru or word_de or "")
             response_json.setdefault("target_text", target_text or translation_de or translation_ru or word_de or "")
-            response_json.setdefault("source_lang", source_lang)
-            response_json.setdefault("target_lang", target_lang)
-            response_json.setdefault(
-                "language_pair",
-                _build_language_pair_payload(source_lang, target_lang),
-            )
+            response_json["source_lang"] = source_lang
+            response_json["target_lang"] = target_lang
+            response_json["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
         save_webapp_dictionary_query(
             user_id=user_id,
             word_ru=resolved_word_ru if resolved_word_ru else None,
@@ -7359,20 +7435,50 @@ def save_mobile_dictionary_entry():
     translation_ru = (payload.get("translation_ru") or "").strip()
     source_text = (payload.get("source_text") or "").strip()
     target_text = (payload.get("target_text") or "").strip()
+    payload_source_lang = payload.get("source_lang")
+    payload_target_lang = payload.get("target_lang")
+    payload_direction = payload.get("direction")
     response_json = payload.get("response_json") or {}
     folder_id = payload.get("folder_id")
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
+    source_lang, target_lang = _resolve_dictionary_save_pair(
+        profile_source_lang=profile_source_lang,
+        profile_target_lang=profile_target_lang,
+        payload_source_lang=payload_source_lang,
+        payload_target_lang=payload_target_lang,
+        payload_direction=payload_direction,
+        response_json=response_json if isinstance(response_json, dict) else None,
+    )
 
     if not word_ru and not word_de and not source_text and not isinstance(response_json, dict):
         return jsonify({"error": "word_ru/word_de/source_text или response_json обязателен"}), 400
-    if source_text and not word_ru and source_lang != "de":
-        word_ru = source_text
-    if source_text and not word_de and source_lang == "de":
-        word_de = source_text
-    if target_text and not translation_de and target_lang == "de":
-        translation_de = target_text
-    if target_text and not translation_ru and target_lang != "de":
-        translation_ru = target_text
+    if source_lang == "ru" and target_lang == "de":
+        if source_text and not word_ru:
+            word_ru = source_text
+        if target_text and not translation_de:
+            translation_de = target_text
+        if target_text and not word_de:
+            word_de = target_text
+        if source_text and not translation_ru:
+            translation_ru = source_text
+    elif source_lang == "de" and target_lang == "ru":
+        if source_text and not word_de:
+            word_de = source_text
+        if target_text and not translation_ru:
+            translation_ru = target_text
+        if target_text and not word_ru:
+            word_ru = target_text
+        if source_text and not translation_de:
+            translation_de = source_text
+    else:
+        if source_text and source_lang == "ru" and not word_ru:
+            word_ru = source_text
+        if source_text and source_lang == "de" and not word_de:
+            word_de = source_text
+        if target_text and target_lang == "de" and not translation_de:
+            translation_de = target_text
+        if target_text and target_lang == "ru" and not translation_ru:
+            translation_ru = target_text
 
     if folder_id is None:
         try:
@@ -7395,12 +7501,9 @@ def save_mobile_dictionary_entry():
             response_json = dict(response_json)
             response_json.setdefault("source_text", source_text or word_ru or word_de or "")
             response_json.setdefault("target_text", target_text or translation_de or translation_ru or word_de or "")
-            response_json.setdefault("source_lang", source_lang)
-            response_json.setdefault("target_lang", target_lang)
-            response_json.setdefault(
-                "language_pair",
-                _build_language_pair_payload(source_lang, target_lang),
-            )
+            response_json["source_lang"] = source_lang
+            response_json["target_lang"] = target_lang
+            response_json["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
 
         save_webapp_dictionary_query(
             user_id=user_id,
