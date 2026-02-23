@@ -2570,64 +2570,58 @@ body {
   }
 
   .topbar-title {
-    max-width: 136px;
+    max-width: 108px;
   }
 
   .topbar-right {
-    gap: 5px;
+    gap: 6px;
   }
 
   .topbar-controls {
     flex-direction: row;
     align-items: center;
-    gap: 4px;
-    flex: 0 0 auto;
+    gap: 5px;
   }
 
   .topbar-controls .language-toggle-compact {
-    width: 34px;
-    min-width: 34px;
-    min-height: 54px;
-    padding: 3px 2px;
-    flex-direction: column;
-    gap: 3px;
+    min-width: 68px;
+    min-height: 30px;
+    width: auto;
+    padding: 3px;
+    flex-direction: row;
+    gap: 2px;
     border-radius: 999px;
   }
 
   .topbar-controls .language-chip {
-    min-width: 22px;
-    height: 20px;
-    font-size: 9px;
+    min-width: 30px;
+    height: 24px;
+    font-size: 10px;
   }
 
   .topbar-controls .language-pair-button {
-    width: 34px;
-    min-width: 34px;
-    min-height: 54px;
-    padding: 4px 2px;
-    font-size: 9px;
-    line-height: 1.05;
-    white-space: normal;
+    min-height: 30px;
+    min-width: 0;
+    width: auto;
+    padding: 0 8px;
+    font-size: 10px;
+    line-height: 1.1;
+    white-space: nowrap;
     text-align: center;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    letter-spacing: 0.01em;
+    letter-spacing: 0.02em;
   }
 
   .topbar-profile {
     gap: 5px;
     min-width: 0;
-    max-width: 116px;
   }
 
   .topbar-user-name {
-    max-width: 82px;
-    font-size: 10px;
-  }
-
-  .topbar-title {
-    max-width: 148px;
+    max-width: 72px;
+    font-size: 11px;
   }
 
   .topbar-avatar {
@@ -4124,6 +4118,41 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: transform 0.14s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.dictionary-tts:hover,
+.inline-tts-button:hover,
+.flashcard-audio-replay:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.26);
+}
+
+.dictionary-tts.is-loading,
+.inline-tts-button.is-loading,
+.flashcard-audio-replay.is-loading {
+  background: linear-gradient(145deg, rgba(56, 189, 248, 0.4), rgba(59, 130, 246, 0.34));
+  border-color: rgba(125, 211, 252, 0.9);
+  box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.3);
+  animation: tts-button-pulse 0.9s ease-in-out infinite;
+}
+
+.dictionary-tts:disabled,
+.inline-tts-button:disabled {
+  opacity: 0.85;
+  cursor: wait;
+}
+
+@keyframes tts-button-pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 .dictionary-back-icon {

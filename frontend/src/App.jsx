@@ -156,6 +156,7 @@ function AppInner() {
   const [selectionInlineMode, setSelectionInlineMode] = useState(false);
   const [selectionInlineLookup, setSelectionInlineLookup] = useState({ loading: false, word: '', translation: '', direction: '' });
   const [selectionLookupLoading, setSelectionLookupLoading] = useState(false);
+  const [ttsPendingMap, setTtsPendingMap] = useState({});
   const [inlineToast, setInlineToast] = useState('');
   const [lastLookupScrollY, setLastLookupScrollY] = useState(null);
   const [telegramFullscreenMode, setTelegramFullscreenMode] = useState(false);
@@ -743,6 +744,25 @@ function AppInner() {
       return playWebSpeech();
     }
   };
+
+  const isTtsPending = useCallback((key) => Boolean(ttsPendingMap[String(key || '')]), [ttsPendingMap]);
+
+  const playTtsWithUi = useCallback(async (key, text, language = 'de-DE') => {
+    const pendingKey = String(key || '').trim();
+    const normalizedText = String(text || '').trim();
+    if (!pendingKey || !normalizedText) return;
+    if (ttsPendingMap[pendingKey]) return;
+    setTtsPendingMap((prev) => ({ ...prev, [pendingKey]: true }));
+    try {
+      await playTts(normalizedText, language);
+    } finally {
+      setTtsPendingMap((prev) => {
+        const next = { ...prev };
+        delete next[pendingKey];
+        return next;
+      });
+    }
+  }, [playTts, ttsPendingMap]);
 
   const coerceResponseJson = (value) => {
     if (!value) return null;
@@ -2902,7 +2922,6 @@ function AppInner() {
         sectionKey !== 'youtube'
         && !wasVisible
         && isVisible
-        && autoPausedTodayTimerIdsRef.current.has(item.id)
         && !isTodayItemTimerRunning(item)
       ) {
         resumedByNavigation = true;
@@ -8139,20 +8158,29 @@ function AppInner() {
                               </div>
                               {correctTextForTts && (
                                 <div className="result-inline-audio-row">
+                                  {(() => {
+                                    const ttsKey = `result-correct-${item.translation_id || item.sentence_number || index}`;
+                                    const loading = isTtsPending(ttsKey);
+                                    return (
+                                      <>
                                   <span className="webapp-muted">
                                     {tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
                                   </span>
                                   <button
                                     type="button"
-                                    className="inline-tts-button"
+                                    className={`inline-tts-button ${loading ? 'is-loading' : ''}`}
                                     onClick={() => {
-                                      void playTts(correctTextForTts, getLearningTtsLocale());
+                                      void playTtsWithUi(ttsKey, correctTextForTts, getLearningTtsLocale());
                                     }}
                                     aria-label={tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
                                     title={tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
+                                    disabled={loading}
                                   >
-                                    🔊
+                                    {loading ? '…' : '🔊'}
                                   </button>
+                                      </>
+                                    );
+                                  })()}
                                 </div>
                               )}
                               <button
@@ -8501,6 +8529,11 @@ function AppInner() {
                       <label className="webapp-field">
                         <span>{tr('Слово или фраза', 'Wort oder Phrase')}</span>
                         <div className="dictionary-input-wrap">
+                          {(() => {
+                            const inputTtsKey = 'dictionary-input';
+                            const inputTtsLoading = isTtsPending(inputTtsKey);
+                            return (
+                              <>
                           <input
                             className="dictionary-input"
                             type="text"
@@ -8512,15 +8545,16 @@ function AppInner() {
                             <div className="dictionary-input-tools">
                               <button
                                 type="button"
-                                className="dictionary-tts"
+                                className={`dictionary-tts ${inputTtsLoading ? 'is-loading' : ''}`}
                                 onClick={() => {
                                   const { sourceLang } = getDictionaryDirectionLangCodes();
-                                  void playTts(dictionaryWord.trim(), getTtsLocaleForLang(sourceLang));
+                                  void playTtsWithUi(inputTtsKey, dictionaryWord.trim(), getTtsLocaleForLang(sourceLang));
                                 }}
                                 aria-label={tr('Озвучить введённое слово', 'Eingegebenes Wort vorlesen')}
                                 title={tr('Озвучить введённое слово', 'Eingegebenes Wort vorlesen')}
+                                disabled={inputTtsLoading}
                               >
-                                🔊
+                                {inputTtsLoading ? '…' : '🔊'}
                               </button>
                               <button
                                 type="button"
@@ -8532,6 +8566,9 @@ function AppInner() {
                               </button>
                             </div>
                           )}
+                              </>
+                            );
+                          })()}
                         </div>
                       </label>
                       <div className="dictionary-actions">
@@ -8674,22 +8711,27 @@ function AppInner() {
                           <span className="dictionary-translation">
                             {getDictionaryDisplayedTranslation(dictionaryResult) || '—'}
                           </span>
-                          {getDictionaryDisplayedTranslation(dictionaryResult) && getDictionaryDisplayedTranslation(dictionaryResult) !== '—' && (
+                          {getDictionaryDisplayedTranslation(dictionaryResult) && getDictionaryDisplayedTranslation(dictionaryResult) !== '—' && (() => {
+                            const translatedText = getDictionaryDisplayedTranslation(dictionaryResult);
+                            const ttsKey = `dictionary-translation-${String(dictionaryDirection || 'default')}`;
+                            const loading = isTtsPending(ttsKey);
+                            return (
                             <button
                               type="button"
-                              className="inline-tts-button"
+                              className={`inline-tts-button ${loading ? 'is-loading' : ''}`}
                               onClick={() => {
                                 const { targetLang } = getDictionaryDirectionLangCodes();
-                                const translatedText = getDictionaryDisplayedTranslation(dictionaryResult);
                                 if (!translatedText) return;
-                                void playTts(translatedText, getTtsLocaleForLang(targetLang));
+                                void playTtsWithUi(ttsKey, translatedText, getTtsLocaleForLang(targetLang));
                               }}
                               aria-label={tr('Озвучить перевод', 'Uebersetzung vorlesen')}
                               title={tr('Озвучить перевод', 'Uebersetzung vorlesen')}
+                              disabled={loading}
                             >
-                              🔊
+                              {loading ? '…' : '🔊'}
                             </button>
-                          )}
+                            );
+                          })()}
                           <span className="dictionary-direction">
                             {getLookupDirectionLabel()}
                           </span>
@@ -9572,6 +9614,8 @@ function AppInner() {
                               const feelVisible = !!flashcardFeelVisibleMap[entry.id];
                               const feelLines = formatFeelLines(feel);
                               const previewNavLocked = previewAudioPlaying || !previewAudioReady;
+                              const previewTtsKey = `flashcard-preview-${entry.id}`;
+                              const previewTtsLoading = previewAudioPlaying || isTtsPending(previewTtsKey);
 
                               return (
                                 <div className="flashcard flashcard-preview">
@@ -9587,13 +9631,13 @@ function AppInner() {
                                     </div>
                                     <button
                                       type="button"
-                                      className="flashcard-audio-replay"
+                                      className={`flashcard-audio-replay ${previewTtsLoading ? 'is-loading' : ''}`}
                                       onClick={async () => {
                                         const text = resolveFlashcardGerman(entry);
-                                        if (!text || previewAudioPlaying) return;
+                                        if (!text || previewTtsLoading) return;
                                         try {
                                           setPreviewAudioPlaying(true);
-                                          await playTts(text, getLearningTtsLocale());
+                                          await playTtsWithUi(previewTtsKey, text, getLearningTtsLocale());
                                         } finally {
                                           setPreviewAudioPlaying(false);
                                           setPreviewAudioReady(true);
@@ -9601,9 +9645,9 @@ function AppInner() {
                                       }}
                                       aria-label={tr('Повторить аудио', 'Audio wiederholen')}
                                       title={tr('Повторить аудио', 'Audio wiederholen')}
-                                      disabled={previewAudioPlaying}
+                                      disabled={previewTtsLoading}
                                     >
-                                      🔊
+                                      {previewTtsLoading ? '…' : '🔊'}
                                     </button>
                                   </div>
                                   <div className="flashcard-native-block">
