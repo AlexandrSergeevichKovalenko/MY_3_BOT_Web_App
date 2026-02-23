@@ -316,6 +316,7 @@ body {
   overscroll-behavior-x: none;
   overflow-x: clip;
   max-width: 100%;
+  -webkit-text-size-adjust: 100%;
 }
 
 .webapp-page.is-telegram-fullscreen {
@@ -705,6 +706,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .language-pair-button {
@@ -735,6 +737,7 @@ body {
   display: grid;
   gap: 0;
   text-align: left;
+  min-width: 0;
 }
 
 .topbar-user-name {
@@ -2575,43 +2578,68 @@ body {
   }
 
   .topbar-controls {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: center;
     gap: 4px;
+    flex: 0 0 auto;
   }
 
   .topbar-controls .language-toggle-compact {
+    width: 34px;
     min-width: 34px;
-    min-height: 52px;
-    padding: 3px;
+    min-height: 54px;
+    padding: 3px 2px;
     flex-direction: column;
     gap: 3px;
+    border-radius: 999px;
   }
 
   .topbar-controls .language-chip {
-    min-width: 24px;
+    min-width: 22px;
     height: 20px;
     font-size: 9px;
   }
 
   .topbar-controls .language-pair-button {
+    width: 34px;
     min-width: 34px;
-    min-height: 52px;
-    padding: 4px 5px;
+    min-height: 54px;
+    padding: 4px 2px;
     font-size: 9px;
     line-height: 1.05;
     white-space: normal;
     text-align: center;
-    word-break: break-word;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    letter-spacing: 0.01em;
   }
 
   .topbar-profile {
     gap: 5px;
     min-width: 0;
+    max-width: 116px;
   }
 
   .topbar-user-name {
-    max-width: 108px;
+    max-width: 82px;
+    font-size: 10px;
+  }
+
+  .topbar-title {
+    max-width: 148px;
+  }
+
+  .topbar-avatar {
+    width: 34px;
+    height: 34px;
+  }
+
+  /* Prevent iOS webview auto-zoom on input focus and accidental scale jumps */
+  .webapp-page input,
+  .webapp-page textarea,
+  .webapp-page select {
+    font-size: 16px;
   }
 }
 

@@ -379,6 +379,7 @@ function AppInner() {
   const globalTimerAutoPauseInFlightRef = useRef(false);
   const sectionVisibilitySnapshotRef = useRef(null);
   const autoPausedTodayTimerIdsRef = useRef(new Set());
+  const youtubeTodayTimerSyncInFlightRef = useRef(false);
   const readerAutoPausedByNavigationRef = useRef(false);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
@@ -1409,11 +1410,12 @@ function AppInner() {
     if (!item?.id) return;
     const startedItem = await updateTodayItemStatus(item.id, 'start');
     const effectiveItem = startedItem || item;
+    const taskType = String(effectiveItem?.task_type || '').toLowerCase();
+    const shouldStartTimerRunning = taskType !== 'video' && taskType !== 'youtube';
     await syncTodayItemTimer(effectiveItem, 'start', {
       elapsedSeconds: getTodayItemElapsedSeconds(effectiveItem, Date.now()),
-      running: true,
+      running: shouldStartTimerRunning,
     });
-    const taskType = String(effectiveItem?.task_type || '').toLowerCase();
     if (taskType === 'cards') {
       setSelectedSections(new Set(['flashcards']));
       openFlashcardsSetup(flashcardsRef);
@@ -2888,13 +2890,21 @@ function AppInner() {
       const elapsedSeconds = getTodayItemElapsedSeconds(item, nowMs);
       if (wasVisible && !isVisible && isTodayItemTimerRunning(item)) {
         pausedByNavigation = true;
-        autoPausedTodayTimerIdsRef.current.add(item.id);
+        if (sectionKey !== 'youtube') {
+          autoPausedTodayTimerIdsRef.current.add(item.id);
+        }
         timerSyncCalls.push(
           syncTodayItemTimer(item, 'pause', { elapsedSeconds, running: false })
         );
         return;
       }
-      if (!wasVisible && isVisible && autoPausedTodayTimerIdsRef.current.has(item.id) && !isTodayItemTimerRunning(item)) {
+      if (
+        sectionKey !== 'youtube'
+        && !wasVisible
+        && isVisible
+        && autoPausedTodayTimerIdsRef.current.has(item.id)
+        && !isTodayItemTimerRunning(item)
+      ) {
         resumedByNavigation = true;
         const hasStartedBefore = elapsedSeconds > 0 || status === 'doing';
         timerSyncCalls.push(
@@ -2936,13 +2946,7 @@ function AppInner() {
       }
       return;
     }
-    if (
-      !readerWasVisible
-      && readerIsVisible
-      && readerHasContent
-      && readerTimerPaused
-      && readerAutoPausedByNavigationRef.current
-    ) {
+    if (!readerWasVisible && readerIsVisible && readerHasContent && readerTimerPaused) {
       setReaderTimerPaused(false);
       void startReaderSessionTracking();
       setGlobalPauseReason('');
@@ -2961,6 +2965,44 @@ function AppInner() {
     syncTodayItemTimer,
     stopReaderSessionTracking,
     startReaderSessionTracking,
+  ]);
+
+  useEffect(() => {
+    const youtubeTask = getTodayTaskForSection('youtube');
+    if (!youtubeTask?.id) return;
+    if (youtubeTodayTimerSyncInFlightRef.current) return;
+    const status = String(youtubeTask.status || '').toLowerCase();
+    if (status === 'done') return;
+
+    const shouldRunByPlayback = Boolean(
+      youtubeSectionVisible
+      && youtubePlayerReady
+      && youtubePlaybackStarted
+      && !youtubeIsPaused
+    );
+    const isRunningNow = isTodayItemTimerRunning(youtubeTask);
+    if (shouldRunByPlayback === isRunningNow) return;
+
+    const elapsedSeconds = getTodayItemElapsedSeconds(youtubeTask, Date.now());
+    const hasStartedBefore = elapsedSeconds > 0 || status === 'doing';
+    youtubeTodayTimerSyncInFlightRef.current = true;
+    void syncTodayItemTimer(
+      youtubeTask,
+      shouldRunByPlayback ? (hasStartedBefore ? 'resume' : 'start') : 'pause',
+      { elapsedSeconds, running: shouldRunByPlayback }
+    ).finally(() => {
+      youtubeTodayTimerSyncInFlightRef.current = false;
+    });
+  }, [
+    todayPlan,
+    youtubeSectionVisible,
+    youtubePlayerReady,
+    youtubePlaybackStarted,
+    youtubeIsPaused,
+    getTodayTaskForSection,
+    getTodayItemElapsedSeconds,
+    isTodayItemTimerRunning,
+    syncTodayItemTimer,
   ]);
 
   useEffect(() => {
@@ -6118,6 +6160,7 @@ function AppInner() {
       return;
     }
     if (!youtubeSectionVisible) {
+      setYoutubeIsPaused(true);
       if (youtubeTimeIntervalRef.current) {
         clearInterval(youtubeTimeIntervalRef.current);
         youtubeTimeIntervalRef.current = null;
