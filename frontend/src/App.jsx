@@ -188,6 +188,7 @@ function AppInner() {
   const [todayPlanError, setTodayPlanError] = useState('');
   const [todayTestSending, setTodayTestSending] = useState(false);
   const [todayItemLoading, setTodayItemLoading] = useState({});
+  const [todayTimerNowMs, setTodayTimerNowMs] = useState(Date.now());
   const [theoryLoading, setTheoryLoading] = useState(false);
   const [theoryError, setTheoryError] = useState('');
   const [theoryPackage, setTheoryPackage] = useState(null);
@@ -361,6 +362,7 @@ function AppInner() {
   const readerTimerIntervalRef = useRef(null);
   const readerSwipeStartRef = useRef(null);
   const readerPageNavLockRef = useRef(false);
+  const todayTimerCompletionLockRef = useRef(new Set());
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
@@ -1080,6 +1082,153 @@ function AppInner() {
     }
   };
 
+  const getTodayItemTimerPayload = (item) => (
+    item?.payload && typeof item.payload === 'object' ? item.payload : {}
+  );
+
+  const getTodayItemGoalSeconds = (item) => {
+    const payload = getTodayItemTimerPayload(item);
+    const explicitGoal = Number(payload?.timer_goal_seconds || 0);
+    if (explicitGoal > 0) return Math.max(0, Math.floor(explicitGoal));
+    return Math.max(0, Math.floor(Number(item?.estimated_minutes || 0) * 60));
+  };
+
+  const getTodayItemElapsedSeconds = (item, nowMs = Date.now()) => {
+    const payload = getTodayItemTimerPayload(item);
+    const baseSeconds = Math.max(0, Math.floor(Number(payload?.timer_seconds || 0)));
+    const timerRunning = Boolean(payload?.timer_running);
+    const startedAtRaw = String(payload?.timer_started_at || '').trim();
+    if (!timerRunning || !startedAtRaw) return baseSeconds;
+    const startedMs = Date.parse(startedAtRaw);
+    if (!Number.isFinite(startedMs)) return baseSeconds;
+    const liveExtra = Math.max(0, Math.floor((nowMs - startedMs) / 1000));
+    return baseSeconds + liveExtra;
+  };
+
+  const getTodayItemProgressPercent = (item, nowMs = Date.now()) => {
+    const goalSeconds = getTodayItemGoalSeconds(item);
+    const elapsed = getTodayItemElapsedSeconds(item, nowMs);
+    if (goalSeconds <= 0) return elapsed > 0 ? 100 : 0;
+    return Math.max(0, Math.min(100, (elapsed / goalSeconds) * 100));
+  };
+
+  const isTodayItemTimerRunning = (item) => {
+    const payload = getTodayItemTimerPayload(item);
+    return Boolean(payload?.timer_running) && String(item?.status || '').toLowerCase() !== 'done';
+  };
+
+  const syncTodayItemTimer = async (item, action, options = {}) => {
+    if (!initData || !item?.id) return null;
+    const elapsedSeconds = options?.elapsedSeconds;
+    const running = options?.running;
+    try {
+      setTodayItemLoading((prev) => ({ ...prev, [item.id]: action === 'sync' ? 'timer_sync' : `timer_${action}` }));
+      const response = await fetch(`/api/today/items/${item.id}/timer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          action,
+          elapsed_seconds: Number.isFinite(Number(elapsedSeconds)) ? Math.max(0, Math.floor(Number(elapsedSeconds))) : undefined,
+          running: running === undefined ? undefined : Boolean(running),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка синхронизации таймера задачи', 'Fehler bei der Aufgaben-Timer-Synchronisierung'));
+      }
+      const data = await response.json();
+      const updated = data?.item || null;
+      if (updated) {
+        setTodayPlan((prev) => {
+          if (!prev || !Array.isArray(prev.items)) return prev;
+          return {
+            ...prev,
+            items: prev.items.map((entry) => (entry.id === updated.id ? { ...entry, ...updated } : entry)),
+          };
+        });
+      }
+      return updated;
+    } catch (error) {
+      setTodayPlanError(normalizeNetworkErrorMessage(
+        error,
+        'Не удалось синхронизировать таймер задачи.',
+        'Aufgaben-Timer konnte nicht synchronisiert werden.'
+      ));
+      return null;
+    } finally {
+      setTodayItemLoading((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+    }
+  };
+
+  const findTodayTaskByTypes = (types = []) => {
+    const normalizedTypes = new Set(types.map((entry) => String(entry || '').toLowerCase()));
+    const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
+    const active = items.find((entry) => normalizedTypes.has(String(entry?.task_type || '').toLowerCase()) && String(entry?.status || '').toLowerCase() !== 'done');
+    if (active) return active;
+    return items.find((entry) => normalizedTypes.has(String(entry?.task_type || '').toLowerCase())) || null;
+  };
+
+  const getTodayTaskForSection = (sectionKey) => {
+    const normalized = String(sectionKey || '').toLowerCase();
+    if (normalized === 'translations') return findTodayTaskByTypes(['translation']);
+    if (normalized === 'theory') return findTodayTaskByTypes(['theory']);
+    if (normalized === 'youtube') return findTodayTaskByTypes(['video', 'youtube']);
+    if (normalized === 'flashcards') return findTodayTaskByTypes(['cards']);
+    return null;
+  };
+
+  const formatCompactTimer = (seconds) => {
+    const safe = Math.max(0, Math.floor(Number(seconds || 0)));
+    const mins = Math.floor(safe / 60);
+    const secs = safe % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
+
+  const toggleTodaySectionTaskTimer = async (sectionKey) => {
+    const item = getTodayTaskForSection(sectionKey);
+    if (!item || String(item?.status || '').toLowerCase() === 'done') return;
+    const nowElapsed = getTodayItemElapsedSeconds(item, Date.now());
+    if (isTodayItemTimerRunning(item)) {
+      await syncTodayItemTimer(item, 'pause', { elapsedSeconds: nowElapsed, running: false });
+      return;
+    }
+    const hasStartedBefore = nowElapsed > 0 || String(item?.status || '').toLowerCase() === 'doing';
+    await syncTodayItemTimer(
+      item,
+      hasStartedBefore ? 'resume' : 'start',
+      { elapsedSeconds: nowElapsed, running: true }
+    );
+  };
+
+  const renderTodaySectionTaskHud = (sectionKey) => {
+    const item = getTodayTaskForSection(sectionKey);
+    if (!item) return null;
+    const elapsed = getTodayItemElapsedSeconds(item, todayTimerNowMs);
+    const progress = getTodayItemProgressPercent(item, todayTimerNowMs);
+    const done = String(item?.status || '').toLowerCase() === 'done' || progress >= 100;
+    const running = isTodayItemTimerRunning(item);
+    return (
+      <div className="today-section-task-hud">
+        {done ? (
+          <span className="today-section-task-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
+        ) : (
+          <button
+            type="button"
+            className={`reader-timer-pill today-section-timer-pill ${!running ? 'is-paused' : ''}`}
+            onClick={() => toggleTodaySectionTaskTimer(sectionKey)}
+            title={tr('Пауза/продолжение таймера задачи', 'Aufgaben-Timer pausieren/fortsetzen')}
+          >
+            {running ? `⏱ ${formatCompactTimer(elapsed)}` : `⏸ ${formatCompactTimer(elapsed)}`}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   const prepareTodayTheory = async (item, options = {}) => {
     if (!initData || !item?.id) return;
     const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
@@ -1185,6 +1334,10 @@ function AppInner() {
     if (!item?.id) return;
     const startedItem = await updateTodayItemStatus(item.id, 'start');
     const effectiveItem = startedItem || item;
+    await syncTodayItemTimer(effectiveItem, 'start', {
+      elapsedSeconds: getTodayItemElapsedSeconds(effectiveItem, Date.now()),
+      running: true,
+    });
     const taskType = String(effectiveItem?.task_type || '').toLowerCase();
     if (taskType === 'cards') {
       setSelectedSections(new Set(['flashcards']));
@@ -1266,11 +1419,6 @@ function AppInner() {
       }
       openSingleSectionAndScroll('youtube', youtubeRef);
     }
-  };
-
-  const completeTodayTask = async (item) => {
-    if (!item?.id) return;
-    await updateTodayItemStatus(item.id, 'complete');
   };
 
   const submitTodayVideoFeedback = async (item, vote) => {
@@ -1378,6 +1526,41 @@ function AppInner() {
     }
     return item?.title || tr('Задача', 'Aufgabe');
   };
+
+  useEffect(() => {
+    const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
+    const hasRunning = items.some((item) => isTodayItemTimerRunning(item));
+    if (!hasRunning) return undefined;
+    const intervalId = window.setInterval(() => {
+      setTodayTimerNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [todayPlan]);
+
+  useEffect(() => {
+    const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
+    items.forEach((item) => {
+      if (!item?.id) return;
+      const status = String(item?.status || '').toLowerCase();
+      if (status === 'done') {
+        todayTimerCompletionLockRef.current.delete(item.id);
+        return;
+      }
+      if (!isTodayItemTimerRunning(item)) {
+        return;
+      }
+      const goal = getTodayItemGoalSeconds(item);
+      if (goal <= 0) return;
+      const elapsed = getTodayItemElapsedSeconds(item, todayTimerNowMs);
+      if (elapsed < goal) return;
+      if (todayTimerCompletionLockRef.current.has(item.id)) return;
+      todayTimerCompletionLockRef.current.add(item.id);
+      syncTodayItemTimer(item, 'sync', { elapsedSeconds: elapsed, running: false })
+        .finally(() => {
+          todayTimerCompletionLockRef.current.delete(item.id);
+        });
+    });
+  }, [todayPlan, todayTimerNowMs]);
 
   const submitSrsReview = async (ratingValue) => {
     if (!initData) {
@@ -6686,6 +6869,11 @@ function AppInner() {
                     {todayPlan.items.map((item) => {
                       const loadingAction = todayItemLoading[item.id];
                       const taskType = String(item?.task_type || '').toLowerCase();
+                      const elapsedSeconds = getTodayItemElapsedSeconds(item, todayTimerNowMs);
+                      const progressPercent = getTodayItemProgressPercent(item, todayTimerNowMs);
+                      const doneByProgress = progressPercent >= 100;
+                      const done = String(item?.status || '').toLowerCase() === 'done' || doneByProgress;
+                      const itemStatusClass = done ? 'done' : (item.status || 'todo');
                       const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
                       const videoTopic = String(payload?.sub_category || payload?.skill_title || payload?.main_category || '').trim();
                       const videoLikes = Number(payload?.video_likes || 0);
@@ -6693,12 +6881,13 @@ function AppInner() {
                       const videoScore = Number(payload?.video_score || 0);
                       const userVote = Number(payload?.video_user_vote || 0);
                       return (
-                        <div className={`today-plan-item is-${item.status || 'todo'}`} key={item.id}>
+                        <div className={`today-plan-item is-${itemStatusClass}`} key={item.id}>
                           <div className="today-plan-item-main">
                             <div className="today-plan-item-title">{getTodayItemTitle(item)}</div>
                             <div className="today-plan-item-meta">
                               {taskType !== 'video' && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
-                              <span>{String(item.status || 'todo').toUpperCase()}</span>
+                              <span>{done ? 'DONE' : String(item.status || 'todo').toUpperCase()}</span>
+                              <span>⏱ {formatCompactTimer(elapsedSeconds)}</span>
                             </div>
                             {taskType === 'video' && (
                               <div className="today-video-hint">
@@ -6720,18 +6909,13 @@ function AppInner() {
                               type="button"
                               className="secondary-button"
                               onClick={() => startTodayTask(item)}
-                              disabled={Boolean(loadingAction) || item.status === 'done'}
+                              disabled={Boolean(loadingAction) || done}
                             >
                               {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
                             </button>
-                            <button
-                              type="button"
-                              className="primary-button"
-                              onClick={() => completeTodayTask(item)}
-                              disabled={Boolean(loadingAction) || item.status === 'done'}
-                            >
-                              {loadingAction === 'complete' ? tr('Сохраняем...', 'Speichern...') : tr('Готово', 'Fertig')}
-                            </button>
+                            <div className={`today-task-progress-badge ${done ? 'is-done' : ''}`} title={done ? tr('Задача выполнена', 'Aufgabe erledigt') : `${Math.round(progressPercent)}%`}>
+                              {done ? '✅' : `⭕ ${Math.round(progressPercent)}%`}
+                            </div>
                             {taskType === 'video' && (
                               <>
                                 <button
@@ -6871,6 +7055,7 @@ function AppInner() {
                       {tr('На главную', 'Startseite')}
                     </button>
                   )}
+                  {renderTodaySectionTaskHud('theory')}
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="theory-actions-top">
@@ -7032,6 +7217,7 @@ function AppInner() {
                       {tr('На главную', 'Startseite')}
                     </button>
                   )}
+                  {renderTodaySectionTaskHud('translations')}
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="webapp-translation-start">
@@ -7393,6 +7579,7 @@ function AppInner() {
                           {tr('На главную', 'Startseite')}
                         </button>
                       )}
+                      {renderTodaySectionTaskHud('youtube')}
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
                     )}
@@ -8381,11 +8568,14 @@ function AppInner() {
 
             {isSectionVisible('flashcards') && (
               <section className="webapp-flashcards" ref={flashcardsRef}>
-                {isFocusedSection('flashcards') && (
-                  <div className="section-inline-actions">
-                    <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                      {tr('На главную', 'Startseite')}
-                    </button>
+                {(isFocusedSection('flashcards') || Boolean(getTodayTaskForSection('flashcards'))) && (
+                  <div className="section-inline-actions section-inline-actions-task">
+                    {isFocusedSection('flashcards') && (
+                      <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                        {tr('На главную', 'Startseite')}
+                      </button>
+                    )}
+                    {renderTodaySectionTaskHud('flashcards')}
                   </div>
                 )}
                 {!flashcardsVisible && (

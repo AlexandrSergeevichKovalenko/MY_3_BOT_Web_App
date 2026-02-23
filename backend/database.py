@@ -4489,6 +4489,178 @@ def update_daily_plan_item_payload(
             return _map_daily_plan_item(row)
 
 
+def update_daily_plan_item_timer(
+    *,
+    user_id: int,
+    item_id: int,
+    action: str,
+    elapsed_seconds: int | None = None,
+    running: bool | None = None,
+    event_at: datetime | None = None,
+) -> dict | None:
+    normalized_action = str(action or "").strip().lower()
+    if normalized_action not in {"start", "pause", "resume", "sync"}:
+        raise ValueError("action must be one of: start, pause, resume, sync")
+
+    def _parse_iso_dt(raw: object) -> datetime | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    now_utc = event_at or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    else:
+        now_utc = now_utc.astimezone(timezone.utc)
+    safe_elapsed_override = None if elapsed_seconds is None else max(0, int(elapsed_seconds))
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    i.id,
+                    i.plan_id,
+                    i.order_index,
+                    i.task_type,
+                    i.title,
+                    i.estimated_minutes,
+                    i.payload,
+                    i.status,
+                    i.completed_at
+                FROM bt_3_daily_plan_items i
+                JOIN bt_3_daily_plans p ON p.id = i.plan_id
+                WHERE i.id = %s
+                  AND p.user_id = %s
+                LIMIT 1;
+                """,
+                (int(item_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            current_item = _map_daily_plan_item(row)
+            current_payload = current_item["payload"] if isinstance(current_item["payload"], dict) else {}
+            estimated_minutes = max(0, int(current_item.get("estimated_minutes") or 0))
+            goal_seconds = estimated_minutes * 60
+
+            stored_elapsed = max(0, int(current_payload.get("timer_seconds") or 0))
+            stored_started_at = _parse_iso_dt(current_payload.get("timer_started_at"))
+            stored_running = bool(current_payload.get("timer_running")) and stored_started_at is not None
+            live_elapsed = stored_elapsed
+            if stored_running and stored_started_at:
+                live_elapsed += max(0, int((now_utc - stored_started_at).total_seconds()))
+
+            if safe_elapsed_override is not None:
+                live_elapsed = max(live_elapsed, safe_elapsed_override)
+
+            next_elapsed = max(0, int(live_elapsed))
+            next_running = stored_running
+            next_paused = bool(current_payload.get("timer_paused")) and not stored_running
+            next_started_at = stored_started_at if stored_running else None
+            next_status = str(current_item.get("status") or "todo").lower()
+
+            if normalized_action == "start":
+                if next_status != "done":
+                    next_status = "doing"
+                    next_running = True
+                    next_paused = False
+                    next_started_at = now_utc
+            elif normalized_action == "resume":
+                if next_status != "done":
+                    next_status = "doing"
+                    if not next_running:
+                        next_running = True
+                        next_started_at = now_utc
+                    next_paused = False
+            elif normalized_action == "pause":
+                next_running = False
+                next_paused = next_status != "done"
+                next_started_at = None
+            elif normalized_action == "sync":
+                if running is not None:
+                    if bool(running) and next_status != "done":
+                        next_running = True
+                        next_paused = False
+                        if not next_started_at:
+                            next_started_at = now_utc
+                    else:
+                        next_running = False
+                        next_paused = next_status != "done"
+                        next_started_at = None
+
+            progress_percent = 0.0
+            if goal_seconds > 0:
+                progress_percent = min(100.0, (float(next_elapsed) / float(goal_seconds)) * 100.0)
+            elif next_elapsed > 0:
+                progress_percent = 100.0
+
+            if goal_seconds > 0 and next_elapsed >= goal_seconds:
+                next_status = "done"
+                next_running = False
+                next_paused = False
+                next_started_at = None
+            elif next_status != "done" and next_elapsed > 0 and next_status in {"todo", "skipped"}:
+                next_status = "doing"
+
+            payload_next = {
+                **current_payload,
+                "timer_seconds": int(next_elapsed),
+                "timer_goal_seconds": int(goal_seconds),
+                "timer_progress_percent": round(progress_percent, 2),
+                "timer_running": bool(next_running),
+                "timer_paused": bool(next_paused),
+                "timer_started_at": next_started_at.isoformat() if next_started_at else None,
+                "timer_updated_at": now_utc.isoformat(),
+            }
+
+            cursor.execute(
+                """
+                UPDATE bt_3_daily_plan_items i
+                SET
+                    payload = %s::jsonb,
+                    status = %s,
+                    completed_at = CASE
+                        WHEN %s = 'done' THEN NOW()
+                        ELSE NULL
+                    END
+                FROM bt_3_daily_plans p
+                WHERE i.id = %s
+                  AND i.plan_id = p.id
+                  AND p.user_id = %s
+                RETURNING
+                    i.id,
+                    i.plan_id,
+                    i.order_index,
+                    i.task_type,
+                    i.title,
+                    i.estimated_minutes,
+                    i.payload,
+                    i.status,
+                    i.completed_at;
+                """,
+                (
+                    json.dumps(payload_next, ensure_ascii=False),
+                    next_status,
+                    next_status,
+                    int(item_id),
+                    int(user_id),
+                ),
+            )
+            saved = cursor.fetchone()
+            if not saved:
+                return None
+            return _map_daily_plan_item(saved)
+
+
 def _normalize_focus_part(value: str | None) -> str:
     return " ".join(str(value or "").strip().lower().split())
 

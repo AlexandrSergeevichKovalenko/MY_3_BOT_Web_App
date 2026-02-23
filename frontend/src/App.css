@@ -1008,6 +1008,53 @@ body {
   margin-bottom: 8px;
 }
 
+.section-inline-actions-task {
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.today-section-task-hud {
+  position: absolute;
+  top: 2px;
+  right: 66px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  z-index: 2;
+}
+
+.section-inline-actions-task .today-section-task-hud {
+  position: static;
+  margin-left: auto;
+}
+
+.today-section-timer-pill {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  background: rgba(173, 32, 32, 0.9);
+  border-color: rgba(255, 130, 130, 0.78);
+  color: #fff2f2;
+}
+
+.today-section-timer-pill.is-paused {
+  background: rgba(255, 209, 102, 0.92);
+  border-color: rgba(255, 190, 60, 0.92);
+  color: #3a2a00;
+}
+
+.today-section-task-done {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(28, 66, 54, 0.88);
+  border: 1px solid rgba(123, 241, 179, 0.7);
+}
+
 .section-corner-logo {
   position: absolute;
   top: 0;
@@ -5007,6 +5054,27 @@ body {
   align-items: center;
 }
 
+.today-task-progress-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 194, 255, 0.55);
+  background: rgba(9, 22, 40, 0.78);
+  color: #d5e9ff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.today-task-progress-badge.is-done {
+  border-color: rgba(123, 241, 179, 0.7);
+  background: rgba(19, 58, 41, 0.88);
+  color: #d8ffe9;
+}
+
 .today-video-hint {
   margin-top: 6px;
   font-size: 11px;
@@ -5459,6 +5527,9 @@ body {
   }
   .today-plan-item-actions {
     justify-content: flex-end;
+  }
+  .today-section-task-hud {
+    right: 58px;
   }
   .skills-grid {
     grid-template-columns: 1fr;

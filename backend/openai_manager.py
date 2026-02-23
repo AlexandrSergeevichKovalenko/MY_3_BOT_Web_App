@@ -959,9 +959,18 @@ NOW DO THE SAME FOR THIS USER SENTENCE:
 Original sentence:
 "{sentence}"
 
-LANGUAGE TAGGING RULE (must follow):
-- Any fragment written in target_language (examples, constructions, quoted target sentence fragments) MUST be wrapped as [TARGET]...[/TARGET].
-- All explanatory text outside those fragments MUST stay in native_language.
+LANGUAGE TAGGING PROTOCOL (must follow strictly):
+1) Every target-language fragment MUST be wrapped as [TARGET]...[/TARGET].
+2) Every native-language explanation fragment MUST be wrapped as [SOURCE]...[/SOURCE].
+3) Never mix languages inside one tag. One tag = one language only.
+4) For grammar pattern examples, keep punctuation inside the same tag.
+5) Output only a sequence of tagged fragments; do not leave untagged text.
+
+GOOD EXAMPLE:
+[SOURCE]Используем конструкцию[/SOURCE] [TARGET]wenn + Nebensatz[/TARGET] [SOURCE]для условного придаточного.[/SOURCE]
+
+BAD EXAMPLE:
+[SOURCE]Используем wenn + Nebensatz для условного придаточного.[/SOURCE]
 """,
 "sales_assistant_instructions": """
     Ти - привітний та професійний асистент з продажів, що представляє компанію. 

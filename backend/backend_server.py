@@ -186,6 +186,7 @@ from backend.database import (
     create_daily_plan,
     update_daily_plan_item_status,
     update_daily_plan_item_payload,
+    update_daily_plan_item_timer,
     get_best_video_recommendation_for_focus,
     upsert_video_recommendation,
     get_video_recommendation_by_id,
@@ -2786,16 +2787,24 @@ def _dedupe_sentences(items: list[dict]) -> list[dict]:
     return result
 
 
-def _send_group_message(text: str) -> None:
+def _send_group_message(
+    text: str,
+    reply_markup: dict | None = None,
+    disable_web_page_preview: bool = True,
+) -> None:
     if not TELEGRAM_GROUP_CHAT_ID:
         raise RuntimeError("TELEGRAM_GROUP_CHAT_ID должен быть установлен")
     url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_GROUP_CHAT_ID,
+        "text": text,
+        "disable_web_page_preview": bool(disable_web_page_preview),
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     response = requests.post(
         url,
-        json={
-            "chat_id": TELEGRAM_GROUP_CHAT_ID,
-            "text": text,
-        },
+        json=payload,
         timeout=15,
     )
     if response.status_code >= 400:
@@ -3494,8 +3503,21 @@ def _split_explanation_fragments_with_lang(
     src = _normalize_short_lang_code(source_lang, fallback="ru")
     tgt = _normalize_short_lang_code(target_lang, fallback="de")
 
-    tagged_pattern = re.compile(r"\[TARGET\](.*?)\[/TARGET\]", re.IGNORECASE | re.DOTALL)
-    has_target_tags = bool(tagged_pattern.search(raw))
+    def _tag_to_lang(tag_name: str) -> str | None:
+        tag = str(tag_name or "").strip().lower()
+        if tag in {"target", "tgt"}:
+            return tgt
+        if tag in {"source", "src", "native", "explanation"}:
+            return src
+        if tag in {"de", "en", "ru", "es", "it"}:
+            return _normalize_short_lang_code(tag, fallback=src)
+        return None
+
+    tagged_pattern = re.compile(
+        r"\[(TARGET|TGT|SOURCE|SRC|NATIVE|EXPLANATION|DE|EN|RU|ES|IT)\](.*?)\[/\1\]",
+        re.IGNORECASE | re.DOTALL,
+    )
+    has_explicit_tags = bool(tagged_pattern.search(raw))
     segments: list[tuple[str, str]] = []
     cursor = 0
 
@@ -3503,12 +3525,13 @@ def _split_explanation_fragments_with_lang(
         before = raw[cursor:match.start()].strip()
         if before:
             segments.extend(_split_explanation_fragments_with_lang(before, src, tgt))
-        inside = _normalize_utterance_text(match.group(1))
-        if inside:
-            segments.append((inside, tgt))
+        tag_lang = _tag_to_lang(match.group(1))
+        tagged_text = _normalize_utterance_text(match.group(2))
+        if tagged_text:
+            segments.append((tagged_text, tag_lang or src))
         cursor = match.end()
 
-    if has_target_tags:
+    if has_explicit_tags:
         tail = raw[cursor:].strip()
         if tail:
             segments.extend(_split_explanation_fragments_with_lang(tail, src, tgt))
@@ -3539,6 +3562,70 @@ def _split_explanation_fragments_with_lang(
     return segments
 
 
+def _split_mixed_fragment_by_script(
+    text: str,
+    source_lang: str,
+    target_lang: str,
+    default_lang: str,
+) -> list[tuple[str, str]]:
+    raw = str(text or "")
+    if not raw.strip():
+        return []
+
+    src = _normalize_short_lang_code(source_lang, fallback="ru")
+    tgt = _normalize_short_lang_code(target_lang, fallback="de")
+    fallback = _normalize_short_lang_code(default_lang, fallback=src)
+    has_cyr = bool(re.search(r"[А-Яа-яЁё]", raw))
+    has_latin = bool(re.search(r"[A-Za-zÀ-ÿ]", raw))
+    if not (has_cyr and has_latin):
+        cleaned = _normalize_utterance_text(raw)
+        return [(cleaned, fallback)] if cleaned else []
+
+    non_ru_lang = tgt if src == "ru" else src if tgt == "ru" else tgt
+    token_pattern = re.compile(
+        r"[A-Za-zÀ-ÿ]+(?:[’'`\-][A-Za-zÀ-ÿ]+)*"
+        r"|[А-Яа-яЁё]+(?:[’'`\-][А-Яа-яЁё]+)*"
+        r"|\d+"
+        r"|[^\w\s]+"
+        r"|\s+",
+        re.UNICODE,
+    )
+    tokens = token_pattern.findall(raw)
+    if not tokens:
+        cleaned = _normalize_utterance_text(raw)
+        return [(cleaned, fallback)] if cleaned else []
+
+    result: list[tuple[str, str]] = []
+    buf: list[str] = []
+    current_lang = fallback
+
+    def _flush() -> None:
+        nonlocal buf
+        if not buf:
+            return
+        segment = _normalize_utterance_text("".join(buf))
+        buf = []
+        if segment:
+            result.append((segment, current_lang))
+
+    for token in tokens:
+        token_lang = current_lang
+        if re.search(r"[А-Яа-яЁё]", token):
+            token_lang = "ru" if "ru" in {src, tgt} else src
+        elif re.search(r"[A-Za-zÀ-ÿ]", token):
+            token_lang = non_ru_lang
+        elif token.strip():
+            # Punctuation/numbers follow current segment language.
+            token_lang = current_lang
+        if token_lang != current_lang and token.strip():
+            _flush()
+            current_lang = token_lang
+        buf.append(token)
+
+    _flush()
+    return result
+
+
 def build_explanation_mixed_script(
     explanation_text: str,
     source_lang: str,
@@ -3552,7 +3639,17 @@ def build_explanation_mixed_script(
     if not segments:
         return []
     script: list[dict] = []
-    for text, lang in segments[:20]:
+    mixed_segments: list[tuple[str, str]] = []
+    for text, lang in segments[:40]:
+        mixed_segments.extend(
+            _split_mixed_fragment_by_script(
+                text=text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                default_lang=lang,
+            )
+        )
+    for text, lang in mixed_segments[:80]:
         script.extend(build_source_script(text, source_lang=lang))
     if script:
         script[-1]["pause_ms_after"] = 800
@@ -5661,6 +5758,45 @@ def start_today_item(item_id: int):
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": f"Ошибка обновления статуса: {exc}"}), 500
+
+    if not item:
+        return jsonify({"error": "Задача не найдена"}), 404
+    return jsonify({"ok": True, "item": item})
+
+
+@app.route("/api/today/items/<int:item_id>/timer", methods=["POST"])
+def update_today_item_timer(item_id: int):
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    action = str(payload.get("action") or "sync").strip().lower() or "sync"
+    elapsed_raw = payload.get("elapsed_seconds")
+    running_raw = payload.get("running")
+
+    elapsed_seconds = None
+    if elapsed_raw is not None and str(elapsed_raw).strip() != "":
+        try:
+            elapsed_seconds = max(0, int(elapsed_raw))
+        except Exception:
+            return jsonify({"error": "elapsed_seconds должен быть числом"}), 400
+
+    running = None if running_raw is None else bool(running_raw)
+
+    try:
+        item = update_daily_plan_item_timer(
+            user_id=int(user_id),
+            item_id=int(item_id),
+            action=action,
+            elapsed_seconds=elapsed_seconds,
+            running=running,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка обновления таймера задачи: {exc}"}), 500
 
     if not item:
         return jsonify({"error": "Задача не найдена"}), 404
@@ -9529,10 +9665,14 @@ def _dispatch_plan_period_progress(
                     f"🗓 Новый понедельник, {name}.\n"
                     "Поставь личный план на неделю: переводы, выученные слова, минуты с агентом и чтение."
                 )
+                plan_button_url = _build_webapp_deeplink("webapp")
+                reply_markup = {
+                    "inline_keyboard": [[{"text": "Войти и поставить план", "url": plan_button_url}]],
+                }
                 if _is_user_member_of_group_chat(user_id):
-                    _send_group_message(reminder)
+                    _send_group_message(reminder, reply_markup=reply_markup)
                 else:
-                    _send_private_message(user_id=user_id, text=reminder)
+                    _send_private_message(user_id=user_id, text=reminder, reply_markup=reply_markup)
                 reminders_sent += 1
             except Exception as exc:
                 errors.append(f"reminder user {user_id}: {exc}")
