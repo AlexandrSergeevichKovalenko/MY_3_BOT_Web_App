@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LiveKitRoom,
   ControlBar,
@@ -274,6 +274,7 @@ function AppInner() {
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
   const [flashcardTimedOut, setFlashcardTimedOut] = useState(false);
   const [flashcardOutcome, setFlashcardOutcome] = useState(null);
+  const [globalTimerSuspended, setGlobalTimerSuspended] = useState(false);
   const [blocksResetNonce, setBlocksResetNonce] = useState(0);
   const [blocksMenuOpen, setBlocksMenuOpen] = useState(false);
   const [blocksMenuSettingsOpen, setBlocksMenuSettingsOpen] = useState(false);
@@ -363,6 +364,7 @@ function AppInner() {
   const readerSwipeStartRef = useRef(null);
   const readerPageNavLockRef = useRef(false);
   const todayTimerCompletionLockRef = useRef(new Set());
+  const globalTimerAutoPauseInFlightRef = useRef(false);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.jpg`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
@@ -1121,10 +1123,12 @@ function AppInner() {
     if (!initData || !item?.id) return null;
     const elapsedSeconds = options?.elapsedSeconds;
     const running = options?.running;
+    const keepalive = Boolean(options?.keepalive);
     try {
       setTodayItemLoading((prev) => ({ ...prev, [item.id]: action === 'sync' ? 'timer_sync' : `timer_${action}` }));
       const response = await fetch(`/api/today/items/${item.id}/timer`, {
         method: 'POST',
+        keepalive,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
@@ -1346,6 +1350,47 @@ function AppInner() {
     }
     if (taskType === 'translation') {
       openSingleSectionAndScroll('translations', translationsRef);
+      const taskPayload = effectiveItem?.payload && typeof effectiveItem.payload === 'object' ? effectiveItem.payload : {};
+      try {
+        setWebappLoading(true);
+        setWebappError('');
+        setFinishMessage('');
+        setFinishStatus('idle');
+        setTranslationCheckProgress({ active: false, done: 0, total: 0 });
+        const response = await fetch(`/api/today/items/${effectiveItem.id}/translation/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            level: String(taskPayload?.level || selectedLevel || 'c1').toLowerCase(),
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(await readApiError(
+            response,
+            'Ошибка запуска переводов по задаче дня',
+            'Fehler beim Start der Tagesaufgabe (Uebersetzung)'
+          ));
+        }
+        const data = await response.json();
+        const practice = data?.practice || {};
+        const levelLabel = String(practice?.level || '').trim().toLowerCase();
+        if (levelLabel) {
+          setSelectedLevel(levelLabel);
+        }
+        if (data?.blocked) {
+          setFinishMessage(tr(
+            'Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.',
+            'Es gibt eine aktive Session. Beende die aktuelle Uebersetzung, um ein neues Set zu erhalten.'
+          ));
+        }
+        await loadSessionInfo();
+        await loadSentences();
+      } catch (error) {
+        setWebappError(`${tr('Ошибка старта', 'Startfehler')}: ${error.message}`);
+      } finally {
+        setWebappLoading(false);
+      }
       return;
     }
     if (taskType === 'theory') {
@@ -2427,6 +2472,63 @@ function AppInner() {
     }
   };
 
+  const pauseAllActiveTimers = useCallback(async (reason = 'auto') => {
+    if (globalTimerAutoPauseInFlightRef.current) return;
+    globalTimerAutoPauseInFlightRef.current = true;
+    setGlobalTimerSuspended(true);
+    try {
+      const nowMs = Date.now();
+      const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
+      const runningTodayTimers = items.filter((item) => (
+        String(item?.status || '').toLowerCase() !== 'done'
+        && isTodayItemTimerRunning(item)
+      ));
+      if (runningTodayTimers.length > 0) {
+        await Promise.all(runningTodayTimers.map((item) => (
+          syncTodayItemTimer(item, 'pause', {
+            elapsedSeconds: getTodayItemElapsedSeconds(item, nowMs),
+            running: false,
+            keepalive: reason === 'pagehide' || reason === 'beforeunload',
+          })
+        )));
+      }
+
+      if (readerHasContent && !readerTimerPaused) {
+        const startedTs = Date.parse(String(readerSessionStartedAt || ''));
+        const segmentSeconds = Number.isFinite(startedTs)
+          ? Math.max(0, Math.floor((nowMs - startedTs) / 1000))
+          : 0;
+        if (segmentSeconds > 0) {
+          setReaderAccumulatedSeconds((prev) => prev + segmentSeconds);
+        }
+        setReaderTimerPaused(true);
+        if (readerSessionId) {
+          await stopReaderSessionTracking(readerSessionId);
+        }
+      }
+
+      if (assistantSessionId) {
+        await stopAssistantSessionTracking(assistantSessionId);
+      }
+    } catch (error) {
+      console.warn(`auto timer pause failed (${reason})`, error);
+    } finally {
+      globalTimerAutoPauseInFlightRef.current = false;
+    }
+  }, [
+    todayPlan,
+    readerHasContent,
+    readerTimerPaused,
+    readerSessionStartedAt,
+    readerSessionId,
+    assistantSessionId,
+    syncTodayItemTimer,
+    getTodayItemElapsedSeconds,
+    isTodayItemTimerRunning,
+    stopReaderSessionTracking,
+    stopAssistantSessionTracking,
+  ]);
+
   useEffect(() => {
     if (!telegramApp) return;
     let fullscreenRetryCount = 0;
@@ -2574,6 +2676,45 @@ function AppInner() {
       }
     };
   }, [telegramApp]);
+
+  useEffect(() => {
+    const pauseNow = () => {
+      void pauseAllActiveTimers('lifecycle');
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        pauseNow();
+      } else if (document.visibilityState === 'visible') {
+        setGlobalTimerSuspended(false);
+      }
+    };
+    const onWindowBlur = () => {
+      pauseNow();
+    };
+    const onWindowFocus = () => {
+      setGlobalTimerSuspended(false);
+    };
+    const onPageHide = () => {
+      void pauseAllActiveTimers('pagehide');
+    };
+    const onBeforeUnload = () => {
+      void pauseAllActiveTimers('beforeunload');
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onWindowBlur);
+    window.addEventListener('focus', onWindowFocus);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onBeforeUnload);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onWindowBlur);
+      window.removeEventListener('focus', onWindowFocus);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    };
+  }, [pauseAllActiveTimers]);
 
   useEffect(() => {
     if (telegramApp?.initData) return;
@@ -3005,6 +3146,9 @@ function AppInner() {
     if (flashcardTrainingMode !== 'quiz') {
       return;
     }
+    if (globalTimerSuspended) {
+      return;
+    }
     if (autoAdvanceTimeoutRef.current) {
       clearTimeout(autoAdvanceTimeoutRef.current);
     }
@@ -3057,6 +3201,7 @@ function AppInner() {
     flashcardIndex,
     flashcardDurationSec,
     flashcardTrainingMode,
+    globalTimerSuspended,
   ]);
 
   useEffect(() => {
@@ -9275,6 +9420,7 @@ function AppInner() {
                                         cardType={blocksType}
                                         resetSignal={blocksResetNonce}
                                         timerMode={blocksTimerMode}
+                                        isExternallyPaused={globalTimerSuspended}
                                         autoAdvance={flashcardAutoAdvance}
                                         labels={{
                                           promptFallback: t('blocks_build_answer'),
@@ -9359,7 +9505,7 @@ function AppInner() {
                                     <div className="flashcard-hero">
                                       <div
                                         key={`timer-${flashcardTimerKey}`}
-                                        className={`flashcard-timer ${flashcardSelection !== null ? 'is-paused' : ''}`}
+                                        className={`flashcard-timer ${(flashcardSelection !== null || globalTimerSuspended) ? 'is-paused' : ''}`}
                                         style={{ '--duration': `${flashcardDurationSec}s` }}
                                       >
                                         <svg viewBox="0 0 120 120" aria-hidden="true">

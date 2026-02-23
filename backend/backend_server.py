@@ -2042,7 +2042,7 @@ def _build_today_plan_for_user(
                 main_category=str(weak_topic.get("main_category") or ""),
                 sub_category=str(weak_topic.get("sub_category") or ""),
                 lookback_days=7,
-                limit=5,
+                limit=7,
                 source_lang=source_lang,
                 target_lang=target_lang,
             )
@@ -2060,11 +2060,11 @@ def _build_today_plan_for_user(
         items.append(cards_item)
         total_minutes += cards_minutes
 
-    weak_title = "Перевод: 5 предложений по ошибкам"
+    weak_title = "Перевод: 7 предложений по ошибкам"
     if weakest_skill and weakest_skill.get("skill_title"):
-        weak_title = f"Перевод: 5 предложений ({weakest_skill.get('skill_title')})"
+        weak_title = f"Перевод: 7 предложений ({weakest_skill.get('skill_title')})"
     elif weak_topic and weak_topic.get("sub_category"):
-        weak_title = f"Перевод: 5 предложений ({weak_topic.get('sub_category')})"
+        weak_title = f"Перевод: 7 предложений ({weak_topic.get('sub_category')})"
     items.append(
         {
             "task_type": "translation",
@@ -2073,7 +2073,7 @@ def _build_today_plan_for_user(
             "payload": {
                 "mode": "weakest_topic",
                 "lookback_days": 7,
-                "sentences": 5,
+                "sentences": 7,
                 "focus_source": "mastery" if weakest_skill else "mistakes",
                 "skill_id": weakest_skill.get("skill_id") if weakest_skill else None,
                 "skill_title": weakest_skill.get("skill_title") if weakest_skill else None,
@@ -2081,7 +2081,8 @@ def _build_today_plan_for_user(
                 "skill_mastery": weakest_skill.get("mastery") if weakest_skill else None,
                 "main_category": weak_topic.get("main_category") if weak_topic else None,
                 "sub_category": weak_topic.get("sub_category") if weak_topic else None,
-                "examples": weak_sentences[:5],
+                "examples": weak_sentences[:7],
+                "level": "c1",
                 "start_action": "translations",
             },
             "status": "todo",
@@ -5770,6 +5771,81 @@ def start_today_item(item_id: int):
     if not item:
         return jsonify({"error": "Задача не найдена"}), 404
     return jsonify({"ok": True, "item": item})
+
+
+@app.route("/api/today/items/<int:item_id>/translation/start", methods=["POST"])
+def start_today_translation_item(item_id: int):
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    requested_level = str(payload.get("level") or "").strip().lower()
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    today_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    plan = get_daily_plan(user_id=int(user_id), plan_date=today_date)
+    if not plan:
+        return jsonify({"error": "План на сегодня не найден"}), 404
+
+    item = None
+    for entry in (plan.get("items") or []):
+        if int(entry.get("id") or 0) == int(item_id):
+            item = entry
+            break
+    if not item:
+        return jsonify({"error": "Задача не найдена"}), 404
+    if str(item.get("task_type") or "").strip().lower() != "translation":
+        return jsonify({"error": "Эта задача не является переводом"}), 400
+
+    task_payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    level = requested_level or str(task_payload.get("level") or "c1").strip().lower() or "c1"
+    skill_title = str(task_payload.get("skill_title") or "").strip()
+    sub_category = str(task_payload.get("sub_category") or "").strip()
+    main_category = str(task_payload.get("main_category") or "").strip()
+    topic_label = sub_category or skill_title or main_category or "Weak skill practice"
+    if skill_title and sub_category:
+        topic_label = f"{skill_title}: {sub_category}"
+    elif skill_title and not sub_category:
+        topic_label = skill_title
+
+    try:
+        session = asyncio.run(
+            start_translation_session_webapp(
+                user_id=int(user_id),
+                username=username,
+                topic=topic_label,
+                level=level,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка запуска переводов по задаче дня: {exc}"}), 500
+
+    updated_item = update_daily_plan_item_status(
+        user_id=int(user_id),
+        item_id=int(item_id),
+        status="doing",
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "item": updated_item or item,
+            "practice": {
+                "task_type": "translation",
+                "mode": str(task_payload.get("mode") or "weakest_topic"),
+                "topic_label": topic_label,
+                "level": level,
+                "sentences": int(task_payload.get("sentences") or 7),
+                "main_category": main_category or None,
+                "sub_category": sub_category or None,
+                "skill_title": skill_title or None,
+            },
+            **session,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/today/items/<int:item_id>/timer", methods=["POST"])
@@ -9703,6 +9779,466 @@ def _dispatch_plan_period_progress(
     }
 
 
+def _resolve_previous_week_bounds(anchor_date: date) -> tuple[date, date]:
+    current_week_start = anchor_date - timedelta(days=anchor_date.weekday())
+    week_end = current_week_start - timedelta(days=1)
+    week_start = week_end - timedelta(days=6)
+    return week_start, week_end
+
+
+def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
+    period_start_dt = datetime.combine(week_start, datetime.min.time(), tzinfo=timezone.utc)
+    period_end_exclusive = datetime.combine(week_end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH week_users AS (
+                    SELECT user_id
+                    FROM (
+                        SELECT DISTINCT p.user_id
+                        FROM bt_3_user_progress p
+                        WHERE p.start_time::date BETWEEN %s AND %s
+                        UNION
+                        SELECT DISTINCT t.user_id
+                        FROM bt_3_translations t
+                        JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                        WHERE ds.date BETWEEN %s AND %s
+                        UNION
+                        SELECT DISTINCT a.user_id
+                        FROM bt_3_agent_voice_sessions a
+                        WHERE a.started_at < %s
+                          AND COALESCE(a.ended_at, %s) > %s
+                        UNION
+                        SELECT DISTINCT r.user_id
+                        FROM bt_3_reader_sessions r
+                        WHERE r.started_at < %s
+                          AND COALESCE(r.ended_at, %s) > %s
+                    ) x
+                ),
+                latest_name AS (
+                    SELECT DISTINCT ON (p.user_id)
+                        p.user_id,
+                        p.username
+                    FROM bt_3_user_progress p
+                    ORDER BY p.user_id, p.start_time DESC
+                ),
+                translation_time AS (
+                    SELECT
+                        p.user_id,
+                        COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time)) / 60.0), 0.0) AS translation_minutes
+                    FROM bt_3_user_progress p
+                    WHERE p.completed = TRUE
+                      AND p.start_time::date BETWEEN %s AND %s
+                    GROUP BY p.user_id
+                ),
+                agent_time AS (
+                    SELECT
+                        a.user_id,
+                        COALESCE(
+                            SUM(
+                                GREATEST(
+                                    0,
+                                    EXTRACT(
+                                        EPOCH FROM (
+                                            LEAST(COALESCE(a.ended_at, %s), %s)
+                                            - GREATEST(a.started_at, %s)
+                                        )
+                                    )
+                                )
+                            ) / 60.0,
+                            0.0
+                        ) AS agent_minutes
+                    FROM bt_3_agent_voice_sessions a
+                    WHERE a.started_at < %s
+                      AND COALESCE(a.ended_at, %s) > %s
+                    GROUP BY a.user_id
+                ),
+                reader_time AS (
+                    SELECT
+                        r.user_id,
+                        COALESCE(
+                            SUM(
+                                GREATEST(
+                                    0,
+                                    EXTRACT(
+                                        EPOCH FROM (
+                                            LEAST(COALESCE(r.ended_at, %s), %s)
+                                            - GREATEST(r.started_at, %s)
+                                        )
+                                    )
+                                )
+                            ) / 60.0,
+                            0.0
+                        ) AS reader_minutes
+                    FROM bt_3_reader_sessions r
+                    WHERE r.started_at < %s
+                      AND COALESCE(r.ended_at, %s) > %s
+                    GROUP BY r.user_id
+                ),
+                score_base AS (
+                    SELECT
+                        t.user_id,
+                        t.id_for_mistake_table,
+                        t.score,
+                        t.timestamp,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY t.user_id, t.id_for_mistake_table
+                            ORDER BY t.timestamp DESC
+                        ) AS rn
+                    FROM bt_3_translations t
+                    JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                    WHERE ds.date BETWEEN %s AND %s
+                ),
+                score_agg AS (
+                    SELECT
+                        user_id,
+                        COUNT(*) AS translations_count,
+                        AVG(score) AS avg_score
+                    FROM score_base
+                    WHERE rn = 1
+                    GROUP BY user_id
+                ),
+                plan_days AS (
+                    SELECT
+                        p.user_id,
+                        p.plan_date,
+                        COUNT(*) AS total_items,
+                        SUM(CASE WHEN LOWER(COALESCE(i.status, 'todo')) = 'done' THEN 1 ELSE 0 END) AS done_items
+                    FROM bt_3_daily_plans p
+                    JOIN bt_3_daily_plan_items i ON i.plan_id = p.id
+                    WHERE p.plan_date BETWEEN %s AND %s
+                    GROUP BY p.user_id, p.plan_date
+                ),
+                plan_agg AS (
+                    SELECT
+                        user_id,
+                        SUM(CASE WHEN total_items >= 3 AND done_items >= total_items THEN 1 ELSE 0 END) AS full_days_3plus
+                    FROM plan_days
+                    GROUP BY user_id
+                )
+                SELECT
+                    u.user_id,
+                    COALESCE(NULLIF(n.username, ''), NULLIF(au.username, ''), '') AS username,
+                    COALESCE(t.translation_minutes, 0.0) AS translation_minutes,
+                    COALESCE(a.agent_minutes, 0.0) AS agent_minutes,
+                    COALESCE(r.reader_minutes, 0.0) AS reader_minutes,
+                    COALESCE(s.avg_score, 0.0) AS avg_score,
+                    COALESCE(s.translations_count, 0) AS translations_count,
+                    COALESCE(p.full_days_3plus, 0) AS full_days_3plus
+                FROM week_users u
+                LEFT JOIN latest_name n ON n.user_id = u.user_id
+                LEFT JOIN bt_3_allowed_users au ON au.user_id = u.user_id
+                LEFT JOIN translation_time t ON t.user_id = u.user_id
+                LEFT JOIN agent_time a ON a.user_id = u.user_id
+                LEFT JOIN reader_time r ON r.user_id = u.user_id
+                LEFT JOIN score_agg s ON s.user_id = u.user_id
+                LEFT JOIN plan_agg p ON p.user_id = u.user_id
+                ORDER BY u.user_id ASC;
+                """,
+                (
+                    week_start,
+                    week_end,
+                    week_start,
+                    week_end,
+                    period_end_exclusive,
+                    period_end_exclusive,
+                    period_start_dt,
+                    period_end_exclusive,
+                    period_end_exclusive,
+                    period_start_dt,
+                    week_start,
+                    week_end,
+                    period_end_exclusive,
+                    period_end_exclusive,
+                    period_start_dt,
+                    period_end_exclusive,
+                    period_end_exclusive,
+                    period_start_dt,
+                    period_end_exclusive,
+                    period_end_exclusive,
+                    period_start_dt,
+                    period_end_exclusive,
+                    period_end_exclusive,
+                    period_start_dt,
+                    week_start,
+                    week_end,
+                    week_start,
+                    week_end,
+                ),
+            )
+            rows = cursor.fetchall()
+
+    normalized: list[dict] = []
+    for row in rows:
+        user_id = int(row[0] or 0)
+        username = str(row[1] or "").strip()
+        translation_minutes = max(0.0, float(row[2] or 0.0))
+        agent_minutes = max(0.0, float(row[3] or 0.0))
+        reader_minutes = max(0.0, float(row[4] or 0.0))
+        avg_score = max(0.0, float(row[5] or 0.0))
+        translations_count = max(0, int(row[6] or 0))
+        full_days_3plus = max(0, int(row[7] or 0))
+        total_minutes = translation_minutes + agent_minutes + reader_minutes
+        if total_minutes <= 0 and translations_count <= 0 and full_days_3plus <= 0:
+            continue
+        normalized.append(
+            {
+                "user_id": user_id,
+                "username": username,
+                "translation_minutes": round(translation_minutes, 1),
+                "agent_minutes": round(agent_minutes, 1),
+                "reader_minutes": round(reader_minutes, 1),
+                "total_minutes": round(total_minutes, 1),
+                "avg_score": round(avg_score, 1),
+                "translations_count": translations_count,
+                "full_days_3plus": full_days_3plus,
+            }
+        )
+
+    normalized.sort(
+        key=lambda item: (
+            float(item.get("total_minutes") or 0.0),
+            float(item.get("avg_score") or 0.0),
+            int(item.get("translations_count") or 0),
+        ),
+        reverse=True,
+    )
+    for idx, item in enumerate(normalized, start=1):
+        item["rank"] = idx
+    return normalized
+
+
+def _weekly_badges_payload(rows: list[dict]) -> dict:
+    if not rows:
+        return {"leaderboard": [], "champion": None, "score_master": None, "streak_monsters": [], "growth_note": None}
+    champion = rows[0]
+    score_candidates = [
+        item for item in rows if int(item.get("translations_count") or 0) >= 5 and float(item.get("avg_score") or 0.0) > 0.0
+    ]
+    score_master = max(score_candidates, key=lambda item: float(item.get("avg_score") or 0.0), default=None)
+    streak_monsters = [item for item in rows if int(item.get("full_days_3plus") or 0) >= 5]
+    growth_note = None
+    if len(rows) >= 3:
+        growth_note = "🌱 Зона роста недели: кому-то немного не хватило темпа. Поддержим друг друга без шейминга."
+    return {
+        "leaderboard": rows[:10],
+        "champion": champion,
+        "score_master": score_master,
+        "streak_monsters": streak_monsters[:5],
+        "growth_note": growth_note,
+    }
+
+
+def _format_weekly_user_label(row: dict | None) -> str:
+    if not isinstance(row, dict):
+        return "участник"
+    username = str(row.get("username") or "").strip().lstrip("@")
+    if username:
+        return f"@{username}"
+    return f"user_{int(row.get('user_id') or 0)}"
+
+
+def _format_weekly_badges_message(week_start: date, week_end: date, payload: dict) -> str:
+    leaderboard = payload.get("leaderboard") if isinstance(payload.get("leaderboard"), list) else []
+    champion = payload.get("champion") if isinstance(payload.get("champion"), dict) else None
+    score_master = payload.get("score_master") if isinstance(payload.get("score_master"), dict) else None
+    streak_monsters = payload.get("streak_monsters") if isinstance(payload.get("streak_monsters"), list) else []
+    growth_note = str(payload.get("growth_note") or "").strip()
+
+    lines = [
+        f"🏁 Weekly leaderboard ({week_start.isoformat()} — {week_end.isoformat()})",
+        "Минуты = переводы + агент + читалка",
+        "",
+    ]
+    for item in leaderboard[:5]:
+        lines.append(
+            f"{int(item.get('rank') or 0)}. {_format_weekly_user_label(item)}"
+            f" — {float(item.get('total_minutes') or 0.0):.1f} мин"
+            f" | score {float(item.get('avg_score') or 0.0):.1f}"
+        )
+    if not leaderboard:
+        lines.append("Активных данных за неделю пока нет.")
+
+    lines.append("")
+    if champion:
+        lines.append(
+            f"🥇 Champion der Woche: {_format_weekly_user_label(champion)}"
+            f" ({float(champion.get('total_minutes') or 0.0):.1f} мин)"
+        )
+    if score_master:
+        lines.append(
+            f"🎯 Präzisionsmeister: {_format_weekly_user_label(score_master)}"
+            f" ({float(score_master.get('avg_score') or 0.0):.1f}/100, {int(score_master.get('translations_count') or 0)} переводов)"
+        )
+    if streak_monsters:
+        labels = ", ".join(_format_weekly_user_label(item) for item in streak_monsters[:3])
+        lines.append(f"🔥 Streak-Monster: {labels}")
+    if growth_note:
+        lines.append(growth_note)
+    return "\n".join(lines)
+
+
+def _dispatch_weekly_group_badges(
+    *,
+    target_date: date,
+    tz_name: str = TODAY_PLAN_DEFAULT_TZ,
+    include_current_week: bool = False,
+) -> dict:
+    if not TELEGRAM_GROUP_CHAT_ID:
+        return {"ok": False, "error": "TELEGRAM_GROUP_CHAT_ID должен быть установлен"}
+    if include_current_week:
+        week_start = target_date - timedelta(days=target_date.weekday())
+        week_end = week_start + timedelta(days=6)
+    else:
+        week_start, week_end = _resolve_previous_week_bounds(target_date)
+
+    try:
+        rows = _collect_weekly_badges_rows(week_start=week_start, week_end=week_end)
+        badges_payload = _weekly_badges_payload(rows)
+        text = _format_weekly_badges_message(week_start=week_start, week_end=week_end, payload=badges_payload)
+        _send_group_message(
+            text,
+            reply_markup={
+                "inline_keyboard": [[{"text": "Открыть приложение", "url": _build_webapp_deeplink("webapp")}]],
+            },
+        )
+        return {
+            "ok": True,
+            "date": target_date.isoformat(),
+            "week_start": week_start.isoformat(),
+            "week_end": week_end.isoformat(),
+            "participants": len(rows),
+            "top_count": len(badges_payload.get("leaderboard") or []),
+            "sent_group": 1,
+            "tz": tz_name,
+        }
+    except Exception as exc:
+        logging.exception("❌ Weekly group badges dispatch failed")
+        return {
+            "ok": False,
+            "date": target_date.isoformat(),
+            "week_start": week_start.isoformat(),
+            "week_end": week_end.isoformat(),
+            "error": str(exc),
+        }
+
+
+def _daily_plan_completion_snapshot(user_id: int, target_date: date) -> dict:
+    plan = get_daily_plan(user_id=int(user_id), plan_date=target_date)
+    items = (plan or {}).get("items") or []
+    total = len(items)
+    done = sum(1 for item in items if str(item.get("status") or "").strip().lower() == "done")
+    is_complete = total > 0 and done >= total
+    return {
+        "has_plan": bool(plan),
+        "total_items": int(total),
+        "done_items": int(done),
+        "is_complete": bool(is_complete),
+    }
+
+
+def _compute_daily_plan_streak(user_id: int, anchor_date: date) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH completed_days AS (
+                    SELECT p.plan_date
+                    FROM bt_3_daily_plans p
+                    JOIN bt_3_daily_plan_items i ON i.plan_id = p.id
+                    WHERE p.user_id = %s
+                      AND p.plan_date <= %s
+                    GROUP BY p.plan_date
+                    HAVING COUNT(*) > 0
+                       AND BOOL_AND(LOWER(COALESCE(i.status, 'todo')) = 'done')
+                ),
+                ordered AS (
+                    SELECT
+                        plan_date,
+                        (%s::date - plan_date) AS delta_days,
+                        ROW_NUMBER() OVER (ORDER BY plan_date DESC) AS rn
+                    FROM completed_days
+                )
+                SELECT COUNT(*)
+                FROM ordered
+                WHERE delta_days = (rn - 1);
+                """,
+                (int(user_id), anchor_date, anchor_date),
+            )
+            row = cursor.fetchone()
+    return max(0, int((row or [0])[0] or 0))
+
+
+def _streak_badge(streak_days: int) -> str:
+    streak = max(0, int(streak_days or 0))
+    if streak >= 20:
+        return "⚡ Неостановимый"
+    if streak >= 7:
+        return "🐉 Пылающий дракон"
+    if streak >= 3:
+        return "🔥 Огонек в профиле"
+    return ""
+
+
+def _dispatch_today_evening_reminders(target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
+    users = list_today_reminder_users(limit=5000, offset=0)
+    if not users:
+        return {"ok": True, "date": target_date.isoformat(), "reminded": 0, "celebrated": 0, "errors": []}
+
+    reminded = 0
+    celebrated = 0
+    errors: list[str] = []
+    plan_url = _build_webapp_deeplink("today")
+    plan_button = {"inline_keyboard": [[{"text": "Открыть план на сегодня", "url": plan_url}]]}
+
+    for user in users:
+        user_id = int(user.get("user_id") or 0)
+        if not user_id or not is_telegram_user_allowed(user_id):
+            continue
+        username = str(user.get("username") or "").strip() or f"user_{user_id}"
+        try:
+            snapshot = _daily_plan_completion_snapshot(user_id, target_date)
+            if not snapshot.get("has_plan"):
+                continue
+            if not snapshot.get("is_complete"):
+                text = (
+                    f"⏰ {username}, мягкое напоминание: сегодня выполнено "
+                    f"{snapshot.get('done_items', 0)}/{snapshot.get('total_items', 0)} задач.\n"
+                    "Если будет возможность, закрой дневной план до конца."
+                )
+                if _is_user_member_of_group_chat(user_id):
+                    _send_group_message(text, reply_markup=plan_button)
+                else:
+                    _send_private_message(user_id=user_id, text=text, reply_markup=plan_button)
+                reminded += 1
+                continue
+
+            streak = _compute_daily_plan_streak(user_id, target_date)
+            badge = _streak_badge(streak)
+            text = (
+                f"✅ {username}, отличный день: план выполнен полностью.\n"
+                f"Серия: {streak} дн."
+            )
+            if badge:
+                text += f"\n{badge}"
+            if _is_user_member_of_group_chat(user_id):
+                _send_group_message(text, reply_markup=plan_button)
+            else:
+                _send_private_message(user_id=user_id, text=text, reply_markup=plan_button)
+            celebrated += 1
+        except Exception as exc:
+            errors.append(f"user {user_id}: {exc}")
+
+    return {
+        "ok": True,
+        "date": target_date.isoformat(),
+        "reminded": int(reminded),
+        "celebrated": int(celebrated),
+        "errors": errors,
+    }
+
+
 def _run_private_analytics_scheduler_job() -> None:
     mode = (os.getenv("ANALYTICS_SCHEDULER_DATE_MODE") or "today").strip().lower()
     tz_name = (os.getenv("ANALYTICS_SCHEDULER_TZ") or "UTC").strip()
@@ -9726,6 +10262,14 @@ def _run_weekly_goals_scheduler_job() -> None:
     try:
         result_week = _dispatch_plan_period_progress(target_date=target_date, period="week")
         logging.info("✅ Weekly goals scheduler finished (week): %s", result_week)
+        weekly_badges_enabled = (os.getenv("WEEKLY_BADGES_GROUP_ENABLED") or "1").strip().lower()
+        if weekly_badges_enabled in ("1", "true", "yes", "on") and target_date.weekday() == 0:
+            badges_result = _dispatch_weekly_group_badges(
+                target_date=target_date,
+                tz_name=tz_name,
+                include_current_week=False,
+            )
+            logging.info("✅ Weekly badges scheduler finished: %s", badges_result)
         if target_date.day == 1:
             prev_day = target_date - timedelta(days=1)
             result_month = _dispatch_plan_period_progress(target_date=prev_day, period="month")
@@ -9757,11 +10301,12 @@ def _format_today_plan_message(plan: dict) -> str:
                 lines.append(f"{idx}. {title}")
             continue
         if item.get("task_type") == "translation":
+            sentences = int(payload.get("sentences") or 7)
             sub = str(payload.get("sub_category") or "").strip()
             if sub:
-                lines.append(f"{idx}. Перевод: 5 предложений ({sub})")
+                lines.append(f"{idx}. Перевод: {sentences} предложений ({sub})")
             else:
-                lines.append(f"{idx}. Перевод: 5 предложений")
+                lines.append(f"{idx}. Перевод: {sentences} предложений")
             continue
         if item.get("task_type") == "theory":
             sub = str(payload.get("sub_category") or "").strip()
@@ -9795,7 +10340,7 @@ def _format_today_group_announcement(user_label: str, plan: dict) -> str:
                 lines.append(f"{idx}. Карточки")
             continue
         if task_type == "translation":
-            sentences = int(payload.get("sentences") or 5)
+            sentences = int(payload.get("sentences") or 7)
             sub = str(payload.get("sub_category") or "").strip()
             if sub:
                 lines.append(f"{idx}. Перевод: {sentences} предложений ({sub})")
@@ -9886,6 +10431,16 @@ def _run_today_plan_scheduler_job() -> None:
         logging.info("✅ Today plan scheduler finished: %s", result)
     except Exception:
         logging.exception("❌ Today plan scheduler failed")
+
+
+def _run_today_evening_reminders_scheduler_job() -> None:
+    tz_name = (os.getenv("TODAY_PLAN_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    target_date = _get_local_today_date(tz_name)
+    try:
+        result = _dispatch_today_evening_reminders(target_date=target_date, tz_name=tz_name)
+        logging.info("✅ Today evening reminders scheduler finished: %s", result)
+    except Exception:
+        logging.exception("❌ Today evening reminders scheduler failed")
 
 
 def _run_system_message_cleanup_job() -> None:
@@ -10065,6 +10620,19 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=300,
         )
+    today_evening_enabled = (os.getenv("TODAY_EVENING_REMINDER_ENABLED") or "1").strip().lower()
+    if today_evening_enabled in ("1", "true", "yes", "on"):
+        today_evening_hour = int((os.getenv("TODAY_EVENING_REMINDER_HOUR") or "18").strip())
+        today_evening_minute = int((os.getenv("TODAY_EVENING_REMINDER_MINUTE") or "0").strip())
+        _audio_scheduler.add_job(
+            _run_today_evening_reminders_scheduler_job,
+            "cron",
+            hour=today_evening_hour,
+            minute=today_evening_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
     weekly_goals_enabled = (os.getenv("WEEKLY_GOALS_SCHEDULER_ENABLED") or "1").strip().lower()
     if weekly_goals_enabled in ("1", "true", "yes", "on"):
         weekly_goals_hour = int((os.getenv("WEEKLY_GOALS_SCHEDULER_HOUR") or "6").strip())
@@ -10204,6 +10772,59 @@ def send_today_plans_now():
         target_date = _get_local_today_date(tz_name)
 
     result = _dispatch_today_plans(target_date=target_date, tz_name=tz_name)
+    return jsonify(result)
+
+
+@app.route("/api/admin/send-today-evening-reminders", methods=["POST"])
+def send_today_evening_reminders_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    date_str = (payload.get("date") or "").strip()
+    tz_name = (payload.get("tz") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
+    else:
+        target_date = _get_local_today_date(tz_name)
+
+    result = _dispatch_today_evening_reminders(target_date=target_date, tz_name=tz_name)
+    return jsonify(result)
+
+
+@app.route("/api/admin/send-weekly-badges", methods=["POST"])
+def send_weekly_badges_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    tz_name = (payload.get("tz") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    date_str = (payload.get("date") or "").strip()
+    include_current_week = str(payload.get("include_current_week") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
+    else:
+        target_date = _get_local_today_date(tz_name)
+
+    result = _dispatch_weekly_group_badges(
+        target_date=target_date,
+        tz_name=tz_name,
+        include_current_week=include_current_week,
+    )
     return jsonify(result)
 
 

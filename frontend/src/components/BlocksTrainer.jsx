@@ -72,6 +72,7 @@ export default function BlocksTrainer({
   cardType,
   resetSignal = 0,
   timerMode = 'adaptive',
+  isExternallyPaused = false,
   autoAdvance = true,
   onNext,
   onRoundResult,
@@ -285,16 +286,17 @@ export default function BlocksTrainer({
       hintsUsed,
       status,
     });
-    if (autoAdvance) {
+    if (autoAdvance && !isExternallyPaused) {
       const delayMs = isCorrect ? AUTO_NEXT_DELAY_OK_MS : AUTO_NEXT_DELAY_FAIL_MS;
       autoNextRef.current = setTimeout(() => {
         onNext?.();
       }, delayMs);
     }
-  }, [status, hintsUsed, onRoundResult, autoAdvance, onNext]);
+  }, [status, hintsUsed, onRoundResult, autoAdvance, onNext, isExternallyPaused]);
 
   useEffect(() => {
     if (timerMs === null || isFinished) return;
+    if (isExternallyPaused) return;
     if (timeLeftMs === null) return;
     if (timeLeftMs <= 0) {
       setStatus('timeout');
@@ -306,7 +308,7 @@ export default function BlocksTrainer({
       setTimeLeftMs((prev) => (prev === null ? prev : Math.max(prev - spent, 0)));
     }, 100);
     return () => clearTimeout(t);
-  }, [timerMs, timeLeftMs, isFinished]);
+  }, [timerMs, timeLeftMs, isFinished, isExternallyPaused]);
 
   useEffect(() => {
     return () => {
