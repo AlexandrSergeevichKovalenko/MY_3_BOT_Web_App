@@ -3971,25 +3971,121 @@ def _synthesize_mp3(
     voice: str = "de-DE-Neural2-C",
     speed: float = 0.9,
 ) -> bytes:
+    normalized_text = str(text or "").strip()
+    if not normalized_text:
+        raise RuntimeError("Google TTS получил пустой текст")
+
     try:
         from google.cloud import texttospeech
     except Exception as exc:
         raise RuntimeError(f"Google TTS не установлен: {exc}") from exc
+
+    # Google TTS has request length limits; chunk long reader documents to avoid
+    # forced fallback to offline engine for otherwise valid requests.
+    max_chars_per_request = 4500
+
+    def split_for_google_tts(raw_text: str) -> list[str]:
+        compact = re.sub(r"[ \t]+", " ", raw_text).strip()
+        if not compact:
+            return []
+        if len(compact) <= max_chars_per_request:
+            return [compact]
+
+        chunks: list[str] = []
+        paragraphs = [part.strip() for part in re.split(r"\n{2,}", compact) if part.strip()]
+        if not paragraphs:
+            paragraphs = [compact]
+
+        def append_piece(piece: str) -> None:
+            piece = piece.strip()
+            if not piece:
+                return
+            if len(piece) <= max_chars_per_request:
+                chunks.append(piece)
+                return
+            # fallback split by sentence and then by words
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", piece) if s.strip()]
+            if not sentences:
+                sentences = [piece]
+            current = ""
+            for sentence in sentences:
+                candidate = f"{current} {sentence}".strip() if current else sentence
+                if len(candidate) <= max_chars_per_request:
+                    current = candidate
+                    continue
+                if current:
+                    chunks.append(current)
+                if len(sentence) <= max_chars_per_request:
+                    current = sentence
+                    continue
+                words = sentence.split()
+                bucket = ""
+                for word in words:
+                    next_bucket = f"{bucket} {word}".strip() if bucket else word
+                    if len(next_bucket) <= max_chars_per_request:
+                        bucket = next_bucket
+                    else:
+                        if bucket:
+                            chunks.append(bucket)
+                        bucket = word
+                if bucket:
+                    current = bucket
+                else:
+                    current = ""
+            if current:
+                chunks.append(current)
+
+        accumulator = ""
+        for paragraph in paragraphs:
+            candidate = f"{accumulator}\n\n{paragraph}".strip() if accumulator else paragraph
+            if len(candidate) <= max_chars_per_request:
+                accumulator = candidate
+            else:
+                if accumulator:
+                    append_piece(accumulator)
+                accumulator = paragraph
+        if accumulator:
+            append_piece(accumulator)
+        return chunks
+
+    text_chunks = split_for_google_tts(normalized_text)
+    if not text_chunks:
+        raise RuntimeError("Google TTS не получил чанки текста")
+
     key_path = prepare_google_creds_for_tts()
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
     tts_client = texttospeech.TextToSpeechClient()
-    input_text = texttospeech.SynthesisInput(text=text)
     voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice)
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
         speaking_rate=speed,
     )
-    response = tts_client.synthesize_speech(
-        input=input_text,
-        voice=voice_params,
-        audio_config=audio_config,
-    )
-    return response.audio_content
+    if len(text_chunks) == 1:
+        response = tts_client.synthesize_speech(
+            input=texttospeech.SynthesisInput(text=text_chunks[0]),
+            voice=voice_params,
+            audio_config=audio_config,
+        )
+        return response.audio_content
+
+    combined = AudioSegment.silent(duration=0)
+    for chunk in text_chunks:
+        response = tts_client.synthesize_speech(
+            input=texttospeech.SynthesisInput(text=chunk),
+            voice=voice_params,
+            audio_config=audio_config,
+        )
+        if not response.audio_content:
+            continue
+        segment = AudioSegment.from_file(io.BytesIO(response.audio_content), format="mp3")
+        combined += segment
+
+    if len(combined) == 0:
+        raise RuntimeError("Google TTS вернул пустой аудиопоток")
+
+    out = io.BytesIO()
+    combined.export(out, format="mp3", bitrate="192k")
+    return out.getvalue()
 
 
 _de_nlp = None
@@ -8553,23 +8649,11 @@ def webapp_tts():
                 download_name="tts.mp3",
             )
 
-        try:
-            from google.cloud import texttospeech
-        except Exception:
-            return jsonify({"error": "Google TTS не установлен на сервере"}), 500
-        key_path = prepare_google_creds_for_tts()
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
-        tts_client = texttospeech.TextToSpeechClient()
-        input_data = texttospeech.SynthesisInput(text=normalized)
-        voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice)
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=speaking_rate,
-        )
-        response = tts_client.synthesize_speech(
-            input=input_data,
-            voice=voice_params,
-            audio_config=audio_config,
+        response_audio = _synthesize_mp3(
+            normalized,
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
         )
         try:
             upsert_tts_audio_cache(
@@ -8578,7 +8662,7 @@ def webapp_tts():
                 voice=voice,
                 speed=speaking_rate,
                 source_text=normalized,
-                audio_mp3=response.audio_content,
+                audio_mp3=response_audio,
             )
         except Exception as exc:
             logging.warning("Failed to persist webapp TTS cache: %s", exc)
@@ -8595,7 +8679,7 @@ def webapp_tts():
             metadata={"cached": False, "language": language, "voice": voice},
         )
         return send_file(
-            BytesIO(response.audio_content),
+            BytesIO(response_audio),
             mimetype="audio/mpeg",
             as_attachment=False,
             download_name="tts.mp3",

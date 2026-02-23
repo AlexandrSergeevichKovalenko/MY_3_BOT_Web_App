@@ -799,6 +799,31 @@ body {
   gap: 10px;
 }
 
+.webapp-page.is-telegram-tablet .overlay-panel {
+  width: min(460px, 92vw);
+  border-radius: 22px;
+  padding: 16px;
+}
+
+.webapp-page.is-telegram-tablet .overlay-header .brand-title {
+  font-size: 18px;
+}
+
+.webapp-page.is-telegram-tablet .overlay-menu .menu-item {
+  min-height: 44px;
+  font-size: 14px;
+}
+
+.webapp-page.is-telegram-tablet .overlay-menu .menu-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.webapp-page.is-telegram-tablet .overlay-menu .menu-icon-svg {
+  width: 15px;
+  height: 15px;
+}
+
 .menu-toggle-row {
   display: flex;
   align-items: center;
