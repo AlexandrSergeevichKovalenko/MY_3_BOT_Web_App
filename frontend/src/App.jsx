@@ -159,6 +159,7 @@ function AppInner() {
   const [inlineToast, setInlineToast] = useState('');
   const [lastLookupScrollY, setLastLookupScrollY] = useState(null);
   const [telegramFullscreenMode, setTelegramFullscreenMode] = useState(false);
+  const [telegramTabletLike, setTelegramTabletLike] = useState(false);
   const [historyItems, setHistoryItems] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
@@ -2613,6 +2614,26 @@ function AppInner() {
     stopAssistantSessionTracking,
   ]);
 
+  const requestTelegramFullscreen = useCallback(() => {
+    if (!telegramApp) return;
+    try {
+      telegramApp.ready?.();
+      telegramApp.expand?.();
+      if (typeof telegramApp.requestFullscreen === 'function') {
+        Promise.resolve(telegramApp.requestFullscreen())
+          .then(() => {
+            const isFullscreen = typeof telegramApp.isFullscreen === 'boolean' ? telegramApp.isFullscreen : true;
+            setTelegramFullscreenMode(Boolean(isFullscreen));
+          })
+          .catch(() => {
+            // ignore: unsupported Telegram clients may reject fullscreen
+          });
+      }
+    } catch (error) {
+      // ignore
+    }
+  }, [telegramApp]);
+
   useEffect(() => {
     if (!telegramApp) return;
     let fullscreenRetryCount = 0;
@@ -2631,7 +2652,10 @@ function AppInner() {
       const minSide = Math.min(viewportWidth, viewportHeight);
       const maxSide = Math.max(viewportWidth, viewportHeight);
       const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
-      const isTabletUserAgent = /iPad|Tablet|PlayBook|Silk|Android(?!.*Mobile)/i.test(userAgent);
+      const platform = typeof navigator !== 'undefined' ? String(navigator.platform || '') : '';
+      const maxTouchPoints = typeof navigator !== 'undefined' ? Number(navigator.maxTouchPoints || 0) : 0;
+      const isIPadDesktopUA = platform === 'MacIntel' && maxTouchPoints > 1;
+      const isTabletUserAgent = /iPad|Tablet|PlayBook|Silk|Android(?!.*Mobile)/i.test(userAgent) || isIPadDesktopUA;
       if (isHandsetDevice()) return false;
       return isTabletUserAgent || viewportWidth >= 700 || (maxSide >= 1000 && minSide >= 600);
     };
@@ -2670,6 +2694,7 @@ function AppInner() {
         telegramApp.ready?.();
         telegramApp.expand?.();
         const shouldUseFullscreen = detectTabletLikeViewport();
+        setTelegramTabletLike(shouldUseFullscreen);
         if (shouldUseFullscreen) {
           tryEnterTelegramFullscreen();
         } else {
@@ -2684,6 +2709,7 @@ function AppInner() {
         telegramApp.disableVerticalSwipes?.();
       } catch (error) {
         setTelegramFullscreenMode(false);
+        setTelegramTabletLike(false);
         try {
           telegramApp.expand?.();
         } catch (expandError) {
@@ -6883,6 +6909,17 @@ function AppInner() {
               </div>
               <div className="topbar-right">
                 <div className="topbar-controls">
+                  {telegramTabletLike && !telegramFullscreenMode && typeof telegramApp?.requestFullscreen === 'function' && (
+                    <button
+                      type="button"
+                      className="telegram-fullscreen-button"
+                      onClick={requestTelegramFullscreen}
+                      title={tr('Развернуть на весь экран', 'Vollbild aktivieren')}
+                      aria-label={tr('Развернуть на весь экран', 'Vollbild aktivieren')}
+                    >
+                      ⤢
+                    </button>
+                  )}
                   <button type="button" className="language-toggle language-toggle-compact" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
                     <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
                     <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>

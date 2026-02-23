@@ -659,6 +659,19 @@ body {
   gap: 6px;
 }
 
+.telegram-fullscreen-button {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(248, 250, 252, 0.9);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
 .menu-toggle {
   width: 40px;
   height: 40px;
@@ -2436,8 +2449,42 @@ body {
   }
 
   .overlay-panel {
+    gap: 12px;
+    padding: 14px;
     max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 24px);
     overflow-y: auto;
+  }
+
+  .overlay-menu {
+    gap: 8px;
+  }
+
+  .overlay-menu .menu-item {
+    min-height: 38px;
+    padding: 8px 10px;
+    font-size: 13px;
+    border-radius: 12px;
+  }
+
+  .overlay-menu .menu-icon {
+    width: 22px;
+    height: 22px;
+    border-radius: 8px;
+  }
+
+  .overlay-menu .menu-icon-svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .overlay-actions {
+    gap: 8px;
+  }
+
+  .overlay-actions .secondary-button {
+    min-height: 36px;
+    padding: 8px 10px;
+    font-size: 13px;
   }
 
   .webapp-shell {
