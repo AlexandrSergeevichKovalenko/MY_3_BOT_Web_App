@@ -370,6 +370,7 @@ function AppInner() {
   const telegramLoginWidgetRef = useRef(null);
   const youtubeAutoFolderCacheRef = useRef(new Map());
   const youtubeAutoFolderPendingRef = useRef(new Map());
+  const ttsPendingKeysRef = useRef(new Set());
   const inlineToastTimeoutRef = useRef(null);
   const readerSessionStartingRef = useRef(false);
   const readerStateSaveTimeoutRef = useRef(null);
@@ -751,18 +752,20 @@ function AppInner() {
     const pendingKey = String(key || '').trim();
     const normalizedText = String(text || '').trim();
     if (!pendingKey || !normalizedText) return;
-    if (ttsPendingMap[pendingKey]) return;
+    if (ttsPendingKeysRef.current.has(pendingKey)) return;
+    ttsPendingKeysRef.current.add(pendingKey);
     setTtsPendingMap((prev) => ({ ...prev, [pendingKey]: true }));
     try {
       await playTts(normalizedText, language);
     } finally {
+      ttsPendingKeysRef.current.delete(pendingKey);
       setTtsPendingMap((prev) => {
         const next = { ...prev };
         delete next[pendingKey];
         return next;
       });
     }
-  }, [playTts, ttsPendingMap]);
+  }, [playTts]);
 
   const coerceResponseJson = (value) => {
     if (!value) return null;
@@ -807,6 +810,18 @@ function AppInner() {
     if (lang === 'ru') return 'ru-RU';
     if (lang === 'de') return 'de-DE';
     return getLearningTtsLocale();
+  };
+  const detectTtsLangFromText = (rawText) => {
+    const text = String(rawText || '').trim();
+    if (!text) return normalizeLangCode(languageProfile?.learning_language) || 'de';
+    if (/[А-Яа-яЁё]/.test(text)) return 'ru';
+    if (/[ÄÖÜäöüß]/.test(text)) return 'de';
+    if (/[A-Za-z]/.test(text)) {
+      const learning = normalizeLangCode(languageProfile?.learning_language) || 'de';
+      if (['de', 'en', 'es', 'it'].includes(learning)) return learning;
+      return 'de';
+    }
+    return normalizeLangCode(languageProfile?.learning_language) || 'de';
   };
 
   const resolveFlashcardTexts = (entry) => {
@@ -8176,8 +8191,13 @@ function AppInner() {
                                     title={tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
                                     disabled={loading}
                                   >
-                                    {loading ? '…' : '🔊'}
+                                    {loading ? '⏳' : '🔊'}
                                   </button>
+                                  {loading && (
+                                    <span className="tts-loading-note">
+                                      {tr('Озвучиваем...', 'Wird vorgelesen...')}
+                                    </span>
+                                  )}
                                       </>
                                     );
                                   })()}
@@ -8547,14 +8567,14 @@ function AppInner() {
                                 type="button"
                                 className={`dictionary-tts ${inputTtsLoading ? 'is-loading' : ''}`}
                                 onClick={() => {
-                                  const { sourceLang } = getDictionaryDirectionLangCodes();
-                                  void playTtsWithUi(inputTtsKey, dictionaryWord.trim(), getTtsLocaleForLang(sourceLang));
+                                  const detectedLang = detectTtsLangFromText(dictionaryWord);
+                                  void playTtsWithUi(inputTtsKey, dictionaryWord.trim(), getTtsLocaleForLang(detectedLang));
                                 }}
                                 aria-label={tr('Озвучить введённое слово', 'Eingegebenes Wort vorlesen')}
                                 title={tr('Озвучить введённое слово', 'Eingegebenes Wort vorlesen')}
                                 disabled={inputTtsLoading}
                               >
-                                {inputTtsLoading ? '…' : '🔊'}
+                                {inputTtsLoading ? '⏳' : '🔊'}
                               </button>
                               <button
                                 type="button"
@@ -8728,7 +8748,7 @@ function AppInner() {
                               title={tr('Озвучить перевод', 'Uebersetzung vorlesen')}
                               disabled={loading}
                             >
-                              {loading ? '…' : '🔊'}
+                              {loading ? '⏳' : '🔊'}
                             </button>
                             );
                           })()}
@@ -9647,7 +9667,7 @@ function AppInner() {
                                       title={tr('Повторить аудио', 'Audio wiederholen')}
                                       disabled={previewTtsLoading}
                                     >
-                                      {previewTtsLoading ? '…' : '🔊'}
+                                      {previewTtsLoading ? '⏳' : '🔊'}
                                     </button>
                                   </div>
                                   <div className="flashcard-native-block">

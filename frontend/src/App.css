@@ -4131,16 +4131,23 @@ body {
 .dictionary-tts.is-loading,
 .inline-tts-button.is-loading,
 .flashcard-audio-replay.is-loading {
-  background: linear-gradient(145deg, rgba(56, 189, 248, 0.4), rgba(59, 130, 246, 0.34));
-  border-color: rgba(125, 211, 252, 0.9);
-  box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.3);
-  animation: tts-button-pulse 0.9s ease-in-out infinite;
+  background: linear-gradient(145deg, rgba(251, 191, 36, 0.95), rgba(245, 158, 11, 0.92));
+  border-color: rgba(255, 237, 160, 0.96);
+  color: #111827;
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.52), 0 10px 20px rgba(251, 191, 36, 0.45);
+  animation: tts-button-pulse 0.7s ease-in-out infinite;
 }
 
 .dictionary-tts:disabled,
 .inline-tts-button:disabled {
-  opacity: 0.85;
+  opacity: 1;
   cursor: wait;
+}
+
+.tts-loading-note {
+  font-size: 12px;
+  font-weight: 700;
+  color: #facc15;
 }
 
 @keyframes tts-button-pulse {
