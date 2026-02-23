@@ -10,6 +10,7 @@ import './App.css';
 import * as echarts from 'echarts';
 import BlocksTrainer from './components/BlocksTrainer';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
+import { detectAppMode } from './utils/appMode';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
@@ -53,6 +54,7 @@ class ErrorBoundary extends React.Component {
 
 function AppInner() {
   const telegramApp = useMemo(() => window.Telegram?.WebApp, []);
+  const [appMode, setAppMode] = useState(() => detectAppMode());
   const isWebAppMode = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     const isWebappPath =
@@ -306,6 +308,13 @@ function AppInner() {
   const [economicsLoading, setEconomicsLoading] = useState(false);
   const [economicsError, setEconomicsError] = useState('');
   const [economicsSummary, setEconomicsSummary] = useState(null);
+  const [billingStatusLoading, setBillingStatusLoading] = useState(false);
+  const [billingStatusError, setBillingStatusError] = useState('');
+  const [billingStatus, setBillingStatus] = useState(null);
+  const [billingPlansLoading, setBillingPlansLoading] = useState(false);
+  const [billingPlansError, setBillingPlansError] = useState('');
+  const [billingPlans, setBillingPlans] = useState([]);
+  const [billingActionLoading, setBillingActionLoading] = useState(false);
   const [languageProfile, setLanguageProfile] = useState(null);
   const [languageProfileDraft, setLanguageProfileDraft] = useState({ learning_language: 'de', native_language: 'ru' });
   const [languageProfileLoading, setLanguageProfileLoading] = useState(false);
@@ -351,6 +360,7 @@ function AppInner() {
   const avatarInputRef = useRef(null);
   const analyticsRef = useRef(null);
   const economicsRef = useRef(null);
+  const billingRef = useRef(null);
   const assistantRef = useRef(null);
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
@@ -404,11 +414,38 @@ function AppInner() {
   const tr = (ru, de) => (uiLang === 'de' ? de : ru);
   const readApiError = async (response, fallbackRu, fallbackDe) => {
     const fallback = tr(fallbackRu, fallbackDe);
+    const formatBillingLimitError = (payload) => {
+      if (!payload || typeof payload !== 'object') return '';
+      const errorCode = String(payload.error || '').trim();
+      if (errorCode === 'cost_cap_exceeded') {
+        const spent = Number(payload.spent_eur || 0);
+        const cap = Number(payload.cap_eur || 0);
+        const resetAt = String(payload.reset_at || '');
+        return tr(
+          `Дневной лимит расходов исчерпан: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Сброс: ${resetAt}`,
+          `Taegliches Kostenlimit erreicht: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Reset: ${resetAt}`
+        );
+      }
+      if (errorCode === 'feature_limit_exceeded') {
+        const feature = String(payload.feature || '').trim();
+        const used = Number(payload.used || 0);
+        const limit = Number(payload.limit || 0);
+        const unit = String(payload.unit || '').trim();
+        const resetAt = String(payload.reset_at || '');
+        return tr(
+          `Лимит функции исчерпан (${feature}): ${used} / ${limit} ${unit}. Сброс: ${resetAt}`,
+          `Funktionslimit erreicht (${feature}): ${used} / ${limit} ${unit}. Reset: ${resetAt}`
+        );
+      }
+      return '';
+    };
     try {
       const raw = await response.text();
       if (!raw) return `${fallback} (HTTP ${response.status})`;
       try {
         const parsed = JSON.parse(raw);
+        const billingLimitMessage = formatBillingLimitError(parsed);
+        if (billingLimitMessage) return billingLimitMessage;
         const message = String(parsed?.error || parsed?.message || '').trim();
         return message || `${fallback} (HTTP ${response.status})`;
       } catch (_jsonError) {
@@ -471,6 +508,35 @@ function AppInner() {
   useEffect(() => {
     safeStorageSet('ui_lang', uiLang);
   }, [uiLang]);
+
+  useEffect(() => {
+    const refreshMode = () => {
+      const nextMode = detectAppMode();
+      setAppMode(nextMode);
+      if (import.meta.env.DEV) {
+        console.log('[app-mode]', nextMode);
+      }
+    };
+    refreshMode();
+    const media = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(display-mode: standalone)')
+      : null;
+    const onChange = () => refreshMode();
+    if (media && typeof media.addEventListener === 'function') {
+      media.addEventListener('change', onChange);
+    } else if (media && typeof media.addListener === 'function') {
+      media.addListener(onChange);
+    }
+    window.addEventListener('focus', refreshMode);
+    return () => {
+      if (media && typeof media.removeEventListener === 'function') {
+        media.removeEventListener('change', onChange);
+      } else if (media && typeof media.removeListener === 'function') {
+        media.removeListener(onChange);
+      }
+      window.removeEventListener('focus', refreshMode);
+    };
+  }, []);
 
   const handleBrowserLogout = () => {
     safeStorageRemove('browser_init_data');
@@ -2090,7 +2156,7 @@ function AppInner() {
   };
 
   const showAllSections = () => {
-    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'analytics', 'economics', 'theory']));
+    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'analytics', 'economics', 'subscription', 'theory']));
     setMoviesCollapsed(false);
   };
 
@@ -2267,6 +2333,15 @@ function AppInner() {
         <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
           <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
           <path d="M9.2 9.3h4.4a1.7 1.7 0 0 1 0 3.4H10.7a1.7 1.7 0 0 0 0 3.4h4.2M12 7v10" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+        </svg>
+      );
+    }
+    if (kind === 'subscription') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <path d="M5 8.5h14v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-9z" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M8.5 8.5V7a3.5 3.5 0 0 1 7 0v1.5" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <circle cx="12" cy="13.3" r="1.1" fill="currentColor" />
         </svg>
       );
     }
@@ -6355,6 +6430,116 @@ function AppInner() {
     }
   };
 
+  const loadBillingStatus = async () => {
+    if (!initData) {
+      setBillingStatusError(initDataMissingMsg);
+      return;
+    }
+    setBillingStatusLoading(true);
+    setBillingStatusError('');
+    try {
+      const response = await fetch('/api/billing/status', {
+        headers: { 'X-Telegram-InitData': initData },
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки статуса подписки', 'Fehler beim Laden des Abo-Status'));
+      }
+      const data = await response.json();
+      setBillingStatus(data || null);
+    } catch (error) {
+      setBillingStatusError(`${tr('Ошибка подписки', 'Abo-Fehler')}: ${error.message}`);
+    } finally {
+      setBillingStatusLoading(false);
+    }
+  };
+
+  const loadBillingPlans = async () => {
+    setBillingPlansLoading(true);
+    setBillingPlansError('');
+    try {
+      const response = await fetch('/api/billing/plans');
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки тарифов', 'Fehler beim Laden der Tarife'));
+      }
+      const data = await response.json();
+      setBillingPlans(Array.isArray(data?.plans) ? data.plans : []);
+    } catch (error) {
+      setBillingPlansError(`${tr('Ошибка тарифов', 'Tarif-Fehler')}: ${error.message}`);
+    } finally {
+      setBillingPlansLoading(false);
+    }
+  };
+
+  const openBillingUrl = (url) => {
+    const target = String(url || '').trim();
+    if (!target) return;
+    if (telegramApp?.openLink) {
+      try {
+        telegramApp.openLink(target);
+        return;
+      } catch (_error) {
+        // fall through to browser redirect
+      }
+    }
+    window.location.href = target;
+  };
+
+  const handleBillingUpgrade = async () => {
+    if (!initData) {
+      setBillingStatusError(initDataMissingMsg);
+      return;
+    }
+    setBillingActionLoading(true);
+    try {
+      const response = await fetch('/api/billing/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, plan_code: 'pro' }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка создания checkout', 'Fehler beim Erstellen von Checkout'));
+      }
+      const data = await response.json();
+      const url = String(data?.url || '').trim();
+      if (!url) {
+        throw new Error(tr('Сервер не вернул URL checkout', 'Server hat keine Checkout-URL geliefert'));
+      }
+      openBillingUrl(url);
+    } catch (error) {
+      setBillingStatusError(`${tr('Ошибка оплаты', 'Zahlungsfehler')}: ${error.message}`);
+    } finally {
+      setBillingActionLoading(false);
+    }
+  };
+
+  const handleBillingManage = async () => {
+    if (!initData) {
+      setBillingStatusError(initDataMissingMsg);
+      return;
+    }
+    setBillingActionLoading(true);
+    try {
+      const response = await fetch('/api/billing/create-portal-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка открытия портала', 'Fehler beim Oeffnen des Portals'));
+      }
+      const data = await response.json();
+      const url = String(data?.url || '').trim();
+      if (!url) {
+        throw new Error(tr('Сервер не вернул URL портала', 'Server hat keine Portal-URL geliefert'));
+      }
+      openBillingUrl(url);
+    } catch (error) {
+      setBillingStatusError(`${tr('Ошибка управления подпиской', 'Fehler bei der Abo-Verwaltung')}: ${error.message}`);
+    } finally {
+      setBillingActionLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!isWebAppMode || !initData) {
       return;
@@ -6372,6 +6557,16 @@ function AppInner() {
       loadEconomics();
     }
   }, [initData, isWebAppMode, economicsPeriod, economicsAllocation, selectedSections, flashcardsOnly]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      return;
+    }
+    if (!flashcardsOnly && isSectionVisible('subscription')) {
+      loadBillingStatus();
+      loadBillingPlans();
+    }
+  }, [initData, isWebAppMode, selectedSections, flashcardsOnly]);
 
   useEffect(() => {
     if (!analyticsTrendRef.current) {
@@ -6634,6 +6829,15 @@ function AppInner() {
                 <span className="menu-icon menu-icon-economics">{renderMenuIcon('economics')}</span>
                 <span>{t('menu_economics')}</span>
               </button>
+              <button
+                type="button"
+                className={`menu-item menu-item-subscription ${selectedSections.has('subscription') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('subscription')}
+                disabled={flashcardsOnly}
+              >
+                <span className="menu-icon menu-icon-subscription">{renderMenuIcon('subscription')}</span>
+                <span>{t('menu_billing')}</span>
+              </button>
             </div>
             <div className="webapp-menu-actions">
               <div className="language-toggle-wrap">
@@ -6835,6 +7039,15 @@ function AppInner() {
                     >
                       <span className="menu-icon menu-icon-economics">{renderMenuIcon('economics')}</span>
                       <span>{t('menu_economics')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item menu-item-subscription ${selectedSections.has('subscription') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('subscription', billingRef)}
+                      disabled={flashcardsOnly}
+                    >
+                      <span className="menu-icon menu-icon-subscription">{renderMenuIcon('subscription')}</span>
+                      <span>{t('menu_billing')}</span>
                     </button>
                   </div>
                   <div className="overlay-actions">
@@ -10147,6 +10360,107 @@ function AppInner() {
                       </div>
                     </div>
                   </>
+                )}
+              </section>
+            )}
+
+            {!flashcardsOnly && isSectionVisible('subscription') && (
+              <section className="webapp-section webapp-billing" ref={billingRef}>
+                <div className="webapp-section-title webapp-section-title-with-logo">
+                  <h2>{tr('Подписка', 'Abo')}</h2>
+                  <p className="webapp-muted">{tr('Текущий тариф, лимиты и управление подпиской.', 'Aktueller Tarif, Limits und Abo-Verwaltung.')}</p>
+                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                </div>
+
+                {billingStatusError && <div className="webapp-error">{billingStatusError}</div>}
+                {billingPlansError && <div className="webapp-error">{billingPlansError}</div>}
+                {(billingStatusLoading || billingPlansLoading) && <div className="webapp-muted">{tr('Загружаем статус подписки...', 'Abo-Status wird geladen...')}</div>}
+
+                {billingStatus && (
+                  <>
+                    <div className="analytics-cards economics-cards">
+                      <div className="analytics-card">
+                        <span>{tr('План', 'Plan')}</span>
+                        <strong>{String(billingStatus?.effective_mode || 'free').toUpperCase()}</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('Статус', 'Status')}</span>
+                        <strong>{String(billingStatus?.status || 'inactive')}</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('Расход сегодня', 'Heute verbraucht')}</span>
+                        <strong>{Number(billingStatus?.spent_today_eur || 0).toFixed(2)} EUR</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('Дневной cap', 'Tages-Cap')}</span>
+                        <strong>{billingStatus?.cap_today_eur == null ? tr('Без лимита', 'Unbegrenzt') : `${Number(billingStatus?.cap_today_eur || 0).toFixed(2)} EUR`}</strong>
+                      </div>
+                    </div>
+
+                    {billingStatus?.trial_ends_at && (
+                      <div className="webapp-muted">
+                        {tr('Trial активен до', 'Trial aktiv bis')}: {new Date(billingStatus.trial_ends_at).toLocaleString()}
+                      </div>
+                    )}
+                    <div className="webapp-muted">
+                      {tr('Сброс лимитов', 'Limits-Reset')}: {billingStatus?.reset_at ? new Date(billingStatus.reset_at).toLocaleString() : '—'}
+                    </div>
+
+                    <div className="webapp-section-actions">
+                      {billingStatus?.upgrade?.available && (
+                        <button type="button" className="secondary-button" onClick={handleBillingUpgrade} disabled={billingActionLoading}>
+                          {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Перейти на Pro', 'Zu Pro wechseln')}
+                        </button>
+                      )}
+                      {billingStatus?.manage?.available && (
+                        <button type="button" className="secondary-button" onClick={handleBillingManage} disabled={billingActionLoading}>
+                          {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Управлять подпиской', 'Abo verwalten')}
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {Array.isArray(billingPlans) && billingPlans.length > 0 && (
+                  <div className="economics-breakdown-grid">
+                    {billingPlans.map((plan) => (
+                      <div className="economics-breakdown-card" key={`plan-${plan.plan_code}`}>
+                        <h4>{String(plan?.name || plan?.plan_code || '').trim() || 'Plan'}</h4>
+                        <div className="economics-breakdown-row">
+                          <span>{tr('Код', 'Code')}</span>
+                          <strong>{String(plan?.plan_code || '')}</strong>
+                        </div>
+                        <div className="economics-breakdown-row">
+                          <span>{tr('Тип', 'Typ')}</span>
+                          <strong>{plan?.is_paid ? tr('Платный', 'Bezahlt') : tr('Бесплатный', 'Kostenlos')}</strong>
+                        </div>
+                        <div className="economics-breakdown-row">
+                          <span>{tr('Cap / день', 'Cap / Tag')}</span>
+                          <strong>{plan?.daily_cost_cap_eur == null ? tr('Без лимита', 'Unbegrenzt') : `${Number(plan.daily_cost_cap_eur).toFixed(2)} EUR`}</strong>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {appMode !== 'telegram' && (
+                  <div className="economics-breakdown-grid">
+                    <div className="economics-breakdown-card">
+                      <h4>{tr('Установить приложение', 'App installieren')}</h4>
+                      {appMode === 'browser' ? (
+                        <ol className="webapp-muted" style={{ margin: 0, paddingLeft: '18px' }}>
+                          <li>{tr('Откройте сайт в Safari', 'Seite in Safari oeffnen')}</li>
+                          <li>{tr('Нажмите Share (квадрат со стрелкой)', 'Auf Share tippen (Quadrat mit Pfeil)')}</li>
+                          <li>{tr('Выберите Add to Home Screen', 'Add to Home Screen waehlen')}</li>
+                          <li>{tr('Запустите приложение с иконки', 'App vom Homescreen starten')}</li>
+                        </ol>
+                      ) : (
+                        <div className="webapp-muted">
+                          {tr('Уже установлено. Вы открыли приложение в standalone режиме.', 'Bereits installiert. Die App laeuft im Standalone-Modus.')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 )}
               </section>
             )}

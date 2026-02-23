@@ -1,6 +1,7 @@
 
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { VitePWA } from 'vite-plugin-pwa'
 import axios from 'axios'
 
 // Функция для получения URL от локального API ngrok
@@ -31,7 +32,29 @@ export default defineConfig(async () => {
   }
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      VitePWA({
+        registerType: 'autoUpdate',
+        injectRegister: false,
+        manifest: false,
+        workbox: {
+          navigateFallbackDenylist: [/^\/api\//],
+          runtimeCaching: [
+            {
+              urlPattern: ({ url, request }) => {
+                if (url.pathname.startsWith('/api/')) return false
+                return ['script', 'style', 'image', 'font'].includes(request.destination)
+              },
+              handler: 'StaleWhileRevalidate',
+              options: {
+                cacheName: 'static-assets',
+              },
+            },
+          ],
+        },
+      }),
+    ],
     server: {
       host: true, // Слушать все интерфейсы
       port: 5173,

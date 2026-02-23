@@ -5,10 +5,12 @@ import os
 import hashlib
 from contextlib import contextmanager
 import json
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, date, timedelta, time as dt_time
 from pathlib import Path
 import time
 from calendar import monthrange
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 env_path = Path(__file__).parent / ".env"
@@ -22,6 +24,88 @@ SUPPORTED_LEARNING_LANGUAGES = {"de", "en", "es", "it"}
 SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
 DEFAULT_NATIVE_LANGUAGE = "ru"
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(name, str(default))).strip() or str(default))
+    except Exception:
+        return int(default)
+
+
+def _env_decimal(name: str, default: str | None) -> Decimal | None:
+    raw = os.getenv(name)
+    if raw is None:
+        raw = default
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
+    if value.lower() == "null":
+        return None
+    try:
+        parsed = Decimal(value)
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"{name} must be a valid decimal or NULL, got: {value!r}")
+    if parsed <= 0:
+        raise ValueError(f"{name} must be > 0 or NULL, got: {value!r}")
+    return parsed
+
+
+# Used only if billing ledger stores events in USD and caps are enforced in EUR.
+FX_USD_TO_EUR = _env_decimal("FX_USD_TO_EUR", "0.92") or Decimal("0.92")
+TRIAL_POLICY_DAYS = max(0, _env_int("TRIAL_DAYS", 3))
+TRIAL_POLICY_TZ = "Europe/Vienna"
+
+
+def convert_cost_to_eur(amount, currency: str | None) -> float:
+    try:
+        amount_decimal = Decimal(str(amount))
+    except (InvalidOperation, ValueError, TypeError):
+        amount_decimal = Decimal("0")
+    currency_code = str(currency or "EUR").strip().upper() or "EUR"
+    if currency_code == "EUR":
+        eur_amount = amount_decimal
+    elif currency_code == "USD":
+        eur_amount = amount_decimal * FX_USD_TO_EUR
+    else:
+        raise ValueError(f"Unsupported currency for EUR conversion: {currency_code}")
+    return float(eur_amount)
+
+
+def _resolve_timezone(tz_name: str | None) -> ZoneInfo:
+    candidate = str(tz_name or TRIAL_POLICY_TZ).strip() or TRIAL_POLICY_TZ
+    try:
+        return ZoneInfo(candidate)
+    except Exception:
+        return ZoneInfo(TRIAL_POLICY_TZ)
+
+
+def _to_aware_datetime(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _compute_trial_ends_at(
+    now_ts: datetime | None,
+    *,
+    trial_days: int = TRIAL_POLICY_DAYS,
+    tz_name: str = TRIAL_POLICY_TZ,
+) -> datetime:
+    # Contract (calendar trial in Europe/Vienna):
+    # trial_ends_at is set to local 00:00 of (local signup date + TRIAL_DAYS).
+    # Example: signup at 2026-02-23 15:00 Europe/Vienna with TRIAL_DAYS=3
+    # => trial_ends_at = 2026-02-26 00:00 Europe/Vienna.
+    tzinfo = _resolve_timezone(tz_name)
+    now_utc = _to_aware_datetime(now_ts)
+    local_now = now_utc.astimezone(tzinfo)
+    trial_end_date = local_now.date() + timedelta(days=max(0, int(trial_days)))
+    trial_end_local = datetime.combine(trial_end_date, dt_time.min, tzinfo=tzinfo)
+    return trial_end_local.astimezone(timezone.utc)
 
 SKILL_SEED_DE: list[tuple[str, str, str]] = [
     ("nouns_articles_gender", "Nouns: Articles & Gender", "Nouns"),
@@ -1502,6 +1586,152 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_billing_fixed_costs_range
                 ON bt_3_billing_fixed_costs (currency, period_start, period_end);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS plans (
+                    plan_code TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    is_paid BOOLEAN NOT NULL DEFAULT FALSE,
+                    stripe_price_id TEXT,
+                    daily_cost_cap_eur NUMERIC(20, 10),
+                    trial_days INT NOT NULL DEFAULT 0,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (trial_days >= 0),
+                    CHECK (daily_cost_cap_eur IS NULL OR daily_cost_cap_eur >= 0)
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_plans_stripe_price_id
+                ON plans (stripe_price_id)
+                WHERE stripe_price_id IS NOT NULL AND stripe_price_id <> '';
+            """)
+            # Trial policy stays global (TRIAL_DAYS / TRIAL_DAILY_COST_CAP_EUR), not per plan row.
+            seed_trial_daily_cap = _env_decimal("TRIAL_DAILY_COST_CAP_EUR", "1.00")
+            seed_free_daily_cap = _env_decimal("FREE_DAILY_COST_CAP_EUR", "0.50")
+            seed_pro_daily_cap = _env_decimal("PRO_DAILY_COST_CAP_EUR", None)
+            seed_pro_price_id = str(os.getenv("STRIPE_PRICE_ID_PRO", "")).strip() or None
+            if not seed_pro_price_id:
+                print("⚠️ billing config warning: STRIPE_PRICE_ID_PRO is empty, pro plan will be seeded without stripe_price_id")
+            if (
+                seed_free_daily_cap is not None
+                and seed_trial_daily_cap is not None
+                and seed_free_daily_cap > seed_trial_daily_cap
+            ):
+                print(
+                    "⚠️ billing config warning: FREE_DAILY_COST_CAP_EUR is greater than TRIAL_DAILY_COST_CAP_EUR"
+                )
+            cursor.executemany(
+                """
+                INSERT INTO plans (
+                    plan_code,
+                    name,
+                    is_paid,
+                    stripe_price_id,
+                    daily_cost_cap_eur,
+                    trial_days,
+                    is_active,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW())
+                ON CONFLICT (plan_code) DO UPDATE
+                SET
+                    name = EXCLUDED.name,
+                    is_paid = EXCLUDED.is_paid,
+                    stripe_price_id = EXCLUDED.stripe_price_id,
+                    daily_cost_cap_eur = EXCLUDED.daily_cost_cap_eur,
+                    trial_days = EXCLUDED.trial_days,
+                    is_active = TRUE,
+                    updated_at = NOW();
+                """,
+                [
+                    (
+                        "free",
+                        "Free",
+                        False,
+                        None,
+                        seed_free_daily_cap,
+                        0,
+                    ),
+                    (
+                        "pro",
+                        "Pro",
+                        True,
+                        seed_pro_price_id,
+                        seed_pro_daily_cap,
+                        0,
+                    ),
+                ],
+            )
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_subscriptions (
+                    user_id BIGINT UNIQUE NOT NULL,
+                    plan_code TEXT NOT NULL REFERENCES plans(plan_code),
+                    status TEXT NOT NULL,
+                    trial_ends_at TIMESTAMPTZ,
+                    current_period_end TIMESTAMPTZ,
+                    stripe_customer_id TEXT,
+                    stripe_subscription_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (status IN ('active', 'inactive', 'past_due', 'canceled', 'trialing'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_subscriptions_plan_status
+                ON user_subscriptions (plan_code, status);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_subscriptions_customer
+                ON user_subscriptions (stripe_customer_id)
+                WHERE stripe_customer_id IS NOT NULL AND stripe_customer_id <> '';
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_subscriptions_subscription
+                ON user_subscriptions (stripe_subscription_id)
+                WHERE stripe_subscription_id IS NOT NULL AND stripe_subscription_id <> '';
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS stripe_events_processed (
+                    event_id TEXT PRIMARY KEY,
+                    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS plan_limits (
+                    plan_code TEXT NOT NULL REFERENCES plans(plan_code),
+                    feature_code TEXT NOT NULL,
+                    limit_value NUMERIC(20, 10) NOT NULL,
+                    limit_unit TEXT NOT NULL,
+                    period TEXT NOT NULL,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (limit_value >= 0),
+                    CHECK (limit_unit IN ('count', 'seconds', 'chars', 'tokens', 'eur')),
+                    CHECK (period IN ('day')),
+                    UNIQUE (plan_code, feature_code, period)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_plan_limits_lookup
+                ON plan_limits (plan_code, is_active, period);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_cost_rollup (
+                    user_id BIGINT NOT NULL,
+                    day DATE NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'EUR',
+                    total_cost_eur NUMERIC(20, 10) NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (total_cost_eur >= 0),
+                    UNIQUE (user_id, day)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_daily_cost_rollup_user_day
+                ON daily_cost_rollup (user_id, day DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_tts_chunk_cache (
@@ -6043,6 +6273,769 @@ def get_user_billing_summary(
             "fixed_costs": fixed_items,
         },
     }
+
+
+def list_billing_plans(*, include_inactive: bool = False) -> list[dict]:
+    where_sql = "" if include_inactive else "WHERE is_active = TRUE"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    plan_code,
+                    name,
+                    is_paid,
+                    stripe_price_id,
+                    daily_cost_cap_eur,
+                    trial_days,
+                    is_active,
+                    created_at,
+                    updated_at
+                FROM plans
+                {where_sql}
+                ORDER BY is_paid ASC, plan_code ASC;
+                """
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "plan_code": str(row[0] or ""),
+            "name": str(row[1] or ""),
+            "is_paid": bool(row[2]),
+            "stripe_price_id": str(row[3] or "") or None,
+            "daily_cost_cap_eur": float(row[4]) if row[4] is not None else None,
+            "trial_days": int(row[5] or 0),
+            "is_active": bool(row[6]),
+            "created_at": row[7].isoformat() if row[7] else None,
+            "updated_at": row[8].isoformat() if row[8] else None,
+        }
+        for row in rows
+    ]
+
+
+def get_billing_plan(plan_code: str) -> dict | None:
+    code = str(plan_code or "").strip().lower()
+    if not code:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    plan_code,
+                    name,
+                    is_paid,
+                    stripe_price_id,
+                    daily_cost_cap_eur,
+                    trial_days,
+                    is_active,
+                    created_at,
+                    updated_at
+                FROM plans
+                WHERE plan_code = %s
+                LIMIT 1;
+                """,
+                (code,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "plan_code": str(row[0] or ""),
+        "name": str(row[1] or ""),
+        "is_paid": bool(row[2]),
+        "stripe_price_id": str(row[3] or "") or None,
+        "daily_cost_cap_eur": float(row[4]) if row[4] is not None else None,
+        "trial_days": int(row[5] or 0),
+        "is_active": bool(row[6]),
+        "created_at": row[7].isoformat() if row[7] else None,
+        "updated_at": row[8].isoformat() if row[8] else None,
+    }
+
+
+def _subscription_row_to_dict(row) -> dict:
+    return {
+        "user_id": int(row[0]),
+        "plan_code": str(row[1] or ""),
+        "status": str(row[2] or ""),
+        "trial_ends_at": row[3].isoformat() if row[3] else None,
+        "current_period_end": row[4].isoformat() if row[4] else None,
+        "stripe_customer_id": str(row[5] or "") or None,
+        "stripe_subscription_id": str(row[6] or "") or None,
+        "created_at": row[7].isoformat() if row[7] else None,
+        "updated_at": row[8].isoformat() if row[8] else None,
+    }
+
+
+def get_user_subscription(user_id: int) -> dict | None:
+    user_id_value = int(user_id)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    current_period_end,
+                    stripe_customer_id,
+                    stripe_subscription_id,
+                    created_at,
+                    updated_at
+                FROM user_subscriptions
+                WHERE user_id = %s
+                LIMIT 1;
+                """,
+                (user_id_value,),
+            )
+            row = cursor.fetchone()
+    return _subscription_row_to_dict(row) if row else None
+
+
+def get_user_subscription_by_customer_id(stripe_customer_id: str) -> dict | None:
+    customer_id_value = str(stripe_customer_id or "").strip()
+    if not customer_id_value:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    current_period_end,
+                    stripe_customer_id,
+                    stripe_subscription_id,
+                    created_at,
+                    updated_at
+                FROM user_subscriptions
+                WHERE stripe_customer_id = %s
+                ORDER BY updated_at DESC
+                LIMIT 1;
+                """,
+                (customer_id_value,),
+            )
+            row = cursor.fetchone()
+    return _subscription_row_to_dict(row) if row else None
+
+
+def get_user_subscription_by_stripe_subscription_id(stripe_subscription_id: str) -> dict | None:
+    subscription_id_value = str(stripe_subscription_id or "").strip()
+    if not subscription_id_value:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    current_period_end,
+                    stripe_customer_id,
+                    stripe_subscription_id,
+                    created_at,
+                    updated_at
+                FROM user_subscriptions
+                WHERE stripe_subscription_id = %s
+                ORDER BY updated_at DESC
+                LIMIT 1;
+                """,
+                (subscription_id_value,),
+            )
+            row = cursor.fetchone()
+    return _subscription_row_to_dict(row) if row else None
+
+
+def _normalize_subscription_status(status: str | None) -> str:
+    value = str(status or "").strip().lower() or "inactive"
+    allowed = {"active", "inactive", "past_due", "canceled", "trialing"}
+    if value not in allowed:
+        raise ValueError(f"Unsupported subscription status: {value!r}")
+    return value
+
+
+def get_or_create_user_subscription(
+    user_id: int,
+    now_ts: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict:
+    """Race-safe create-or-get via INSERT .. ON CONFLICT DO NOTHING + SELECT."""
+    user_id_value = int(user_id)
+    trial_ends_at = _compute_trial_ends_at(now_ts, trial_days=TRIAL_POLICY_DAYS, tz_name=tz)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO user_subscriptions (
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    updated_at
+                )
+                VALUES (%s, 'free', 'trialing', %s, NOW())
+                ON CONFLICT (user_id) DO NOTHING
+                RETURNING
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    current_period_end,
+                    stripe_customer_id,
+                    stripe_subscription_id,
+                    created_at,
+                    updated_at;
+                """,
+                (user_id_value, trial_ends_at),
+            )
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    """
+                    SELECT
+                        user_id,
+                        plan_code,
+                        status,
+                        trial_ends_at,
+                        current_period_end,
+                        stripe_customer_id,
+                        stripe_subscription_id,
+                        created_at,
+                        updated_at
+                    FROM user_subscriptions
+                    WHERE user_id = %s
+                    LIMIT 1;
+                    """,
+                    (user_id_value,),
+                )
+                row = cursor.fetchone()
+    if not row:
+        raise RuntimeError("Failed to create or fetch user subscription")
+    return _subscription_row_to_dict(row)
+
+
+def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=None) -> dict:
+    user_id_value = int(user_id)
+    customer_id_value = str(stripe_customer_id or "").strip()
+    if not customer_id_value:
+        raise ValueError("stripe_customer_id is required")
+    owns_conn = db_conn is None
+    if owns_conn:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO user_subscriptions (
+                        user_id,
+                        plan_code,
+                        status,
+                        trial_ends_at,
+                        stripe_customer_id,
+                        updated_at
+                    )
+                    VALUES (%s, 'free', 'trialing', %s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET
+                        stripe_customer_id = EXCLUDED.stripe_customer_id,
+                        updated_at = NOW()
+                    RETURNING
+                        user_id,
+                        plan_code,
+                        status,
+                        trial_ends_at,
+                        current_period_end,
+                        stripe_customer_id,
+                        stripe_subscription_id,
+                        created_at,
+                        updated_at;
+                    """,
+                    (
+                        user_id_value,
+                        _compute_trial_ends_at(datetime.now(timezone.utc), trial_days=TRIAL_POLICY_DAYS, tz_name=TRIAL_POLICY_TZ),
+                        customer_id_value,
+                    ),
+                )
+                row = cursor.fetchone()
+    else:
+        with db_conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO user_subscriptions (
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    stripe_customer_id,
+                    updated_at
+                )
+                VALUES (%s, 'free', 'trialing', %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET
+                    stripe_customer_id = EXCLUDED.stripe_customer_id,
+                    updated_at = NOW()
+                RETURNING
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    current_period_end,
+                    stripe_customer_id,
+                    stripe_subscription_id,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    user_id_value,
+                    _compute_trial_ends_at(datetime.now(timezone.utc), trial_days=TRIAL_POLICY_DAYS, tz_name=TRIAL_POLICY_TZ),
+                    customer_id_value,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        raise RuntimeError("Failed to bind stripe customer to user subscription")
+    return _subscription_row_to_dict(row)
+
+
+def set_subscription_from_stripe(
+    user_id: int,
+    stripe_customer_id: str | None,
+    stripe_subscription_id: str | None,
+    status: str,
+    current_period_end: datetime | None,
+    db_conn=None,
+) -> dict:
+    user_id_value = int(user_id)
+    status_value = _normalize_subscription_status(status)
+    period_end_value = _to_aware_datetime(current_period_end) if current_period_end else None
+    customer_id_value = str(stripe_customer_id or "").strip() or None
+    subscription_id_value = str(stripe_subscription_id or "").strip() or None
+    owns_conn = db_conn is None
+    if owns_conn:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO user_subscriptions (
+                        user_id,
+                        plan_code,
+                        status,
+                        trial_ends_at,
+                        current_period_end,
+                        stripe_customer_id,
+                        stripe_subscription_id,
+                        updated_at
+                    )
+                    VALUES (%s, 'pro', %s, NULL, %s, %s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET
+                        plan_code = 'pro',
+                        status = EXCLUDED.status,
+                        trial_ends_at = NULL,
+                        current_period_end = EXCLUDED.current_period_end,
+                        stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id, user_subscriptions.stripe_customer_id),
+                        stripe_subscription_id = COALESCE(EXCLUDED.stripe_subscription_id, user_subscriptions.stripe_subscription_id),
+                        updated_at = NOW()
+                    RETURNING
+                        user_id,
+                        plan_code,
+                        status,
+                        trial_ends_at,
+                        current_period_end,
+                        stripe_customer_id,
+                        stripe_subscription_id,
+                        created_at,
+                        updated_at;
+                    """,
+                    (
+                        user_id_value,
+                        status_value,
+                        period_end_value,
+                        customer_id_value,
+                        subscription_id_value,
+                    ),
+                )
+                row = cursor.fetchone()
+    else:
+        with db_conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO user_subscriptions (
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    current_period_end,
+                    stripe_customer_id,
+                    stripe_subscription_id,
+                    updated_at
+                )
+                VALUES (%s, 'pro', %s, NULL, %s, %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET
+                    plan_code = 'pro',
+                    status = EXCLUDED.status,
+                    trial_ends_at = NULL,
+                    current_period_end = EXCLUDED.current_period_end,
+                    stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id, user_subscriptions.stripe_customer_id),
+                    stripe_subscription_id = COALESCE(EXCLUDED.stripe_subscription_id, user_subscriptions.stripe_subscription_id),
+                    updated_at = NOW()
+                RETURNING
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    current_period_end,
+                    stripe_customer_id,
+                    stripe_subscription_id,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    user_id_value,
+                    status_value,
+                    period_end_value,
+                    customer_id_value,
+                    subscription_id_value,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        raise RuntimeError("Failed to upsert Stripe subscription")
+    return _subscription_row_to_dict(row)
+
+
+def try_mark_stripe_event_processed(event_id: str, db_conn=None) -> bool:
+    """Insert-first idempotency marker. True only for the first successful insert."""
+    event_id_value = str(event_id or "").strip()
+    if not event_id_value:
+        return False
+    if db_conn is None:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO stripe_events_processed (event_id)
+                    VALUES (%s)
+                    ON CONFLICT (event_id) DO NOTHING
+                    RETURNING event_id;
+                    """,
+                    (event_id_value,),
+                )
+                inserted = cursor.fetchone()
+    else:
+        with db_conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO stripe_events_processed (event_id)
+                VALUES (%s)
+                ON CONFLICT (event_id) DO NOTHING
+                RETURNING event_id;
+                """,
+                (event_id_value,),
+            )
+            inserted = cursor.fetchone()
+    return bool(inserted)
+
+
+def mark_stripe_event_processed(event_id: str, db_conn=None) -> bool:
+    # Backward-compatible alias; use try_mark_stripe_event_processed in webhook flow.
+    return try_mark_stripe_event_processed(event_id, db_conn=db_conn)
+
+
+def is_stripe_event_processed(event_id: str) -> bool:
+    event_id_value = str(event_id or "").strip()
+    if not event_id_value:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM stripe_events_processed
+                WHERE event_id = %s
+                LIMIT 1;
+                """,
+                (event_id_value,),
+            )
+            row = cursor.fetchone()
+    return bool(row)
+
+
+def get_today_cost_eur(user_id: int, tz: str = TRIAL_POLICY_TZ) -> float:
+    user_id_value = int(user_id)
+    tz_name = str(tz or TRIAL_POLICY_TZ).strip() or TRIAL_POLICY_TZ
+    tzinfo = _resolve_timezone(tz_name)
+    day_local = datetime.now(timezone.utc).astimezone(tzinfo).date()
+
+    # Always recompute from source-of-truth billing events before writing rollup.
+    # This avoids stale totals when new events arrive after an earlier rollup read.
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT currency, COALESCE(SUM(cost_amount), 0) AS total_cost
+                FROM bt_3_billing_events
+                WHERE user_id = %s
+                  AND (event_time AT TIME ZONE %s)::date = %s
+                GROUP BY currency;
+                """,
+                (user_id_value, tz_name, day_local),
+            )
+            rows = cursor.fetchall() or []
+            total_eur = 0.0
+            for row in rows:
+                currency = str(row[0] or "EUR").upper()
+                amount = float(row[1] or 0.0)
+                try:
+                    total_eur += convert_cost_to_eur(amount, currency)
+                except ValueError:
+                    continue
+
+            cursor.execute(
+                """
+                INSERT INTO daily_cost_rollup (
+                    user_id,
+                    day,
+                    currency,
+                    total_cost_eur,
+                    updated_at
+                )
+                VALUES (%s, %s, 'EUR', %s, NOW())
+                ON CONFLICT (user_id, day) DO UPDATE
+                SET
+                    currency = 'EUR',
+                    total_cost_eur = EXCLUDED.total_cost_eur,
+                    updated_at = NOW();
+                """,
+                (user_id_value, day_local, total_eur),
+            )
+    return float(total_eur)
+
+
+def _next_local_midnight_iso(now_ts_utc: datetime | None = None, tz: str = TRIAL_POLICY_TZ) -> str:
+    tzinfo = _resolve_timezone(tz)
+    now_utc = _to_aware_datetime(now_ts_utc)
+    local_now = now_utc.astimezone(tzinfo)
+    next_day = local_now.date() + timedelta(days=1)
+    next_midnight_local = datetime.combine(next_day, dt_time.min, tzinfo=tzinfo)
+    return next_midnight_local.isoformat()
+
+
+def resolve_entitlement(
+    user_id: int,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict:
+    now_utc = _to_aware_datetime(now_ts_utc)
+    subscription = get_user_subscription(int(user_id))
+    if not subscription:
+        subscription = {
+            "user_id": int(user_id),
+            "plan_code": "free",
+            "status": "inactive",
+            "trial_ends_at": None,
+            "current_period_end": None,
+            "stripe_customer_id": None,
+            "stripe_subscription_id": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+
+    plan_code = str(subscription.get("plan_code") or "free").strip().lower() or "free"
+    if plan_code not in {"free", "pro"}:
+        plan_code = "free"
+    status = _normalize_subscription_status(subscription.get("status"))
+
+    trial_ends_at_value = subscription.get("trial_ends_at")
+    trial_ends_at_dt = None
+    if trial_ends_at_value:
+        try:
+            trial_ends_at_dt = datetime.fromisoformat(str(trial_ends_at_value))
+            trial_ends_at_dt = _to_aware_datetime(trial_ends_at_dt)
+        except Exception:
+            trial_ends_at_dt = None
+
+    if plan_code == "pro" and status in {"active", "trialing"}:
+        effective_mode = "pro"
+    elif status == "trialing" and trial_ends_at_dt is not None and now_utc < trial_ends_at_dt:
+        effective_mode = "trial"
+    else:
+        effective_mode = "free"
+
+    free_plan = get_billing_plan("free") or {}
+    pro_plan = get_billing_plan("pro") or {}
+    if effective_mode == "pro":
+        cap_eur = pro_plan.get("daily_cost_cap_eur")
+    elif effective_mode == "trial":
+        cap_eur = float(_env_decimal("TRIAL_DAILY_COST_CAP_EUR", "1.00"))
+    else:
+        cap_eur = free_plan.get("daily_cost_cap_eur")
+        if cap_eur is None:
+            fallback = _env_decimal("FREE_DAILY_COST_CAP_EUR", "0.50")
+            cap_eur = float(fallback) if fallback is not None else None
+
+    return {
+        "user_id": int(user_id),
+        "plan_code": plan_code,
+        "status": status,
+        "trial_ends_at": trial_ends_at_dt.isoformat() if trial_ends_at_dt else None,
+        "effective_mode": effective_mode,
+        "cap_eur": float(cap_eur) if cap_eur is not None else None,
+        "reset_at": _next_local_midnight_iso(now_utc, tz=tz),
+    }
+
+
+def enforce_daily_cost_cap(
+    user_id: int,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_ts_utc, tz=tz)
+    cap_eur = entitlement.get("cap_eur")
+    if cap_eur is None:
+        return None
+    spent_eur = float(get_today_cost_eur(int(user_id), tz=tz))
+    if spent_eur >= float(cap_eur):
+        return {
+            "error": "cost_cap_exceeded",
+            "cap_eur": float(cap_eur),
+            "spent_eur": float(round(spent_eur, 6)),
+            "currency": "EUR",
+            "reset_at": entitlement.get("reset_at"),
+            "upgrade": {
+                "available": True,
+                "plan_code": "pro",
+                "action": "checkout",
+                "endpoint": "/api/billing/create-checkout-session",
+            },
+        }
+    return None
+
+
+def get_plan_limit(plan_code: str, feature_code: str, period: str = "day") -> dict | None:
+    plan_value = str(plan_code or "").strip().lower()
+    feature_value = str(feature_code or "").strip().lower()
+    period_value = str(period or "day").strip().lower() or "day"
+    if not plan_value or not feature_value:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT plan_code, feature_code, limit_value, limit_unit, period, is_active
+                FROM plan_limits
+                WHERE plan_code = %s
+                  AND feature_code = %s
+                  AND period = %s
+                  AND is_active = TRUE
+                LIMIT 1;
+                """,
+                (plan_value, feature_value, period_value),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "plan_code": str(row[0] or ""),
+        "feature_code": str(row[1] or ""),
+        "limit_value": float(row[2] or 0.0),
+        "limit_unit": str(row[3] or ""),
+        "period": str(row[4] or "day"),
+        "is_active": bool(row[5]),
+    }
+
+
+def _get_feature_usage_today(user_id: int, feature_code: str, tz: str = TRIAL_POLICY_TZ) -> float:
+    feature = str(feature_code or "").strip().lower()
+    tz_name = str(tz or TRIAL_POLICY_TZ).strip() or TRIAL_POLICY_TZ
+    day_local = datetime.now(timezone.utc).astimezone(_resolve_timezone(tz_name)).date()
+
+    if feature == "youtube_fetch_daily":
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bt_3_billing_events
+                    WHERE user_id = %s
+                      AND action_type = 'youtube_transcript_fetch'
+                      AND (event_time AT TIME ZONE %s)::date = %s;
+                    """,
+                    (int(user_id), tz_name, day_local),
+                )
+                row = cursor.fetchone()
+        return float((row or [0])[0] or 0)
+
+    if feature == "tts_chars_daily":
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(SUM(units_value), 0)
+                    FROM bt_3_billing_events
+                    WHERE user_id = %s
+                      AND action_type = 'webapp_tts_chars'
+                      AND units_type = 'chars'
+                      AND (event_time AT TIME ZONE %s)::date = %s;
+                    """,
+                    (int(user_id), tz_name, day_local),
+                )
+                row = cursor.fetchone()
+        return float((row or [0])[0] or 0.0)
+
+    return 0.0
+
+
+def enforce_feature_limit(
+    user_id: int,
+    feature_code: str,
+    *,
+    requested_units: float = 1.0,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_ts_utc, tz=tz)
+    effective_mode = str(entitlement.get("effective_mode") or "free")
+    plan_code = str(entitlement.get("plan_code") or "free")
+
+    # Product policy: trial has full features, except YouTube safety limit.
+    if effective_mode == "trial" and feature_code != "youtube_fetch_daily":
+        return None
+
+    lookup_plan = plan_code
+    if effective_mode == "trial" and feature_code == "youtube_fetch_daily":
+        lookup_plan = "free"
+    limit = get_plan_limit(lookup_plan, feature_code, period="day")
+    if not limit:
+        return None
+
+    usage = _get_feature_usage_today(int(user_id), feature_code, tz=tz)
+    requested = max(0.0, float(requested_units or 0.0))
+    limit_value = float(limit.get("limit_value") or 0.0)
+    if usage + requested > limit_value:
+        used_value = float(round(usage, 6))
+        limit_out = int(limit_value) if float(limit_value).is_integer() else float(limit_value)
+        used_out = int(used_value) if float(used_value).is_integer() else float(used_value)
+        return {
+            "error": "feature_limit_exceeded",
+            "feature": feature_code,
+            "limit": limit_out,
+            "used": used_out,
+            "unit": str(limit.get("limit_unit") or "count"),
+            "reset_at": entitlement.get("reset_at"),
+            "upgrade": {
+                "available": True,
+                "plan_code": "pro",
+                "action": "checkout",
+                "endpoint": "/api/billing/create-checkout-session",
+            },
+        }
+    return None
 
 
 def get_today_reminder_settings(user_id: int) -> dict:

@@ -26,3 +26,4 @@ pypdf==5.2.0
 pyttsx3==2.98
 
 fsrs>=6.1.1
+stripe>=11.0.0

@@ -472,7 +472,8 @@ body {
 .menu-icon-reader,
 .menu-icon-flashcards,
 .menu-icon-assistant,
-.menu-icon-analytics {
+.menu-icon-analytics,
+.menu-icon-subscription {
   color: inherit;
 }
 
@@ -500,6 +501,7 @@ body {
 .menu-item-flashcards.is-active .menu-icon { color: #c2a2ff; }
 .menu-item-assistant.is-active .menu-icon { color: #ffc786; }
 .menu-item-analytics.is-active .menu-icon { color: #8ce3b0; }
+.menu-item-subscription.is-active .menu-icon { color: #9adf8f; }
 
 .menu-item:disabled {
   opacity: 0.5;

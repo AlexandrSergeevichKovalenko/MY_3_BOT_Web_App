@@ -67,6 +67,7 @@ import json
 import asyncio
 import logging
 import requests
+import stripe
 import tempfile
 import base64
 import time
@@ -206,6 +207,18 @@ from backend.database import (
     log_billing_event,
     upsert_billing_fixed_cost,
     get_user_billing_summary,
+    list_billing_plans,
+    get_or_create_user_subscription,
+    get_user_subscription,
+    get_user_subscription_by_customer_id,
+    get_user_subscription_by_stripe_subscription_id,
+    bind_stripe_customer_to_user,
+    set_subscription_from_stripe,
+    try_mark_stripe_event_processed,
+    resolve_entitlement,
+    enforce_daily_cost_cap,
+    enforce_feature_limit,
+    get_today_cost_eur,
     get_today_reminder_settings,
     upsert_today_reminder_settings,
     list_today_reminder_users,
@@ -300,6 +313,14 @@ YOUTUBE_API_KEY = (os.getenv("YOUTUBE_API_KEY") or "").strip()
 THEORY_PACKAGE_TTL_MINUTES = max(1, int((os.getenv("THEORY_PACKAGE_TTL_MINUTES") or "720").strip()))
 BILLING_CURRENCY_DEFAULT = (os.getenv("BILLING_CURRENCY") or "USD").strip().upper() or "USD"
 BILLING_ALLOCATION_DEFAULT = (os.getenv("BILLING_ALLOCATION_METHOD_DEFAULT") or "weighted").strip().lower() or "weighted"
+STRIPE_SECRET_KEY = (os.getenv("STRIPE_SECRET_KEY") or "").strip()
+STRIPE_WEBHOOK_SECRET = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
+STRIPE_PRICE_ID_PRO = (os.getenv("STRIPE_PRICE_ID_PRO") or "").strip()
+APP_BASE_URL = (os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
+BACKEND_BASE_URL = (os.getenv("BACKEND_BASE_URL") or "").strip().rstrip("/")
+
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
 
 _TODAY_PREFERRED_CHANNELS = [
     "UCthmoIZKvuR1-KuwednkjHg",
@@ -366,6 +387,29 @@ _LEGACY_API_PREFIXES = (
     "/admin/",
 )
 _LEGACY_API_EXACT_PATHS = {"/token", "/message"}
+_BILLING_GUARD_RULES: dict[str, dict] = {
+    "/api/token": {"cap": True},
+    "/api/webapp/dictionary": {"cap": True},
+    "/api/webapp/dictionary/collocations": {"cap": True},
+    "/api/webapp/flashcards/feel": {"cap": True},
+    "/api/webapp/flashcards/enrich": {"cap": True},
+    "/api/webapp/explain": {"cap": True},
+    "/api/webapp/tts": {"cap": True, "feature_code": "tts_chars_daily"},
+    "/api/webapp/youtube/transcript": {"cap": True, "feature_code": "youtube_fetch_daily"},
+    "/api/webapp/youtube/translate": {"cap": True},
+    "/api/webapp/submit-group": {"cap": True},
+    "/api/webapp/story/submit": {"cap": True},
+    "/api/today/theory/prepare": {"cap": True},
+    "/api/today/theory/check": {"cap": True},
+}
+_BILLING_GUARD_SKIP_PATHS = {
+    "/api/billing/webhook",
+    "/api/billing/plans",
+    "/api/billing/create-checkout-session",
+    "/api/billing/create-portal-session",
+    "/api/web/auth/telegram",
+    "/api/web/auth/config",
+}
 
 
 def _is_webapp_allowlist_bypass_enabled() -> bool:
@@ -409,6 +453,25 @@ def enforce_webapp_access():
     g.telegram_user_id = int(user_id)
     g.telegram_user = user_data
     g.telegram_init_data = parsed
+    return None
+
+
+@app.before_request
+def enforce_billing_guards():
+    path = request.path or ""
+    if path in _BILLING_GUARD_SKIP_PATHS:
+        return None
+    if path in {"/health", "/api/health"} or path.startswith("/health/") or path.startswith("/api/health/"):
+        return None
+    if path not in _BILLING_GUARD_RULES:
+        return None
+    if path.startswith("/api/admin/"):
+        return None
+    if _admin_token_is_valid() and path.startswith("/api/admin/"):
+        return None
+    payload, status = _apply_billing_guard(path)
+    if payload:
+        return jsonify(payload), int(status or 429)
     return None
 
 
@@ -715,7 +778,12 @@ def _extract_webapp_user_from_init_data(init_data: str) -> tuple[int | None, str
 
 def _get_authenticated_user_from_request_init_data() -> tuple[int | None, str | None, str | None]:
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData") or request.args.get("initData") or request.headers.get("X-Telegram-Init-Data")
+    init_data = (
+        request.headers.get("X-Telegram-InitData")
+        or request.headers.get("X-Telegram-Init-Data")
+        or payload.get("initData")
+        or request.args.get("initData")
+    )
     if not init_data:
         return None, None, "initData обязателен"
     user_id, username = _extract_webapp_user_from_init_data(init_data)
@@ -726,11 +794,159 @@ def _get_authenticated_user_from_request_init_data() -> tuple[int | None, str | 
     return int(user_id), username, None
 
 
+def _admin_token_is_valid() -> bool:
+    token = (request.headers.get("X-Admin-Token") or "").strip()
+    required = (os.getenv("ADMIN_TOKEN") or os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+    if not required:
+        return False
+    return bool(token) and token == required
+
+
+def _extract_guard_user_id_for_path(path: str) -> int | None:
+    if path == "/api/token":
+        try:
+            return int(str(request.args.get("user_id") or "").strip())
+        except Exception:
+            return None
+    user_id, _username, _error = _get_authenticated_user_from_request_init_data()
+    return int(user_id) if user_id is not None else None
+
+
+def _apply_billing_guard(path: str) -> tuple[dict | None, int | None]:
+    rule = _BILLING_GUARD_RULES.get(path) or {}
+    user_id = _extract_guard_user_id_for_path(path)
+    if user_id is None:
+        return {"error": "user_id не определён для billing guard"}, 400
+
+    now_utc = datetime.now(timezone.utc)
+    if bool(rule.get("cap")):
+        cap_error = enforce_daily_cost_cap(user_id=int(user_id), now_ts_utc=now_utc, tz="Europe/Vienna")
+        if cap_error:
+            return cap_error, 429
+
+    feature_code = str(rule.get("feature_code") or "").strip()
+    if feature_code:
+        payload = request.get_json(silent=True) or {}
+        requested_units = 1.0
+        if feature_code == "tts_chars_daily":
+            requested_units = float(len((payload.get("text") or "").strip()))
+        feature_error = enforce_feature_limit(
+            user_id=int(user_id),
+            feature_code=feature_code,
+            requested_units=requested_units,
+            now_ts_utc=now_utc,
+            tz="Europe/Vienna",
+        )
+        if feature_error:
+            return feature_error, 429
+    return None, None
+
+
 def _get_user_language_pair(user_id: int) -> tuple[str, str, dict]:
     profile = get_user_language_profile(user_id=int(user_id))
     native_language = str(profile.get("native_language") or "ru").strip().lower() or "ru"
     learning_language = str(profile.get("learning_language") or "de").strip().lower() or "de"
     return native_language, learning_language, profile
+
+
+def _require_stripe_config(*, require_webhook_secret: bool = False) -> str | None:
+    if not STRIPE_SECRET_KEY:
+        return "STRIPE_SECRET_KEY не задан"
+    if require_webhook_secret and not STRIPE_WEBHOOK_SECRET:
+        return "STRIPE_WEBHOOK_SECRET не задан"
+    return None
+
+
+def _safe_int(value) -> int | None:
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def _stripe_unix_ts_to_datetime(value) -> datetime | None:
+    ts = _safe_int(value)
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    except Exception:
+        return None
+
+
+def _map_stripe_subscription_status(status: str | None) -> str:
+    status_value = str(status or "").strip().lower()
+    if status_value == "active":
+        return "active"
+    if status_value == "trialing":
+        return "trialing"
+    if status_value in {"past_due", "unpaid", "incomplete", "incomplete_expired"}:
+        return "past_due"
+    if status_value == "canceled":
+        return "canceled"
+    return "inactive"
+
+
+def _resolve_user_id_for_stripe_event(
+    *,
+    metadata_user_id,
+    client_reference_id,
+    stripe_customer_id,
+    stripe_subscription_id,
+) -> int | None:
+    user_id = _safe_int(metadata_user_id) or _safe_int(client_reference_id)
+    if user_id:
+        return int(user_id)
+    if stripe_customer_id:
+        sub = get_user_subscription_by_customer_id(str(stripe_customer_id))
+        if sub and sub.get("user_id") is not None:
+            return int(sub["user_id"])
+    if stripe_subscription_id:
+        sub = get_user_subscription_by_stripe_subscription_id(str(stripe_subscription_id))
+        if sub and sub.get("user_id") is not None:
+            return int(sub["user_id"])
+    return None
+
+
+def _get_or_create_stripe_customer_id(user_id: int, username: str | None = None) -> str:
+    subscription = get_or_create_user_subscription(user_id=int(user_id), now_ts=datetime.now(timezone.utc))
+    existing_customer_id = str(subscription.get("stripe_customer_id") or "").strip()
+    if existing_customer_id:
+        try:
+            customer = stripe.Customer.retrieve(existing_customer_id)
+            if customer and not getattr(customer, "deleted", False):
+                return existing_customer_id
+        except Exception as exc:
+            logging.warning("stripe customer retrieve failed for user_id=%s customer=%s: %s", user_id, existing_customer_id, exc)
+
+    customer = stripe.Customer.create(
+        metadata={"user_id": str(int(user_id))},
+        name=str(username or "").strip() or None,
+    )
+    customer_id = str(getattr(customer, "id", "") or "")
+    if not customer_id:
+        raise RuntimeError("Stripe customer id is empty")
+    bind_stripe_customer_to_user(int(user_id), customer_id)
+    return customer_id
+
+
+def _upsert_subscription_from_stripe_payload(
+    *,
+    user_id: int,
+    stripe_customer_id: str | None,
+    stripe_subscription_id: str | None,
+    stripe_status: str | None,
+    current_period_end_ts,
+    db_conn=None,
+) -> dict:
+    return set_subscription_from_stripe(
+        user_id=int(user_id),
+        stripe_customer_id=stripe_customer_id,
+        stripe_subscription_id=stripe_subscription_id,
+        status=_map_stripe_subscription_status(stripe_status),
+        current_period_end=_stripe_unix_ts_to_datetime(current_period_end_ts),
+        db_conn=db_conn,
+    )
 
 
 def _build_language_pair_payload(source_lang: str, target_lang: str) -> dict:
@@ -5204,6 +5420,286 @@ def get_economics_summary():
     )
 
 
+@app.route("/api/billing/plans", methods=["GET"])
+def get_billing_plans():
+    try:
+        plans = list_billing_plans(include_inactive=False)
+        return jsonify(
+            {
+                "plans": [
+                    {
+                        "plan_code": str(item.get("plan_code") or ""),
+                        "name": str(item.get("name") or ""),
+                        "is_paid": bool(item.get("is_paid")),
+                        "daily_cost_cap_eur": item.get("daily_cost_cap_eur"),
+                        "stripe_price_id": item.get("stripe_price_id") if bool(item.get("is_paid")) else None,
+                        "is_active": bool(item.get("is_active")),
+                    }
+                    for item in plans
+                ]
+            }
+        ), 200
+    except Exception as exc:
+        logging.exception("billing plans fetch failed: %s", exc)
+        return jsonify({"error": "Не удалось получить список billing plans"}), 500
+
+
+@app.route("/api/billing/status", methods=["GET"])
+def get_billing_status():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    now_utc = datetime.now(timezone.utc)
+    entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz="Europe/Vienna")
+    subscription = get_user_subscription(int(user_id)) or {}
+    spent_today = float(get_today_cost_eur(user_id=int(user_id), tz="Europe/Vienna"))
+    plan_code = str(entitlement.get("plan_code") or "free")
+    status_value = str(entitlement.get("status") or "inactive")
+    effective_mode = str(entitlement.get("effective_mode") or "free")
+    cap_today = entitlement.get("cap_eur")
+    is_pro_active = plan_code == "pro" and status_value in {"active", "trialing"}
+    return jsonify(
+        {
+            "plan_code": plan_code,
+            "status": status_value,
+            "effective_mode": effective_mode,
+            "trial_ends_at": entitlement.get("trial_ends_at"),
+            "current_period_end": subscription.get("current_period_end"),
+            "spent_today_eur": float(round(spent_today, 6)),
+            "cap_today_eur": float(cap_today) if cap_today is not None else None,
+            "currency": "EUR",
+            "reset_at": entitlement.get("reset_at"),
+            "upgrade": {
+                "available": not is_pro_active,
+                "endpoint": "/api/billing/create-checkout-session",
+            },
+            "manage": {
+                "available": bool(is_pro_active),
+                "endpoint": "/api/billing/create-portal-session",
+            },
+        }
+    ), 200
+
+
+@app.route("/api/billing/create-checkout-session", methods=["POST"])
+def create_billing_checkout_session():
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    config_error = _require_stripe_config(require_webhook_secret=False)
+    if config_error:
+        return jsonify({"error": config_error}), 500
+    if not STRIPE_PRICE_ID_PRO:
+        return jsonify({"error": "STRIPE_PRICE_ID_PRO не задан"}), 500
+    if not APP_BASE_URL:
+        return jsonify({"error": "APP_BASE_URL не задан"}), 500
+
+    payload = request.get_json(silent=True) or {}
+    requested_plan = str(payload.get("plan_code") or "pro").strip().lower() or "pro"
+    if requested_plan != "pro":
+        return jsonify({"error": "Поддерживается только plan_code='pro'"}), 400
+
+    try:
+        stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            customer=stripe_customer_id,
+            client_reference_id=str(int(user_id)),
+            metadata={"user_id": str(int(user_id)), "plan_code": "pro"},
+            subscription_data={"metadata": {"user_id": str(int(user_id)), "plan_code": "pro"}},
+            line_items=[{"price": STRIPE_PRICE_ID_PRO, "quantity": 1}],
+            success_url=f"{APP_BASE_URL}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{APP_BASE_URL}/billing/cancel",
+        )
+        checkout_url = str(getattr(session, "url", "") or "")
+        if not checkout_url:
+            return jsonify({"error": "Stripe checkout session URL отсутствует"}), 500
+        return jsonify({"url": checkout_url}), 200
+    except Exception as exc:
+        logging.exception("create checkout session failed user_id=%s: %s", user_id, exc)
+        return jsonify({"error": f"Не удалось создать checkout session: {exc}"}), 500
+
+
+@app.route("/api/billing/create-portal-session", methods=["POST"])
+def create_billing_portal_session():
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    config_error = _require_stripe_config(require_webhook_secret=False)
+    if config_error:
+        return jsonify({"error": config_error}), 500
+    if not APP_BASE_URL:
+        return jsonify({"error": "APP_BASE_URL не задан"}), 500
+
+    try:
+        stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
+        session = stripe.billing_portal.Session.create(
+            customer=stripe_customer_id,
+            return_url=f"{APP_BASE_URL}/billing",
+        )
+        portal_url = str(getattr(session, "url", "") or "")
+        if not portal_url:
+            return jsonify({"error": "Stripe portal session URL отсутствует"}), 500
+        return jsonify({"url": portal_url}), 200
+    except Exception as exc:
+        logging.exception("create portal session failed user_id=%s: %s", user_id, exc)
+        return jsonify({"error": f"Не удалось создать portal session: {exc}"}), 500
+
+
+@app.route("/api/billing/webhook", methods=["POST"])
+def stripe_billing_webhook():
+    config_error = _require_stripe_config(require_webhook_secret=True)
+    if config_error:
+        return jsonify({"error": config_error}), 500
+
+    payload = request.get_data(cache=False, as_text=False)
+    signature = request.headers.get("Stripe-Signature") or ""
+    try:
+        event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
+    except Exception as exc:
+        return jsonify({"error": f"Webhook signature verification failed: {exc}"}), 400
+
+    event_id = str(getattr(event, "id", "") or "")
+    if not event_id:
+        return jsonify({"error": "Stripe event.id отсутствует"}), 400
+
+    event_type = str(getattr(event, "type", "") or "")
+    data_object = (getattr(event, "data", None) or {}).get("object", {}) or {}
+
+    with get_db_connection_context() as db_conn:
+        try:
+            # Insert-first idempotency lock to avoid duplicate processing races.
+            if not try_mark_stripe_event_processed(event_id, db_conn=db_conn):
+                return jsonify({"ok": True, "duplicate": True}), 200
+
+            if event_type == "checkout.session.completed":
+                metadata = data_object.get("metadata") or {}
+                stripe_customer_id = str(data_object.get("customer") or "") or None
+                stripe_subscription_id = str(data_object.get("subscription") or "") or None
+                user_id = _resolve_user_id_for_stripe_event(
+                    metadata_user_id=metadata.get("user_id"),
+                    client_reference_id=data_object.get("client_reference_id"),
+                    stripe_customer_id=stripe_customer_id,
+                    stripe_subscription_id=stripe_subscription_id,
+                )
+                if user_id is None:
+                    logging.warning("checkout.session.completed user_id unresolved event_id=%s", event_id)
+                    return jsonify({"ok": True, "ignored": "user_not_resolved"}), 200
+
+                subscription_obj = {}
+                if stripe_subscription_id:
+                    try:
+                        subscription_obj = stripe.Subscription.retrieve(stripe_subscription_id)
+                    except Exception as exc:
+                        logging.warning("subscription retrieve failed id=%s event_id=%s: %s", stripe_subscription_id, event_id, exc)
+                _upsert_subscription_from_stripe_payload(
+                    user_id=int(user_id),
+                    stripe_customer_id=stripe_customer_id,
+                    stripe_subscription_id=stripe_subscription_id,
+                    stripe_status=(subscription_obj or {}).get("status") or "active",
+                    current_period_end_ts=(subscription_obj or {}).get("current_period_end"),
+                    db_conn=db_conn,
+                )
+                return jsonify({"ok": True}), 200
+
+            if event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
+                metadata = data_object.get("metadata") or {}
+                stripe_customer_id = str(data_object.get("customer") or "") or None
+                stripe_subscription_id = str(data_object.get("id") or "") or None
+                user_id = _resolve_user_id_for_stripe_event(
+                    metadata_user_id=metadata.get("user_id"),
+                    client_reference_id=None,
+                    stripe_customer_id=stripe_customer_id,
+                    stripe_subscription_id=stripe_subscription_id,
+                )
+                if user_id is None:
+                    logging.warning("%s user_id unresolved event_id=%s", event_type, event_id)
+                    return jsonify({"ok": True, "ignored": "user_not_resolved"}), 200
+
+                _upsert_subscription_from_stripe_payload(
+                    user_id=int(user_id),
+                    stripe_customer_id=stripe_customer_id,
+                    stripe_subscription_id=stripe_subscription_id,
+                    stripe_status=data_object.get("status") or ("canceled" if event_type.endswith(".deleted") else "inactive"),
+                    current_period_end_ts=data_object.get("current_period_end"),
+                    db_conn=db_conn,
+                )
+                return jsonify({"ok": True}), 200
+
+            if event_type in {"invoice.payment_succeeded", "invoice.payment_failed"}:
+                metadata = data_object.get("metadata") or {}
+                stripe_customer_id = str(data_object.get("customer") or "") or None
+                stripe_subscription_id = str(data_object.get("subscription") or "") or None
+                user_id = _resolve_user_id_for_stripe_event(
+                    metadata_user_id=metadata.get("user_id"),
+                    client_reference_id=None,
+                    stripe_customer_id=stripe_customer_id,
+                    stripe_subscription_id=stripe_subscription_id,
+                )
+                if user_id is None:
+                    logging.warning("%s user_id unresolved event_id=%s", event_type, event_id)
+                    return jsonify({"ok": True, "ignored": "user_not_resolved"}), 200
+
+                subscription_obj = {}
+                if stripe_subscription_id:
+                    try:
+                        subscription_obj = stripe.Subscription.retrieve(stripe_subscription_id)
+                    except Exception as exc:
+                        logging.warning("invoice subscription retrieve failed id=%s event_id=%s: %s", stripe_subscription_id, event_id, exc)
+
+                fallback_status = "active" if event_type == "invoice.payment_succeeded" else "past_due"
+                _upsert_subscription_from_stripe_payload(
+                    user_id=int(user_id),
+                    stripe_customer_id=stripe_customer_id,
+                    stripe_subscription_id=stripe_subscription_id,
+                    stripe_status=(subscription_obj or {}).get("status") or fallback_status,
+                    current_period_end_ts=(subscription_obj or {}).get("current_period_end"),
+                    db_conn=db_conn,
+                )
+                return jsonify({"ok": True}), 200
+
+            return jsonify({"ok": True, "ignored": event_type}), 200
+        except Exception as exc:
+            db_conn.rollback()
+            logging.exception("stripe webhook handling failed event_id=%s type=%s: %s", event_id, event_type, exc)
+            return jsonify({"error": f"Webhook handling failed: {exc}"}), 500
+
+
+@app.route("/api/admin/billing/debug-entitlement", methods=["GET"])
+def admin_billing_debug_entitlement():
+    required = (os.getenv("ADMIN_TOKEN") or os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+    token = (request.headers.get("X-Admin-Token") or "").strip()
+    if not required:
+        return jsonify({"error": "ADMIN_TOKEN не задан"}), 500
+    if token != required:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    raw_user_id = request.args.get("user_id")
+    try:
+        user_id = int(str(raw_user_id).strip())
+    except Exception:
+        return jsonify({"error": "user_id обязателен"}), 400
+
+    now_utc = datetime.now(timezone.utc)
+    entitlement = resolve_entitlement(user_id=user_id, now_ts_utc=now_utc, tz="Europe/Vienna")
+    spent_today = float(get_today_cost_eur(user_id=user_id, tz="Europe/Vienna"))
+    return jsonify(
+        {
+            "ok": True,
+            "user_id": user_id,
+            "entitlement": entitlement,
+            "spent_today_eur": spent_today,
+            "currency": "EUR",
+        }
+    ), 200
+
+
 @app.route("/api/admin/economics/fixed-costs/sync", methods=["POST"])
 def sync_economics_fixed_costs():
     payload = request.get_json(silent=True) or {}
@@ -8023,14 +8519,33 @@ def webapp_tts():
 
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     speaking_rate = 0.95
     normalized = _normalize_utterance_text(text)
+    chars_count = float(len(normalized))
     cache_key = _tts_cache_key(language, voice, speaking_rate, normalized)
 
     try:
         cached_audio = get_tts_audio_cache(cache_key)
         if cached_audio:
+            _billing_log_event_safe(
+                user_id=int(user_id),
+                action_type="webapp_tts_chars",
+                provider="google_tts",
+                units_type="chars",
+                units_value=chars_count,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                idempotency_seed=f"webapp-tts-cache:{user_id}:{cache_key}:{time.time_ns()}",
+                status="estimated",
+                metadata={"cached": True, "language": language, "voice": voice},
+            )
             return send_file(
                 BytesIO(cached_audio),
                 mimetype="audio/mpeg",
@@ -8067,6 +8582,18 @@ def webapp_tts():
             )
         except Exception as exc:
             logging.warning("Failed to persist webapp TTS cache: %s", exc)
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="webapp_tts_chars",
+            provider="google_tts",
+            units_type="chars",
+            units_value=chars_count,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"webapp-tts:{user_id}:{cache_key}:{time.time_ns()}",
+            status="estimated",
+            metadata={"cached": False, "language": language, "voice": voice},
+        )
         return send_file(
             BytesIO(response.audio_content),
             mimetype="audio/mpeg",
