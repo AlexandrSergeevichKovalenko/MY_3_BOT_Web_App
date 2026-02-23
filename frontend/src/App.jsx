@@ -767,6 +767,12 @@ function AppInner() {
     }
   }, [playTts]);
 
+  const renderTtsButtonContent = useCallback((loading) => (
+    loading
+      ? <span className="tts-mini-spinner" aria-hidden="true" />
+      : '🔊'
+  ), []);
+
   const coerceResponseJson = (value) => {
     if (!value) return null;
     if (typeof value === 'string') {
@@ -1980,7 +1986,6 @@ function AppInner() {
     youtubeId
     && youtubePlaybackStarted
     && !youtubeForceShowPanel
-    && !youtubeIsPaused
     && !youtubeOverlayEnabled
     && !youtubeAppFullscreen
   );
@@ -2883,7 +2888,8 @@ function AppInner() {
       translations: !flashcardsOnly && selectedSections.has('translations'),
       theory: !flashcardsOnly && selectedSections.has('theory'),
       youtube: !flashcardsOnly && selectedSections.has('youtube'),
-      reader: !flashcardsOnly && selectedSections.has('reader'),
+      // Reader timer is active only in immersive reading mode.
+      reader: !flashcardsOnly && selectedSections.has('reader') && readerImmersive,
     };
 
     const prevVisibility = sectionVisibilitySnapshotRef.current;
@@ -2980,7 +2986,7 @@ function AppInner() {
       }
       return;
     }
-    if (!readerWasVisible && readerIsVisible && readerHasContent && readerTimerPaused) {
+    if (!readerWasVisible && readerIsVisible && readerHasContent && readerTimerPaused && readerImmersive) {
       setReaderTimerPaused(false);
       void startReaderSessionTracking();
       setGlobalPauseReason('');
@@ -2991,6 +2997,7 @@ function AppInner() {
     selectedSections,
     todayPlan,
     readerHasContent,
+    readerImmersive,
     readerTimerPaused,
     readerSessionStartedAt,
     readerSessionId,
@@ -3235,6 +3242,7 @@ function AppInner() {
       && initData
       && !flashcardsOnly
       && selectedSections.has('reader')
+      && readerImmersive
       && String(readerContent || '').trim()
       && !readerTimerPaused
     );
@@ -3245,7 +3253,7 @@ function AppInner() {
     if (readerSessionId) {
       stopReaderSessionTracking(readerSessionId);
     }
-  }, [isWebAppMode, initData, flashcardsOnly, selectedSections, readerContent, readerTimerPaused]);
+  }, [isWebAppMode, initData, flashcardsOnly, selectedSections, readerImmersive, readerContent, readerTimerPaused]);
 
   useEffect(() => {
     return () => {
@@ -7068,7 +7076,7 @@ function AppInner() {
               </div>
             </div>
 
-            {globalPauseReason && (
+            {globalPauseReason && !isSectionVisible('youtube') && (
               <div className="timer-pause-reason-banner">
                 {globalPauseReason}
               </div>
@@ -8191,7 +8199,7 @@ function AppInner() {
                                     title={tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
                                     disabled={loading}
                                   >
-                                    {loading ? '⏳' : '🔊'}
+                                    {renderTtsButtonContent(loading)}
                                   </button>
                                   {loading && (
                                     <span className="tts-loading-note">
@@ -8294,10 +8302,11 @@ function AppInner() {
                       <div className="youtube-focus-actions">
                         <button
                           type="button"
-                          className="secondary-button youtube-restore-panel-btn"
+                          className="youtube-restore-panel-btn"
                           onClick={() => setYoutubeForceShowPanel(true)}
+                          title={tr('Назад к настройкам', 'Zurueck zu den Einstellungen')}
                         >
-                          {tr('Вернуть панель', 'Panel anzeigen')}
+                          <span aria-hidden="true">←</span> {tr('Назад', 'Zurueck')}
                         </button>
                       </div>
                     )}
@@ -8351,47 +8360,59 @@ function AppInner() {
                     )}
                     {!youtubeWatchFocusMode && (
                     <div className="webapp-video-actions is-subtitle-toolbar">
-                      <button
-                        type="button"
-                        className={`secondary-button ${youtubeTranslationEnabled ? 'is-active' : ''}`}
-                        onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
-                        disabled={!youtubeTranscript.length}
-                      >
-                        {youtubeTranslationEnabled
-                          ? `${tr('Скрыть', 'Ausblenden')} ${getNativeSubtitleCode()}`
-                          : `${tr('Показать', 'Anzeigen')} ${getNativeSubtitleCode()}`}
-                      </button>
-                      <button
-                        type="button"
-                        className="primary-button"
-                        onClick={() => fetchTranscript()}
-                        disabled={!youtubeId || youtubeTranscriptLoading || youtubeManualOverride}
-                      >
-                        {youtubeTranscriptLoading ? tr('Загружаем...', 'Laden...') : tr('Загрузить', 'Laden')}
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => setShowManualTranscript((prev) => !prev)}
-                      >
-                        {showManualTranscript ? tr('Скрыть вставку', 'Einfuegen ausblenden') : tr('Вставить транскрипцию', 'Transkript einfuegen')}
-                      </button>
-                      <button
-                        type="button"
-                        className={`secondary-button ${youtubeOverlayEnabled ? 'is-active' : ''}`}
-                        onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
-                        disabled={!youtubeTranscript.length}
-                      >
-                        {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
-                      </button>
-                      <button
-                        type="button"
-                        className={`secondary-button ${youtubeAppFullscreen ? 'is-active' : ''}`}
-                        onClick={() => setYoutubeAppFullscreen((prev) => !prev)}
-                        disabled={!youtubeId}
-                      >
-                        {youtubeAppFullscreen ? tr('Свернуть', 'Minimieren') : tr('Развернуть', 'Erweitern')}
-                      </button>
+                      <div className="youtube-toolbar-row youtube-toolbar-row-main">
+                        <button
+                          type="button"
+                          className="youtube-toolbar-btn youtube-toolbar-btn-main"
+                          onClick={() => fetchTranscript()}
+                          disabled={!youtubeId || youtubeTranscriptLoading || youtubeManualOverride}
+                        >
+                          {youtubeTranscriptLoading
+                            ? tr('Загружаем субтитры...', 'Untertitel werden geladen...')
+                            : tr('Загрузить субтитры', 'Untertitel laden')}
+                        </button>
+                      </div>
+                      <div className="youtube-toolbar-row">
+                        <button
+                          type="button"
+                          className={`youtube-toolbar-btn ${youtubeTranslationEnabled ? 'is-active' : ''}`}
+                          onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
+                          disabled={!youtubeTranscript.length}
+                        >
+                          {youtubeTranslationEnabled
+                            ? `${tr('Скрыть', 'Ausblenden')} ${getNativeSubtitleCode()}`
+                            : `${tr('Показать', 'Anzeigen')} ${getNativeSubtitleCode()}`}
+                        </button>
+                        <button
+                          type="button"
+                          className={`youtube-toolbar-btn ${showManualTranscript ? 'is-active' : ''}`}
+                          onClick={() => setShowManualTranscript((prev) => !prev)}
+                        >
+                          {showManualTranscript
+                            ? tr('Скрыть вставку', 'Einfuegen ausblenden')
+                            : tr('Вставить транскрипцию', 'Transkript einfuegen')}
+                        </button>
+                      </div>
+                      <div className="youtube-toolbar-row">
+                        <button
+                          type="button"
+                          className={`youtube-toolbar-btn ${youtubeAppFullscreen ? 'is-active' : ''}`}
+                          onClick={() => setYoutubeAppFullscreen((prev) => !prev)}
+                          disabled={!youtubeId}
+                        >
+                          {youtubeAppFullscreen
+                            ? tr('Свернуть', 'Minimieren')
+                            : tr('Развернуть во весь экран', 'Vollbildmodus')}
+                        </button>
+                        <button
+                          type="button"
+                          className={`youtube-toolbar-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
+                          onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
+                          disabled={!youtubeTranscript.length}
+                        >
+                          {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
+                        </button>
+                      </div>
                     </div>
                     )}
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
@@ -8574,7 +8595,7 @@ function AppInner() {
                                 title={tr('Озвучить введённое слово', 'Eingegebenes Wort vorlesen')}
                                 disabled={inputTtsLoading}
                               >
-                                {inputTtsLoading ? '⏳' : '🔊'}
+                                {renderTtsButtonContent(inputTtsLoading)}
                               </button>
                               <button
                                 type="button"
@@ -8748,7 +8769,7 @@ function AppInner() {
                               title={tr('Озвучить перевод', 'Uebersetzung vorlesen')}
                               disabled={loading}
                             >
-                              {loading ? '⏳' : '🔊'}
+                              {renderTtsButtonContent(loading)}
                             </button>
                             );
                           })()}
@@ -9667,7 +9688,7 @@ function AppInner() {
                                       title={tr('Повторить аудио', 'Audio wiederholen')}
                                       disabled={previewTtsLoading}
                                     >
-                                      {previewTtsLoading ? '⏳' : '🔊'}
+                                      {renderTtsButtonContent(previewTtsLoading)}
                                     </button>
                                   </div>
                                   <div className="flashcard-native-block">
