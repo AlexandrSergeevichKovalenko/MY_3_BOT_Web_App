@@ -642,6 +642,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -650,6 +651,7 @@ body {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  flex: 0 0 auto;
   min-width: 0;
 }
 
@@ -696,7 +698,7 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 122px;
+  max-width: 150px;
 }
 
 .topbar-profile {
@@ -740,7 +742,7 @@ body {
   font-weight: 700;
   color: #f8fafc;
   line-height: 1.1;
-  max-width: 72px;
+  max-width: 96px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1428,7 +1430,7 @@ body {
   border: 2px solid rgba(93, 220, 255, 0.6);
   background: rgba(93, 220, 255, 0.12);
   box-shadow: 0 0 0 2px rgba(93, 220, 255, 0.1), 0 0 18px rgba(93, 220, 255, 0.25);
-  padding-right: 32px;
+  padding-right: 64px;
   width: 100%;
   box-sizing: border-box;
 }
@@ -1541,6 +1543,12 @@ body {
 .result-audio-optin input {
   width: 16px;
   height: 16px;
+}
+
+.result-inline-audio-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .status-done {
@@ -2559,35 +2567,51 @@ body {
   }
 
   .topbar-title {
-    max-width: 108px;
+    max-width: 136px;
   }
 
   .topbar-right {
-    gap: 6px;
-  }
-
-  .topbar-controls {
     gap: 5px;
   }
 
-  .language-toggle-compact {
-    min-width: 68px;
-    min-height: 30px;
+  .topbar-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
   }
 
-  .language-chip {
-    min-width: 30px;
-    height: 24px;
-    font-size: 10px;
+  .topbar-controls .language-toggle-compact {
+    min-width: 34px;
+    min-height: 52px;
+    padding: 3px;
+    flex-direction: column;
+    gap: 3px;
   }
 
-  .language-pair-button {
-    min-height: 30px;
-    padding: 0 8px;
+  .topbar-controls .language-chip {
+    min-width: 24px;
+    height: 20px;
+    font-size: 9px;
+  }
+
+  .topbar-controls .language-pair-button {
+    min-width: 34px;
+    min-height: 52px;
+    padding: 4px 5px;
+    font-size: 9px;
+    line-height: 1.05;
+    white-space: normal;
+    text-align: center;
+    word-break: break-word;
   }
 
   .topbar-profile {
     gap: 5px;
+    min-width: 0;
+  }
+
+  .topbar-user-name {
+    max-width: 108px;
   }
 }
 
@@ -4034,11 +4058,17 @@ body {
   width: 100%;
 }
 
-.dictionary-clear {
+.dictionary-input-tools {
   position: absolute;
   right: 8px;
   top: 50%;
   transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dictionary-clear {
   width: 24px;
   height: 24px;
   border-radius: 50%;
@@ -4050,6 +4080,22 @@ body {
   cursor: pointer;
   display: grid;
   place-items: center;
+}
+
+.dictionary-tts,
+.inline-tts-button {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid rgba(125, 211, 252, 0.58);
+  background: linear-gradient(145deg, rgba(56, 189, 248, 0.25), rgba(59, 130, 246, 0.2));
+  color: #f8fafc;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .dictionary-back-icon {

@@ -4182,6 +4182,40 @@ function AppInner() {
     }
     return getDictionaryDirectionLabel();
   };
+  const getDictionaryDirectionLangCodes = () => {
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const dir = String(dictionaryDirection || '').trim().toLowerCase();
+    if (dir && dir.includes('-')) {
+      const [from, to] = dir.split('-', 2);
+      return {
+        sourceLang: normalizeLangCode(from || pair.source_lang || languageProfile?.native_language || 'ru'),
+        targetLang: normalizeLangCode(to || pair.target_lang || languageProfile?.learning_language || 'de'),
+      };
+    }
+    return {
+      sourceLang: normalizeLangCode(pair.source_lang || languageProfile?.native_language || 'ru'),
+      targetLang: normalizeLangCode(pair.target_lang || languageProfile?.learning_language || 'de'),
+    };
+  };
+  const extractCorrectTranslationText = (item) => {
+    const direct = String(item?.correct_translation || '').trim();
+    if (direct && direct !== '—') return direct;
+    const feedback = String(item?.feedback || '').trim();
+    if (!feedback) return '';
+    const patterns = [
+      /Correct Translation:\*?\s*([^\n]+)/i,
+      /Korrigierte Version:\*?\s*([^\n]+)/i,
+      /Исправленный вариант:\*?\s*([^\n]+)/i,
+    ];
+    for (const pattern of patterns) {
+      const match = feedback.match(pattern);
+      if (match?.[1]) {
+        const cleaned = String(match[1]).replace(/[*`_]/g, '').trim();
+        if (cleaned && cleaned !== '—') return cleaned;
+      }
+    }
+    return '';
+  };
   const getActiveLanguagePairLabel = () => {
     const source = String(languageProfile?.native_language || 'ru').toUpperCase();
     const target = String(languageProfile?.learning_language || 'de').toUpperCase();
@@ -8032,7 +8066,9 @@ function AppInner() {
                   <section className="webapp-result">
                     <h3>{tr('Результат проверки', 'Pruefungsergebnis')}</h3>
                     <div className="webapp-result-list">
-                      {results.map((item, index) => (
+                      {results.map((item, index) => {
+                        const correctTextForTts = extractCorrectTranslationText(item);
+                        return (
                         <div key={`${item.sentence_number ?? index}`} className="webapp-result-card">
                           {item.error ? (
                             <div className="webapp-error">{item.error}</div>
@@ -8058,6 +8094,24 @@ function AppInner() {
                               >
                                 {renderFeedback(item.feedback)}
                               </div>
+                              {correctTextForTts && (
+                                <div className="result-inline-audio-row">
+                                  <span className="webapp-muted">
+                                    {tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="inline-tts-button"
+                                    onClick={() => {
+                                      void playTts(correctTextForTts, getLearningTtsLocale());
+                                    }}
+                                    aria-label={tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
+                                    title={tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
+                                  >
+                                    🔊
+                                  </button>
+                                </div>
+                              )}
                               <button
                                 type="button"
                                 className="secondary-button explanation-button"
@@ -8081,7 +8135,7 @@ function AppInner() {
                             </>
                           )}
                         </div>
-                      ))}
+                      )})}
                     </div>
                   </section>
                 )}
@@ -8412,14 +8466,28 @@ function AppInner() {
                             placeholder={tr('Например: слово, фраза или выражение', 'Zum Beispiel: Wort, Phrase oder Ausdruck')}
                           />
                           {dictionaryWord.trim() && (
-                            <button
-                              type="button"
-                              className="dictionary-clear"
-                              onClick={() => setDictionaryWord('')}
-                              aria-label={tr('Очистить слово', 'Wort loeschen')}
-                            >
-                              ×
-                            </button>
+                            <div className="dictionary-input-tools">
+                              <button
+                                type="button"
+                                className="dictionary-tts"
+                                onClick={() => {
+                                  const { sourceLang } = getDictionaryDirectionLangCodes();
+                                  void playTts(dictionaryWord.trim(), getTtsLocaleForLang(sourceLang));
+                                }}
+                                aria-label={tr('Озвучить введённое слово', 'Eingegebenes Wort vorlesen')}
+                                title={tr('Озвучить введённое слово', 'Eingegebenes Wort vorlesen')}
+                              >
+                                🔊
+                              </button>
+                              <button
+                                type="button"
+                                className="dictionary-clear"
+                                onClick={() => setDictionaryWord('')}
+                                aria-label={tr('Очистить слово', 'Wort loeschen')}
+                              >
+                                ×
+                              </button>
+                            </div>
                           )}
                         </div>
                       </label>
@@ -8563,6 +8631,22 @@ function AppInner() {
                           <span className="dictionary-translation">
                             {getDictionaryDisplayedTranslation(dictionaryResult) || '—'}
                           </span>
+                          {getDictionaryDisplayedTranslation(dictionaryResult) && getDictionaryDisplayedTranslation(dictionaryResult) !== '—' && (
+                            <button
+                              type="button"
+                              className="inline-tts-button"
+                              onClick={() => {
+                                const { targetLang } = getDictionaryDirectionLangCodes();
+                                const translatedText = getDictionaryDisplayedTranslation(dictionaryResult);
+                                if (!translatedText) return;
+                                void playTts(translatedText, getTtsLocaleForLang(targetLang));
+                              }}
+                              aria-label={tr('Озвучить перевод', 'Uebersetzung vorlesen')}
+                              title={tr('Озвучить перевод', 'Uebersetzung vorlesen')}
+                            >
+                              🔊
+                            </button>
+                          )}
                           <span className="dictionary-direction">
                             {getLookupDirectionLabel()}
                           </span>
