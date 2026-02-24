@@ -1895,6 +1895,7 @@ body {
 .reader-pages-layout {
   display: grid;
   gap: 10px;
+  justify-items: center;
 }
 
 .webapp-reader.is-immersive .reader-pages-layout {
@@ -1915,7 +1916,7 @@ body {
   border: 1px solid rgba(138, 109, 74, 0.22);
   border-radius: 10px;
   box-shadow: 0 12px 22px rgba(7, 12, 26, 0.2);
-  width: min(92vw, 720px);
+  width: min(100%, 720px);
   height: 72vh;
   min-height: 72vh;
   margin: 0 auto;
@@ -1937,7 +1938,7 @@ body {
 }
 
 .webapp-reader.is-immersive .reader-page-sheet {
-  width: min(95vw, 760px);
+  width: min(100%, 760px);
   height: 80vh;
   min-height: 80vh;
 }
@@ -1982,6 +1983,44 @@ body {
 
 .reader-clickable-word:hover {
   background: rgba(112, 185, 255, 0.2);
+}
+
+.reader-container {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--reader-font-size, 18px);
+  font-weight: var(--reader-font-weight, 500);
+  line-height: 1.72;
+}
+
+.reader-sentence {
+  display: inline;
+  border-radius: 6px;
+  transition: background-color 0.16s ease;
+}
+
+.reader-sentence.is-selected {
+  background: rgba(86, 183, 255, 0.16);
+}
+
+.reader-word {
+  display: inline;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.14s ease;
+}
+
+.reader-word:hover {
+  background: rgba(112, 185, 255, 0.2);
+}
+
+.reader-word.is-selected {
+  background: rgba(92, 196, 255, 0.35);
+}
+
+.reader-token {
+  display: inline;
 }
 
 .webapp-movies {
@@ -2503,6 +2542,19 @@ body {
   border: 1px solid rgba(148, 163, 184, 0.25);
   border-radius: 9px;
   padding: 6px 8px;
+}
+
+.webapp-selection-provider {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #93c5fd;
+  background: rgba(37, 99, 235, 0.2);
+  border: 1px solid rgba(59, 130, 246, 0.35);
 }
 
 .webapp-selection-menu.is-compact {

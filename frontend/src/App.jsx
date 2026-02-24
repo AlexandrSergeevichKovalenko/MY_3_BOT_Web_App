@@ -123,6 +123,7 @@ function AppInner() {
   const [readerSelectedFile, setReaderSelectedFile] = useState(null);
   const [readerLoading, setReaderLoading] = useState(false);
   const [readerError, setReaderError] = useState('');
+  const [readerErrorCode, setReaderErrorCode] = useState('');
   const [readerContent, setReaderContent] = useState('');
   const [readerTitle, setReaderTitle] = useState('');
   const [readerSourceType, setReaderSourceType] = useState('');
@@ -150,15 +151,22 @@ function AppInner() {
   const [readerTimerPaused, setReaderTimerPaused] = useState(false);
   const [readerSwipeSensitivity, setReaderSwipeSensitivity] = useState('medium');
   const [readerImmersive, setReaderImmersive] = useState(false);
+  const [readerArchiveOpen, setReaderArchiveOpen] = useState(false);
   const [readerFontSize, setReaderFontSize] = useState(18);
   const [readerFontWeight, setReaderFontWeight] = useState(500);
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
+  const [selectionType, setSelectionType] = useState('');
+  const [selectedMeta, setSelectedMeta] = useState(null);
   const [selectionCompact, setSelectionCompact] = useState(false);
   const [selectionLookupLang, setSelectionLookupLang] = useState('');
   const [selectionInlineMode, setSelectionInlineMode] = useState(false);
-  const [selectionInlineLookup, setSelectionInlineLookup] = useState({ loading: false, word: '', translation: '', direction: '' });
+  const [selectionInlineLookup, setSelectionInlineLookup] = useState({ loading: false, word: '', translation: '', direction: '', provider: '' });
   const [selectionLookupLoading, setSelectionLookupLoading] = useState(false);
+  const [selectionGptOpen, setSelectionGptOpen] = useState(false);
+  const [selectionGptLoading, setSelectionGptLoading] = useState(false);
+  const [selectionGptError, setSelectionGptError] = useState('');
+  const [selectionGptData, setSelectionGptData] = useState({ translation: '', notes: '', examples: [] });
   const [ttsPendingMap, setTtsPendingMap] = useState({});
   const [inlineToast, setInlineToast] = useState('');
   const [lastLookupScrollY, setLastLookupScrollY] = useState(null);
@@ -1978,6 +1986,54 @@ function AppInner() {
     return pages.map((text, index) => ({ page_number: index + 1, text }));
   }, [readerPages, readerContent]);
   const readerPageCount = readerDisplayPages.length;
+  const readerVisibleText = useMemo(() => {
+    if (readerPageCount > 0) {
+      return String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '');
+    }
+    return String(readerContent || '');
+  }, [readerPageCount, readerDisplayPages, readerCurrentPage, readerContent]);
+  const readerSegmentationHash = useMemo(() => {
+    const value = String(readerVisibleText || '');
+    let hash = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+    }
+    return `${String(readerDocumentId || 'no-doc')}:${value.length}:${hash}`;
+  }, [readerVisibleText, readerDocumentId]);
+  const readerSegmentationLang = useMemo(
+    () => normalizeLangCode(readerDetectedLanguage || '') || 'de',
+    [readerDetectedLanguage]
+  );
+  const readerSentencesModel = useMemo(
+    () => segmentText(readerVisibleText, readerSegmentationLang),
+    [readerVisibleText, readerSegmentationLang, readerSegmentationHash]
+  );
+  const readerSentenceMap = useMemo(() => {
+    const map = new Map();
+    readerSentencesModel.forEach((sentence) => {
+      map.set(sentence.sid, sentence);
+    });
+    return map;
+  }, [readerSentencesModel]);
+  const readerWordMap = useMemo(() => {
+    const map = new Map();
+    readerSentencesModel.forEach((sentence) => {
+      sentence.tokens
+        .filter((token) => token.kind === 'word' && token.wid)
+        .forEach((token) => {
+          map.set(token.wid, { ...token, sid: sentence.sid });
+        });
+    });
+    return map;
+  }, [readerSentencesModel]);
+  const selectedSentenceIds = useMemo(
+    () => new Set(Array.isArray(selectedMeta?.sids) ? selectedMeta.sids : []),
+    [selectedMeta]
+  );
+  const selectedWordIds = useMemo(
+    () => new Set(Array.isArray(selectedMeta?.wids) ? selectedMeta.wids : []),
+    [selectedMeta]
+  );
   const readerBookmarkPage = readerPageCount > 0
     ? Math.max(1, Math.min(readerPageCount, Math.round((Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0))) / 100) * readerPageCount) || 1))
     : 0;
@@ -4086,6 +4142,154 @@ function AppInner() {
     return value.replace(/\s+/g, ' ').trim();
   };
 
+  function splitNonWordToken(value) {
+    const chunks = [];
+    if (!value) return chunks;
+    const regex = /(\s+|[^\s]+)/g;
+    let match = regex.exec(value);
+    while (match) {
+      const piece = String(match[0] || '');
+      if (piece) {
+        chunks.push({
+          kind: /^\s+$/u.test(piece) ? 'space' : 'punct',
+          value: piece,
+          relativeStart: Number(match.index || 0),
+          relativeEnd: Number(match.index || 0) + piece.length,
+        });
+      }
+      match = regex.exec(value);
+    }
+    return chunks;
+  }
+
+  function segmentText(rawText, langHint) {
+    const text = String(rawText || '');
+    if (!text) return [];
+    const safeLang = normalizeLangCode(langHint || '') || 'de';
+    const wordRegex = /[A-Za-z0-9À-ÿА-Яа-яЁё'’-]/u;
+
+    const tokenizeSentence = (sentenceText, sentenceStart, sid) => {
+      const tokens = [];
+      let wordIndex = 0;
+      if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+        try {
+          const wordSegmenter = new Intl.Segmenter(safeLang, { granularity: 'word' });
+          const segmented = wordSegmenter.segment(sentenceText);
+          for (const part of segmented) {
+            const value = String(part?.segment || '');
+            if (!value) continue;
+            const tokenStart = Number(sentenceStart) + Number(part?.index || 0);
+            const tokenEnd = tokenStart + value.length;
+            if (part?.isWordLike) {
+              const wid = `${sid}-w-${wordIndex}-${tokenStart}-${tokenEnd}`;
+              wordIndex += 1;
+              tokens.push({ kind: 'word', wid, value, start: tokenStart, end: tokenEnd });
+              continue;
+            }
+            const chunks = splitNonWordToken(value);
+            if (!chunks.length) {
+              tokens.push({
+                kind: /^\s+$/u.test(value) ? 'space' : 'punct',
+                value,
+                start: tokenStart,
+                end: tokenEnd,
+              });
+              continue;
+            }
+            chunks.forEach((chunk) => {
+              tokens.push({
+                kind: chunk.kind,
+                value: chunk.value,
+                start: tokenStart + chunk.relativeStart,
+                end: tokenStart + chunk.relativeEnd,
+              });
+            });
+          }
+          return tokens;
+        } catch (_intlWordError) {
+          // fallback below
+        }
+      }
+
+      const fallbackWordTokenRegex = /(\s+|[A-Za-z0-9À-ÿА-Яа-яЁё'’-]+|[^A-Za-z0-9À-ÿА-Яа-яЁё'’-\s]+)/g;
+      let match = fallbackWordTokenRegex.exec(sentenceText);
+      while (match) {
+        const value = String(match[0] || '');
+        const tokenStart = Number(sentenceStart) + Number(match.index || 0);
+        const tokenEnd = tokenStart + value.length;
+        const isWord = wordRegex.test(value);
+        if (isWord && !/^\s+$/u.test(value)) {
+          const wid = `${sid}-w-${wordIndex}-${tokenStart}-${tokenEnd}`;
+          wordIndex += 1;
+          tokens.push({ kind: 'word', wid, value, start: tokenStart, end: tokenEnd });
+        } else {
+          tokens.push({
+            kind: /^\s+$/u.test(value) ? 'space' : 'punct',
+            value,
+            start: tokenStart,
+            end: tokenEnd,
+          });
+        }
+        match = fallbackWordTokenRegex.exec(sentenceText);
+      }
+      return tokens;
+    };
+
+    const buildSentence = (sentenceText, startIndex, endIndex, sidIndex) => {
+      const sid = `s-${sidIndex}-${startIndex}-${endIndex}`;
+      return {
+        sid,
+        text: sentenceText,
+        start: startIndex,
+        end: endIndex,
+        tokens: tokenizeSentence(sentenceText, startIndex, sid),
+      };
+    };
+
+    const sentences = [];
+    if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+      try {
+        const sentenceSegmenter = new Intl.Segmenter(safeLang, { granularity: 'sentence' });
+        const segmented = sentenceSegmenter.segment(text);
+        let sidIndex = 0;
+        for (const part of segmented) {
+          const sentenceText = String(part?.segment || '');
+          if (!sentenceText) continue;
+          const startIndex = Number(part?.index || 0);
+          const endIndex = startIndex + sentenceText.length;
+          sentences.push(buildSentence(sentenceText, startIndex, endIndex, sidIndex));
+          sidIndex += 1;
+        }
+        if (sentences.length > 0) return sentences;
+      } catch (_intlSentenceError) {
+        // fallback below
+      }
+    }
+
+    const fallbackRegex = /([.!?]+|\n+)/g;
+    let sidIndex = 0;
+    let cursor = 0;
+    let match = fallbackRegex.exec(text);
+    while (match) {
+      const end = Number(match.index || 0) + String(match[0] || '').length;
+      const segment = text.slice(cursor, end);
+      if (segment) {
+        sentences.push(buildSentence(segment, cursor, end, sidIndex));
+        sidIndex += 1;
+      }
+      cursor = end;
+      match = fallbackRegex.exec(text);
+    }
+    if (cursor < text.length) {
+      const segment = text.slice(cursor);
+      const end = text.length;
+      if (segment) {
+        sentences.push(buildSentence(segment, cursor, end, sidIndex));
+      }
+    }
+    return sentences;
+  }
+
   const normalizeFolderKey = (value) => normalizeSelectionText(value).toLocaleLowerCase();
 
   const showInlineToast = (text) => {
@@ -4409,6 +4613,8 @@ function AppInner() {
     if (!text) {
       setSelectionText('');
       setSelectionPos(null);
+      setSelectionType('');
+      setSelectedMeta(null);
       setSelectionCompact(false);
       setSelectionLookupLang('');
       setSelectionInlineMode(false);
@@ -4427,6 +4633,8 @@ function AppInner() {
     const safeY = clamp(rawY, margin, Math.max(margin, window.innerHeight - menuHeight - margin));
     setSelectionText(text);
     setSelectionPos({ x: safeX, y: safeY });
+    setSelectionType(String(options?.selectionType || ''));
+    setSelectedMeta(options?.selectedMeta || null);
     setSelectionCompact(Boolean(options?.compact));
     setSelectionLookupLang(normalizeLangCode(options?.lookupLang || ''));
     setSelectionInlineMode(Boolean(options?.inlineLookup));
@@ -4438,11 +4646,13 @@ function AppInner() {
   const clearSelection = () => {
     setSelectionText('');
     setSelectionPos(null);
+    setSelectionType('');
+    setSelectedMeta(null);
     setSelectionCompact(false);
     setSelectionLookupLang('');
     setSelectionInlineMode(false);
     setSelectionLookupLoading(false);
-    setSelectionInlineLookup({ loading: false, word: '', translation: '', direction: '' });
+    setSelectionInlineLookup({ loading: false, word: '', translation: '', direction: '', provider: '' });
   };
 
   const normalizeForLookup = async (rawText) => {
@@ -4467,33 +4677,68 @@ function AppInner() {
     return cleaned;
   };
 
+  const resolveQuickTranslateParams = (rawText) => {
+    const cleaned = normalizeSelectionText(rawText);
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const nativeLang = normalizeLangCode(pair.source_lang || languageProfile?.native_language || 'ru') || 'ru';
+    const learningLang = normalizeLangCode(pair.target_lang || languageProfile?.learning_language || 'de') || 'de';
+    const sourceLangHint = normalizeLangCode(
+      selectionLookupLang || (hasCyrillic(cleaned) ? nativeLang : learningLang)
+    ) || null;
+    const targetLang = sourceLangHint === learningLang ? nativeLang : learningLang;
+    return { cleaned, sourceLangHint, targetLang };
+  };
+
+  const requestQuickTranslation = async (rawText) => {
+    const { cleaned, sourceLangHint, targetLang } = resolveQuickTranslateParams(rawText);
+    const response = await fetch('/api/translate/quick', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: cleaned,
+        source_lang: sourceLangHint || null,
+        target_lang: targetLang,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await readApiError(response, 'Ошибка быстрого перевода', 'Fehler bei Schnelluebersetzung'));
+    }
+    const data = await response.json();
+    const translation = String(data?.translation || '').trim();
+    const provider = String(data?.provider || '').trim();
+    const detectedSource = normalizeLangCode(data?.detected_source_lang || sourceLangHint || '') || sourceLangHint || '';
+    return {
+      cleaned,
+      translation,
+      provider,
+      sourceLangHint,
+      targetLang,
+      detectedSource,
+    };
+  };
+
   const loadSelectionInlineLookup = async (rawText) => {
-    if (!initData) return;
-    const normalized = await normalizeForLookup(rawText);
-    if (!normalized) return;
-    const lookupLangHint = normalizeLangCode(
-      selectionLookupLang || (hasCyrillic(normalized) ? 'ru' : getNormalizeLookupLang())
-    );
-    setSelectionInlineLookup({ loading: true, word: normalized, translation: '', direction: '' });
+    const cleaned = normalizeSelectionText(rawText);
+    if (!cleaned) return;
+    setSelectionInlineLookup({ loading: true, word: cleaned, translation: '', direction: '', provider: '' });
     try {
-      const response = await fetch('/api/webapp/dictionary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word: normalized, lookup_lang: lookupLangHint || undefined }),
-      });
-      if (!response.ok) throw new Error('lookup failed');
-      const data = await response.json();
-      const direction = data.direction || resolveDictionaryDirection(data.item);
-      setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
-      const translation = getDictionarySourceTarget(data.item, direction).targetText || '';
+      const quick = await requestQuickTranslation(cleaned);
+      const direction = `${String(quick.detectedSource || quick.sourceLangHint || 'auto').toLowerCase()}-${String(quick.targetLang).toLowerCase()}`;
       setSelectionInlineLookup({
         loading: false,
-        word: normalized,
-        translation: String(translation || '').trim(),
+        word: cleaned,
+        translation: quick.translation,
         direction,
+        provider: quick.provider,
       });
     } catch (error) {
-      setSelectionInlineLookup({ loading: false, word: normalized, translation: tr('Ошибка перевода', 'Uebersetzungsfehler'), direction: '' });
+      setSelectionInlineLookup({
+        loading: false,
+        word: cleaned,
+        translation: String(error?.message || tr('Ошибка перевода', 'Uebersetzungsfehler')),
+        direction: '',
+        provider: '',
+      });
     }
   };
 
@@ -4591,10 +4836,10 @@ function AppInner() {
       const savePayload = await saveResponse.json();
       setDictionaryLanguagePair(resolveLanguagePairForUI(savePayload.language_pair));
       if (inlineMode) {
-        setSelectionInlineLookup((prev) => ({
-          ...prev,
-          translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
-        }));
+      setSelectionInlineLookup((prev) => ({
+        ...prev,
+        translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
+      }));
         if (youtubeAppFullscreen) {
           showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
         }
@@ -4612,64 +4857,87 @@ function AppInner() {
   const handleQuickLookupDictionary = async (text) => {
     const cleaned = normalizeSelectionText(text);
     if (!cleaned) return;
-    if (!initData) {
-      setDictionaryError(initDataMissingMsg);
-      return;
-    }
-    let normalized = cleaned;
-    if (!hasCyrillic(cleaned)) {
-      try {
-        const normalizeLang = encodeURIComponent(getNormalizeLookupLang());
-        const normalizeResponse = await fetch(`/api/webapp/normalize/${normalizeLang}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData, text: cleaned }),
-        });
-        if (normalizeResponse.ok) {
-          const data = await normalizeResponse.json();
-          normalized = data.normalized || cleaned;
-        }
-      } catch (error) {
-        // ignore normalization errors
-      }
-    }
-    setDictionaryLoading(true);
+    setSelectionInlineMode(true);
     setSelectionLookupLoading(true);
-    setDictionaryError('');
-    setDictionarySaved('');
-    setDictionaryWord(normalized);
-    setLastLookupScrollY(window.scrollY);
-    const lookupLangHint = normalizeLangCode(
-      selectionLookupLang || (hasCyrillic(normalized) ? 'ru' : getNormalizeLookupLang())
-    );
     try {
-      const response = await fetch('/api/webapp/dictionary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word: normalized, lookup_lang: lookupLangHint || undefined }),
-      });
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
-      }
-      const data = await response.json();
-      setDictionaryResult(data.item || null);
-      setDictionaryDirection(data.direction || resolveDictionaryDirection(data.item));
-      setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
-      scrollToDictionary();
-      clearSelection();
+      await loadSelectionInlineLookup(cleaned);
     } catch (error) {
-      setDictionaryError(`${tr('Ошибка словаря', 'Woerterbuchfehler')}: ${error.message}`);
+      setSelectionInlineLookup({
+        loading: false,
+        word: cleaned,
+        translation: String(error?.message || tr('Ошибка перевода', 'Uebersetzungsfehler')),
+        direction: '',
+        provider: '',
+      });
     } finally {
-      setDictionaryLoading(false);
       setSelectionLookupLoading(false);
     }
+  };
+
+  const parseSelectionGptPayload = (explanationRaw, quickTranslationRaw) => {
+    const quickTranslation = String(quickTranslationRaw || '').trim();
+    const explanation = String(explanationRaw || '').trim();
+    const lines = explanation
+      .split(/\r?\n/)
+      .map((line) => String(line || '').trim())
+      .filter(Boolean);
+    const examples = lines
+      .filter((line) => /^[-•*]\s+/.test(line) || /^\d+\.\s+/.test(line) || /["“”„«»]/.test(line))
+      .map((line) => line.replace(/^[-•*]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+      .filter(Boolean)
+      .slice(0, 4);
+    return {
+      translation: quickTranslation || lines[0] || '',
+      notes: explanation,
+      examples,
+    };
+  };
+
+  const handleSelectionGptLookup = async () => {
+    const cleaned = normalizeSelectionText(selectionText);
+    if (!cleaned) return;
+    if (!initData) {
+      setWebappError(initDataMissingMsg);
+      return;
+    }
+    setSelectionGptOpen(true);
+    setSelectionGptLoading(true);
+    setSelectionGptError('');
+    setSelectionGptData({ translation: '', notes: '', examples: [] });
+    try {
+      const quick = await requestQuickTranslation(cleaned);
+      const explainResponse = await fetch('/api/webapp/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          original_text: cleaned,
+          user_translation: quick.translation || cleaned,
+        }),
+      });
+      if (!explainResponse.ok) {
+        throw new Error(await readApiError(explainResponse, 'Ошибка GPT-объяснения', 'Fehler bei GPT-Erklaerung'));
+      }
+      const explainData = await explainResponse.json();
+      setSelectionGptData(parseSelectionGptPayload(explainData?.explanation, quick.translation));
+      setSelectionInlineLookup({
+        loading: false,
+        word: cleaned,
+        translation: quick.translation,
+        direction: `${String(quick.detectedSource || quick.sourceLangHint || 'auto').toLowerCase()}-${String(quick.targetLang).toLowerCase()}`,
+        provider: quick.provider || '',
+      });
+    } catch (error) {
+      setSelectionGptError(String(error?.message || tr('Ошибка GPT-объяснения', 'GPT-Erklaerungsfehler')));
+    } finally {
+      setSelectionGptLoading(false);
+    }
+  };
+
+  const closeSelectionGptSheet = () => {
+    setSelectionGptOpen(false);
+    setSelectionGptLoading(false);
+    setSelectionGptError('');
   };
 
   function formatReaderTimer(seconds) {
@@ -4716,7 +4984,232 @@ function AppInner() {
     node.scrollTop = (safe / 100) * max;
   }
 
-  async function loadReaderLibrary() {
+  const handleReaderStructuredClick = (event) => {
+    const root = readerArticleRef.current;
+    if (!root) return;
+    const target = event?.target;
+    if (!(target instanceof Element)) return;
+
+    const wordEl = target.closest('[data-wid]');
+    if (wordEl && root.contains(wordEl)) {
+      const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+      const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+      const metaWord = readerWordMap.get(wid);
+      if (!metaWord || !sid) return;
+      handleSelection(event, metaWord.value, {
+        compact: true,
+        inlineLookup: true,
+        lookupLang: getNormalizeLookupLang(),
+        selectionType: 'word',
+        selectedMeta: {
+          sids: [sid],
+          wids: [wid],
+          start: Number(metaWord.start || 0),
+          end: Number(metaWord.end || 0),
+        },
+      });
+      return;
+    }
+
+    const sentenceEl = target.closest('[data-sid]');
+    if (sentenceEl && root.contains(sentenceEl)) {
+      const sid = String(sentenceEl.getAttribute('data-sid') || '').trim();
+      const sentence = readerSentenceMap.get(sid);
+      if (!sentence) return;
+      handleSelection(event, String(sentence.text || ''), {
+        compact: true,
+        inlineLookup: true,
+        lookupLang: getNormalizeLookupLang(),
+        selectionType: 'sentence',
+        selectedMeta: {
+          sids: [sid],
+          start: Number(sentence.start || 0),
+          end: Number(sentence.end || 0),
+        },
+      });
+    }
+  };
+
+  const handleReaderStructuredSelectionEnd = (event) => {
+    const root = readerArticleRef.current;
+    if (!root) return;
+    const selection = window.getSelection?.();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+    const range = selection.getRangeAt(0);
+    const commonNode = range.commonAncestorContainer;
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    if (commonNode && !root.contains(commonNode)) return;
+    if (anchorNode && !root.contains(anchorNode)) return;
+    if (focusNode && !root.contains(focusNode)) return;
+
+    const words = Array.from(root.querySelectorAll('[data-wid][data-sid]'));
+    const pickedWords = [];
+    for (const node of words) {
+      try {
+        if (range.intersectsNode(node)) {
+          pickedWords.push(node);
+        }
+      } catch (_rangeError) {
+        // ignore invalid nodes
+      }
+    }
+    if (pickedWords.length === 0) return;
+
+    const sentenceIds = [];
+    const sentenceIdSet = new Set();
+    const wordIds = [];
+    pickedWords.forEach((node) => {
+      const sid = String(node.getAttribute('data-sid') || '').trim();
+      const wid = String(node.getAttribute('data-wid') || '').trim();
+      if (sid && !sentenceIdSet.has(sid)) {
+        sentenceIdSet.add(sid);
+        sentenceIds.push(sid);
+      }
+      if (wid) wordIds.push(wid);
+    });
+    if (!sentenceIds.length) return;
+
+    const selectedSentences = readerSentencesModel.filter((sentence) => sentenceIdSet.has(sentence.sid));
+    if (!selectedSentences.length) return;
+    const selectedText = selectedSentences.map((sentence) => String(sentence.text || '')).join('');
+    if (!selectedText) return;
+
+    const selectionKind = selectedSentences.length > 1 ? 'multi_sentence' : 'sentence';
+    const start = Number(selectedSentences[0]?.start || 0);
+    const end = Number(selectedSentences[selectedSentences.length - 1]?.end || start);
+    handleSelection(event, selectedText, {
+      compact: true,
+      inlineLookup: true,
+      lookupLang: getNormalizeLookupLang(),
+      selectionType: selectionKind,
+      selectedMeta: {
+        sids: sentenceIds,
+        wids: wordIds,
+        start,
+        end,
+      },
+    });
+    try {
+      selection.removeAllRanges();
+    } catch (_clearError) {
+      // ignore cleanup errors
+    }
+  };
+
+  const handleReaderArticleMouseUp = (event) => {
+    handleReaderStructuredSelectionEnd(event);
+  };
+
+  const handleReaderArticleTouchEnd = (event) => {
+    handleReaderPageTouchEnd(event);
+    handleReaderStructuredSelectionEnd(event);
+  };
+
+  const renderReaderStructuredText = () => (
+    <div className="reader-container">
+      {readerSentencesModel.map((sentence) => (
+        <span
+          key={sentence.sid}
+          className={`reader-sentence ${selectedSentenceIds.has(sentence.sid) ? 'is-selected' : ''}`}
+          data-sid={sentence.sid}
+          data-start={sentence.start}
+          data-end={sentence.end}
+        >
+          {sentence.tokens.map((token, tokenIndex) => {
+            if (token.kind === 'word') {
+              const wordId = String(token.wid || '');
+              return (
+                <span
+                  key={wordId || `${sentence.sid}-word-${tokenIndex}`}
+                  className={`reader-word ${selectedWordIds.has(wordId) ? 'is-selected' : ''}`}
+                  data-wid={wordId}
+                  data-sid={sentence.sid}
+                  data-start={token.start}
+                  data-end={token.end}
+                >
+                  {token.value}
+                </span>
+              );
+            }
+            return (
+              <span
+                key={`${sentence.sid}-${token.kind}-${token.start}-${token.end}-${tokenIndex}`}
+                className="reader-token"
+                aria-hidden="true"
+              >
+                {token.value}
+              </span>
+            );
+          })}
+        </span>
+      ))}
+    </div>
+  );
+
+  const getReaderCoverInitials = (title) => {
+    const value = String(title || '').trim();
+    if (!value) return 'BK';
+    const parts = value.split(/\s+/).filter(Boolean);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
+  };
+
+  const getReaderCoverGradient = (item) => {
+    const seedRaw = `${item?.id || ''}:${item?.title || ''}:${item?.target_lang || ''}`;
+    let hash = 0;
+    for (let i = 0; i < seedRaw.length; i += 1) {
+      hash = (hash << 5) - hash + seedRaw.charCodeAt(i);
+      hash |= 0;
+    }
+    const themes = [
+      ['#1d4ed8', '#0f172a'],
+      ['#0f766e', '#1e293b'],
+      ['#7c3aed', '#0f172a'],
+      ['#be123c', '#1f2937'],
+      ['#065f46', '#111827'],
+      ['#334155', '#0f172a'],
+    ];
+    return themes[Math.abs(hash) % themes.length];
+  };
+
+  const getReaderCoverUrl = (item) => {
+    const candidates = [
+      item?.cover_url,
+      item?.thumbnail,
+      item?.image_url,
+      item?.poster_url,
+    ];
+    for (const raw of candidates) {
+      const value = String(raw || '').trim();
+      if (!value) continue;
+      if (/^https?:\/\//i.test(value) && /\.(png|jpe?g|webp|avif|gif)(\?.*)?$/i.test(value)) {
+        return value;
+      }
+    }
+    return '';
+  };
+
+  const formatReaderArchiveDate = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const ts = Date.parse(raw);
+    if (!Number.isFinite(ts)) return '';
+    return new Date(ts).toLocaleDateString();
+  };
+
+  const buildReaderArchiveMeta = (item) => {
+    const bits = [];
+    const lang = String(item?.target_lang || '').toUpperCase();
+    const sourceType = String(item?.source_type || '').toUpperCase();
+    const dateLabel = formatReaderArchiveDate(item?.updated_at || item?.last_opened_at || item?.created_at);
+    if (lang) bits.push(lang);
+    if (sourceType) bits.push(sourceType);
+    if (dateLabel) bits.push(dateLabel);
+    return bits.join(' • ');
+  };
+
+  async function loadReaderLibrary(includeArchivedOverride = readerIncludeArchived) {
     if (!initData) return;
     try {
       setReaderLibraryLoading(true);
@@ -4724,7 +5217,7 @@ function AppInner() {
       const response = await fetch('/api/webapp/reader/library', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, limit: 120, include_archived: readerIncludeArchived }),
+        body: JSON.stringify({ initData, limit: 120, include_archived: includeArchivedOverride }),
       });
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки библиотеки', 'Fehler beim Laden der Bibliothek'));
@@ -4737,6 +5230,12 @@ function AppInner() {
       setReaderLibraryLoading(false);
     }
   }
+
+  const openReaderArchive = async () => {
+    setReaderArchiveOpen(true);
+    setReaderIncludeArchived(true);
+    await loadReaderLibrary(true);
+  };
 
   const handleReaderFileSelect = (event) => {
     const file = event?.target?.files?.[0] || null;
@@ -5080,6 +5579,7 @@ function AppInner() {
     }
     setReaderLoading(true);
     setReaderError('');
+    setReaderErrorCode('');
     try {
       const looksLikeUrl = /^https?:\/\//i.test(rawInput) || /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawInput);
       let filePayload = {};
@@ -5102,7 +5602,28 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus'));
+        const fallback = tr('Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
+        let message = fallback;
+        let errorCode = '';
+        try {
+          const raw = await response.text();
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              message = String(parsed?.error || parsed?.message || '').trim() || fallback;
+              errorCode = String(parsed?.error_code || '').trim();
+            } catch (_jsonError) {
+              message = String(raw).replace(/\s+/g, ' ').trim() || `${fallback} (HTTP ${response.status})`;
+            }
+          } else {
+            message = `${fallback} (HTTP ${response.status})`;
+          }
+        } catch (_readError) {
+          message = `${fallback} (HTTP ${response.status})`;
+        }
+        const apiError = new Error(message);
+        apiError.code = errorCode;
+        throw apiError;
       }
       const data = await response.json();
       const doc = data?.document || {};
@@ -5138,8 +5659,18 @@ function AppInner() {
       }, 80);
       loadReaderLibrary();
       setReaderSelectedFile(null);
+      setReaderErrorCode('');
     } catch (error) {
-      setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить текст в читалку.', 'Text konnte nicht in den Leser geladen werden.'));
+      const code = String(error?.code || '').trim();
+      setReaderErrorCode(code);
+      if (code === 'LIMIT_FREE_PLAN_1_BOOK') {
+        setReaderError(tr(
+          'На бесплатном плане можно хранить только 1 книгу/документ. Удалите текущий документ или перейдите на Pro.',
+          'Im Free-Plan kannst du nur 1 Buch/Dokument speichern. Loesche das aktuelle Dokument oder wechsle zu Pro.'
+        ));
+      } else {
+        setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить текст в читалку.', 'Text konnte nicht in den Leser geladen werden.'));
+      }
     } finally {
       setReaderLoading(false);
     }
@@ -6390,6 +6921,19 @@ function AppInner() {
   }, [youtubeAppFullscreen, selectionText, selectionPos]);
 
   useEffect(() => {
+    if (!selectionGptOpen) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closeSelectionGptSheet();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [selectionGptOpen]);
+
+  useEffect(() => {
     if (!youtubeAppFullscreen) {
       setYoutubeIsPaused(false);
     }
@@ -7622,6 +8166,7 @@ function AppInner() {
                     {todayPlan.items.map((item) => {
                       const loadingAction = todayItemLoading[item.id];
                       const taskType = String(item?.task_type || '').toLowerCase();
+                      const isVideoTask = taskType === 'video' || taskType === 'youtube';
                       const elapsedSeconds = getTodayItemElapsedSeconds(item, todayTimerNowMs);
                       const progressPercent = getTodayItemProgressPercent(item, todayTimerNowMs);
                       const doneByProgress = progressPercent >= 100;
@@ -7638,11 +8183,11 @@ function AppInner() {
                           <div className="today-plan-item-main">
                             <div className="today-plan-item-title">{getTodayItemTitle(item)}</div>
                             <div className="today-plan-item-meta">
-                              {taskType !== 'video' && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
+                              {!isVideoTask && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
                               <span>{done ? 'DONE' : String(item.status || 'todo').toUpperCase()}</span>
                               <span>⏱ {formatCompactTimer(elapsedSeconds)}</span>
                             </div>
-                            {taskType === 'video' && (
+                            {isVideoTask && (
                               <div className="today-video-hint">
                                 <div className="today-video-topic-line">
                                   <span>{tr('Тема для тренировки:', 'Thema fuer Training:')}</span>{' '}
@@ -7662,14 +8207,14 @@ function AppInner() {
                               type="button"
                               className="secondary-button"
                               onClick={() => startTodayTask(item)}
-                              disabled={Boolean(loadingAction) || done}
+                              disabled={Boolean(loadingAction) || (!isVideoTask && done)}
                             >
                               {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
                             </button>
                             <div className={`today-task-progress-badge ${done ? 'is-done' : ''}`} title={done ? tr('Задача выполнена', 'Aufgabe erledigt') : `${Math.round(progressPercent)}%`}>
                               {done ? '✅' : `⭕ ${Math.round(progressPercent)}%`}
                             </div>
-                            {taskType === 'video' && (
+                            {isVideoTask && (
                               <>
                                 <button
                                   type="button"
@@ -8972,26 +9517,64 @@ function AppInner() {
 
             {!flashcardsOnly && isSectionVisible('reader') && (
               <section className={`webapp-section webapp-reader ${readerHasContent && readerImmersive ? 'is-immersive' : ''}`} ref={readerRef}>
-                <div className="webapp-section-title webapp-section-title-with-logo">
-                  <div className="webapp-local-section-head">
-                    <h3>{tr('Читалка', 'Leser')}</h3>
-                    {!readerImmersive && isFocusedSection('reader') && (
-                      <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                        {tr('На главную', 'Startseite')}
+                <div
+                  className="reader-topbar"
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'auto minmax(0, 1fr) auto',
+                    gap: 8,
+                    alignItems: 'center',
+                    marginBottom: 10,
+                    padding: '8px 10px',
+                    borderRadius: 12,
+                    border: '1px solid rgba(148,163,184,0.28)',
+                    background: 'rgba(15,23,42,0.45)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {isFocusedSection('reader') && (
+                      <button type="button" className="secondary-button" onClick={goHomeScreen}>
+                        {tr('Назад', 'Zurueck')}
                       </button>
                     )}
-                    {!readerImmersive && <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />}
-                  </div>
-                </div>
-                {readerHasContent && readerImmersive && (
-                  <div className="reader-immersive-topbar">
                     <button
                       type="button"
-                      className="secondary-button"
-                      onClick={() => setReaderImmersive(false)}
+                      className={`secondary-button ${readerArchiveOpen ? 'is-active' : ''}`}
+                      onClick={openReaderArchive}
                     >
-                      {tr('Назад', 'Zurueck')}
+                      {tr('Архив', 'Archiv')}
                     </button>
+                    {readerDocumentId && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => archiveReaderDocument(readerDocumentId, true)}
+                        title={tr('В архив', 'Archivieren')}
+                      >
+                        {tr('В архив', 'In Archiv')}
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontSize: 15,
+                        fontWeight: 700,
+                        lineHeight: 1.2,
+                        color: '#f8fafc',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {readerTitle || tr('Читалка', 'Leser')}
+                    </div>
+                    <div className="webapp-muted" style={{ fontSize: 12 }}>
+                      {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
+                      {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <button
                       type="button"
                       className={`secondary-button ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
@@ -9002,37 +9585,162 @@ function AppInner() {
                           syncReaderState({ reading_mode: nextMode });
                         }
                       }}
+                      disabled={!readerContent}
                     >
                       {readerReadingMode === 'vertical' ? '↕︎' : '↔︎'}
                     </button>
                     <button
                       type="button"
-                      className={`reader-bookmark-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
-                      onClick={() => {
-                        const mark = computeReaderProgressPercent();
-                        setReaderBookmarkPercent(mark);
-                        if (readerDocumentId) {
-                          syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
-                        }
-                      }}
-                      title={tr('Поставить закладку', 'Lesezeichen setzen')}
+                      className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
+                      onClick={toggleReaderTimerPause}
+                      disabled={!readerHasContent}
                     >
-                      🔖
+                      {readerTimerPaused
+                        ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}`
+                        : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
                     </button>
                     <button
                       type="button"
-                      className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
-                      onClick={toggleReaderTimerPause}
+                      className="secondary-button"
+                      onClick={() => setReaderImmersive((prev) => !prev)}
+                      disabled={!readerHasContent}
                     >
-                      {readerTimerPaused ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}` : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
+                      {readerImmersive ? tr('Обычный', 'Normal') : tr('Иммерсивный', 'Immersiv')}
                     </button>
-                    <span className="reader-immersive-indicator is-on">
-                      {tr('Иммерсивный: ON', 'Immersiv: ON')}
-                    </span>
                   </div>
+                </div>
+
+                {!readerImmersive && readerArchiveOpen && (
+                  <section
+                    className="reader-archive-panel"
+                    style={{
+                      marginBottom: 12,
+                      borderRadius: 14,
+                      border: '1px solid rgba(148,163,184,0.3)',
+                      background: 'rgba(15,23,42,0.36)',
+                      padding: 12,
+                      display: 'grid',
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                      <strong style={{ fontSize: 15 }}>{tr('Архив документов', 'Archivierte Dokumente')}</strong>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setReaderArchiveOpen(false)}
+                      >
+                        {tr('К читалке', 'Zum Leser')}
+                      </button>
+                    </div>
+                    {readerLibraryLoading && <div className="webapp-muted">{tr('Обновляем архив...', 'Archiv wird aktualisiert...')}</div>}
+                    {!readerLibraryLoading && readerDocuments.filter((item) => Boolean(item?.is_archived)).length === 0 && (
+                      <div className="webapp-muted">{tr('В архиве пока пусто.', 'Archiv ist noch leer.')}</div>
+                    )}
+                    {!readerLibraryLoading && readerDocuments.filter((item) => Boolean(item?.is_archived)).length > 0 && (
+                      <div
+                        className="reader-archive-grid"
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))',
+                          gap: 10,
+                        }}
+                      >
+                        {readerDocuments
+                          .filter((item) => Boolean(item?.is_archived))
+                          .map((item) => {
+                            const coverUrl = getReaderCoverUrl(item);
+                            const initials = getReaderCoverInitials(item?.title);
+                            const [fromColor, toColor] = getReaderCoverGradient(item);
+                            const meta = buildReaderArchiveMeta(item);
+                            return (
+                              <button
+                                type="button"
+                                key={`reader-archive-${item.id}`}
+                                onClick={async () => {
+                                  setReaderArchiveOpen(false);
+                                  await openReaderDocument(item.id);
+                                }}
+                                style={{
+                                  border: '1px solid rgba(148,163,184,0.28)',
+                                  borderRadius: 12,
+                                  background: 'rgba(2,6,23,0.52)',
+                                  padding: 8,
+                                  display: 'grid',
+                                  gap: 8,
+                                  textAlign: 'left',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    width: '100%',
+                                    aspectRatio: '3 / 4',
+                                    borderRadius: 10,
+                                    overflow: 'hidden',
+                                    border: '1px solid rgba(148,163,184,0.3)',
+                                    background: `linear-gradient(160deg, ${fromColor}, ${toColor})`,
+                                    display: 'grid',
+                                    placeItems: 'center',
+                                  }}
+                                >
+                                  {coverUrl ? (
+                                    <img
+                                      src={coverUrl}
+                                      alt=""
+                                      loading="lazy"
+                                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                                    />
+                                  ) : (
+                                    <span
+                                      style={{
+                                        fontSize: 28,
+                                        fontWeight: 800,
+                                        letterSpacing: '0.04em',
+                                        color: 'rgba(248,250,252,0.95)',
+                                      }}
+                                    >
+                                      {initials}
+                                    </span>
+                                  )}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: 13,
+                                    lineHeight: 1.3,
+                                    fontWeight: 700,
+                                    color: '#f8fafc',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                  }}
+                                  title={String(item?.title || '')}
+                                >
+                                  {String(item?.title || tr('Без названия', 'Ohne Titel'))}
+                                </div>
+                                {meta && (
+                                  <div
+                                    className="webapp-muted"
+                                    style={{
+                                      fontSize: 11,
+                                      whiteSpace: 'nowrap',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                    }}
+                                    title={meta}
+                                  >
+                                    {meta}
+                                  </div>
+                                )}
+                              </button>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </section>
                 )}
 
-                {!readerImmersive && (
+                {!readerImmersive && !readerArchiveOpen && (
                 <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
                   <label className="webapp-field">
                     <span>{tr('Ссылка или текст', 'Link oder Text')}</span>
@@ -9159,7 +9867,7 @@ function AppInner() {
                   </label>
                 </form>
                 )}
-                {!readerImmersive && readerDocumentId && (
+                {!readerImmersive && !readerArchiveOpen && readerDocumentId && (
                   <section className="reader-audio-panel">
                     <div className="reader-audio-head">
                       <strong>{tr('Оффлайн-аудио документа', 'Offline-Audio des Dokuments')}</strong>
@@ -9224,10 +9932,26 @@ function AppInner() {
                         </div>
                       </div>
                     )}
-                  </section>
+                </section>
                 )}
-                {!readerImmersive && readerError && <div className="webapp-error">{readerError}</div>}
-                {!readerImmersive && (
+                {!readerImmersive && !readerArchiveOpen && readerError && (
+                  <div className="webapp-error" style={{ display: 'grid', gap: 8 }}>
+                    <span>{readerError}</span>
+                    {readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' && (
+                      <div>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={handleBillingUpgrade}
+                          disabled={billingActionLoading}
+                        >
+                          {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Upgrade', 'Upgrade')}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {!readerImmersive && !readerArchiveOpen && (
                 <section className="reader-library">
                   <div className="reader-library-head">
                     <h4>{tr('Библиотека', 'Bibliothek')}</h4>
@@ -9302,14 +10026,20 @@ function AppInner() {
                   )}
                 </section>
                 )}
-                {readerImmersive && readerContent && (
+                {readerContent && !readerArchiveOpen && (
                   <article
                     ref={readerArticleRef}
                     className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${readerPageCount > 0 ? 'has-pages' : ''}`}
-                    onMouseUp={(event) => handleSelection(event, '', { lookupLang: getNormalizeLookupLang() })}
+                    onClick={handleReaderStructuredClick}
+                    onMouseUp={handleReaderArticleMouseUp}
                     onWheel={handleReaderPageWheel}
                     onTouchStart={handleReaderPageTouchStart}
-                    onTouchEnd={handleReaderPageTouchEnd}
+                    onTouchEnd={handleReaderArticleTouchEnd}
+                    style={{
+                      marginTop: 0,
+                      paddingTop: readerImmersive ? 2 : undefined,
+                      minHeight: readerImmersive ? 'calc(100vh - 200px)' : undefined,
+                    }}
                   >
                     {readerSourceType && !readerImmersive && (
                       <div className="reader-meta">
@@ -9356,10 +10086,7 @@ function AppInner() {
                             <span className="reader-page-bookmark-indicator" aria-hidden="true" />
                           )}
                           <div className="reader-page-sheet-inner">
-                            {renderClickableText(
-                              String(readerDisplayPages[readerCurrentPage - 1]?.text || ''),
-                              { className: 'reader-clickable-word', lookupLang: getNormalizeLookupLang(), inlineLookup: true, compact: true }
-                            )}
+                            {renderReaderStructuredText()}
                           </div>
                           <div className="reader-page-num">
                             {tr('Стр.', 'S.')}{' '}{readerCurrentPage}{readerPageCount > 0 ? ` / ${readerPageCount}` : ''}
@@ -9367,15 +10094,7 @@ function AppInner() {
                         </div>
                       </div>
                     ) : (
-                      readerContent.split(/\n{2,}/).map((paragraph, index) => {
-                        const value = String(paragraph || '').trim();
-                        if (!value) return null;
-                        return (
-                          <p key={`reader-p-${index}`}>
-                            {renderClickableText(value, { className: 'reader-clickable-word', lookupLang: getNormalizeLookupLang(), inlineLookup: true, compact: true })}
-                          </p>
-                        );
-                      })
+                      renderReaderStructuredText()
                     )}
                   </article>
                 )}
@@ -10806,69 +11525,136 @@ function AppInner() {
             {selectionText && selectionPos && (isSectionVisible('youtube') || isSectionVisible('dictionary') || isSectionVisible('translations') || isSectionVisible('reader')) && (
               <div
                 ref={selectionMenuRef}
-                className={`webapp-selection-menu ${selectionCompact ? 'is-compact' : ''} ${(youtubeAppFullscreen || selectionInlineMode) ? 'is-overlay-mode' : ''}`}
-                style={{ left: `${selectionPos.x}px`, top: `${selectionPos.y}px` }}
+                className={`webapp-selection-menu ${selectionCompact ? 'is-compact' : ''} ${(youtubeAppFullscreen || selectionInlineMode) ? 'is-overlay-mode' : ''} ${selectionType ? `is-${selectionType}` : ''}`}
+                style={{
+                  left: `${selectionPos.x}px`,
+                  top: `${selectionPos.y}px`,
+                  minWidth: 180,
+                  maxWidth: 280,
+                  borderRadius: 10,
+                  padding: '8px 9px',
+                  boxShadow: '0 14px 28px rgba(8, 11, 26, 0.45)',
+                  gap: 6,
+                }}
                 onMouseLeave={clearSelection}
               >
-                <div className="webapp-selection-text">{selectionText}</div>
-                {(youtubeAppFullscreen || selectionInlineMode) ? (
-                  <>
-                    <div className="webapp-selection-translation">
-                      {selectionInlineLookup.loading
-                        ? tr('Переводим...', 'Uebersetzen...')
-                        : (selectionInlineLookup.translation || '—')}
-                    </div>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => loadSelectionInlineLookup(selectionText)}
-                      disabled={selectionInlineLookup.loading}
-                    >
-                      {selectionInlineLookup.loading ? tr('Переводим...', 'Uebersetzen...') : tr('Перевести', 'Uebersetzen')}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => playTts(selectionText, getTtsLocaleForLang(selectionLookupLang || readerDetectedLanguage || getNormalizeLookupLang()))}
-                      disabled={selectionInlineLookup.loading}
-                    >
-                      {tr('Прослушать', 'Anhoeren')}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => handleQuickAddToDictionary(selectionText, { inlineMode: true })}
-                      disabled={selectionInlineLookup.loading}
-                    >
-                      {tr('Сохранить', 'Speichern')}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => playTts(selectionText, getTtsLocaleForLang(selectionLookupLang || readerDetectedLanguage || getNormalizeLookupLang()))}
-                    >
-                      {tr('Прослушать', 'Anhoeren')}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => handleQuickLookupDictionary(selectionText)}
-                      disabled={selectionLookupLoading}
-                    >
-                      {selectionLookupLoading ? tr('Переводим...', 'Uebersetzen...') : tr('Перевести', 'Uebersetzen')}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => handleQuickAddToDictionary(selectionText)}
-                    >
-                      {tr('Добавить в словарь', 'Zum Woerterbuch hinzufuegen')}
-                    </button>
-                  </>
+                <div
+                  className="webapp-selection-text"
+                  style={{
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    maxWidth: 248,
+                    fontSize: 12,
+                    lineHeight: 1.2,
+                  }}
+                  title={selectionText}
+                >
+                  {selectionText}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => handleQuickLookupDictionary(selectionText)}
+                    disabled={selectionLookupLoading || selectionInlineLookup.loading}
+                    style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
+                  >
+                    {selectionLookupLoading || selectionInlineLookup.loading ? tr('Quick...', 'Quick...') : 'Quick'}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={handleSelectionGptLookup}
+                    disabled={selectionGptLoading}
+                    style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
+                  >
+                    {selectionGptLoading ? 'GPT...' : 'GPT'}
+                  </button>
+                </div>
+                {(selectionInlineLookup.loading || selectionInlineLookup.translation) && (
+                  <div className="webapp-selection-translation" style={{ fontSize: 11, padding: '5px 7px' }}>
+                    {selectionInlineLookup.provider && (
+                      <div className="webapp-selection-provider">
+                        {String(selectionInlineLookup.provider).toUpperCase()}
+                      </div>
+                    )}
+                    {selectionInlineLookup.loading
+                      ? tr('Переводим...', 'Uebersetzen...')
+                      : (selectionInlineLookup.translation || '—')}
+                  </div>
                 )}
+              </div>
+            )}
+            {selectionGptOpen && (
+              <div
+                role="presentation"
+                onClick={(event) => {
+                  if (event.target === event.currentTarget) {
+                    closeSelectionGptSheet();
+                  }
+                }}
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  zIndex: 180,
+                  background: 'rgba(2, 6, 23, 0.56)',
+                  display: 'flex',
+                  alignItems: 'flex-end',
+                  justifyContent: 'center',
+                }}
+              >
+                <section
+                  style={{
+                    width: 'min(100%, 760px)',
+                    maxHeight: '82vh',
+                    overflow: 'auto',
+                    background: 'rgba(10, 18, 36, 0.98)',
+                    borderTopLeftRadius: 16,
+                    borderTopRightRadius: 16,
+                    border: '1px solid rgba(148, 163, 184, 0.35)',
+                    boxShadow: '0 -12px 34px rgba(2, 6, 23, 0.58)',
+                    padding: '14px 14px 18px',
+                    display: 'grid',
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <strong style={{ fontSize: 14 }}>{tr('GPT Объяснение', 'GPT-Erklaerung')}</strong>
+                    <button type="button" className="secondary-button" onClick={closeSelectionGptSheet}>
+                      {tr('Закрыть', 'Schliessen')}
+                    </button>
+                  </div>
+                  <div className="webapp-muted" style={{ fontSize: 12 }}>
+                    {selectionText}
+                  </div>
+                  {selectionGptLoading && <div className="webapp-muted">{tr('Готовим объяснение...', 'Erklaerung wird vorbereitet...')}</div>}
+                  {selectionGptError && <div className="webapp-error">{selectionGptError}</div>}
+                  {!selectionGptLoading && !selectionGptError && (
+                    <>
+                      <div className="webapp-selection-translation">
+                        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Перевод', 'Uebersetzung')}</div>
+                        <div>{selectionGptData.translation || '—'}</div>
+                      </div>
+                      <div className="webapp-selection-translation">
+                        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Смысл / заметки', 'Bedeutung / Hinweise')}</div>
+                        <div style={{ whiteSpace: 'pre-wrap' }}>{selectionGptData.notes || '—'}</div>
+                      </div>
+                      <div className="webapp-selection-translation">
+                        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Примеры', 'Beispiele')}</div>
+                        {Array.isArray(selectionGptData.examples) && selectionGptData.examples.length > 0 ? (
+                          <div style={{ display: 'grid', gap: 4 }}>
+                            {selectionGptData.examples.map((item, index) => (
+                              <div key={`gpt-example-${index}`}>• {item}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div>—</div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </section>
               </div>
             )}
             {inlineToast && <div className="webapp-inline-toast">{inlineToast}</div>}

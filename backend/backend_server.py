@@ -318,6 +318,8 @@ STRIPE_WEBHOOK_SECRET = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
 STRIPE_PRICE_ID_PRO = (os.getenv("STRIPE_PRICE_ID_PRO") or "").strip()
 APP_BASE_URL = (os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
 BACKEND_BASE_URL = (os.getenv("BACKEND_BASE_URL") or "").strip().rstrip("/")
+DEEPL_AUTH_KEY = (os.getenv("DEEPL_AUTH_KEY") or "").strip()
+LIBRETRANSLATE_URL = (os.getenv("LIBRETRANSLATE_URL") or "").strip().rstrip("/")
 
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
@@ -2690,6 +2692,94 @@ def _normalize_short_lang_code(value: str | None, fallback: str = "ru") -> str:
     if "-" in raw:
         raw = raw.split("-", 1)[0]
     return raw or fallback
+
+
+def _quick_translate_deepl(text: str, source_lang: str | None, target_lang: str) -> dict:
+    if not DEEPL_AUTH_KEY:
+        raise RuntimeError("DEEPL_AUTH_KEY not configured")
+    endpoint = "https://api-free.deepl.com/v2/translate"
+    target = _normalize_short_lang_code(target_lang, fallback="de").upper()
+    source = _normalize_short_lang_code(source_lang, fallback="").upper() if source_lang else ""
+    payload = {
+        "text": [str(text or "")],
+        "target_lang": target,
+    }
+    if source:
+        payload["source_lang"] = source
+    headers = {"Authorization": f"DeepL-Auth-Key {DEEPL_AUTH_KEY}"}
+    resp = requests.post(endpoint, data=payload, headers=headers, timeout=10)
+    if not resp.ok:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
+    data = resp.json() if resp.content else {}
+    translations = data.get("translations") if isinstance(data, dict) else []
+    item = translations[0] if isinstance(translations, list) and translations else {}
+    translated = str(item.get("text") or "").strip()
+    if not translated:
+        raise RuntimeError("Empty translation from DeepL")
+    detected = _normalize_short_lang_code(item.get("detected_source_language"), fallback="") or None
+    return {
+        "translation": translated,
+        "provider": "deepl_free",
+        "detected_source_lang": detected,
+    }
+
+
+def _quick_translate_libretranslate(text: str, source_lang: str | None, target_lang: str) -> dict:
+    if not LIBRETRANSLATE_URL:
+        raise RuntimeError("LIBRETRANSLATE_URL not configured")
+    target = _normalize_short_lang_code(target_lang, fallback="de")
+    source = _normalize_short_lang_code(source_lang, fallback="auto") if source_lang else "auto"
+    endpoint = LIBRETRANSLATE_URL
+    if not endpoint.endswith("/translate"):
+        endpoint = f"{endpoint}/translate"
+    payload = {
+        "q": str(text or ""),
+        "source": source,
+        "target": target,
+        "format": "text",
+    }
+    resp = requests.post(endpoint, json=payload, timeout=10)
+    if not resp.ok:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
+    data = resp.json() if resp.content else {}
+    translated = str(data.get("translatedText") or data.get("translation") or "").strip()
+    if not translated:
+        raise RuntimeError("Empty translation from LibreTranslate")
+    detected = data.get("detectedLanguage") if isinstance(data, dict) else None
+    if isinstance(detected, dict):
+        detected = detected.get("language")
+    detected_lang = _normalize_short_lang_code(detected, fallback="") or None
+    return {
+        "translation": translated,
+        "provider": "libretranslate",
+        "detected_source_lang": detected_lang,
+    }
+
+
+def _quick_translate_mymemory(text: str, source_lang: str | None, target_lang: str) -> dict:
+    target = _normalize_short_lang_code(target_lang, fallback="de")
+    source = _normalize_short_lang_code(source_lang, fallback="auto") if source_lang else "auto"
+    resp = requests.get(
+        "https://api.mymemory.translated.net/get",
+        params={
+            "q": str(text or ""),
+            "langpair": f"{source}|{target}",
+        },
+        timeout=10,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
+    data = resp.json() if resp.content else {}
+    response_data = data.get("responseData") if isinstance(data, dict) else {}
+    translated = str((response_data or {}).get("translatedText") or "").strip()
+    translated = html.unescape(translated)
+    if not translated:
+        raise RuntimeError("Empty translation from MyMemory")
+    return {
+        "translation": translated,
+        "provider": "mymemory",
+        "detected_source_lang": None,
+    }
 
 
 def _language_label(code: str) -> str:
@@ -6151,6 +6241,50 @@ def sync_economics_price_snapshots_from_env():
     return jsonify({"ok": True, "result": result})
 
 
+@app.route("/api/translate/quick", methods=["POST"])
+def translate_quick():
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text") or "").strip()
+    source_lang_raw = payload.get("source_lang")
+    source_lang = _normalize_short_lang_code(source_lang_raw, fallback="") if source_lang_raw else None
+    target_lang = _normalize_short_lang_code(payload.get("target_lang"), fallback="")
+
+    if not text:
+        return jsonify({"error": "text обязателен"}), 400
+    if not target_lang:
+        return jsonify({"error": "target_lang обязателен"}), 400
+    if source_lang and source_lang == target_lang:
+        return jsonify({"error": "source_lang и target_lang не должны совпадать"}), 400
+
+    attempts: list[dict] = []
+    providers = []
+    if DEEPL_AUTH_KEY:
+        providers.append(("deepl_free", _quick_translate_deepl))
+    if LIBRETRANSLATE_URL:
+        providers.append(("libretranslate", _quick_translate_libretranslate))
+    providers.append(("mymemory", _quick_translate_mymemory))
+
+    for provider_name, translate_func in providers:
+        try:
+            result = translate_func(text, source_lang, target_lang)
+            result["provider"] = provider_name
+            if not result.get("detected_source_lang") and source_lang:
+                result["detected_source_lang"] = source_lang
+            return jsonify(result)
+        except requests.Timeout:
+            attempts.append({"provider": provider_name, "error": "timeout"})
+        except Exception as exc:
+            attempts.append({"provider": provider_name, "error": str(exc)})
+
+    return jsonify(
+        {
+            "error": "quick_translation_failed",
+            "error_code": "QUICK_TRANSLATION_FAILED",
+            "details": attempts,
+        }
+    ), 502
+
+
 @app.route("/api/webapp/dictionary", methods=["POST"])
 def lookup_webapp_dictionary():
     payload = request.get_json(silent=True) or {}
@@ -9437,6 +9571,11 @@ def ingest_reader_content():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
+    try:
+        get_or_create_user_subscription(user_id=int(user_id), now_ts=datetime.now(timezone.utc))
+    except Exception:
+        pass
+
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     normalized_text = ""
     content_pages: list[dict] = []
@@ -9476,6 +9615,28 @@ def ingest_reader_content():
 
     if not normalized_text:
         return jsonify({"error": "Не удалось извлечь текст"}), 422
+
+    try:
+        entitlement = resolve_entitlement(user_id=int(user_id))
+        if str(entitlement.get("effective_mode") or "free").lower() == "free":
+            text_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+            existing_docs = list_reader_library_documents(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                limit=300,
+                include_archived=True,
+            )
+            has_same_document = any(str(item.get("text_hash") or "") == text_hash for item in existing_docs)
+            if not has_same_document and len(existing_docs) >= 1:
+                return jsonify(
+                    {
+                        "error": "Лимит бесплатного плана: можно хранить только 1 книгу/документ.",
+                        "error_code": "LIMIT_FREE_PLAN_1_BOOK",
+                    }
+                ), 403
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка проверки лимита плана: {exc}"}), 500
 
     title = _infer_reader_title(
         input_text=normalized_text,
