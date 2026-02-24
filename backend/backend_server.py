@@ -84,7 +84,7 @@ from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConf
 from datetime import datetime, timezone
 from io import BytesIO
 from uuid import uuid4
-from urllib.parse import parse_qsl, urlparse, urlencode
+from urllib.parse import parse_qsl, quote_plus, urlparse, urlencode
 from flask import Flask, request, jsonify, send_from_directory, send_file, g, redirect
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -1734,10 +1734,10 @@ def _default_theory_resources(target_lang: str) -> list[dict]:
                 "why": "Справочник по грамматике немецкого языка.",
             },
             {
-                "title": "Canoonet",
-                "url": "https://www.canoonet.eu/",
+                "title": "Lingolia Deutsch Grammatik",
+                "url": "https://deutsch.lingolia.com/de/grammatik",
                 "type": "article",
-                "why": "Подробные правила и формы немецкой грамматики.",
+                "why": "Надежный источник с правилами и упражнениями по немецкой грамматике.",
             },
             {
                 "title": "Deutsch lernen (DW)",
@@ -1801,9 +1801,90 @@ def _default_theory_resources(target_lang: str) -> list[dict]:
     ]
 
 
-def _normalize_theory_resources(theory: dict, target_lang: str) -> list[dict]:
+def _extract_topic_keywords(*parts: str) -> list[str]:
+    stopwords = {
+        "skill", "skills", "grammar", "grammatik", "topic", "error", "mistake", "other",
+        "unclassified", "practice", "training", "theory", "basics", "general",
+        "und", "der", "die", "das", "mit", "für", "fürs", "with", "for", "and",
+    }
+    result: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        for token in re.findall(r"[A-Za-zА-Яа-яЁё0-9]{3,}", str(part or "").lower()):
+            if token in stopwords or token in seen:
+                continue
+            seen.add(token)
+            result.append(token)
+    return result[:12]
+
+
+def _is_resource_homepage(url: str) -> bool:
+    try:
+        parsed = urlparse(str(url or "").strip())
+    except Exception:
+        return True
+    path = (parsed.path or "").strip()
+    return (not path or path == "/") and not parsed.query
+
+
+def _build_topic_fallback_resources(
+    *,
+    target_lang: str,
+    skill_name: str,
+    error_category: str,
+    error_subcategory: str,
+) -> list[dict]:
+    lang = _normalize_short_lang_code(target_lang, fallback="de")
+    topic_query = " ".join(
+        part for part in [
+            str(skill_name or "").strip(),
+            str(error_subcategory or "").strip(),
+            str(error_category or "").strip(),
+        ] if part
+    ).strip() or "grammar topic"
+    encoded = quote_plus(topic_query)
+    if lang == "de":
+        return [
+            {
+                "title": f"Duden Suche: {topic_query}",
+                "url": f"https://www.duden.de/suchen/dudenonline/{encoded}",
+                "type": "article",
+                "why": "Поиск в Duden по точной теме навыка.",
+            },
+            {
+                "title": f"YouTube: {topic_query}",
+                "url": f"https://www.youtube.com/results?search_query={encoded}+Deutsch+Grammatik",
+                "type": "video",
+                "why": "Видео-материалы по конкретной теме навыка.",
+            },
+        ]
+    return [
+        {
+            "title": f"Wikipedia search: {topic_query}",
+            "url": f"https://en.wikipedia.org/w/index.php?search={encoded}",
+            "type": "article",
+            "why": "Поиск справочной статьи по точной теме навыка.",
+        },
+        {
+            "title": f"YouTube: {topic_query}",
+            "url": f"https://www.youtube.com/results?search_query={encoded}+grammar",
+            "type": "video",
+            "why": "Видео-материалы по конкретной теме навыка.",
+        },
+    ]
+
+
+def _normalize_theory_resources(
+    theory: dict,
+    target_lang: str,
+    *,
+    skill_name: str = "",
+    error_category: str = "",
+    error_subcategory: str = "",
+) -> list[dict]:
     raw = theory.get("resources") if isinstance(theory, dict) else None
     resources: list[dict] = []
+    topic_keywords = _extract_topic_keywords(skill_name, error_category, error_subcategory)
     if isinstance(raw, list):
         for entry in raw:
             if not isinstance(entry, dict):
@@ -1820,6 +1901,11 @@ def _normalize_theory_resources(theory: dict, target_lang: str) -> list[dict]:
                 continue
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 continue
+            haystack = f"{title} {url} {why}".lower()
+            if topic_keywords and not any(keyword in haystack for keyword in topic_keywords):
+                continue
+            if _is_resource_homepage(url):
+                continue
             if kind not in {"article", "video"}:
                 kind = "article"
             resources.append(
@@ -1834,7 +1920,221 @@ def _normalize_theory_resources(theory: dict, target_lang: str) -> list[dict]:
                 break
     if resources:
         return resources
+    fallback_topic = _build_topic_fallback_resources(
+        target_lang=target_lang,
+        skill_name=skill_name,
+        error_category=error_category,
+        error_subcategory=error_subcategory,
+    )
+    if fallback_topic:
+        return fallback_topic[:3]
     return _default_theory_resources(target_lang)[:3]
+
+
+def _ensure_skill_training_daily_table() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_skill_training_daily (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    plan_date DATE NOT NULL,
+                    required_resource_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    opened_resource_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    practice_submitted BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, skill_id, plan_date)
+                );
+                """
+            )
+
+
+def _normalize_resource_url(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    normalized_netloc = parsed.netloc.lower()
+    normalized_path = parsed.path or ""
+    normalized_query = parsed.query or ""
+    return f"{parsed.scheme}://{normalized_netloc}{normalized_path}" + (f"?{normalized_query}" if normalized_query else "")
+
+
+def _decode_json_list(value) -> list[str]:
+    payload = value
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = []
+    if not isinstance(payload, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in payload:
+        normalized = _normalize_resource_url(item)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _upsert_skill_training_seed(user_id: int, skill_id: str, required_urls: list[str]) -> None:
+    if not skill_id:
+        return
+    _ensure_skill_training_daily_table()
+    plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    required_normalized = _decode_json_list(required_urls)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT required_resource_urls, opened_resource_urls, practice_submitted
+                FROM bt_3_skill_training_daily
+                WHERE user_id = %s AND skill_id = %s AND plan_date = %s
+                LIMIT 1;
+                """,
+                (int(user_id), str(skill_id), plan_date),
+            )
+            row = cursor.fetchone()
+            existing_opened = _decode_json_list(row[1] if row else [])
+            practice_submitted = bool(row[2]) if row else False
+            merged_opened = [url for url in existing_opened if (not required_normalized or url in required_normalized)]
+            cursor.execute(
+                """
+                INSERT INTO bt_3_skill_training_daily (
+                    user_id, skill_id, plan_date, required_resource_urls, opened_resource_urls, practice_submitted, updated_at
+                )
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, NOW())
+                ON CONFLICT (user_id, skill_id, plan_date) DO UPDATE
+                SET required_resource_urls = EXCLUDED.required_resource_urls,
+                    opened_resource_urls = EXCLUDED.opened_resource_urls,
+                    practice_submitted = EXCLUDED.practice_submitted,
+                    updated_at = NOW();
+                """,
+                (
+                    int(user_id),
+                    str(skill_id),
+                    plan_date,
+                    json.dumps(required_normalized, ensure_ascii=False),
+                    json.dumps(merged_opened, ensure_ascii=False),
+                    bool(practice_submitted),
+                ),
+            )
+
+
+def _record_skill_training_event(
+    *,
+    user_id: int,
+    skill_id: str,
+    event: str,
+    resource_url: str | None = None,
+) -> dict:
+    if not skill_id:
+        return {"state": "idle", "is_complete": False, "opened_count": 0, "required_count": 0, "practice_submitted": False}
+    _ensure_skill_training_daily_table()
+    plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT required_resource_urls, opened_resource_urls, practice_submitted
+                FROM bt_3_skill_training_daily
+                WHERE user_id = %s AND skill_id = %s AND plan_date = %s
+                LIMIT 1;
+                """,
+                (int(user_id), str(skill_id), plan_date),
+            )
+            row = cursor.fetchone()
+            required_urls = _decode_json_list(row[0] if row else [])
+            opened_urls = _decode_json_list(row[1] if row else [])
+            practice_submitted = bool(row[2]) if row else False
+
+            if event == "open_resource":
+                normalized = _normalize_resource_url(resource_url or "")
+                if normalized and normalized not in opened_urls:
+                    opened_urls.append(normalized)
+            elif event == "practice_submitted":
+                practice_submitted = True
+
+            cursor.execute(
+                """
+                INSERT INTO bt_3_skill_training_daily (
+                    user_id, skill_id, plan_date, required_resource_urls, opened_resource_urls, practice_submitted, updated_at
+                )
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, NOW())
+                ON CONFLICT (user_id, skill_id, plan_date) DO UPDATE
+                SET required_resource_urls = EXCLUDED.required_resource_urls,
+                    opened_resource_urls = EXCLUDED.opened_resource_urls,
+                    practice_submitted = EXCLUDED.practice_submitted,
+                    updated_at = NOW();
+                """,
+                (
+                    int(user_id),
+                    str(skill_id),
+                    plan_date,
+                    json.dumps(required_urls, ensure_ascii=False),
+                    json.dumps(opened_urls, ensure_ascii=False),
+                    bool(practice_submitted),
+                ),
+            )
+
+    required_count = len(required_urls)
+    opened_count = len([url for url in opened_urls if (not required_urls or url in required_urls)])
+    resources_done = opened_count >= required_count if required_count > 0 else True
+    is_complete = bool(resources_done and practice_submitted)
+    return {
+        "state": "complete" if is_complete else "in_progress",
+        "is_complete": bool(is_complete),
+        "opened_count": int(opened_count),
+        "required_count": int(required_count),
+        "practice_submitted": bool(practice_submitted),
+    }
+
+
+def _get_skill_training_status_map(user_id: int) -> dict[str, dict]:
+    _ensure_skill_training_daily_table()
+    plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    result: dict[str, dict] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT skill_id, required_resource_urls, opened_resource_urls, practice_submitted
+                FROM bt_3_skill_training_daily
+                WHERE user_id = %s AND plan_date = %s;
+                """,
+                (int(user_id), plan_date),
+            )
+            rows = cursor.fetchall() or []
+    for row in rows:
+        skill_id = str(row[0] or "").strip()
+        if not skill_id:
+            continue
+        required_urls = _decode_json_list(row[1])
+        opened_urls = _decode_json_list(row[2])
+        practice_submitted = bool(row[3])
+        required_count = len(required_urls)
+        opened_count = len([url for url in opened_urls if (not required_urls or url in required_urls)])
+        resources_done = opened_count >= required_count if required_count > 0 else True
+        is_complete = bool(resources_done and practice_submitted)
+        result[skill_id] = {
+            "state": "complete" if is_complete else "in_progress",
+            "is_complete": bool(is_complete),
+            "opened_count": int(opened_count),
+            "required_count": int(required_count),
+            "practice_submitted": bool(practice_submitted),
+        }
+    return result
 
 
 def _billing_env_float(name: str) -> float:
@@ -7246,6 +7546,9 @@ def prepare_today_theory():
         "skill_name": skill_name,
         "error_category": main_category or "Other mistake",
         "error_subcategory": sub_category or "Unclassified mistake",
+        "topic_must_match": " | ".join(
+            part for part in [skill_name, sub_category, main_category] if str(part or "").strip()
+        ),
         "user_mistake_examples": formatted_examples[:8],
     }
     practice_payload = {
@@ -7254,22 +7557,34 @@ def prepare_today_theory():
         "skill_name": skill_name,
         "error_category": main_category or "Other mistake",
         "error_subcategory": sub_category or "Unclassified mistake",
+        "topic_must_match": " | ".join(
+            part for part in [skill_name, sub_category, main_category] if str(part or "").strip()
+        ),
+        "user_mistake_examples": formatted_examples[:5],
     }
 
-    try:
-        theory = asyncio.run(run_theory_generation(theory_payload))
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка генерации теории: {exc}"}), 500
-    usage_theory = get_last_llm_usage(reset=True)
-    if not isinstance(theory, dict):
-        theory = {}
-    theory["resources"] = _normalize_theory_resources(theory, target_lang)
+    async def _generate_theory_and_practice() -> tuple[dict, dict]:
+        theory_task = asyncio.create_task(run_theory_generation(theory_payload))
+        practice_task = asyncio.create_task(run_theory_practice_sentences(practice_payload))
+        theory_result, practice_result = await asyncio.gather(theory_task, practice_task)
+        return theory_result or {}, practice_result or {}
 
     try:
-        practice_raw = asyncio.run(run_theory_practice_sentences(practice_payload))
+        theory, practice_raw = asyncio.run(_generate_theory_and_practice())
     except Exception as exc:
-        return jsonify({"error": f"Ошибка генерации практики: {exc}"}), 500
-    usage_practice = get_last_llm_usage(reset=True)
+        return jsonify({"error": f"Ошибка подготовки тренировки навыка: {exc}"}), 500
+    usage_theory = None
+    usage_practice = None
+    get_last_llm_usage(reset=True)
+    if not isinstance(theory, dict):
+        theory = {}
+    theory["resources"] = _normalize_theory_resources(
+        theory,
+        target_lang,
+        skill_name=skill_name,
+        error_category=main_category or "",
+        error_subcategory=sub_category or "",
+    )
 
     practice_sentences = _normalize_theory_sentences(practice_raw)
     if len(practice_sentences) < 5:
@@ -7294,6 +7609,21 @@ def prepare_today_theory():
         "examples_used": formatted_examples[:8],
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+    required_resource_urls = [
+        _normalize_resource_url(item.get("url"))
+        for item in (package.get("theory") or {}).get("resources") or []
+        if isinstance(item, dict)
+    ]
+    required_resource_urls = [url for url in required_resource_urls if url][:2]
+    if package["focus"]["skill_id"]:
+        try:
+            _upsert_skill_training_seed(
+                user_id=int(user_id),
+                skill_id=str(package["focus"]["skill_id"]),
+                required_urls=required_resource_urls,
+            )
+        except Exception as exc:
+            logging.warning("Skill training seed upsert failed: %s", exc)
     _billing_log_event_safe(
         user_id=int(user_id),
         action_type="theory_package_prepare",
@@ -7446,7 +7776,26 @@ def check_today_theory():
         except Exception as exc:
             return jsonify({"error": f"Ошибка сохранения проверки теории: {exc}"}), 500
 
-    return jsonify({"ok": True, "feedback": feedback if isinstance(feedback, dict) else {}, "updated_item": updated_item})
+    training_status = None
+    focus_skill_id = str(focus.get("skill_id") or "").strip()
+    if focus_skill_id:
+        try:
+            training_status = _record_skill_training_event(
+                user_id=int(user_id),
+                skill_id=focus_skill_id,
+                event="practice_submitted",
+            )
+        except Exception as exc:
+            logging.warning("Skill training practice event failed: %s", exc)
+
+    return jsonify(
+        {
+            "ok": True,
+            "feedback": feedback if isinstance(feedback, dict) else {},
+            "updated_item": updated_item,
+            "skill_training_status": training_status,
+        }
+    )
 
 
 @app.route("/api/today/items/<int:item_id>/complete", methods=["POST"])
@@ -7789,6 +8138,11 @@ def get_skill_progress():
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка построения отчёта по навыкам: {exc}"}), 500
+    try:
+        skill_training_status = _get_skill_training_status_map(int(user_id))
+    except Exception as exc:
+        logging.warning("Skill training status load failed: %s", exc)
+        skill_training_status = {}
 
     return jsonify(
         {
@@ -7796,9 +8150,36 @@ def get_skill_progress():
             "user_id": int(user_id),
             "username": username,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "skill_training_status": skill_training_status,
             **report,
         }
     )
+
+
+@app.route("/api/progress/skills/<string:skill_id>/practice/event", methods=["POST"])
+def track_skill_practice_event(skill_id: str):
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    normalized_skill_id = str(skill_id or "").strip()
+    if not normalized_skill_id:
+        return jsonify({"error": "skill_id обязателен"}), 400
+    payload = request.get_json(silent=True) or {}
+    event = str(payload.get("event") or "").strip().lower()
+    if event not in {"open_resource", "practice_submitted"}:
+        return jsonify({"error": "event должен быть open_resource или practice_submitted"}), 400
+    resource_url = str(payload.get("resource_url") or "").strip() or None
+    try:
+        status_payload = _record_skill_training_event(
+            user_id=int(user_id),
+            skill_id=normalized_skill_id,
+            event=event,
+            resource_url=resource_url,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения события тренировки навыка: {exc}"}), 500
+    return jsonify({"ok": True, "status": status_payload, "skill_id": normalized_skill_id})
 
 
 @app.route("/api/progress/weekly-plan", methods=["GET", "POST"])
@@ -10216,6 +10597,8 @@ def start_webapp_story():
                 story_type=story_type,
                 difficulty=difficulty,
                 story_id=int(story_id) if story_id else None,
+                source_lang=source_lang,
+                target_lang=target_lang,
             )
         )
     except Exception as exc:

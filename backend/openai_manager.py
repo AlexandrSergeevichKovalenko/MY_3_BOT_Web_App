@@ -1510,6 +1510,7 @@ You will receive JSON:
   "skill_name": "...",
   "error_category": "...",
   "error_subcategory": "...",
+  "topic_must_match": "...",
   "user_mistake_examples": ["..."]
 }
 
@@ -1535,10 +1536,12 @@ Return STRICT JSON only:
 Requirements:
 - Simple beginner-friendly style (A1-A2 language of explanation).
 - Focus only on provided skill/error.
+- The topic MUST match topic_must_match exactly (no generic grammar overviews).
 - 3-5 short examples.
 - Add 2-3 high-quality external resources about this exact topic.
 - Prefer broadly trusted sources (official grammar references, well-known educational sites/channels).
 - Links must be direct HTTPS URLs and relevant to the topic.
+- Do not return homepage/root links; each URL must lead to a topic-specific page or search result for this topic.
 - No markdown, no extra text.
 """,
     "theory_practice_sentences": """
@@ -1550,7 +1553,9 @@ You will receive JSON:
   "native_language": "...",
   "skill_name": "...",
   "error_category": "...",
-  "error_subcategory": "..."
+  "error_subcategory": "...",
+  "topic_must_match": "...",
+  "user_mistake_examples": ["..."]
 }
 
 Return STRICT JSON only:
@@ -1562,6 +1567,7 @@ Rules:
 - Exactly 5 short sentences.
 - Sentences must be in learner native language.
 - Must trigger target grammar concept.
+- Every sentence MUST stay on the topic in topic_must_match (no generic/off-topic lines).
 - No explanations and no translations.
 """,
     "theory_check_feedback": """

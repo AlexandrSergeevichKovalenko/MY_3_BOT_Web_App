@@ -358,13 +358,37 @@ def fetch_user_summary(
               AND COALESCE(ds.target_lang, 'de') = %s
               AND date BETWEEN %s AND %s
         ),
-        assigned_days AS (
-            SELECT DISTINCT date
-            FROM bt_3_daily_sentences ds
-            WHERE user_id = %s
-              AND COALESCE(ds.source_lang, 'ru') = %s
-              AND COALESCE(ds.target_lang, 'de') = %s
-              AND date BETWEEN %s AND %s
+        first_activity AS (
+            SELECT MIN(activity_date) AS first_activity_date
+            FROM (
+                SELECT MIN(start_time::date) AS activity_date
+                FROM bt_3_user_progress
+                WHERE user_id = %s
+
+                UNION ALL
+
+                SELECT MIN(created_at::date) AS activity_date
+                FROM bt_3_webapp_checks
+                WHERE user_id = %s
+
+                UNION ALL
+
+                SELECT MIN(timestamp::date) AS activity_date
+                FROM bt_3_translations
+                WHERE user_id = %s
+
+                UNION ALL
+
+                SELECT MIN(date) AS activity_date
+                FROM bt_3_daily_sentences
+                WHERE user_id = %s
+            ) activity_union
+        ),
+        active_range AS (
+            SELECT
+                GREATEST(%s::date, COALESCE(first_activity.first_activity_date, %s::date)) AS active_start,
+                LEAST(%s::date, CURRENT_DATE) AS active_end
+            FROM first_activity
         ),
         translated_days AS (
             SELECT DISTINCT ds.date AS date
@@ -377,8 +401,10 @@ def fetch_user_summary(
         ),
         missed_days AS (
             SELECT COUNT(*) AS missed_days
-            FROM assigned_days a
-            LEFT JOIN translated_days t ON t.date = a.date
+            FROM active_range r
+            JOIN LATERAL generate_series(r.active_start, r.active_end, interval '1 day') AS d(active_day)
+              ON r.active_start <= r.active_end
+            LEFT JOIN translated_days t ON t.date = d.active_day::date
             WHERE t.date IS NULL
         )
         SELECT
@@ -416,8 +442,10 @@ def fetch_user_summary(
                     start_date,
                     end_date,
                     user_id,
-                    source_lang,
-                    target_lang,
+                    user_id,
+                    user_id,
+                    user_id,
+                    start_date,
                     start_date,
                     end_date,
                     user_id,
@@ -504,12 +532,50 @@ def fetch_comparison_leaderboard(
               AND COALESCE(ds.target_lang, 'de') = %s
             GROUP BY user_id
         ),
-        assigned_days AS (
-            SELECT DISTINCT user_id, date
-            FROM bt_3_daily_sentences ds
-            WHERE date BETWEEN %s AND %s
-              AND COALESCE(ds.source_lang, 'ru') = %s
-              AND COALESCE(ds.target_lang, 'de') = %s
+        users_in_scope AS (
+            SELECT user_id FROM translations_agg
+        ),
+        first_activity AS (
+            SELECT
+                u.user_id,
+                MIN(activity_date) AS first_activity_date
+            FROM users_in_scope u
+            LEFT JOIN LATERAL (
+                SELECT MIN(start_time::date) AS activity_date
+                FROM bt_3_user_progress
+                WHERE user_id = u.user_id
+
+                UNION ALL
+
+                SELECT MIN(created_at::date) AS activity_date
+                FROM bt_3_webapp_checks
+                WHERE user_id = u.user_id
+
+                UNION ALL
+
+                SELECT MIN(timestamp::date) AS activity_date
+                FROM bt_3_translations
+                WHERE user_id = u.user_id
+
+                UNION ALL
+
+                SELECT MIN(date) AS activity_date
+                FROM bt_3_daily_sentences
+                WHERE user_id = u.user_id
+            ) activity_union ON TRUE
+            GROUP BY u.user_id
+        ),
+        active_days AS (
+            SELECT
+                fa.user_id,
+                d.active_day::date AS date
+            FROM first_activity fa
+            JOIN LATERAL generate_series(
+                GREATEST(%s::date, COALESCE(fa.first_activity_date, %s::date)),
+                LEAST(%s::date, CURRENT_DATE),
+                interval '1 day'
+            ) AS d(active_day)
+              ON GREATEST(%s::date, COALESCE(fa.first_activity_date, %s::date)) <= LEAST(%s::date, CURRENT_DATE)
         ),
         translated_days AS (
             SELECT DISTINCT t.user_id, ds.date AS date
@@ -523,7 +589,7 @@ def fetch_comparison_leaderboard(
             SELECT
                 a.user_id,
                 COUNT(*) AS missed_days
-            FROM assigned_days a
+            FROM active_days a
             LEFT JOIN translated_days t
                 ON t.user_id = a.user_id AND t.date = a.date
             WHERE t.date IS NULL
@@ -573,9 +639,11 @@ def fetch_comparison_leaderboard(
                     source_lang,
                     target_lang,
                     start_date,
+                    start_date,
                     end_date,
-                    source_lang,
-                    target_lang,
+                    start_date,
+                    start_date,
+                    end_date,
                     start_date,
                     end_date,
                     source_lang,

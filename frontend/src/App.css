@@ -1070,6 +1070,18 @@ body {
   background: rgba(16, 44, 48, 0.78);
 }
 
+.section-head-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-home-back.is-compact-arrow {
+  min-width: 32px;
+  padding: 0 8px;
+  justify-content: center;
+}
+
 .section-inline-actions {
   display: flex;
   justify-content: flex-end;
@@ -6061,6 +6073,33 @@ body {
 .skill-rings-name {
   font-weight: 600;
   font-size: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.skill-train-status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.skill-train-status-badge.is-complete {
+  color: #d1fae5;
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+}
+
+.skill-train-status-badge.is-progress {
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(245, 158, 11, 0.45);
 }
 
 .skill-rings-meta {

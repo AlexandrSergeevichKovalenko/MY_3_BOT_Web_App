@@ -483,6 +483,8 @@ async def start_story_session_webapp(
     story_type: str,
     difficulty: str,
     story_id: int | None = None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
 ) -> dict[str, Any]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1690,6 +1692,17 @@ async def check_user_translation_webapp(
                         (user_id, sentence_id_for_mistake),
                     )
                     conn.commit()
+                    await log_translation_mistake(
+                        user_id,
+                        original_text,
+                        user_translation,
+                        categories,
+                        subcategories,
+                        score_value,
+                        correct_translation,
+                        source_lang=source_lang or "ru",
+                        target_lang=target_lang or "de",
+                    )
             else:
                 if score_value >= 80:
                     cursor.execute(

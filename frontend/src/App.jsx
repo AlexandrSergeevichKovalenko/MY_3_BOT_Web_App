@@ -117,6 +117,7 @@ function AppInner() {
   const [youtubeForceShowPanel, setYoutubeForceShowPanel] = useState(false);
   const [youtubeManualOverride, setYoutubeManualOverride] = useState(false);
   const [youtubeTranscriptHasTiming, setYoutubeTranscriptHasTiming] = useState(true);
+  const [youtubeBackSection, setYoutubeBackSection] = useState('');
   const [movies, setMovies] = useState([]);
   const [moviesLoading, setMoviesLoading] = useState(false);
   const [moviesError, setMoviesError] = useState('');
@@ -232,6 +233,7 @@ function AppInner() {
   const [skillTrainingAnswers, setSkillTrainingAnswers] = useState(['', '', '', '', '']);
   const [skillTrainingChecking, setSkillTrainingChecking] = useState(false);
   const [skillTrainingFeedback, setSkillTrainingFeedback] = useState(null);
+  const [skillTrainingVideoLoading, setSkillTrainingVideoLoading] = useState(false);
   const [weeklyPlan, setWeeklyPlan] = useState(null);
   const [weeklyPlanLoading, setWeeklyPlanLoading] = useState(false);
   const [weeklyPlanSaving, setWeeklyPlanSaving] = useState(false);
@@ -955,6 +957,9 @@ function AppInner() {
         top_weak: Array.isArray(data?.top_weak) ? data.top_weak : [],
         groups: Array.isArray(data?.groups) ? data.groups : [],
         total_skills: Number(data?.total_skills || 0),
+        skill_training_status: data?.skill_training_status && typeof data.skill_training_status === 'object'
+          ? data.skill_training_status
+          : {},
       });
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
@@ -1083,13 +1088,15 @@ function AppInner() {
     }
   };
 
-  const startSkillPractice = async (skill) => {
+  const startSkillPractice = async (skill, options = {}) => {
     if (!initData || !skill?.skill_id) return;
     const skillId = String(skill.skill_id);
+    const forceRefresh = Boolean(options?.forceRefresh);
     try {
       setSkillPracticeLoading((prev) => ({ ...prev, [skillId]: true }));
       setSkillReportError('');
       setSkillTrainingLoading(true);
+      setSkillTrainingVideoLoading(false);
       setSkillTrainingError('');
       setSkillTrainingFeedback(null);
       setSkillTrainingAnswers(['', '', '', '', '']);
@@ -1103,7 +1110,7 @@ function AppInner() {
           skill_id: skillId,
           skill_title: String(skill?.name || skill?.title || '').trim() || null,
           lookback_days: 14,
-          force_refresh: true,
+          force_refresh: forceRefresh,
         }),
       });
       if (!prepareResponse.ok) {
@@ -1116,29 +1123,6 @@ function AppInner() {
       }
 
       const focus = pack?.focus && typeof pack.focus === 'object' ? pack.focus : {};
-      let video = null;
-      try {
-        const videoResponse = await fetch('/api/today/video/recommend', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            initData,
-            skill_id: focus?.skill_id || skillId,
-            skill_title: focus?.skill_name || String(skill?.name || skill?.title || '').trim() || null,
-            main_category: focus?.error_category || null,
-            sub_category: focus?.error_subcategory || null,
-            examples: Array.isArray(pack?.examples_used) ? pack.examples_used.slice(0, 5) : [],
-            lookback_days: 14,
-          }),
-        });
-        if (videoResponse.ok) {
-          const videoData = await videoResponse.json();
-          video = videoData?.video && typeof videoData.video === 'object' ? videoData.video : null;
-        }
-      } catch (error) {
-        // Keep skill training flow functional even if video recommendation fails.
-      }
-
       setSkillTrainingData({
         skill: {
           skill_id: skillId,
@@ -1146,8 +1130,40 @@ function AppInner() {
           mastery: skill?.mastery,
         },
         package: pack,
-        video,
+        video: null,
       });
+      loadSkillReport();
+
+      setSkillTrainingVideoLoading(true);
+      void (async () => {
+        try {
+          const videoResponse = await fetch('/api/today/video/recommend', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              skill_id: focus?.skill_id || skillId,
+              skill_title: focus?.skill_name || String(skill?.name || skill?.title || '').trim() || null,
+              main_category: focus?.error_category || null,
+              sub_category: focus?.error_subcategory || null,
+              examples: Array.isArray(pack?.examples_used) ? pack.examples_used.slice(0, 5) : [],
+              lookback_days: 14,
+            }),
+          });
+          if (!videoResponse.ok) return;
+          const videoData = await videoResponse.json();
+          const video = videoData?.video && typeof videoData.video === 'object' ? videoData.video : null;
+          setSkillTrainingData((prev) => {
+            const prevSkillId = String(prev?.skill?.skill_id || '').trim();
+            if (!prev || prevSkillId !== skillId) return prev;
+            return { ...prev, video };
+          });
+        } catch (error) {
+          // Keep skill training flow functional even if video recommendation fails.
+        } finally {
+          setSkillTrainingVideoLoading(false);
+        }
+      })();
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -1156,6 +1172,7 @@ function AppInner() {
       );
       setSkillTrainingError(friendly);
       setSkillTrainingData(null);
+      setSkillTrainingVideoLoading(false);
       setSelectedSections(new Set());
     } finally {
       setSkillTrainingLoading(false);
@@ -1198,6 +1215,7 @@ function AppInner() {
       }
       const data = await response.json();
       setSkillTrainingFeedback(data?.feedback || null);
+      loadSkillReport();
     } catch (error) {
       setSkillTrainingError(normalizeNetworkErrorMessage(
         error,
@@ -1216,17 +1234,38 @@ function AppInner() {
     if (!videoUrl && !videoId) return;
     setYoutubeInput(videoUrl || `https://youtu.be/${videoId}`);
     setYoutubeForceShowPanel(true);
+    setYoutubeBackSection('skill_training');
     openSingleSectionAndScroll('youtube', youtubeRef);
   };
 
   const finishSkillTraining = () => {
     setSkillTrainingLoading(false);
+    setSkillTrainingVideoLoading(false);
     setSkillTrainingError('');
     setSkillTrainingFeedback(null);
     setSkillTrainingData(null);
     setSkillTrainingAnswers(['', '', '', '', '']);
     goHomeScreen();
   };
+
+  const trackSkillPracticeEvent = useCallback(async (skillId, event, resourceUrl = '') => {
+    const normalizedSkillId = String(skillId || '').trim();
+    if (!initData || !normalizedSkillId || !event) return;
+    try {
+      await fetch(`/api/progress/skills/${encodeURIComponent(normalizedSkillId)}/practice/event`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          event,
+          resource_url: resourceUrl || null,
+        }),
+      });
+      loadSkillReport();
+    } catch (error) {
+      // no-op: UI should not break if event tracking failed
+    }
+  }, [initData, loadSkillReport]);
 
   const regenerateTodayPlan = async () => {
     if (!initData) return;
@@ -1705,6 +1744,8 @@ function AppInner() {
       } else {
         setYoutubeError(tr('Видео по текущему слабому навыку не найдено. Попробуйте обновить план.', 'Kein passendes Video fuer den aktuellen schwachen Skill gefunden. Bitte Plan aktualisieren.'));
       }
+      const backCandidate = Array.from(selectedSections).find((key) => key && key !== 'youtube') || '';
+      setYoutubeBackSection(backCandidate);
       openSingleSectionAndScroll('youtube', youtubeRef);
     }
   };
@@ -2191,6 +2232,25 @@ function AppInner() {
     .slice(0, 3)
     .map((item) => ({ ...item, ring_type: 'best' }));
   const ringSkills = [...weakestSkills, ...strongestSkills];
+  const skillTrainingStatusMap = useMemo(
+    () => (skillReport?.skill_training_status && typeof skillReport.skill_training_status === 'object'
+      ? skillReport.skill_training_status
+      : {}),
+    [skillReport]
+  );
+  const getSkillTrainingStatus = useCallback((skillId) => {
+    const normalized = String(skillId || '').trim();
+    if (!normalized) return null;
+    const value = skillTrainingStatusMap[normalized];
+    if (!value || typeof value !== 'object') return null;
+    return {
+      state: String(value?.state || '').trim().toLowerCase(),
+      is_complete: Boolean(value?.is_complete),
+      opened_count: Number(value?.opened_count || 0),
+      required_count: Number(value?.required_count || 0),
+      practice_submitted: Boolean(value?.practice_submitted),
+    };
+  }, [skillTrainingStatusMap]);
   const ringPalette = ['#ff5d7a', '#ff9d57', '#ffd84d', '#46dca0', '#53c7ff', '#7c9dff'];
   const economicsActionMap = useMemo(() => {
     const rows = Array.isArray(economicsSummary?.breakdown?.by_action_type)
@@ -2351,9 +2411,36 @@ function AppInner() {
     setFlashcardsOnly(false);
     setFlashcardSessionActive(false);
     setSelectedSections(new Set());
+    setYoutubeBackSection('');
     setGlobalPauseReason('');
     setGlobalTimerSuspended(false);
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 60);
+  };
+
+  const getSectionRefByKey = (key) => {
+    if (key === 'translations') return translationsRef;
+    if (key === 'youtube') return youtubeRef;
+    if (key === 'movies') return moviesRef;
+    if (key === 'dictionary') return dictionaryRef;
+    if (key === 'reader') return readerRef;
+    if (key === 'flashcards') return flashcardsRef;
+    if (key === 'assistant') return assistantRef;
+    if (key === 'analytics') return analyticsRef;
+    if (key === 'economics') return economicsRef;
+    if (key === 'subscription') return billingRef;
+    if (key === 'theory') return theoryRef;
+    if (key === 'skill_training') return skillTrainingRef;
+    return null;
+  };
+
+  const goBackFromYoutube = () => {
+    const backKey = String(youtubeBackSection || '').trim();
+    if (!backKey) {
+      goHomeScreen();
+      return;
+    }
+    const backRef = getSectionRefByKey(backKey);
+    openSingleSectionAndScroll(backKey, backRef);
   };
 
   const jumpToDictionaryFromSentence = () => {
@@ -2393,6 +2480,10 @@ function AppInner() {
   };
 
   const handleMenuSelection = (key, ref) => {
+    if (key === 'youtube' && !menuMultiSelect) {
+      const backCandidate = Array.from(selectedSections).find((item) => item && item !== 'youtube') || '';
+      setYoutubeBackSection(backCandidate);
+    }
     setSelectedSections((prev) => {
       if (!menuMultiSelect) {
         return new Set([key]);
@@ -5079,6 +5170,20 @@ function AppInner() {
     }
   };
 
+  const handleSelectionSave = async (text) => {
+    const inReaderImmersive = Boolean(
+      isSectionVisible('reader')
+      && readerHasContent
+      && readerImmersive
+      && !readerArchiveOpen
+    );
+    if (inReaderImmersive) {
+      await handleQuickAddToDictionary(text, { inlineMode: true });
+      return;
+    }
+    await handleSelectionOpenDictionary(text);
+  };
+
   const parseSelectionGptPayload = (explanationRaw, quickTranslationRaw) => {
     const quickTranslation = String(quickTranslationRaw || '').trim();
     const explanation = String(explanationRaw || '').trim();
@@ -6566,7 +6671,10 @@ function AppInner() {
       .replace(/^Original Word:/gim, '<strong>• Original Word:</strong>')
       .replace(/^Possible Synonyms:/gim, '<strong>• Possible Synonyms:</strong>');
 
-    return withSections.replace(/\n/g, '<br />');
+    return withSections
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br />');
   };
 
   const renderFeedback = (feedback) => {
@@ -8547,11 +8655,24 @@ function AppInner() {
                     <div className="skill-rings-legend">
                       {ringSkills.map((skill, index) => {
                         const color = ringPalette[index % ringPalette.length];
+                        const trainingStatus = getSkillTrainingStatus(skill?.skill_id);
+                        const isSkillComplete = Boolean(trainingStatus?.is_complete);
+                        const showSkillInProgress = Boolean(trainingStatus && !isSkillComplete);
                         return (
                           <div className="skill-rings-legend-item" key={`legend-${skill.skill_id}`}>
                             <span className="skill-rings-dot" style={{ backgroundColor: color }} />
                             <div className="skill-rings-text">
-                              <div className="skill-rings-name">{skill.name}</div>
+                              <div className="skill-rings-name">
+                                {skill.name}
+                                {isSkillComplete && (
+                                  <span className="skill-train-status-badge is-complete">✅ {tr('Готово', 'Fertig')}</span>
+                                )}
+                                {showSkillInProgress && (
+                                  <span className="skill-train-status-badge is-progress">
+                                    {tr('в процессе', 'in Arbeit')}
+                                  </span>
+                                )}
+                              </div>
                               <div className="skill-rings-meta">
                                 <span>{skill.ring_type === 'weak' ? tr('Слабый', 'Schwach') : tr('Сильный', 'Stark')}</span>
                                 <span>
@@ -8560,12 +8681,17 @@ function AppInner() {
                                     : `${Math.round(Number(skill.mastery || 0))}%`}
                                 </span>
                                 <span>{tr('Ошибки 7д', 'Fehler 7T')}: {Number(skill.errors_7d || 0)}</span>
+                                {trainingStatus && (
+                                  <span>
+                                    {tr('Ссылки', 'Links')}: {Math.max(0, Number(trainingStatus.opened_count || 0))}/{Math.max(0, Number(trainingStatus.required_count || 0))}
+                                  </span>
+                                )}
                               </div>
                             </div>
                             <button
                               type="button"
                               className="secondary-button skill-rings-train-btn"
-                              onClick={() => startSkillPractice(skill)}
+                              onClick={() => startSkillPractice(skill, { forceRefresh: false })}
                               disabled={Boolean(skillPracticeLoading[String(skill.skill_id || '')])}
                             >
                               {skillPracticeLoading[String(skill.skill_id || '')]
@@ -8603,7 +8729,7 @@ function AppInner() {
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={() => startSkillPractice(skillTrainingData?.skill)}
+                    onClick={() => startSkillPractice(skillTrainingData?.skill, { forceRefresh: true })}
                     disabled={skillTrainingLoading || !skillTrainingData?.skill?.skill_id}
                   >
                     {skillTrainingLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
@@ -8641,6 +8767,11 @@ function AppInner() {
                               href={url}
                               target="_blank"
                               rel="noreferrer"
+                              onClick={() => {
+                                const focusSkillId = String(skillTrainingData?.package?.focus?.skill_id || skillTrainingData?.skill?.skill_id || '').trim();
+                                if (!focusSkillId) return;
+                                trackSkillPracticeEvent(focusSkillId, 'open_resource', url);
+                              }}
                             >
                               <div className="theory-resource-title">🔗 {title}</div>
                               {why && <div className="theory-resource-why">{why}</div>}
@@ -8652,7 +8783,11 @@ function AppInner() {
 
                     <div className="theory-practice-block skill-training-video-block">
                       <h4>{tr('2) Релевантное видео YouTube', '2) Relevantes YouTube-Video')}</h4>
-                      {skillTrainingData?.video?.video_url || skillTrainingData?.video?.video_id ? (
+                      {skillTrainingVideoLoading ? (
+                        <div className="webapp-muted">
+                          {tr('Подбираем видео по теме...', 'Video zum Thema wird geladen...')}
+                        </div>
+                      ) : skillTrainingData?.video?.video_url || skillTrainingData?.video?.video_id ? (
                         <>
                           <div className="webapp-muted">
                             {String(skillTrainingData?.video?.title || tr('Видео по теме найдено', 'Video zum Thema gefunden'))}
@@ -9275,9 +9410,20 @@ function AppInner() {
                     <div className="webapp-local-section-head">
                       <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
                       {isFocusedSection('youtube') && (
-                        <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                          {tr('На главную', 'Startseite')}
-                        </button>
+                        <div className="section-head-nav">
+                          <button
+                            type="button"
+                            className="section-home-back is-compact-arrow"
+                            onClick={goBackFromYoutube}
+                            title={tr('Назад', 'Zurueck')}
+                            aria-label={tr('Назад', 'Zurueck')}
+                          >
+                            ⏪
+                          </button>
+                          <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                            {tr('На главную', 'Startseite')}
+                          </button>
+                        </div>
                       )}
                       {renderTodaySectionTaskHud('youtube')}
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
@@ -11777,7 +11923,7 @@ function AppInner() {
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={() => handleSelectionOpenDictionary(selectionText)}
+                    onClick={() => { void handleSelectionSave(selectionText); }}
                     disabled={dictionaryLoading}
                     style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
                   >
