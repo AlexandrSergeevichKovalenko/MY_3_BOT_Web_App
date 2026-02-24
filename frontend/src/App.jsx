@@ -4416,7 +4416,9 @@ function AppInner() {
     return forward;
   };
 
-  const normalizeLangCode = (value) => String(value || '').trim().toLowerCase();
+  function normalizeLangCode(value) {
+    return String(value || '').trim().toLowerCase();
+  }
   const prependArticleIfNeeded = (text, article, partOfSpeech) => {
     const base = String(text || '').trim();
     const articleText = String(article || '').trim();
