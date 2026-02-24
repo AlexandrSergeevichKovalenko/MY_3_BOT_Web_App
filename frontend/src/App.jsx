@@ -2062,6 +2062,7 @@ function AppInner() {
     return selectedSections.has(key);
   };
   const youtubeSectionVisible = isSectionVisible('youtube');
+  const isSkillTrainingReady = Boolean(skillTrainingData?.package);
 
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
   const readerHasContent = Boolean(String(readerContent || '').trim());
@@ -2373,7 +2374,11 @@ function AppInner() {
   };
 
   const showAllSections = () => {
-    setSelectedSections(new Set(['translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'analytics', 'economics', 'subscription', 'theory']));
+    const next = ['translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'analytics', 'economics', 'subscription', 'theory'];
+    if (isSkillTrainingReady) {
+      next.push('skill_training');
+    }
+    setSelectedSections(new Set(next));
     setMoviesCollapsed(false);
   };
 
@@ -2559,6 +2564,15 @@ function AppInner() {
           <path d="M5 8.5h14v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-9z" fill="none" stroke="currentColor" strokeWidth="1.9" />
           <path d="M8.5 8.5V7a3.5 3.5 0 0 1 7 0v1.5" fill="none" stroke="currentColor" strokeWidth="1.9" />
           <circle cx="12" cy="13.3" r="1.1" fill="currentColor" />
+        </svg>
+      );
+    }
+    if (kind === 'skill_training') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <path d="M4.5 7.2h15v9.6a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2V7.2z" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M8.2 12.2l2.2 2.2 5.4-5.4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M8 4.8h8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
         </svg>
       );
     }
@@ -7771,6 +7785,15 @@ function AppInner() {
                 <span className="menu-icon menu-icon-subscription">{renderMenuIcon('subscription')}</span>
                 <span>{t('menu_billing')}</span>
               </button>
+              <button
+                type="button"
+                className={`menu-item menu-item-skill-training ${selectedSections.has('skill_training') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('skill_training')}
+                disabled={flashcardsOnly || (!isSkillTrainingReady && !selectedSections.has('skill_training'))}
+              >
+                <span className="menu-icon menu-icon-skill-training">{renderMenuIcon('skill_training')}</span>
+                <span>{tr('Тренировка навыка', 'Skill-Training')}</span>
+              </button>
             </div>
             <div className="webapp-menu-actions">
               <div className="language-toggle-wrap">
@@ -7992,6 +8015,15 @@ function AppInner() {
                     >
                       <span className="menu-icon menu-icon-subscription">{renderMenuIcon('subscription')}</span>
                       <span>{t('menu_billing')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item menu-item-skill-training ${selectedSections.has('skill_training') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('skill_training', skillTrainingRef)}
+                      disabled={flashcardsOnly || (!isSkillTrainingReady && !selectedSections.has('skill_training'))}
+                    >
+                      <span className="menu-icon menu-icon-skill-training">{renderMenuIcon('skill_training')}</span>
+                      <span>{tr('Тренировка навыка', 'Skill-Training')}</span>
                     </button>
                   </div>
                   <div className="overlay-actions">
