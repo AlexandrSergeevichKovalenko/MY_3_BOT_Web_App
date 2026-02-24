@@ -1776,12 +1776,30 @@ body {
   position: sticky;
   top: 0;
   z-index: 12;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   padding: 10px 10px 8px;
   background: linear-gradient(180deg, rgba(5, 12, 25, 0.98), rgba(5, 12, 25, 0.82));
-  justify-content: center;
+}
+
+.reader-immersive-left {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.reader-immersive-center {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+}
+
+.reader-immersive-right {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
 }
 
 .reader-immersive-indicator {
@@ -2091,6 +2109,7 @@ body {
   z-index: 140;
   display: grid;
   align-items: end;
+  justify-items: stretch;
 }
 
 .reader-settings-sheet-backdrop {
@@ -2103,6 +2122,8 @@ body {
 .reader-settings-sheet {
   position: relative;
   margin: 0;
+  width: 100%;
+  box-sizing: border-box;
   border-radius: 16px 16px 0 0;
   border: 1px solid rgba(120, 174, 237, 0.24);
   background: rgba(8, 14, 30, 0.98);
@@ -6174,6 +6195,17 @@ body {
   }
   .skill-rings-train-btn {
     grid-column: 2;
+    justify-self: start;
+  }
+}
+
+@media (max-width: 900px) {
+  .reader-immersive-topbar {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: start;
+  }
+
+  .reader-immersive-left .section-home-back {
     justify-self: start;
   }
 }

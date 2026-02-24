@@ -2350,6 +2350,8 @@ function AppInner() {
     setFlashcardsOnly(false);
     setFlashcardSessionActive(false);
     setSelectedSections(new Set());
+    setGlobalPauseReason('');
+    setGlobalTimerSuspended(false);
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 60);
   };
 
@@ -7895,7 +7897,7 @@ function AppInner() {
               </div>
             </div>
 
-            {globalPauseReason && !isSectionVisible('youtube') && (
+            {globalPauseReason && !isSectionVisible('youtube') && !isHomeScreen && (
               <div className="timer-pause-reason-banner">
                 {globalPauseReason}
               </div>
@@ -10103,7 +10105,14 @@ function AppInner() {
                   return (
                     <>
                       <div className="reader-topbar reader-immersive-topbar">
-                        <div className="reader-topbar-left">
+                        <div className="reader-immersive-left">
+                          <div className="reader-topbar-title">
+                            {readerTitle || tr('Читалка', 'Leser')}
+                          </div>
+                          <div className="webapp-muted reader-topbar-meta">
+                            {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
+                            {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
+                          </div>
                           <button
                             type="button"
                             className="section-home-back"
@@ -10116,16 +10125,21 @@ function AppInner() {
                             {tr('← Архив', '← Archiv')}
                           </button>
                         </div>
-                        <div className="reader-topbar-center">
-                          <div className="reader-topbar-title">
-                            {readerTitle || tr('Читалка', 'Leser')}
-                          </div>
-                          <div className="webapp-muted reader-topbar-meta">
-                            {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
-                            {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
-                          </div>
-                        </div>
-                        <div className="reader-topbar-right">
+                        <div className="reader-immersive-center">
+                          <button
+                            type="button"
+                            className={`reader-bookmark-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
+                            onClick={() => {
+                              const mark = computeReaderProgressPercent();
+                              setReaderBookmarkPercent(mark);
+                              if (readerDocumentId) {
+                                syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
+                              }
+                            }}
+                            disabled={!readerContent || !readerDocumentId}
+                          >
+                            🔖
+                          </button>
                           <button
                             type="button"
                             className={`secondary-button ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
@@ -10141,6 +10155,16 @@ function AppInner() {
                           >
                             {readerReadingMode === 'vertical' ? '↕︎' : '↔︎'}
                           </button>
+                        </div>
+                        <div className="reader-immersive-right">
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => setReaderSettingsOpen(true)}
+                            title={tr('Настройки чтения', 'Leseeinstellungen')}
+                          >
+                            ⋯
+                          </button>
                           <button
                             type="button"
                             className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
@@ -10150,28 +10174,6 @@ function AppInner() {
                             {readerTimerPaused
                               ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}`
                               : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
-                          </button>
-                          <button
-                            type="button"
-                            className={`reader-bookmark-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
-                            onClick={() => {
-                              const mark = computeReaderProgressPercent();
-                              setReaderBookmarkPercent(mark);
-                              if (readerDocumentId) {
-                                syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
-                              }
-                            }}
-                            disabled={!readerContent || !readerDocumentId}
-                          >
-                            {tr('Закладка', 'Lesezeichen')}
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            onClick={() => setReaderSettingsOpen(true)}
-                            title={tr('Настройки чтения', 'Leseeinstellungen')}
-                          >
-                            ⋯
                           </button>
                         </div>
                       </div>
