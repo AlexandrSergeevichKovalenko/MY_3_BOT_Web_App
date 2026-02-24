@@ -223,6 +223,12 @@ function AppInner() {
   const [skillReportLoading, setSkillReportLoading] = useState(false);
   const [skillReportError, setSkillReportError] = useState('');
   const [skillPracticeLoading, setSkillPracticeLoading] = useState({});
+  const [skillTrainingLoading, setSkillTrainingLoading] = useState(false);
+  const [skillTrainingError, setSkillTrainingError] = useState('');
+  const [skillTrainingData, setSkillTrainingData] = useState(null);
+  const [skillTrainingAnswers, setSkillTrainingAnswers] = useState(['', '', '', '', '']);
+  const [skillTrainingChecking, setSkillTrainingChecking] = useState(false);
+  const [skillTrainingFeedback, setSkillTrainingFeedback] = useState(null);
   const [weeklyPlan, setWeeklyPlan] = useState(null);
   const [weeklyPlanLoading, setWeeklyPlanLoading] = useState(false);
   const [weeklyPlanSaving, setWeeklyPlanSaving] = useState(false);
@@ -348,6 +354,7 @@ function AppInner() {
 
   const dictionaryRef = useRef(null);
   const theoryRef = useRef(null);
+  const skillTrainingRef = useRef(null);
   const readerRef = useRef(null);
   const readerArticleRef = useRef(null);
   const flashcardsRef = useRef(null);
@@ -1079,40 +1086,143 @@ function AppInner() {
     try {
       setSkillPracticeLoading((prev) => ({ ...prev, [skillId]: true }));
       setSkillReportError('');
-      const response = await fetch(`/api/progress/skills/${encodeURIComponent(skillId)}/practice/start`, {
+      setSkillTrainingLoading(true);
+      setSkillTrainingError('');
+      setSkillTrainingFeedback(null);
+      setSkillTrainingAnswers(['', '', '', '', '']);
+      openSingleSectionAndScroll('skill_training', skillTrainingRef);
+
+      const prepareResponse = await fetch('/api/today/theory/prepare', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, level: selectedLevel }),
+        body: JSON.stringify({
+          initData,
+          skill_id: skillId,
+          skill_title: String(skill?.name || skill?.title || '').trim() || null,
+          lookback_days: 14,
+          force_refresh: true,
+        }),
       });
-      if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка запуска прокачки', 'Fehler beim Start der Skill-Uebung'));
+      if (!prepareResponse.ok) {
+        throw new Error(await readApiError(prepareResponse, 'Ошибка запуска прокачки', 'Fehler beim Start der Skill-Uebung'));
       }
-      const data = await response.json();
-      if (data?.blocked) {
-        setFinishMessage(
-          tr(
-            'Есть активная сессия. Завершите текущую, чтобы начать новую тренировку.',
-            'Es gibt eine aktive Session. Beende die aktuelle, um eine neue Uebung zu starten.'
-          )
-        );
+      const prepareData = await prepareResponse.json();
+      const pack = prepareData?.package && typeof prepareData.package === 'object' ? prepareData.package : null;
+      if (!pack) {
+        throw new Error(tr('Не удалось подготовить тренировку навыка.', 'Skill-Training konnte nicht vorbereitet werden.'));
       }
-      await loadSessionInfo();
-      await loadSentences();
-      openSingleSectionAndScroll('translations', translationsRef);
+
+      const focus = pack?.focus && typeof pack.focus === 'object' ? pack.focus : {};
+      let video = null;
+      try {
+        const videoResponse = await fetch('/api/today/video/recommend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            skill_id: focus?.skill_id || skillId,
+            skill_title: focus?.skill_name || String(skill?.name || skill?.title || '').trim() || null,
+            main_category: focus?.error_category || null,
+            sub_category: focus?.error_subcategory || null,
+            examples: Array.isArray(pack?.examples_used) ? pack.examples_used.slice(0, 5) : [],
+            lookback_days: 14,
+          }),
+        });
+        if (videoResponse.ok) {
+          const videoData = await videoResponse.json();
+          video = videoData?.video && typeof videoData.video === 'object' ? videoData.video : null;
+        }
+      } catch (error) {
+        // Keep skill training flow functional even if video recommendation fails.
+      }
+
+      setSkillTrainingData({
+        skill: {
+          skill_id: skillId,
+          title: String(skill?.name || skill?.title || '').trim() || String(pack?.focus?.skill_name || '').trim(),
+          mastery: skill?.mastery,
+        },
+        package: pack,
+        video,
+      });
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
         'Не удалось запустить тренировку навыка.',
         'Skill-Uebung konnte nicht gestartet werden.'
       );
-      setSkillReportError(friendly);
+      setSkillTrainingError(friendly);
+      setSkillTrainingData(null);
+      setSelectedSections(new Set());
     } finally {
+      setSkillTrainingLoading(false);
       setSkillPracticeLoading((prev) => {
         const next = { ...prev };
         delete next[skillId];
         return next;
       });
     }
+  };
+
+  const checkSkillTraining = async () => {
+    if (!initData || !skillTrainingData?.package) return;
+    const sentences = Array.isArray(skillTrainingData?.package?.practice_sentences)
+      ? skillTrainingData.package.practice_sentences
+      : [];
+    if (!sentences.length) {
+      setSkillTrainingError(tr('Нет предложений для проверки.', 'Keine Saetze zur Pruefung.'));
+      return;
+    }
+    if (skillTrainingAnswers.some((item, index) => index < sentences.length && !String(item || '').trim())) {
+      setSkillTrainingError(tr('Заполните переводы для всех предложений.', 'Bitte alle Uebersetzungen ausfuellen.'));
+      return;
+    }
+    try {
+      setSkillTrainingChecking(true);
+      setSkillTrainingError('');
+      const response = await fetch('/api/today/theory/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          focus: skillTrainingData?.package?.focus || {},
+          native_sentences: sentences,
+          translations: skillTrainingAnswers.slice(0, sentences.length),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка проверки тренировки', 'Fehler beim Pruefen des Trainings'));
+      }
+      const data = await response.json();
+      setSkillTrainingFeedback(data?.feedback || null);
+    } catch (error) {
+      setSkillTrainingError(normalizeNetworkErrorMessage(
+        error,
+        'Не удалось проверить тренировку.',
+        'Training konnte nicht geprueft werden.'
+      ));
+    } finally {
+      setSkillTrainingChecking(false);
+    }
+  };
+
+  const openSkillTrainingVideo = () => {
+    const video = skillTrainingData?.video && typeof skillTrainingData.video === 'object' ? skillTrainingData.video : null;
+    const videoUrl = String(video?.video_url || '').trim();
+    const videoId = String(video?.video_id || '').trim();
+    if (!videoUrl && !videoId) return;
+    setYoutubeInput(videoUrl || `https://youtu.be/${videoId}`);
+    setYoutubeForceShowPanel(true);
+    openSingleSectionAndScroll('youtube', youtubeRef);
+  };
+
+  const finishSkillTraining = () => {
+    setSkillTrainingLoading(false);
+    setSkillTrainingError('');
+    setSkillTrainingFeedback(null);
+    setSkillTrainingData(null);
+    setSkillTrainingAnswers(['', '', '', '', '']);
+    goHomeScreen();
   };
 
   const regenerateTodayPlan = async () => {
@@ -8424,6 +8534,133 @@ function AppInner() {
                         <div className="webapp-muted">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
                       )}
                     </div>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {!flashcardsOnly && isSectionVisible('skill_training') && (
+              <section className="webapp-section theory-section skill-training-section" ref={skillTrainingRef}>
+                <div className="webapp-section-title webapp-section-title-with-logo">
+                  <h2>
+                    {tr('Тренируем навык', 'Skill-Training')}: {String(
+                      skillTrainingData?.package?.focus?.skill_name
+                      || skillTrainingData?.skill?.title
+                      || tr('Навык', 'Skill')
+                    )}
+                  </h2>
+                  <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                    {tr('← Назад', '← Zurueck')}
+                  </button>
+                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                </div>
+                <div className="theory-actions-top">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => startSkillPractice(skillTrainingData?.skill)}
+                    disabled={skillTrainingLoading || !skillTrainingData?.skill?.skill_id}
+                  >
+                    {skillTrainingLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
+                  </button>
+                  <button type="button" className="primary-button" onClick={finishSkillTraining}>
+                    {tr('Закончить тренировку навыка', 'Skill-Training beenden')}
+                  </button>
+                </div>
+
+                {skillTrainingLoading && <div className="webapp-muted">{tr('Готовим тренировку навыка...', 'Skill-Training wird vorbereitet...')}</div>}
+                {skillTrainingError && <div className="webapp-error">{skillTrainingError}</div>}
+
+                {!skillTrainingLoading && !skillTrainingError && skillTrainingData?.package && (
+                  <div className="theory-card">
+                    <div className="theory-focus-line">
+                      <strong>{tr('Фокус', 'Fokus')}:</strong>{' '}
+                      {String(skillTrainingData?.package?.focus?.skill_name || '')}
+                      {skillTrainingData?.package?.focus?.error_subcategory
+                        ? ` • ${String(skillTrainingData.package.focus.error_subcategory)}`
+                        : ''}
+                    </div>
+
+                    <div className="theory-resources">
+                      <h4>{tr('1) Теория по теме (2 ссылки)', '1) Theorie zum Thema (2 Links)')}</h4>
+                      {Array.isArray(skillTrainingData?.package?.theory?.resources)
+                        && skillTrainingData.package.theory.resources.slice(0, 2).map((item, index) => {
+                          const title = String(item?.title || '').trim();
+                          const url = String(item?.url || '').trim();
+                          const why = String(item?.why || '').trim();
+                          if (!title || !url) return null;
+                          return (
+                            <a
+                              key={`skill-training-resource-${index}`}
+                              className="theory-resource-item"
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <div className="theory-resource-title">🔗 {title}</div>
+                              {why && <div className="theory-resource-why">{why}</div>}
+                              <div className="theory-resource-url">{url}</div>
+                            </a>
+                          );
+                        })}
+                    </div>
+
+                    <div className="theory-practice-block skill-training-video-block">
+                      <h4>{tr('2) Релевантное видео YouTube', '2) Relevantes YouTube-Video')}</h4>
+                      {skillTrainingData?.video?.video_url || skillTrainingData?.video?.video_id ? (
+                        <>
+                          <div className="webapp-muted">
+                            {String(skillTrainingData?.video?.title || tr('Видео по теме найдено', 'Video zum Thema gefunden'))}
+                          </div>
+                          <button type="button" className="primary-button" onClick={openSkillTrainingVideo}>
+                            {tr('Открыть видео', 'Video oeffnen')}
+                          </button>
+                        </>
+                      ) : (
+                        <div className="webapp-muted">
+                          {tr('Видео по теме пока не найдено. Нажмите «Обновить».', 'Video zum Thema wurde noch nicht gefunden. Klicke auf „Aktualisieren“.')}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="theory-practice-block">
+                      <h4>{tr('3) Практика: 5 предложений', '3) Uebung: 5 Saetze')}</h4>
+                      {(skillTrainingData?.package?.practice_sentences || []).map((sentence, index) => (
+                        <label key={`skill-training-practice-${index}`} className="webapp-field">
+                          <span>{index + 1}. {String(sentence || '')}</span>
+                          <textarea
+                            rows={2}
+                            value={skillTrainingAnswers[index] || ''}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setSkillTrainingAnswers((prev) => prev.map((item, idx) => (idx === index ? value : item)));
+                            }}
+                            placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
+                          />
+                        </label>
+                      ))}
+                      <button type="button" className="primary-button" onClick={checkSkillTraining} disabled={skillTrainingChecking}>
+                        {skillTrainingChecking ? tr('Проверяем...', 'Pruefen...') : tr('Проверить', 'Pruefen')}
+                      </button>
+                    </div>
+
+                    {skillTrainingFeedback && (
+                      <div className="theory-feedback">
+                        <h4>{tr('Обратная связь', 'Feedback')}</h4>
+                        {(skillTrainingFeedback?.items || []).map((row, index) => (
+                          <div className="theory-feedback-item" key={`skill-training-feedback-${index}`}>
+                            <div><strong>{index + 1}. {String(row?.native_sentence || '')}</strong></div>
+                            <div>{tr('Ваш перевод', 'Deine Uebersetzung')}: {String(row?.learner_translation || '')}</div>
+                            <div>{tr('Статус', 'Status')}: {row?.is_correct ? tr('Верно', 'Korrekt') : tr('Нужно исправить', 'Korrigieren')}</div>
+                            {row?.corrected_translation && <div>{tr('Исправленный вариант', 'Korrigierte Version')}: {String(row.corrected_translation)}</div>}
+                            {row?.what_is_good && <div>{tr('Что хорошо', 'Was gut ist')}: {String(row.what_is_good)}</div>}
+                            {row?.what_is_wrong && <div>{tr('Что не так', 'Was falsch ist')}: {String(row.what_is_wrong)}</div>}
+                            {row?.missed_rule && <div>{tr('Правило', 'Regel')}: {String(row.missed_rule)}</div>}
+                            {row?.tip && <div>{tr('Совет', 'Tipp')}: {String(row.tip)}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </section>

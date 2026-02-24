@@ -5678,6 +5678,11 @@ body {
   background: rgba(12, 20, 40, 0.74);
 }
 
+.skill-training-section {
+  border-color: rgba(125, 236, 255, 0.28);
+  background: linear-gradient(165deg, rgba(8, 22, 48, 0.78), rgba(12, 20, 40, 0.72));
+}
+
 .theory-actions-top {
   display: flex;
   gap: 8px;
@@ -5769,6 +5774,11 @@ body {
   background: rgba(8, 15, 30, 0.58);
   display: grid;
   gap: 8px;
+}
+
+.skill-training-video-block {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(7, 23, 45, 0.72);
 }
 
 .theory-feedback {
