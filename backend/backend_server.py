@@ -337,6 +337,8 @@ SEPARABLE_PREFIX_QUIZ_SHARE = max(0.0, min(1.0, float(os.getenv("SEPARABLE_PREFI
 SEPARABLE_PREFIX_QUIZ_CACHE_TTL_SEC = max(60, int(os.getenv("SEPARABLE_PREFIX_QUIZ_CACHE_TTL_SEC") or "86400"))
 SEPARABLE_PREFIX_QUIZ_TOPICS = ("finance", "work", "travel", "daily_life", "communication", "study")
 _SEPARABLE_PREFIX_QUIZ_CACHE: dict[str, dict] = {}
+TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+FSRS_PROFILING_ENABLED = str(os.getenv("FSRS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
@@ -1115,6 +1117,7 @@ def _build_next_srs_payload(
     source_lang: str,
     target_lang: str,
     now_utc: datetime,
+    include_queue_info: bool = True,
 ) -> dict:
     due_payload = get_next_due_srs_card(
         user_id=user_id,
@@ -1124,12 +1127,25 @@ def _build_next_srs_payload(
     )
     card_payload = None
     srs_payload = None
-    queue_info = _compute_srs_queue_info(
-        user_id=user_id,
-        now_utc=now_utc,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
+    if include_queue_info:
+        queue_info = _compute_srs_queue_info(
+            user_id=user_id,
+            now_utc=now_utc,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    else:
+        introduced_today = count_new_cards_introduced_today(
+            user_id=user_id,
+            now_utc=now_utc,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        queue_info = {
+            "due_count": 0,
+            "new_remaining_today": max(NEW_PER_DAY - int(introduced_today or 0), 0),
+            "available_new_total": 0,
+        }
 
     if due_payload:
         card_payload = due_payload.get("card")
@@ -9426,6 +9442,83 @@ def record_webapp_flashcard_answer():
 
 @app.route("/api/cards/next", methods=["GET"])
 def get_next_srs_card():
+    started_at = time.perf_counter()
+    stage_marks: dict[str, float] = {"start": started_at}
+    had_error = False
+    user_id: int | None = None
+
+    def mark(stage_name: str) -> None:
+        stage_marks[stage_name] = time.perf_counter()
+
+    def log_profile(user_id_value: int | None, error_text: str | None = None) -> None:
+        if not FSRS_PROFILING_ENABLED:
+            return
+        try:
+            end_ts = time.perf_counter()
+            ordered = [("start", stage_marks.get("start", started_at))]
+            for key in ("parsed", "validated", "lang_pair", "build_next"):
+                if key in stage_marks:
+                    ordered.append((key, stage_marks[key]))
+            ordered.append(("end", end_ts))
+            prev = ordered[0][1] or started_at
+            parts = []
+            for name, ts in ordered[1:]:
+                parts.append(f"{name}={int((ts - prev) * 1000)}ms")
+                prev = ts
+            total_ms = int((end_ts - started_at) * 1000)
+            logging.info(
+                "FSRS next profile: user_id=%s total=%sms %s%s",
+                user_id_value,
+                total_ms,
+                " ".join(parts),
+                f" error={error_text}" if error_text else "",
+            )
+        except Exception:
+            logging.debug("Failed to log FSRS next profile", exc_info=True)
+
+    init_data = request.args.get("initData") or request.headers.get("X-Telegram-Init-Data")
+    mark("parsed")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+
+    user_id, _username = _extract_webapp_user_from_init_data(init_data)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку или user_id отсутствует"}), 401
+    if not _is_webapp_user_allowed(int(user_id)):
+        return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
+    mark("validated")
+
+    try:
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        mark("lang_pair")
+        now_utc = datetime.now(timezone.utc)
+
+        payload_next = _build_next_srs_payload(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            now_utc=now_utc,
+        )
+        mark("build_next")
+
+        return jsonify(
+            {
+                "ok": True,
+                **payload_next,
+                "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            }
+        )
+    except Exception as exc:
+        had_error = True
+        log_profile(int(user_id) if user_id else None, error_text=str(exc))
+        raise
+    finally:
+        if not had_error:
+            log_profile(int(user_id) if user_id else None, error_text=None)
+
+
+@app.route("/api/cards/prefetch", methods=["GET"])
+def get_srs_prefetch_cards():
     init_data = request.args.get("initData") or request.headers.get("X-Telegram-Init-Data")
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -9439,17 +9532,123 @@ def get_next_srs_card():
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     now_utc = datetime.now(timezone.utc)
 
-    payload_next = _build_next_srs_payload(
-        user_id=int(user_id),
-        source_lang=source_lang,
-        target_lang=target_lang,
-        now_utc=now_utc,
-    )
+    try:
+        queue_info = _compute_srs_queue_info(
+            user_id=int(user_id),
+            now_utc=now_utc,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        due_count = max(0, int(queue_info.get("due_count") or 0))
+        new_remaining_today = max(0, int(queue_info.get("new_remaining_today") or 0))
+        max_items = max(1, min(200, due_count + new_remaining_today))
+
+        due_limit = min(due_count, max_items)
+        new_limit = min(new_remaining_today, max(0, max_items - due_limit))
+        cards: list[dict] = []
+
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                if due_limit > 0:
+                    cursor.execute(
+                        """
+                        SELECT
+                            s.card_id,
+                            q.word_ru,
+                            q.translation_de,
+                            q.word_de,
+                            q.translation_ru,
+                            q.response_json,
+                            q.source_lang,
+                            q.target_lang
+                        FROM bt_3_card_srs_state s
+                        JOIN bt_3_webapp_dictionary_queries q
+                          ON q.id = s.card_id
+                         AND q.user_id = s.user_id
+                        WHERE s.user_id = %s
+                          AND s.status <> 'suspended'
+                          AND s.due_at <= %s
+                          AND q.source_lang = %s
+                          AND q.target_lang = %s
+                        ORDER BY s.due_at ASC
+                        LIMIT %s;
+                        """,
+                        (int(user_id), now_utc, source_lang, target_lang, int(due_limit)),
+                    )
+                    for row in cursor.fetchall():
+                        cards.append(
+                            {
+                                "id": row[0],
+                                "word_ru": row[1],
+                                "translation_de": row[2],
+                                "word_de": row[3],
+                                "translation_ru": row[4],
+                                "response_json": row[5],
+                                "source_lang": row[6],
+                                "target_lang": row[7],
+                            }
+                        )
+
+                if new_limit > 0:
+                    cursor.execute(
+                        """
+                        SELECT
+                            q.id,
+                            q.word_ru,
+                            q.translation_de,
+                            q.word_de,
+                            q.translation_ru,
+                            q.response_json,
+                            q.source_lang,
+                            q.target_lang
+                        FROM bt_3_webapp_dictionary_queries q
+                        LEFT JOIN bt_3_card_srs_state s
+                          ON s.user_id = q.user_id
+                         AND s.card_id = q.id
+                        WHERE q.user_id = %s
+                          AND s.id IS NULL
+                          AND q.source_lang = %s
+                          AND q.target_lang = %s
+                        ORDER BY q.created_at ASC
+                        LIMIT %s;
+                        """,
+                        (int(user_id), source_lang, target_lang, int(new_limit)),
+                    )
+                    for row in cursor.fetchall():
+                        cards.append(
+                            {
+                                "id": row[0],
+                                "word_ru": row[1],
+                                "translation_de": row[2],
+                                "word_de": row[3],
+                                "translation_ru": row[4],
+                                "response_json": row[5],
+                                "source_lang": row[6],
+                                "target_lang": row[7],
+                            }
+                        )
+
+        direction = f"{source_lang}-{target_lang}"
+        decorated_items = [
+            _decorate_dictionary_item(
+                item if isinstance(item, dict) else {},
+                source_lang=source_lang,
+                target_lang=target_lang,
+                direction=direction,
+            )
+            for item in cards
+        ]
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка prefetch карточек: {exc}"}), 500
 
     return jsonify(
         {
             "ok": True,
-            **payload_next,
+            "items": decorated_items,
+            "queue_info": {
+                "due_count": due_count,
+                "new_remaining_today": new_remaining_today,
+            },
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
@@ -9457,11 +9656,45 @@ def get_next_srs_card():
 
 @app.route("/api/cards/review", methods=["POST"])
 def review_srs_card():
+    started_at = time.perf_counter()
+    stage_marks: dict[str, float] = {"start": started_at}
+
+    def mark(stage_name: str) -> None:
+        stage_marks[stage_name] = time.perf_counter()
+
+    def log_profile(user_id_value: int | None, card_id_value: int | None, error_text: str | None = None) -> None:
+        if not FSRS_PROFILING_ENABLED:
+            return
+        try:
+            end_ts = time.perf_counter()
+            ordered = [("start", stage_marks.get("start", started_at))]
+            for key in ("parsed", "validated", "lang_pair", "db_write", "build_next"):
+                if key in stage_marks:
+                    ordered.append((key, stage_marks[key]))
+            ordered.append(("end", end_ts))
+            prev = ordered[0][1] or started_at
+            parts = []
+            for name, ts in ordered[1:]:
+                parts.append(f"{name}={int((ts - prev) * 1000)}ms")
+                prev = ts
+            total_ms = int((end_ts - started_at) * 1000)
+            logging.info(
+                "FSRS review profile: user_id=%s card_id=%s total=%sms %s%s",
+                user_id_value,
+                card_id_value,
+                total_ms,
+                " ".join(parts),
+                f" error={error_text}" if error_text else "",
+            )
+        except Exception:
+            logging.debug("Failed to log FSRS review profile", exc_info=True)
+
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     card_id = payload.get("card_id")
     rating_raw = payload.get("rating")
     response_ms = payload.get("response_ms")
+    mark("parsed")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -9475,7 +9708,9 @@ def review_srs_card():
         return jsonify({"error": "initData не прошёл проверку или user_id отсутствует"}), 401
     if not _is_webapp_user_allowed(int(user_id)):
         return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
+    mark("validated")
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    mark("lang_pair")
 
     reviewed_at = datetime.now(timezone.utc)
     card_id = int(card_id)
@@ -9539,9 +9774,12 @@ def review_srs_card():
                     interval_days_after=scheduled.interval_days,
                     cursor=cursor,
                 )
+        mark("db_write")
     except ValueError as exc:
+        log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, error_text=str(exc))
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
+        log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, error_text=str(exc))
         return jsonify({"error": f"Ошибка review: {exc}"}), 500
 
     interval_days = int(persisted.get("interval_days") or 0)
@@ -9551,7 +9789,10 @@ def review_srs_card():
         source_lang=source_lang,
         target_lang=target_lang,
         now_utc=datetime.now(timezone.utc),
+        include_queue_info=False,
     )
+    mark("build_next")
+    log_profile(int(user_id), int(card_id), error_text=None)
     return jsonify(
         {
             "ok": True,
@@ -9724,11 +9965,50 @@ def set_flashcard_feel_feedback():
 
 @app.route("/api/webapp/tts", methods=["POST"])
 def webapp_tts():
+    started_at = time.perf_counter()
+    stage_marks: dict[str, float] = {"start": started_at}
+    had_error = False
+
+    def mark(stage_name: str) -> None:
+        stage_marks[stage_name] = time.perf_counter()
+
+    def _log_tts_profile(user_id_value: int | None, normalized_text: str, cached: bool, error_text: str | None = None) -> None:
+        if not TTS_PROFILING_ENABLED:
+            return
+        try:
+            end_ts = time.perf_counter()
+            points = {"start": started_at, **stage_marks, "end": end_ts}
+            ordered = [("start", points.get("start"))]
+            for key in ("parsed", "validated", "db_cache_hit", "synth_done", "cache_saved"):
+                if key in points:
+                    ordered.append((key, points[key]))
+            ordered.append(("end", end_ts))
+            prev = ordered[0][1] or started_at
+            parts = []
+            for name, ts in ordered[1:]:
+                if ts is None:
+                    continue
+                parts.append(f"{name}={int((ts - prev) * 1000)}ms")
+                prev = ts
+            total_ms = int((end_ts - started_at) * 1000)
+            logging.info(
+                "TTS profile: user_id=%s cached=%s chars=%s total=%sms %s%s",
+                user_id_value,
+                cached,
+                len(normalized_text),
+                total_ms,
+                " ".join(parts),
+                f" error={error_text}" if error_text else "",
+            )
+        except Exception:
+            logging.debug("Failed to log TTS profile", exc_info=True)
+
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     text = (payload.get("text") or "").strip()
     language = (payload.get("language") or "de-DE").strip()
     voice = (payload.get("voice") or "de-DE-Neural2-C").strip()
+    mark("parsed")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -9743,6 +10023,7 @@ def webapp_tts():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    mark("validated")
 
     speaking_rate = 0.95
     normalized = _normalize_utterance_text(text)
@@ -9752,6 +10033,7 @@ def webapp_tts():
     try:
         cached_audio = get_tts_audio_cache(cache_key)
         if cached_audio:
+            mark("db_cache_hit")
             _billing_log_event_safe(
                 user_id=int(user_id),
                 action_type="webapp_tts_chars",
@@ -9777,6 +10059,7 @@ def webapp_tts():
             voice=voice,
             speed=speaking_rate,
         )
+        mark("synth_done")
         try:
             upsert_tts_audio_cache(
                 cache_key=cache_key,
@@ -9786,6 +10069,7 @@ def webapp_tts():
                 source_text=normalized,
                 audio_mp3=response_audio,
             )
+            mark("cache_saved")
         except Exception as exc:
             logging.warning("Failed to persist webapp TTS cache: %s", exc)
         _billing_log_event_safe(
@@ -9807,7 +10091,31 @@ def webapp_tts():
             download_name="tts.mp3",
         )
     except Exception as exc:
+        had_error = True
+        _log_tts_profile(
+            user_id_value=int(user_id) if user_id else None,
+            normalized_text=_normalize_utterance_text(text),
+            cached=False,
+            error_text=str(exc),
+        )
         return jsonify({"error": f"TTS error: {exc}"}), 500
+    finally:
+        if request.method == "POST" and not had_error:
+            # If response returned from cache/synthesis without exception, log success profile.
+            if "db_cache_hit" in stage_marks:
+                _log_tts_profile(
+                    user_id_value=int(user_id) if user_id else None,
+                    normalized_text=normalized,
+                    cached=True,
+                    error_text=None,
+                )
+            elif "synth_done" in stage_marks:
+                _log_tts_profile(
+                    user_id_value=int(user_id) if user_id else None,
+                    normalized_text=normalized,
+                    cached=False,
+                    error_text=None,
+                )
 
 
 @app.route("/api/webapp/flashcards/enrich", methods=["POST"])

@@ -380,7 +380,11 @@ function AppInner() {
   const flashcardRoundStartRef = useRef(Date.now());
   const blocksMenuRef = useRef(null);
   const srsShownAtRef = useRef(null);
+  const srsAutoTtsPlayedRef = useRef('');
+  const srsTtsPrefetchSignatureRef = useRef('');
   const ttsCacheRef = useRef(new Map());
+  const ttsInFlightRef = useRef(new Map());
+  const ttsBlobUrlsRef = useRef(new Set());
   const ttsLastRef = useRef({ key: '', ts: 0 });
   const ttsCurrentAudioRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -714,7 +718,9 @@ function AppInner() {
 
   const playTts = async (text, language = 'de-DE') => {
     if (!initData || !text) return Promise.resolve();
-    const key = `${language}:${text}`;
+    const normalizedText = String(text || '').trim();
+    if (!normalizedText) return Promise.resolve();
+    const key = `${language}:${normalizedText}`;
     const now = Date.now();
     if (ttsLastRef.current.key === key && now - ttsLastRef.current.ts < 1200) {
       return Promise.resolve();
@@ -738,7 +744,7 @@ function AppInner() {
         return;
       }
       try {
-        const utterance = new SpeechSynthesisUtterance(text);
+        const utterance = new SpeechSynthesisUtterance(normalizedText);
         utterance.lang = language;
         utterance.rate = 0.95;
         utterance.onend = () => resolve();
@@ -754,20 +760,47 @@ function AppInner() {
       const audio = ttsCacheRef.current.get(key);
       return playAudio(audio);
     }
-    try {
-      const response = await fetch('/api/webapp/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, text, language }),
-      });
-      if (!response.ok) {
-        throw new Error(await response.text());
+
+    const fetchAndCacheTts = async () => {
+      if (ttsCacheRef.current.has(key)) {
+        return ttsCacheRef.current.get(key);
       }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      ttsCacheRef.current.set(key, audio);
-      return playAudio(audio);
+      if (ttsInFlightRef.current.has(key)) {
+        return ttsInFlightRef.current.get(key);
+      }
+      const requestPromise = (async () => {
+        const response = await fetch('/api/webapp/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, text: normalizedText, language }),
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        ttsBlobUrlsRef.current.add(url);
+        const audio = new Audio(url);
+        ttsCacheRef.current.set(key, audio);
+        return audio;
+      })()
+        .finally(() => {
+          ttsInFlightRef.current.delete(key);
+        });
+      ttsInFlightRef.current.set(key, requestPromise);
+      return requestPromise;
+    };
+
+    try {
+      const fastResult = await Promise.race([
+        fetchAndCacheTts().then((audio) => ({ audio })),
+        new Promise((resolve) => setTimeout(() => resolve({ audio: null }), 450)),
+      ]);
+      if (fastResult?.audio) {
+        return playAudio(fastResult.audio);
+      }
+      void fetchAndCacheTts().catch(() => {});
+      return playWebSpeech();
     } catch (error) {
       console.warn('TTS error', error);
       return playWebSpeech();
@@ -891,6 +924,71 @@ function AppInner() {
     }
     return resolveFlashcardTexts(entry).targetText;
   };
+
+  const preloadTts = useCallback((text, language = 'de-DE') => {
+    if (!initData) return;
+    const normalizedText = String(text || '').trim();
+    if (!normalizedText) return;
+    const key = `${language}:${normalizedText}`;
+    if (ttsCacheRef.current.has(key) || ttsInFlightRef.current.has(key)) return;
+    const requestPromise = (async () => {
+      const response = await fetch('/api/webapp/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, text: normalizedText, language }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      ttsBlobUrlsRef.current.add(url);
+      const audio = new Audio(url);
+      ttsCacheRef.current.set(key, audio);
+      return audio;
+    })()
+      .catch(() => null)
+      .finally(() => {
+        ttsInFlightRef.current.delete(key);
+      });
+    ttsInFlightRef.current.set(key, requestPromise);
+  }, [initData]);
+
+  useEffect(() => {
+    const locale = getLearningTtsLocale();
+    flashcards.slice(0, 8).forEach((item) => {
+      const german = resolveFlashcardGerman(item);
+      if (german) preloadTts(german, locale);
+    });
+  }, [flashcards, languageProfile?.learning_language, preloadTts]);
+
+  useEffect(() => {
+    const toPrefetch = [];
+    const sourceText = String(
+      dictionaryResult?.source_text
+      || dictionaryResult?.word_de
+      || dictionaryResult?.translation_de
+      || ''
+    ).trim();
+    const targetText = String(
+      dictionaryResult?.target_text
+      || dictionaryResult?.translation_de
+      || dictionaryResult?.word_de
+      || ''
+    ).trim();
+    if (sourceText) toPrefetch.push(sourceText);
+    if (targetText && targetText !== sourceText) toPrefetch.push(targetText);
+    const locale = getLearningTtsLocale();
+    toPrefetch.slice(0, 2).forEach((text) => preloadTts(text, locale));
+  }, [dictionaryResult, languageProfile?.learning_language, preloadTts]);
+
+  useEffect(() => {
+    const locale = getLearningTtsLocale();
+    results.slice(0, 6).forEach((item) => {
+      const correct = extractCorrectTranslationText(item);
+      if (correct) preloadTts(correct, locale);
+    });
+  }, [results, languageProfile?.learning_language, preloadTts]);
 
   const loadSrsNextCard = async () => {
     if (!initData) return;
@@ -1947,7 +2045,14 @@ function AppInner() {
       if (data?.next && typeof data.next === 'object') {
         setSrsCard(data.next.card || null);
         setSrsState(data.next.srs || null);
-        setSrsQueueInfo(data.next.queue_info || { due_count: 0, new_remaining_today: 0 });
+        if (data.next.queue_info && typeof data.next.queue_info === 'object') {
+          setSrsQueueInfo(data.next.queue_info || { due_count: 0, new_remaining_today: 0 });
+        } else {
+          setSrsQueueInfo((prev) => ({
+            ...prev,
+            due_count: Math.max(0, Number(prev?.due_count || 0) - 1),
+          }));
+        }
         srsShownAtRef.current = Date.now();
       } else {
         await loadSrsNextCard();
@@ -1979,6 +2084,21 @@ function AppInner() {
       window.clearInterval(intervalId);
     };
   }, [srsRevealAnswer, srsCard, srsRevealStartedAt]);
+
+  useEffect(() => {
+    if (!srsRevealAnswer || !srsCard) return;
+    const key = String(srsCard?.id || srsCard?.entry_id || '');
+    if (!key) return;
+    if (srsAutoTtsPlayedRef.current === key) return;
+    const answerText = getDictionarySourceTarget(
+      srsCard,
+      (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de'
+    ).targetText || '';
+    const langCode = detectTtsLangFromText(answerText);
+    const locale = getTtsLocaleForLang(langCode);
+    srsAutoTtsPlayedRef.current = key;
+    void playTts(answerText, locale);
+  }, [srsRevealAnswer, srsCard, dictionaryDirection, languageProfile?.learning_language, languageProfile?.native_language]);
 
   const loadLanguageProfile = async () => {
     if (!initData) return;
@@ -3685,6 +3805,61 @@ function AppInner() {
     setSrsError('');
     loadSrsNextCard();
   }, [initData, flashcardsOnly, selectedSections, languageProfile?.native_language, languageProfile?.learning_language]);
+
+  useEffect(() => {
+    if (!initData || flashcardsOnly || !isSectionVisible('flashcards')) return;
+    const dueCount = Math.max(0, Number(srsQueueInfo?.due_count || 0));
+    const newCount = Math.max(0, Number(srsQueueInfo?.new_remaining_today || 0));
+    const activeCardId = String(srsCard?.id || srsCard?.entry_id || '');
+    if (dueCount + newCount <= 0 && !activeCardId) return;
+
+    const signature = `${activeCardId}:${dueCount}:${newCount}`;
+    if (srsTtsPrefetchSignatureRef.current === signature) return;
+    srsTtsPrefetchSignatureRef.current = signature;
+
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const response = await fetch(`/api/cards/prefetch?initData=${encodeURIComponent(initData)}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        const items = Array.isArray(data?.items) ? data.items : [];
+        const queue = [];
+        if (srsCard) queue.push(srsCard);
+        queue.push(...items);
+        const seenIds = new Set();
+        for (const item of queue) {
+          if (cancelled) return;
+          const itemId = String(item?.id || item?.entry_id || '');
+          if (itemId && seenIds.has(itemId)) continue;
+          if (itemId) seenIds.add(itemId);
+          const direction = (item?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
+          const targetText = String(getDictionarySourceTarget(item, direction).targetText || '').trim();
+          if (!targetText) continue;
+          const locale = getTtsLocaleForLang(detectTtsLangFromText(targetText));
+          preloadTts(targetText, locale);
+        }
+      } catch (error) {
+        console.warn('FSRS TTS prefetch failed', error);
+      }
+    };
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    initData,
+    flashcardsOnly,
+    selectedSections,
+    srsQueueInfo?.due_count,
+    srsQueueInfo?.new_remaining_today,
+    srsCard?.id,
+    srsCard?.entry_id,
+    languageProfile?.native_language,
+    languageProfile?.learning_language,
+    preloadTts,
+  ]);
 
   useEffect(() => {
     if (!flashcardSessionActive) {
