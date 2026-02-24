@@ -99,6 +99,10 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     spacy = None
 try:
+    import argostranslate.translate as argos_translate
+except Exception:  # pragma: no cover - optional dependency
+    argos_translate = None
+try:
     from pypdf import PdfReader
 except Exception:  # pragma: no cover - optional dependency
     PdfReader = None
@@ -320,6 +324,19 @@ APP_BASE_URL = (os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
 BACKEND_BASE_URL = (os.getenv("BACKEND_BASE_URL") or "").strip().rstrip("/")
 DEEPL_AUTH_KEY = (os.getenv("DEEPL_AUTH_KEY") or "").strip()
 LIBRETRANSLATE_URL = (os.getenv("LIBRETRANSLATE_URL") or "").strip().rstrip("/")
+AZURE_TRANSLATOR_KEY = (os.getenv("AZURE_TRANSLATOR_KEY") or "").strip()
+AZURE_TRANSLATOR_REGION = (os.getenv("AZURE_TRANSLATOR_REGION") or "").strip()
+AZURE_TRANSLATOR_ENDPOINT = (
+    os.getenv("AZURE_TRANSLATOR_ENDPOINT") or "https://api.cognitive.microsofttranslator.com"
+).strip().rstrip("/")
+GOOGLE_TRANSLATE_API_KEY = (os.getenv("GOOGLE_TRANSLATE_API_KEY") or "").strip()
+ARGOS_TRANSLATE_ENABLED = str(os.getenv("ARGOS_TRANSLATE_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
+OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+OPENAI_QUIZ_MODEL = (os.getenv("OPENAI_QUIZ_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini").strip()
+SEPARABLE_PREFIX_QUIZ_SHARE = max(0.0, min(1.0, float(os.getenv("SEPARABLE_PREFIX_QUIZ_SHARE") or "0.35")))
+SEPARABLE_PREFIX_QUIZ_CACHE_TTL_SEC = max(60, int(os.getenv("SEPARABLE_PREFIX_QUIZ_CACHE_TTL_SEC") or "86400"))
+SEPARABLE_PREFIX_QUIZ_TOPICS = ("finance", "work", "travel", "daily_life", "communication", "study")
+_SEPARABLE_PREFIX_QUIZ_CACHE: dict[str, dict] = {}
 
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
@@ -3080,6 +3097,396 @@ def _quick_translate_mymemory(text: str, source_lang: str | None, target_lang: s
         "provider": "mymemory",
         "detected_source_lang": None,
     }
+
+
+def _quick_translate_azure(text: str, source_lang: str | None, target_lang: str) -> dict:
+    if not AZURE_TRANSLATOR_KEY:
+        raise RuntimeError("AZURE_TRANSLATOR_KEY not configured")
+    endpoint = f"{AZURE_TRANSLATOR_ENDPOINT}/translate"
+    target = _normalize_short_lang_code(target_lang, fallback="de")
+    source = _normalize_short_lang_code(source_lang, fallback="") if source_lang else ""
+    params = {
+        "api-version": "3.0",
+        "to": target,
+    }
+    if source:
+        params["from"] = source
+    headers = {
+        "Ocp-Apim-Subscription-Key": AZURE_TRANSLATOR_KEY,
+        "Content-Type": "application/json",
+    }
+    if AZURE_TRANSLATOR_REGION:
+        headers["Ocp-Apim-Subscription-Region"] = AZURE_TRANSLATOR_REGION
+    resp = requests.post(
+        endpoint,
+        params=params,
+        headers=headers,
+        json=[{"text": str(text or "")}],
+        timeout=10,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
+    data = resp.json() if resp.content else []
+    item = data[0] if isinstance(data, list) and data else {}
+    translations = item.get("translations") if isinstance(item, dict) else []
+    translated = str((translations[0] or {}).get("text") or "").strip() if isinstance(translations, list) and translations else ""
+    if not translated:
+        raise RuntimeError("Empty translation from Azure Translator")
+    detected = None
+    if isinstance(item, dict):
+        detected_obj = item.get("detectedLanguage")
+        if isinstance(detected_obj, dict):
+            detected = _normalize_short_lang_code(detected_obj.get("language"), fallback="") or None
+    return {
+        "translation": translated,
+        "provider": "azure_translator",
+        "detected_source_lang": detected,
+    }
+
+
+def _quick_translate_google(text: str, source_lang: str | None, target_lang: str) -> dict:
+    if not GOOGLE_TRANSLATE_API_KEY:
+        raise RuntimeError("GOOGLE_TRANSLATE_API_KEY not configured")
+    target = _normalize_short_lang_code(target_lang, fallback="de")
+    source = _normalize_short_lang_code(source_lang, fallback="") if source_lang else ""
+    payload = {
+        "q": str(text or ""),
+        "target": target,
+        "format": "text",
+        "key": GOOGLE_TRANSLATE_API_KEY,
+    }
+    if source:
+        payload["source"] = source
+    resp = requests.post(
+        "https://translation.googleapis.com/language/translate/v2",
+        data=payload,
+        timeout=10,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
+    data = resp.json() if resp.content else {}
+    translations = ((data.get("data") or {}).get("translations") or []) if isinstance(data, dict) else []
+    item = translations[0] if isinstance(translations, list) and translations else {}
+    translated = html.unescape(str(item.get("translatedText") or "").strip()) if isinstance(item, dict) else ""
+    if not translated:
+        raise RuntimeError("Empty translation from Google Translate")
+    detected = _normalize_short_lang_code(item.get("detectedSourceLanguage"), fallback="") if isinstance(item, dict) else ""
+    return {
+        "translation": translated,
+        "provider": "google_translate",
+        "detected_source_lang": detected or None,
+    }
+
+
+def _quick_translate_argos(text: str, source_lang: str | None, target_lang: str) -> dict:
+    if argos_translate is None:
+        raise RuntimeError("argostranslate not installed")
+    target = _normalize_short_lang_code(target_lang, fallback="de")
+    source = _normalize_short_lang_code(source_lang, fallback="") if source_lang else ""
+    installed = argos_translate.get_installed_languages() or []
+    by_code = {str(getattr(lang, "code", "")).strip().lower(): lang for lang in installed}
+    to_lang = by_code.get(target)
+    if not to_lang:
+        raise RuntimeError(f"Argos package for target '{target}' not installed")
+
+    candidate_sources: list[str] = []
+    if source:
+        candidate_sources.append(source)
+    else:
+        sample = str(text or "")
+        if re.search(r"[А-Яа-яЁё]", sample):
+            candidate_sources.append("ru")
+        candidate_sources.extend(["de", "en", "es", "it", "fr", "pt"])
+    for code in candidate_sources:
+        from_lang = by_code.get(code)
+        if not from_lang or code == target:
+            continue
+        try:
+            translation = from_lang.get_translation(to_lang)
+            translated = str(translation.translate(str(text or "")) or "").strip()
+            if translated:
+                return {
+                    "translation": translated,
+                    "provider": "argos_offline",
+                    "detected_source_lang": code,
+                }
+        except Exception:
+            continue
+    raise RuntimeError("No suitable Argos translation package found")
+
+
+SEPARABLE_PREFIX_VERB_GAP_PROMPT = """SYSTEM:
+You are a generator of strictly formatted quiz items for a German learning app. You must follow the JSON schema exactly. No extra keys. No markdown. No commentary.
+
+USER:
+Generate ONE multiple-choice quiz item that trains *separable prefix verbs* (trennbare Verben) in German.
+
+CRITICAL CONSTRAINTS:
+1) The correct verb MUST be a separable prefix verb (trennbares Verb). In the correct sentence, the prefix MUST appear separated at the end of the clause (e.g., "Ich lege ... an.", "Er steht ... auf.").
+2) The quiz must test choosing the correct infinitive verb from 4 options. Options must be infinitives (e.g., "anlegen", "ausgeben", etc.).
+3) The sentence must be a simple main clause in Präsens (present tense), B1–B2, not a question, not passive.
+4) The gap must remove ONLY the conjugated verb stem part, leaving the separated prefix still visible at the end.
+   Example pattern:
+   sentence_with_gap: "Ich ___ mein Geld in Immobilien an."
+   correct_full_sentence: "Ich lege mein Geld in Immobilien an."
+   correct_infinitive: "anlegen"
+5) Provide 3 wrong options that are plausible but clearly wrong in this exact context.
+   - At least 2 wrong options should be other separable prefix verbs (preferably similar topic).
+   - Avoid nonsense distractors.
+   - Avoid ambiguous cases (ONLY one correct choice must make sense).
+6) Provide a short German explanation focusing on meaning and why distractors are wrong.
+7) Provide Russian translation of the correct full sentence.
+
+OUTPUT MUST BE STRICT JSON WITH EXACT KEYS IN THIS ORDER:
+{
+  "quiz_type": "separable_prefix_verb_gap",
+  "level": "B1-B2",
+  "topic": "<one of: finance, work, travel, daily_life, communication, study>",
+  "sentence_with_gap": "...",
+  "correct_full_sentence": "...",
+  "translation_ru": "...",
+  "options": ["...", "...", "...", "..."],
+  "correct_index": 1,
+  "correct_infinitive": "...",
+  "prefix": "...",
+  "base_verb": "...",
+  "explanation_de": "..."
+}
+
+VALIDATION CHECKLIST (you must self-check before output):
+- sentence_with_gap contains "___" exactly once
+- correct_full_sentence has separated prefix at the end
+- options are infinitives only
+- correct_infinitive equals options[correct_index-1]
+- prefix equals the separated prefix at the end (e.g., "an", "auf", "mit", "zurück")
+- base_verb is the verb without prefix (e.g., "legen" for "anlegen")
+- Only one option fits semantically"""
+
+
+def _extract_json_object(raw_text: str) -> str:
+    raw = str(raw_text or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw)
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        return raw[start:end + 1]
+    return raw
+
+
+def _validate_separable_prefix_quiz_item(item: dict) -> dict:
+    if not isinstance(item, dict):
+        raise ValueError("quiz item is not an object")
+    required_keys = [
+        "quiz_type",
+        "level",
+        "topic",
+        "sentence_with_gap",
+        "correct_full_sentence",
+        "translation_ru",
+        "options",
+        "correct_index",
+        "correct_infinitive",
+        "prefix",
+        "base_verb",
+        "explanation_de",
+    ]
+    if list(item.keys()) != required_keys:
+        raise ValueError("quiz item keys/order mismatch")
+    if str(item.get("quiz_type") or "").strip() != "separable_prefix_verb_gap":
+        raise ValueError("invalid quiz_type")
+    if str(item.get("level") or "").strip() != "B1-B2":
+        raise ValueError("invalid level")
+    topic = str(item.get("topic") or "").strip()
+    if topic not in SEPARABLE_PREFIX_QUIZ_TOPICS:
+        raise ValueError("invalid topic")
+
+    sentence_with_gap = str(item.get("sentence_with_gap") or "").strip()
+    if sentence_with_gap.count("___") != 1:
+        raise ValueError("sentence_with_gap must contain one ___")
+    correct_full_sentence = str(item.get("correct_full_sentence") or "").strip()
+    translation_ru = str(item.get("translation_ru") or "").strip()
+    explanation_de = str(item.get("explanation_de") or "").strip()
+    if not correct_full_sentence or not translation_ru or not explanation_de:
+        raise ValueError("missing text fields")
+
+    options = item.get("options")
+    if not isinstance(options, list) or len(options) != 4:
+        raise ValueError("options must contain 4 items")
+    options_clean = [str(opt or "").strip() for opt in options]
+    if any(not opt for opt in options_clean):
+        raise ValueError("empty option")
+    if len(set(options_clean)) != 4:
+        raise ValueError("duplicate options")
+    infinitive_re = re.compile(r"^[A-Za-zÄÖÜäöüß]+$")
+    if any(not infinitive_re.match(opt) for opt in options_clean):
+        raise ValueError("options must be infinitives")
+
+    correct_index = int(item.get("correct_index") or 0)
+    if correct_index < 1 or correct_index > 4:
+        raise ValueError("correct_index out of range")
+    correct_infinitive = str(item.get("correct_infinitive") or "").strip()
+    if not correct_infinitive:
+        raise ValueError("correct_infinitive empty")
+    if correct_infinitive != options_clean[correct_index - 1]:
+        raise ValueError("correct_infinitive mismatch")
+
+    prefix = str(item.get("prefix") or "").strip()
+    base_verb = str(item.get("base_verb") or "").strip()
+    if not prefix or not base_verb:
+        raise ValueError("prefix/base_verb required")
+    if not re.search(rf"\b{re.escape(prefix)}[.!?]?\s*$", correct_full_sentence):
+        raise ValueError("prefix is not separated at sentence end")
+
+    return {
+        "quiz_type": "separable_prefix_verb_gap",
+        "level": "B1-B2",
+        "topic": topic,
+        "sentence_with_gap": sentence_with_gap,
+        "correct_full_sentence": correct_full_sentence,
+        "translation_ru": translation_ru,
+        "options": options_clean,
+        "correct_index": correct_index,
+        "correct_infinitive": correct_infinitive,
+        "prefix": prefix,
+        "base_verb": base_verb,
+        "explanation_de": explanation_de,
+    }
+
+
+def _request_separable_prefix_quiz_item_via_openai() -> dict:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not configured")
+    endpoint = "https://api.openai.com/v1/chat/completions"
+    payload = {
+        "model": OPENAI_QUIZ_MODEL,
+        "temperature": 0.35,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "user", "content": SEPARABLE_PREFIX_VERB_GAP_PROMPT},
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    response = requests.post(endpoint, headers=headers, json=payload, timeout=25)
+    if not response.ok:
+        raise RuntimeError(f"OpenAI quiz HTTP {response.status_code}: {response.text[:240]}")
+    data = response.json() if response.content else {}
+    choices = data.get("choices") if isinstance(data, dict) else []
+    message = choices[0].get("message") if isinstance(choices, list) and choices else {}
+    raw_content = ""
+    if isinstance(message, dict):
+        raw_content = str(message.get("content") or "")
+    normalized = _extract_json_object(raw_content)
+    if not normalized:
+        raise RuntimeError("OpenAI quiz empty response")
+    try:
+        parsed = json.loads(normalized)
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI quiz parse error: {exc}") from exc
+    return _validate_separable_prefix_quiz_item(parsed)
+
+
+def _get_separable_prefix_quiz_item_with_retry(max_retries: int = 2) -> dict:
+    last_error = None
+    attempts = max(1, int(max_retries) + 1)
+    for _ in range(attempts):
+        try:
+            return _request_separable_prefix_quiz_item_via_openai()
+        except Exception as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(f"failed to generate separable quiz item: {last_error}")
+
+
+def _get_cached_separable_prefix_quiz_items(count: int) -> list[dict]:
+    target_count = max(0, int(count or 0))
+    if target_count <= 0:
+        return []
+    now_ts = time.time()
+    day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cache_entry = _SEPARABLE_PREFIX_QUIZ_CACHE.get(day_key)
+    if cache_entry and now_ts - float(cache_entry.get("ts") or 0) > SEPARABLE_PREFIX_QUIZ_CACHE_TTL_SEC:
+        cache_entry = None
+        _SEPARABLE_PREFIX_QUIZ_CACHE.pop(day_key, None)
+    pool = list((cache_entry or {}).get("items") or [])
+    seen_sentences = {str(item.get("sentence_with_gap") or "").strip() for item in pool if isinstance(item, dict)}
+
+    generation_cap = min(12, target_count * 4)
+    attempts = 0
+    while len(pool) < target_count and attempts < generation_cap:
+        attempts += 1
+        try:
+            quiz_item = _get_separable_prefix_quiz_item_with_retry(max_retries=2)
+        except Exception as exc:
+            logging.warning("Separable quiz generation failed: %s", exc)
+            break
+        sentence_key = str(quiz_item.get("sentence_with_gap") or "").strip()
+        if sentence_key and sentence_key not in seen_sentences:
+            pool.append(quiz_item)
+            seen_sentences.add(sentence_key)
+
+    if pool:
+        _SEPARABLE_PREFIX_QUIZ_CACHE[day_key] = {"ts": now_ts, "items": pool[-40:]}
+    if len(pool) <= target_count:
+        return pool
+    return random.sample(pool, target_count)
+
+
+def _inject_separable_prefix_quizzes(items: list[dict]) -> list[dict]:
+    if not isinstance(items, list) or not items:
+        return items
+    candidate_indexes = [idx for idx, item in enumerate(items) if isinstance(item, dict) and item.get("id")]
+    if not candidate_indexes or SEPARABLE_PREFIX_QUIZ_SHARE <= 0:
+        return items
+
+    selected_indexes = [idx for idx in candidate_indexes if random.random() < SEPARABLE_PREFIX_QUIZ_SHARE]
+    if not selected_indexes and random.random() < SEPARABLE_PREFIX_QUIZ_SHARE:
+        selected_indexes = [random.choice(candidate_indexes)]
+    if not selected_indexes:
+        return items
+
+    quiz_items = _get_cached_separable_prefix_quiz_items(len(selected_indexes))
+    if not quiz_items:
+        return items
+
+    for idx, quiz in zip(selected_indexes, quiz_items):
+        current = dict(items[idx] or {})
+        response_json = current.get("response_json")
+        if not isinstance(response_json, dict):
+            response_json = {}
+        quiz_payload = {
+            "quiz_type": "separable_prefix_verb_gap",
+            "level": str(quiz.get("level") or "B1-B2"),
+            "topic": str(quiz.get("topic") or ""),
+            "sentence_with_gap": str(quiz.get("sentence_with_gap") or ""),
+            "correct_full_sentence": str(quiz.get("correct_full_sentence") or ""),
+            "translation_ru": str(quiz.get("translation_ru") or ""),
+            "options": [str(opt or "") for opt in (quiz.get("options") or [])],
+            "correct_index": int(quiz.get("correct_index") or 1),
+            "correct_infinitive": str(quiz.get("correct_infinitive") or ""),
+            "prefix": str(quiz.get("prefix") or ""),
+            "base_verb": str(quiz.get("base_verb") or ""),
+            "explanation_de": str(quiz.get("explanation_de") or ""),
+            "source_text": str(quiz.get("sentence_with_gap") or ""),
+            "target_text": str(quiz.get("correct_infinitive") or ""),
+        }
+        response_json.update(quiz_payload)
+        current["response_json"] = response_json
+        current["source_text"] = quiz_payload["source_text"]
+        current["target_text"] = quiz_payload["target_text"]
+        current["word_ru"] = quiz_payload["source_text"]
+        current["translation_de"] = quiz_payload["target_text"]
+        current["word_de"] = quiz_payload["target_text"]
+        current["translation_ru"] = quiz_payload["translation_ru"]
+        items[idx] = current
+
+    return items
 
 
 def _language_label(code: str) -> str:
@@ -6562,6 +6969,12 @@ def translate_quick():
         providers.append(("deepl_free", _quick_translate_deepl))
     if LIBRETRANSLATE_URL:
         providers.append(("libretranslate", _quick_translate_libretranslate))
+    if AZURE_TRANSLATOR_KEY:
+        providers.append(("azure_translator", _quick_translate_azure))
+    if GOOGLE_TRANSLATE_API_KEY:
+        providers.append(("google_translate", _quick_translate_google))
+    if ARGOS_TRANSLATE_ENABLED:
+        providers.append(("argos_offline", _quick_translate_argos))
     providers.append(("mymemory", _quick_translate_mymemory))
 
     for provider_name, translate_func in providers:
@@ -8941,6 +9354,7 @@ def create_webapp_dictionary_folder():
 def get_webapp_flashcard_set():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
+    training_mode = str(payload.get("training_mode") or "quiz").strip().lower()
     set_size = int(payload.get("set_size", 15))
     wrong_size = int(payload.get("wrong_size", 5))
     folder_mode = payload.get("folder_mode", "all")
@@ -8983,6 +9397,11 @@ def get_webapp_flashcard_set():
         )
         for item in items
     ]
+    if training_mode == "quiz":
+        try:
+            decorated_items = _inject_separable_prefix_quizzes(decorated_items)
+        except Exception as exc:
+            logging.warning("Failed to inject separable prefix quizzes: %s", exc)
     return jsonify(
         {
             "ok": True,

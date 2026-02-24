@@ -884,6 +884,11 @@ function AppInner() {
   };
 
   const resolveFlashcardGerman = (entry) => {
+    const responseJson = entry?.response_json || {};
+    const quizType = String(responseJson?.quiz_type || '').trim();
+    if (quizType === 'separable_prefix_verb_gap') {
+      return String(responseJson?.correct_full_sentence || '').trim() || resolveFlashcardTexts(entry).targetText;
+    }
     return resolveFlashcardTexts(entry).targetText;
   };
 
@@ -5171,14 +5176,12 @@ function AppInner() {
   };
 
   const handleSelectionSave = async (text) => {
-    const inReaderImmersive = Boolean(
-      isSectionVisible('reader')
-      && readerHasContent
-      && readerImmersive
-      && !readerArchiveOpen
-    );
-    if (inReaderImmersive) {
-      await handleQuickAddToDictionary(text, { inlineMode: true });
+    const inReaderSection = Boolean(isSectionVisible('reader') && readerHasContent && !readerArchiveOpen);
+    if (inReaderSection) {
+      const snapshot = normalizeSelectionText(text);
+      clearSelection();
+      if (!snapshot) return;
+      void handleQuickAddToDictionary(snapshot, { inlineMode: true });
       return;
     }
     await handleSelectionOpenDictionary(text);
@@ -6008,6 +6011,7 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
+          training_mode: flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz',
           set_size: flashcardSetSize,
           wrong_size: 5,
           folder_mode: flashcardFolderMode,
@@ -6157,6 +6161,15 @@ function AppInner() {
   };
 
   const buildFlashcardOptions = (entry, allEntries) => {
+    const responseJson = entry?.response_json || {};
+    if (String(responseJson?.quiz_type || '').trim() === 'separable_prefix_verb_gap') {
+      const options = Array.isArray(responseJson?.options)
+        ? responseJson.options.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+      if (options.length === 4) {
+        return options;
+      }
+    }
     const correct = resolveFlashcardTexts(entry).targetText || '';
     if (!correct) return [];
     const pool = [...allEntries, ...flashcardPool]
@@ -9009,7 +9022,7 @@ function AppInner() {
             )}
 
             {!flashcardsOnly && isSectionVisible('translations') && (
-              <section className="webapp-section" ref={translationsRef}>
+              <section className="webapp-section webapp-section-translations" ref={translationsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
                   {isFocusedSection('translations') && (
@@ -11121,11 +11134,24 @@ function AppInner() {
                                 const entry = flashcards[flashcardIndex] || {};
                                 const responseJson = entry.response_json || {};
                                 const cardTexts = resolveFlashcardTexts(entry);
-                                const correct = cardTexts.targetText || '—';
-                                const questionWord = cardTexts.sourceText || '—';
-                                const context = Array.isArray(responseJson.usage_examples)
+                                const quizType = String(responseJson?.quiz_type || '').trim();
+                                const isSeparablePrefixQuiz = quizType === 'separable_prefix_verb_gap';
+                                const questionWord = isSeparablePrefixQuiz
+                                  ? (String(responseJson?.sentence_with_gap || '').trim() || cardTexts.sourceText || '—')
+                                  : (cardTexts.sourceText || '—');
+                                const context = !isSeparablePrefixQuiz && Array.isArray(responseJson.usage_examples)
                                   ? responseJson.usage_examples[0]
                                   : '';
+                                const quizOptions = Array.isArray(responseJson?.options)
+                                  ? responseJson.options.map((item) => String(item || '').trim()).filter(Boolean)
+                                  : [];
+                                const oneBasedCorrectIndex = Number(responseJson?.correct_index);
+                                const zeroBasedCorrectIndex = Number.isFinite(oneBasedCorrectIndex)
+                                  ? Math.max(0, Math.min(quizOptions.length - 1, Math.trunc(oneBasedCorrectIndex) - 1))
+                                  : -1;
+                                const correct = isSeparablePrefixQuiz
+                                  ? (quizOptions[zeroBasedCorrectIndex] || cardTexts.targetText || '—')
+                                  : (cardTexts.targetText || '—');
                                 const blocksAnswer = resolveBlocksAnswer(entry);
                                 const blocksPrompt = resolveBlocksPrompt(entry);
                                 const blocksType = resolveBlocksType(entry, blocksAnswer);
@@ -11421,6 +11447,18 @@ function AppInner() {
                                         );
                                       })}
                                     </div>
+                                    {isSeparablePrefixQuiz && flashcardSelection !== null && (
+                                      <div className="flashcard-separable-feedback">
+                                        <div><strong>{tr('Правильное предложение', 'Korrekter Satz')}:</strong> {String(responseJson?.correct_full_sentence || '—')}</div>
+                                        <div><strong>{tr('Перевод', 'Uebersetzung')}:</strong> {String(responseJson?.translation_ru || '—')}</div>
+                                        {String(responseJson?.explanation_de || '').trim() && (
+                                          <details className="flashcard-separable-explanation">
+                                            <summary>{tr('Пояснение (DE)', 'Erklaerung (DE)')}</summary>
+                                            <div>{String(responseJson.explanation_de || '')}</div>
+                                          </details>
+                                        )}
+                                      </div>
+                                    )}
                                     {flashcardTimedOut && (
                                       <div className="flashcard-timeout">die Zeit ist um</div>
                                     )}

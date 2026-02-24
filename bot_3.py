@@ -6014,9 +6014,13 @@ async def _send_quiz_result_private(
     if not correct_option_text:
         correct_option_text = correct_text
 
-    de_text = _normalize_quiz_option_for_private_message(correct_option_text)
-    if not de_text:
+    quiz_type = str(quiz_data.get("quiz_type") or "").strip().lower()
+    if quiz_type == "anagram":
         de_text = _normalize_quiz_option_for_private_message(correct_text)
+    else:
+        de_text = _normalize_quiz_option_for_private_message(correct_option_text)
+        if not de_text:
+            de_text = _normalize_quiz_option_for_private_message(correct_text)
 
     fallback_ru = quiz_data.get("word_ru") or ""
     ru_text = await _translate_quiz_text_to_ru(de_text, fallback_ru=fallback_ru)
@@ -6213,9 +6217,16 @@ def _build_same_word_anagram_distractors(correct_word: str, count: int = 3) -> l
 def _format_anagram_option(word: str) -> str:
     if not word:
         return word
-    base = word.lower()
-    formatted = base[0].upper() + base[1:]
-    return " ".join(f"[{ch}]" for ch in formatted)
+    def _tile_for_char(ch: str) -> str:
+        upper = (ch or "").upper()
+        if "A" <= upper <= "Z":
+            return chr(0x1F1E6 + (ord(upper) - ord("A")))
+        return f"▫️{upper}"
+
+    base = _to_letters_only_word(word)
+    if not base:
+        return word
+    return " ".join(_tile_for_char(ch) for ch in base)
 
 
 def _short_ru_prompt(word_ru: str) -> str | None:
@@ -6291,15 +6302,30 @@ async def generate_anagram_quiz(entry: dict) -> dict | None:
         return None
 
     distractors = _build_same_word_anagram_distractors(correct_word, count=3)
-    if not distractors:
+    if len(distractors) < 3:
+        fallback_distractors = _pick_anagram_distractors(correct_word, count=3 - len(distractors))
+        for candidate in fallback_distractors:
+            cleaned = _to_letters_only_word(candidate)
+            if not cleaned:
+                continue
+            if cleaned.lower() == correct_word.lower():
+                continue
+            if cleaned in distractors:
+                continue
+            distractors.append(cleaned)
+            if len(distractors) >= 3:
+                break
+
+    if len(distractors) < 2:
         return None
 
-    options = [correct_word] + distractors
-    options = list(dict.fromkeys(options))[:4]
-    if len(options) < 2:
+    options_raw = [correct_word] + distractors
+    options_raw = list(dict.fromkeys(options_raw))[:4]
+    if len(options_raw) < 2:
         return None
-    random.shuffle(options)
-    correct_option_id = options.index(correct_word)
+    random.shuffle(options_raw)
+    correct_option_id = options_raw.index(correct_word)
+    options = [_format_anagram_option(item) for item in options_raw]
 
     question = (
         f"Выберите правильное немецкое слово для «{word_ru}».\n"
@@ -6527,6 +6553,43 @@ async def delete_temporary_message(context: CallbackContext) -> None:
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
 
 
+async def _is_user_member_of_quiz_group(context: CallbackContext, user_id: int) -> bool:
+    try:
+        member = await context.bot.get_chat_member(
+            chat_id=BOT_GROUP_CHAT_ID_Deutsch,
+            user_id=int(user_id),
+        )
+        status = str(getattr(member, "status", "") or "").strip().lower()
+        return status in {"creator", "administrator", "member", "restricted"}
+    except Exception:
+        return False
+
+
+async def _collect_quiz_delivery_targets(context: CallbackContext) -> list[int]:
+    targets: list[int] = [int(BOT_GROUP_CHAT_ID_Deutsch)]
+    try:
+        allowed_rows = await asyncio.to_thread(list_allowed_telegram_users, 500)
+    except Exception:
+        logging.warning("⚠️ Не удалось получить список allowed users для quiz fallback", exc_info=True)
+        allowed_rows = []
+
+    candidate_user_ids: set[int] = set()
+    for row in allowed_rows:
+        try:
+            user_id = int((row or {}).get("user_id") or 0)
+        except Exception:
+            user_id = 0
+        if user_id > 0:
+            candidate_user_ids.add(user_id)
+    candidate_user_ids.update({int(user_id) for user_id in get_admin_telegram_ids() if int(user_id) > 0})
+
+    for user_id in sorted(candidate_user_ids):
+        if await _is_user_member_of_quiz_group(context, user_id):
+            continue
+        targets.append(int(user_id))
+    return targets
+
+
 async def send_scheduled_quiz(context: CallbackContext) -> None:
     generator_order = [
         ("word_order", generate_word_order_quiz),
@@ -6572,56 +6635,72 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
     if shuffled_quiz:
         quiz = shuffled_quiz
 
-    poll_message = await context.bot.send_poll(
-        chat_id=BOT_GROUP_CHAT_ID_Deutsch,
-        question=quiz["question"],
-        options=quiz["options"],
-        type=Poll.QUIZ,
-        correct_option_id=quiz["correct_option_id"],
-        is_anonymous=False,
-        allows_multiple_answers=False,
-    )
-    logging.info(
-        "✅ Quiz sent: type=%s options=%s correct_option_id=%s word_ru=%s",
-        quiz.get("quiz_type", "generated"),
-        len(quiz.get("options", [])),
-        quiz.get("correct_option_id"),
-        (chosen_entry or {}).get("word_ru"),
-    )
+    delivery_targets = await _collect_quiz_delivery_targets(context)
+    sent_count = 0
+    for target_chat_id in delivery_targets:
+        try:
+            poll_message = await context.bot.send_poll(
+                chat_id=int(target_chat_id),
+                question=quiz["question"],
+                options=quiz["options"],
+                type=Poll.QUIZ,
+                correct_option_id=quiz["correct_option_id"],
+                is_anonymous=False,
+                allows_multiple_answers=False,
+            )
+        except Exception as exc:
+            logging.warning(
+                "⚠️ Не удалось отправить quiz в chat_id=%s: %s",
+                target_chat_id,
+                exc,
+            )
+            continue
 
-    record_quiz_word((chosen_entry or {}).get("word_ru"))
+        sent_count += 1
+        active_quizzes[poll_message.poll.id] = {
+            "chat_id": int(target_chat_id),
+            "correct_option_id": quiz["correct_option_id"],
+            "correct_text": quiz.get("correct_text"),
+            "options": quiz["options"],
+            "freeform_option": QUIZ_FREEFORM_OPTION,
+            "message_id": poll_message.message_id,
+            "quiz_type": quiz.get("quiz_type", "generated"),
+            "word_ru": quiz.get("word_ru"),
+        }
+        try:
+            await asyncio.to_thread(
+                upsert_active_quiz,
+                str(poll_message.poll.id),
+                chat_id=int(target_chat_id),
+                message_id=int(poll_message.message_id),
+                correct_option_id=int(quiz["correct_option_id"]),
+                options=[str(option) for option in (quiz.get("options") or [])],
+                correct_text=(quiz.get("correct_text") or ""),
+                freeform_option=QUIZ_FREEFORM_OPTION,
+                quiz_type=(quiz.get("quiz_type") or "generated"),
+                word_ru=(quiz.get("word_ru") or ""),
+            )
+        except Exception:
+            logging.warning("⚠️ Не удалось сохранить активный квиз в БД", exc_info=True)
 
-    active_quizzes[poll_message.poll.id] = {
-        "chat_id": BOT_GROUP_CHAT_ID_Deutsch,
-        "correct_option_id": quiz["correct_option_id"],
-        "correct_text": quiz.get("correct_text"),
-        "options": quiz["options"],
-        "freeform_option": QUIZ_FREEFORM_OPTION,
-        "message_id": poll_message.message_id,
-        "quiz_type": quiz.get("quiz_type", "generated"),
-        "word_ru": quiz.get("word_ru"),
-    }
-    try:
-        await asyncio.to_thread(
-            upsert_active_quiz,
-            str(poll_message.poll.id),
-            chat_id=int(BOT_GROUP_CHAT_ID_Deutsch),
-            message_id=int(poll_message.message_id),
-            correct_option_id=int(quiz["correct_option_id"]),
-            options=[str(option) for option in (quiz.get("options") or [])],
-            correct_text=(quiz.get("correct_text") or ""),
-            freeform_option=QUIZ_FREEFORM_OPTION,
-            quiz_type=(quiz.get("quiz_type") or "generated"),
-            word_ru=(quiz.get("word_ru") or ""),
+        context.job_queue.run_once(
+            cleanup_quiz_cache,
+            when=QUIZ_CACHE_TTL_SECONDS,
+            data={"poll_id": poll_message.poll.id},
         )
-    except Exception:
-        logging.warning("⚠️ Не удалось сохранить активный квиз в БД", exc_info=True)
 
-    context.job_queue.run_once(
-        cleanup_quiz_cache,
-        when=QUIZ_CACHE_TTL_SECONDS,
-        data={"poll_id": poll_message.poll.id},
-    )
+    if sent_count > 0:
+        record_quiz_word((chosen_entry or {}).get("word_ru"))
+        logging.info(
+            "✅ Quiz sent to %s chats: type=%s options=%s correct_option_id=%s word_ru=%s",
+            sent_count,
+            quiz.get("quiz_type", "generated"),
+            len(quiz.get("options", [])),
+            quiz.get("correct_option_id"),
+            (chosen_entry or {}).get("word_ru"),
+        )
+    else:
+        logging.warning("⚠️ Квиз сгенерирован, но не был отправлен ни в один чат.")
 
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
