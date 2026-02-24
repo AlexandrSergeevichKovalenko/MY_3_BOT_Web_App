@@ -94,6 +94,9 @@ function AppInner() {
   const [youtubeInput, setYoutubeInput] = useState('');
   const [youtubeId, setYoutubeId] = useState('');
   const [youtubeError, setYoutubeError] = useState('');
+  const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
+  const [youtubeSearchResults, setYoutubeSearchResults] = useState([]);
+  const [youtubeSearchError, setYoutubeSearchError] = useState('');
   const [videoExpanded, setVideoExpanded] = useState(false);
   const [youtubeTranscript, setYoutubeTranscript] = useState([]);
   const [youtubeTranscriptError, setYoutubeTranscriptError] = useState('');
@@ -6078,6 +6081,8 @@ function AppInner() {
     if (!trimmed) {
       setYoutubeId('');
       setYoutubeError('');
+      setYoutubeSearchError('');
+      setYoutubeSearchResults([]);
       safeStorageRemove('webapp_youtube');
       return;
     }
@@ -6086,13 +6091,57 @@ function AppInner() {
       setYoutubeId(id);
       setYoutubeError('');
       safeStorageSet('webapp_youtube', JSON.stringify({ input: trimmed, id }));
-    } else if (trimmed.length > 8) {
+    } else if (/(youtube\.com|youtu\.be|^https?:\/\/)/i.test(trimmed)) {
       setYoutubeError(tr('Не удалось распознать ссылку или ID видео.', 'Video-Link oder ID konnte nicht erkannt werden.'));
       setYoutubeId('');
     } else {
       setYoutubeError('');
+      setYoutubeId('');
     }
   }, [youtubeInput]);
+
+  const searchYoutubeVideos = async () => {
+    const query = youtubeInput.trim();
+    if (!query || !initData) return;
+
+    const directId = extractYoutubeId(query);
+    if (directId) {
+      setYoutubeSearchError('');
+      setYoutubeSearchResults([]);
+      return;
+    }
+
+    setYoutubeSearchLoading(true);
+    setYoutubeSearchError('');
+    try {
+      const response = await fetch('/api/webapp/youtube/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, query, limit: 8 }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      setYoutubeSearchResults(items);
+      if (!items.length) {
+        setYoutubeSearchError(tr('По вашему запросу ничего не найдено.', 'Keine Ergebnisse fuer diese Suche.'));
+      }
+    } catch (error) {
+      setYoutubeSearchResults([]);
+      setYoutubeSearchError(`${tr('Ошибка поиска YouTube', 'YouTube-Suchfehler')}: ${error.message}`);
+    } finally {
+      setYoutubeSearchLoading(false);
+    }
+  };
 
   const fetchTranscript = async () => {
     if (!youtubeId || !initData) return;
@@ -8325,14 +8374,20 @@ function AppInner() {
                     {!youtubeWatchFocusMode && (
                     <div className="webapp-video-form">
                       <label className="webapp-field">
-                        <span>{tr('Ссылка или ID видео', 'Link oder Video-ID')}</span>
+                        <span>{tr('Ссылка, ID или поисковый запрос', 'Link, Video-ID oder Suchanfrage')}</span>
                         <div className="input-clear-wrap">
                           <input
                             type="text"
                             className="input-clear-field"
                             value={youtubeInput}
                             onChange={(event) => setYoutubeInput(event.target.value)}
-                            placeholder="https://youtu.be/VIDEO_ID"
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                searchYoutubeVideos();
+                              }
+                            }}
+                            placeholder="https://youtu.be/VIDEO_ID или Deutsch Grammatik B1"
                           />
                           {youtubeInput && (
                             <button
@@ -8350,12 +8405,46 @@ function AppInner() {
                       <button
                         type="button"
                         className="secondary-button"
+                        onClick={searchYoutubeVideos}
+                        disabled={!youtubeInput.trim() || youtubeSearchLoading}
+                      >
+                        {youtubeSearchLoading
+                          ? tr('Ищем в YouTube...', 'Suche auf YouTube...')
+                          : tr('Искать в YouTube', 'Auf YouTube suchen')}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
                         onClick={() => setVideoExpanded((prev) => !prev)}
                         style={{ display: 'none' }}
                         >
                           {videoExpanded ? tr('Обычный режим', 'Normalmodus') : tr('Словарь рядом', 'Woerterbuch daneben')}
                         </button>
                       </div>
+                      {youtubeSearchError && <div className="webapp-error">{youtubeSearchError}</div>}
+                      {youtubeSearchResults.length > 0 && (
+                        <div className="youtube-search-results">
+                          {youtubeSearchResults.map((item) => (
+                            <button
+                              type="button"
+                              key={item.video_id}
+                              className="youtube-search-item"
+                              onClick={() => {
+                                setYoutubeInput(item.video_url || `https://youtu.be/${item.video_id}`);
+                                setYoutubeSearchResults([]);
+                                setYoutubeSearchError('');
+                              }}
+                            >
+                              <img
+                                src={item.thumbnail || `https://i.ytimg.com/vi/${item.video_id}/mqdefault.jpg`}
+                                alt=""
+                                loading="lazy"
+                              />
+                              <span>{item.title || item.video_id}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     )}
                     {!youtubeWatchFocusMode && (

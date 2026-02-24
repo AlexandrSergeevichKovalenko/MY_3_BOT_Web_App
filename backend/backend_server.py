@@ -1183,6 +1183,38 @@ def _build_video_search_queries(
     main = str(main_category or "").strip()
     skill = str(skill_title or "").strip()
 
+    def _normalize_video_search_term(raw: str) -> str:
+        cleaned = " ".join(str(raw or "").strip().split())
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"[:;|/]+", " ", cleaned)
+        if target == "de":
+            replacements = {
+                r"\bdeclension errors?\b": "deklination",
+                r"\bnouns?\b": "nomen",
+                r"\badjectives?\b": "adjektive",
+                r"\bverbs?\b": "verben",
+                r"\bcases?\b": "faelle",
+                r"\bcase\b": "fall",
+                r"\barticles?\b": "artikel",
+                r"\bpronouns?\b": "pronomen",
+            }
+            lowered = cleaned.lower()
+            for pattern, replacement in replacements.items():
+                lowered = re.sub(pattern, replacement, lowered, flags=re.IGNORECASE)
+            cleaned = lowered
+        cleaned = " ".join(cleaned.split())
+        if len(cleaned) > 72:
+            compact_parts: list[str] = []
+            total = 0
+            for word in cleaned.split():
+                if total + len(word) + (1 if compact_parts else 0) > 72:
+                    break
+                compact_parts.append(word)
+                total += len(word) + (1 if compact_parts[:-1] else 0)
+            cleaned = " ".join(compact_parts).strip()
+        return cleaned
+
     def _translate_term_for_video_search(raw: str) -> str:
         cleaned = " ".join(str(raw or "").strip().split())
         if not cleaned:
@@ -1210,9 +1242,9 @@ def _build_video_search_queries(
             logging.debug("Video query translation failed for '%s' -> %s", cleaned, target, exc_info=True)
         return cleaned
 
-    sub_local = _translate_term_for_video_search(sub)
-    main_local = _translate_term_for_video_search(main)
-    skill_local = _translate_term_for_video_search(skill)
+    sub_local = _normalize_video_search_term(_translate_term_for_video_search(sub))
+    main_local = _normalize_video_search_term(_translate_term_for_video_search(main))
+    skill_local = _normalize_video_search_term(_translate_term_for_video_search(skill))
 
     phrase_map = {
         "de": {
@@ -1258,7 +1290,11 @@ def _build_video_search_queries(
         for item in examples[:3]:
             text = " ".join(str(item or "").strip().split())
             if text:
-                sample_items.append(_translate_term_for_video_search(text[:80]))
+                translated = _normalize_video_search_term(_translate_term_for_video_search(text[:80]))
+                token_count = len(translated.split())
+                # Keep only short keyword-like phrases; long sentence fragments pollute search.
+                if translated and token_count <= 6 and len(translated) <= 48:
+                    sample_items.append(translated)
 
     queries: list[str] = []
     if sub_local:
@@ -1298,6 +1334,85 @@ def _build_video_search_queries(
     return unique
 
 
+def _youtube_fallback_videos_from_local_sources(
+    *,
+    query: str,
+    target_lang: str,
+    max_results: int = 5,
+) -> list[dict]:
+    lang = _normalize_short_lang_code(target_lang, fallback="de")
+    safe_limit = max(1, min(int(max_results or 5), 12))
+    found: list[dict] = []
+    seen: set[str] = set()
+    query_tokens = re.findall(r"[A-Za-zА-Яа-яЁёÄÖÜäöüß]{3,}", str(query or "").lower())[:5]
+
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                sql = """
+                    SELECT video_id, COALESCE(video_title, '') AS title
+                    FROM bt_3_video_recommendations
+                    WHERE is_active = TRUE
+                      AND target_lang = %s
+                """
+                params: list[object] = [lang]
+                if query_tokens:
+                    token_filters: list[str] = []
+                    for token in query_tokens:
+                        like = f"%{token}%"
+                        token_filters.append(
+                            "(COALESCE(video_title, '') ILIKE %s OR COALESCE(search_query, '') ILIKE %s "
+                            "OR COALESCE(main_category, '') ILIKE %s OR COALESCE(sub_category, '') ILIKE %s)"
+                        )
+                        params.extend([like, like, like, like])
+                    sql += " AND (" + " OR ".join(token_filters) + ")"
+                sql += " ORDER BY score DESC, last_selected_at DESC NULLS LAST, updated_at DESC LIMIT %s"
+                params.append(safe_limit)
+                cur.execute(sql, tuple(params))
+                for video_id, title in cur.fetchall() or []:
+                    vid = str(video_id or "").strip()
+                    if not vid or vid in seen:
+                        continue
+                    seen.add(vid)
+                    found.append({"video_id": vid, "title": str(title or "").strip(), "views": 0})
+                    if len(found) >= safe_limit:
+                        return found
+
+                cur.execute(
+                    """
+                    SELECT video_id
+                    FROM bt_3_youtube_transcripts
+                    WHERE video_id IS NOT NULL
+                      AND video_id <> ''
+                    ORDER BY
+                      CASE WHEN COALESCE(language, '') = %s THEN 0 ELSE 1 END,
+                      updated_at DESC
+                    LIMIT %s
+                    """,
+                    (lang, max(10, safe_limit * 4)),
+                )
+                transcript_rows = cur.fetchall() or []
+    except Exception:
+        logging.exception("YT local fallback query failed")
+        return found
+
+    for (video_id,) in transcript_rows:
+        vid = str(video_id or "").strip()
+        if not vid or vid in seen:
+            continue
+        title = ""
+        try:
+            oembed = _get_youtube_oembed(vid) or {}
+            title = str(oembed.get("title") or "").strip()
+        except Exception:
+            title = ""
+        found.append({"video_id": vid, "title": title, "views": 0})
+        seen.add(vid)
+        if len(found) >= safe_limit:
+            break
+    return found
+
+
 def _youtube_search_videos(
     query: str,
     *,
@@ -1307,9 +1422,20 @@ def _youtube_search_videos(
     billing_source_lang: str | None = None,
     billing_target_lang: str | None = None,
 ) -> list[dict]:
-    if not YOUTUBE_API_KEY or not query:
-        logging.info("YT search skipped: query='%s' key_present=%s", query, bool(YOUTUBE_API_KEY))
+    if not query:
         return []
+    if not YOUTUBE_API_KEY:
+        local_fallback = _youtube_fallback_videos_from_local_sources(
+            query=query,
+            target_lang=target_lang,
+            max_results=max_results,
+        )
+        logging.info(
+            "YT search skipped (no API key): query='%s' local_fallback=%s",
+            query,
+            len(local_fallback),
+        )
+        return local_fallback
     collected: list[dict] = []
     preferred_hits = 0
     fallback_hits = 0
@@ -1393,7 +1519,21 @@ def _youtube_search_videos(
         fallback_hits,
         len(unique),
     )
-    return list(unique.values())
+    if unique:
+        return list(unique.values())
+
+    local_fallback = _youtube_fallback_videos_from_local_sources(
+        query=query,
+        target_lang=target_lang,
+        max_results=max_results,
+    )
+    if local_fallback:
+        logging.info(
+            "YT search fallback used: query='%s' local_fallback=%s",
+            query,
+            len(local_fallback),
+        )
+    return local_fallback
 
 
 def _youtube_fill_view_counts(
@@ -1463,13 +1603,45 @@ def _pick_today_recommended_video(
     billing_source_lang: str | None = None,
     billing_target_lang: str | None = None,
 ) -> dict | None:
-    queries = _build_video_search_queries(
-        main_category,
-        sub_category,
-        skill_title=skill_title,
-        examples=examples,
-        target_lang=target_lang,
-    )
+    query_stages = [
+        _build_video_search_queries(
+            main_category,
+            sub_category,
+            skill_title=skill_title,
+            examples=examples,
+            target_lang=target_lang,
+        ),
+        _build_video_search_queries(
+            main_category,
+            None,
+            skill_title=skill_title,
+            examples=None,
+            target_lang=target_lang,
+        ),
+        _build_video_search_queries(
+            None,
+            sub_category,
+            skill_title=skill_title,
+            examples=None,
+            target_lang=target_lang,
+        ),
+        _build_video_search_queries(
+            None,
+            None,
+            skill_title=skill_title,
+            examples=None,
+            target_lang=target_lang,
+        ),
+    ]
+    queries: list[str] = []
+    seen_queries: set[str] = set()
+    for stage in query_stages:
+        for query in stage:
+            norm = " ".join(str(query or "").strip().lower().split())
+            if not norm or norm in seen_queries:
+                continue
+            seen_queries.add(norm)
+            queries.append(query)
     logging.info("YT recommendation queries: %s", queries)
     for query in queries:
         videos = _youtube_search_videos(
@@ -1500,6 +1672,22 @@ def _pick_today_recommended_video(
             "query": query,
             "views": int(best.get("views") or 0),
         }
+    local_fallback = _youtube_fallback_videos_from_local_sources(
+        query=(queries[0] if queries else ""),
+        target_lang=target_lang,
+        max_results=5,
+    )
+    if local_fallback:
+        best = local_fallback[0]
+        video_id = str(best.get("video_id") or "").strip()
+        if video_id:
+            return {
+                "video_id": video_id,
+                "video_url": f"https://www.youtube.com/watch?v={video_id}",
+                "title": str(best.get("title") or "").strip(),
+                "query": queries[0] if queries else "local_fallback",
+                "views": int(best.get("views") or 0),
+            }
     return None
 
 
@@ -8980,6 +9168,66 @@ def get_youtube_catalog():
                 "is_generated": is_generated,
                 "items_count": items_count,
                 "updated_at": updated_at.isoformat() if updated_at else None,
+            }
+        )
+
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/webapp/youtube/search", methods=["POST"])
+def search_youtube_videos():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    query = str(payload.get("query") or "").strip()
+    limit_raw = payload.get("limit", 8)
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not query:
+        return jsonify({"error": "query обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        limit = int(limit_raw)
+    except Exception:
+        limit = 8
+    limit = max(1, min(limit, 12))
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    videos = _youtube_search_videos(
+        query,
+        max_results=limit,
+        target_lang=target_lang,
+        billing_user_id=int(user_id),
+        billing_source_lang=source_lang,
+        billing_target_lang=target_lang,
+    )
+    videos = _youtube_fill_view_counts(
+        videos,
+        billing_user_id=int(user_id),
+        billing_source_lang=source_lang,
+        billing_target_lang=target_lang,
+    )
+
+    items = []
+    for row in videos[:limit]:
+        video_id = str(row.get("video_id") or "").strip()
+        if not video_id:
+            continue
+        items.append(
+            {
+                "video_id": video_id,
+                "title": str(row.get("title") or "").strip() or video_id,
+                "video_url": f"https://www.youtube.com/watch?v={video_id}",
+                "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                "views": int(row.get("views") or 0),
             }
         )
 
