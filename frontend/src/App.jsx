@@ -93,7 +93,7 @@ function AppInner() {
   const [collocationsLoading, setCollocationsLoading] = useState(false);
   const [collocationsError, setCollocationsError] = useState('');
   const [collocationOptions, setCollocationOptions] = useState([]);
-  const [selectedCollocation, setSelectedCollocation] = useState(null);
+  const [selectedCollocations, setSelectedCollocations] = useState([]);
   const [flashcardExitSummary, setFlashcardExitSummary] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [youtubeInput, setYoutubeInput] = useState('');
@@ -4614,6 +4614,9 @@ function AppInner() {
   };
 
   const hasCyrillic = (value) => /[А-Яа-яЁё]/.test(value || '');
+  const hasLatin = (value) => /[A-Za-zÄÖÜäöüßÀ-ÿ]/.test(value || '');
+  const cyrillicLangs = new Set(['ru', 'uk', 'be', 'bg', 'sr', 'mk']);
+  const isCyrillicLang = (lang) => cyrillicLangs.has(String(lang || '').toLowerCase());
 
   const handleSelection = (event, overrideText = '', options = {}) => {
     const text = overrideText || normalizeSelectionText(window.getSelection()?.toString() || '');
@@ -4689,8 +4692,20 @@ function AppInner() {
     const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
     const nativeLang = normalizeLangCode(pair.source_lang || languageProfile?.native_language || 'ru') || 'ru';
     const learningLang = normalizeLangCode(pair.target_lang || languageProfile?.learning_language || 'de') || 'de';
+    let detectedByScript = '';
+    if (hasCyrillic(cleaned) && !hasLatin(cleaned)) {
+      detectedByScript = nativeLang;
+    } else if (hasLatin(cleaned) && !hasCyrillic(cleaned)) {
+      if (isCyrillicLang(nativeLang) && !isCyrillicLang(learningLang)) {
+        detectedByScript = learningLang;
+      } else if (!isCyrillicLang(nativeLang) && isCyrillicLang(learningLang)) {
+        detectedByScript = nativeLang;
+      } else {
+        detectedByScript = learningLang;
+      }
+    }
     const sourceLangHint = normalizeLangCode(
-      selectionLookupLang || (hasCyrillic(cleaned) ? nativeLang : learningLang)
+      detectedByScript || selectionLookupLang || (hasCyrillic(cleaned) ? nativeLang : learningLang)
     ) || null;
     const targetLang = sourceLangHint === learningLang ? nativeLang : learningLang;
     return { cleaned, sourceLangHint, targetLang };
@@ -4758,9 +4773,8 @@ function AppInner() {
       return;
     }
     const normalized = await normalizeForLookup(cleaned);
-    const lookupLangHint = normalizeLangCode(
-      selectionLookupLang || (hasCyrillic(normalized) ? 'ru' : getNormalizeLookupLang())
-    );
+    const lookupParams = resolveQuickTranslateParams(normalized);
+    const lookupLangHint = normalizeLangCode(lookupParams.sourceLangHint || '');
     setDictionaryLoading(true);
     setDictionaryError('');
     setDictionarySaved('');
@@ -4856,6 +4870,61 @@ function AppInner() {
       clearSelection();
     } catch (error) {
       setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
+    } finally {
+      setDictionaryLoading(false);
+    }
+  };
+
+  const handleSelectionOpenDictionary = async (text) => {
+    const cleaned = normalizeSelectionText(text);
+    if (!cleaned) return;
+    if (!initData) {
+      setDictionaryError(initDataMissingMsg);
+      return;
+    }
+    const normalized = await normalizeForLookup(cleaned);
+    const lookupParams = resolveQuickTranslateParams(normalized);
+    setDictionaryLoading(true);
+    setDictionaryError('');
+    setDictionarySaved('');
+    setCollocationsVisible(false);
+    setCollocationsError('');
+    setCollocationOptions([]);
+    setSelectedCollocations([]);
+    setDictionaryWord(normalized);
+    setLastLookupScrollY(window.scrollY);
+    try {
+      const response = await fetch('/api/webapp/dictionary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, word: normalized, lookup_lang: lookupParams.sourceLangHint || undefined }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (_error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      setDictionaryResult(data.item || null);
+      setDictionaryDirection(data.direction || resolveDictionaryDirection(data.item));
+      setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
+      setSelectedSections((prev) => {
+        const next = new Set(prev);
+        next.add('dictionary');
+        return next;
+      });
+      ensureSectionVisible('dictionary');
+      setTimeout(() => {
+        scrollToDictionary();
+      }, 90);
+      clearSelection();
+    } catch (error) {
+      setDictionaryError(`${tr('Ошибка словаря', 'Woerterbuchfehler')}: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
     }
@@ -6338,7 +6407,8 @@ function AppInner() {
       .replace(/>/g, '&gt;');
     return escaped
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.+?)\*/g, '<strong>$1</strong>');
+      .replace(/\*(.+?)\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br />');
   };
 
   const renderExplanationRichText = (text) => {
@@ -6444,7 +6514,7 @@ function AppInner() {
     setCollocationsLoading(true);
     setCollocationsError('');
     setCollocationOptions([]);
-    setSelectedCollocation(null);
+    setSelectedCollocations([]);
     try {
       const response = await fetch('/api/webapp/dictionary/collocations', {
         method: 'POST',
@@ -6482,7 +6552,9 @@ function AppInner() {
         })),
       ].filter((item) => item.source && item.target);
       setCollocationOptions(options);
-      setSelectedCollocation(options[0] || null);
+      setSelectedCollocations(options.length > 0
+        ? [`${String(options[0].source)}|||${String(options[0].target)}`]
+        : []);
     } catch (error) {
       setCollocationsError(`${tr('Ошибка связок', 'Kollokationsfehler')}: ${error.message}`);
     } finally {
@@ -6491,8 +6563,11 @@ function AppInner() {
   };
 
   const handleConfirmSaveCollocation = async () => {
-    if (!selectedCollocation) {
-      setCollocationsError(tr('Выберите вариант для сохранения.', 'Waehle eine Option zum Speichern.'));
+    const selectedOptions = collocationOptions.filter((option) => (
+      selectedCollocations.includes(`${String(option.source)}|||${String(option.target)}`)
+    ));
+    if (selectedOptions.length === 0) {
+      setCollocationsError(tr('Выберите минимум один вариант для сохранения.', 'Waehle mindestens eine Option zum Speichern.'));
       return;
     }
     setDictionaryLoading(true);
@@ -6506,46 +6581,48 @@ function AppInner() {
       const saveSourceLang = normalizeLangCode(directionPair[0] || pair.source_lang);
       const saveTargetLang = normalizeLangCode(directionPair[1] || pair.target_lang);
       const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(dictionaryDirection);
-      const response = await fetch('/api/webapp/dictionary/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          word_ru: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.source : '',
-          word_de: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.source : '',
-          translation_de: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.target : '',
-          translation_ru: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.target : '',
-          source_text: selectedCollocation.source,
-          target_text: selectedCollocation.target,
-          response_json: {
-            ...(dictionaryResult || {}),
+      for (const selectedCollocation of selectedOptions) {
+        const response = await fetch('/api/webapp/dictionary/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            word_ru: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.source : '',
+            word_de: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.source : '',
+            translation_de: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.target : '',
+            translation_ru: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.target : '',
             source_text: selectedCollocation.source,
             target_text: selectedCollocation.target,
-            source_lang: saveSourceLang || pair.source_lang,
-            target_lang: saveTargetLang || pair.target_lang,
-            language_pair: {
+            response_json: {
+              ...(dictionaryResult || {}),
+              source_text: selectedCollocation.source,
+              target_text: selectedCollocation.target,
               source_lang: saveSourceLang || pair.source_lang,
               target_lang: saveTargetLang || pair.target_lang,
+              language_pair: {
+                source_lang: saveSourceLang || pair.source_lang,
+                target_lang: saveTargetLang || pair.target_lang,
+              },
             },
-          },
-          source_lang: saveSourceLang || undefined,
-          target_lang: saveTargetLang || undefined,
-          direction: dictionaryDirection || undefined,
-          folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
-        }),
-      });
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
+            source_lang: saveSourceLang || undefined,
+            target_lang: saveTargetLang || undefined,
+            direction: dictionaryDirection || undefined,
+            folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
+          }),
+        });
+        if (!response.ok) {
+          let message = await response.text();
+          try {
+            const data = JSON.parse(message);
+            message = data.error || message;
+          } catch (_error) {
+            // ignore parsing errors
+          }
+          throw new Error(message);
         }
-        throw new Error(message);
+        const payload = await response.json();
+        setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
       }
-      const payload = await response.json();
-      setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
       setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
       setCollocationsVisible(false);
     } catch (error) {
@@ -9473,10 +9550,16 @@ function AppInner() {
                             {collocationOptions.map((option, index) => (
                               <label key={`${option.source}-${index}`} className="collocation-item">
                                 <input
-                                  type="radio"
-                                  name="collocation"
-                                  checked={selectedCollocation?.source === option.source && selectedCollocation?.target === option.target}
-                                  onChange={() => setSelectedCollocation(option)}
+                                  type="checkbox"
+                                  checked={selectedCollocations.includes(`${String(option.source)}|||${String(option.target)}`)}
+                                  onChange={() => {
+                                    const optionKey = `${String(option.source)}|||${String(option.target)}`;
+                                    setSelectedCollocations((prev) => (
+                                      prev.includes(optionKey)
+                                        ? prev.filter((key) => key !== optionKey)
+                                        : [...prev, optionKey]
+                                    ));
+                                  }}
                                 />
                                 <div>
                                   <div className="collocation-source">{option.source}</div>
@@ -9524,21 +9607,8 @@ function AppInner() {
 
             {!flashcardsOnly && isSectionVisible('reader') && (
               <section className={`webapp-section webapp-reader ${readerHasContent && readerImmersive ? 'is-immersive' : ''}`} ref={readerRef}>
-                <div
-                  className="reader-topbar"
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'auto minmax(0, 1fr) auto',
-                    gap: 8,
-                    alignItems: 'center',
-                    marginBottom: 10,
-                    padding: '8px 10px',
-                    borderRadius: 12,
-                    border: '1px solid rgba(148,163,184,0.28)',
-                    background: 'rgba(15,23,42,0.45)',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div className="reader-topbar">
+                  <div className="reader-topbar-left">
                     {isFocusedSection('reader') && (
                       <button type="button" className="secondary-button" onClick={goHomeScreen}>
                         {tr('Назад', 'Zurueck')}
@@ -9562,26 +9632,16 @@ function AppInner() {
                       </button>
                     )}
                   </div>
-                  <div style={{ minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: 15,
-                        fontWeight: 700,
-                        lineHeight: 1.2,
-                        color: '#f8fafc',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
+                  <div className="reader-topbar-center">
+                    <div className="reader-topbar-title">
                       {readerTitle || tr('Читалка', 'Leser')}
                     </div>
-                    <div className="webapp-muted" style={{ fontSize: 12 }}>
+                    <div className="webapp-muted reader-topbar-meta">
                       {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
                       {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
                     </div>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div className="reader-topbar-right">
                     <button
                       type="button"
                       className={`secondary-button ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
@@ -9618,20 +9678,9 @@ function AppInner() {
                 </div>
 
                 {!readerImmersive && readerArchiveOpen && (
-                  <section
-                    className="reader-archive-panel"
-                    style={{
-                      marginBottom: 12,
-                      borderRadius: 14,
-                      border: '1px solid rgba(148,163,184,0.3)',
-                      background: 'rgba(15,23,42,0.36)',
-                      padding: 12,
-                      display: 'grid',
-                      gap: 10,
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                      <strong style={{ fontSize: 15 }}>{tr('Архив документов', 'Archivierte Dokumente')}</strong>
+                  <section className="reader-archive-panel">
+                    <div className="reader-archive-head">
+                      <strong className="reader-archive-title">{tr('Архив документов', 'Archivierte Dokumente')}</strong>
                       <button
                         type="button"
                         className="secondary-button"
@@ -9645,14 +9694,7 @@ function AppInner() {
                       <div className="webapp-muted">{tr('В архиве пока пусто.', 'Archiv ist noch leer.')}</div>
                     )}
                     {!readerLibraryLoading && readerDocuments.filter((item) => Boolean(item?.is_archived)).length > 0 && (
-                      <div
-                        className="reader-archive-grid"
-                        style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))',
-                          gap: 10,
-                        }}
-                      >
+                      <div className="reader-archive-grid">
                         {readerDocuments
                           .filter((item) => Boolean(item?.is_archived))
                           .map((item) => {
@@ -9664,78 +9706,35 @@ function AppInner() {
                               <button
                                 type="button"
                                 key={`reader-archive-${item.id}`}
+                                className="reader-archive-card"
                                 onClick={async () => {
                                   setReaderArchiveOpen(false);
                                   await openReaderDocument(item.id);
                                 }}
-                                style={{
-                                  border: '1px solid rgba(148,163,184,0.28)',
-                                  borderRadius: 12,
-                                  background: 'rgba(2,6,23,0.52)',
-                                  padding: 8,
-                                  display: 'grid',
-                                  gap: 8,
-                                  textAlign: 'left',
-                                  cursor: 'pointer',
-                                }}
                               >
                                 <div
-                                  style={{
-                                    width: '100%',
-                                    aspectRatio: '3 / 4',
-                                    borderRadius: 10,
-                                    overflow: 'hidden',
-                                    border: '1px solid rgba(148,163,184,0.3)',
-                                    background: `linear-gradient(160deg, ${fromColor}, ${toColor})`,
-                                    display: 'grid',
-                                    placeItems: 'center',
-                                  }}
+                                  className="reader-archive-cover"
+                                  style={{ background: `linear-gradient(160deg, ${fromColor}, ${toColor})` }}
                                 >
                                   {coverUrl ? (
                                     <img
                                       src={coverUrl}
                                       alt=""
                                       loading="lazy"
-                                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                                      className="reader-archive-cover-img"
                                     />
                                   ) : (
-                                    <span
-                                      style={{
-                                        fontSize: 28,
-                                        fontWeight: 800,
-                                        letterSpacing: '0.04em',
-                                        color: 'rgba(248,250,252,0.95)',
-                                      }}
-                                    >
+                                    <span className="reader-archive-cover-fallback">
                                       {initials}
                                     </span>
                                   )}
+                                  <span className="reader-archive-open-icon" aria-hidden="true">📄</span>
                                 </div>
-                                <div
-                                  style={{
-                                    fontSize: 13,
-                                    lineHeight: 1.3,
-                                    fontWeight: 700,
-                                    color: '#f8fafc',
-                                    whiteSpace: 'nowrap',
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                  }}
-                                  title={String(item?.title || '')}
-                                >
+                                <div className="reader-archive-card-title" title={String(item?.title || '')}>
                                   {String(item?.title || tr('Без названия', 'Ohne Titel'))}
                                 </div>
                                 {meta && (
-                                  <div
-                                    className="webapp-muted"
-                                    style={{
-                                      fontSize: 11,
-                                      whiteSpace: 'nowrap',
-                                      overflow: 'hidden',
-                                      textOverflow: 'ellipsis',
-                                    }}
-                                    title={meta}
-                                  >
+                                  <div className="webapp-muted reader-archive-card-meta" title={meta}>
                                     {meta}
                                   </div>
                                 )}
@@ -10042,11 +10041,6 @@ function AppInner() {
                     onWheel={handleReaderPageWheel}
                     onTouchStart={handleReaderPageTouchStart}
                     onTouchEnd={handleReaderArticleTouchEnd}
-                    style={{
-                      marginTop: 0,
-                      paddingTop: readerImmersive ? 2 : undefined,
-                      minHeight: readerImmersive ? 'calc(100vh - 200px)' : undefined,
-                    }}
                   >
                     {readerSourceType && !readerImmersive && (
                       <div className="reader-meta">
@@ -11572,6 +11566,17 @@ function AppInner() {
                   <button
                     type="button"
                     className="secondary-button"
+                    onClick={() => handleSelectionOpenDictionary(selectionText)}
+                    disabled={dictionaryLoading}
+                    style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
+                  >
+                    {dictionaryLoading ? tr('Словарь...', 'Woerterbuch...') : tr('Сохранить', 'Speichern')}
+                  </button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 6 }}>
+                  <button
+                    type="button"
+                    className="secondary-button"
                     onClick={handleSelectionGptLookup}
                     disabled={selectionGptLoading}
                     style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
@@ -11643,10 +11648,13 @@ function AppInner() {
                         <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Перевод', 'Uebersetzung')}</div>
                         <div>{selectionGptData.translation || '—'}</div>
                       </div>
-                      <div className="webapp-selection-translation">
-                        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Смысл / заметки', 'Bedeutung / Hinweise')}</div>
-                        <div style={{ whiteSpace: 'pre-wrap' }}>{selectionGptData.notes || '—'}</div>
-                      </div>
+                  <div className="webapp-selection-translation">
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Смысл / заметки', 'Bedeutung / Hinweise')}</div>
+                    <div
+                      style={{ whiteSpace: 'pre-wrap' }}
+                      dangerouslySetInnerHTML={{ __html: renderRichText(selectionGptData.notes || '—') }}
+                    />
+                  </div>
                       <div className="webapp-selection-translation">
                         <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Примеры', 'Beispiele')}</div>
                         {Array.isArray(selectionGptData.examples) && selectionGptData.examples.length > 0 ? (
