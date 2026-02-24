@@ -157,6 +157,8 @@ function AppInner() {
   const [readerSwipeSensitivity, setReaderSwipeSensitivity] = useState('medium');
   const [readerImmersive, setReaderImmersive] = useState(false);
   const [readerArchiveOpen, setReaderArchiveOpen] = useState(false);
+  const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
+  const [readerLibrarySearch, setReaderLibrarySearch] = useState('');
   const [readerFontSize, setReaderFontSize] = useState(18);
   const [readerFontWeight, setReaderFontWeight] = useState(500);
   const [selectionText, setSelectionText] = useState('');
@@ -5434,6 +5436,8 @@ function AppInner() {
 
   const openReaderArchive = async () => {
     setReaderArchiveOpen(true);
+    setReaderImmersive(false);
+    setReaderSettingsOpen(false);
     setReaderIncludeArchived(true);
     await loadReaderLibrary(true);
   };
@@ -5582,6 +5586,8 @@ function AppInner() {
       setReaderLiveSeconds(0);
       setReaderTimerPaused(false);
       setReaderImmersive(true);
+      setReaderArchiveOpen(false);
+      setReaderSettingsOpen(false);
       setSelectedSections(new Set(['reader']));
       ensureSectionVisible('reader');
       setTimeout(() => {
@@ -5851,6 +5857,8 @@ function AppInner() {
       setReaderLiveSeconds(0);
       setReaderTimerPaused(false);
       setReaderImmersive(true);
+      setReaderArchiveOpen(false);
+      setReaderSettingsOpen(false);
       setSelectedSections(new Set(['reader']));
       ensureSectionVisible('reader');
       setTimeout(() => {
@@ -9876,499 +9884,395 @@ function AppInner() {
             )}
 
             {!flashcardsOnly && isSectionVisible('reader') && (
-              <section className={`webapp-section webapp-reader ${readerHasContent && readerImmersive ? 'is-immersive' : ''}`} ref={readerRef}>
-                <div className="reader-topbar">
-                  <div className="reader-topbar-left">
-                    {isFocusedSection('reader') && (
-                      <button type="button" className="secondary-button" onClick={goHomeScreen}>
-                        {tr('Назад', 'Zurueck')}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className={`secondary-button ${readerArchiveOpen ? 'is-active' : ''}`}
-                      onClick={openReaderArchive}
-                    >
-                      {tr('Архив', 'Archiv')}
-                    </button>
-                    {readerDocumentId && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => archiveReaderDocument(readerDocumentId, true)}
-                        title={tr('В архив', 'Archivieren')}
-                      >
-                        {tr('В архив', 'In Archiv')}
-                      </button>
-                    )}
-                  </div>
-                  <div className="reader-topbar-center">
-                    <div className="reader-topbar-title">
-                      {readerTitle || tr('Читалка', 'Leser')}
-                    </div>
-                    <div className="webapp-muted reader-topbar-meta">
-                      {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
-                      {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
-                    </div>
-                  </div>
-                  <div className="reader-topbar-right">
-                    <button
-                      type="button"
-                      className={`secondary-button ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
-                      onClick={() => {
-                        const nextMode = readerReadingMode === 'vertical' ? 'horizontal' : 'vertical';
-                        setReaderReadingMode(nextMode);
-                        if (readerDocumentId) {
-                          syncReaderState({ reading_mode: nextMode });
-                        }
-                      }}
-                      disabled={!readerContent}
-                    >
-                      {readerReadingMode === 'vertical' ? '↕︎' : '↔︎'}
-                    </button>
-                    <button
-                      type="button"
-                      className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
-                      onClick={toggleReaderTimerPause}
-                      disabled={!readerHasContent}
-                    >
-                      {readerTimerPaused
-                        ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}`
-                        : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => setReaderImmersive((prev) => !prev)}
-                      disabled={!readerHasContent}
-                    >
-                      {readerImmersive ? tr('Обычный', 'Normal') : tr('Иммерсивный', 'Immersiv')}
-                    </button>
-                  </div>
-                </div>
+              <section className={`webapp-section webapp-reader ${readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : ''}`} ref={readerRef}>
+                {(() => {
+                  const showLibraryMode = !readerHasContent || readerArchiveOpen || !readerImmersive;
+                  const searchRaw = String(readerLibrarySearch || '').trim().toLowerCase();
+                  const visibleLibraryItems = readerDocuments.filter((item) => {
+                    const isArchived = Boolean(item?.is_archived);
+                    if (!readerIncludeArchived && isArchived) return false;
+                    if (!searchRaw) return true;
+                    const haystack = `${item?.title || ''} ${item?.source_type || ''} ${item?.target_lang || ''}`.toLowerCase();
+                    return haystack.includes(searchRaw);
+                  });
 
-                {!readerImmersive && readerArchiveOpen && (
-                  <section className="reader-archive-panel">
-                    <div className="reader-archive-head">
-                      <strong className="reader-archive-title">{tr('Архив документов', 'Archivierte Dokumente')}</strong>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => setReaderArchiveOpen(false)}
-                      >
-                        {tr('К читалке', 'Zum Leser')}
-                      </button>
-                    </div>
-                    {readerLibraryLoading && <div className="webapp-muted">{tr('Обновляем архив...', 'Archiv wird aktualisiert...')}</div>}
-                    {!readerLibraryLoading && readerDocuments.filter((item) => Boolean(item?.is_archived)).length === 0 && (
-                      <div className="webapp-muted">{tr('В архиве пока пусто.', 'Archiv ist noch leer.')}</div>
-                    )}
-                    {!readerLibraryLoading && readerDocuments.filter((item) => Boolean(item?.is_archived)).length > 0 && (
-                      <div className="reader-archive-grid">
-                        {readerDocuments
-                          .filter((item) => Boolean(item?.is_archived))
-                          .map((item) => {
-                            const coverUrl = getReaderCoverUrl(item);
-                            const initials = getReaderCoverInitials(item?.title);
-                            const [fromColor, toColor] = getReaderCoverGradient(item);
-                            const meta = buildReaderArchiveMeta(item);
-                            return (
+                  if (showLibraryMode) {
+                    return (
+                      <div className="reader-library-mode">
+                        <div className="reader-topbar">
+                          <div className="reader-topbar-left">
+                            {isFocusedSection('reader') && (
+                              <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                                {tr('← Назад', '← Zurueck')}
+                              </button>
+                            )}
+                          </div>
+                          <div className="reader-topbar-center">
+                            <div className="reader-topbar-title">{tr('Библиотека', 'Bibliothek')}</div>
+                            <div className="webapp-muted reader-topbar-meta">
+                              {tr('Книги и тексты для чтения', 'Buecher und Texte zum Lesen')}
+                            </div>
+                          </div>
+                          <div className="reader-topbar-right">
+                            <button type="button" className="secondary-button" onClick={() => loadReaderLibrary()}>
+                              {readerLibraryLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
+                            </button>
+                          </div>
+                        </div>
+
+                        <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
+                          <label className="webapp-field">
+                            <span>{tr('URL или текст', 'URL oder Text')}</span>
+                            <textarea
+                              rows={4}
+                              value={readerInput}
+                              onChange={(event) => setReaderInput(event.target.value)}
+                              placeholder={tr(
+                                'Вставьте URL статьи/книги (включая PDF) или сам текст.',
+                                'Fuege URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
+                              )}
+                            />
+                          </label>
+                          <label className="webapp-field">
+                            <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
+                            <input
+                              type="file"
+                              accept=".txt,.md,.pdf,text/plain,application/pdf"
+                              onChange={handleReaderFileSelect}
+                            />
+                            {readerSelectedFile && (
+                              <small className="webapp-muted">
+                                {tr('Выбран файл', 'Datei gewaehlt')}: {readerSelectedFile.name}
+                              </small>
+                            )}
+                          </label>
+                          <div className="webapp-actions">
+                            <button type="submit" className="primary-button" disabled={readerLoading}>
+                              {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser oeffnen')}
+                            </button>
+                          </div>
+                        </form>
+
+                        {readerError && (
+                          <div className="webapp-error">
+                            <span>{readerError}</span>
+                            {readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' && (
+                              <div>
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={handleBillingUpgrade}
+                                  disabled={billingActionLoading}
+                                >
+                                  {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Upgrade', 'Upgrade')}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        <section className="reader-library">
+                          <div className="reader-library-head">
+                            <h4>{readerArchiveOpen ? tr('Архив', 'Archiv') : tr('Моя библиотека', 'Meine Bibliothek')}</h4>
+                            <div className="reader-library-head-actions">
+                              <label className="menu-toggle-row">
+                                <input
+                                  type="checkbox"
+                                  checked={readerIncludeArchived}
+                                  onChange={(event) => setReaderIncludeArchived(event.target.checked)}
+                                />
+                                <span>{tr('Показывать архив', 'Archiv zeigen')}</span>
+                              </label>
+                            </div>
+                          </div>
+                          <label className="webapp-field">
+                            <span>{tr('Поиск по библиотеке', 'Suche in Bibliothek')}</span>
+                            <input
+                              type="text"
+                              value={readerLibrarySearch}
+                              onChange={(event) => setReaderLibrarySearch(event.target.value)}
+                              placeholder={tr('Название книги...', 'Buchtitel...')}
+                            />
+                          </label>
+                          {readerLibraryError && <div className="webapp-error">{readerLibraryError}</div>}
+                          {!readerLibraryError && visibleLibraryItems.length === 0 && (
+                            <div className="webapp-muted">{tr('Библиотека пока пуста.', 'Bibliothek ist noch leer.')}</div>
+                          )}
+                          {visibleLibraryItems.length > 0 && (
+                            <div className="reader-library-grid">
+                              {visibleLibraryItems.map((item) => {
+                                const progress = Math.max(0, Math.min(100, Number(item?.progress_percent || 0)));
+                                const coverUrl = getReaderCoverUrl(item);
+                                const initials = getReaderCoverInitials(item?.title);
+                                const [fromColor, toColor] = getReaderCoverGradient(item);
+                                const meta = buildReaderArchiveMeta(item);
+                                return (
+                                  <button
+                                    type="button"
+                                    key={`reader-doc-${item.id}`}
+                                    className={`reader-library-card ${Number(readerDocumentId) === Number(item.id) ? 'is-active' : ''}`}
+                                    onClick={() => openReaderDocument(item.id)}
+                                  >
+                                    <div
+                                      className="reader-library-cover"
+                                      style={{ background: `linear-gradient(160deg, ${fromColor}, ${toColor})` }}
+                                    >
+                                      {coverUrl ? (
+                                        <img src={coverUrl} alt="" loading="lazy" className="reader-archive-cover-img" />
+                                      ) : (
+                                        <span className="reader-archive-cover-fallback">{initials}</span>
+                                      )}
+                                    </div>
+                                    <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
+                                    <div className="reader-library-meta">
+                                      <span>{tr('Прогресс', 'Fortschritt')}: {Math.round(progress)}%</span>
+                                      {meta && <span>{meta}</span>}
+                                    </div>
+                                    <div className="reader-library-actions" onClick={(event) => event.stopPropagation()}>
+                                      <button
+                                        type="button"
+                                        className="reader-lib-action"
+                                        onClick={() => renameReaderDocument(item.id, item.title)}
+                                        title={tr('Переименовать', 'Umbenennen')}
+                                      >
+                                        ✎
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="reader-lib-action"
+                                        onClick={() => archiveReaderDocument(item.id, !Boolean(item?.is_archived))}
+                                        title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
+                                      >
+                                        {Boolean(item?.is_archived) ? '↺' : '⤓'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="reader-lib-action is-danger"
+                                        onClick={() => deleteReaderDocument(item.id)}
+                                        title={tr('Удалить', 'Loeschen')}
+                                      >
+                                        ×
+                                      </button>
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </section>
+
+                        {readerDocumentId && (
+                          <section className="reader-audio-panel">
+                            <div className="reader-audio-head">
+                              <strong>{tr('Оффлайн-аудио документа', 'Offline-Audio des Dokuments')}</strong>
+                            </div>
+                            <div className="reader-audio-actions">
                               <button
                                 type="button"
-                                key={`reader-archive-${item.id}`}
-                                className="reader-archive-card"
-                                onClick={async () => {
-                                  setReaderArchiveOpen(false);
-                                  await openReaderDocument(item.id);
-                                }}
+                                className="secondary-button"
+                                onClick={() => downloadReaderAudio(true)}
+                                disabled={readerAudioLoading}
                               >
-                                <div
-                                  className="reader-archive-cover"
-                                  style={{ background: `linear-gradient(160deg, ${fromColor}, ${toColor})` }}
-                                >
-                                  {coverUrl ? (
-                                    <img
-                                      src={coverUrl}
-                                      alt=""
-                                      loading="lazy"
-                                      className="reader-archive-cover-img"
-                                    />
-                                  ) : (
-                                    <span className="reader-archive-cover-fallback">
-                                      {initials}
-                                    </span>
-                                  )}
-                                  <span className="reader-archive-open-icon" aria-hidden="true">📄</span>
-                                </div>
-                                <div className="reader-archive-card-title" title={String(item?.title || '')}>
-                                  {String(item?.title || tr('Без названия', 'Ohne Titel'))}
-                                </div>
-                                {meta && (
-                                  <div className="webapp-muted reader-archive-card-meta" title={meta}>
-                                    {meta}
-                                  </div>
-                                )}
+                                {readerAudioLoading ? tr('Готовим...', 'Erstellen...') : tr('Скачать весь документ', 'Ganzes Dokument herunterladen')}
                               </button>
-                            );
-                          })}
+                            </div>
+                            {readerAudioError && <div className="webapp-error">{readerAudioError}</div>}
+                            {readerAudioPreviewUrl && (
+                              <div className="reader-audio-preview">
+                                <audio controls preload="metadata" src={readerAudioPreviewUrl} className="reader-audio-player" />
+                                <div className="reader-audio-preview-actions">
+                                  <a
+                                    href={readerAudioPreviewUrl}
+                                    download={readerAudioPreviewName || 'reader_audio.wav'}
+                                    className="secondary-button"
+                                  >
+                                    {tr('Скачать файл', 'Datei herunterladen')}
+                                  </a>
+                                  <button type="button" className="secondary-button" onClick={closeReaderAudioPreview}>
+                                    {tr('Назад', 'Zurueck')}
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </section>
+                        )}
                       </div>
-                    )}
-                  </section>
-                )}
+                    );
+                  }
 
-                {!readerImmersive && !readerArchiveOpen && (
-                <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
-                  <label className="webapp-field">
-                    <span>{tr('Ссылка или текст', 'Link oder Text')}</span>
-                    <textarea
-                      rows={4}
-                      value={readerInput}
-                      onChange={(event) => setReaderInput(event.target.value)}
-                      placeholder={tr(
-                        'Вставьте URL статьи/книги (включая PDF) или сам текст.',
-                        'Fuege die URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
-                      )}
-                    />
-                  </label>
-                  <label className="webapp-field">
-                    <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
-                    <input
-                      type="file"
-                      accept=".txt,.md,.pdf,text/plain,application/pdf"
-                      onChange={handleReaderFileSelect}
-                    />
-                    {readerSelectedFile && (
-                      <small className="webapp-muted">
-                        {tr('Выбран файл', 'Datei gewaehlt')}: {readerSelectedFile.name}
-                      </small>
-                    )}
-                  </label>
-                  <div className="webapp-actions">
-                    <button type="submit" className="primary-button" disabled={readerLoading}>
-                      {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser oeffnen')}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => setReaderImmersive(true)}
-                      disabled={!readerHasContent}
-                    >
-                      {tr('Иммерсивный ON', 'Immersiv ON')}
-                    </button>
-                    <button
-                      type="button"
-                      className={`secondary-button ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
-                      onClick={() => {
-                        const nextMode = readerReadingMode === 'vertical' ? 'horizontal' : 'vertical';
-                        setReaderReadingMode(nextMode);
-                        if (readerDocumentId) {
-                          syncReaderState({ reading_mode: nextMode });
-                        }
-                      }}
-                      disabled={!readerContent}
-                    >
-                      {readerReadingMode === 'vertical'
-                        ? tr('Режим: вертикально', 'Modus: vertikal')
-                        : tr('Режим: горизонтально', 'Modus: horizontal')}
-                    </button>
-                    <button
-                      type="button"
-                      className={`reader-bookmark-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
-                      onClick={() => {
-                        const mark = computeReaderProgressPercent();
-                        setReaderBookmarkPercent(mark);
-                        if (readerDocumentId) {
-                          syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
-                        }
-                      }}
-                      disabled={!readerContent || !readerDocumentId}
-                      title={tr('Поставить закладку на текущей позиции', 'Lesezeichen an der aktuellen Position setzen')}
-                    >
-                      {tr('Закладка', 'Lesezeichen')}
-                    </button>
-                    {readerDetectedLanguage && (
-                      <span className="webapp-muted">
-                        {tr('Язык текста', 'Textsprache')}: {readerDetectedLanguage.toUpperCase()}
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
-                      onClick={toggleReaderTimerPause}
-                      disabled={!readerHasContent}
-                      title={tr('Пауза/продолжение таймера чтения', 'Lese-Timer pausieren/fortsetzen')}
-                    >
-                      {readerTimerPaused ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}` : `${tr('Чтение', 'Lesen')}: ${formatReaderTimer(readerElapsedTotalSeconds)}`}
-                    </button>
-                    <span className={`reader-immersive-indicator ${readerImmersive ? 'is-on' : 'is-off'}`}>
-                      {readerImmersive
-                        ? tr('Иммерсивный: ON', 'Immersiv: ON')
-                        : tr('Иммерсивный: OFF', 'Immersiv: OFF')}
-                    </span>
-                  </div>
-                  <label className="webapp-field">
-                    <span>{tr('Чувствительность свайпа', 'Swipe-Empfindlichkeit')}</span>
-                    <select
-                      value={readerSwipeSensitivity}
-                      onChange={(event) => setReaderSwipeSensitivity(event.target.value)}
-                    >
-                      <option value="high">{tr('Высокая', 'Hoch')}</option>
-                      <option value="medium">{tr('Средняя', 'Mittel')}</option>
-                      <option value="low">{tr('Низкая', 'Niedrig')}</option>
-                    </select>
-                  </label>
-                  <label className="webapp-field">
-                    <span>{tr('Размер шрифта', 'Schriftgroesse')}</span>
-                    <input
-                      type="range"
-                      min="14"
-                      max="28"
-                      step="1"
-                      value={readerFontSize}
-                      onChange={(event) => setReaderFontSize(Number(event.target.value))}
-                    />
-                    <small className="webapp-muted">{readerFontSize}px</small>
-                  </label>
-                  <label className="webapp-field">
-                    <span>{tr('Жирность текста', 'Schriftstaerke')}</span>
-                    <input
-                      type="range"
-                      min="400"
-                      max="700"
-                      step="50"
-                      value={readerFontWeight}
-                      onChange={(event) => setReaderFontWeight(Number(event.target.value))}
-                    />
-                    <small className="webapp-muted">{readerFontWeight}</small>
-                  </label>
-                </form>
-                )}
-                {!readerImmersive && !readerArchiveOpen && readerDocumentId && (
-                  <section className="reader-audio-panel">
-                    <div className="reader-audio-head">
-                      <strong>{tr('Оффлайн-аудио документа', 'Offline-Audio des Dokuments')}</strong>
-                    </div>
-                    <div className="reader-audio-actions">
-                      {readerPageCount > 0 && (
-                        <>
-                          <label className="webapp-field">
-                            <span>{tr('Страницы от', 'Seiten von')}</span>
-                            <input
-                              type="number"
-                              min="1"
-                              max={readerPageCount}
-                              value={readerAudioFromPage}
-                              onChange={(event) => setReaderAudioFromPage(event.target.value)}
-                            />
-                          </label>
-                          <label className="webapp-field">
-                            <span>{tr('до', 'bis')}</span>
-                            <input
-                              type="number"
-                              min="1"
-                              max={readerPageCount}
-                              value={readerAudioToPage}
-                              onChange={(event) => setReaderAudioToPage(event.target.value)}
-                            />
-                          </label>
+                  return (
+                    <>
+                      <div className="reader-topbar reader-immersive-topbar">
+                        <div className="reader-topbar-left">
+                          <button
+                            type="button"
+                            className="section-home-back"
+                            onClick={() => {
+                              setReaderArchiveOpen(true);
+                              setReaderImmersive(false);
+                              setReaderSettingsOpen(false);
+                            }}
+                          >
+                            {tr('← Архив', '← Archiv')}
+                          </button>
+                        </div>
+                        <div className="reader-topbar-center">
+                          <div className="reader-topbar-title">
+                            {readerTitle || tr('Читалка', 'Leser')}
+                          </div>
+                          <div className="webapp-muted reader-topbar-meta">
+                            {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
+                            {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
+                          </div>
+                        </div>
+                        <div className="reader-topbar-right">
+                          <button
+                            type="button"
+                            className={`secondary-button ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
+                            onClick={() => {
+                              const nextMode = readerReadingMode === 'vertical' ? 'horizontal' : 'vertical';
+                              setReaderReadingMode(nextMode);
+                              if (readerDocumentId) {
+                                syncReaderState({ reading_mode: nextMode });
+                              }
+                            }}
+                            disabled={!readerContent}
+                            title={tr('Направление прокрутки', 'Scroll-Richtung')}
+                          >
+                            {readerReadingMode === 'vertical' ? '↕︎' : '↔︎'}
+                          </button>
+                          <button
+                            type="button"
+                            className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
+                            onClick={toggleReaderTimerPause}
+                            disabled={!readerHasContent}
+                          >
+                            {readerTimerPaused
+                              ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}`
+                              : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
+                          </button>
+                          <button
+                            type="button"
+                            className={`reader-bookmark-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
+                            onClick={() => {
+                              const mark = computeReaderProgressPercent();
+                              setReaderBookmarkPercent(mark);
+                              if (readerDocumentId) {
+                                syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
+                              }
+                            }}
+                            disabled={!readerContent || !readerDocumentId}
+                          >
+                            {tr('Закладка', 'Lesezeichen')}
+                          </button>
                           <button
                             type="button"
                             className="secondary-button"
-                            onClick={() => downloadReaderAudio(false)}
-                            disabled={readerAudioLoading}
+                            onClick={() => setReaderSettingsOpen(true)}
+                            title={tr('Настройки чтения', 'Leseeinstellungen')}
                           >
-                            {readerAudioLoading ? tr('Готовим...', 'Erstellen...') : tr('Скачать диапазон', 'Bereich herunterladen')}
-                          </button>
-                        </>
-                      )}
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => downloadReaderAudio(true)}
-                        disabled={readerAudioLoading}
-                      >
-                        {readerAudioLoading ? tr('Готовим...', 'Erstellen...') : tr('Скачать весь документ', 'Ganzes Dokument herunterladen')}
-                      </button>
-                    </div>
-                    {readerAudioError && <div className="webapp-error">{readerAudioError}</div>}
-                    {readerAudioPreviewUrl && (
-                      <div className="reader-audio-preview">
-                        <audio controls preload="metadata" src={readerAudioPreviewUrl} className="reader-audio-player" />
-                        <div className="reader-audio-preview-actions">
-                          <a
-                            href={readerAudioPreviewUrl}
-                            download={readerAudioPreviewName || 'reader_audio.wav'}
-                            className="secondary-button"
-                          >
-                            {tr('Скачать файл', 'Datei herunterladen')}
-                          </a>
-                          <button type="button" className="secondary-button" onClick={closeReaderAudioPreview}>
-                            {tr('Назад', 'Zurueck')}
+                            ⋯
                           </button>
                         </div>
                       </div>
-                    )}
-                </section>
-                )}
-                {!readerImmersive && !readerArchiveOpen && readerError && (
-                  <div className="webapp-error" style={{ display: 'grid', gap: 8 }}>
-                    <span>{readerError}</span>
-                    {readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' && (
-                      <div>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={handleBillingUpgrade}
-                          disabled={billingActionLoading}
+
+                      {readerContent && (
+                        <article
+                          ref={readerArticleRef}
+                          className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${readerPageCount > 0 ? 'has-pages' : ''}`}
+                          onClick={handleReaderStructuredClick}
+                          onMouseUp={handleReaderArticleMouseUp}
+                          onWheel={handleReaderPageWheel}
+                          onTouchStart={handleReaderPageTouchStart}
+                          onTouchEnd={handleReaderArticleTouchEnd}
                         >
-                          {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Upgrade', 'Upgrade')}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {!readerImmersive && !readerArchiveOpen && (
-                <section className="reader-library">
-                  <div className="reader-library-head">
-                    <h4>{tr('Библиотека', 'Bibliothek')}</h4>
-                    <div className="reader-library-head-actions">
-                      <label className="menu-toggle-row">
-                        <input
-                          type="checkbox"
-                          checked={readerIncludeArchived}
-                          onChange={(event) => setReaderIncludeArchived(event.target.checked)}
-                        />
-                        <span>{tr('Показывать архив', 'Archiv zeigen')}</span>
-                      </label>
-                      <button type="button" className="secondary-button" onClick={loadReaderLibrary} disabled={readerLibraryLoading}>
-                        {readerLibraryLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
-                      </button>
-                    </div>
-                  </div>
-                  {readerLibraryError && <div className="webapp-error">{readerLibraryError}</div>}
-                  {!readerLibraryError && readerDocuments.length === 0 && (
-                    <div className="webapp-muted">{tr('Пока библиотека пуста. Откройте текст или книгу, и она появится здесь.', 'Die Bibliothek ist noch leer. Oeffne Text oder Buch, dann erscheint es hier.')}</div>
-                  )}
-                  {readerDocuments.length > 0 && (
-                    <div className="reader-library-grid">
-                      {readerDocuments.map((item) => {
-                        const progress = Math.max(0, Math.min(100, Number(item?.progress_percent || 0)));
-                        const badgeStyle = { '--reader-progress': `${progress}%` };
-                        return (
+                          {readerPageCount > 0 ? (
+                            <div className="reader-pages-layout">
+                              <div
+                                className="reader-page-sheet"
+                                style={{
+                                  '--reader-font-size': `${readerFontSize}px`,
+                                  '--reader-font-weight': readerFontWeight,
+                                }}
+                              >
+                                {isCurrentReaderPageBookmarked && (
+                                  <span className="reader-page-bookmark-indicator" aria-hidden="true" />
+                                )}
+                                <div className="reader-page-sheet-inner">
+                                  {renderReaderStructuredText()}
+                                </div>
+                                <div className="reader-page-num">
+                                  {tr('Стр.', 'S.')}{' '}{readerCurrentPage}{readerPageCount > 0 ? ` / ${readerPageCount}` : ''}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            renderReaderStructuredText()
+                          )}
+                        </article>
+                      )}
+
+                      {readerSettingsOpen && (
+                        <div className="reader-settings-sheet-wrap" role="dialog" aria-modal="true">
                           <button
                             type="button"
-                            key={`reader-doc-${item.id}`}
-                            className={`reader-library-card ${Number(readerDocumentId) === Number(item.id) ? 'is-active' : ''}`}
-                            onClick={() => openReaderDocument(item.id)}
-                          >
-                            <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
-                            <div className="reader-library-meta">
-                              <span>{String(item.source_type || 'text').toUpperCase()}</span>
-                              <span>{String(item.target_lang || '').toUpperCase()}</span>
-                            </div>
-                            <div className="reader-library-progress-ring" style={badgeStyle}>
-                              <span>{Math.round(progress)}%</span>
-                            </div>
-                            <div className="reader-library-actions" onClick={(event) => event.stopPropagation()}>
+                            className="reader-settings-sheet-backdrop"
+                            aria-label={tr('Закрыть', 'Schliessen')}
+                            onClick={() => setReaderSettingsOpen(false)}
+                          />
+                          <div className="reader-settings-sheet">
+                            <div className="reader-settings-sheet-head">
+                              <strong>{tr('Настройки чтения', 'Leseeinstellungen')}</strong>
                               <button
                                 type="button"
-                                className="reader-lib-action"
-                                onClick={() => renameReaderDocument(item.id, item.title)}
-                                title={tr('Переименовать', 'Umbenennen')}
-                              >
-                                ✎
-                              </button>
-                              <button
-                                type="button"
-                                className="reader-lib-action"
-                                onClick={() => archiveReaderDocument(item.id, !Boolean(item?.is_archived))}
-                                title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
-                              >
-                                {Boolean(item?.is_archived) ? '↺' : '⤓'}
-                              </button>
-                              <button
-                                type="button"
-                                className="reader-lib-action is-danger"
-                                onClick={() => deleteReaderDocument(item.id)}
-                                title={tr('Удалить', 'Loeschen')}
+                                className="secondary-button"
+                                onClick={() => setReaderSettingsOpen(false)}
                               >
                                 ×
                               </button>
                             </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </section>
-                )}
-                {readerContent && !readerArchiveOpen && (
-                  <article
-                    ref={readerArticleRef}
-                    className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${readerPageCount > 0 ? 'has-pages' : ''}`}
-                    onClick={handleReaderStructuredClick}
-                    onMouseUp={handleReaderArticleMouseUp}
-                    onWheel={handleReaderPageWheel}
-                    onTouchStart={handleReaderPageTouchStart}
-                    onTouchEnd={handleReaderArticleTouchEnd}
-                  >
-                    {readerSourceType && !readerImmersive && (
-                      <div className="reader-meta">
-                        {readerTitle && <span>{tr('Книга', 'Buch')}: {readerTitle}</span>}
-                        <span>{tr('Источник', 'Quelle')}: {readerSourceType.toUpperCase()}</span>
-                        {readerSourceUrl && <span>{readerSourceUrl}</span>}
-                        <span>{tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%</span>
-                        <span>{tr('Закладка', 'Lesezeichen')}: {Math.round(readerBookmarkPercent)}%</span>
-                      </div>
-                    )}
-                    {readerPageCount > 0 ? (
-                      <div className="reader-pages-layout">
-                        {!readerImmersive && (
-                        <div className="reader-pages-controls">
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            onClick={() => goReaderPage(-1)}
-                            disabled={readerCurrentPage <= 1}
-                          >
-                            {tr('Назад', 'Zurueck')}
-                          </button>
-                          <span>
-                            {tr('Страница', 'Seite')} {readerCurrentPage} / {readerPageCount}
-                          </span>
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            onClick={() => goReaderPage(1)}
-                            disabled={readerCurrentPage >= readerPageCount}
-                          >
-                            {tr('Вперёд', 'Weiter')}
-                          </button>
-                        </div>
-                        )}
-                        <div
-                          className="reader-page-sheet"
-                          style={{
-                            '--reader-font-size': `${readerFontSize}px`,
-                            '--reader-font-weight': readerFontWeight,
-                          }}
-                        >
-                          {isCurrentReaderPageBookmarked && (
-                            <span className="reader-page-bookmark-indicator" aria-hidden="true" />
-                          )}
-                          <div className="reader-page-sheet-inner">
-                            {renderReaderStructuredText()}
-                          </div>
-                          <div className="reader-page-num">
-                            {tr('Стр.', 'S.')}{' '}{readerCurrentPage}{readerPageCount > 0 ? ` / ${readerPageCount}` : ''}
+                            <label className="webapp-field">
+                              <span>{tr('Размер шрифта', 'Schriftgroesse')}</span>
+                              <input
+                                type="range"
+                                min="14"
+                                max="28"
+                                step="1"
+                                value={readerFontSize}
+                                onChange={(event) => setReaderFontSize(Number(event.target.value))}
+                              />
+                              <small className="webapp-muted">{readerFontSize}px</small>
+                            </label>
+                            <label className="webapp-field">
+                              <span>{tr('Жирность текста', 'Schriftstaerke')}</span>
+                              <input
+                                type="range"
+                                min="400"
+                                max="700"
+                                step="50"
+                                value={readerFontWeight}
+                                onChange={(event) => setReaderFontWeight(Number(event.target.value))}
+                              />
+                              <small className="webapp-muted">{readerFontWeight}</small>
+                            </label>
+                            <label className="webapp-field">
+                              <span>{tr('Чувствительность свайпа', 'Swipe-Empfindlichkeit')}</span>
+                              <select
+                                value={readerSwipeSensitivity}
+                                onChange={(event) => setReaderSwipeSensitivity(event.target.value)}
+                              >
+                                <option value="high">{tr('Высокая', 'Hoch')}</option>
+                                <option value="medium">{tr('Средняя', 'Mittel')}</option>
+                                <option value="low">{tr('Низкая', 'Niedrig')}</option>
+                              </select>
+                            </label>
+                            <div className="reader-immersive-indicator is-on">{tr('Immersive: ON', 'Immersive: ON')}</div>
                           </div>
                         </div>
-                      </div>
-                    ) : (
-                      renderReaderStructuredText()
-                    )}
-                  </article>
-                )}
+                      )}
+                    </>
+                  );
+                })()}
               </section>
             )}
 
