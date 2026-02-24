@@ -1605,6 +1605,8 @@ body {
   border-radius: 18px;
   padding: 18px;
   box-shadow: 0 16px 32px rgba(8, 11, 26, 0.35);
+  box-sizing: border-box;
+  overflow-x: hidden;
 }
 
 .webapp-reader.is-immersive {
@@ -1630,6 +1632,8 @@ body {
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.28);
   background: rgba(15, 23, 42, 0.45);
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .webapp-reader.is-immersive .reader-topbar {
@@ -1786,8 +1790,16 @@ body {
 
 .reader-immersive-left {
   min-width: 0;
-  display: grid;
-  gap: 5px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  column-gap: 6px;
+  row-gap: 4px;
+}
+
+.reader-immersive-left .reader-topbar-title,
+.reader-immersive-left .reader-topbar-meta {
+  width: 100%;
 }
 
 .reader-immersive-center {
@@ -1800,6 +1812,16 @@ body {
   display: grid;
   gap: 6px;
   justify-items: end;
+}
+
+.reader-topbar-collapse-btn {
+  min-width: 34px;
+  padding: 0 10px;
+}
+
+.reader-immersive-center .reader-bookmark-btn {
+  min-width: 40px;
+  padding: 0 10px;
 }
 
 .reader-immersive-indicator {
@@ -1829,6 +1851,8 @@ body {
 .webapp-reader-form {
   display: grid;
   gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .webapp-reader-form textarea {
@@ -1846,6 +1870,8 @@ body {
   line-height: 1.72;
   max-height: 68vh;
   overflow: auto;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .webapp-reader.is-immersive .reader-article {
@@ -1946,6 +1972,8 @@ body {
   padding: 12px;
   display: grid;
   gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .reader-library-head {
@@ -2068,6 +2096,8 @@ body {
   background: rgba(8, 15, 30, 0.55);
   display: grid;
   gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .reader-audio-actions {

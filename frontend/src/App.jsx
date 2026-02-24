@@ -158,6 +158,7 @@ function AppInner() {
   const [readerImmersive, setReaderImmersive] = useState(false);
   const [readerArchiveOpen, setReaderArchiveOpen] = useState(false);
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
+  const [readerTopbarCollapsed, setReaderTopbarCollapsed] = useState(false);
   const [readerLibrarySearch, setReaderLibrarySearch] = useState('');
   const [readerFontSize, setReaderFontSize] = useState(18);
   const [readerFontWeight, setReaderFontWeight] = useState(500);
@@ -5588,6 +5589,7 @@ function AppInner() {
       setReaderLiveSeconds(0);
       setReaderTimerPaused(false);
       setReaderImmersive(true);
+      setReaderTopbarCollapsed(false);
       setReaderArchiveOpen(false);
       setReaderSettingsOpen(false);
       setSelectedSections(new Set(['reader']));
@@ -5859,6 +5861,7 @@ function AppInner() {
       setReaderLiveSeconds(0);
       setReaderTimerPaused(false);
       setReaderImmersive(true);
+      setReaderTopbarCollapsed(false);
       setReaderArchiveOpen(false);
       setReaderSettingsOpen(false);
       setSelectedSections(new Set(['reader']));
@@ -10119,12 +10122,30 @@ function AppInner() {
                             onClick={() => {
                               setReaderArchiveOpen(true);
                               setReaderImmersive(false);
+                              setReaderTopbarCollapsed(false);
                               setReaderSettingsOpen(false);
                             }}
                           >
                             {tr('← Архив', '← Archiv')}
                           </button>
+                          <button
+                            type="button"
+                            className="secondary-button reader-topbar-collapse-btn"
+                            onClick={() => {
+                              const next = !readerTopbarCollapsed;
+                              setReaderTopbarCollapsed(next);
+                              if (next) {
+                                setReaderSettingsOpen(false);
+                              }
+                            }}
+                            title={readerTopbarCollapsed
+                              ? tr('Развернуть панель', 'Leiste aufklappen')
+                              : tr('Свернуть панель', 'Leiste einklappen')}
+                          >
+                            {readerTopbarCollapsed ? '▾' : '▴'}
+                          </button>
                         </div>
+                        {!readerTopbarCollapsed && (
                         <div className="reader-immersive-center">
                           <button
                             type="button"
@@ -10156,6 +10177,8 @@ function AppInner() {
                             {readerReadingMode === 'vertical' ? '↕︎' : '↔︎'}
                           </button>
                         </div>
+                        )}
+                        {!readerTopbarCollapsed && (
                         <div className="reader-immersive-right">
                           <button
                             type="button"
@@ -10176,6 +10199,7 @@ function AppInner() {
                               : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
                           </button>
                         </div>
+                        )}
                       </div>
 
                       {readerContent && (
