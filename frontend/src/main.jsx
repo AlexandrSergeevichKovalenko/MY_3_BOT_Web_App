@@ -1,13 +1,25 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { registerSW } from 'virtual:pwa-register'
+import { detectAppMode } from './utils/appMode.js'
 // ./ в начале пути означает, что файл App.jsx находится в той же папке, что и текущий файл main.jsx
 import App from './App.jsx'
 
 // Импортируем стили для компонентов LiveKit для красивого отображения
 import '@livekit/components-styles';
 
-registerSW({ immediate: true });
+const appMode = detectAppMode();
+if (appMode === 'telegram') {
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations()
+      .then((registrations) => Promise.all(registrations.map((item) => item.unregister())))
+      .catch(() => {
+        // ignore SW cleanup errors in Telegram webview
+      });
+  }
+} else {
+  registerSW({ immediate: true });
+}
 
 // Полная последовательность команд: 
 // "Эй, браузер, дай мне твой document. 
