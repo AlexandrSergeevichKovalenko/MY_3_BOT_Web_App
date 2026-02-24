@@ -12119,16 +12119,54 @@ def cleanup_system_messages_now():
     return jsonify({"ok": True})
 
 
+def _format_selection_dictionary_explanation(result: dict, source_lang: str, target_lang: str) -> str:
+    if not isinstance(result, dict):
+        return "Перевод не найден."
+    source_text = str(result.get("word_source") or "").strip()
+    target_text = str(result.get("word_target") or "").strip()
+    detected = str(result.get("detected_language") or "").strip().lower()
+    detected_side = "source" if detected == "source" else ("target" if detected == "target" else "unknown")
+    lines = []
+    lines.append(f"Перевод: {target_text or '—'}")
+    lines.append(f"Исходное слово: {source_text or '—'}")
+    lines.append(
+        f"Язык слова: {detected_side} ({(source_lang or '').lower()} -> {(target_lang or '').lower()})"
+    )
+    meanings = result.get("meanings") or {}
+    primary = meanings.get("primary") if isinstance(meanings, dict) else None
+    if isinstance(primary, dict):
+        val = str(primary.get("value") or "").strip()
+        ctx = str(primary.get("context") or "").strip()
+        if val:
+            lines.append(f"Основной вариант: {val}" + (f" ({ctx})" if ctx else ""))
+    usage_note = str(result.get("usage_note") or "").strip()
+    if usage_note:
+        lines.append(f"Примечание: {usage_note}")
+    examples = result.get("usage_examples") or []
+    if isinstance(examples, list):
+        for item in examples[:3]:
+            if not isinstance(item, dict):
+                continue
+            src = str(item.get("source") or "").strip()
+            tgt = str(item.get("target") or "").strip()
+            if src or tgt:
+                lines.append(f"- {src} -> {tgt}")
+    return "\n".join(lines)
+
+
 @app.route("/api/webapp/explain", methods=["POST"])
 def explain_webapp_translation():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
+    mode = str(payload.get("mode") or "").strip().lower()
     original_text = (payload.get("original_text") or "").strip()
     user_translation = (payload.get("user_translation") or "").strip()
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
-    if not original_text or not user_translation:
+    if not original_text:
+        return jsonify({"error": "original_text обязателен"}), 400
+    if mode != "selection_context" and not user_translation:
         return jsonify({"error": "original_text и user_translation обязательны"}), 400
 
     if not _telegram_hash_is_valid(init_data):
@@ -12143,7 +12181,20 @@ def explain_webapp_translation():
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
-        if _is_legacy_ru_de_pair(source_lang, target_lang):
+        if mode == "selection_context":
+            dictionary_result = asyncio.run(
+                run_dictionary_lookup_multilang(
+                    word=original_text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
+            explanation = _format_selection_dictionary_explanation(
+                dictionary_result,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        elif _is_legacy_ru_de_pair(source_lang, target_lang):
             explanation = asyncio.run(run_translation_explanation(original_text, user_translation))
         else:
             explanation = asyncio.run(

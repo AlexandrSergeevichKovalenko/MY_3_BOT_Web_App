@@ -4987,6 +4987,7 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
+          mode: 'selection_context',
           original_text: cleaned,
           user_translation: quick.translation || cleaned,
         }),
