@@ -9889,7 +9889,7 @@ function AppInner() {
             )}
 
             {!flashcardsOnly && isSectionVisible('reader') && (
-              <section className={`webapp-section webapp-reader ${readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : ''}`} ref={readerRef}>
+              <section className={`webapp-section webapp-reader ${readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : ''} ${readerHasContent && readerImmersive && !readerArchiveOpen && readerTopbarCollapsed ? 'is-topbar-collapsed' : ''}`} ref={readerRef}>
                 {(() => {
                   const showLibraryMode = !readerHasContent || readerArchiveOpen || !readerImmersive;
                   const searchRaw = String(readerLibrarySearch || '').trim().toLowerCase();
@@ -10107,6 +10107,7 @@ function AppInner() {
 
                   return (
                     <>
+                      {!readerTopbarCollapsed && (
                       <div className="reader-topbar reader-immersive-topbar">
                         <div className="reader-immersive-left">
                           <div className="reader-topbar-title">
@@ -10145,7 +10146,6 @@ function AppInner() {
                             {readerTopbarCollapsed ? '▾' : '▴'}
                           </button>
                         </div>
-                        {!readerTopbarCollapsed && (
                         <div className="reader-immersive-center">
                           <button
                             type="button"
@@ -10177,8 +10177,6 @@ function AppInner() {
                             {readerReadingMode === 'vertical' ? '↕︎' : '↔︎'}
                           </button>
                         </div>
-                        )}
-                        {!readerTopbarCollapsed && (
                         <div className="reader-immersive-right">
                           <button
                             type="button"
@@ -10199,8 +10197,21 @@ function AppInner() {
                               : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
                           </button>
                         </div>
-                        )}
                       </div>
+                      )}
+
+                      {readerTopbarCollapsed && (
+                        <div className="reader-topbar-peek">
+                          <button
+                            type="button"
+                            className="secondary-button reader-topbar-peek-btn"
+                            onClick={() => setReaderTopbarCollapsed(false)}
+                            title={tr('Показать панель чтения', 'Leseleiste anzeigen')}
+                          >
+                            ▾
+                          </button>
+                        </div>
+                      )}
 
                       {readerContent && (
                         <article
