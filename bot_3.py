@@ -6810,14 +6810,14 @@ def main():
                 minute=minute,
             )
 
-    scheduler.add_job(
-        lambda: submit_async(send_german_news, CallbackContext(application=application)), 
-        "cron",
-        hour=4,
-        minute=1,
-        #day_of_week = "mon,tue,thu,fri,sat"
-        day_of_week = "mon, fri"
-    )
+    # scheduler.add_job(
+    #     lambda: submit_async(send_german_news, CallbackContext(application=application)), 
+    #     "cron",
+    #     hour=4,
+    #     minute=1,
+    #     #day_of_week = "mon,tue,thu,fri,sat"
+    #     day_of_week = "mon, fri"
+    # )
     
     scheduler.add_job(lambda: submit_async(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="fri", hour=15, minute=15)
     scheduler.add_job(lambda: submit_async(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="mon", hour=6, minute=5) 
@@ -6833,7 +6833,7 @@ def main():
 
     scheduler.add_job(lambda: submit_async(get_yesterdays_mistakes_for_audio_message, CallbackContext(application=application)), "cron", hour=4, minute=15)
 
-    scheduler.add_job(lambda: submit_async(send_user_analytics_bar_charts, CallbackContext(application=application), period="day"), "cron", hour= 22, minute=39, day_of_week = "sun")
+    # scheduler.add_job(lambda: submit_async(send_user_analytics_bar_charts, CallbackContext(application=application), period="day"), "cron", hour= 22, minute=39, day_of_week = "sun")
 
     # планировщик по отправке аналитике:
     scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="day"), "cron", hour=22, minute=40, day_of_week="sun")
