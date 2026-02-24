@@ -1,6 +1,5 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { registerSW } from 'virtual:pwa-register'
 import { detectAppMode } from './utils/appMode.js'
 // ./ в начале пути означает, что файл App.jsx находится в той же папке, что и текущий файл main.jsx
 import App from './App.jsx'
@@ -9,7 +8,13 @@ import App from './App.jsx'
 import '@livekit/components-styles';
 
 const appMode = detectAppMode();
-if (appMode === 'telegram') {
+const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
+const isWebappPath = typeof window !== 'undefined'
+  && (window.location.pathname === '/webapp' || window.location.pathname === '/webapp/review');
+const hasTelegramUrlHints = params.has('tgWebAppData') || params.get('mode') === 'webapp' || isWebappPath;
+const shouldTreatAsTelegram = appMode === 'telegram' || hasTelegramUrlHints;
+
+if (shouldTreatAsTelegram) {
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     navigator.serviceWorker.getRegistrations()
       .then((registrations) => Promise.all(registrations.map((item) => item.unregister())))
@@ -18,7 +23,13 @@ if (appMode === 'telegram') {
       });
   }
 } else {
-  registerSW({ immediate: true });
+  import('virtual:pwa-register')
+    .then(({ registerSW }) => {
+      registerSW({ immediate: true });
+    })
+    .catch(() => {
+      // ignore SW registration errors in non-PWA environments
+    });
 }
 
 // Полная последовательность команд: 

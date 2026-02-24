@@ -43,6 +43,11 @@ class ErrorBoundary extends React.Component {
             <div className="webapp-error">
               {this.state.error?.message || (isDe ? 'Unbekannter Fehler' : 'Неизвестная ошибка')}
             </div>
+            {this.state.error?.stack && (
+              <pre className="webapp-error webapp-error-stack">
+                {String(this.state.error.stack).slice(0, 1200)}
+              </pre>
+            )}
           </div>
         </div>
       );
