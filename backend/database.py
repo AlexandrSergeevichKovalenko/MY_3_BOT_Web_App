@@ -1282,6 +1282,10 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_card_srs_state (user_id, due_at);
             """)
             cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_card_srs_state_user_created
+                ON bt_3_card_srs_state (user_id, created_at);
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_card_srs_state_user_status
                 ON bt_3_card_srs_state (user_id, status);
             """)
@@ -2421,6 +2425,56 @@ def get_webapp_dictionary_entries(
     return items
 
 
+def get_dictionary_entries_for_tts_prewarm(
+    *,
+    limit: int = 200,
+    lookback_hours: int = 168,
+) -> list[dict]:
+    safe_limit = max(1, min(int(limit), 2000))
+    safe_hours = max(1, min(int(lookback_hours), 24 * 90))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    user_id,
+                    word_ru,
+                    translation_de,
+                    word_de,
+                    translation_ru,
+                    source_lang,
+                    target_lang,
+                    response_json,
+                    created_at
+                FROM bt_3_webapp_dictionary_queries
+                WHERE created_at >= NOW() - (%s || ' hours')::interval
+                ORDER BY created_at DESC
+                LIMIT %s;
+                """,
+                (safe_hours, safe_limit),
+            )
+            rows = cursor.fetchall()
+
+    items: list[dict] = []
+    for row in rows:
+        items.append(
+            {
+                "id": int(row[0]),
+                "user_id": int(row[1]),
+                "word_ru": row[2],
+                "translation_de": row[3],
+                "word_de": row[4],
+                "translation_ru": row[5],
+                "source_lang": row[6],
+                "target_lang": row[7],
+                "response_json": row[8],
+                "created_at": row[9].isoformat() if row[9] else None,
+            }
+        )
+    return items
+
+
 def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
     if not entry_id:
         return None
@@ -3259,6 +3313,8 @@ def count_new_cards_introduced_today(
     target_lang: str | None = None,
 ) -> int:
     now_utc = now_utc or datetime.now(timezone.utc)
+    day_start = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             language_filter_sql, language_params = _build_language_pair_filter(
@@ -3273,13 +3329,42 @@ def count_new_cards_introduced_today(
                 JOIN bt_3_webapp_dictionary_queries q
                   ON q.id = s.card_id AND q.user_id = s.user_id
                 WHERE s.user_id = %s
-                  AND DATE(s.created_at AT TIME ZONE 'UTC') = DATE(%s AT TIME ZONE 'UTC')
+                  AND s.created_at >= %s
+                  AND s.created_at < %s
                   {language_filter_sql};
                 """,
-                [int(user_id), now_utc, *language_params],
+                [int(user_id), day_start, day_end, *language_params],
             )
             row = cursor.fetchone()
             return int(row[0] if row else 0)
+
+
+def has_available_new_srs_cards(
+    user_id: int,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang,
+                target_lang,
+                table_alias="q",
+            )
+            cursor.execute(
+                f"""
+                SELECT 1
+                FROM bt_3_webapp_dictionary_queries q
+                LEFT JOIN bt_3_card_srs_state s
+                  ON s.user_id = q.user_id AND s.card_id = q.id
+                WHERE q.user_id = %s
+                  AND s.id IS NULL
+                  {language_filter_sql}
+                LIMIT 1;
+                """,
+                [int(user_id), *language_params],
+            )
+            return cursor.fetchone() is not None
 
 
 def count_available_new_srs_cards(

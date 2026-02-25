@@ -72,6 +72,7 @@ import tempfile
 import base64
 import time
 import random
+import threading
 import http.cookiejar
 import re
 import html
@@ -153,6 +154,7 @@ from backend.database import (
     ensure_webapp_tables,
     get_pending_daily_sentences,
     get_webapp_dictionary_entries,
+    get_dictionary_entries_for_tts_prewarm,
     get_webapp_translation_history,
     get_latest_daily_sentences,
     save_webapp_dictionary_query,
@@ -176,7 +178,7 @@ from backend.database import (
     get_next_new_srs_candidate,
     count_due_srs_cards,
     count_new_cards_introduced_today,
-    count_available_new_srs_cards,
+    has_available_new_srs_cards,
     ensure_new_srs_state,
     get_card_srs_state,
     upsert_card_srs_state,
@@ -339,6 +341,15 @@ SEPARABLE_PREFIX_QUIZ_TOPICS = ("finance", "work", "travel", "daily_life", "comm
 _SEPARABLE_PREFIX_QUIZ_CACHE: dict[str, dict] = {}
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 FSRS_PROFILING_ENABLED = str(os.getenv("FSRS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TTS_PREWARM_ENABLED = str(os.getenv("TTS_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TTS_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("TTS_PREWARM_INTERVAL_MINUTES") or "60").strip()))
+TTS_PREWARM_BATCH_SIZE = max(10, min(500, int((os.getenv("TTS_PREWARM_BATCH_SIZE") or "120").strip())))
+TTS_PREWARM_MAX_CHARS_PER_RUN = max(500, min(200000, int((os.getenv("TTS_PREWARM_MAX_CHARS_PER_RUN") or "12000").strip())))
+TTS_PREWARM_LOOKBACK_HOURS = max(1, min(24 * 90, int((os.getenv("TTS_PREWARM_LOOKBACK_HOURS") or "168").strip())))
+TTS_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_START_HOUR") or "1").strip())))
+TTS_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
+TTS_PREWARM_ALLOW_DAYTIME = str(os.getenv("TTS_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
+_TTS_PREWARM_LOCK = threading.Lock()
 
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
@@ -1097,17 +1108,17 @@ def _compute_srs_queue_info(
         source_lang=source_lang,
         target_lang=target_lang,
     )
-    available_new_total = count_available_new_srs_cards(
+    has_new_candidates = has_available_new_srs_cards(
         user_id=user_id,
         source_lang=source_lang,
         target_lang=target_lang,
     )
     new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
-    new_remaining_today = min(new_remaining_today, max(0, int(available_new_total)))
+    new_remaining_today = new_remaining_today if has_new_candidates else 0
     return {
         "due_count": int(due_count),
         "new_remaining_today": int(new_remaining_today),
-        "available_new_total": int(available_new_total),
+        "available_new_total": int(1 if has_new_candidates else 0),
     }
 
 
@@ -4505,6 +4516,148 @@ def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAU
         logging.warning("Failed to persist TTS audio cache: %s", exc)
     _TTS_CACHE[key] = audio
     return audio
+
+
+def _hour_in_window(hour: int, start_hour: int, end_hour: int) -> bool:
+    if start_hour == end_hour:
+        return True
+    if start_hour < end_hour:
+        return start_hour <= hour < end_hour
+    return hour >= start_hour or hour < end_hour
+
+
+def _should_run_tts_prewarm_now(tz_name: str) -> bool:
+    if TTS_PREWARM_ALLOW_DAYTIME:
+        return True
+    try:
+        local_now = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        local_now = datetime.utcnow()
+    return _hour_in_window(
+        int(local_now.hour),
+        int(TTS_PREWARM_OFFPEAK_START_HOUR),
+        int(TTS_PREWARM_OFFPEAK_END_HOUR),
+    )
+
+
+def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
+    if not TTS_PREWARM_ENABLED and not force:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+    if not force and not _should_run_tts_prewarm_now(tz_name):
+        return {"ok": True, "skipped": True, "reason": "outside_offpeak_window"}
+    if not _TTS_PREWARM_LOCK.acquire(blocking=False):
+        return {"ok": True, "skipped": True, "reason": "already_running"}
+
+    started_at = time.perf_counter()
+    try:
+        candidates = get_dictionary_entries_for_tts_prewarm(
+            limit=max(TTS_PREWARM_BATCH_SIZE * 3, TTS_PREWARM_BATCH_SIZE),
+            lookback_hours=TTS_PREWARM_LOOKBACK_HOURS,
+        )
+        processed = 0
+        generated = 0
+        cached_hits = 0
+        skipped_empty = 0
+        skipped_budget = 0
+        errors = 0
+        total_chars = 0
+        seen_keys: set[str] = set()
+
+        for item in candidates:
+            if processed >= TTS_PREWARM_BATCH_SIZE:
+                break
+
+            response_json = item.get("response_json")
+            if isinstance(response_json, str):
+                try:
+                    response_json = json.loads(response_json)
+                except Exception:
+                    response_json = {}
+            if not isinstance(response_json, dict):
+                response_json = {}
+
+            source_lang = _normalize_short_lang_code(
+                item.get("source_lang") or response_json.get("source_lang"),
+                fallback="ru",
+            )
+            target_lang = _normalize_short_lang_code(
+                item.get("target_lang") or response_json.get("target_lang"),
+                fallback="de",
+            )
+            source_text, target_text = _resolve_entry_texts_for_pair(
+                item,
+                response_json,
+                source_lang,
+                target_lang,
+            )
+            text = _normalize_utterance_text(target_text or source_text)
+            if not text:
+                skipped_empty += 1
+                continue
+
+            if total_chars + len(text) > TTS_PREWARM_MAX_CHARS_PER_RUN:
+                skipped_budget += 1
+                break
+
+            voice = _TTS_VOICES.get(target_lang, _TTS_VOICES["de"])
+            cache_key = _tts_cache_key(target_lang, voice, _TTS_SPEED_DEFAULT, text)
+            if cache_key in seen_keys:
+                continue
+            seen_keys.add(cache_key)
+
+            processed += 1
+            total_chars += len(text)
+            if get_tts_audio_cache(cache_key):
+                cached_hits += 1
+                continue
+
+            try:
+                language_code = _TTS_LANG_CODES.get(target_lang, _TTS_LANG_CODES["de"])
+                audio_mp3 = _synthesize_mp3(
+                    text,
+                    language=language_code,
+                    voice=voice,
+                    speed=_TTS_SPEED_DEFAULT,
+                )
+                upsert_tts_audio_cache(
+                    cache_key=cache_key,
+                    language=target_lang,
+                    voice=voice,
+                    speed=_TTS_SPEED_DEFAULT,
+                    source_text=text,
+                    audio_mp3=audio_mp3,
+                )
+                generated += 1
+            except Exception:
+                errors += 1
+                logging.exception("TTS prewarm failed for dictionary_entry_id=%s", item.get("id"))
+
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        result = {
+            "ok": True,
+            "processed": processed,
+            "generated": generated,
+            "cached_hits": cached_hits,
+            "skipped_empty": skipped_empty,
+            "skipped_budget": skipped_budget,
+            "errors": errors,
+            "chars": total_chars,
+            "elapsed_ms": elapsed_ms,
+            "force": bool(force),
+            "tz": tz_name,
+        }
+        logging.info("✅ TTS prewarm finished: %s", result)
+        return result
+    finally:
+        _TTS_PREWARM_LOCK.release()
+
+
+def _run_tts_prewarm_scheduler_job() -> None:
+    try:
+        tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip()
+        _dispatch_tts_prewarm(force=False, tz_name=tz_name)
+    except Exception:
+        logging.exception("❌ TTS prewarm scheduler failed")
 
 
 def _chain_cache_key(chunks: list[str], lang: str, speed: float) -> str:
@@ -9784,13 +9937,18 @@ def review_srs_card():
 
     interval_days = int(persisted.get("interval_days") or 0)
     due_at = persisted.get("due_at")
-    payload_next = _build_next_srs_payload(
-        user_id=int(user_id),
-        source_lang=source_lang,
-        target_lang=target_lang,
-        now_utc=datetime.now(timezone.utc),
-        include_queue_info=False,
-    )
+    payload_next = None
+    try:
+        payload_next = _build_next_srs_payload(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            now_utc=datetime.now(timezone.utc),
+            include_queue_info=False,
+        )
+    except Exception:
+        # Review is already persisted; next-card hydration must not break the user flow.
+        logging.exception("Failed to build next FSRS payload after review")
     mark("build_next")
     log_profile(int(user_id), int(card_id), error_text=None)
     return jsonify(
@@ -12898,6 +13056,15 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=300,
         )
+    if TTS_PREWARM_ENABLED:
+        _audio_scheduler.add_job(
+            _run_tts_prewarm_scheduler_job,
+            "interval",
+            minutes=TTS_PREWARM_INTERVAL_MINUTES,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=120,
+        )
     _audio_scheduler.start()
     logging.info("✅ Audio scheduler started: %02d:%02d %s", hour, minute, tz_name)
 
@@ -12945,6 +13112,22 @@ def send_private_analytics_now():
         target_date = datetime.utcnow().date()
 
     result = _dispatch_private_analytics(target_date)
+    return jsonify(result)
+
+
+@app.route("/api/admin/prewarm-tts", methods=["POST"])
+def prewarm_tts_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    force = bool(payload.get("force", True))
+    tz_name = str(payload.get("tz") or os.getenv("AUDIO_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    result = _dispatch_tts_prewarm(force=force, tz_name=tz_name)
     return jsonify(result)
 
 

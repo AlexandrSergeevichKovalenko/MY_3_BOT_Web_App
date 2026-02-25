@@ -2076,6 +2076,11 @@ function AppInner() {
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.');
       setSrsError(friendly);
       setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${friendly}`);
+      try {
+        await loadSrsNextCard();
+      } catch (_) {
+        // noop: preserve original review error message
+      }
     } finally {
       setSrsSubmitting(false);
       setSrsSubmittingRating(null);
