@@ -501,14 +501,16 @@ def _build_language_pair_filter(
         "LOWER(COALESCE("
         f"NULLIF({alias_prefix}source_lang, ''), "
         f"NULLIF({alias_prefix}response_json->>'source_lang', ''), "
-        f"NULLIF({alias_prefix}response_json#>>'{{language_pair,source_lang}}', '')"
+        f"NULLIF({alias_prefix}response_json#>>'{{language_pair,source_lang}}', ''), "
+        "'ru'"
         "))"
     )
     target_expr = (
         "LOWER(COALESCE("
         f"NULLIF({alias_prefix}target_lang, ''), "
         f"NULLIF({alias_prefix}response_json->>'target_lang', ''), "
-        f"NULLIF({alias_prefix}response_json#>>'{{language_pair,target_lang}}', '')"
+        f"NULLIF({alias_prefix}response_json#>>'{{language_pair,target_lang}}', ''), "
+        "'de'"
         "))"
     )
     clause = f" AND {source_expr} = %s AND {target_expr} = %s"
@@ -761,6 +763,10 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_webapp_dictionary_queries (user_id, folder_id);
             """)
             cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_pair_created
+                ON bt_3_webapp_dictionary_queries (user_id, source_lang, target_lang, created_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_schema_migrations (
                     migration_key TEXT PRIMARY KEY,
                     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -905,6 +911,74 @@ def ensure_webapp_tables() -> None:
                     EXCEPTION
                         WHEN duplicate_object THEN NULL;
                     END;
+                END $$;
+                """
+            )
+            # Repair incomplete language metadata for dictionary rows inserted by legacy flows.
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM bt_3_schema_migrations
+                        WHERE migration_key = '2026_02_25_dictionary_lang_metadata_repair'
+                    ) THEN
+                        UPDATE bt_3_webapp_dictionary_queries
+                        SET
+                            source_lang = COALESCE(
+                                NULLIF(source_lang, ''),
+                                NULLIF(response_json->>'source_lang', ''),
+                                NULLIF(response_json#>>'{language_pair,source_lang}', ''),
+                                'ru'
+                            ),
+                            target_lang = COALESCE(
+                                NULLIF(target_lang, ''),
+                                NULLIF(response_json->>'target_lang', ''),
+                                NULLIF(response_json#>>'{language_pair,target_lang}', ''),
+                                'de'
+                            )
+                        WHERE source_lang IS NULL
+                           OR target_lang IS NULL
+                           OR source_lang = ''
+                           OR target_lang = '';
+
+                        UPDATE bt_3_webapp_dictionary_queries
+                        SET response_json = jsonb_set(
+                            jsonb_set(
+                                COALESCE(response_json, '{}'::jsonb),
+                                '{source_lang}',
+                                to_jsonb(COALESCE(NULLIF(source_lang, ''), 'ru')::text),
+                                true
+                            ),
+                            '{target_lang}',
+                            to_jsonb(COALESCE(NULLIF(target_lang, ''), 'de')::text),
+                            true
+                        )
+                        WHERE response_json IS NULL
+                           OR COALESCE(response_json->>'source_lang', '') = ''
+                           OR COALESCE(response_json->>'target_lang', '') = '';
+
+                        UPDATE bt_3_webapp_dictionary_queries
+                        SET response_json = jsonb_set(
+                            jsonb_set(
+                                COALESCE(response_json, '{}'::jsonb),
+                                '{language_pair,source_lang}',
+                                to_jsonb(COALESCE(NULLIF(source_lang, ''), 'ru')::text),
+                                true
+                            ),
+                            '{language_pair,target_lang}',
+                            to_jsonb(COALESCE(NULLIF(target_lang, ''), 'de')::text),
+                            true
+                        )
+                        WHERE response_json IS NULL
+                           OR COALESCE(response_json#>>'{language_pair,source_lang}', '') = ''
+                           OR COALESCE(response_json#>>'{language_pair,target_lang}', '') = '';
+
+                        INSERT INTO bt_3_schema_migrations (migration_key)
+                        VALUES ('2026_02_25_dictionary_lang_metadata_repair')
+                        ON CONFLICT (migration_key) DO NOTHING;
+                    END IF;
                 END $$;
                 """
             )

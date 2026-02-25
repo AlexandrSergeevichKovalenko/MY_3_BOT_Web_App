@@ -739,20 +739,35 @@ function AppInner() {
       audio.play().catch(() => resolve());
     });
     const playWebSpeech = () => new Promise((resolve) => {
-      if (!('speechSynthesis' in window)) {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
         resolve();
+      };
+      const watchdog = window.setTimeout(finish, 4000);
+      if (!('speechSynthesis' in window)) {
+        window.clearTimeout(watchdog);
+        finish();
         return;
       }
       try {
         const utterance = new SpeechSynthesisUtterance(normalizedText);
         utterance.lang = language;
         utterance.rate = 0.95;
-        utterance.onend = () => resolve();
-        utterance.onerror = () => resolve();
+        utterance.onend = () => {
+          window.clearTimeout(watchdog);
+          finish();
+        };
+        utterance.onerror = () => {
+          window.clearTimeout(watchdog);
+          finish();
+        };
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(utterance);
       } catch (error) {
-        resolve();
+        window.clearTimeout(watchdog);
+        finish();
       }
     });
 
@@ -11008,7 +11023,7 @@ function AppInner() {
                                 || '';
                               const feelVisible = !!flashcardFeelVisibleMap[entry.id];
                               const feelLines = formatFeelLines(feel);
-                              const previewNavLocked = previewAudioPlaying || !previewAudioReady;
+                              const previewNavLocked = previewAudioPlaying;
                               const previewTtsKey = `flashcard-preview-${entry.id}`;
                               const previewTtsLoading = previewAudioPlaying || isTtsPending(previewTtsKey);
 
