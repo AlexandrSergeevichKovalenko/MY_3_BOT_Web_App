@@ -5,6 +5,7 @@ import os
 import hashlib
 from contextlib import contextmanager
 import json
+import random
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, date, timedelta, time as dt_time
 from pathlib import Path
@@ -1256,6 +1257,40 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_telegram_sysmsg_pending
                 ON bt_3_telegram_system_messages (deleted_at, created_at);
             """)
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_support_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    from_role TEXT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    admin_telegram_id BIGINT,
+                    telegram_chat_id BIGINT,
+                    telegram_message_id BIGINT,
+                    reply_to_id BIGINT,
+                    is_read_by_user BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_support_messages_user_created
+                ON bt_3_support_messages (user_id, created_at ASC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_support_messages_unread
+                ON bt_3_support_messages (user_id, is_read_by_user, from_role, created_at DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_support_messages_telegram_ref
+                ON bt_3_support_messages (telegram_chat_id, telegram_message_id);
+                """
+            )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_card_srs_state (
                     id BIGSERIAL PRIMARY KEY,
@@ -3144,46 +3179,61 @@ def get_flashcard_set(
                 base_params.append(folder_id)
             elif folder_mode == "none":
                 base_where += " AND folder_id IS NULL"
-            base_params.extend([user_id, max(set_size - len(wrong_ids), 0)])
-            cursor.execute(f"""
-                SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
-                FROM bt_3_webapp_dictionary_queries
-                WHERE {base_where}
-                  AND id NOT IN (
-                      SELECT entry_id
-                      FROM bt_3_flashcard_seen
-                      WHERE user_id = %s
-                        AND seen_at >= NOW() - INTERVAL '2 days'
-                  )
-                ORDER BY RANDOM()
-                LIMIT %s;
-            """, base_params)
-            random_rows = cursor.fetchall()
-
-            if len(random_rows) < max(set_size - len(wrong_ids), 0):
-                fallback_where = (
-                    "user_id = %s "
-                    "AND id <> ALL(%s::bigint[]) "
-                    "AND COALESCE(response_json->>'sentence_origin', '') <> 'gpt_seed'"
-                )
-                fallback_params = [user_id, wrong_ids or [0]]
-                if language_filter_sql:
-                    fallback_where += language_filter_sql
-                    fallback_params.extend(language_params_no_alias)
-                if folder_mode == "folder" and folder_id is not None:
-                    fallback_where += " AND folder_id = %s"
-                    fallback_params.append(folder_id)
-                elif folder_mode == "none":
-                    fallback_where += " AND folder_id IS NULL"
-                fallback_params.append(max(set_size - len(wrong_ids), 0))
+            needed = max(set_size - len(wrong_ids), 0)
+            random_rows = []
+            if needed > 0:
+                sample_cap = max(needed * 12, 300)
+                sample_params = [*base_params, user_id, sample_cap]
                 cursor.execute(f"""
-                SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
-                FROM bt_3_webapp_dictionary_queries
-                WHERE {fallback_where}
-                ORDER BY RANDOM()
-                LIMIT %s;
-            """, fallback_params)
-                random_rows = cursor.fetchall()
+                    SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE {base_where}
+                      AND id NOT IN (
+                          SELECT entry_id
+                          FROM bt_3_flashcard_seen
+                          WHERE user_id = %s
+                            AND seen_at >= NOW() - INTERVAL '2 days'
+                      )
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                """, sample_params)
+                candidate_rows = list(cursor.fetchall())
+                random.shuffle(candidate_rows)
+                random_rows = candidate_rows[:needed]
+
+                if len(random_rows) < needed:
+                    fallback_where = (
+                        "user_id = %s "
+                        "AND id <> ALL(%s::bigint[]) "
+                        "AND COALESCE(response_json->>'sentence_origin', '') <> 'gpt_seed'"
+                    )
+                    fallback_params = [user_id, wrong_ids or [0]]
+                    if language_filter_sql:
+                        fallback_where += language_filter_sql
+                        fallback_params.extend(language_params_no_alias)
+                    if folder_mode == "folder" and folder_id is not None:
+                        fallback_where += " AND folder_id = %s"
+                        fallback_params.append(folder_id)
+                    elif folder_mode == "none":
+                        fallback_where += " AND folder_id IS NULL"
+                    fallback_cap = max(needed * 20, 600)
+                    fallback_params.append(fallback_cap)
+                    cursor.execute(f"""
+                        SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
+                        FROM bt_3_webapp_dictionary_queries
+                        WHERE {fallback_where}
+                        ORDER BY created_at DESC
+                        LIMIT %s;
+                    """, fallback_params)
+                    fallback_rows = list(cursor.fetchall())
+                    existing_ids = {row[0] for row in random_rows}
+                    for row in fallback_rows:
+                        if row[0] in existing_ids:
+                            continue
+                        random_rows.append(row)
+                        existing_ids.add(row[0])
+                        if len(random_rows) >= needed:
+                            break
 
             if wrong_ids:
                 wrong_where = (
@@ -3871,6 +3921,166 @@ def mark_telegram_system_message_deleted(
                     """,
                     (int(row_id),),
                 )
+
+
+def create_support_message(
+    *,
+    user_id: int,
+    from_role: str,
+    message_text: str,
+    admin_telegram_id: int | None = None,
+    telegram_chat_id: int | None = None,
+    telegram_message_id: int | None = None,
+    reply_to_id: int | None = None,
+    is_read_by_user: bool | None = None,
+) -> dict:
+    normalized_role = str(from_role or "").strip().lower()
+    if normalized_role not in {"user", "admin", "system"}:
+        raise ValueError("from_role must be one of: user, admin, system")
+    text = str(message_text or "").strip()
+    if not text:
+        raise ValueError("message_text is required")
+    if is_read_by_user is None:
+        is_read_by_user = normalized_role != "admin"
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_support_messages (
+                    user_id,
+                    from_role,
+                    message_text,
+                    admin_telegram_id,
+                    telegram_chat_id,
+                    telegram_message_id,
+                    reply_to_id,
+                    is_read_by_user
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, user_id, from_role, message_text, admin_telegram_id, telegram_chat_id, telegram_message_id, reply_to_id, is_read_by_user, created_at;
+                """,
+                (
+                    int(user_id),
+                    normalized_role,
+                    text,
+                    int(admin_telegram_id) if admin_telegram_id is not None else None,
+                    int(telegram_chat_id) if telegram_chat_id is not None else None,
+                    int(telegram_message_id) if telegram_message_id is not None else None,
+                    int(reply_to_id) if reply_to_id is not None else None,
+                    bool(is_read_by_user),
+                ),
+            )
+            row = cursor.fetchone()
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]),
+        "from_role": str(row[2] or ""),
+        "message_text": str(row[3] or ""),
+        "admin_telegram_id": int(row[4]) if row[4] is not None else None,
+        "telegram_chat_id": int(row[5]) if row[5] is not None else None,
+        "telegram_message_id": int(row[6]) if row[6] is not None else None,
+        "reply_to_id": int(row[7]) if row[7] is not None else None,
+        "is_read_by_user": bool(row[8]),
+        "created_at": row[9].isoformat() if row[9] else None,
+    }
+
+
+def list_support_messages_for_user(*, user_id: int, limit: int = 100) -> list[dict]:
+    safe_limit = max(1, min(int(limit or 100), 500))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, from_role, message_text, admin_telegram_id, telegram_chat_id, telegram_message_id, reply_to_id, is_read_by_user, created_at
+                FROM bt_3_support_messages
+                WHERE user_id = %s
+                ORDER BY created_at ASC
+                LIMIT %s;
+                """,
+                (int(user_id), safe_limit),
+            )
+            rows = cursor.fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "user_id": int(row[1]),
+            "from_role": str(row[2] or ""),
+            "message_text": str(row[3] or ""),
+            "admin_telegram_id": int(row[4]) if row[4] is not None else None,
+            "telegram_chat_id": int(row[5]) if row[5] is not None else None,
+            "telegram_message_id": int(row[6]) if row[6] is not None else None,
+            "reply_to_id": int(row[7]) if row[7] is not None else None,
+            "is_read_by_user": bool(row[8]),
+            "created_at": row[9].isoformat() if row[9] else None,
+        }
+        for row in rows
+    ]
+
+
+def count_unread_support_messages_for_user(*, user_id: int) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_support_messages
+                WHERE user_id = %s
+                  AND from_role = 'admin'
+                  AND is_read_by_user = FALSE;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def mark_support_messages_read_for_user(*, user_id: int) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_support_messages
+                SET is_read_by_user = TRUE
+                WHERE user_id = %s
+                  AND from_role = 'admin'
+                  AND is_read_by_user = FALSE;
+                """,
+                (int(user_id),),
+            )
+            affected = cursor.rowcount
+    return int(affected or 0)
+
+
+def get_support_message_by_telegram_ref(*, telegram_chat_id: int, telegram_message_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, from_role, message_text, admin_telegram_id, telegram_chat_id, telegram_message_id, reply_to_id, is_read_by_user, created_at
+                FROM bt_3_support_messages
+                WHERE telegram_chat_id = %s
+                  AND telegram_message_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (int(telegram_chat_id), int(telegram_message_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]),
+        "from_role": str(row[2] or ""),
+        "message_text": str(row[3] or ""),
+        "admin_telegram_id": int(row[4]) if row[4] is not None else None,
+        "telegram_chat_id": int(row[5]) if row[5] is not None else None,
+        "telegram_message_id": int(row[6]) if row[6] is not None else None,
+        "reply_to_id": int(row[7]) if row[7] is not None else None,
+        "is_read_by_user": bool(row[8]),
+        "created_at": row[9].isoformat() if row[9] else None,
+    }
 
 
 def _map_daily_plan_item(row: tuple) -> dict:

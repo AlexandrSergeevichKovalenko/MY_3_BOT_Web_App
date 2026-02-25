@@ -37,8 +37,8 @@ const ADAPTIVE_SECONDS_PER_CHAR = 4;
 const ADAPTIVE_SECONDS_MAX = 180;
 const AUTO_NEXT_DELAY_OK_MS = 1100;
 const AUTO_NEXT_DELAY_FAIL_MS = 4500;
-const TILE_WIDTH = 92;
-const TILE_HEIGHT = 56;
+const TILE_WIDTH = 76;
+const TILE_HEIGHT = 62;
 
 const GERMAN_ARTICLES = new Set([
   'der', 'die', 'das', 'den', 'dem', 'des',
@@ -107,6 +107,10 @@ export default function BlocksTrainer({
   const autoNextRef = useRef(null);
   const snapSlotTimeoutRef = useRef(null);
   const tileMotionTimeoutsRef = useRef({});
+  const flyTimeoutsRef = useRef([]);
+  const revealInProgressRef = useRef(false);
+  const tilesRef = useRef([]);
+  const slotsRef = useRef([]);
 
   const type = useMemo(() => detectCardType(answer, cardType), [answer, cardType]);
   const targetTokens = useMemo(() => tokenize(answer, type), [answer, type]);
@@ -124,6 +128,7 @@ export default function BlocksTrainer({
   const [hoverSlotIndex, setHoverSlotIndex] = useState(null);
   const [snapSlotIndex, setSnapSlotIndex] = useState(null);
   const [tileMotionMap, setTileMotionMap] = useState({});
+  const [flyTokens, setFlyTokens] = useState([]);
 
   const allSlotsFilled = slots.length > 0 && slots.every((item) => item !== null);
   const isFinished = status !== 'idle';
@@ -151,19 +156,20 @@ export default function BlocksTrainer({
     const containerRect = containerRef.current?.getBoundingClientRect();
     if (!containerRect) return tileItems;
 
-    const leftPad = 16;
-    const rightPad = 16;
-    const topBase = 12;
+    const leftPad = 10;
+    const rightPad = 10;
+    const topBase = 8;
     const usableWidth = Math.max(containerRect.width - leftPad - rightPad, 220);
     const desiredTileWidth = tileWidthPx;
-    const cols = Math.max(3, Math.min(type === 'WORD' ? 8 : 5, Math.floor(usableWidth / (desiredTileWidth + 12))));
+    const baseCols = type === 'WORD' ? 4 : 3;
+    const cols = Math.max(2, Math.min(baseCols, Math.floor(usableWidth / (desiredTileWidth + 8))));
     const gapX = Math.max(8, Math.floor((usableWidth - cols * desiredTileWidth) / Math.max(cols - 1, 1)));
-    const gapY = 14;
+    const gapY = 10;
     const occupiedSet = new Set(currentSlots.filter(Boolean));
     const visibleCount = tileItems.filter((item) => !occupiedSet.has(item.id)).length;
     const rows = Math.max(1, Math.ceil(visibleCount / cols));
-    const targetHeight = Math.max(240, topBase + rows * (TILE_HEIGHT + gapY) + 28);
-    const boundedHeight = Math.min(targetHeight, 420);
+    const targetHeight = Math.max(214, topBase + rows * (TILE_HEIGHT + gapY) + 12);
+    const boundedHeight = Math.min(targetHeight, 360);
     setPlaygroundHeight(boundedHeight);
     const cellCoords = [];
     for (let r = 0; r < rows; r += 1) {
@@ -195,10 +201,8 @@ export default function BlocksTrainer({
       visibleIndex += 1;
       const baseX = leftPad + col * (desiredTileWidth + gapX);
       const baseY = topBase + row * (TILE_HEIGHT + gapY);
-      const jitterLimitX = Math.min(8, Math.max(2, Math.floor(gapX / 3)));
-      const jitterLimitY = Math.min(8, Math.max(2, Math.floor(gapY / 3)));
-      let x = baseX + (Math.random() * jitterLimitX * 2 - jitterLimitX);
-      let y = baseY + (Math.random() * jitterLimitY * 2 - jitterLimitY);
+      let x = baseX;
+      let y = baseY;
 
       const minX = leftPad;
       const maxX = Math.max(minX, leftPad + usableWidth - desiredTileWidth);
@@ -228,12 +232,20 @@ export default function BlocksTrainer({
   };
 
   useEffect(() => {
+    tilesRef.current = tiles;
+  }, [tiles]);
+
+  useEffect(() => {
+    slotsRef.current = slots;
+  }, [slots]);
+
+  useEffect(() => {
     const baseTiles = shuffle(
       targetTokens.map((text, idx) => ({
         id: `tile-${idx}`,
         text,
         targetIndex: idx,
-        angle: (Math.random() * 14 - 7),
+        angle: 0,
         slotIndex: null,
         x: 0,
         y: 0,
@@ -252,6 +264,10 @@ export default function BlocksTrainer({
     setHoverSlotIndex(null);
     setSnapSlotIndex(null);
     setTileMotionMap({});
+    setFlyTokens([]);
+    revealInProgressRef.current = false;
+    flyTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
+    flyTimeoutsRef.current = [];
     finishedRef.current = false;
     startAtRef.current = Date.now();
     if (autoNextRef.current) {
@@ -324,6 +340,7 @@ export default function BlocksTrainer({
       if (autoNextRef.current) clearTimeout(autoNextRef.current);
       if (snapSlotTimeoutRef.current) clearTimeout(snapSlotTimeoutRef.current);
       Object.values(tileMotionTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
+      flyTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
     };
   }, []);
 
@@ -607,6 +624,83 @@ export default function BlocksTrainer({
     setStatus(isCorrect ? 'correct' : 'wrong');
   };
 
+  const scheduleTimeout = (callback, delayMs) => {
+    const timeoutId = setTimeout(callback, delayMs);
+    flyTimeoutsRef.current.push(timeoutId);
+  };
+
+  const revealCorrectArrangementAnimated = () => {
+    if (revealInProgressRef.current) return;
+    if (!slotRects.length || slotRects.some((item) => !item)) return;
+    const currentTiles = Array.isArray(tilesRef.current) ? tilesRef.current : [];
+    if (!currentTiles.length) return;
+    revealInProgressRef.current = true;
+    setSelectedSlotIndex(null);
+    setHoverSlotIndex(null);
+    setDragTileId(null);
+
+    const plan = [];
+    targetTokens.forEach((_token, targetIndex) => {
+      const tile = currentTiles.find((item) => item.targetIndex === targetIndex);
+      if (!tile) return;
+      if (tile.slotIndex === targetIndex) return;
+      const sourceRect = tile.slotIndex !== null && slotRects[tile.slotIndex]
+        ? slotRects[tile.slotIndex]
+        : null;
+      const targetRect = slotRects[targetIndex];
+      if (!targetRect) return;
+      const fromX = sourceRect
+        ? sourceRect.left + Math.max(0, (sourceRect.width - tileWidthPx) / 2)
+        : Number(tile.x || 0);
+      const fromY = sourceRect
+        ? sourceRect.top + Math.max(0, (sourceRect.height - TILE_HEIGHT) / 2)
+        : Number(tile.y || 0);
+      const toX = targetRect.left + Math.max(0, (targetRect.width - tileWidthPx) / 2);
+      const toY = targetRect.top + Math.max(0, (targetRect.height - TILE_HEIGHT) / 2);
+      plan.push({
+        id: `fly-${tile.id}-${targetIndex}-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`,
+        tileId: tile.id,
+        targetIndex,
+        text: tile.text,
+        fromX,
+        fromY,
+        toX,
+        toY,
+      });
+    });
+    if (!plan.length) return;
+
+    plan.forEach((item, index) => {
+      const startDelay = index * 120;
+      const settleDelay = startDelay + 480;
+      const cleanupDelay = startDelay + 680;
+      scheduleTimeout(() => {
+        setFlyTokens((prev) => [...prev, {
+          ...item,
+          active: false,
+        }]);
+        scheduleTimeout(() => {
+          setFlyTokens((prev) => prev.map((fly) => (
+            fly.id === item.id ? { ...fly, active: true } : fly
+          )));
+        }, 30);
+      }, startDelay);
+      scheduleTimeout(() => {
+        moveTileToSlot(item.tileId, item.targetIndex);
+      }, settleDelay);
+      scheduleTimeout(() => {
+        setFlyTokens((prev) => prev.filter((fly) => fly.id !== item.id));
+      }, cleanupDelay);
+    });
+  };
+
+  useEffect(() => {
+    if (status !== 'timeout') return;
+    scheduleTimeout(() => {
+      revealCorrectArrangementAnimated();
+    }, 120);
+  }, [status, slotRects, targetTokens.length]);
+
   const displayAnswer = type === 'PHRASE' ? targetTokens.join(' ') : targetTokens.join('');
   const timerSeconds = timeLeftMs === null ? null : Math.ceil(timeLeftMs / 1000);
   const text = {
@@ -669,6 +763,22 @@ export default function BlocksTrainer({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
+        {flyTokens.map((fly) => (
+          <div
+            key={fly.id}
+            className={`blocks-fly-token ${fly.active ? 'is-active' : ''}`}
+            style={{
+              '--from-x': `${fly.fromX}px`,
+              '--from-y': `${fly.fromY}px`,
+              '--to-x': `${fly.toX}px`,
+              '--to-y': `${fly.toY}px`,
+              width: type === 'WORD' ? '60px' : undefined,
+              fontSize: type === 'WORD' ? '22px' : undefined,
+            }}
+          >
+            {fly.text}
+          </div>
+        ))}
         {tiles.filter((tile) => tile.slotIndex === null).map((tile) => (
           <button
             key={tile.id}

@@ -74,6 +74,7 @@ from backend.database import (
     get_dictionary_cache,
     upsert_dictionary_cache,
     save_webapp_dictionary_query,
+    create_support_message,
     get_or_create_dictionary_folder,
     record_telegram_system_message,
     get_pending_telegram_system_messages,
@@ -724,10 +725,27 @@ async def send_main_menu(update: Update, context: CallbackContext):
 
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+    chat_type = update.effective_chat.type if update.effective_chat else "private"
+    if chat_type in ("group", "supergroup"):
+        # ReplyKeyboard в группе больше не используем.
+        # await update.message.reply_text("⏳ Обновляем меню...", reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
+        # await update.message.reply_text("Используйте кнопки:", reply_markup=reply_markup)
+        bot_username = context.bot.username
+        if not bot_username:
+            bot_info = await context.bot.get_me()
+            bot_username = bot_info.username
+        webapp_url = get_webapp_deeplink(bot_username=bot_username)
+        await update.message.reply_text(
+            "✅ В группе используем Web App.\n"
+            f"Открыть приложение: {webapp_url}",
+            disable_web_page_preview=True,
+        )
+        return
+
     # 1️⃣ Удаляем старую клавиатуру
     await update.message.reply_text("⏳ Обновляем меню...", reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
 
-    # 2️⃣ Отправляем новое меню
+    # 2️⃣ Отправляем новое меню (только в личке)
     await update.message.reply_text("Используйте кнопки:", reply_markup=reply_markup)
 
 async def debug_message_handler(update: Update, context: CallbackContext):
@@ -806,6 +824,76 @@ def _is_admin_user(user_id: int | None) -> bool:
     if not user_id:
         return False
     return int(user_id) in get_admin_telegram_ids()
+
+
+_SUPPORT_USER_ID_RE = re.compile(r"Support User ID:\s*(\d+)", re.IGNORECASE)
+_SUPPORT_MESSAGE_ID_RE = re.compile(r"Support Message ID:\s*(\d+)", re.IGNORECASE)
+
+
+def _extract_support_target_from_reply_text(text: str) -> tuple[int | None, int | None]:
+    raw = str(text or "")
+    user_match = _SUPPORT_USER_ID_RE.search(raw)
+    message_match = _SUPPORT_MESSAGE_ID_RE.search(raw)
+    user_id = int(user_match.group(1)) if user_match else None
+    support_message_id = int(message_match.group(1)) if message_match else None
+    return user_id, support_message_id
+
+
+async def _try_handle_admin_support_reply(update: Update, context: CallbackContext, text: str) -> bool:
+    message = update.message
+    if not message or not message.from_user:
+        return False
+    if not _is_admin_user(message.from_user.id):
+        return False
+    if not (update.effective_chat and update.effective_chat.type == "private"):
+        return False
+    if not message.reply_to_message:
+        return False
+
+    reply_source_text = (
+        (message.reply_to_message.text or "")
+        or (message.reply_to_message.caption or "")
+    ).strip()
+    target_user_id, source_support_message_id = _extract_support_target_from_reply_text(reply_source_text)
+    if not target_user_id:
+        return False
+
+    try:
+        await asyncio.to_thread(
+            create_support_message,
+            user_id=int(target_user_id),
+            from_role="admin",
+            message_text=str(text or "").strip(),
+            admin_telegram_id=int(message.from_user.id),
+            reply_to_id=int(source_support_message_id) if source_support_message_id else None,
+            is_read_by_user=False,
+        )
+    except Exception as exc:
+        await message.reply_text(f"❌ Не удалось сохранить ответ техподдержки: {exc}")
+        return True
+
+    bot_username = context.bot.username
+    if not bot_username:
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+    webapp_url = get_webapp_deeplink("webapp", bot_username=bot_username)
+    reply_markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🛟 Открыть техподдержку", url=webapp_url)]]
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_user_id),
+            text=(
+                "🛟 У вас новое сообщение от администратора в разделе «Техподдержка».\n"
+                "Откройте WebApp и перейдите в этот раздел."
+            ),
+            reply_markup=reply_markup,
+        )
+    except Exception as exc:
+        logging.warning("Не удалось отправить уведомление пользователю %s: %s", target_user_id, exc)
+
+    await message.reply_text("✅ Ответ отправлен в WebApp пользователя.")
+    return True
 
 
 def _display_user_name(user) -> str:
@@ -1397,13 +1485,14 @@ async def send_morning_reminder(context:CallbackContext):
     # Формируем утреннее сообщение
     message = (
         f"🌅 {'Доброе утро' if time(2, 0) < time_now < time(10, 0) else ('Добрый день' if time(10, 1) < time_now < time(17, 0) else 'Добрый вечер')}!\n\n"
-        "Чтобы принять участие в переводе, нажмите на кнопку 📌 Выбрать тему. После выбора темы подтвердите начало с помощью кнопки 🚀 Начать перевод.\n\n"
-        "📌 Важно:\n"
-        "🔹 Переводите максимально точно и быстро.\n\n"
-        "🔹 После перевода всех предложений выполните 📜 Проверить перевод и подтвердите нажатием ✅ Завершить перевод.\n\n"
-        "🔹 В 09:05, 14:05 и 18:05 - промежуточные итоги по каждому участнику.\n\n"
-        "🔹 Итоговые результаты получим в 22:52.\n\n"
-        "🔹 Узнать свою статистику - жми 🟡 Посмотреть свою статистику.\n"
+        "Чтобы начать обучение, откройте приложение через кнопку WEB APP.\n\n"
+        "Что доступно в приложении:\n"
+        "🔹 Переводы и проверка предложений.\n"
+        "🔹 Карточки (FSRS, Quiz, Blocks, Дополни предложение).\n"
+        "🔹 Видео по слабым темам, словарь и читалка.\n"
+        "🔹 Практика с AI-учителем и прокачка навыков.\n"
+        "🔹 Дневной план и персональная аналитика прогресса.\n\n"
+        "🎯 Рекомендация: откройте раздел «Задачи на день» и выполняйте план по шагам.\n"
     )
 
     # формируем список команд
@@ -1420,19 +1509,41 @@ async def send_morning_reminder(context:CallbackContext):
     if not bot_username:
         bot_info = await context.bot.get_me()
         bot_username = bot_info.username
+    webapp_url = get_webapp_deeplink("webapp", bot_username=bot_username)
 
-    reply_markup = None
-    if bot_username:
-        private_url = f"https://t.me/{bot_username}?start=from_group"
-        reply_markup = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("💬 Перейти в личку", url=private_url)]]
-        )
-
-    await context.bot.send_message(
-        chat_id=BOT_GROUP_CHAT_ID_Deutsch,
-        text=message,
-        reply_markup=reply_markup,
+    group_reply_markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🚀 Открыть Web App", url=webapp_url)]]
     )
+    private_reply_markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🚀 Открыть приложение", url=webapp_url)]]
+    )
+
+    try:
+        targets = await _collect_quiz_delivery_targets(context)
+    except Exception:
+        logging.warning("⚠️ Не удалось собрать targets для morning reminder, отправляем только в группу", exc_info=True)
+        targets = [int(BOT_GROUP_CHAT_ID_Deutsch)]
+
+    for target_chat_id in targets:
+        try:
+            if int(target_chat_id) == int(BOT_GROUP_CHAT_ID_Deutsch):
+                await context.bot.send_message(
+                    chat_id=int(target_chat_id),
+                    text=message,
+                    reply_markup=group_reply_markup,
+                )
+                continue
+            private_text = (
+                "ℹ️ Вы сейчас не состоите в группе, поэтому отправляю напоминание в личку.\n\n"
+                f"{message}"
+            )
+            await context.bot.send_message(
+                chat_id=int(target_chat_id),
+                text=private_text,
+                reply_markup=private_reply_markup,
+            )
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить morning reminder в chat_id=%s: %s", target_chat_id, exc)
     #await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text= commands)
 
 async def send_flashcard_reminder(context: CallbackContext):
@@ -1651,6 +1762,10 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
     user_id = update.message.from_user.id
     text = update.message.text.strip()
+
+    if _is_admin_user(user_id):
+        if await _try_handle_admin_support_reply(update, context, text):
+            return
 
     pending = pending_quiz_freeform.get(user_id)
     if pending:

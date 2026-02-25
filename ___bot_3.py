@@ -394,10 +394,18 @@ async def send_main_menu(update: Update, context: CallbackContext):
 
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+    chat_type = update.effective_chat.type if update.effective_chat else "private"
+    if chat_type in ("group", "supergroup"):
+        # ReplyKeyboard в группе больше не используем.
+        # await update.message.reply_text("⏳ Обновляем меню...", reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
+        # await update.message.reply_text("Используйте кнопки:", reply_markup=reply_markup)
+        await update.message.reply_text("✅ В группе используем только Web App.")
+        return
+
     # 1️⃣ Удаляем старую клавиатуру
     #await update.message.reply_text("⏳ Обновляем меню...", reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
 
-    # 2️⃣ Отправляем новое меню
+    # 2️⃣ Отправляем новое меню (только в личке)
     await update.message.reply_text("Используйте кнопки:", reply_markup=reply_markup)
 
 async def debug_message_handler(update: Update, context: CallbackContext):
@@ -545,13 +553,14 @@ async def send_morning_reminder(context:CallbackContext):
     # Формируем утреннее сообщение
     message = (
         f"🌅 {'Доброе утро' if time(2, 0) < time_now < time(10, 0) else ('Добрый день' if time(10, 1) < time_now < time(17, 0) else 'Добрый вечер')}!\n\n"
-        "Чтобы принять участие в переводе, нажмите на кнопку 📌 Выбрать тему. После выбора темы подтвердите начало с помощью кнопки 🚀 Начать перевод.\n\n"
-        "📌 Важно:\n"
-        "🔹 Переводите максимально точно и быстро.\n\n"
-        "🔹 После перевода всех предложений выполните 📜 Проверить перевод и подтвердите нажатием ✅ Завершить перевод.\n\n"
-        "🔹 В 09:00, 12:00 и 15:00 - промежуточные итоги по каждому участнику.\n\n"
-        "🔹 Итоговые результаты получим в 23:30.\n\n"
-        "🔹 Узнать свою статистику - жми 🟡 Посмотреть свою статистику.\n"
+        "Чтобы начать обучение, откройте приложение через кнопку WEB APP.\n\n"
+        "Что доступно в приложении:\n"
+        "🔹 Переводы и проверка предложений.\n"
+        "🔹 Карточки (FSRS, Quiz, Blocks, Дополни предложение).\n"
+        "🔹 Видео по слабым темам, словарь и читалка.\n"
+        "🔹 Практика с AI-учителем и прокачка навыков.\n"
+        "🔹 Дневной план и персональная аналитика прогресса.\n\n"
+        "🎯 Рекомендация: откройте раздел «Задачи на день» и выполняйте план по шагам.\n"
     )
 
     # формируем список команд
@@ -2930,4 +2939,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

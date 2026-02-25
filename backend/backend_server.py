@@ -230,6 +230,11 @@ from backend.database import (
     get_today_reminder_settings,
     upsert_today_reminder_settings,
     list_today_reminder_users,
+    get_admin_telegram_ids,
+    create_support_message,
+    list_support_messages_for_user,
+    count_unread_support_messages_for_user,
+    mark_support_messages_read_for_user,
     get_audio_grammar_settings,
     upsert_audio_grammar_settings,
     update_translation_audio_grammar_opt_in,
@@ -318,6 +323,7 @@ NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 TODAY_PLAN_DEFAULT_TZ = (os.getenv("TODAY_PLAN_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 YOUTUBE_API_KEY = (os.getenv("YOUTUBE_API_KEY") or "").strip()
+SUPPORT_MESSAGE_MAX_LEN = int((os.getenv("SUPPORT_MESSAGE_MAX_LEN") or "2000").strip() or "2000")
 THEORY_PACKAGE_TTL_MINUTES = max(1, int((os.getenv("THEORY_PACKAGE_TTL_MINUTES") or "720").strip()))
 BILLING_CURRENCY_DEFAULT = (os.getenv("BILLING_CURRENCY") or "USD").strip().upper() or "USD"
 BILLING_ALLOCATION_DEFAULT = (os.getenv("BILLING_ALLOCATION_METHOD_DEFAULT") or "weighted").strip().lower() or "weighted"
@@ -1179,6 +1185,8 @@ def _build_next_srs_payload(
     if due_payload:
         card_payload = due_payload.get("card")
         srs_payload = due_payload.get("srs")
+        if not include_queue_info:
+            queue_info["due_count"] = max(1, int(queue_info.get("due_count") or 0))
     else:
         if int(queue_info.get("new_remaining_today") or 0) > 0:
             candidate = get_next_new_srs_candidate(
@@ -1616,7 +1624,7 @@ def _youtube_fill_view_counts(
         resp = requests.get(
             "https://www.googleapis.com/youtube/v3/videos",
             params={
-                "part": "statistics,snippet",
+                "part": "statistics,snippet,contentDetails",
                 "id": ids,
                 "key": YOUTUBE_API_KEY,
             },
@@ -1642,6 +1650,7 @@ def _youtube_fill_view_counts(
             by_id[vid] = {
                 "views": int(((item.get("statistics") or {}).get("viewCount") or 0)),
                 "title": ((item.get("snippet") or {}).get("title") or "").strip(),
+                "duration": str(((item.get("contentDetails") or {}).get("duration") or "")).strip(),
             }
         enriched = []
         for video in videos:
@@ -1650,10 +1659,56 @@ def _youtube_fill_view_counts(
             row["views"] = int((by_id.get(vid) or {}).get("views") or 0)
             if not row.get("title"):
                 row["title"] = (by_id.get(vid) or {}).get("title") or ""
+            row["duration"] = (by_id.get(vid) or {}).get("duration") or ""
             enriched.append(row)
         return enriched
     except Exception:
         return videos
+
+
+def _parse_iso8601_duration_to_seconds(duration: str | None) -> int:
+    raw = str(duration or "").strip().upper()
+    if not raw:
+        return 0
+    match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", raw)
+    if not match:
+        return 0
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _is_youtube_short_like(video: dict | None) -> bool:
+    data = video if isinstance(video, dict) else {}
+    title = str(data.get("title") or "").strip().lower()
+    video_url = str(data.get("video_url") or "").strip().lower()
+    if "#shorts" in title:
+        return True
+    if "/shorts/" in video_url:
+        return True
+    duration_seconds = int(data.get("duration_seconds") or 0)
+    return 0 < duration_seconds < MIN_RECOMMENDED_VIDEO_SECONDS
+
+
+def _filter_videos_for_today_task(
+    videos: list[dict],
+    *,
+    min_seconds: int = MIN_RECOMMENDED_VIDEO_SECONDS,
+) -> list[dict]:
+    filtered: list[dict] = []
+    for item in videos or []:
+        video = dict(item or {})
+        duration_seconds = int(video.get("duration_seconds") or 0)
+        if duration_seconds <= 0:
+            duration_seconds = _parse_iso8601_duration_to_seconds(video.get("duration"))
+            video["duration_seconds"] = duration_seconds
+        if duration_seconds < int(min_seconds):
+            continue
+        if _is_youtube_short_like(video):
+            continue
+        filtered.append(video)
+    return filtered
 
 
 def _pick_today_recommended_video(
@@ -1724,6 +1779,9 @@ def _pick_today_recommended_video(
             billing_source_lang=billing_source_lang,
             billing_target_lang=billing_target_lang,
         )
+        videos = _filter_videos_for_today_task(videos, min_seconds=MIN_RECOMMENDED_VIDEO_SECONDS)
+        if not videos:
+            continue
         videos.sort(key=lambda x: int(x.get("views") or 0), reverse=True)
         best = videos[0] if videos else None
         if not best or not best.get("video_id"):
@@ -1735,12 +1793,20 @@ def _pick_today_recommended_video(
             "title": str(best.get("title") or "").strip(),
             "query": query,
             "views": int(best.get("views") or 0),
+            "duration_seconds": int(best.get("duration_seconds") or 0),
         }
     local_fallback = _youtube_fallback_videos_from_local_sources(
         query=(queries[0] if queries else ""),
         target_lang=target_lang,
         max_results=5,
     )
+    local_fallback = _youtube_fill_view_counts(
+        local_fallback,
+        billing_user_id=billing_user_id,
+        billing_source_lang=billing_source_lang,
+        billing_target_lang=billing_target_lang,
+    )
+    local_fallback = _filter_videos_for_today_task(local_fallback, min_seconds=MIN_RECOMMENDED_VIDEO_SECONDS)
     if local_fallback:
         best = local_fallback[0]
         video_id = str(best.get("video_id") or "").strip()
@@ -1751,6 +1817,7 @@ def _pick_today_recommended_video(
                 "title": str(best.get("title") or "").strip(),
                 "query": queries[0] if queries else "local_fallback",
                 "views": int(best.get("views") or 0),
+                "duration_seconds": int(best.get("duration_seconds") or 0),
             }
     return None
 
@@ -4746,6 +4813,56 @@ def _send_private_message_chunks(user_id: int, text: str, limit: int = 3800) -> 
         _send_private_message(user_id, part)
 
 
+def _notify_admins_about_support_message(
+    *,
+    user_id: int,
+    username: str | None,
+    text: str,
+    support_message_id: int,
+) -> dict:
+    admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+    if not admin_ids:
+        return {"sent": 0, "failed": 0}
+
+    sender_label = str(username or "").strip() or f"user_{int(user_id)}"
+    message_text = (
+        "🛟 Новое сообщение в техподдержку\n\n"
+        f"User: {sender_label}\n"
+        f"Support User ID: {int(user_id)}\n"
+        f"Support Message ID: {int(support_message_id)}\n\n"
+        f"{text}\n\n"
+        "Ответьте РЕПЛАЕМ на это сообщение, и ответ попадет пользователю в WebApp (раздел «Техподдержка»)."
+    )
+    url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendMessage"
+
+    sent = 0
+    failed = 0
+    for admin_id in admin_ids:
+        try:
+            response = requests.post(
+                url,
+                json={
+                    "chat_id": int(admin_id),
+                    "text": message_text,
+                    "disable_web_page_preview": True,
+                },
+                timeout=15,
+            )
+            if response.status_code >= 400:
+                failed += 1
+                logging.warning(
+                    "Support notify failed for admin=%s: %s",
+                    admin_id,
+                    response.text,
+                )
+                continue
+            sent += 1
+        except Exception:
+            failed += 1
+            logging.exception("Support notify exception for admin=%s", admin_id)
+    return {"sent": sent, "failed": failed}
+
+
 def _build_private_analytics_chart_png(
     user_id: int,
     start_date: date,
@@ -5921,6 +6038,7 @@ def _normalize_lookup_text(text: str, lang_code: str) -> str:
 
 ALLOWED_COUNTRIES = {"DE", "AT"}
 DEFAULT_LANG_ORDER = ("de", "en", "ru")
+MIN_RECOMMENDED_VIDEO_SECONDS = max(300, int((os.getenv("TODAY_VIDEO_MIN_SECONDS") or "300").strip()))
 
 
 def _get_yta_special_exceptions() -> tuple[type[BaseException], ...]:
@@ -7021,6 +7139,69 @@ def get_webapp_daily_history():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
+
+
+@app.route("/api/webapp/support/messages/list", methods=["POST"])
+def list_webapp_support_messages():
+    payload = request.get_json(silent=True) or {}
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        return jsonify({"error": error}), 401
+
+    try:
+        limit = int(payload.get("limit", 100))
+    except Exception:
+        limit = 100
+
+    items = list_support_messages_for_user(user_id=int(user_id), limit=limit)
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/webapp/support/messages/send", methods=["POST"])
+def send_webapp_support_message():
+    payload = request.get_json(silent=True) or {}
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        return jsonify({"error": error}), 401
+
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "text обязателен"}), 400
+    if len(text) > SUPPORT_MESSAGE_MAX_LEN:
+        return jsonify({"error": f"Сообщение слишком длинное (максимум {SUPPORT_MESSAGE_MAX_LEN} символов)"}), 400
+
+    message = create_support_message(
+        user_id=int(user_id),
+        from_role="user",
+        message_text=text,
+    )
+    delivery = _notify_admins_about_support_message(
+        user_id=int(user_id),
+        username=username,
+        text=text,
+        support_message_id=int(message["id"]),
+    )
+    return jsonify({"ok": True, "item": message, "delivery": delivery})
+
+
+@app.route("/api/webapp/support/messages/read", methods=["POST"])
+def read_webapp_support_messages():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        return jsonify({"error": error}), 401
+
+    updated = mark_support_messages_read_for_user(user_id=int(user_id))
+    return jsonify({"ok": True, "updated": int(updated), "unread": 0})
+
+
+@app.route("/api/webapp/support/unread", methods=["POST"])
+def unread_webapp_support_messages():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        return jsonify({"error": error}), 401
+
+    unread = count_unread_support_messages_for_user(user_id=int(user_id))
+    return jsonify({"ok": True, "unread": int(unread)})
 
 
 def _parse_iso_date(value: str | None):
@@ -8440,8 +8621,7 @@ def recommend_today_video():
         recommendation_row = None
 
     if recommendation_row and recommendation_row.get("video_id"):
-        cache_hit = True
-        recommended_video = {
+        cached_candidate = {
             "video_id": recommendation_row.get("video_id"),
             "video_url": recommendation_row.get("video_url") or f"https://www.youtube.com/watch?v={recommendation_row.get('video_id')}",
             "title": recommendation_row.get("video_title"),
@@ -8451,6 +8631,20 @@ def recommend_today_video():
             "dislike_count": int(recommendation_row.get("dislike_count") or 0),
             "score": int(recommendation_row.get("score") or 0),
         }
+        validated = _youtube_fill_view_counts(
+            [cached_candidate],
+            billing_user_id=int(user_id),
+            billing_source_lang=source_lang,
+            billing_target_lang=target_lang,
+        )
+        validated = _filter_videos_for_today_task(validated, min_seconds=MIN_RECOMMENDED_VIDEO_SECONDS)
+        if validated:
+            cache_hit = True
+            recommended_video = validated[0]
+            recommended_video["recommendation_id"] = cached_candidate.get("recommendation_id")
+            recommended_video["like_count"] = int(cached_candidate.get("like_count") or 0)
+            recommended_video["dislike_count"] = int(cached_candidate.get("dislike_count") or 0)
+            recommended_video["score"] = int(cached_candidate.get("score") or 0)
 
     if not recommended_video:
         recommended_video = _pick_today_recommended_video(
@@ -8506,6 +8700,7 @@ def recommend_today_video():
             "video_url": (recommended_video or {}).get("video_url"),
             "video_title": (recommended_video or {}).get("title"),
             "video_query": (recommended_video or {}).get("query"),
+            "video_duration_seconds": int((recommended_video or {}).get("duration_seconds") or 0),
             "recommendation_id": (recommended_video or {}).get("recommendation_id"),
             "video_likes": int((recommended_video or {}).get("like_count") or 0),
             "video_dislikes": int((recommended_video or {}).get("dislike_count") or 0),
@@ -10287,6 +10482,7 @@ def get_next_srs_card():
             source_lang=source_lang,
             target_lang=target_lang,
             now_utc=now_utc,
+            include_queue_info=False,
         )
         mark("build_next")
 
@@ -10330,7 +10526,7 @@ def get_srs_prefetch_cards():
         )
         due_count = max(0, int(queue_info.get("due_count") or 0))
         new_remaining_today = max(0, int(queue_info.get("new_remaining_today") or 0))
-        max_items = max(1, min(200, due_count + new_remaining_today))
+        max_items = max(1, min(20, due_count + new_remaining_today))
 
         due_limit = min(due_count, max_items)
         new_limit = min(new_remaining_today, max(0, max_items - due_limit))
@@ -10574,17 +10770,6 @@ def review_srs_card():
     interval_days = int(persisted.get("interval_days") or 0)
     due_at = persisted.get("due_at")
     payload_next = None
-    try:
-        payload_next = _build_next_srs_payload(
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            now_utc=datetime.now(timezone.utc),
-            include_queue_info=False,
-        )
-    except Exception:
-        # Review is already persisted; next-card hydration must not break the user flow.
-        logging.exception("Failed to build next FSRS payload after review")
     mark("build_next")
     log_profile(int(user_id), int(card_id), error_text=None)
     return jsonify(
