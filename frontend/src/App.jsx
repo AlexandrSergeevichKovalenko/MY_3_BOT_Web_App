@@ -96,6 +96,8 @@ function AppInner() {
   const [selectedCollocations, setSelectedCollocations] = useState([]);
   const [flashcardExitSummary, setFlashcardExitSummary] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
+  const [dictionaryPdfUrl, setDictionaryPdfUrl] = useState('');
+  const [dictionaryPdfName, setDictionaryPdfName] = useState('dictionary.pdf');
   const [youtubeInput, setYoutubeInput] = useState('');
   const [youtubeId, setYoutubeId] = useState('');
   const [youtubeError, setYoutubeError] = useState('');
@@ -201,6 +203,8 @@ function AppInner() {
   const [flashcardDurationSec, setFlashcardDurationSec] = useState(10);
   const [flashcardTrainingMode, setFlashcardTrainingMode] = useState('quiz');
   const [blocksTimerMode, setBlocksTimerMode] = useState('fixed');
+  const [flashcardActiveMode, setFlashcardActiveMode] = useState(null); // 'fsrs' | 'quiz' | 'blocks' | 'sentence' | null
+  const [flashcardSettingsModalMode, setFlashcardSettingsModalMode] = useState(null); // same domain as flashcardActiveMode
   const [flashcardSessionActive, setFlashcardSessionActive] = useState(false);
   const [flashcardPreviewActive, setFlashcardPreviewActive] = useState(false);
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
@@ -309,7 +313,6 @@ function AppInner() {
   const [globalPauseReason, setGlobalPauseReason] = useState('');
   const [blocksResetNonce, setBlocksResetNonce] = useState(0);
   const [blocksMenuOpen, setBlocksMenuOpen] = useState(false);
-  const [blocksMenuSettingsOpen, setBlocksMenuSettingsOpen] = useState(false);
   const [blocksFinishConfirmOpen, setBlocksFinishConfirmOpen] = useState(false);
   const [folders, setFolders] = useState([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
@@ -874,6 +877,27 @@ function AppInner() {
       .split(/(?<=[.!?])\s+(?=[A-ZА-ЯЁ])/)
       .map((line) => line.trim())
       .filter(Boolean);
+  };
+
+  const renderFeelLine = (line, keyPrefix = 'feel') => {
+    const chunks = [];
+    const raw = String(line || '');
+    const regex = /\*\*(.+?)\*\*/g;
+    let lastIndex = 0;
+    let match;
+    let index = 0;
+    while ((match = regex.exec(raw)) !== null) {
+      if (match.index > lastIndex) {
+        chunks.push(raw.slice(lastIndex, match.index));
+      }
+      chunks.push(<strong key={`${keyPrefix}-b-${index}`}>{match[1]}</strong>);
+      lastIndex = regex.lastIndex;
+      index += 1;
+    }
+    if (lastIndex < raw.length) {
+      chunks.push(raw.slice(lastIndex));
+    }
+    return chunks.length ? chunks : raw;
   };
 
   const getLearningTtsLocale = () => {
@@ -1630,6 +1654,27 @@ function AppInner() {
         )}
       </div>
     );
+  };
+
+  const ensureFlashcardsTaskTimerRunning = async () => {
+    const item = getTodayTaskForSection('flashcards');
+    if (!item || String(item?.status || '').toLowerCase() === 'done') return;
+    if (isTodayItemTimerRunning(item)) return;
+    const elapsedSeconds = getTodayItemElapsedSeconds(item, Date.now());
+    const hasStartedBefore = elapsedSeconds > 0 || String(item?.status || '').toLowerCase() === 'doing';
+    await syncTodayItemTimer(
+      item,
+      hasStartedBefore ? 'resume' : 'start',
+      { elapsedSeconds, running: true }
+    );
+  };
+
+  const pauseFlashcardsTaskTimer = async () => {
+    const item = getTodayTaskForSection('flashcards');
+    if (!item || String(item?.status || '').toLowerCase() === 'done') return;
+    if (!isTodayItemTimerRunning(item)) return;
+    const elapsedSeconds = getTodayItemElapsedSeconds(item, Date.now());
+    await syncTodayItemTimer(item, 'pause', { elapsedSeconds, running: false });
   };
 
   const prepareTodayTheory = async (item, options = {}) => {
@@ -2599,6 +2644,8 @@ function AppInner() {
   const openFlashcardsSetup = (ref) => {
     setFlashcardsVisible(true);
     setFlashcardsOnly(false);
+    setFlashcardActiveMode(null);
+    setFlashcardSettingsModalMode(null);
     setFlashcardSessionActive(false);
     setFlashcardPreviewActive(false);
     setFlashcardExitSummary(false);
@@ -2608,6 +2655,42 @@ function AppInner() {
         scrollToRef(ref, { center: true });
       }, 120);
     }
+  };
+
+  const exitFlashcardsTraining = async () => {
+    setFlashcardsOnly(false);
+    setFlashcardActiveMode(null);
+    setFlashcardSettingsModalMode(null);
+    setFlashcardSessionActive(false);
+    setFlashcardPreviewActive(false);
+    setFlashcardExitSummary(false);
+    await pauseFlashcardsTaskTimer();
+  };
+
+  const startFlashcardsMode = async (mode) => {
+    const normalizedMode = String(mode || '').toLowerCase();
+    if (!['fsrs', 'quiz', 'blocks', 'sentence'].includes(normalizedMode)) return;
+    setFlashcardsVisible(true);
+    setFlashcardSettingsModalMode(null);
+    setFlashcardActiveMode(normalizedMode);
+    setFlashcardsOnly(true);
+    setFlashcardExitSummary(false);
+    await ensureFlashcardsTaskTimerRunning();
+
+    if (normalizedMode === 'fsrs') {
+      setFlashcardSessionActive(false);
+      setFlashcardPreviewActive(false);
+      setSrsError('');
+      void loadSrsNextCard();
+      return;
+    }
+
+    flashcardTrainingModeRef.current = normalizedMode;
+    setFlashcardTrainingMode(normalizedMode);
+    setFlashcardSessionActive(false);
+    setFlashcardPreviewActive(true);
+    unlockAudio();
+    await loadFlashcards();
   };
 
   const showAllSections = () => {
@@ -2644,6 +2727,8 @@ function AppInner() {
     if (key === 'flashcards') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(false);
+      setFlashcardActiveMode(null);
+      setFlashcardSettingsModalMode(null);
       setFlashcardSessionActive(false);
       setFlashcardExitSummary(false);
     }
@@ -3785,18 +3870,21 @@ function AppInner() {
     if (params.get('review') === '1') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
-      setFlashcardSessionActive(true);
+      setFlashcardActiveMode('fsrs');
+      setFlashcardSessionActive(false);
     }
     const startParam = telegramApp?.initDataUnsafe?.start_param;
     if (startParam === 'review' || startParam === 'flashcards') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
-      setFlashcardSessionActive(true);
+      setFlashcardActiveMode('fsrs');
+      setFlashcardSessionActive(false);
     }
     if (window.location.pathname === '/webapp/review') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
-      setFlashcardSessionActive(true);
+      setFlashcardActiveMode('fsrs');
+      setFlashcardSessionActive(false);
     }
   }, []);
 
@@ -3815,7 +3903,7 @@ function AppInner() {
   }, [initData, isWebAppMode]);
 
   useEffect(() => {
-    if (!initData || flashcardsOnly || !isSectionVisible('flashcards')) {
+    if (!initData || !isSectionVisible('flashcards') || !flashcardsVisible || flashcardActiveMode !== 'fsrs') {
       return;
     }
     setSrsCard(null);
@@ -3824,10 +3912,22 @@ function AppInner() {
     setSrsRevealAnswer(false);
     setSrsError('');
     loadSrsNextCard();
-  }, [initData, flashcardsOnly, selectedSections, languageProfile?.native_language, languageProfile?.learning_language]);
+  }, [
+    initData,
+    selectedSections,
+    flashcardsVisible,
+    flashcardActiveMode,
+    languageProfile?.native_language,
+    languageProfile?.learning_language,
+  ]);
 
   useEffect(() => {
-    if (!initData || flashcardsOnly || !isSectionVisible('flashcards')) return;
+    if (!flashcardsOnly || !flashcardActiveMode || !isSectionVisible('flashcards')) return;
+    void ensureFlashcardsTaskTimerRunning();
+  }, [flashcardsOnly, flashcardActiveMode, selectedSections]);
+
+  useEffect(() => {
+    if (!initData || !isSectionVisible('flashcards') || !flashcardsVisible || flashcardActiveMode !== 'fsrs') return;
     const dueCount = Math.max(0, Number(srsQueueInfo?.due_count || 0));
     const newCount = Math.max(0, Number(srsQueueInfo?.new_remaining_today || 0));
     const activeCardId = String(srsCard?.id || srsCard?.entry_id || '');
@@ -3870,8 +3970,9 @@ function AppInner() {
     };
   }, [
     initData,
-    flashcardsOnly,
     selectedSections,
+    flashcardsVisible,
+    flashcardActiveMode,
     srsQueueInfo?.due_count,
     srsQueueInfo?.new_remaining_today,
     srsCard?.id,
@@ -3967,7 +4068,7 @@ function AppInner() {
     if (!flashcardSessionActive || flashcards.length === 0) {
       return;
     }
-    if (flashcardTrainingMode !== 'quiz') {
+    if (!['quiz', 'sentence'].includes(flashcardTrainingMode)) {
       return;
     }
     setFlashcardTimerKey((prev) => prev + 1);
@@ -3977,7 +4078,7 @@ function AppInner() {
     if (!flashcardSessionActive || flashcardSetComplete || flashcardExitSummary || !flashcards.length) {
       return;
     }
-    if (flashcardTrainingMode !== 'quiz') {
+    if (!['quiz', 'sentence'].includes(flashcardTrainingMode)) {
       return;
     }
     if (globalTimerSuspended) {
@@ -3993,10 +4094,9 @@ function AppInner() {
       if (currentSelection !== null) return;
       const entry = flashcards[currentIndex];
       if (!entry) return;
-      const correct = resolveFlashcardTexts(entry).targetText || '—';
       const timeSpentMs = Math.max(0, Date.now() - flashcardRoundStartRef.current);
       recordFlashcardAnswer(entry.id, false, {
-        mode: 'quiz',
+        mode: flashcardTrainingModeRef.current || 'quiz',
         timeSpentMs,
         hintsUsed: 0,
       });
@@ -4054,13 +4154,11 @@ function AppInner() {
     const onPointerDown = (event) => {
       if (!blocksMenuRef.current?.contains(event.target)) {
         setBlocksMenuOpen(false);
-        setBlocksMenuSettingsOpen(false);
       }
     };
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         setBlocksMenuOpen(false);
-        setBlocksMenuSettingsOpen(false);
       }
     };
     document.addEventListener('pointerdown', onPointerDown);
@@ -4073,7 +4171,6 @@ function AppInner() {
 
   useEffect(() => {
     setBlocksMenuOpen(false);
-    setBlocksMenuSettingsOpen(false);
     setBlocksFinishConfirmOpen(false);
   }, [flashcardIndex, flashcardPreviewActive, flashcardTrainingMode]);
 
@@ -6392,6 +6489,37 @@ function AppInner() {
     return shuffleArray(options).slice(0, 4);
   };
 
+  const resolveQuizCorrectOption = (entry, options = []) => {
+    const responseJson = entry?.response_json || {};
+    const normalizedOptions = Array.isArray(options)
+      ? options.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const oneBasedCorrectIndex = Number(responseJson?.correct_index);
+    const zeroBasedCorrectIndex = Number.isFinite(oneBasedCorrectIndex)
+      ? Math.max(0, Math.min(normalizedOptions.length - 1, Math.trunc(oneBasedCorrectIndex) - 1))
+      : -1;
+    return normalizedOptions[zeroBasedCorrectIndex] || resolveFlashcardTexts(entry).targetText || '—';
+  };
+
+  const renderSentenceWithGapAnswer = (sentenceWithGap, answer, tone = 'neutral') => {
+    const sentence = String(sentenceWithGap || '').trim();
+    if (!sentence) return '—';
+    if (!sentence.includes('___') || !answer) return sentence;
+    const answerToneClass = tone === 'correct'
+      ? 'flashcard-gap-answer is-correct'
+      : tone === 'wrong'
+        ? 'flashcard-gap-answer is-wrong'
+        : 'flashcard-gap-answer';
+    const [left, right] = sentence.split('___');
+    return (
+      <>
+        {left}
+        <span className={answerToneClass}>{answer}</span>
+        {right}
+      </>
+    );
+  };
+
   const resolveBlocksAnswer = (entry) => {
     const responseJson = entry?.response_json || {};
     const translationDe = resolveFlashcardTexts(entry).targetText || '';
@@ -6435,7 +6563,13 @@ function AppInner() {
       const resolvedRating = (() => {
         const raw = String(meta.rating || '').trim().toUpperCase();
         if (raw === 'AGAIN' || raw === 'HARD' || raw === 'GOOD' || raw === 'EASY') return raw;
-        return isCorrect ? 'GOOD' : 'AGAIN';
+        if (!isCorrect) return 'AGAIN';
+        const timeSpentMs = Number(meta.timeSpentMs);
+        if (!Number.isFinite(timeSpentMs) || timeSpentMs < 0) return 'GOOD';
+        const seconds = timeSpentMs / 1000;
+        if (seconds <= 5) return 'EASY';
+        if (seconds <= 8) return 'GOOD';
+        return 'HARD';
       })();
 
       await fetch('/api/cards/review', {
@@ -7108,19 +7242,60 @@ function AppInner() {
       }
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'dictionary.pdf';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
+      setDictionaryPdfUrl((prev) => {
+        if (prev) {
+          try {
+            window.URL.revokeObjectURL(prev);
+          } catch (_error) {
+            // ignore revoke errors
+          }
+        }
+        return url;
+      });
+      setDictionaryPdfName('dictionary.pdf');
+      setDictionarySaved(tr('PDF готов. Выберите: скачать или открыть.', 'PDF ist bereit. Waehle: herunterladen oder oeffnen.'));
     } catch (error) {
       setDictionaryError(`${tr('Ошибка выгрузки PDF', 'PDF-Exportfehler')}: ${error.message}`);
     } finally {
       setExportLoading(false);
     }
   };
+
+  const handleCloseDictionaryPdf = useCallback(() => {
+    setDictionaryPdfUrl((prev) => {
+      if (prev) {
+        try {
+          window.URL.revokeObjectURL(prev);
+        } catch (_error) {
+          // ignore revoke errors
+        }
+      }
+      return '';
+    });
+    setDictionaryPdfName('dictionary.pdf');
+  }, []);
+
+  const handleOpenDictionaryPdf = useCallback(() => {
+    if (!dictionaryPdfUrl) return;
+    const opened = window.open(dictionaryPdfUrl, '_blank', 'noopener,noreferrer');
+    if (opened) return;
+    const link = document.createElement('a');
+    link.href = dictionaryPdfUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }, [dictionaryPdfUrl]);
+
+  useEffect(() => () => {
+    if (!dictionaryPdfUrl) return;
+    try {
+      window.URL.revokeObjectURL(dictionaryPdfUrl);
+    } catch (_error) {
+      // ignore revoke errors
+    }
+  }, [dictionaryPdfUrl]);
 
   const selectedDictionaryFolder = folders.find(
     (folder) => String(folder.id) === dictionaryFolderId
@@ -10032,6 +10207,36 @@ function AppInner() {
                           {exportLoading ? tr('Готовим PDF...', 'PDF wird erstellt...') : tr('Выгрузить PDF', 'PDF exportieren')}
                         </button>
                       </div>
+                      {dictionaryPdfUrl && (
+                        <div className="dictionary-pdf-panel">
+                          <div className="dictionary-pdf-title">
+                            {tr('PDF готов', 'PDF ist bereit')}
+                          </div>
+                          <div className="dictionary-pdf-actions">
+                            <a
+                              href={dictionaryPdfUrl}
+                              download={dictionaryPdfName || 'dictionary.pdf'}
+                              className="secondary-button"
+                            >
+                              {tr('Скачать PDF', 'PDF herunterladen')}
+                            </a>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={handleOpenDictionaryPdf}
+                            >
+                              {tr('Открыть PDF', 'PDF oeffnen')}
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={handleCloseDictionaryPdf}
+                            >
+                              {tr('← Назад', '← Zurueck')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       {showNewFolderForm && (
                         <div className="folder-create">
                           <label className="webapp-field">
@@ -10737,7 +10942,7 @@ function AppInner() {
 
             {isSectionVisible('flashcards') && (
               <section className="webapp-flashcards" ref={flashcardsRef}>
-                {(isFocusedSection('flashcards') || Boolean(getTodayTaskForSection('flashcards'))) && (
+                {flashcardActiveMode && !flashcardsOnly && (isFocusedSection('flashcards') || Boolean(getTodayTaskForSection('flashcards'))) && (
                   <div className="section-inline-actions section-inline-actions-task">
                     {isFocusedSection('flashcards') && (
                       <button type="button" className="section-home-back" onClick={goHomeScreen}>
@@ -10754,22 +10959,51 @@ function AppInner() {
                 )}
                 {flashcardsVisible && (
                   <div className={`flashcards-panel ${flashcardsOnly ? 'is-session' : 'is-setup'}`}>
-                    {!flashcardsOnly && (
-                      <div className="flashcard-stage is-setup">
-                        <div
-                          className={`srs-panel srs-panel-setup ${
-                            (srsQueueInfo?.due_count ?? 0) > 0 || srsCard ? 'is-urgent' : 'is-calm'
-                          } ${
-                            !srsLoading && !srsCard && (srsQueueInfo?.due_count ?? 0) === 0 ? 'is-collapsed' : ''
-                          }`}
-                        >
+                    {!flashcardsOnly && !flashcardActiveMode && (
+                      <div className="flashcard-mode-menu">
+                        <h3>{tr('Выбери режим тренировки', 'Waehle einen Trainingsmodus')}</h3>
+                        <div className="flashcard-mode-list">
+                          {[
+                            { mode: 'fsrs', title: 'FSRS' },
+                            { mode: 'quiz', title: 'Quiz 4 Options' },
+                            { mode: 'blocks', title: 'Blocks' },
+                            { mode: 'sentence', title: tr('Дополни предложение', 'Satz ergaenzen') },
+                          ].map((entry) => (
+                            <div className="flashcard-mode-item" key={`mode-${entry.mode}`}>
+                              <button
+                                type="button"
+                                className="flashcard-mode-button"
+                                onClick={() => {
+                                  void startFlashcardsMode(entry.mode);
+                                }}
+                              >
+                                {entry.title}
+                              </button>
+                              <button
+                                type="button"
+                                className="flashcard-mode-settings"
+                                aria-label={tr('Настройки режима', 'Modus-Einstellungen')}
+                                onClick={() => setFlashcardSettingsModalMode(entry.mode)}
+                              >
+                                ⚙️
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {flashcardsOnly && flashcardActiveMode === 'fsrs' && (
+                      <div className="flashcard-mode-screen">
+                        <div className="flashcard-mode-topbar">
+                          <button type="button" className="secondary-button" onClick={() => void exitFlashcardsTraining()}>
+                            {tr('Назад', 'Zurueck')}
+                          </button>
+                          {renderTodaySectionTaskHud('flashcards')}
+                        </div>
+                        <div className="srs-panel flashcard-mode-srs">
                           <div className="srs-panel-head">
-                            <h3>
-                              <span className="srs-head-icon" aria-hidden="true">
-                                {(srsQueueInfo?.due_count ?? 0) > 0 || srsCard ? '‼️' : '🛋️'}
-                              </span>
-                              {t('srs_title')}
-                            </h3>
+                            <h3>{t('srs_title')}</h3>
                             <div className="srs-queue">
                               <span>{t('due')}: {srsQueueInfo?.due_count ?? 0}</span>
                               <span>{t('new_today')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
@@ -10846,168 +11080,17 @@ function AppInner() {
                             </div>
                           )}
                         </div>
-                        <div className="flashcards-setup">
-                            <div className="setup-hero">
-                              <div className="setup-ring">
-                                <img src={heroStickerSrc} alt="Deutsch mascot" className="setup-mascot-flat" />
-                              </div>
-                              <div className="setup-title">{t('setup_training_title')}</div>
-                              <div className="setup-subtitle">{t('setup_training_subtitle')}</div>
-                            </div>
-                            <div className="setup-grid">
-                              <div className="setup-group">
-                                <div className="setup-label">{t('setup_training_mode')}</div>
-                                <div className="setup-options">
-                                <button
-                                  type="button"
-                                  className={`option-pill ${flashcardTrainingMode === 'quiz' ? 'is-active' : ''}`}
-                                  onClick={() => {
-                                    flashcardTrainingModeRef.current = 'quiz';
-                                    setFlashcardTrainingMode('quiz');
-                                  }}
-                                >
-                                  {t('setup_mode_quiz')}
-                                </button>
-                                <button
-                                  type="button"
-                                  className={`option-pill ${flashcardTrainingMode === 'blocks' ? 'is-active' : ''}`}
-                                  onClick={() => {
-                                    flashcardTrainingModeRef.current = 'blocks';
-                                    setFlashcardTrainingMode('blocks');
-                                  }}
-                                >
-                                  {t('setup_mode_blocks')}
-                                </button>
-                              </div>
-                            </div>
-                            <div className="setup-group">
-                              <div className="setup-label">{t('setup_set_size')}</div>
-                              <div className="setup-options">
-                                {[5, 10, 15].map((size) => (
-                                  <button
-                                    key={`set-${size}`}
-                                    type="button"
-                                    className={`option-pill ${flashcardSetSize === size ? 'is-active' : ''}`}
-                                    onClick={() => setFlashcardSetSize(size)}
-                                  >
-                                    {t('setup_cards_count', { count: size })}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                            <div className="setup-group">
-                              <div className="setup-label">{t('setup_folder')}</div>
-                              <label className="webapp-field">
-                                <select
-                                  value={flashcardFolderMode === 'folder' ? flashcardFolderId : flashcardFolderMode}
-                                  onChange={(event) => {
-                                    const value = event.target.value;
-                                    if (value === 'all') {
-                                      setFlashcardFolderMode('all');
-                                      setFlashcardFolderId('');
-                                    } else if (value === 'none') {
-                                      setFlashcardFolderMode('none');
-                                      setFlashcardFolderId('');
-                                    } else {
-                                      setFlashcardFolderMode('folder');
-                                      setFlashcardFolderId(value);
-                                    }
-                                  }}
-                                >
-                                  <option value="all">{t('setup_all_folders')}</option>
-                                  <option value="none">{t('setup_without_folder')}</option>
-                                  {folders.map((folder) => (
-                                    <option key={folder.id} value={folder.id}>
-                                      {resolveFolderIconLabel(folder.icon)} • {folder.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                            </div>
-                            {flashcardTrainingMode === 'quiz' ? (
-                              <div className="setup-group">
-                                <div className="setup-label">{t('setup_speed')}</div>
-                                <div className="setup-options">
-                                  {[5, 10, 15].map((seconds) => (
-                                    <button
-                                      key={`speed-${seconds}`}
-                                      type="button"
-                                      className={`option-pill ${flashcardDurationSec === seconds ? 'is-active' : ''}`}
-                                      onClick={() => setFlashcardDurationSec(seconds)}
-                                    >
-                                      {seconds} {uiLang === 'de' ? 'Sek' : 'сек'}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="setup-group">
-                                <div className="setup-label">{t('setup_blocks_timer')}</div>
-                                <div className="setup-options">
-                                  <button
-                                    type="button"
-                                    className={`option-pill ${blocksTimerMode === 'adaptive' ? 'is-active' : ''}`}
-                                    onClick={() => setBlocksTimerMode('adaptive')}
-                                  >
-                                    {t('timer_adaptive')}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={`option-pill ${blocksTimerMode === 'fixed' ? 'is-active' : ''}`}
-                                    onClick={() => setBlocksTimerMode('fixed')}
-                                  >
-                                    {t('timer_fixed_10')}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={`option-pill ${blocksTimerMode === 'none' ? 'is-active' : ''}`}
-                                    onClick={() => setBlocksTimerMode('none')}
-                                  >
-                                    {t('timer_none')}
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                            <div className="setup-group">
-                              <div className="setup-label">{t('setup_transition')}</div>
-                              <div className="setup-options">
-                                <button
-                                  type="button"
-                                  className={`option-pill ${flashcardAutoAdvance ? 'is-active' : ''}`}
-                                  onClick={() => setFlashcardAutoAdvance(true)}
-                                >
-                                  {t('transition_auto')}
-                                </button>
-                                <button
-                                  type="button"
-                                  className={`option-pill ${!flashcardAutoAdvance ? 'is-active' : ''}`}
-                                  onClick={() => setFlashcardAutoAdvance(false)}
-                                >
-                                  {t('transition_manual')}
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            className="primary-button flashcards-start"
-                            onClick={() => {
-                              setFlashcardTrainingMode(flashcardTrainingModeRef.current || 'quiz');
-                              unlockAudio();
-                              loadFlashcards();
-                              setFlashcardPreviewActive(true);
-                              setFlashcardsOnly(true);
-                              setFlashcardExitSummary(false);
-                            }}
-                          >
-                            {t('start_training')}
-                          </button>
-                        </div>
                       </div>
                     )}
 
-                    {flashcardsOnly && (
+                    {flashcardsOnly && (flashcardActiveMode === 'quiz' || flashcardActiveMode === 'blocks' || flashcardActiveMode === 'sentence') && (
                       <>
+                        <div className="flashcard-mode-topbar">
+                          <button type="button" className="secondary-button" onClick={() => void exitFlashcardsTraining()}>
+                            {tr('Назад', 'Zurueck')}
+                          </button>
+                          {renderTodaySectionTaskHud('flashcards')}
+                        </div>
                         {flashcardsLoading && <div className="webapp-muted">{t('loading_cards')}</div>}
                         {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
                         {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && (
@@ -11100,7 +11183,7 @@ function AppInner() {
                                         <strong>{tr('Почувствовать слово', 'Wort fuehlen')}</strong>
                                         <div className="flashcard-feel-content">
                                           {feelLines.map((line, idx) => (
-                                            <p key={`${entry.id}-feel-${idx}`}>{line}</p>
+                                            <p key={`${entry.id}-feel-${idx}`}>{renderFeelLine(line, `${entry.id}-feel-${idx}`)}</p>
                                           ))}
                                         </div>
                                         {entry.id && (
@@ -11313,12 +11396,7 @@ function AppInner() {
                                   <button
                                     type="button"
                                     className="secondary-button"
-                                    onClick={() => {
-                                      setFlashcardsVisible(false);
-                                      setFlashcardsOnly(false);
-                                      setFlashcardSessionActive(false);
-                                      setFlashcardExitSummary(false);
-                                    }}
+                                    onClick={() => void exitFlashcardsTraining()}
                                   >
                                     {tr('Нет, завершить', 'Nein, beenden')}
                                   </button>
@@ -11330,23 +11408,16 @@ function AppInner() {
                                 const responseJson = entry.response_json || {};
                                 const cardTexts = resolveFlashcardTexts(entry);
                                 const quizType = String(responseJson?.quiz_type || '').trim();
-                                const isSeparablePrefixQuiz = quizType === 'separable_prefix_verb_gap';
-                                const questionWord = isSeparablePrefixQuiz
+                                const isSentenceTrainingMode = flashcardTrainingMode === 'sentence';
+                                const isSentenceGapQuiz = quizType === 'separable_prefix_verb_gap';
+                                const questionWord = (isSentenceTrainingMode || isSentenceGapQuiz)
                                   ? (String(responseJson?.sentence_with_gap || '').trim() || cardTexts.sourceText || '—')
                                   : (cardTexts.sourceText || '—');
-                                const context = !isSeparablePrefixQuiz && Array.isArray(responseJson.usage_examples)
+                                const sentenceTranslation = String(responseJson?.translation_ru || '').trim();
+                                const context = !(isSentenceTrainingMode || isSentenceGapQuiz) && Array.isArray(responseJson.usage_examples)
                                   ? responseJson.usage_examples[0]
                                   : '';
-                                const quizOptions = Array.isArray(responseJson?.options)
-                                  ? responseJson.options.map((item) => String(item || '').trim()).filter(Boolean)
-                                  : [];
-                                const oneBasedCorrectIndex = Number(responseJson?.correct_index);
-                                const zeroBasedCorrectIndex = Number.isFinite(oneBasedCorrectIndex)
-                                  ? Math.max(0, Math.min(quizOptions.length - 1, Math.trunc(oneBasedCorrectIndex) - 1))
-                                  : -1;
-                                const correct = isSeparablePrefixQuiz
-                                  ? (quizOptions[zeroBasedCorrectIndex] || cardTexts.targetText || '—')
-                                  : (cardTexts.targetText || '—');
+                                const correct = resolveQuizCorrectOption(entry, flashcardOptions);
                                 const blocksAnswer = resolveBlocksAnswer(entry);
                                 const blocksPrompt = resolveBlocksPrompt(entry);
                                 const blocksType = resolveBlocksType(entry, blocksAnswer);
@@ -11367,9 +11438,6 @@ function AppInner() {
                                             aria-label={t('blocks_menu_open')}
                                             onClick={() => {
                                               setBlocksMenuOpen((prev) => !prev);
-                                              if (blocksMenuOpen) {
-                                                setBlocksMenuSettingsOpen(false);
-                                              }
                                             }}
                                           >
                                             ⋯
@@ -11382,66 +11450,15 @@ function AppInner() {
                                                 onClick={() => {
                                                   resetCurrentBlocksCard();
                                                   setBlocksMenuOpen(false);
-                                                  setBlocksMenuSettingsOpen(false);
                                                 }}
                                               >
                                                 {t('blocks_reset_card')}
                                               </button>
                                               <button
                                                 type="button"
-                                                className="blocks-overflow-item"
-                                                onClick={() => {
-                                                  setBlocksMenuSettingsOpen((prev) => !prev);
-                                                }}
-                                              >
-                                                {t('blocks_timer_settings')}
-                                              </button>
-                                              {blocksMenuSettingsOpen && (
-                                                <div className="blocks-overflow-settings">
-                                                  <div className="blocks-overflow-settings-label">{t('blocks_timer_label')}</div>
-                                                  <div className="blocks-overflow-pills">
-                                                    <button
-                                                      type="button"
-                                                      className={`blocks-overflow-pill ${blocksTimerMode === 'adaptive' ? 'is-active' : ''}`}
-                                                      onClick={() => {
-                                                        setBlocksTimerMode('adaptive');
-                                                        setBlocksMenuOpen(false);
-                                                        setBlocksMenuSettingsOpen(false);
-                                                      }}
-                                                    >
-                                                      {t('timer_adaptive')}
-                                                    </button>
-                                                    <button
-                                                      type="button"
-                                                      className={`blocks-overflow-pill ${blocksTimerMode === 'fixed' ? 'is-active' : ''}`}
-                                                      onClick={() => {
-                                                        setBlocksTimerMode('fixed');
-                                                        setBlocksMenuOpen(false);
-                                                        setBlocksMenuSettingsOpen(false);
-                                                      }}
-                                                    >
-                                                      {t('timer_fixed_10')}
-                                                    </button>
-                                                    <button
-                                                      type="button"
-                                                      className={`blocks-overflow-pill ${blocksTimerMode === 'none' ? 'is-active' : ''}`}
-                                                      onClick={() => {
-                                                        setBlocksTimerMode('none');
-                                                        setBlocksMenuOpen(false);
-                                                        setBlocksMenuSettingsOpen(false);
-                                                      }}
-                                                    >
-                                                      {t('timer_none')}
-                                                    </button>
-                                                  </div>
-                                                </div>
-                                              )}
-                                              <button
-                                                type="button"
                                                 className="blocks-overflow-item is-danger"
                                                 onClick={() => {
                                                   setBlocksMenuOpen(false);
-                                                  setBlocksMenuSettingsOpen(false);
                                                   requestFinishFlashcardSession();
                                                 }}
                                               >
@@ -11579,7 +11596,20 @@ function AppInner() {
                                         </div>
                                       </div>
                                     </div>
-                                    <div className="flashcard-word">{questionWord}</div>
+                                    <div className={`flashcard-word ${(isSentenceTrainingMode || isSentenceGapQuiz) ? 'is-sentence-gap' : ''}`}>
+                                      {(isSentenceTrainingMode || isSentenceGapQuiz) && flashcardSelection !== null
+                                        ? renderSentenceWithGapAnswer(
+                                          questionWord,
+                                          correct,
+                                          flashcardOutcome === 'correct' ? 'correct' : 'wrong'
+                                        )
+                                        : questionWord}
+                                    </div>
+                                    {(isSentenceTrainingMode || isSentenceGapQuiz) && sentenceTranslation && (
+                                      <div className="flashcard-sentence-translation">
+                                        {sentenceTranslation}
+                                      </div>
+                                    )}
                                     {flashcardSelection !== null && context && (
                                       <div className="flashcard-context flashcard-context-visible">{context}</div>
                                     )}
@@ -11609,7 +11639,7 @@ function AppInner() {
                                                 playFeedbackSound(option === correct ? 'positive' : 'negative');
                                                 const timeSpentMs = Math.max(0, Date.now() - flashcardRoundStartRef.current);
                                                 recordFlashcardAnswer(entry.id, option === correct, {
-                                                  mode: 'quiz',
+                                                  mode: flashcardTrainingMode,
                                                   timeSpentMs,
                                                   hintsUsed: 0,
                                                 });
@@ -11642,18 +11672,6 @@ function AppInner() {
                                         );
                                       })}
                                     </div>
-                                    {isSeparablePrefixQuiz && flashcardSelection !== null && (
-                                      <div className="flashcard-separable-feedback">
-                                        <div><strong>{tr('Правильное предложение', 'Korrekter Satz')}:</strong> {String(responseJson?.correct_full_sentence || '—')}</div>
-                                        <div><strong>{tr('Перевод', 'Uebersetzung')}:</strong> {String(responseJson?.translation_ru || '—')}</div>
-                                        {String(responseJson?.explanation_de || '').trim() && (
-                                          <details className="flashcard-separable-explanation">
-                                            <summary>{tr('Пояснение (DE)', 'Erklaerung (DE)')}</summary>
-                                            <div>{String(responseJson.explanation_de || '')}</div>
-                                          </details>
-                                        )}
-                                      </div>
-                                    )}
                                     {flashcardTimedOut && (
                                       <div className="flashcard-timeout">die Zeit ist um</div>
                                     )}
@@ -11692,20 +11710,150 @@ function AppInner() {
                             )}
                           </div>
                         )}
-                        {!flashcardsOnly && !(flashcardSetComplete || flashcardExitSummary) && (
-                          <div className="flashcard-end">
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() => {
-                                setFlashcardExitSummary(true);
-                              }}
-                            >
-                              {tr('Закончить повтор', 'Wiederholung beenden')}
-                            </button>
-                          </div>
-                        )}
                       </>
+                    )}
+                    {flashcardSettingsModalMode && (
+                      <div className="flashcard-settings-overlay" onClick={() => setFlashcardSettingsModalMode(null)}>
+                        <div className="flashcard-settings-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+                          <div className="flashcard-settings-head">
+                            <button type="button" className="secondary-button" onClick={() => setFlashcardSettingsModalMode(null)}>
+                              {tr('Назад', 'Zurueck')}
+                            </button>
+                            <h4>
+                              {flashcardSettingsModalMode === 'fsrs'
+                                ? tr('Настройки FSRS', 'FSRS Einstellungen')
+                                : flashcardSettingsModalMode === 'quiz'
+                                  ? tr('Настройки Quiz 4 Options', 'Quiz 4 Options Einstellungen')
+                                  : flashcardSettingsModalMode === 'blocks'
+                                    ? tr('Настройки Blocks', 'Blocks Einstellungen')
+                                    : tr('Настройки: Дополни предложение', 'Einstellungen: Satz ergaenzen')}
+                            </h4>
+                          </div>
+                          <div className="setup-grid">
+                            {flashcardSettingsModalMode === 'fsrs' ? (
+                              <div className="setup-group">
+                                <div className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {getActiveLanguagePairLabel()}</div>
+                                <div className="srs-queue">
+                                  <span>{t('due')}: {srsQueueInfo?.due_count ?? 0}</span>
+                                  <span>{t('new_today')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
+                                </div>
+                                <button type="button" className="secondary-button" onClick={() => void loadSrsNextCard()}>
+                                  {tr('Обновить очередь', 'Queue aktualisieren')}
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <div className="setup-group">
+                                  <div className="setup-label">{t('setup_set_size')}</div>
+                                  <div className="setup-options">
+                                    {[5, 10, 15].map((size) => (
+                                      <button
+                                        key={`modal-set-${size}`}
+                                        type="button"
+                                        className={`option-pill ${flashcardSetSize === size ? 'is-active' : ''}`}
+                                        onClick={() => setFlashcardSetSize(size)}
+                                      >
+                                        {t('setup_cards_count', { count: size })}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div className="setup-group">
+                                  <div className="setup-label">{t('setup_folder')}</div>
+                                  <label className="webapp-field">
+                                    <select
+                                      value={flashcardFolderMode === 'folder' ? flashcardFolderId : flashcardFolderMode}
+                                      onChange={(event) => {
+                                        const value = event.target.value;
+                                        if (value === 'all') {
+                                          setFlashcardFolderMode('all');
+                                          setFlashcardFolderId('');
+                                        } else if (value === 'none') {
+                                          setFlashcardFolderMode('none');
+                                          setFlashcardFolderId('');
+                                        } else {
+                                          setFlashcardFolderMode('folder');
+                                          setFlashcardFolderId(value);
+                                        }
+                                      }}
+                                    >
+                                      <option value="all">{t('setup_all_folders')}</option>
+                                      <option value="none">{t('setup_without_folder')}</option>
+                                      {folders.map((folder) => (
+                                        <option key={folder.id} value={folder.id}>
+                                          {resolveFolderIconLabel(folder.icon)} • {folder.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                </div>
+                                <div className="setup-group">
+                                  <div className="setup-label">{t('setup_speed')}</div>
+                                  <div className="setup-options">
+                                    {[5, 10, 15].map((seconds) => (
+                                      <button
+                                        key={`modal-speed-${seconds}`}
+                                        type="button"
+                                        className={`option-pill ${flashcardDurationSec === seconds ? 'is-active' : ''}`}
+                                        onClick={() => setFlashcardDurationSec(seconds)}
+                                      >
+                                        {seconds} {uiLang === 'de' ? 'Sek' : 'сек'}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                                {flashcardSettingsModalMode === 'blocks' && (
+                                  <div className="setup-group">
+                                    <div className="setup-label">{t('setup_blocks_timer')}</div>
+                                    <div className="setup-options">
+                                      <button
+                                        type="button"
+                                        className={`option-pill ${blocksTimerMode === 'adaptive' ? 'is-active' : ''}`}
+                                        onClick={() => setBlocksTimerMode('adaptive')}
+                                      >
+                                        {t('timer_adaptive')}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={`option-pill ${blocksTimerMode === 'fixed' ? 'is-active' : ''}`}
+                                        onClick={() => setBlocksTimerMode('fixed')}
+                                      >
+                                        {t('timer_fixed_10')}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={`option-pill ${blocksTimerMode === 'none' ? 'is-active' : ''}`}
+                                        onClick={() => setBlocksTimerMode('none')}
+                                      >
+                                        {t('timer_none')}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                                <div className="setup-group">
+                                  <div className="setup-label">{t('setup_transition')}</div>
+                                  <div className="setup-options">
+                                    <button
+                                      type="button"
+                                      className={`option-pill ${flashcardAutoAdvance ? 'is-active' : ''}`}
+                                      onClick={() => setFlashcardAutoAdvance(true)}
+                                    >
+                                      {t('transition_auto')}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`option-pill ${!flashcardAutoAdvance ? 'is-active' : ''}`}
+                                      onClick={() => setFlashcardAutoAdvance(false)}
+                                    >
+                                      {t('transition_manual')}
+                                    </button>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}

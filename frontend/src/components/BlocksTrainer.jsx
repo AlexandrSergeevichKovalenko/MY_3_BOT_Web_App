@@ -7,6 +7,14 @@ export const normalizeAnswer = (value) => {
     .trim();
 };
 
+const normalizeForCompare = (value, cardType) => {
+  const normalized = normalizeAnswer(value);
+  if (cardType === 'WORD') {
+    return normalized.replace(/\s+/g, '');
+  }
+  return normalized;
+};
+
 export const shuffle = (items) => {
   const arr = [...items];
   const rand = () => {
@@ -270,7 +278,7 @@ export default function BlocksTrainer({
       return tile?.text || '';
     });
     const built = type === 'PHRASE' ? builtTokens.join(' ') : builtTokens.join('');
-    const isCorrect = normalizeAnswer(built) === normalizeAnswer(answer);
+    const isCorrect = normalizeForCompare(built, type) === normalizeForCompare(answer, type);
     setStatus(isCorrect ? 'correct' : 'wrong');
   }, [allSlotsFilled, isFinished, slots, tiles, type, answer]);
 
@@ -595,7 +603,7 @@ export default function BlocksTrainer({
       return tile?.text || '';
     });
     const built = type === 'PHRASE' ? builtTokens.join(' ') : builtTokens.join('');
-    const isCorrect = normalizeAnswer(built) === normalizeAnswer(answer);
+    const isCorrect = normalizeForCompare(built, type) === normalizeForCompare(answer, type);
     setStatus(isCorrect ? 'correct' : 'wrong');
   };
 

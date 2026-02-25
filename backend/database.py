@@ -2377,6 +2377,51 @@ def save_webapp_dictionary_query(
             ))
 
 
+def save_webapp_dictionary_query_returning_id(
+    user_id: int,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict,
+    folder_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_webapp_dictionary_queries (
+                    user_id,
+                    word_ru,
+                    folder_id,
+                    translation_de,
+                    word_de,
+                    translation_ru,
+                    source_lang,
+                    target_lang,
+                    response_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    user_id,
+                    word_ru,
+                    folder_id,
+                    translation_de,
+                    word_de,
+                    translation_ru,
+                    source_lang,
+                    target_lang,
+                    json.dumps(response_json, ensure_ascii=False),
+                ),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+
+
 def get_webapp_dictionary_entries(
     user_id: int,
     limit: int = 100,
@@ -2473,6 +2518,30 @@ def get_dictionary_entries_for_tts_prewarm(
             }
         )
     return items
+
+
+def get_recent_dictionary_user_ids(
+    *,
+    limit: int = 100,
+    lookback_hours: int = 168,
+) -> list[int]:
+    safe_limit = max(1, min(int(limit), 2000))
+    safe_hours = max(1, min(int(lookback_hours), 24 * 180))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, MAX(created_at) AS last_created_at
+                FROM bt_3_webapp_dictionary_queries
+                WHERE created_at >= NOW() - (%s || ' hours')::interval
+                GROUP BY user_id
+                ORDER BY last_created_at DESC
+                LIMIT %s;
+                """,
+                (safe_hours, safe_limit),
+            )
+            rows = cursor.fetchall()
+    return [int(row[0]) for row in rows if row and row[0] is not None]
 
 
 def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
@@ -3004,7 +3073,11 @@ def get_flashcard_set(
     wrong_ids: list[int] = []
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            wrong_where = "s.user_id = %s AND s.last_result = FALSE"
+            wrong_where = (
+                "s.user_id = %s "
+                "AND s.last_result = FALSE "
+                "AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'"
+            )
             wrong_params = [user_id]
             language_filter_sql_q, language_params = _build_language_pair_filter(
                 source_lang,
@@ -3031,7 +3104,11 @@ def get_flashcard_set(
             wrong_ids = [row[0] for row in cursor.fetchall()]
 
             if len(wrong_ids) < wrong_size:
-                extra_where = "s.user_id = %s AND s.entry_id <> ALL(%s::bigint[])"
+                extra_where = (
+                    "s.user_id = %s "
+                    "AND s.entry_id <> ALL(%s::bigint[]) "
+                    "AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'"
+                )
                 extra_params = [user_id, wrong_ids or [0]]
                 if language_filter_sql_q:
                     extra_where += language_filter_sql_q
@@ -3052,7 +3129,11 @@ def get_flashcard_set(
                 """, extra_params)
                 wrong_ids.extend([row[0] for row in cursor.fetchall()])
 
-            base_where = "user_id = %s AND id <> ALL(%s::bigint[])"
+            base_where = (
+                "user_id = %s "
+                "AND id <> ALL(%s::bigint[]) "
+                "AND COALESCE(response_json->>'sentence_origin', '') <> 'gpt_seed'"
+            )
             base_params = [user_id, wrong_ids or [0]]
             language_filter_sql, language_params_no_alias = _build_language_pair_filter(source_lang, target_lang)
             if language_filter_sql:
@@ -3080,7 +3161,11 @@ def get_flashcard_set(
             random_rows = cursor.fetchall()
 
             if len(random_rows) < max(set_size - len(wrong_ids), 0):
-                fallback_where = "user_id = %s AND id <> ALL(%s::bigint[])"
+                fallback_where = (
+                    "user_id = %s "
+                    "AND id <> ALL(%s::bigint[]) "
+                    "AND COALESCE(response_json->>'sentence_origin', '') <> 'gpt_seed'"
+                )
                 fallback_params = [user_id, wrong_ids or [0]]
                 if language_filter_sql:
                     fallback_where += language_filter_sql
@@ -3101,7 +3186,11 @@ def get_flashcard_set(
                 random_rows = cursor.fetchall()
 
             if wrong_ids:
-                wrong_where = "user_id = %s AND id = ANY(%s::bigint[])"
+                wrong_where = (
+                    "user_id = %s "
+                    "AND id = ANY(%s::bigint[]) "
+                    "AND COALESCE(response_json->>'sentence_origin', '') <> 'gpt_seed'"
+                )
                 wrong_params = [user_id, wrong_ids]
                 if language_filter_sql:
                     wrong_where += language_filter_sql

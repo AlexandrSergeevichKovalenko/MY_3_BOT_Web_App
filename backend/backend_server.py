@@ -155,9 +155,11 @@ from backend.database import (
     get_pending_daily_sentences,
     get_webapp_dictionary_entries,
     get_dictionary_entries_for_tts_prewarm,
+    get_recent_dictionary_user_ids,
     get_webapp_translation_history,
     get_latest_daily_sentences,
     save_webapp_dictionary_query,
+    save_webapp_dictionary_query_returning_id,
     save_webapp_translation,
     get_dictionary_cache,
     upsert_dictionary_cache,
@@ -339,6 +341,22 @@ SEPARABLE_PREFIX_QUIZ_SHARE = max(0.0, min(1.0, float(os.getenv("SEPARABLE_PREFI
 SEPARABLE_PREFIX_QUIZ_CACHE_TTL_SEC = max(60, int(os.getenv("SEPARABLE_PREFIX_QUIZ_CACHE_TTL_SEC") or "86400"))
 SEPARABLE_PREFIX_QUIZ_TOPICS = ("finance", "work", "travel", "daily_life", "communication", "study")
 _SEPARABLE_PREFIX_QUIZ_CACHE: dict[str, dict] = {}
+SENTENCE_TRAINING_GPT_SEED_SHARE = max(0.0, min(1.0, float(os.getenv("SENTENCE_TRAINING_GPT_SEED_SHARE") or "0.30")))
+SENTENCE_TRAINING_MIN_WORDS = max(3, int((os.getenv("SENTENCE_TRAINING_MIN_WORDS") or "3").strip()))
+SENTENCE_TRAINING_GPT_SEED_TARGET = max(20, int((os.getenv("SENTENCE_TRAINING_GPT_SEED_TARGET") or "100").strip()))
+SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST = max(1, int((os.getenv("SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST") or "8").strip()))
+SENTENCE_TRAINING_LOOKUP_LIMIT = max(100, int((os.getenv("SENTENCE_TRAINING_LOOKUP_LIMIT") or "600").strip()))
+SENTENCE_TRAINING_LLM_MAX_PER_REQUEST = max(0, int((os.getenv("SENTENCE_TRAINING_LLM_MAX_PER_REQUEST") or "4").strip()))
+SENTENCE_GAP_CACHE_VERSION = 2
+SENTENCE_PREWARM_ENABLED = str(os.getenv("SENTENCE_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+SENTENCE_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("SENTENCE_PREWARM_INTERVAL_MINUTES") or "60").strip()))
+SENTENCE_PREWARM_LOOKBACK_HOURS = max(1, min(24 * 90, int((os.getenv("SENTENCE_PREWARM_LOOKBACK_HOURS") or "168").strip())))
+SENTENCE_PREWARM_MAX_USERS = max(1, min(500, int((os.getenv("SENTENCE_PREWARM_MAX_USERS") or "40").strip())))
+SENTENCE_PREWARM_MAX_GENERATE_PER_USER = max(1, min(20, int((os.getenv("SENTENCE_PREWARM_MAX_GENERATE_PER_USER") or "3").strip())))
+SENTENCE_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("SENTENCE_PREWARM_OFFPEAK_START_HOUR") or "1").strip())))
+SENTENCE_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("SENTENCE_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
+SENTENCE_PREWARM_ALLOW_DAYTIME = str(os.getenv("SENTENCE_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
+_SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 FSRS_PROFILING_ENABLED = str(os.getenv("FSRS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_PREWARM_ENABLED = str(os.getenv("TTS_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -3252,9 +3270,9 @@ CRITICAL CONSTRAINTS:
 1) The correct verb MUST be a separable prefix verb (trennbares Verb). In the correct sentence, the prefix MUST appear separated at the end of the clause (e.g., "Ich lege ... an.", "Er steht ... auf.").
 2) The quiz must test choosing the correct infinitive verb from 4 options. Options must be infinitives (e.g., "anlegen", "ausgeben", etc.).
 3) The sentence must be a simple main clause in Präsens (present tense), B1–B2, not a question, not passive.
-4) The gap must remove ONLY the conjugated verb stem part, leaving the separated prefix still visible at the end.
+4) The gap must remove the WHOLE target verb phrase from the sentence. Do NOT leave the separated prefix visible in sentence_with_gap.
    Example pattern:
-   sentence_with_gap: "Ich ___ mein Geld in Immobilien an."
+   sentence_with_gap: "Ich ___ mein Geld in Immobilien."
    correct_full_sentence: "Ich lege mein Geld in Immobilien an."
    correct_infinitive: "anlegen"
 5) Provide 3 wrong options that are plausible but clearly wrong in this exact context.
@@ -3367,6 +3385,8 @@ def _validate_separable_prefix_quiz_item(item: dict) -> dict:
         raise ValueError("prefix/base_verb required")
     if not re.search(rf"\b{re.escape(prefix)}[.!?]?\s*$", correct_full_sentence):
         raise ValueError("prefix is not separated at sentence end")
+    if re.search(rf"\b{re.escape(prefix)}[.!?]?\s*$", sentence_with_gap):
+        raise ValueError("sentence_with_gap must hide separated prefix too")
 
     return {
         "quiz_type": "separable_prefix_verb_gap",
@@ -3400,7 +3420,7 @@ def _request_separable_prefix_quiz_item_via_openai() -> dict:
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
-    response = requests.post(endpoint, headers=headers, json=payload, timeout=25)
+    response = requests.post(endpoint, headers=headers, json=payload, timeout=10)
     if not response.ok:
         raise RuntimeError(f"OpenAI quiz HTTP {response.status_code}: {response.text[:240]}")
     data = response.json() if response.content else {}
@@ -3465,15 +3485,19 @@ def _get_cached_separable_prefix_quiz_items(count: int) -> list[dict]:
     return random.sample(pool, target_count)
 
 
-def _inject_separable_prefix_quizzes(items: list[dict]) -> list[dict]:
+def _inject_separable_prefix_quizzes(items: list[dict], share: float | None = None) -> list[dict]:
     if not isinstance(items, list) or not items:
         return items
     candidate_indexes = [idx for idx, item in enumerate(items) if isinstance(item, dict) and item.get("id")]
-    if not candidate_indexes or SEPARABLE_PREFIX_QUIZ_SHARE <= 0:
+    effective_share = SEPARABLE_PREFIX_QUIZ_SHARE if share is None else max(0.0, min(1.0, float(share or 0.0)))
+    if not candidate_indexes or effective_share <= 0:
         return items
 
-    selected_indexes = [idx for idx in candidate_indexes if random.random() < SEPARABLE_PREFIX_QUIZ_SHARE]
-    if not selected_indexes and random.random() < SEPARABLE_PREFIX_QUIZ_SHARE:
+    if effective_share >= 1.0:
+        selected_indexes = candidate_indexes
+    else:
+        selected_indexes = [idx for idx in candidate_indexes if random.random() < effective_share]
+    if not selected_indexes and random.random() < effective_share:
         selected_indexes = [random.choice(candidate_indexes)]
     if not selected_indexes:
         return items
@@ -3514,6 +3538,510 @@ def _inject_separable_prefix_quizzes(items: list[dict]) -> list[dict]:
         items[idx] = current
 
     return items
+
+
+SENTENCE_CONTEXT_GAP_PROMPT = """SYSTEM:
+You generate one strict JSON quiz item for a German-learning app.
+No markdown. No comments. JSON only.
+
+USER:
+Create ONE difficult multiple-choice item for mode "complete the sentence".
+Input:
+- german_sentence: a full German sentence (3+ words)
+- translation_ru: Russian translation of that sentence
+
+Task:
+1) Pick ONE key semantic element from german_sentence:
+   - verb / noun / preposition / separable_verb
+2) Build sentence_with_gap by replacing that whole element with exactly "___".
+   - If separable_verb: remove BOTH parts (stem and separated prefix), do not leave prefix at sentence end.
+3) Build 4 close options (hard distractors), exactly one correct.
+4) correct_word must equal options[correct_index - 1].
+
+Return STRICT JSON with keys in this exact order:
+{
+  "quiz_type": "sentence_gap_context",
+  "sentence_with_gap": "...",
+  "correct_full_sentence": "...",
+  "translation_ru": "...",
+  "options": ["...", "...", "...", "..."],
+  "correct_index": 1,
+  "correct_word": "...",
+  "focus_type": "verb"
+}
+"""
+
+
+def _normalize_space(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _count_words(value: str | None) -> int:
+    return len(re.findall(r"[A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?", _normalize_space(value)))
+
+
+def _coerce_response_json(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _extract_sentence_training_pair(entry: dict, source_lang: str, target_lang: str) -> tuple[str, str, dict]:
+    data = dict(entry or {})
+    response_json = _coerce_response_json(data.get("response_json"))
+    src_lang = _normalize_short_lang_code(
+        data.get("source_lang") or response_json.get("source_lang") or source_lang,
+        fallback=source_lang,
+    )
+    tgt_lang = _normalize_short_lang_code(
+        data.get("target_lang") or response_json.get("target_lang") or target_lang,
+        fallback=target_lang,
+    )
+    source_text, target_text = _resolve_entry_texts_for_pair(
+        data,
+        response_json,
+        src_lang,
+        tgt_lang,
+        source_text_hint=data.get("source_text"),
+        target_text_hint=data.get("target_text"),
+    )
+    source_text = _normalize_space(source_text)
+    target_text = _normalize_space(target_text)
+
+    if src_lang == "de":
+        german = source_text
+        russian = target_text
+    elif tgt_lang == "de":
+        german = target_text
+        russian = source_text
+    else:
+        german = _normalize_space(
+            data.get("word_de")
+            or response_json.get("word_de")
+            or data.get("translation_de")
+            or response_json.get("translation_de")
+            or target_text
+            or source_text
+        )
+        russian = _normalize_space(
+            data.get("translation_ru")
+            or response_json.get("translation_ru")
+            or data.get("word_ru")
+            or response_json.get("word_ru")
+            or source_text
+            or target_text
+        )
+
+    if not russian:
+        russian = _normalize_space(
+            data.get("translation_ru")
+            or response_json.get("translation_ru")
+            or data.get("word_ru")
+            or response_json.get("word_ru")
+            or source_text
+        )
+    return german, russian, response_json
+
+
+def _validate_sentence_context_quiz(item: dict) -> dict:
+    if not isinstance(item, dict):
+        raise ValueError("quiz item is not an object")
+    required_keys = [
+        "quiz_type",
+        "sentence_with_gap",
+        "correct_full_sentence",
+        "translation_ru",
+        "options",
+        "correct_index",
+        "correct_word",
+        "focus_type",
+    ]
+    if any(key not in item for key in required_keys):
+        raise ValueError("quiz item missing keys")
+    if str(item.get("quiz_type") or "").strip() != "sentence_gap_context":
+        raise ValueError("invalid quiz_type")
+
+    sentence_with_gap = _normalize_space(item.get("sentence_with_gap"))
+    correct_full_sentence = _normalize_space(item.get("correct_full_sentence"))
+    translation_ru = _normalize_space(item.get("translation_ru"))
+    focus_type = _normalize_space(item.get("focus_type")).lower()
+    options_raw = item.get("options")
+    if sentence_with_gap.count("___") != 1:
+        raise ValueError("sentence_with_gap must contain one ___")
+    if not correct_full_sentence or not translation_ru:
+        raise ValueError("missing sentence/translation")
+    if not isinstance(options_raw, list) or len(options_raw) != 4:
+        raise ValueError("options must contain 4 items")
+    options = [_normalize_space(opt) for opt in options_raw]
+    if any(not opt for opt in options):
+        raise ValueError("empty option")
+    if len(set(options)) != 4:
+        raise ValueError("duplicate options")
+    correct_index = int(item.get("correct_index") or 0)
+    if correct_index < 1 or correct_index > 4:
+        raise ValueError("correct_index out of range")
+    correct_word = _normalize_space(item.get("correct_word"))
+    if not correct_word:
+        raise ValueError("correct_word empty")
+    if correct_word != options[correct_index - 1]:
+        raise ValueError("correct_word mismatch")
+    if focus_type not in {"verb", "noun", "preposition", "separable_verb"}:
+        focus_type = "verb"
+
+    # Critical rule: when separable verb is hidden, separated prefix must not remain visible.
+    if focus_type == "separable_verb":
+        prefix = _normalize_space(item.get("prefix"))
+        if prefix and re.search(rf"\b{re.escape(prefix)}[.!?]?\s*$", sentence_with_gap):
+            raise ValueError("separable prefix is still visible in sentence_with_gap")
+
+    return {
+        "quiz_type": "sentence_gap_context",
+        "sentence_with_gap": sentence_with_gap,
+        "correct_full_sentence": correct_full_sentence,
+        "translation_ru": translation_ru,
+        "options": options,
+        "correct_index": correct_index,
+        "correct_word": correct_word,
+        "focus_type": focus_type,
+    }
+
+
+def _request_sentence_context_quiz_via_openai(german_sentence: str, translation_ru: str) -> dict:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not configured")
+    endpoint = "https://api.openai.com/v1/chat/completions"
+    payload = {
+        "model": OPENAI_QUIZ_MODEL,
+        "temperature": 0.35,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": SENTENCE_CONTEXT_GAP_PROMPT},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "german_sentence": _normalize_space(german_sentence),
+                        "translation_ru": _normalize_space(translation_ru),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    response = requests.post(endpoint, headers=headers, json=payload, timeout=25)
+    if not response.ok:
+        raise RuntimeError(f"OpenAI sentence quiz HTTP {response.status_code}: {response.text[:240]}")
+    data = response.json() if response.content else {}
+    choices = data.get("choices") if isinstance(data, dict) else []
+    message = choices[0].get("message") if isinstance(choices, list) and choices else {}
+    raw_content = str(message.get("content") or "") if isinstance(message, dict) else ""
+    normalized = _extract_json_object(raw_content)
+    if not normalized:
+        raise RuntimeError("OpenAI sentence quiz empty response")
+    try:
+        parsed = json.loads(normalized)
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI sentence quiz parse error: {exc}") from exc
+    return _validate_sentence_context_quiz(parsed)
+
+
+def _build_fallback_sentence_context_quiz(german_sentence: str, translation_ru: str) -> dict:
+    sentence = _normalize_space(german_sentence)
+    translation = _normalize_space(translation_ru)
+    words = re.findall(r"[A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?", sentence)
+    stop = {"und", "oder", "aber", "ich", "du", "er", "sie", "wir", "ihr", "sie", "der", "die", "das", "ein", "eine"}
+    candidates = [w for w in words if len(w) >= 4 and w.lower() not in stop]
+    if not candidates:
+        candidates = words
+    correct_word = candidates[0] if candidates else "Wort"
+    sentence_with_gap = re.sub(rf"\b{re.escape(correct_word)}\b", "___", sentence, count=1)
+    distractor_pool = [w for w in words if w.lower() != correct_word.lower() and len(w) >= 3]
+    while len(distractor_pool) < 3:
+        distractor_pool.append(random.choice(["gehen", "machen", "geben", "nehmen", "stellen", "tragen"]))
+    options = [correct_word, distractor_pool[0], distractor_pool[1], distractor_pool[2]]
+    deduped = []
+    for item in options:
+        norm = _normalize_space(item)
+        if norm and norm not in deduped:
+            deduped.append(norm)
+    while len(deduped) < 4:
+        candidate = random.choice(["gehen", "machen", "geben", "nehmen", "stellen", "tragen", "setzen", "legen"])
+        if candidate not in deduped:
+            deduped.append(candidate)
+    options = deduped[:4]
+    random.shuffle(options)
+    correct_index = options.index(correct_word) + 1
+    focus_type = "verb" if correct_word.lower().endswith("en") else ("noun" if correct_word[:1].isupper() else "preposition")
+    return {
+        "quiz_type": "sentence_gap_context",
+        "sentence_with_gap": sentence_with_gap,
+        "correct_full_sentence": sentence,
+        "translation_ru": translation,
+        "options": options,
+        "correct_index": correct_index,
+        "correct_word": correct_word,
+        "focus_type": focus_type,
+    }
+
+
+def _entry_sentence_cache_payload(response_json: dict, german_sentence: str) -> dict | None:
+    cache = response_json.get("sentence_gap_v2")
+    if not isinstance(cache, dict):
+        return None
+    if int(cache.get("version") or 0) != SENTENCE_GAP_CACHE_VERSION:
+        return None
+    if _normalize_space(cache.get("source_sentence")) != _normalize_space(german_sentence):
+        return None
+    payload = cache.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return _validate_sentence_context_quiz(payload)
+    except Exception:
+        return None
+
+
+def _merge_sentence_quiz_into_entry(entry: dict, quiz_payload: dict, *, sentence_origin: str) -> dict:
+    item = dict(entry or {})
+    response_json = _coerce_response_json(item.get("response_json"))
+    payload = dict(quiz_payload or {})
+    if not payload.get("sentence_with_gap") or not payload.get("correct_word"):
+        cache = response_json.get("sentence_gap_v2")
+        if isinstance(cache, dict) and isinstance(cache.get("payload"), dict):
+            payload = {**cache.get("payload"), **payload}
+    merged = {
+        **response_json,
+        **payload,
+        "source_text": payload.get("sentence_with_gap") or "",
+        "target_text": payload.get("correct_word") or "",
+        "sentence_origin": sentence_origin,
+    }
+    item["response_json"] = merged
+    item["source_text"] = merged["source_text"]
+    item["target_text"] = merged["target_text"]
+    item["word_ru"] = merged["source_text"]
+    item["translation_de"] = merged["target_text"]
+    item["word_de"] = merged["target_text"]
+    item["translation_ru"] = payload.get("translation_ru") or item.get("translation_ru") or ""
+    return item
+
+
+def _build_sentence_quiz_from_dictionary_entry(
+    entry: dict,
+    *,
+    source_lang: str,
+    target_lang: str,
+    allow_llm: bool = True,
+) -> dict | None:
+    german_sentence, translation_ru, response_json = _extract_sentence_training_pair(entry, source_lang, target_lang)
+    if _count_words(german_sentence) < SENTENCE_TRAINING_MIN_WORDS:
+        return None
+
+    cached = _entry_sentence_cache_payload(response_json, german_sentence)
+    payload = cached
+    if payload is None:
+        if allow_llm:
+            try:
+                payload = _request_sentence_context_quiz_via_openai(german_sentence, translation_ru)
+            except Exception as exc:
+                logging.warning("Sentence quiz generation failed for entry %s: %s", entry.get("id"), exc)
+                payload = _build_fallback_sentence_context_quiz(german_sentence, translation_ru)
+        else:
+            payload = _build_fallback_sentence_context_quiz(german_sentence, translation_ru)
+        updated_response_json = dict(response_json)
+        updated_response_json["sentence_gap_v2"] = {
+            "version": SENTENCE_GAP_CACHE_VERSION,
+            "source_sentence": german_sentence,
+            "payload": payload,
+            "cached_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            update_webapp_dictionary_entry(int(entry.get("id") or 0), updated_response_json)
+        except Exception as exc:
+            logging.warning("Failed to cache sentence quiz for entry %s: %s", entry.get("id"), exc)
+
+    return _merge_sentence_quiz_into_entry(entry, payload, sentence_origin="dictionary")
+
+
+def _is_gpt_seed_sentence_entry(entry: dict | None) -> bool:
+    response_json = _coerce_response_json((entry or {}).get("response_json"))
+    return str(response_json.get("sentence_origin") or "").strip() == "gpt_seed"
+
+
+def _ensure_sentence_gpt_seed_entries(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    existing_entries: list[dict],
+    max_generate_per_call: int | None = None,
+) -> list[dict]:
+    seed_entries = [item for item in existing_entries if _is_gpt_seed_sentence_entry(item)]
+    if len(seed_entries) >= SENTENCE_TRAINING_GPT_SEED_TARGET:
+        return seed_entries
+    missing_total = SENTENCE_TRAINING_GPT_SEED_TARGET - len(seed_entries)
+    per_call_cap = SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST
+    if max_generate_per_call is not None:
+        per_call_cap = max(1, min(per_call_cap, int(max_generate_per_call)))
+    to_generate = min(missing_total, per_call_cap)
+    if to_generate <= 0:
+        return seed_entries
+
+    existing_sentences = {
+        _normalize_space(_coerce_response_json(item.get("response_json")).get("correct_full_sentence")).lower()
+        for item in existing_entries
+    }
+    generated_count = 0
+    for _ in range(to_generate):
+        try:
+            quiz = _get_separable_prefix_quiz_item_with_retry(max_retries=2)
+        except Exception as exc:
+            logging.warning("GPT seed generation failed: %s", exc)
+            break
+        full_sentence = _normalize_space(quiz.get("correct_full_sentence"))
+        if not full_sentence or full_sentence.lower() in existing_sentences:
+            continue
+        payload = {
+            "quiz_type": "sentence_gap_context",
+            "sentence_with_gap": _normalize_space(quiz.get("sentence_with_gap")),
+            "correct_full_sentence": full_sentence,
+            "translation_ru": _normalize_space(quiz.get("translation_ru")),
+            "options": [str(opt or "").strip() for opt in (quiz.get("options") or [])][:4],
+            "correct_index": int(quiz.get("correct_index") or 1),
+            "correct_word": _normalize_space(quiz.get("correct_infinitive")),
+            "focus_type": "separable_verb",
+            "prefix": _normalize_space(quiz.get("prefix")),
+        }
+        try:
+            payload = _validate_sentence_context_quiz(payload)
+        except Exception as exc:
+            logging.warning("Invalid GPT seed sentence item skipped: %s", exc)
+            continue
+        response_json = {
+            **payload,
+            "source_text": payload["sentence_with_gap"],
+            "target_text": payload["correct_word"],
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "sentence_origin": "gpt_seed",
+        }
+        try:
+            entry_id = save_webapp_dictionary_query_returning_id(
+                user_id=int(user_id),
+                word_ru=payload["translation_ru"] or payload["sentence_with_gap"],
+                translation_de=payload["correct_word"],
+                word_de=payload["correct_word"],
+                translation_ru=payload["translation_ru"],
+                response_json=response_json,
+                folder_id=None,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        except Exception as exc:
+            logging.warning("Failed to persist GPT seed sentence: %s", exc)
+            continue
+        if entry_id <= 0:
+            continue
+        seed_entries.append(
+            {
+                "id": entry_id,
+                "word_ru": payload["sentence_with_gap"],
+                "translation_de": payload["correct_word"],
+                "word_de": payload["correct_word"],
+                "translation_ru": payload["translation_ru"],
+                "response_json": response_json,
+                "source_text": payload["sentence_with_gap"],
+                "target_text": payload["correct_word"],
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+            }
+        )
+        existing_sentences.add(full_sentence.lower())
+        generated_count += 1
+    if generated_count:
+        logging.info("Generated %s new GPT seed sentence entries for user %s", generated_count, user_id)
+    return seed_entries
+
+
+def _build_sentence_training_set(
+    *,
+    user_id: int,
+    set_size: int,
+    folder_mode: str,
+    folder_id: int | None,
+    source_lang: str,
+    target_lang: str,
+) -> list[dict]:
+    raw_entries = get_webapp_dictionary_entries(
+        user_id=int(user_id),
+        limit=SENTENCE_TRAINING_LOOKUP_LIMIT,
+        folder_mode=folder_mode,
+        folder_id=folder_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if not raw_entries:
+        return []
+    decorated_all = [
+        _decorate_dictionary_item(item, source_lang=source_lang, target_lang=target_lang, direction=f"{source_lang}-{target_lang}")
+        for item in raw_entries
+    ]
+
+    gpt_seed_entries = [item for item in decorated_all if _is_gpt_seed_sentence_entry(item)]
+    if folder_mode in {"all", "none"}:
+        gpt_seed_entries = _ensure_sentence_gpt_seed_entries(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            existing_entries=decorated_all,
+        )
+
+    desired_seed_count = min(set_size, int(round(set_size * SENTENCE_TRAINING_GPT_SEED_SHARE)))
+    selected_seed = random.sample(gpt_seed_entries, k=min(len(gpt_seed_entries), desired_seed_count)) if gpt_seed_entries else []
+    selected_seed = [_merge_sentence_quiz_into_entry(item, _coerce_response_json(item.get("response_json")), sentence_origin="gpt_seed") for item in selected_seed]
+
+    remaining = max(0, set_size - len(selected_seed))
+    dictionary_candidates = []
+    for entry in decorated_all:
+        if _is_gpt_seed_sentence_entry(entry):
+            continue
+        german_sentence, _, _ = _extract_sentence_training_pair(entry, source_lang, target_lang)
+        if _count_words(german_sentence) >= SENTENCE_TRAINING_MIN_WORDS:
+            dictionary_candidates.append(entry)
+    random.shuffle(dictionary_candidates)
+
+    selected_dict: list[dict] = []
+    llm_remaining = SENTENCE_TRAINING_LLM_MAX_PER_REQUEST
+    for entry in dictionary_candidates:
+        if len(selected_dict) >= remaining:
+            break
+        allow_llm = llm_remaining > 0
+        if allow_llm:
+            llm_remaining -= 1
+        quiz_entry = _build_sentence_quiz_from_dictionary_entry(
+            entry,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            allow_llm=allow_llm,
+        )
+        if quiz_entry:
+            selected_dict.append(quiz_entry)
+
+    result = selected_seed + selected_dict
+    random.shuffle(result)
+    return result[:set_size]
 
 
 def _language_label(code: str) -> str:
@@ -4658,6 +5186,105 @@ def _run_tts_prewarm_scheduler_job() -> None:
         _dispatch_tts_prewarm(force=False, tz_name=tz_name)
     except Exception:
         logging.exception("❌ TTS prewarm scheduler failed")
+
+
+def _should_run_sentence_prewarm_now(tz_name: str) -> bool:
+    if SENTENCE_PREWARM_ALLOW_DAYTIME:
+        return True
+    try:
+        local_now = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        local_now = datetime.utcnow()
+    return _hour_in_window(
+        int(local_now.hour),
+        int(SENTENCE_PREWARM_OFFPEAK_START_HOUR),
+        int(SENTENCE_PREWARM_OFFPEAK_END_HOUR),
+    )
+
+
+def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
+    if not SENTENCE_PREWARM_ENABLED and not force:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+    if not force and not _should_run_sentence_prewarm_now(tz_name):
+        return {"ok": True, "skipped": True, "reason": "outside_offpeak_window"}
+    if not _SENTENCE_PREWARM_LOCK.acquire(blocking=False):
+        return {"ok": True, "skipped": True, "reason": "already_running"}
+
+    started_at = time.perf_counter()
+    try:
+        user_ids = get_recent_dictionary_user_ids(
+            limit=SENTENCE_PREWARM_MAX_USERS,
+            lookback_hours=SENTENCE_PREWARM_LOOKBACK_HOURS,
+        )
+        scanned_users = 0
+        eligible_users = 0
+        generated_total = 0
+        current_seed_total = 0
+        errors = 0
+
+        for user_id in user_ids:
+            scanned_users += 1
+            if not _is_webapp_user_allowed(int(user_id)):
+                continue
+            eligible_users += 1
+            try:
+                source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+                entries = get_webapp_dictionary_entries(
+                    user_id=int(user_id),
+                    limit=SENTENCE_TRAINING_LOOKUP_LIMIT,
+                    folder_mode="all",
+                    folder_id=None,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+                decorated = [
+                    _decorate_dictionary_item(
+                        item if isinstance(item, dict) else {},
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        direction=f"{source_lang}-{target_lang}",
+                    )
+                    for item in entries
+                ]
+                before = len([item for item in decorated if _is_gpt_seed_sentence_entry(item)])
+                seed_entries = _ensure_sentence_gpt_seed_entries(
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    existing_entries=decorated,
+                    max_generate_per_call=SENTENCE_PREWARM_MAX_GENERATE_PER_USER,
+                )
+                after = len(seed_entries)
+                current_seed_total += after
+                generated_total += max(0, after - before)
+            except Exception:
+                errors += 1
+                logging.exception("Sentence prewarm failed for user_id=%s", user_id)
+
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        result = {
+            "ok": True,
+            "scanned_users": scanned_users,
+            "eligible_users": eligible_users,
+            "generated": generated_total,
+            "seed_items_total": current_seed_total,
+            "errors": errors,
+            "elapsed_ms": elapsed_ms,
+            "force": bool(force),
+            "tz": tz_name,
+        }
+        logging.info("✅ Sentence prewarm finished: %s", result)
+        return result
+    finally:
+        _SENTENCE_PREWARM_LOCK.release()
+
+
+def _run_sentence_prewarm_scheduler_job() -> None:
+    try:
+        tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip()
+        _dispatch_sentence_prewarm(force=False, tz_name=tz_name)
+    except Exception:
+        logging.exception("❌ Sentence prewarm scheduler failed")
 
 
 def _chain_cache_key(chunks: list[str], lang: str, speed: float) -> str:
@@ -9544,33 +10171,42 @@ def get_webapp_flashcard_set():
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
-        items = get_flashcard_set(
-            user_id=user_id,
-            set_size=set_size,
-            wrong_size=wrong_size,
-            folder_mode=folder_mode,
-            folder_id=int(folder_id) if folder_id is not None else None,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
+        resolved_folder_id = int(folder_id) if folder_id is not None else None
+    except Exception:
+        resolved_folder_id = None
+
+    try:
+        if training_mode == "sentence":
+            decorated_items = _build_sentence_training_set(
+                user_id=int(user_id),
+                set_size=max(1, int(set_size)),
+                folder_mode=str(folder_mode or "all"),
+                folder_id=resolved_folder_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        else:
+            items = get_flashcard_set(
+                user_id=user_id,
+                set_size=set_size,
+                wrong_size=wrong_size,
+                folder_mode=folder_mode,
+                folder_id=resolved_folder_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            direction = f"{source_lang}-{target_lang}"
+            decorated_items = [
+                _decorate_dictionary_item(
+                    item if isinstance(item, dict) else {},
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    direction=direction,
+                )
+                for item in items
+            ]
     except Exception as exc:
         return jsonify({"error": f"Ошибка получения карточек: {exc}"}), 500
-
-    direction = f"{source_lang}-{target_lang}"
-    decorated_items = [
-        _decorate_dictionary_item(
-            item if isinstance(item, dict) else {},
-            source_lang=source_lang,
-            target_lang=target_lang,
-            direction=direction,
-        )
-        for item in items
-    ]
-    if training_mode == "quiz":
-        try:
-            decorated_items = _inject_separable_prefix_quizzes(decorated_items)
-        except Exception as exc:
-            logging.warning("Failed to inject separable prefix quizzes: %s", exc)
     return jsonify(
         {
             "ok": True,
@@ -13065,6 +13701,15 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=120,
         )
+    if SENTENCE_PREWARM_ENABLED:
+        _audio_scheduler.add_job(
+            _run_sentence_prewarm_scheduler_job,
+            "interval",
+            minutes=SENTENCE_PREWARM_INTERVAL_MINUTES,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=180,
+        )
     _audio_scheduler.start()
     logging.info("✅ Audio scheduler started: %02d:%02d %s", hour, minute, tz_name)
 
@@ -13128,6 +13773,22 @@ def prewarm_tts_now():
     force = bool(payload.get("force", True))
     tz_name = str(payload.get("tz") or os.getenv("AUDIO_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     result = _dispatch_tts_prewarm(force=force, tz_name=tz_name)
+    return jsonify(result)
+
+
+@app.route("/api/admin/prewarm-sentence-cards", methods=["POST"])
+def prewarm_sentence_cards_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    force = bool(payload.get("force", True))
+    tz_name = str(payload.get("tz") or os.getenv("AUDIO_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    result = _dispatch_sentence_prewarm(force=force, tz_name=tz_name)
     return jsonify(result)
 
 
