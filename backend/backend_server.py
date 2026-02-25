@@ -1694,8 +1694,9 @@ def _is_youtube_short_like(video: dict | None) -> bool:
 def _filter_videos_for_today_task(
     videos: list[dict],
     *,
-    min_seconds: int = MIN_RECOMMENDED_VIDEO_SECONDS,
+    min_seconds: int | None = None,
 ) -> list[dict]:
+    min_seconds = int(min_seconds or MIN_RECOMMENDED_VIDEO_SECONDS)
     filtered: list[dict] = []
     for item in videos or []:
         video = dict(item or {})
@@ -1703,7 +1704,7 @@ def _filter_videos_for_today_task(
         if duration_seconds <= 0:
             duration_seconds = _parse_iso8601_duration_to_seconds(video.get("duration"))
             video["duration_seconds"] = duration_seconds
-        if duration_seconds < int(min_seconds):
+        if duration_seconds < min_seconds:
             continue
         if _is_youtube_short_like(video):
             continue
