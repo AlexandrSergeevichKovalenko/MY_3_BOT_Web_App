@@ -2505,6 +2505,73 @@ def get_webapp_dictionary_entries(
     return items
 
 
+def has_dictionary_entries_for_language_pair(
+    user_id: int,
+    source_lang: str | None,
+    target_lang: str | None,
+    cursor=None,
+) -> bool:
+    def _check(cur) -> bool:
+        where_clause = "WHERE user_id = %s"
+        params: list = [int(user_id)]
+        language_filter_sql, language_params = _build_language_pair_filter(source_lang, target_lang)
+        if language_filter_sql:
+            where_clause += language_filter_sql
+            params.extend(language_params)
+        cur.execute(
+            f"""
+            SELECT 1
+            FROM bt_3_webapp_dictionary_queries
+            {where_clause}
+            LIMIT 1;
+            """,
+            params,
+        )
+        return cur.fetchone() is not None
+
+    if cursor is not None:
+        return _check(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _check(own_cursor)
+
+
+def get_latest_dictionary_language_pair_for_user(user_id: int, cursor=None) -> tuple[str, str] | None:
+    def _get(cur):
+        cur.execute(
+            """
+            SELECT
+                LOWER(COALESCE(
+                    NULLIF(source_lang, ''),
+                    NULLIF(response_json->>'source_lang', ''),
+                    NULLIF(response_json#>>'{language_pair,source_lang}', ''),
+                    'ru'
+                )) AS source_lang_value,
+                LOWER(COALESCE(
+                    NULLIF(target_lang, ''),
+                    NULLIF(response_json->>'target_lang', ''),
+                    NULLIF(response_json#>>'{language_pair,target_lang}', ''),
+                    'de'
+                )) AS target_lang_value
+            FROM bt_3_webapp_dictionary_queries
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1;
+            """,
+            (int(user_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return str(row[0] or "ru"), str(row[1] or "de")
+
+    if cursor is not None:
+        return _get(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _get(own_cursor)
+
+
 def get_dictionary_entries_for_tts_prewarm(
     *,
     limit: int = 200,

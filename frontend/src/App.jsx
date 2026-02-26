@@ -1166,13 +1166,14 @@ function AppInner() {
 
   const loadSrsNextCard = async () => {
     if (!initData) return;
+    const FSRS_LOAD_TIMEOUT_MS = 60000;
     try {
       setSrsLoading(true);
       setSrsError('');
-      let response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}`, {}, 12000);
+      let response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}`, {}, FSRS_LOAD_TIMEOUT_MS);
       if (!response.ok && response.status >= 500) {
         await new Promise((resolve) => setTimeout(resolve, 220));
-        response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}`, {}, 12000);
+        response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}`, {}, FSRS_LOAD_TIMEOUT_MS);
       }
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte'));
@@ -1184,6 +1185,35 @@ function AppInner() {
       setSrsRevealAnswer(false);
       srsShownAtRef.current = Date.now();
     } catch (error) {
+      const rawName = String(error?.name || '').toLowerCase();
+      const rawMessage = String(error?.message || '').toLowerCase();
+      const isTimeoutError = rawName === 'timeouterror'
+        || rawName === 'aborterror'
+        || rawMessage.includes('timeout')
+        || rawMessage.includes('timed out')
+        || rawMessage.includes('aborted');
+      if (isTimeoutError) {
+        try {
+          const probe = await fetchWithTimeout('/api/webapp/dictionary/cards', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData, limit: 1 }),
+          }, 12000);
+          if (probe.ok) {
+            const probeData = await probe.json();
+            const probeItems = Array.isArray(probeData?.items) ? probeData.items : [];
+            if (probeItems.length === 0) {
+              setSrsCard(null);
+              setSrsState(null);
+              setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
+              setSrsError('');
+              return;
+            }
+          }
+        } catch (_probeError) {
+          // ignore probe errors and show original timeout message
+        }
+      }
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить FSRS карточку.', 'FSRS-Karte konnte nicht geladen werden.');
       setSrsError(friendly);
       setWebappError(`${tr('Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte')}: ${friendly}`);
@@ -2207,6 +2237,7 @@ function AppInner() {
       setSrsError('');
       setSrsSubmitting(true);
       setSrsSubmittingRating(ratingValue);
+      const FSRS_REVIEW_TIMEOUT_MS = 60000;
       let response = await fetchWithTimeout('/api/cards/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2216,7 +2247,7 @@ function AppInner() {
           rating: ratingValue,
           response_ms: responseMs,
         }),
-      }, 12000);
+      }, FSRS_REVIEW_TIMEOUT_MS);
       if (!response.ok && response.status >= 500) {
         await new Promise((resolve) => setTimeout(resolve, 220));
         response = await fetchWithTimeout('/api/cards/review', {
@@ -2228,7 +2259,7 @@ function AppInner() {
             rating: ratingValue,
             response_ms: responseMs,
           }),
-        }, 12000);
+        }, FSRS_REVIEW_TIMEOUT_MS);
       }
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
@@ -11314,7 +11345,7 @@ function AppInner() {
                             </div>
                           </div>
 
-                          {!srsLoading && !srsCard && (srsQueueInfo?.due_count ?? 0) === 0 && (
+                          {!srsLoading && !srsCard && !srsError && (srsQueueInfo?.due_count ?? 0) === 0 && (srsQueueInfo?.new_remaining_today ?? 0) === 0 && (
                             <div className="fsrs-empty-note">
                               {tr('Сегодня по FSRS всё повторено. Можно отдыхать.', 'Heute ist alles in FSRS wiederholt. Du kannst entspannen.')}
                             </div>
