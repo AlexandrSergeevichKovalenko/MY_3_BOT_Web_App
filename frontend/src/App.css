@@ -7886,6 +7886,340 @@ body {
   }
 }
 
+/* Header v2 + Hamburger Menu Icon Refinement */
+@media (max-width: 900px) {
+  .webapp-topbar {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 28px;
+    border: 1px solid #334155;
+    background: #111827;
+    box-shadow: none;
+  }
+
+  .topbar-row {
+    width: 100%;
+  }
+
+  .topbar-row-main {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .topbar-row-controls {
+    display: flex;
+    justify-content: center;
+  }
+
+  .topbar-left,
+  .topbar-right {
+    display: contents;
+  }
+
+  .menu-toggle {
+    width: 44px;
+    height: 44px;
+    border-radius: 16px;
+    border: 1px solid #334155;
+    background: transparent;
+    padding: 12px 10px;
+    gap: 5px;
+  }
+
+  .menu-toggle span {
+    background: #cbd5e1;
+    height: 2px;
+  }
+
+  .menu-toggle:active {
+    background: #1f2937;
+  }
+
+  .topbar-title {
+    font-size: 20px;
+    line-height: 1.25;
+    font-weight: 600;
+    color: #e2e8f0;
+    text-align: center;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    max-width: none;
+    overflow-wrap: anywhere;
+  }
+
+  .topbar-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .topbar-controls .language-toggle-compact {
+    min-width: 124px;
+    min-height: 40px;
+    height: 40px;
+    padding: 3px;
+    border: 1px solid #334155;
+    border-radius: 999px;
+    background: #0b1220;
+    gap: 4px;
+  }
+
+  .topbar-controls .language-chip {
+    min-width: 56px;
+    height: 32px;
+    border-radius: 999px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #cbd5e1;
+  }
+
+  .webapp-topbar .language-chip.is-active {
+    background: #2563eb;
+    color: #ffffff;
+    box-shadow: none;
+  }
+
+  .topbar-controls .language-pair-button {
+    min-height: 40px;
+    height: 40px;
+    padding: 0 16px;
+    border-radius: 999px;
+    border: 1px solid #334155;
+    background: transparent;
+    color: #cbd5e1;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0;
+  }
+
+  .topbar-controls .language-pair-button:active {
+    background: #1f2937;
+  }
+
+  .topbar-profile {
+    justify-content: flex-end;
+    gap: 0;
+  }
+
+  .topbar-avatar {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    border: none;
+    background: transparent;
+    padding: 4px;
+    border-radius: 16px;
+    display: grid;
+    place-items: center;
+  }
+
+  .topbar-avatar img,
+  .topbar-avatar .avatar-placeholder {
+    width: 36px;
+    height: 36px;
+    border-radius: 999px;
+    border: 1px solid #334155;
+  }
+
+  .topbar-user-meta,
+  .topbar-user-name,
+  .topbar-user-line,
+  .topbar-user-extra {
+    display: none;
+  }
+
+  .overlay-backdrop {
+    background: rgba(15, 23, 42, 0.86);
+    backdrop-filter: none;
+  }
+
+  .overlay-panel {
+    width: min(326px, 92vw);
+    padding: 16px;
+    gap: 12px;
+    background: #111827;
+    border: 1px solid #334155;
+    border-radius: 28px;
+    box-shadow: none;
+  }
+
+  .overlay-header {
+    min-height: 40px;
+    padding: 0;
+    border-bottom: 1px solid #334155;
+  }
+
+  .overlay-brand-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: #e2e8f0;
+  }
+
+  .overlay-back-button,
+  .overlay-close-button {
+    color: #94a3b8;
+    min-height: 32px;
+    padding: 0;
+    font-size: 14px;
+  }
+
+  .overlay-profile-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 0 12px;
+    border-bottom: 1px solid #334155;
+  }
+
+  .overlay-profile-avatar {
+    width: 44px;
+    height: 44px;
+    border-radius: 999px;
+    border: 1px solid #334155;
+    background: #0b1220;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .overlay-profile-avatar img,
+  .overlay-profile-avatar .avatar-placeholder {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 999px;
+  }
+
+  .overlay-profile-meta {
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+  }
+
+  .overlay-profile-name {
+    font-size: 16px;
+    line-height: 1.25;
+    font-weight: 600;
+    color: #e2e8f0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .overlay-profile-sub {
+    font-size: 14px;
+    line-height: 1.4;
+    color: #94a3b8;
+  }
+
+  .overlay-menu {
+    border-radius: 14px;
+    border: 1px solid #334155;
+    background: #111827;
+  }
+
+  .overlay-menu .menu-toggle-row {
+    min-height: 44px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #334155;
+    color: #cbd5e1;
+    font-size: 14px;
+  }
+
+  .overlay-menu .menu-toggle-row input {
+    width: 14px;
+    height: 14px;
+    accent-color: #2563eb;
+  }
+
+  .overlay-menu .menu-item {
+    min-height: 44px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #334155;
+    border-radius: 0;
+    font-size: 15px;
+    line-height: 1.3;
+    font-weight: 500;
+    color: #cbd5e1;
+    gap: 10px;
+  }
+
+  .overlay-menu .menu-item .menu-icon {
+    width: 18px;
+    height: 18px;
+    color: #94a3b8;
+    filter: none;
+    transform: none;
+    background: transparent;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .overlay-menu .menu-item .menu-icon-svg {
+    width: 15px;
+    height: 15px;
+    opacity: 0.96;
+  }
+
+  .overlay-menu .menu-item .menu-icon-svg path,
+  .overlay-menu .menu-item .menu-icon-svg rect,
+  .overlay-menu .menu-item .menu-icon-svg circle,
+  .overlay-menu .menu-item .menu-icon-svg line,
+  .overlay-menu .menu-item .menu-icon-svg polyline {
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+  }
+
+  .overlay-menu .menu-item.is-active {
+    background: #1c2435;
+    box-shadow: inset 2px 0 0 #2563eb;
+    color: #e2e8f0;
+    font-weight: 600;
+  }
+
+  .overlay-menu .menu-item.is-active .menu-icon {
+    color: #2563eb;
+    transform: none;
+    background: rgba(37, 99, 235, 0.2);
+    border: 1px solid rgba(37, 99, 235, 0.5);
+  }
+
+  .overlay-actions {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .overlay-actions .secondary-button {
+    min-height: 40px;
+    border-radius: 12px;
+    border: 1px solid #334155;
+    background: #111827;
+    color: #cbd5e1;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: none;
+  }
+
+  .webapp-page.is-telegram-tablet .overlay-panel {
+    width: min(420px, 92vw);
+    border-radius: 28px;
+    padding: 16px;
+  }
+}
+
 /* Home Page: Dark Minimal Premium Study Mode */
 .weekly-plan-panel,
 .today-plan-panel,

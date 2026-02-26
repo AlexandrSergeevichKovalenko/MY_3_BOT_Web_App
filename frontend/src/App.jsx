@@ -8751,7 +8751,7 @@ function AppInner() {
 
           <div className="webapp-main">
             <div className="webapp-topbar">
-              <div className="topbar-left">
+              <div className="topbar-row topbar-row-main">
                 <button
                   type="button"
                   className="menu-toggle"
@@ -8761,9 +8761,25 @@ function AppInner() {
                   <span />
                   <span />
                 </button>
-                <div className="topbar-title">DeutschFlow</div>
+                <div className="topbar-title">Das Deutsche Schlümpfchen</div>
+                <div className="topbar-profile">
+                  <input
+                    ref={avatarInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="avatar-input"
+                    onChange={handleAvatarUpload}
+                  />
+                  <button
+                    type="button"
+                    className="avatar-button topbar-avatar"
+                    onClick={() => avatarInputRef.current?.click()}
+                  >
+                    {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                  </button>
+                </div>
               </div>
-              <div className="topbar-right">
+              <div className="topbar-row topbar-row-controls">
                 <div className="topbar-controls">
                   {telegramTabletLike && !telegramFullscreenMode && typeof telegramApp?.requestFullscreen === 'function' && (
                     <button
@@ -8788,27 +8804,6 @@ function AppInner() {
                   >
                     {getActiveLanguagePairLabel()}
                   </button>
-                </div>
-                <div className="topbar-profile">
-                  <input
-                    ref={avatarInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="avatar-input"
-                    onChange={handleAvatarUpload}
-                  />
-                  <button
-                    type="button"
-                    className="avatar-button topbar-avatar"
-                    onClick={() => avatarInputRef.current?.click()}
-                  >
-                    {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
-                  </button>
-                  <div className="topbar-user-meta">
-                    <div className="topbar-user-name">{webappUser?.first_name || t('guest')}</div>
-                    <div className="topbar-user-line topbar-user-extra">ID: {webappUser?.id || '—'}</div>
-                    <div className="topbar-user-line topbar-user-extra">Chat: {webappChatType || '—'}</div>
-                  </div>
                 </div>
               </div>
             </div>
@@ -8839,6 +8834,19 @@ function AppInner() {
                     >
                       {t('menu_close')}
                     </button>
+                  </div>
+                  <div className="overlay-profile-head">
+                    <div className="overlay-profile-avatar">
+                      {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                    </div>
+                    <div className="overlay-profile-meta">
+                      <div className="overlay-profile-name">
+                        {[webappUser?.first_name, webappUser?.last_name].filter(Boolean).join(' ').trim()
+                          || webappUser?.username
+                          || t('guest')}
+                      </div>
+                      <div className="overlay-profile-sub">{getActiveLanguagePairLabel()}</div>
+                    </div>
                   </div>
                   <div className="overlay-menu">
                     <label className="menu-toggle-row">
