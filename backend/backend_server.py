@@ -365,6 +365,7 @@ SENTENCE_PREWARM_ALLOW_DAYTIME = str(os.getenv("SENTENCE_PREWARM_ALLOW_DAYTIME")
 _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 FSRS_PROFILING_ENABLED = str(os.getenv("FSRS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+FLASHCARDS_SET_PROFILING_ENABLED = str(os.getenv("FLASHCARDS_SET_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 LANGUAGE_PAIR_CACHE_TTL_SEC = max(30, int((os.getenv("LANGUAGE_PAIR_CACHE_TTL_SEC") or "900").strip()))
 TTS_PREWARM_ENABLED = str(os.getenv("TTS_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("TTS_PREWARM_INTERVAL_MINUTES") or "60").strip()))
@@ -10539,6 +10540,7 @@ def create_webapp_dictionary_folder():
 
 @app.route("/api/webapp/flashcards/set", methods=["POST"])
 def get_webapp_flashcard_set():
+    started_at = time.perf_counter()
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     training_mode = str(payload.get("training_mode") or "quiz").strip().lower()
@@ -10561,10 +10563,43 @@ def get_webapp_flashcard_set():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
+    def _resolve_blocks_answer_for_profile(entry: dict) -> str:
+        item = entry if isinstance(entry, dict) else {}
+        response_json = _coerce_response_json(item.get("response_json"))
+        text_from_entry = (
+            item.get("target_text")
+            or item.get("translation_de")
+            or item.get("word_de")
+            or response_json.get("target_text")
+            or response_json.get("translation_de")
+            or response_json.get("word_de")
+            or ""
+        )
+        translations = response_json.get("translations")
+        first_translation = ""
+        if isinstance(translations, list):
+            for candidate in translations:
+                candidate_text = str(candidate or "").strip()
+                if candidate_text:
+                    first_translation = candidate_text
+                    break
+        raw = first_translation or str(text_from_entry or "")
+        normalized = re.sub(r"\s+", " ", raw).strip()
+        if ";" in normalized or "/" in normalized:
+            return re.split(r"[;/]", normalized, maxsplit=1)[0].strip() or normalized
+        return normalized
+
     try:
         resolved_folder_id = int(folder_id) if folder_id is not None else None
     except Exception:
         resolved_folder_id = None
+
+    profile_payload: dict[str, object] = {
+        "mode": training_mode,
+        "requested_set_size": max(1, int(set_size)),
+        "server_items": 0,
+        "blocks_eligible_len10_server": None,
+    }
 
     try:
         if training_mode == "sentence":
@@ -10576,6 +10611,7 @@ def get_webapp_flashcard_set():
                 source_lang=source_lang,
                 target_lang=target_lang,
             )
+            profile_payload["server_items"] = len(decorated_items)
         else:
             items = get_flashcard_set(
                 user_id=user_id,
@@ -10585,7 +10621,9 @@ def get_webapp_flashcard_set():
                 folder_id=resolved_folder_id,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                randomize_pool=(training_mode == "blocks"),
             )
+            profile_payload["server_items"] = len(items)
             direction = f"{source_lang}-{target_lang}"
             decorated_items = [
                 _decorate_dictionary_item(
@@ -10596,13 +10634,33 @@ def get_webapp_flashcard_set():
                 )
                 for item in items
             ]
+            if training_mode == "blocks":
+                blocks_eligible = 0
+                for item in decorated_items:
+                    answer = _resolve_blocks_answer_for_profile(item)
+                    if answer and len(answer) <= 10:
+                        blocks_eligible += 1
+                profile_payload["blocks_eligible_len10_server"] = blocks_eligible
     except Exception as exc:
         return jsonify({"error": f"Ошибка получения карточек: {exc}"}), 500
+    total_ms = int((time.perf_counter() - started_at) * 1000)
+    profile_payload["total_ms"] = total_ms
+    if FLASHCARDS_SET_PROFILING_ENABLED:
+        logging.info(
+            "Flashcards set profile: user_id=%s mode=%s requested=%s server_items=%s blocks_eligible_len10_server=%s total=%sms",
+            user_id,
+            training_mode,
+            profile_payload.get("requested_set_size"),
+            profile_payload.get("server_items"),
+            profile_payload.get("blocks_eligible_len10_server"),
+            total_ms,
+        )
     return jsonify(
         {
             "ok": True,
             "items": decorated_items,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "profile": profile_payload,
         }
     )
 

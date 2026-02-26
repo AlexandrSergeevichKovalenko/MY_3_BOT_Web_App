@@ -87,6 +87,9 @@ def _env_decimal(name: str, default: str | None) -> Decimal | None:
     return parsed
 
 
+FLASHCARD_RECENT_SEEN_HOURS = max(1, _env_int("FLASHCARD_RECENT_SEEN_HOURS", 24))
+
+
 # Used only if billing ledger stores events in USD and caps are enforced in EUR.
 FX_USD_TO_EUR = _env_decimal("FX_USD_TO_EUR", "0.92") or Decimal("0.92")
 TRIAL_POLICY_DAYS = max(0, _env_int("TRIAL_DAYS", 3))
@@ -3251,6 +3254,7 @@ def get_flashcard_set(
     folder_id: int | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    randomize_pool: bool = False,
 ) -> list[dict]:
     if not user_id:
         return []
@@ -3332,7 +3336,7 @@ def get_flashcard_set(
             random_rows = []
             if needed > 0:
                 sample_cap = max(needed * 12, 300)
-                sample_params = [*base_params, user_id, sample_cap]
+                sample_order_sql = "ORDER BY RANDOM()" if randomize_pool else "ORDER BY created_at DESC"
                 cursor.execute(f"""
                     SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
                     FROM bt_3_webapp_dictionary_queries
@@ -3341,11 +3345,11 @@ def get_flashcard_set(
                           SELECT entry_id
                           FROM bt_3_flashcard_seen
                           WHERE user_id = %s
-                            AND seen_at >= NOW() - INTERVAL '2 days'
+                            AND seen_at >= NOW() - (%s * INTERVAL '1 hour')
                       )
-                    ORDER BY created_at DESC
+                    {sample_order_sql}
                     LIMIT %s;
-                """, sample_params)
+                """, [*base_params, user_id, FLASHCARD_RECENT_SEEN_HOURS, sample_cap])
                 candidate_rows = list(cursor.fetchall())
                 random.shuffle(candidate_rows)
                 random_rows = candidate_rows[:needed]
@@ -3366,12 +3370,13 @@ def get_flashcard_set(
                     elif folder_mode == "none":
                         fallback_where += " AND folder_id IS NULL"
                     fallback_cap = max(needed * 20, 600)
+                    fallback_order_sql = "ORDER BY RANDOM()" if randomize_pool else "ORDER BY created_at DESC"
                     fallback_params.append(fallback_cap)
                     cursor.execute(f"""
                         SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
                         FROM bt_3_webapp_dictionary_queries
                         WHERE {fallback_where}
-                        ORDER BY created_at DESC
+                        {fallback_order_sql}
                         LIMIT %s;
                     """, fallback_params)
                     fallback_rows = list(cursor.fetchall())

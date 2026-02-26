@@ -366,6 +366,8 @@ function AppInner() {
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
   const BLOCKS_SINGLE_WORD_MAX_LEN = 10;
+  const FLASHCARDS_LOAD_DEDUP_WINDOW_MS = 900;
+  const SRS_NEXT_DEDUP_WINDOW_MS = 900;
   const SRS_EASY_LOCK_AFTER_SEC = 5;
   const SRS_GOOD_LOCK_AFTER_SEC = 7;
   const srsEasyLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_EASY_LOCK_AFTER_SEC;
@@ -403,6 +405,15 @@ function AppInner() {
   const srsReviewDrainInFlightRef = useRef(false);
   const srsReviewRetryTimerRef = useRef(null);
   const srsInitSignatureRef = useRef('');
+  const srsNextLoadInFlightRef = useRef(false);
+  const srsNextLoadPendingRef = useRef(false);
+  const srsNextLoadLastSignatureRef = useRef('');
+  const srsNextLoadLastStartedAtRef = useRef(0);
+  const flashcardsLoadInFlightRef = useRef(false);
+  const flashcardsLoadInFlightSignatureRef = useRef('');
+  const flashcardsLoadPendingRef = useRef(false);
+  const flashcardsLoadLastSignatureRef = useRef('');
+  const flashcardsLoadLastStartedAtRef = useRef(0);
   const ttsCacheRef = useRef(new Map());
   const ttsInFlightRef = useRef(new Map());
   const ttsBlobUrlsRef = useRef(new Set());
@@ -443,6 +454,7 @@ function AppInner() {
   const heroMascotSrc = `${assetBaseUrl}hero_original.webp`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
   const heroCrySrc = `${assetBaseUrl}hero_cry.webp`;
+  const heroThinkSrc = `${assetBaseUrl}hero_think.webp`;
 
   const safeStorageGet = (key) => {
     try {
@@ -1425,6 +1437,27 @@ function AppInner() {
 
   const loadSrsNextCard = useCallback(async () => {
     if (!initData) return;
+    const fsrsContextActive = flashcardActiveMode === 'fsrs'
+      && flashcardsVisible
+      && (flashcardsOnly || selectedSections.has('flashcards'));
+    if (!fsrsContextActive) return;
+    const requestSignature = `${String(initData || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}`;
+    const nowTs = Date.now();
+    if (srsNextLoadInFlightRef.current) {
+      if (srsNextLoadLastSignatureRef.current !== requestSignature) {
+        srsNextLoadPendingRef.current = true;
+      }
+      return;
+    }
+    if (
+      srsNextLoadLastSignatureRef.current === requestSignature
+      && (nowTs - srsNextLoadLastStartedAtRef.current) < SRS_NEXT_DEDUP_WINDOW_MS
+    ) {
+      return;
+    }
+    srsNextLoadInFlightRef.current = true;
+    srsNextLoadLastSignatureRef.current = requestSignature;
+    srsNextLoadLastStartedAtRef.current = nowTs;
     const FSRS_LOAD_TIMEOUT_MS = 60000;
     try {
       setSrsLoading(true);
@@ -1476,8 +1509,28 @@ function AppInner() {
       setWebappError(`${tr('Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte')}: ${friendly}`);
     } finally {
       setSrsLoading(false);
+      srsNextLoadInFlightRef.current = false;
+      if (srsNextLoadPendingRef.current) {
+        srsNextLoadPendingRef.current = false;
+        window.setTimeout(() => {
+          void loadSrsNextCard();
+        }, 0);
+      }
     }
-  }, [applySrsPayload, fetchWithTimeout, initData, normalizeNetworkErrorMessage, readApiError, tr]);
+  }, [
+    applySrsPayload,
+    fetchWithTimeout,
+    initData,
+    normalizeNetworkErrorMessage,
+    readApiError,
+    tr,
+    flashcardActiveMode,
+    flashcardsVisible,
+    flashcardsOnly,
+    selectedSections,
+    languageProfile?.native_language,
+    languageProfile?.learning_language,
+  ]);
 
   const prefetchSrsCards = useCallback(async () => {
     if (!initData || srsPrefetchInFlightRef.current) return;
@@ -7022,13 +7075,43 @@ function AppInner() {
       setFlashcardsError(initDataMissingMsg);
       return;
     }
+    const requestedMode = String(flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz').toLowerCase();
+    const requestedSetSize = requestedMode === 'blocks'
+      ? Math.max(flashcardSetSize * 5, 40)
+      : flashcardSetSize;
+    const requestSignature = [
+      requestedMode,
+      String(flashcardSetSize),
+      String(requestedSetSize),
+      String(flashcardFolderMode || 'all'),
+      flashcardFolderMode === 'folder' ? String(flashcardFolderId || '') : '-',
+    ].join('|');
+    const nowTs = Date.now();
+
+    if (flashcardsLoadInFlightRef.current) {
+      if (flashcardsLoadInFlightSignatureRef.current !== requestSignature) {
+        flashcardsLoadPendingRef.current = true;
+      }
+      return;
+    }
+    if (
+      flashcardsLoadLastSignatureRef.current === requestSignature
+      && (nowTs - flashcardsLoadLastStartedAtRef.current) < FLASHCARDS_LOAD_DEDUP_WINDOW_MS
+    ) {
+      return;
+    }
+
+    flashcardsLoadInFlightRef.current = true;
+    flashcardsLoadInFlightSignatureRef.current = requestSignature;
+    flashcardsLoadLastSignatureRef.current = requestSignature;
+    flashcardsLoadLastStartedAtRef.current = nowTs;
     setFlashcardsLoading(true);
     setFlashcardsError('');
     try {
       const requestPayload = {
         initData,
-        training_mode: flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz',
-        set_size: flashcardSetSize,
+        training_mode: requestedMode,
+        set_size: requestedSetSize,
         wrong_size: 5,
         folder_mode: flashcardFolderMode,
         folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
@@ -7062,7 +7145,6 @@ function AppInner() {
       }
       const data = await response.json();
       setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
-      const requestedMode = String(flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz').toLowerCase();
       const items = (data.items || []).map((item) => ({
         ...item,
         response_json: coerceResponseJson(item.response_json),
@@ -7073,12 +7155,28 @@ function AppInner() {
       const isBlocksSingleWordEligible = (entry) => {
         const raw = String(resolveBlocksAnswer(entry) || '').replace(/\s+/g, ' ').trim();
         if (!raw) return false;
-        if (/\s/.test(raw)) return false;
         return raw.length <= BLOCKS_SINGLE_WORD_MAX_LEN;
       };
       const filteredItems = requestedMode === 'blocks'
         ? solvedFilteredItems.filter(isBlocksSingleWordEligible)
         : solvedFilteredItems;
+      const sessionItems = requestedMode === 'blocks'
+        ? filteredItems.slice(0, flashcardSetSize)
+        : filteredItems;
+      try {
+        console.info('[flashcards-client-profile]', {
+          mode: requestedMode,
+          requested_set_size: flashcardSetSize,
+          requested_fetch_size: requestedSetSize,
+          server_items: items.length,
+          after_solved_today: solvedFilteredItems.length,
+          blocks_eligible_len10_client: requestedMode === 'blocks' ? filteredItems.length : null,
+          session_items: sessionItems.length,
+          server_profile: data?.profile || null,
+        });
+      } catch (_error) {
+        // no-op: profiling must never break training flow
+      }
       if (autoAdvanceTimeoutRef.current) {
         clearTimeout(autoAdvanceTimeoutRef.current);
         autoAdvanceTimeoutRef.current = null;
@@ -7087,7 +7185,7 @@ function AppInner() {
         clearTimeout(revealTimeoutRef.current);
         revealTimeoutRef.current = null;
       }
-      setFlashcards(filteredItems);
+      setFlashcards(sessionItems);
       setFlashcardIndex(0);
       setFlashcardSelection(null);
       setFlashcardSetComplete(false);
@@ -7096,15 +7194,15 @@ function AppInner() {
       setFlashcardTimerKey((prev) => prev + 1);
       setFlashcardPreviewIndex(0);
       setFlashcardStats({
-        total: filteredItems.length,
+        total: sessionItems.length,
         correct: 0,
         wrong: 0,
       });
-      if (requestedMode === 'blocks' && solvedFilteredItems.length > 0 && filteredItems.length === 0) {
+      if (requestedMode === 'blocks' && solvedFilteredItems.length > 0 && sessionItems.length === 0) {
         setFlashcardsError(
           tr(
-            `Для режима Blocks сейчас нет подходящих карточек: используем только отдельные слова длиной до ${BLOCKS_SINGLE_WORD_MAX_LEN} символов.`,
-            `Fuer den Blocks-Modus gibt es aktuell keine passenden Karten: Es werden nur einzelne Woerter bis ${BLOCKS_SINGLE_WORD_MAX_LEN} Zeichen verwendet.`
+            `Для режима Blocks сейчас нет подходящих карточек: используем варианты длиной до ${BLOCKS_SINGLE_WORD_MAX_LEN} символов (включая пробелы).`,
+            `Fuer den Blocks-Modus gibt es aktuell keine passenden Karten: Es werden nur Varianten bis ${BLOCKS_SINGLE_WORD_MAX_LEN} Zeichen (inklusive Leerzeichen) verwendet.`
           )
         );
       } else if (['blocks', 'quiz', 'sentence'].includes(requestedMode) && items.length > 0 && solvedFilteredItems.length === 0) {
@@ -7129,6 +7227,14 @@ function AppInner() {
       setFlashcardsError(`${tr('Ошибка карточек', 'Kartenfehler')}: ${friendly}`);
     } finally {
       setFlashcardsLoading(false);
+      flashcardsLoadInFlightRef.current = false;
+      flashcardsLoadInFlightSignatureRef.current = '';
+      if (flashcardsLoadPendingRef.current) {
+        flashcardsLoadPendingRef.current = false;
+        window.setTimeout(() => {
+          void loadFlashcards();
+        }, 0);
+      }
     }
 
     (async () => {
@@ -12340,6 +12446,9 @@ function AppInner() {
 
                                 const isAnswered = flashcardSelection !== null;
                                 const isCorrectAnswer = flashcardOutcome === 'correct';
+                                const quizMascotSrc = !isAnswered
+                                  ? heroThinkSrc
+                                  : (isCorrectAnswer ? heroMascotSrc : heroCrySrc);
                                 const screenModeLabel = isSentenceTrainingMode || isSentenceGapQuiz ? 'Satz Ergaenzen Mode' : 'Quiz Mode';
                                 const longestOptionLen = Array.isArray(flashcardOptions)
                                   ? flashcardOptions.reduce((maxLen, optionText) => {
@@ -12384,7 +12493,7 @@ function AppInner() {
 
                                       <div className={`quiz-mascot-circle ${isAnswered ? (isCorrectAnswer ? 'is-correct' : 'is-wrong') : ''}`}>
                                         <img
-                                          src={isAnswered && !isCorrectAnswer ? heroCrySrc : heroMascotSrc}
+                                          src={quizMascotSrc}
                                           alt="Deutsch mascot"
                                           className="quiz-mascot-image"
                                         />
