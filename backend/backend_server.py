@@ -172,8 +172,6 @@ from backend.database import (
     get_or_create_dictionary_folder,
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
-    has_dictionary_entries_for_language_pair,
-    get_latest_dictionary_language_pair_for_user,
     get_tts_chunk_cache,
     upsert_tts_chunk_cache,
     get_tts_audio_cache,
@@ -905,44 +903,6 @@ def _get_user_language_pair(user_id: int) -> tuple[str, str, dict]:
     native_language = str(profile.get("native_language") or "ru").strip().lower() or "ru"
     learning_language = str(profile.get("learning_language") or "de").strip().lower() or "de"
     return native_language, learning_language, profile
-
-
-def _resolve_cards_language_pair(
-    *,
-    user_id: int,
-    source_lang: str,
-    target_lang: str,
-    cursor=None,
-) -> tuple[str, str, bool]:
-    source = str(source_lang or "ru").strip().lower() or "ru"
-    target = str(target_lang or "de").strip().lower() or "de"
-    if source == target:
-        target = "de" if source != "de" else "ru"
-    try:
-        if has_dictionary_entries_for_language_pair(
-            user_id=int(user_id),
-            source_lang=source,
-            target_lang=target,
-            cursor=cursor,
-        ):
-            return source, target, False
-
-        reverse_source, reverse_target = target, source
-        if has_dictionary_entries_for_language_pair(
-            user_id=int(user_id),
-            source_lang=reverse_source,
-            target_lang=reverse_target,
-            cursor=cursor,
-        ):
-            return reverse_source, reverse_target, True
-
-        latest_pair = get_latest_dictionary_language_pair_for_user(int(user_id), cursor=cursor)
-        if latest_pair:
-            latest_source, latest_target = latest_pair
-            return latest_source, latest_target, (latest_source != source or latest_target != target)
-    except Exception:
-        logging.debug("Language-pair fallback resolve failed for user_id=%s", user_id, exc_info=True)
-    return source, target, False
 
 
 def _require_stripe_config(*, require_webhook_secret: bool = False) -> str | None:
@@ -10301,12 +10261,7 @@ def get_webapp_dictionary_cards():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
-    profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
-    source_lang, target_lang, pair_auto_switched = _resolve_cards_language_pair(
-        user_id=int(user_id),
-        source_lang=profile_source_lang,
-        target_lang=profile_target_lang,
-    )
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
         items = get_webapp_dictionary_entries(
@@ -10335,8 +10290,6 @@ def get_webapp_dictionary_cards():
             "ok": True,
             "items": decorated_items,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
-            "language_pair_auto_switched": bool(pair_auto_switched),
-            "profile_language_pair": _build_language_pair_payload(profile_source_lang, profile_target_lang),
         }
     )
 
@@ -10424,12 +10377,7 @@ def get_webapp_flashcard_set():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
-    profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
-    source_lang, target_lang, pair_auto_switched = _resolve_cards_language_pair(
-        user_id=int(user_id),
-        source_lang=profile_source_lang,
-        target_lang=profile_target_lang,
-    )
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
         resolved_folder_id = int(folder_id) if folder_id is not None else None
@@ -10473,8 +10421,6 @@ def get_webapp_flashcard_set():
             "ok": True,
             "items": decorated_items,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
-            "language_pair_auto_switched": bool(pair_auto_switched),
-            "profile_language_pair": _build_language_pair_payload(profile_source_lang, profile_target_lang),
         }
     )
 
@@ -10541,17 +10487,11 @@ def get_next_srs_card():
     mark("validated")
 
     try:
-        profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
         mark("lang_pair")
         now_utc = datetime.now(timezone.utc)
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
-                source_lang, target_lang, pair_auto_switched = _resolve_cards_language_pair(
-                    user_id=int(user_id),
-                    source_lang=profile_source_lang,
-                    target_lang=profile_target_lang,
-                    cursor=cursor,
-                )
                 payload_next = _build_next_srs_payload(
                     user_id=int(user_id),
                     source_lang=source_lang,
@@ -10567,8 +10507,6 @@ def get_next_srs_card():
                 "ok": True,
                 **payload_next,
                 "language_pair": _build_language_pair_payload(source_lang, target_lang),
-                "language_pair_auto_switched": bool(pair_auto_switched),
-                "profile_language_pair": _build_language_pair_payload(profile_source_lang, profile_target_lang),
             }
         )
     except Exception as exc:
@@ -10592,18 +10530,12 @@ def get_srs_prefetch_cards():
     if not _is_webapp_user_allowed(int(user_id)):
         return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
 
-    profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     now_utc = datetime.now(timezone.utc)
 
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
-                source_lang, target_lang, pair_auto_switched = _resolve_cards_language_pair(
-                    user_id=int(user_id),
-                    source_lang=profile_source_lang,
-                    target_lang=profile_target_lang,
-                    cursor=cursor,
-                )
                 queue_info = _compute_srs_queue_info(
                     user_id=int(user_id),
                     now_utc=now_utc,
@@ -10719,8 +10651,6 @@ def get_srs_prefetch_cards():
                 "new_remaining_today": new_remaining_today,
             },
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
-            "language_pair_auto_switched": bool(pair_auto_switched),
-            "profile_language_pair": _build_language_pair_payload(profile_source_lang, profile_target_lang),
         }
     )
 

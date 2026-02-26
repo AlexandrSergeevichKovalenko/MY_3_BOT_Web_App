@@ -6582,18 +6582,38 @@ function AppInner() {
     setFlashcardsLoading(true);
     setFlashcardsError('');
     try {
-      const response = await fetchWithTimeout('/api/webapp/flashcards/set', {
+      const requestPayload = {
+        initData,
+        training_mode: flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz',
+        set_size: flashcardSetSize,
+        wrong_size: 5,
+        folder_mode: flashcardFolderMode,
+        folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
+      };
+      const requestOptions = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          training_mode: flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz',
-          set_size: flashcardSetSize,
-          wrong_size: 5,
-          folder_mode: flashcardFolderMode,
-          folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
-        }),
-      }, 18000);
+        body: JSON.stringify(requestPayload),
+      };
+      const FLASHCARDS_SET_TIMEOUT_MS = 60000;
+      let response;
+      try {
+        response = await fetchWithTimeout('/api/webapp/flashcards/set', requestOptions, FLASHCARDS_SET_TIMEOUT_MS);
+      } catch (error) {
+        const raw = String(error?.message || '').toLowerCase();
+        const name = String(error?.name || '').toLowerCase();
+        const shouldRetry = name === 'timeouterror'
+          || name === 'aborterror'
+          || raw.includes('load failed')
+          || raw.includes('failed to fetch')
+          || raw.includes('networkerror')
+          || raw.includes('timeout')
+          || raw.includes('timed out')
+          || raw.includes('aborted');
+        if (!shouldRetry) throw error;
+        await new Promise((resolve) => window.setTimeout(resolve, 350));
+        response = await fetchWithTimeout('/api/webapp/flashcards/set', requestOptions, FLASHCARDS_SET_TIMEOUT_MS);
+      }
       if (!response.ok) {
         throw new Error(await response.text());
       }
@@ -6642,7 +6662,12 @@ function AppInner() {
         );
       }
     } catch (error) {
-      setFlashcardsError(`${tr('Ошибка карточек', 'Kartenfehler')}: ${error.message}`);
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось загрузить карточки.',
+        'Karten konnten nicht geladen werden.'
+      );
+      setFlashcardsError(`${tr('Ошибка карточек', 'Kartenfehler')}: ${friendly}`);
     } finally {
       setFlashcardsLoading(false);
     }
