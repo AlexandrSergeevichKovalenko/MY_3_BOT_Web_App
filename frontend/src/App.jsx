@@ -212,6 +212,7 @@ function AppInner() {
   const [srsState, setSrsState] = useState(null);
   const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0 });
   const [srsPreview, setSrsPreview] = useState(null);
+  const [srsPrefetchQueue, setSrsPrefetchQueue] = useState([]);
   const [todayPlan, setTodayPlan] = useState(null);
   const [todayPlanLoading, setTodayPlanLoading] = useState(false);
   const [todayPlanError, setTodayPlanError] = useState('');
@@ -395,6 +396,12 @@ function AppInner() {
   const srsShownAtRef = useRef(null);
   const srsAutoTtsPlayedRef = useRef('');
   const srsTtsPrefetchSignatureRef = useRef('');
+  const srsCardRef = useRef(null);
+  const srsPrefetchQueueRef = useRef([]);
+  const srsPrefetchInFlightRef = useRef(false);
+  const srsReviewBufferRef = useRef([]);
+  const srsReviewDrainInFlightRef = useRef(false);
+  const srsReviewRetryTimerRef = useRef(null);
   const ttsCacheRef = useRef(new Map());
   const ttsInFlightRef = useRef(new Map());
   const ttsBlobUrlsRef = useRef(new Set());
@@ -1318,7 +1325,104 @@ function AppInner() {
     });
   }, [results, languageProfile?.learning_language, preloadTts]);
 
-  const loadSrsNextCard = async () => {
+  const getSrsCardId = useCallback((card) => String(card?.id || card?.entry_id || '').trim(), []);
+
+  const updateSrsPrefetchQueue = useCallback((updater) => {
+    setSrsPrefetchQueue((prev) => {
+      const rawNext = typeof updater === 'function' ? updater(prev) : updater;
+      const next = Array.isArray(rawNext) ? rawNext : [];
+      srsPrefetchQueueRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const clearSrsReviewRetryTimer = useCallback(() => {
+    if (srsReviewRetryTimerRef.current) {
+      window.clearTimeout(srsReviewRetryTimerRef.current);
+      srsReviewRetryTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => {
+    clearSrsReviewRetryTimer();
+  }, [clearSrsReviewRetryTimer]);
+
+  const appendToSrsPrefetchQueue = useCallback((items = []) => {
+    const incoming = Array.isArray(items) ? items : [];
+    if (incoming.length === 0) return;
+    updateSrsPrefetchQueue((prev) => {
+      const activeCardId = getSrsCardId(srsCardRef.current);
+      const seen = new Set(activeCardId ? [activeCardId] : []);
+      const next = [];
+      for (const item of prev) {
+        const itemId = getSrsCardId(item);
+        if (itemId && seen.has(itemId)) continue;
+        if (itemId) seen.add(itemId);
+        next.push(item);
+      }
+      for (const item of incoming) {
+        const itemId = getSrsCardId(item);
+        if (itemId && seen.has(itemId)) continue;
+        if (itemId) seen.add(itemId);
+        next.push(item);
+      }
+      return next.slice(0, 20);
+    });
+  }, [getSrsCardId, updateSrsPrefetchQueue]);
+
+  const takeFromSrsPrefetchQueue = useCallback(() => {
+    const queue = srsPrefetchQueueRef.current;
+    if (!Array.isArray(queue) || queue.length === 0) return null;
+    const [nextCard, ...rest] = queue;
+    srsPrefetchQueueRef.current = rest;
+    setSrsPrefetchQueue(rest);
+    return nextCard || null;
+  }, []);
+
+  const applySrsPayload = useCallback((data) => {
+    const nextCard = data?.card || null;
+    srsCardRef.current = nextCard;
+    setSrsCard(nextCard);
+    setSrsState(data?.srs || null);
+    setSrsPreview(data?.srs_preview && typeof data.srs_preview === 'object' ? data.srs_preview : null);
+    const incomingQueue = data?.queue_info && typeof data.queue_info === 'object'
+      ? data.queue_info
+      : null;
+    const nextDueCount = Number(incomingQueue?.due_count);
+    const nextNewRemaining = Number(incomingQueue?.new_remaining_today);
+    if (Number.isFinite(nextDueCount) || Number.isFinite(nextNewRemaining)) {
+      setSrsQueueInfo((prev) => ({
+        due_count: Number.isFinite(nextDueCount)
+          ? Math.max(0, Math.trunc(nextDueCount))
+          : Math.max(0, Math.trunc(Number(prev?.due_count || 0))),
+        new_remaining_today: Number.isFinite(nextNewRemaining)
+          ? Math.max(0, Math.trunc(nextNewRemaining))
+          : Math.max(0, Math.trunc(Number(prev?.new_remaining_today || 0))),
+      }));
+    }
+    const activeCardId = getSrsCardId(nextCard);
+    if (activeCardId) {
+      updateSrsPrefetchQueue((prev) => prev.filter((item) => getSrsCardId(item) !== activeCardId));
+    }
+    setSrsRevealAnswer(false);
+    srsShownAtRef.current = Date.now();
+  }, [getSrsCardId, updateSrsPrefetchQueue]);
+
+  const decrementSrsQueueInfoLocal = () => {
+    setSrsQueueInfo((prev) => {
+      const dueCount = Math.max(0, Math.trunc(Number(prev?.due_count || 0)));
+      const newRemaining = Math.max(0, Math.trunc(Number(prev?.new_remaining_today || 0)));
+      if (dueCount > 0) {
+        return { due_count: dueCount - 1, new_remaining_today: newRemaining };
+      }
+      if (newRemaining > 0) {
+        return { due_count: dueCount, new_remaining_today: newRemaining - 1 };
+      }
+      return { due_count: dueCount, new_remaining_today: newRemaining };
+    });
+  };
+
+  const loadSrsNextCard = useCallback(async () => {
     if (!initData) return;
     const FSRS_LOAD_TIMEOUT_MS = 60000;
     try {
@@ -1333,12 +1437,7 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte'));
       }
       const data = await response.json();
-      setSrsCard(data.card || null);
-      setSrsState(data.srs || null);
-      setSrsPreview(data?.srs_preview && typeof data.srs_preview === 'object' ? data.srs_preview : null);
-      setSrsQueueInfo(data.queue_info || { due_count: 0, new_remaining_today: 0 });
-      setSrsRevealAnswer(false);
-      srsShownAtRef.current = Date.now();
+      applySrsPayload(data);
     } catch (error) {
       const rawName = String(error?.name || '').toLowerCase();
       const rawMessage = String(error?.message || '').toLowerCase();
@@ -1358,6 +1457,7 @@ function AppInner() {
             const probeData = await probe.json();
             const probeItems = Array.isArray(probeData?.items) ? probeData.items : [];
             if (probeItems.length === 0) {
+              srsCardRef.current = null;
               setSrsCard(null);
               setSrsState(null);
               setSrsPreview(null);
@@ -1376,7 +1476,38 @@ function AppInner() {
     } finally {
       setSrsLoading(false);
     }
-  };
+  }, [applySrsPayload, fetchWithTimeout, initData, normalizeNetworkErrorMessage, readApiError, tr]);
+
+  const prefetchSrsCards = useCallback(async () => {
+    if (!initData || srsPrefetchInFlightRef.current) return;
+    srsPrefetchInFlightRef.current = true;
+    try {
+      const response = await fetchWithTimeout(`/api/cards/prefetch?initData=${encodeURIComponent(initData)}`, {}, 12000);
+      if (!response.ok) return;
+      const data = await response.json();
+      const queueInfo = data?.queue_info && typeof data.queue_info === 'object' ? data.queue_info : null;
+      if (queueInfo) {
+        const nextDueCount = Number(queueInfo?.due_count);
+        const nextNewRemaining = Number(queueInfo?.new_remaining_today);
+        if (Number.isFinite(nextDueCount) || Number.isFinite(nextNewRemaining)) {
+          setSrsQueueInfo((prev) => ({
+            due_count: Number.isFinite(nextDueCount)
+              ? Math.max(0, Math.trunc(nextDueCount))
+              : Math.max(0, Math.trunc(Number(prev?.due_count || 0))),
+            new_remaining_today: Number.isFinite(nextNewRemaining)
+              ? Math.max(0, Math.trunc(nextNewRemaining))
+              : Math.max(0, Math.trunc(Number(prev?.new_remaining_today || 0))),
+          }));
+        }
+      }
+      const items = Array.isArray(data?.items) ? data.items : [];
+      appendToSrsPrefetchQueue(items);
+    } catch (error) {
+      console.warn('FSRS card prefetch failed', error);
+    } finally {
+      srsPrefetchInFlightRef.current = false;
+    }
+  }, [appendToSrsPrefetchQueue, fetchWithTimeout, initData]);
 
   const loadTodayPlan = async () => {
     if (!initData) return;
@@ -2402,6 +2533,67 @@ function AppInner() {
     });
   }, [todayPlan, todayTimerNowMs]);
 
+  const drainSrsReviewBuffer = useCallback(async () => {
+    if (!initData || srsReviewDrainInFlightRef.current) return;
+    srsReviewDrainInFlightRef.current = true;
+    try {
+      while (srsReviewBufferRef.current.length > 0) {
+        const job = srsReviewBufferRef.current[0];
+        const FSRS_REVIEW_TIMEOUT_MS = 60000;
+        try {
+          let response = await fetchWithTimeout('/api/cards/review', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              card_id: job.cardId,
+              rating: job.rating,
+              response_ms: job.responseMs,
+            }),
+          }, FSRS_REVIEW_TIMEOUT_MS);
+          if (!response.ok && response.status >= 500) {
+            await new Promise((resolve) => setTimeout(resolve, 220));
+            response = await fetchWithTimeout('/api/cards/review', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                initData,
+                card_id: job.cardId,
+                rating: job.rating,
+                response_ms: job.responseMs,
+              }),
+            }, FSRS_REVIEW_TIMEOUT_MS);
+          }
+          if (!response.ok) {
+            throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
+          }
+          srsReviewBufferRef.current.shift();
+        } catch (error) {
+          job.attempt = Number(job.attempt || 0) + 1;
+          const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.');
+          setSrsError(friendly);
+          setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${friendly}`);
+          clearSrsReviewRetryTimer();
+          const delayMs = Math.min(15000, 1200 * (2 ** Math.max(0, job.attempt - 1)));
+          srsReviewRetryTimerRef.current = window.setTimeout(() => {
+            srsReviewRetryTimerRef.current = null;
+            void drainSrsReviewBuffer();
+          }, delayMs);
+          break;
+        }
+      }
+    } finally {
+      srsReviewDrainInFlightRef.current = false;
+    }
+  }, [
+    clearSrsReviewRetryTimer,
+    fetchWithTimeout,
+    initData,
+    normalizeNetworkErrorMessage,
+    readApiError,
+    tr,
+  ]);
+
   const submitSrsReview = async (ratingValue) => {
     if (!initData) {
       setSrsError(tr('Сессия Telegram не найдена. Откройте mini app через Telegram.', 'Telegram-Sitzung nicht gefunden. Bitte ueber Telegram oeffnen.'));
@@ -2420,6 +2612,31 @@ function AppInner() {
       setSrsError('');
       setSrsSubmitting(true);
       setSrsSubmittingRating(ratingValue);
+      const optimisticCard = takeFromSrsPrefetchQueue();
+      setSrsRevealAnswer(false);
+      setSrsRevealStartedAt(0);
+      setSrsRevealElapsedSec(0);
+      decrementSrsQueueInfoLocal();
+      if (optimisticCard) {
+        applySrsPayload({
+          card: optimisticCard,
+          srs: null,
+          srs_preview: null,
+          queue_info: null,
+        });
+        srsReviewBufferRef.current.push({
+          cardId,
+          rating: ratingValue,
+          responseMs,
+          attempt: 0,
+        });
+        void drainSrsReviewBuffer();
+        if (srsPrefetchQueueRef.current.length <= 2) {
+          void prefetchSrsCards();
+        }
+        return;
+      }
+
       const FSRS_REVIEW_TIMEOUT_MS = 60000;
       let response = await fetchWithTimeout('/api/cards/review', {
         method: 'POST',
@@ -2448,10 +2665,11 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
       }
       const data = await response.json();
-      setSrsRevealAnswer(false);
-      setSrsRevealStartedAt(0);
-      setSrsRevealElapsedSec(0);
-      await loadSrsNextCard();
+      if (data?.next && typeof data.next === 'object') {
+        applySrsPayload(data.next);
+      } else {
+        await loadSrsNextCard();
+      }
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.');
       setSrsError(friendly);
@@ -2497,7 +2715,18 @@ function AppInner() {
     const langCode = detectTtsLangFromText(answerText);
     const locale = getTtsLocaleForLang(langCode);
     srsAutoTtsPlayedRef.current = key;
-    void playTts(answerText, locale);
+    let timerId = null;
+    const rafId = window.requestAnimationFrame(() => {
+      timerId = window.setTimeout(() => {
+        void playTts(answerText, locale);
+      }, 0);
+    });
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      if (timerId) {
+        window.clearTimeout(timerId);
+      }
+    };
   }, [srsRevealAnswer, srsCard, dictionaryDirection, languageProfile?.learning_language, languageProfile?.native_language]);
 
   const loadLanguageProfile = async () => {
@@ -3027,7 +3256,6 @@ function AppInner() {
       setFlashcardSessionActive(false);
       setFlashcardPreviewActive(false);
       setSrsError('');
-      void loadSrsNextCard();
       return;
     }
 
@@ -4378,19 +4606,33 @@ function AppInner() {
     if (!initData || !isSectionVisible('flashcards') || !flashcardsVisible || flashcardActiveMode !== 'fsrs') {
       return;
     }
+    clearSrsReviewRetryTimer();
+    srsReviewBufferRef.current = [];
+    srsReviewDrainInFlightRef.current = false;
+    updateSrsPrefetchQueue([]);
+    srsCardRef.current = null;
     setSrsCard(null);
     setSrsState(null);
     setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
     setSrsRevealAnswer(false);
     setSrsError('');
-    loadSrsNextCard();
+    void loadSrsNextCard().then(() => {
+      void prefetchSrsCards();
+    });
+    return () => {
+      clearSrsReviewRetryTimer();
+    };
   }, [
+    clearSrsReviewRetryTimer,
     initData,
-    selectedSections,
     flashcardsVisible,
     flashcardActiveMode,
     languageProfile?.native_language,
     languageProfile?.learning_language,
+    loadSrsNextCard,
+    prefetchSrsCards,
+    selectedSections,
+    updateSrsPrefetchQueue,
   ]);
 
   useEffect(() => {
@@ -4400,49 +4642,16 @@ function AppInner() {
 
   useEffect(() => {
     if (!initData || !isSectionVisible('flashcards') || !flashcardsVisible || flashcardActiveMode !== 'fsrs') return;
-    const dueCount = Math.max(0, Number(srsQueueInfo?.due_count || 0));
-    const newCount = Math.max(0, Number(srsQueueInfo?.new_remaining_today || 0));
-    const activeCardId = String(srsCard?.id || srsCard?.entry_id || '');
-    if (dueCount + newCount <= 0 && !activeCardId) return;
-
-    const signature = `${activeCardId}:${dueCount}:${newCount}`;
+    const activeCardId = getSrsCardId(srsCard);
+    const pendingTotal = Math.max(0, Number(srsQueueInfo?.due_count || 0)) + Math.max(0, Number(srsQueueInfo?.new_remaining_today || 0));
+    if (!activeCardId && pendingTotal <= 0) return;
+    if (srsPrefetchQueue.length > 2) return;
+    const signature = `${activeCardId}:${pendingTotal}:${srsPrefetchQueue.length}`;
     if (srsTtsPrefetchSignatureRef.current === signature) return;
     srsTtsPrefetchSignatureRef.current = signature;
-    const FSRS_TTS_PREFETCH_ENABLED = false;
-    if (!FSRS_TTS_PREFETCH_ENABLED) return;
-
-    let cancelled = false;
-    const run = async () => {
-      try {
-        const response = await fetchWithTimeout(`/api/cards/prefetch?initData=${encodeURIComponent(initData)}`, {}, 9000);
-        if (!response.ok) return;
-        const data = await response.json();
-        const items = Array.isArray(data?.items) ? data.items : [];
-        const queue = [];
-        if (srsCard) queue.push(srsCard);
-        queue.push(...items.slice(0, 6));
-        const seenIds = new Set();
-        for (const item of queue.slice(0, 6)) {
-          if (cancelled) return;
-          const itemId = String(item?.id || item?.entry_id || '');
-          if (itemId && seenIds.has(itemId)) continue;
-          if (itemId) seenIds.add(itemId);
-          const direction = (item?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
-          const targetText = String(getDictionarySourceTarget(item, direction).targetText || '').trim();
-          if (!targetText) continue;
-          const locale = getTtsLocaleForLang(detectTtsLangFromText(targetText));
-          preloadTts(targetText, locale);
-        }
-      } catch (error) {
-        console.warn('FSRS TTS prefetch failed', error);
-      }
-    };
-    void run();
-
-    return () => {
-      cancelled = true;
-    };
+    void prefetchSrsCards();
   }, [
+    getSrsCardId,
     initData,
     selectedSections,
     flashcardsVisible,
@@ -4451,10 +4660,8 @@ function AppInner() {
     srsQueueInfo?.new_remaining_today,
     srsCard?.id,
     srsCard?.entry_id,
-    languageProfile?.native_language,
-    languageProfile?.learning_language,
-    preloadTts,
-    fetchWithTimeout,
+    srsPrefetchQueue.length,
+    prefetchSrsCards,
   ]);
 
   useEffect(() => {
@@ -4549,6 +4756,10 @@ function AppInner() {
   useEffect(() => {
     flashcardIndexRef.current = flashcardIndex;
   }, [flashcardIndex]);
+
+  useEffect(() => {
+    srsCardRef.current = srsCard;
+  }, [srsCard]);
 
   useEffect(() => {
     flashcardSelectionRef.current = flashcardSelection;
@@ -11638,6 +11849,9 @@ function AppInner() {
                             const cardTexts = getDictionarySourceTarget(srsCard, direction);
                             const sourceText = cardTexts?.sourceText || '—';
                             const targetText = cardTexts?.targetText || '—';
+                            const srsReplayTtsKey = `srs-replay-${srsCard?.id || srsCard?.entry_id || 'current'}`;
+                            const srsReplayTtsLoading = isTtsPending(srsReplayTtsKey);
+                            const srsReplayLang = getTtsLocaleForLang(detectTtsLangFromText(targetText));
                             return (
                               <>
                                 <div className={`fsrs-study-card ${srsRevealAnswer ? 'is-revealed' : ''}`}>
@@ -11670,6 +11884,18 @@ function AppInner() {
                                       <div className="fsrs-card-meta fsrs-card-meta-answer">
                                         {tr('Response time', 'Response time')}: {srsRevealElapsedSec}s
                                       </div>
+                                      <button
+                                        type="button"
+                                        className={`flashcard-audio-replay ${srsReplayTtsLoading ? 'is-loading' : ''}`}
+                                        onClick={() => {
+                                          void playTtsWithUi(srsReplayTtsKey, targetText, srsReplayLang);
+                                        }}
+                                        aria-label={tr('Повторить аудио', 'Audio wiederholen')}
+                                        title={tr('Повторить аудио', 'Audio wiederholen')}
+                                        disabled={srsReplayTtsLoading || srsSubmitting}
+                                      >
+                                        {renderTtsButtonContent(srsReplayTtsLoading)}
+                                      </button>
                                     </>
                                   )}
                                 </div>

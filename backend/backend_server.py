@@ -365,6 +365,7 @@ SENTENCE_PREWARM_ALLOW_DAYTIME = str(os.getenv("SENTENCE_PREWARM_ALLOW_DAYTIME")
 _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 FSRS_PROFILING_ENABLED = str(os.getenv("FSRS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+LANGUAGE_PAIR_CACHE_TTL_SEC = max(30, int((os.getenv("LANGUAGE_PAIR_CACHE_TTL_SEC") or "900").strip()))
 TTS_PREWARM_ENABLED = str(os.getenv("TTS_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("TTS_PREWARM_INTERVAL_MINUTES") or "60").strip()))
 TTS_PREWARM_BATCH_SIZE = max(10, min(500, int((os.getenv("TTS_PREWARM_BATCH_SIZE") or "120").strip())))
@@ -374,6 +375,8 @@ TTS_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFP
 TTS_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
 TTS_PREWARM_ALLOW_DAYTIME = str(os.getenv("TTS_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
 _TTS_PREWARM_LOCK = threading.Lock()
+_LANGUAGE_PAIR_CACHE_LOCK = threading.Lock()
+_LANGUAGE_PAIR_CACHE: dict[int, dict] = {}
 
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
@@ -708,6 +711,7 @@ def user_language_profile():
             learning_language=learning_language,
             native_language=native_language,
         )
+        _invalidate_user_language_pair_cache(user_id)
         new_pair = (
             str(profile.get("native_language") or "ru").strip().lower(),
             str(profile.get("learning_language") or "de").strip().lower(),
@@ -899,10 +903,33 @@ def _apply_billing_guard(path: str) -> tuple[dict | None, int | None]:
 
 
 def _get_user_language_pair(user_id: int) -> tuple[str, str, dict]:
-    profile = get_user_language_profile(user_id=int(user_id))
+    user_key = int(user_id)
+    now_ts = time.time()
+    with _LANGUAGE_PAIR_CACHE_LOCK:
+        cached = _LANGUAGE_PAIR_CACHE.get(user_key)
+        if cached and float(cached.get("expires_at") or 0.0) > now_ts:
+            return (
+                str(cached.get("source_lang") or "ru"),
+                str(cached.get("target_lang") or "de"),
+                dict(cached.get("profile") or {}),
+            )
+
+    profile = get_user_language_profile(user_id=user_key)
     native_language = str(profile.get("native_language") or "ru").strip().lower() or "ru"
     learning_language = str(profile.get("learning_language") or "de").strip().lower() or "de"
+    with _LANGUAGE_PAIR_CACHE_LOCK:
+        _LANGUAGE_PAIR_CACHE[user_key] = {
+            "source_lang": native_language,
+            "target_lang": learning_language,
+            "profile": dict(profile or {}),
+            "expires_at": now_ts + float(LANGUAGE_PAIR_CACHE_TTL_SEC),
+        }
     return native_language, learning_language, profile
+
+
+def _invalidate_user_language_pair_cache(user_id: int) -> None:
+    with _LANGUAGE_PAIR_CACHE_LOCK:
+        _LANGUAGE_PAIR_CACHE.pop(int(user_id), None)
 
 
 def _require_stripe_config(*, require_webhook_secret: bool = False) -> str | None:
@@ -1193,6 +1220,8 @@ def _build_next_srs_payload(
     card_payload = None
     srs_payload = None
     srs_state_for_preview = None
+    queue_info: dict | None = None
+
     if include_queue_info:
         queue_info = _compute_srs_queue_info(
             user_id=user_id,
@@ -1201,34 +1230,34 @@ def _build_next_srs_payload(
             target_lang=target_lang,
             cursor=cursor,
         )
-    else:
-        introduced_today = count_new_cards_introduced_today(
-            user_id=user_id,
-            now_utc=now_utc,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            cursor=cursor,
-        )
-        queue_info = {
-            "due_count": 0,
-            "new_remaining_today": max(NEW_PER_DAY - int(introduced_today or 0), 0),
-            "available_new_total": 0,
-        }
 
     if due_payload:
         card_payload = due_payload.get("card")
         srs_payload = due_payload.get("srs")
-        card_id = int(card_payload.get("id") or 0) if isinstance(card_payload, dict) else 0
-        if card_id > 0:
-            srs_state_for_preview = get_card_srs_state(
+        if isinstance(srs_payload, dict):
+            srs_state_for_preview = {
+                "status": srs_payload.get("status") or "new",
+                "due_at": srs_payload.get("due_at"),
+                "last_review_at": srs_payload.get("last_review_at"),
+                "interval_days": int(srs_payload.get("interval_days") or 0),
+                "reps": int(srs_payload.get("reps") or 0),
+                "lapses": int(srs_payload.get("lapses") or 0),
+                "stability": float(srs_payload.get("stability") or 0.0),
+                "difficulty": float(srs_payload.get("difficulty") or 0.0),
+            }
+    else:
+        if include_queue_info:
+            can_take_new = int(queue_info.get("new_remaining_today") or 0) > 0
+        else:
+            introduced_today = count_new_cards_introduced_today(
                 user_id=user_id,
-                card_id=card_id,
+                now_utc=now_utc,
+                source_lang=source_lang,
+                target_lang=target_lang,
                 cursor=cursor,
             )
-        if not include_queue_info:
-            queue_info["due_count"] = max(1, int(queue_info.get("due_count") or 0))
-    else:
-        if int(queue_info.get("new_remaining_today") or 0) > 0:
+            can_take_new = max(NEW_PER_DAY - int(introduced_today or 0), 0) > 0
+        if can_take_new:
             candidate = get_next_new_srs_candidate(
                 user_id=user_id,
                 source_lang=source_lang,
@@ -1252,15 +1281,19 @@ def _build_next_srs_payload(
                 }
                 srs_state_for_preview = state
 
+    queue_payload = None
+    if isinstance(queue_info, dict):
+        queue_payload = {
+            "due_count": int(queue_info.get("due_count") or 0),
+            "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
+        }
+
     if not card_payload:
         return {
             "card": None,
             "srs": None,
             "srs_preview": None,
-            "queue_info": {
-                "due_count": int(queue_info.get("due_count") or 0),
-                "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
-            },
+            "queue_info": queue_payload,
         }
 
     due_at = srs_payload.get("due_at")
@@ -1288,10 +1321,7 @@ def _build_next_srs_payload(
         "card": card_response,
         "srs": srs_response,
         "srs_preview": srs_preview,
-        "queue_info": {
-            "due_count": int(queue_info.get("due_count") or 0),
-            "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
-        },
+        "queue_info": queue_payload,
     }
 
 
@@ -10840,6 +10870,7 @@ def review_srs_card():
 
     reviewed_at = datetime.now(timezone.utc)
     card_id = int(card_id)
+    payload_next = None
 
     try:
         with get_db_connection_context() as conn:
@@ -10900,7 +10931,16 @@ def review_srs_card():
                     interval_days_after=scheduled.interval_days,
                     cursor=cursor,
                 )
-        mark("db_write")
+                mark("db_write")
+                payload_next = _build_next_srs_payload(
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    now_utc=datetime.now(timezone.utc),
+                    include_queue_info=False,
+                    cursor=cursor,
+                )
+                mark("build_next")
     except ValueError as exc:
         log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, error_text=str(exc))
         return jsonify({"error": str(exc)}), 400
@@ -10910,8 +10950,6 @@ def review_srs_card():
 
     interval_days = int(persisted.get("interval_days") or 0)
     due_at = persisted.get("due_at")
-    payload_next = None
-    mark("build_next")
     log_profile(int(user_id), int(card_id), error_text=None)
     return jsonify(
         {
@@ -11088,6 +11126,7 @@ def webapp_tts():
     started_at = time.perf_counter()
     stage_marks: dict[str, float] = {"start": started_at}
     had_error = False
+    is_cached_response = False
 
     def mark(stage_name: str) -> None:
         stage_marks[stage_name] = time.perf_counter()
@@ -11099,7 +11138,17 @@ def webapp_tts():
             end_ts = time.perf_counter()
             points = {"start": started_at, **stage_marks, "end": end_ts}
             ordered = [("start", points.get("start"))]
-            for key in ("parsed", "validated", "db_cache_hit", "synth_done", "cache_saved"):
+            for key in (
+                "parse_body",
+                "hash_check",
+                "parse_init_data",
+                "lang_pair",
+                "db_cache_read",
+                "db_cache_hit",
+                "synth_done",
+                "cache_saved",
+                "send_file",
+            ):
                 if key in points:
                     ordered.append((key, points[key]))
             ordered.append(("end", end_ts))
@@ -11128,7 +11177,7 @@ def webapp_tts():
     text = (payload.get("text") or "").strip()
     language = (payload.get("language") or "de-DE").strip()
     voice = (payload.get("voice") or "de-DE-Neural2-C").strip()
-    mark("parsed")
+    mark("parse_body")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -11137,13 +11186,15 @@ def webapp_tts():
 
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
+    mark("hash_check")
     parsed = _parse_telegram_init_data(init_data)
+    mark("parse_init_data")
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    mark("validated")
+    mark("lang_pair")
 
     speaking_rate = 0.95
     normalized = _normalize_utterance_text(text)
@@ -11152,6 +11203,7 @@ def webapp_tts():
 
     try:
         cached_audio = get_tts_audio_cache(cache_key)
+        mark("db_cache_read")
         if cached_audio:
             mark("db_cache_hit")
             _billing_log_event_safe(
@@ -11166,12 +11218,15 @@ def webapp_tts():
                 status="estimated",
                 metadata={"cached": True, "language": language, "voice": voice},
             )
-            return send_file(
+            response = send_file(
                 BytesIO(cached_audio),
                 mimetype="audio/mpeg",
                 as_attachment=False,
                 download_name="tts.mp3",
             )
+            is_cached_response = True
+            mark("send_file")
+            return response
 
         response_audio = _synthesize_mp3(
             normalized,
@@ -11204,12 +11259,14 @@ def webapp_tts():
             status="estimated",
             metadata={"cached": False, "language": language, "voice": voice},
         )
-        return send_file(
+        response = send_file(
             BytesIO(response_audio),
             mimetype="audio/mpeg",
             as_attachment=False,
             download_name="tts.mp3",
         )
+        mark("send_file")
+        return response
     except Exception as exc:
         had_error = True
         _log_tts_profile(
@@ -11221,21 +11278,12 @@ def webapp_tts():
         return jsonify({"error": f"TTS error: {exc}"}), 500
     finally:
         if request.method == "POST" and not had_error:
-            # If response returned from cache/synthesis without exception, log success profile.
-            if "db_cache_hit" in stage_marks:
-                _log_tts_profile(
-                    user_id_value=int(user_id) if user_id else None,
-                    normalized_text=normalized,
-                    cached=True,
-                    error_text=None,
-                )
-            elif "synth_done" in stage_marks:
-                _log_tts_profile(
-                    user_id_value=int(user_id) if user_id else None,
-                    normalized_text=normalized,
-                    cached=False,
-                    error_text=None,
-                )
+            _log_tts_profile(
+                user_id_value=int(user_id) if user_id else None,
+                normalized_text=normalized,
+                cached=is_cached_response,
+                error_text=None,
+            )
 
 
 @app.route("/api/webapp/flashcards/enrich", methods=["POST"])
