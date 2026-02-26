@@ -514,8 +514,21 @@ function AppInner() {
   }, [tr]);
   const normalizeNetworkErrorMessage = useCallback((error, fallbackRu, fallbackDe) => {
     const fallback = tr(fallbackRu, fallbackDe);
+    const name = String(error?.name || '').trim().toLowerCase();
     const raw = String(error?.message || '').trim().toLowerCase();
     if (!raw) return fallback;
+    if (
+      name === 'aborterror'
+      || name === 'timeouterror'
+      || raw.includes('aborted')
+      || raw.includes('timeout')
+      || raw.includes('timed out')
+    ) {
+      return tr(
+        'Сервер отвечает слишком долго. Попробуйте ещё раз.',
+        'Der Server antwortet zu langsam. Bitte erneut versuchen.'
+      );
+    }
     if (
       raw.includes('load failed')
       || raw.includes('failed to fetch')
@@ -570,13 +583,38 @@ function AppInner() {
     return response.json();
   }, [initData, initDataMissingMsg, tr]);
   const fetchWithTimeout = useCallback(async (url, options = {}, timeoutMs = 15000) => {
-    const controller = new AbortController();
-    const timerId = window.setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || 15000)));
-    try {
-      return await fetch(url, { ...options, signal: controller.signal });
-    } finally {
-      window.clearTimeout(timerId);
+    const method = String(options?.method || 'GET').trim().toUpperCase();
+    const maxAttempts = method === 'GET' || method === 'HEAD' ? 2 : 1;
+    const isTelegramWebApp = Boolean(window.Telegram?.WebApp);
+    const baseTimeout = Math.max(1000, Number(timeoutMs || 15000));
+    const effectiveTimeout = isTelegramWebApp ? Math.max(baseTimeout, 30000) : baseTimeout;
+    let lastError;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      let didTimeout = false;
+      const timerId = window.setTimeout(() => {
+        didTimeout = true;
+        controller.abort();
+      }, effectiveTimeout);
+      try {
+        return await fetch(url, { ...options, signal: controller.signal });
+      } catch (error) {
+        if (didTimeout) {
+          const timeoutError = new Error('Request timed out');
+          timeoutError.name = 'TimeoutError';
+          lastError = timeoutError;
+        } else {
+          lastError = error;
+        }
+      } finally {
+        window.clearTimeout(timerId);
+      }
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      }
     }
+    throw lastError || new Error('Request failed');
   }, []);
   const learningLanguageOptions = [
     { value: 'de', label: tr('Немецкий', 'Deutsch') },

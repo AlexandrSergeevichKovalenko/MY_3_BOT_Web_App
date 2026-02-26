@@ -1119,23 +1119,27 @@ def _compute_srs_queue_info(
     now_utc: datetime,
     source_lang: str,
     target_lang: str,
+    cursor=None,
 ) -> dict:
     due_count = count_due_srs_cards(
         user_id=user_id,
         now_utc=now_utc,
         source_lang=source_lang,
         target_lang=target_lang,
+        cursor=cursor,
     )
     introduced_today = count_new_cards_introduced_today(
         user_id=user_id,
         now_utc=now_utc,
         source_lang=source_lang,
         target_lang=target_lang,
+        cursor=cursor,
     )
     has_new_candidates = has_available_new_srs_cards(
         user_id=user_id,
         source_lang=source_lang,
         target_lang=target_lang,
+        cursor=cursor,
     )
     new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
     new_remaining_today = new_remaining_today if has_new_candidates else 0
@@ -1153,12 +1157,14 @@ def _build_next_srs_payload(
     target_lang: str,
     now_utc: datetime,
     include_queue_info: bool = True,
+    cursor=None,
 ) -> dict:
     due_payload = get_next_due_srs_card(
         user_id=user_id,
         now_utc=now_utc,
         source_lang=source_lang,
         target_lang=target_lang,
+        cursor=cursor,
     )
     card_payload = None
     srs_payload = None
@@ -1168,6 +1174,7 @@ def _build_next_srs_payload(
             now_utc=now_utc,
             source_lang=source_lang,
             target_lang=target_lang,
+            cursor=cursor,
         )
     else:
         introduced_today = count_new_cards_introduced_today(
@@ -1175,6 +1182,7 @@ def _build_next_srs_payload(
             now_utc=now_utc,
             source_lang=source_lang,
             target_lang=target_lang,
+            cursor=cursor,
         )
         queue_info = {
             "due_count": 0,
@@ -1193,9 +1201,15 @@ def _build_next_srs_payload(
                 user_id=user_id,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                cursor=cursor,
             )
             if candidate:
-                state = ensure_new_srs_state(user_id=user_id, card_id=int(candidate["id"]), now_utc=now_utc)
+                state = ensure_new_srs_state(
+                    user_id=user_id,
+                    card_id=int(candidate["id"]),
+                    now_utc=now_utc,
+                    cursor=cursor,
+                )
                 card_payload = candidate
                 srs_payload = {
                     "status": state.get("status") or "new",
@@ -10477,14 +10491,16 @@ def get_next_srs_card():
         source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
         mark("lang_pair")
         now_utc = datetime.now(timezone.utc)
-
-        payload_next = _build_next_srs_payload(
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            now_utc=now_utc,
-            include_queue_info=False,
-        )
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                payload_next = _build_next_srs_payload(
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    now_utc=now_utc,
+                    include_queue_info=False,
+                    cursor=cursor,
+                )
         mark("build_next")
 
         return jsonify(
@@ -10519,22 +10535,22 @@ def get_srs_prefetch_cards():
     now_utc = datetime.now(timezone.utc)
 
     try:
-        queue_info = _compute_srs_queue_info(
-            user_id=int(user_id),
-            now_utc=now_utc,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-        due_count = max(0, int(queue_info.get("due_count") or 0))
-        new_remaining_today = max(0, int(queue_info.get("new_remaining_today") or 0))
-        max_items = max(1, min(20, due_count + new_remaining_today))
-
-        due_limit = min(due_count, max_items)
-        new_limit = min(new_remaining_today, max(0, max_items - due_limit))
-        cards: list[dict] = []
-
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
+                queue_info = _compute_srs_queue_info(
+                    user_id=int(user_id),
+                    now_utc=now_utc,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    cursor=cursor,
+                )
+                due_count = max(0, int(queue_info.get("due_count") or 0))
+                new_remaining_today = max(0, int(queue_info.get("new_remaining_today") or 0))
+                max_items = max(1, min(20, due_count + new_remaining_today))
+
+                due_limit = min(due_count, max_items)
+                new_limit = min(new_remaining_today, max(0, max_items - due_limit))
+                cards: list[dict] = []
                 if due_limit > 0:
                     cursor.execute(
                         """

@@ -3419,30 +3419,35 @@ def count_due_srs_cards(
     now_utc: datetime | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    cursor=None,
 ) -> int:
     now_utc = now_utc or datetime.now(timezone.utc)
+    def _count(cur):
+        language_filter_sql, language_params = _build_language_pair_filter(
+            source_lang,
+            target_lang,
+            table_alias="q",
+        )
+        cur.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM bt_3_card_srs_state s
+            JOIN bt_3_webapp_dictionary_queries q
+              ON q.id = s.card_id AND q.user_id = s.user_id
+            WHERE s.user_id = %s
+              AND s.status <> 'suspended'
+              AND s.due_at <= %s
+              {language_filter_sql};
+            """,
+            [int(user_id), now_utc, *language_params],
+        )
+        row = cur.fetchone()
+        return int(row[0] if row else 0)
+    if cursor is not None:
+        return _count(cursor)
     with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            language_filter_sql, language_params = _build_language_pair_filter(
-                source_lang,
-                target_lang,
-                table_alias="q",
-            )
-            cursor.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM bt_3_card_srs_state s
-                JOIN bt_3_webapp_dictionary_queries q
-                  ON q.id = s.card_id AND q.user_id = s.user_id
-                WHERE s.user_id = %s
-                  AND s.status <> 'suspended'
-                  AND s.due_at <= %s
-                  {language_filter_sql};
-                """,
-                [int(user_id), now_utc, *language_params],
-            )
-            row = cursor.fetchone()
-            return int(row[0] if row else 0)
+        with conn.cursor() as own_cursor:
+            return _count(own_cursor)
 
 
 def count_new_cards_introduced_today(
@@ -3450,60 +3455,70 @@ def count_new_cards_introduced_today(
     now_utc: datetime | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    cursor=None,
 ) -> int:
     now_utc = now_utc or datetime.now(timezone.utc)
     day_start = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
     day_end = day_start + timedelta(days=1)
+    def _count(cur):
+        language_filter_sql, language_params = _build_language_pair_filter(
+            source_lang,
+            target_lang,
+            table_alias="q",
+        )
+        cur.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM bt_3_card_srs_state s
+            JOIN bt_3_webapp_dictionary_queries q
+              ON q.id = s.card_id AND q.user_id = s.user_id
+            WHERE s.user_id = %s
+              AND s.created_at >= %s
+              AND s.created_at < %s
+              {language_filter_sql};
+            """,
+            [int(user_id), day_start, day_end, *language_params],
+        )
+        row = cur.fetchone()
+        return int(row[0] if row else 0)
+    if cursor is not None:
+        return _count(cursor)
     with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            language_filter_sql, language_params = _build_language_pair_filter(
-                source_lang,
-                target_lang,
-                table_alias="q",
-            )
-            cursor.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM bt_3_card_srs_state s
-                JOIN bt_3_webapp_dictionary_queries q
-                  ON q.id = s.card_id AND q.user_id = s.user_id
-                WHERE s.user_id = %s
-                  AND s.created_at >= %s
-                  AND s.created_at < %s
-                  {language_filter_sql};
-                """,
-                [int(user_id), day_start, day_end, *language_params],
-            )
-            row = cursor.fetchone()
-            return int(row[0] if row else 0)
+        with conn.cursor() as own_cursor:
+            return _count(own_cursor)
 
 
 def has_available_new_srs_cards(
     user_id: int,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    cursor=None,
 ) -> bool:
+    def _exists(cur):
+        language_filter_sql, language_params = _build_language_pair_filter(
+            source_lang,
+            target_lang,
+            table_alias="q",
+        )
+        cur.execute(
+            f"""
+            SELECT 1
+            FROM bt_3_webapp_dictionary_queries q
+            LEFT JOIN bt_3_card_srs_state s
+              ON s.user_id = q.user_id AND s.card_id = q.id
+            WHERE q.user_id = %s
+              AND s.id IS NULL
+              {language_filter_sql}
+            LIMIT 1;
+            """,
+            [int(user_id), *language_params],
+        )
+        return cur.fetchone() is not None
+    if cursor is not None:
+        return _exists(cursor)
     with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            language_filter_sql, language_params = _build_language_pair_filter(
-                source_lang,
-                target_lang,
-                table_alias="q",
-            )
-            cursor.execute(
-                f"""
-                SELECT 1
-                FROM bt_3_webapp_dictionary_queries q
-                LEFT JOIN bt_3_card_srs_state s
-                  ON s.user_id = q.user_id AND s.card_id = q.id
-                WHERE q.user_id = %s
-                  AND s.id IS NULL
-                  {language_filter_sql}
-                LIMIT 1;
-                """,
-                [int(user_id), *language_params],
-            )
-            return cursor.fetchone() is not None
+        with conn.cursor() as own_cursor:
+            return _exists(own_cursor)
 
 
 def count_available_new_srs_cards(
@@ -3539,106 +3554,116 @@ def get_next_due_srs_card(
     now_utc: datetime | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    cursor=None,
 ) -> dict | None:
     now_utc = now_utc or datetime.now(timezone.utc)
+    def _fetch(cur):
+        language_filter_sql, language_params = _build_language_pair_filter(
+            source_lang,
+            target_lang,
+            table_alias="q",
+        )
+        cur.execute(
+            f"""
+            SELECT
+                s.card_id,
+                s.status,
+                s.due_at,
+                s.interval_days,
+                s.stability,
+                s.difficulty,
+                q.word_ru,
+                q.translation_de,
+                q.word_de,
+                q.translation_ru,
+                q.response_json
+            FROM bt_3_card_srs_state s
+            JOIN bt_3_webapp_dictionary_queries q
+              ON q.id = s.card_id
+             AND q.user_id = s.user_id
+            WHERE s.user_id = %s
+              AND s.status <> 'suspended'
+              AND s.due_at <= %s
+              {language_filter_sql}
+            ORDER BY s.due_at ASC
+            LIMIT 1;
+            """,
+            [int(user_id), now_utc, *language_params],
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "card": {
+                "id": row[0],
+                "word_ru": row[6],
+                "translation_de": row[7],
+                "word_de": row[8],
+                "translation_ru": row[9],
+                "response_json": row[10],
+            },
+            "srs": {
+                "status": row[1],
+                "due_at": row[2],
+                "interval_days": int(row[3] or 0),
+                "stability": float(row[4] or 0.0),
+                "difficulty": float(row[5] or 0.0),
+            },
+        }
+    if cursor is not None:
+        return _fetch(cursor)
     with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            language_filter_sql, language_params = _build_language_pair_filter(
-                source_lang,
-                target_lang,
-                table_alias="q",
-            )
-            cursor.execute(
-                f"""
-                SELECT
-                    s.card_id,
-                    s.status,
-                    s.due_at,
-                    s.interval_days,
-                    s.stability,
-                    s.difficulty,
-                    q.word_ru,
-                    q.translation_de,
-                    q.word_de,
-                    q.translation_ru,
-                    q.response_json
-                FROM bt_3_card_srs_state s
-                JOIN bt_3_webapp_dictionary_queries q
-                  ON q.id = s.card_id
-                 AND q.user_id = s.user_id
-                WHERE s.user_id = %s
-                  AND s.status <> 'suspended'
-                  AND s.due_at <= %s
-                  {language_filter_sql}
-                ORDER BY s.due_at ASC
-                LIMIT 1;
-                """,
-                [int(user_id), now_utc, *language_params],
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return {
-                "card": {
-                    "id": row[0],
-                    "word_ru": row[6],
-                    "translation_de": row[7],
-                    "word_de": row[8],
-                    "translation_ru": row[9],
-                    "response_json": row[10],
-                },
-                "srs": {
-                    "status": row[1],
-                    "due_at": row[2],
-                    "interval_days": int(row[3] or 0),
-                    "stability": float(row[4] or 0.0),
-                    "difficulty": float(row[5] or 0.0),
-                },
-            }
+        with conn.cursor() as own_cursor:
+            return _fetch(own_cursor)
 
 
 def get_next_new_srs_candidate(
     user_id: int,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    cursor=None,
 ) -> dict | None:
+    def _fetch(cur):
+        language_filter_sql, language_params = _build_language_pair_filter(
+            source_lang,
+            target_lang,
+            table_alias="q",
+        )
+        cur.execute(
+            f"""
+            SELECT q.id, q.word_ru, q.translation_de, q.word_de, q.translation_ru, q.response_json
+            FROM bt_3_webapp_dictionary_queries q
+            LEFT JOIN bt_3_card_srs_state s
+              ON s.user_id = q.user_id AND s.card_id = q.id
+            WHERE q.user_id = %s
+              AND s.id IS NULL
+              {language_filter_sql}
+            ORDER BY q.created_at ASC
+            LIMIT 1;
+            """,
+            [int(user_id), *language_params],
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "word_ru": row[1],
+            "translation_de": row[2],
+            "word_de": row[3],
+            "translation_ru": row[4],
+            "response_json": row[5],
+        }
+    if cursor is not None:
+        return _fetch(cursor)
     with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            language_filter_sql, language_params = _build_language_pair_filter(
-                source_lang,
-                target_lang,
-                table_alias="q",
-            )
-            cursor.execute(
-                f"""
-                SELECT q.id, q.word_ru, q.translation_de, q.word_de, q.translation_ru, q.response_json
-                FROM bt_3_webapp_dictionary_queries q
-                LEFT JOIN bt_3_card_srs_state s
-                  ON s.user_id = q.user_id AND s.card_id = q.id
-                WHERE q.user_id = %s
-                  AND s.id IS NULL
-                  {language_filter_sql}
-                ORDER BY q.created_at ASC
-                LIMIT 1;
-                """,
-                [int(user_id), *language_params],
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return {
-                "id": row[0],
-                "word_ru": row[1],
-                "translation_de": row[2],
-                "word_de": row[3],
-                "translation_ru": row[4],
-                "response_json": row[5],
-            }
+        with conn.cursor() as own_cursor:
+            return _fetch(own_cursor)
 
 
-def ensure_new_srs_state(user_id: int, card_id: int, now_utc: datetime | None = None) -> dict:
+def ensure_new_srs_state(user_id: int, card_id: int, now_utc: datetime | None = None, cursor=None) -> dict:
     now_utc = now_utc or datetime.now(timezone.utc)
-    state = get_card_srs_state(user_id=user_id, card_id=card_id)
+    state = get_card_srs_state(user_id=user_id, card_id=card_id, cursor=cursor)
     if state:
         return state
     return upsert_card_srs_state(
@@ -3652,6 +3677,7 @@ def ensure_new_srs_state(user_id: int, card_id: int, now_utc: datetime | None = 
         lapses=0,
         stability=0.0,
         difficulty=0.0,
+        cursor=cursor,
     )
 
 
