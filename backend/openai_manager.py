@@ -12,6 +12,9 @@ from contextlib import contextmanager
 from dotenv import load_dotenv
 from pathlib import Path
 
+FEEL_POLL_INTERVAL_SECONDS = 1.0
+FEEL_THREAD_DELETE_TIMEOUT_SECONDS = 0.75
+
 
 system_message = {
     "check_translation": """
@@ -2118,6 +2121,18 @@ async def run_check_story_guess_semantic(
         return {"is_correct": False, "reason": "Не удалось надёжно оценить ответ по смыслу."}
 
 
+async def _delete_feel_thread_fast(thread_id: str) -> None:
+    try:
+        await asyncio.wait_for(
+            client.beta.threads.delete(thread_id=thread_id),
+            timeout=FEEL_THREAD_DELETE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logging.debug("Пропускаем медленное удаление thread=%s", thread_id)
+    except Exception as exc:
+        logging.warning(f"Не удалось удалить thread: {exc}")
+
+
 async def run_feel_word(word_ru: str, word_de: str | None = None) -> str:
     task_name = "feel_word"
     system_instruction_key = "feel_word"
@@ -2149,16 +2164,13 @@ async def run_feel_word(word_ru: str, word_de: str | None = None) -> str:
         )
         if run_status.status == "completed":
             break
-        await asyncio.sleep(2)
+        await asyncio.sleep(FEEL_POLL_INTERVAL_SECONDS)
 
     messages = await client.beta.threads.messages.list(thread_id=thread_id)
     last_message = messages.data[0]
     content = last_message.content[0].text.value.strip()
 
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
+    await _delete_feel_thread_fast(thread_id)
 
     return content
 
@@ -2249,16 +2261,13 @@ async def run_feel_word_multilang(
         )
         if run_status.status == "completed":
             break
-        await asyncio.sleep(2)
+        await asyncio.sleep(FEEL_POLL_INTERVAL_SECONDS)
 
     messages = await client.beta.threads.messages.list(thread_id=thread_id)
     last_message = messages.data[0]
     content = last_message.content[0].text.value.strip()
 
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
+    await _delete_feel_thread_fast(thread_id)
 
     return content
 

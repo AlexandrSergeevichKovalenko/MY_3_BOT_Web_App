@@ -13839,6 +13839,31 @@ def _run_system_message_cleanup_job() -> None:
     )
 
 
+def _run_flashcard_feel_cleanup_job() -> None:
+    enabled = (os.getenv("FLASHCARD_FEEL_CLEANUP_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        logging.info("ℹ️ Flashcard feel cleanup disabled by FLASHCARD_FEEL_CLEANUP_ENABLED")
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET response_json = response_json - 'feel_explanation' - 'feel_feedback'
+                    WHERE response_json IS NOT NULL
+                      AND (
+                        response_json ? 'feel_explanation'
+                        OR response_json ? 'feel_feedback'
+                      );
+                    """
+                )
+                cleaned_rows = int(cursor.rowcount or 0)
+        logging.info("✅ Flashcard feel cleanup finished: cleaned_rows=%s", cleaned_rows)
+    except Exception:
+        logging.exception("❌ Flashcard feel cleanup failed")
+
+
 def _get_youtube_oembed(video_id: str) -> dict:
     now = time.time()
     cached = _YT_OEMBED_CACHE.get(video_id)
@@ -14017,6 +14042,21 @@ def _start_audio_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=300,
+        )
+    feel_cleanup_enabled = (os.getenv("FLASHCARD_FEEL_CLEANUP_ENABLED") or "1").strip().lower()
+    if feel_cleanup_enabled in ("1", "true", "yes", "on"):
+        feel_cleanup_day = int((os.getenv("FLASHCARD_FEEL_CLEANUP_DAY") or "1").strip())
+        feel_cleanup_hour = int((os.getenv("FLASHCARD_FEEL_CLEANUP_HOUR") or "3").strip())
+        feel_cleanup_minute = int((os.getenv("FLASHCARD_FEEL_CLEANUP_MINUTE") or "30").strip())
+        _audio_scheduler.add_job(
+            _run_flashcard_feel_cleanup_job,
+            "cron",
+            day=feel_cleanup_day,
+            hour=feel_cleanup_hour,
+            minute=feel_cleanup_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
         )
     if TTS_PREWARM_ENABLED:
         _audio_scheduler.add_job(
@@ -14396,6 +14436,19 @@ def cleanup_system_messages_now():
     if token != required_token:
         return jsonify({"error": "Неверный токен"}), 401
     _run_system_message_cleanup_job()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/cleanup-flashcard-feel", methods=["POST"])
+def cleanup_flashcard_feel_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+    _run_flashcard_feel_cleanup_job()
     return jsonify({"ok": True})
 
 

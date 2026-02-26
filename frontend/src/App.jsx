@@ -417,6 +417,7 @@ function AppInner() {
   const youtubeAutoFolderCacheRef = useRef(new Map());
   const youtubeAutoFolderPendingRef = useRef(new Map());
   const ttsPendingKeysRef = useRef(new Set());
+  const flashcardFeelInFlightRef = useRef(new Map());
   const inlineToastTimeoutRef = useRef(null);
   const readerSessionStartingRef = useRef(false);
   const readerStateSaveTimeoutRef = useRef(null);
@@ -1119,6 +1120,138 @@ function AppInner() {
     }
     return resolveFlashcardTexts(entry).targetText;
   };
+
+  const fetchFlashcardFeel = useCallback(async (entry, options = {}) => {
+    const {
+      revealOnSuccess = false,
+      showError = false,
+      setLoading = false,
+    } = options;
+    const entryId = entry?.id;
+    if (!entryId) return '';
+
+    let responseJson = entry?.response_json;
+    if (typeof responseJson === 'string') {
+      try {
+        responseJson = JSON.parse(responseJson);
+      } catch (_error) {
+        responseJson = {};
+      }
+    }
+    if (!responseJson || typeof responseJson !== 'object') {
+      responseJson = {};
+    }
+
+    const cachedFeel = String(
+      flashcardFeelMap[entryId]
+      || responseJson.feel_explanation
+      || ''
+    ).trim();
+    if (cachedFeel) {
+      if (!flashcardFeelMap[entryId]) {
+        setFlashcardFeelMap((prev) => ({
+          ...prev,
+          [entryId]: cachedFeel,
+        }));
+      }
+      if (revealOnSuccess) {
+        setFlashcardFeelVisibleMap((prev) => ({
+          ...prev,
+          [entryId]: true,
+        }));
+      }
+      return cachedFeel;
+    }
+
+    if (!initData) {
+      if (showError) setWebappError(initDataMissingMsg);
+      return '';
+    }
+
+    if (setLoading) {
+      setFlashcardFeelLoadingMap((prev) => ({
+        ...prev,
+        [entryId]: true,
+      }));
+    }
+
+    let requestPromise = flashcardFeelInFlightRef.current.get(entryId);
+    if (!requestPromise) {
+      const sourceText = String(
+        responseJson.source_text
+        || entry?.word_ru
+        || responseJson.word_ru
+        || entry?.translation_ru
+        || responseJson.translation_ru
+        || entry?.word_de
+        || responseJson.word_de
+        || ''
+      ).trim();
+      const targetText = String(
+        responseJson.target_text
+        || entry?.translation_de
+        || responseJson.translation_de
+        || entry?.word_de
+        || responseJson.word_de
+        || entry?.translation_ru
+        || responseJson.translation_ru
+        || ''
+      ).trim();
+
+      requestPromise = (async () => {
+        const response = await fetch('/api/webapp/flashcards/feel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            entry_id: entryId,
+            word_ru: sourceText,
+            word_de: targetText,
+            source_text: sourceText,
+            target_text: targetText,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        const data = await response.json();
+        const feelText = String(data?.feel_explanation || '').trim();
+        if (feelText) {
+          setFlashcardFeelMap((prev) => ({
+            ...prev,
+            [entryId]: feelText,
+          }));
+        }
+        return feelText;
+      })().finally(() => {
+        flashcardFeelInFlightRef.current.delete(entryId);
+      });
+      flashcardFeelInFlightRef.current.set(entryId, requestPromise);
+    }
+
+    try {
+      const feelText = await requestPromise;
+      if (feelText && revealOnSuccess) {
+        setFlashcardFeelVisibleMap((prev) => ({
+          ...prev,
+          [entryId]: true,
+        }));
+      }
+      return feelText;
+    } catch (error) {
+      if (showError) {
+        setWebappError(`${tr('Ошибка feel', 'Feel-Fehler')}: ${error.message}`);
+      }
+      return '';
+    } finally {
+      if (setLoading) {
+        setFlashcardFeelLoadingMap((prev) => ({
+          ...prev,
+          [entryId]: false,
+        }));
+      }
+    }
+  }, [flashcardFeelMap, initData, initDataMissingMsg, tr]);
 
   const preloadTts = useCallback((text, language = 'de-DE') => {
     if (!initData) return;
@@ -4393,6 +4526,25 @@ function AppInner() {
       [entry.id]: false,
     }));
   }, [flashcardPreviewActive, flashcardsOnly, flashcards, flashcardPreviewIndex]);
+
+  useEffect(() => {
+    if (!flashcardPreviewActive || !flashcardsOnly) return;
+    if (flashcardActiveMode !== 'quiz') return;
+    const entry = flashcards[flashcardPreviewIndex];
+    if (!entry?.id) return;
+    void fetchFlashcardFeel(entry, {
+      revealOnSuccess: false,
+      showError: false,
+      setLoading: false,
+    });
+  }, [
+    flashcardPreviewActive,
+    flashcardsOnly,
+    flashcardActiveMode,
+    flashcards,
+    flashcardPreviewIndex,
+    fetchFlashcardFeel,
+  ]);
 
   useEffect(() => {
     flashcardIndexRef.current = flashcardIndex;
@@ -11647,47 +11799,12 @@ function AppInner() {
                                         type="button"
                                         className="secondary-button flashcard-preview-feel-btn"
                                         disabled={!!flashcardFeelLoadingMap[entry.id]}
-                                        onClick={async () => {
-                                          if (!entry.id) return;
-                                          try {
-                                            setFlashcardFeelLoadingMap((prev) => ({
-                                              ...prev,
-                                              [entry.id]: true,
-                                            }));
-                                            const response = await fetch('/api/webapp/flashcards/feel', {
-                                              method: 'POST',
-                                              headers: { 'Content-Type': 'application/json' },
-                                              body: JSON.stringify({
-                                                initData,
-                                                entry_id: entry.id,
-                                                word_ru: cardTexts.sourceText,
-                                                word_de: cardTexts.targetText,
-                                                source_text: cardTexts.sourceText,
-                                                target_text: cardTexts.targetText,
-                                              }),
-                                            });
-                                            if (!response.ok) {
-                                              throw new Error(await response.text());
-                                            }
-                                            const data = await response.json();
-                                            if (data.feel_explanation) {
-                                              setFlashcardFeelMap((prev) => ({
-                                                ...prev,
-                                                [entry.id]: data.feel_explanation,
-                                              }));
-                                              setFlashcardFeelVisibleMap((prev) => ({
-                                                ...prev,
-                                                [entry.id]: true,
-                                              }));
-                                            }
-                                          } catch (error) {
-                                            setWebappError(`${tr('Ошибка feel', 'Feel-Fehler')}: ${error.message}`);
-                                          } finally {
-                                            setFlashcardFeelLoadingMap((prev) => ({
-                                              ...prev,
-                                              [entry.id]: false,
-                                            }));
-                                          }
+                                        onClick={() => {
+                                          void fetchFlashcardFeel(entry, {
+                                            revealOnSuccess: true,
+                                            showError: true,
+                                            setLoading: true,
+                                          });
                                         }}
                                       >
                                         {flashcardFeelLoadingMap[entry.id]
@@ -11725,6 +11842,16 @@ function AppInner() {
                                                 if (!response.ok) {
                                                   throw new Error(await response.text());
                                                 }
+                                                setFlashcardFeelVisibleMap((prev) => ({
+                                                  ...prev,
+                                                  [entry.id]: false,
+                                                }));
+                                                setFlashcards((prev) => prev.map((item) => {
+                                                  if (item.id !== entry.id) return item;
+                                                  const nextResponse = { ...(item.response_json || {}) };
+                                                  nextResponse.feel_feedback = 'like';
+                                                  return { ...item, response_json: nextResponse };
+                                                }));
                                               } catch (error) {
                                                 setWebappError(`${tr('Ошибка feedback', 'Feedback-Fehler')}: ${error.message}`);
                                               } finally {
