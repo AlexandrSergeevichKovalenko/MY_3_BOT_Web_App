@@ -530,6 +530,17 @@ function AppInner() {
       );
     }
     if (
+      raw.includes('application failed to respond')
+      || raw.includes('upstream request timeout')
+      || raw.includes('gateway timeout')
+      || raw.includes('service unavailable')
+    ) {
+      return tr(
+        'Сервер перегружен или временно недоступен. Повторите через несколько секунд.',
+        'Der Server ist ueberlastet oder voruebergehend nicht verfuegbar. Bitte in ein paar Sekunden erneut versuchen.'
+      );
+    }
+    if (
       raw.includes('load failed')
       || raw.includes('failed to fetch')
       || raw.includes('networkerror')
@@ -616,6 +627,14 @@ function AppInner() {
     }
     throw lastError || new Error('Request failed');
   }, []);
+  const fetchGetWithRetry = useCallback(async (url, timeoutMs = 45000) => {
+    let response = await fetchWithTimeout(url, {}, timeoutMs);
+    if (!response.ok && response.status >= 500) {
+      await new Promise((resolve) => window.setTimeout(resolve, 280));
+      response = await fetchWithTimeout(url, {}, timeoutMs);
+    }
+    return response;
+  }, [fetchWithTimeout]);
   const learningLanguageOptions = [
     { value: 'de', label: tr('Немецкий', 'Deutsch') },
     { value: 'en', label: tr('Английский', 'Englisch') },
@@ -1227,7 +1246,7 @@ function AppInner() {
     try {
       setTodayPlanLoading(true);
       setTodayPlanError('');
-      const response = await fetch(`/api/today?initData=${encodeURIComponent(initData)}`);
+      const response = await fetchGetWithRetry(`/api/today?initData=${encodeURIComponent(initData)}`, 45000);
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки плана на сегодня', 'Fehler beim Laden des Tagesplans'));
       }
@@ -1254,7 +1273,7 @@ function AppInner() {
     try {
       setSkillReportLoading(true);
       setSkillReportError('');
-      const response = await fetch(`/api/progress/skills?period=7d&initData=${encodeURIComponent(initData)}`);
+      const response = await fetchGetWithRetry(`/api/progress/skills?period=7d&initData=${encodeURIComponent(initData)}`, 45000);
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки отчета по навыкам', 'Fehler beim Laden des Skills-Reports'));
       }
@@ -1285,7 +1304,7 @@ function AppInner() {
     try {
       setWeeklyPlanLoading(true);
       setWeeklyPlanError('');
-      const response = await fetch(`/api/progress/weekly-plan?initData=${encodeURIComponent(initData)}`);
+      const response = await fetchGetWithRetry(`/api/progress/weekly-plan?initData=${encodeURIComponent(initData)}`, 45000);
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки недельного плана', 'Fehler beim Laden des Wochenplans'));
       }
@@ -1320,7 +1339,7 @@ function AppInner() {
     try {
       setPlanAnalyticsLoading(true);
       setPlanAnalyticsError('');
-      const response = await fetch(`/api/progress/plan-analytics?initData=${encodeURIComponent(initData)}&period=${encodeURIComponent(period)}`);
+      const response = await fetchGetWithRetry(`/api/progress/plan-analytics?initData=${encodeURIComponent(initData)}&period=${encodeURIComponent(period)}`, 45000);
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки аналитики планов', 'Fehler beim Laden der Plan-Analytik'));
       }
@@ -3926,7 +3945,10 @@ function AppInner() {
       setTodayPlanError('');
       return;
     }
-    loadTodayPlan();
+    const timer = window.setTimeout(() => {
+      loadTodayPlan();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
@@ -3935,7 +3957,10 @@ function AppInner() {
       setSkillReportError('');
       return;
     }
-    loadSkillReport();
+    const timer = window.setTimeout(() => {
+      loadSkillReport();
+    }, 150);
+    return () => window.clearTimeout(timer);
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
@@ -3993,8 +4018,10 @@ function AppInner() {
       });
       return;
     }
-    loadWeeklyPlan();
-    loadPlanAnalytics();
+    const timer = window.setTimeout(() => {
+      loadWeeklyPlan();
+    }, 300);
+    return () => window.clearTimeout(timer);
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
@@ -4009,7 +4036,7 @@ function AppInner() {
   useEffect(() => {
     if (!isWebAppMode || !initData) return;
     loadPlanAnalytics(planAnalyticsPeriod);
-  }, [planAnalyticsPeriod]);
+  }, [planAnalyticsPeriod, isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
 
   useEffect(() => {
     if (!isWebAppMode) return;
