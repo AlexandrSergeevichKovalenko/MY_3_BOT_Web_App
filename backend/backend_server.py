@@ -347,13 +347,13 @@ SEPARABLE_PREFIX_QUIZ_SHARE = max(0.0, min(1.0, float(os.getenv("SEPARABLE_PREFI
 SEPARABLE_PREFIX_QUIZ_CACHE_TTL_SEC = max(60, int(os.getenv("SEPARABLE_PREFIX_QUIZ_CACHE_TTL_SEC") or "86400"))
 SEPARABLE_PREFIX_QUIZ_TOPICS = ("finance", "work", "travel", "daily_life", "communication", "study")
 _SEPARABLE_PREFIX_QUIZ_CACHE: dict[str, dict] = {}
-SENTENCE_TRAINING_GPT_SEED_SHARE = max(0.0, min(1.0, float(os.getenv("SENTENCE_TRAINING_GPT_SEED_SHARE") or "0.30")))
+SENTENCE_TRAINING_GPT_SEED_SHARE = max(0.0, min(1.0, float(os.getenv("SENTENCE_TRAINING_GPT_SEED_SHARE") or "0.00")))
 SENTENCE_TRAINING_MIN_WORDS = max(3, int((os.getenv("SENTENCE_TRAINING_MIN_WORDS") or "3").strip()))
 SENTENCE_TRAINING_GPT_SEED_TARGET = max(20, int((os.getenv("SENTENCE_TRAINING_GPT_SEED_TARGET") or "100").strip()))
 SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST = max(1, int((os.getenv("SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST") or "8").strip()))
 SENTENCE_TRAINING_LOOKUP_LIMIT = max(100, int((os.getenv("SENTENCE_TRAINING_LOOKUP_LIMIT") or "600").strip()))
 SENTENCE_TRAINING_LLM_MAX_PER_REQUEST = max(0, int((os.getenv("SENTENCE_TRAINING_LLM_MAX_PER_REQUEST") or "4").strip()))
-SENTENCE_GAP_CACHE_VERSION = 2
+SENTENCE_GAP_CACHE_VERSION = 3
 SENTENCE_PREWARM_ENABLED = str(os.getenv("SENTENCE_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 SENTENCE_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("SENTENCE_PREWARM_INTERVAL_MINUTES") or "60").strip()))
 SENTENCE_PREWARM_LOOKBACK_HOURS = max(1, min(24 * 90, int((os.getenv("SENTENCE_PREWARM_LOOKBACK_HOURS") or "168").strip())))
@@ -1149,6 +1149,31 @@ def _compute_srs_queue_info(
     }
 
 
+def _build_srs_review_preview(*, current_state: dict | None, reviewed_at: datetime) -> dict:
+    if reviewed_at.tzinfo is None:
+        reviewed_at = reviewed_at.replace(tzinfo=timezone.utc)
+    preview: dict[str, dict] = {}
+    for rating_key in ("AGAIN", "HARD", "GOOD", "EASY"):
+        try:
+            scheduled, _canonical_rating = schedule_review(
+                current_state=current_state,
+                rating=rating_key,
+                reviewed_at=reviewed_at,
+            )
+            due_at = scheduled.due_at
+            if due_at.tzinfo is None:
+                due_at = due_at.replace(tzinfo=timezone.utc)
+            seconds = max(0, int((due_at - reviewed_at).total_seconds()))
+            preview[rating_key] = {
+                "seconds": int(seconds),
+                "interval_days": int(scheduled.interval_days or 0),
+                "due_at": due_at.isoformat(),
+            }
+        except Exception:
+            logging.debug("Failed to build SRS preview for %s", rating_key, exc_info=True)
+    return preview
+
+
 def _build_next_srs_payload(
     *,
     user_id: int,
@@ -1167,6 +1192,7 @@ def _build_next_srs_payload(
     )
     card_payload = None
     srs_payload = None
+    srs_state_for_preview = None
     if include_queue_info:
         queue_info = _compute_srs_queue_info(
             user_id=user_id,
@@ -1192,6 +1218,13 @@ def _build_next_srs_payload(
     if due_payload:
         card_payload = due_payload.get("card")
         srs_payload = due_payload.get("srs")
+        card_id = int(card_payload.get("id") or 0) if isinstance(card_payload, dict) else 0
+        if card_id > 0:
+            srs_state_for_preview = get_card_srs_state(
+                user_id=user_id,
+                card_id=card_id,
+                cursor=cursor,
+            )
         if not include_queue_info:
             queue_info["due_count"] = max(1, int(queue_info.get("due_count") or 0))
     else:
@@ -1217,11 +1250,13 @@ def _build_next_srs_payload(
                     "stability": float(state.get("stability") or 0.0),
                     "difficulty": float(state.get("difficulty") or 0.0),
                 }
+                srs_state_for_preview = state
 
     if not card_payload:
         return {
             "card": None,
             "srs": None,
+            "srs_preview": None,
             "queue_info": {
                 "due_count": int(queue_info.get("due_count") or 0),
                 "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
@@ -1239,6 +1274,10 @@ def _build_next_srs_payload(
         "difficulty": float(srs_payload.get("difficulty") or 0.0),
         "is_mature": interval_days >= MATURE_INTERVAL_DAYS,
     }
+    srs_preview = _build_srs_review_preview(
+        current_state=srs_state_for_preview,
+        reviewed_at=now_utc,
+    )
     card_response = _decorate_dictionary_item(
         card_payload if isinstance(card_payload, dict) else {},
         source_lang=source_lang,
@@ -1248,6 +1287,7 @@ def _build_next_srs_payload(
     return {
         "card": card_response,
         "srs": srs_response,
+        "srs_preview": srs_preview,
         "queue_info": {
             "due_count": int(queue_info.get("due_count") or 0),
             "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
@@ -3623,21 +3663,25 @@ def _inject_separable_prefix_quizzes(items: list[dict], share: float | None = No
 
 SENTENCE_CONTEXT_GAP_PROMPT = """SYSTEM:
 You generate one strict JSON quiz item for a German-learning app.
-No markdown. No comments. JSON only.
+Output JSON only. No markdown. No comments.
 
 USER:
-Create ONE difficult multiple-choice item for mode "complete the sentence".
+Create ONE multiple-choice item for mode "complete the sentence".
 Input:
-- german_sentence: a full German sentence (3+ words)
-- translation_ru: Russian translation of that sentence
+- german_sentence: one full German sentence (already correct)
+- translation_ru: Russian translation hint for context
 
-Task:
-1) Pick ONE key semantic element from german_sentence:
-   - verb / noun / preposition / separable_verb
-2) Build sentence_with_gap by replacing that whole element with exactly "___".
-   - If separable_verb: remove BOTH parts (stem and separated prefix), do not leave prefix at sentence end.
-3) Build 4 close options (hard distractors), exactly one correct.
-4) correct_word must equal options[correct_index - 1].
+HARD RULES:
+1) correct_full_sentence MUST be exactly german_sentence (only whitespace normalization allowed).
+2) Pick ONE contiguous German element from correct_full_sentence: verb / noun / preposition.
+3) Build sentence_with_gap by replacing this exact contiguous element with exactly "___" (once).
+4) The removed element is correct_word.
+5) correct_word and all options MUST be German only (Latin letters incl. ÄÖÜäöüß, spaces, hyphen). No Cyrillic.
+6) Provide exactly 4 unique options, exactly one correct.
+7) correct_word MUST equal options[correct_index - 1].
+8) focus_type MUST be one of: "verb", "noun", "preposition" (do NOT use "separable_verb" in this mode).
+9) translation_ru MUST be Russian and correspond to correct_full_sentence.
+10) Keep grammar natural; no nonsense distractors.
 
 Return STRICT JSON with keys in this exact order:
 {
@@ -3650,6 +3694,12 @@ Return STRICT JSON with keys in this exact order:
   "correct_word": "...",
   "focus_type": "verb"
 }
+
+SELF-CHECK BEFORE OUTPUT:
+- sentence_with_gap contains exactly one ___
+- replacing ___ with correct_word reconstructs correct_full_sentence exactly (after whitespace normalization)
+- no Cyrillic in sentence_with_gap, correct_full_sentence, options, correct_word
+- Cyrillic is present in translation_ru
 """
 
 
@@ -3659,6 +3709,32 @@ def _normalize_space(value: str | None) -> str:
 
 def _count_words(value: str | None) -> int:
     return len(re.findall(r"[A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?", _normalize_space(value)))
+
+
+_CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
+_GERMAN_OPTION_RE = re.compile(
+    r"^[A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?(?: [A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?){0,3}$"
+)
+
+
+def _looks_like_german_sentence(value: str | None) -> bool:
+    text = _normalize_space(value)
+    if not text:
+        return False
+    if _CYRILLIC_RE.search(text):
+        return False
+    return _count_words(text) >= SENTENCE_TRAINING_MIN_WORDS
+
+
+def _is_valid_german_option(value: str | None) -> bool:
+    text = _normalize_space(value)
+    if not text:
+        return False
+    if _CYRILLIC_RE.search(text):
+        return False
+    if "___" in text:
+        return False
+    return _GERMAN_OPTION_RE.match(text) is not None
 
 
 def _coerce_response_json(value: object) -> dict:
@@ -3758,6 +3834,14 @@ def _validate_sentence_context_quiz(item: dict) -> dict:
         raise ValueError("sentence_with_gap must contain one ___")
     if not correct_full_sentence or not translation_ru:
         raise ValueError("missing sentence/translation")
+    if "___" in correct_full_sentence:
+        raise ValueError("correct_full_sentence must not contain ___")
+    if not _looks_like_german_sentence(correct_full_sentence):
+        raise ValueError("correct_full_sentence must be a valid German sentence")
+    if _CYRILLIC_RE.search(sentence_with_gap):
+        raise ValueError("sentence_with_gap must not contain Cyrillic")
+    if not _CYRILLIC_RE.search(translation_ru):
+        raise ValueError("translation_ru must contain Cyrillic")
     if not isinstance(options_raw, list) or len(options_raw) != 4:
         raise ValueError("options must contain 4 items")
     options = [_normalize_space(opt) for opt in options_raw]
@@ -3765,22 +3849,25 @@ def _validate_sentence_context_quiz(item: dict) -> dict:
         raise ValueError("empty option")
     if len(set(options)) != 4:
         raise ValueError("duplicate options")
+    if any(not _is_valid_german_option(opt) for opt in options):
+        raise ValueError("options must be short German phrases only")
     correct_index = int(item.get("correct_index") or 0)
     if correct_index < 1 or correct_index > 4:
         raise ValueError("correct_index out of range")
     correct_word = _normalize_space(item.get("correct_word"))
     if not correct_word:
         raise ValueError("correct_word empty")
+    if not _is_valid_german_option(correct_word):
+        raise ValueError("correct_word must be a short German phrase")
     if correct_word != options[correct_index - 1]:
         raise ValueError("correct_word mismatch")
-    if focus_type not in {"verb", "noun", "preposition", "separable_verb"}:
+    if focus_type not in {"verb", "noun", "preposition"}:
         focus_type = "verb"
 
-    # Critical rule: when separable verb is hidden, separated prefix must not remain visible.
-    if focus_type == "separable_verb":
-        prefix = _normalize_space(item.get("prefix"))
-        if prefix and re.search(rf"\b{re.escape(prefix)}[.!?]?\s*$", sentence_with_gap):
-            raise ValueError("separable prefix is still visible in sentence_with_gap")
+    left, right = sentence_with_gap.split("___", 1)
+    reconstructed = _normalize_space(f"{left}{correct_word}{right}")
+    if reconstructed != correct_full_sentence:
+        raise ValueError("gap reconstruction mismatch")
 
     return {
         "quiz_type": "sentence_gap_context",
@@ -3926,7 +4013,7 @@ def _build_sentence_quiz_from_dictionary_entry(
     allow_llm: bool = True,
 ) -> dict | None:
     german_sentence, translation_ru, response_json = _extract_sentence_training_pair(entry, source_lang, target_lang)
-    if _count_words(german_sentence) < SENTENCE_TRAINING_MIN_WORDS:
+    if not _looks_like_german_sentence(german_sentence):
         return None
 
     cached = _entry_sentence_cache_payload(response_json, german_sentence)
@@ -3940,6 +4027,11 @@ def _build_sentence_quiz_from_dictionary_entry(
                 payload = _build_fallback_sentence_context_quiz(german_sentence, translation_ru)
         else:
             payload = _build_fallback_sentence_context_quiz(german_sentence, translation_ru)
+        try:
+            payload = _validate_sentence_context_quiz(payload)
+        except Exception as exc:
+            logging.warning("Sentence quiz payload failed validation for entry %s: %s", entry.get("id"), exc)
+            return None
         updated_response_json = dict(response_json)
         updated_response_json["sentence_gap_v2"] = {
             "version": SENTENCE_GAP_CACHE_VERSION,
@@ -4080,16 +4172,15 @@ def _build_sentence_training_set(
         for item in raw_entries
     ]
 
+    desired_seed_count = min(set_size, int(round(set_size * SENTENCE_TRAINING_GPT_SEED_SHARE)))
     gpt_seed_entries = [item for item in decorated_all if _is_gpt_seed_sentence_entry(item)]
-    if folder_mode in {"all", "none"}:
+    if desired_seed_count > 0 and folder_mode in {"all", "none"}:
         gpt_seed_entries = _ensure_sentence_gpt_seed_entries(
             user_id=int(user_id),
             source_lang=source_lang,
             target_lang=target_lang,
             existing_entries=decorated_all,
         )
-
-    desired_seed_count = min(set_size, int(round(set_size * SENTENCE_TRAINING_GPT_SEED_SHARE)))
     selected_seed = random.sample(gpt_seed_entries, k=min(len(gpt_seed_entries), desired_seed_count)) if gpt_seed_entries else []
     selected_seed = [_merge_sentence_quiz_into_entry(item, _coerce_response_json(item.get("response_json")), sentence_origin="gpt_seed") for item in selected_seed]
 
@@ -4099,7 +4190,7 @@ def _build_sentence_training_set(
         if _is_gpt_seed_sentence_entry(entry):
             continue
         german_sentence, _, _ = _extract_sentence_training_pair(entry, source_lang, target_lang)
-        if _count_words(german_sentence) >= SENTENCE_TRAINING_MIN_WORDS:
+        if _looks_like_german_sentence(german_sentence):
             dictionary_candidates.append(entry)
     random.shuffle(dictionary_candidates)
 
@@ -10497,7 +10588,7 @@ def get_next_srs_card():
                     source_lang=source_lang,
                     target_lang=target_lang,
                     now_utc=now_utc,
-                    include_queue_info=False,
+                    include_queue_info=True,
                     cursor=cursor,
                 )
         mark("build_next")

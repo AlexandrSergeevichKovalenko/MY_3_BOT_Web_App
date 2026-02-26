@@ -211,6 +211,7 @@ function AppInner() {
   const [srsCard, setSrsCard] = useState(null);
   const [srsState, setSrsState] = useState(null);
   const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0 });
+  const [srsPreview, setSrsPreview] = useState(null);
   const [todayPlan, setTodayPlan] = useState(null);
   const [todayPlanLoading, setTodayPlanLoading] = useState(false);
   const [todayPlanError, setTodayPlanError] = useState('');
@@ -363,6 +364,7 @@ function AppInner() {
   const [supportDraft, setSupportDraft] = useState('');
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
+  const BLOCKS_SINGLE_WORD_MAX_LEN = 10;
   const SRS_EASY_LOCK_AFTER_SEC = 5;
   const SRS_GOOD_LOCK_AFTER_SEC = 7;
   const srsEasyLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_EASY_LOCK_AFTER_SEC;
@@ -1200,6 +1202,7 @@ function AppInner() {
       const data = await response.json();
       setSrsCard(data.card || null);
       setSrsState(data.srs || null);
+      setSrsPreview(data?.srs_preview && typeof data.srs_preview === 'object' ? data.srs_preview : null);
       setSrsQueueInfo(data.queue_info || { due_count: 0, new_remaining_today: 0 });
       setSrsRevealAnswer(false);
       srsShownAtRef.current = Date.now();
@@ -1224,6 +1227,7 @@ function AppInner() {
             if (probeItems.length === 0) {
               setSrsCard(null);
               setSrsState(null);
+              setSrsPreview(null);
               setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
               setSrsError('');
               return;
@@ -1797,6 +1801,33 @@ function AppInner() {
     const mins = Math.floor(safe / 60);
     const secs = safe % 60;
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
+
+  const formatSrsIntervalHint = (seconds) => {
+    const safeSeconds = Number(seconds);
+    if (!Number.isFinite(safeSeconds) || safeSeconds < 0) return '';
+    if (safeSeconds < 3600) {
+      const mins = Math.max(1, Math.ceil(safeSeconds / 60));
+      return tr(`${mins} мин`, `${mins} Min`);
+    }
+    if (safeSeconds < 86400) {
+      const hours = Math.max(1, Math.ceil(safeSeconds / 3600));
+      return tr(`${hours} ч`, `${hours} Std`);
+    }
+    const days = Math.max(1, Math.ceil(safeSeconds / 86400));
+    return tr(`${days} дн`, `${days} Tg`);
+  };
+
+  const getSrsRatingHint = (ratingKey) => {
+    const previewSeconds = Number(srsPreview?.[ratingKey]?.seconds);
+    if (Number.isFinite(previewSeconds) && previewSeconds >= 0) {
+      return formatSrsIntervalHint(previewSeconds);
+    }
+    if (ratingKey === 'AGAIN') return tr('1 мин', '1 Min');
+    if (ratingKey === 'HARD') return tr('5 мин', '5 Min');
+    if (ratingKey === 'GOOD') return tr('3 дн', '3 Tg');
+    if (ratingKey === 'EASY') return tr('7 дн', '7 Tg');
+    return '';
   };
 
   const toggleTodaySectionTaskTimer = async (sectionKey) => {
@@ -6651,9 +6682,18 @@ function AppInner() {
         ...item,
         response_json: coerceResponseJson(item.response_json),
       }));
-      const filteredItems = ['blocks', 'quiz', 'sentence'].includes(requestedMode)
+      const solvedFilteredItems = ['blocks', 'quiz', 'sentence'].includes(requestedMode)
         ? items.filter((item) => !readSolvedTodaySet(requestedMode).has(Number(item?.id || 0)))
         : items;
+      const isBlocksSingleWordEligible = (entry) => {
+        const raw = String(resolveBlocksAnswer(entry) || '').replace(/\s+/g, ' ').trim();
+        if (!raw) return false;
+        if (/\s/.test(raw)) return false;
+        return raw.length <= BLOCKS_SINGLE_WORD_MAX_LEN;
+      };
+      const filteredItems = requestedMode === 'blocks'
+        ? solvedFilteredItems.filter(isBlocksSingleWordEligible)
+        : solvedFilteredItems;
       if (autoAdvanceTimeoutRef.current) {
         clearTimeout(autoAdvanceTimeoutRef.current);
         autoAdvanceTimeoutRef.current = null;
@@ -6675,7 +6715,14 @@ function AppInner() {
         correct: 0,
         wrong: 0,
       });
-      if (['blocks', 'quiz', 'sentence'].includes(requestedMode) && items.length > 0 && filteredItems.length === 0) {
+      if (requestedMode === 'blocks' && solvedFilteredItems.length > 0 && filteredItems.length === 0) {
+        setFlashcardsError(
+          tr(
+            `Для режима Blocks сейчас нет подходящих карточек: используем только отдельные слова длиной до ${BLOCKS_SINGLE_WORD_MAX_LEN} символов.`,
+            `Fuer den Blocks-Modus gibt es aktuell keine passenden Karten: Es werden nur einzelne Woerter bis ${BLOCKS_SINGLE_WORD_MAX_LEN} Zeichen verwendet.`
+          )
+        );
+      } else if (['blocks', 'quiz', 'sentence'].includes(requestedMode) && items.length > 0 && solvedFilteredItems.length === 0) {
         const modeLabel = requestedMode === 'blocks'
           ? tr('Blocks', 'Blocks')
           : requestedMode === 'sentence'
@@ -6807,7 +6854,8 @@ function AppInner() {
 
   const buildFlashcardOptions = (entry, allEntries) => {
     const responseJson = entry?.response_json || {};
-    if (String(responseJson?.quiz_type || '').trim() === 'separable_prefix_verb_gap') {
+    const quizType = String(responseJson?.quiz_type || '').trim();
+    if (quizType === 'separable_prefix_verb_gap' || quizType === 'sentence_gap_context') {
       const options = Array.isArray(responseJson?.options)
         ? responseJson.options.map((item) => String(item || '').trim()).filter(Boolean)
         : [];
@@ -6844,6 +6892,7 @@ function AppInner() {
 
   const resolveQuizCorrectOption = (entry, options = []) => {
     const responseJson = entry?.response_json || {};
+    const quizType = String(responseJson?.quiz_type || '').trim();
     const normalizedOptions = Array.isArray(options)
       ? options.map((item) => String(item || '').trim()).filter(Boolean)
       : [];
@@ -6851,7 +6900,15 @@ function AppInner() {
     const zeroBasedCorrectIndex = Number.isFinite(oneBasedCorrectIndex)
       ? Math.max(0, Math.min(normalizedOptions.length - 1, Math.trunc(oneBasedCorrectIndex) - 1))
       : -1;
-    return normalizedOptions[zeroBasedCorrectIndex] || resolveFlashcardTexts(entry).targetText || '—';
+    const indexed = normalizedOptions[zeroBasedCorrectIndex] || '';
+    if (indexed) return indexed;
+    if (quizType === 'sentence_gap_context') {
+      return String(responseJson?.correct_word || '').trim() || resolveFlashcardTexts(entry).targetText || '—';
+    }
+    if (quizType === 'separable_prefix_verb_gap') {
+      return String(responseJson?.correct_infinitive || '').trim() || resolveFlashcardTexts(entry).targetText || '—';
+    }
+    return resolveFlashcardTexts(entry).targetText || '—';
   };
 
   const renderSentenceWithGapAnswer = (sentenceWithGap, answer, tone = 'neutral') => {
@@ -11464,25 +11521,25 @@ function AppInner() {
                                         <button type="button" className="fsrs-rate-btn again" onClick={() => submitSrsReview('AGAIN')} disabled={srsSubmitting}>
                                           <span>Again</span>
                                         </button>
-                                        <small className="fsrs-rate-hint">1 min</small>
+                                        <small className="fsrs-rate-hint">{getSrsRatingHint('AGAIN')}</small>
                                       </div>
                                       <div className="fsrs-rate-cell">
                                         <button type="button" className="fsrs-rate-btn hard" onClick={() => submitSrsReview('HARD')} disabled={srsSubmitting}>
                                           <span>Hard</span>
                                         </button>
-                                        <small className="fsrs-rate-hint">5 min</small>
+                                        <small className="fsrs-rate-hint">{getSrsRatingHint('HARD')}</small>
                                       </div>
                                       <div className="fsrs-rate-cell">
                                         <button type="button" className="fsrs-rate-btn good" onClick={() => submitSrsReview('GOOD')} disabled={srsSubmitting || srsGoodLocked}>
                                           <span>Good</span>
                                         </button>
-                                        <small className="fsrs-rate-hint">3 days</small>
+                                        <small className="fsrs-rate-hint">{getSrsRatingHint('GOOD')}</small>
                                       </div>
                                       <div className="fsrs-rate-cell">
                                         <button type="button" className="fsrs-rate-btn easy" onClick={() => submitSrsReview('EASY')} disabled={srsSubmitting || srsEasyLocked}>
                                           <span>Easy</span>
                                         </button>
-                                        <small className="fsrs-rate-hint">7 days</small>
+                                        <small className="fsrs-rate-hint">{getSrsRatingHint('EASY')}</small>
                                       </div>
                                     </div>
                                   </div>
@@ -11514,6 +11571,10 @@ function AppInner() {
                               const cardTexts = resolveFlashcardTexts(entry);
                               const previewLearningText = cardTexts.targetText || cardTexts.sourceText || '—';
                               const previewNativeText = cardTexts.sourceText || cardTexts.targetText || '—';
+                              const previewQuizType = String(entry?.response_json?.quiz_type || '').trim();
+                              const sentencePreviewRuHint = previewQuizType === 'sentence_gap_context'
+                                ? String(entry?.response_json?.translation_ru || entry?.translation_ru || '').trim()
+                                : '';
                               const learningCode = String(languageProfile?.learning_language || 'de').toUpperCase();
                               const nativeCode = String(languageProfile?.native_language || 'ru').toUpperCase();
                               const previewModeLabel = flashcardActiveMode === 'blocks'
@@ -11546,6 +11607,9 @@ function AppInner() {
                                     <div className="flashcard-preview-native-box">
                                       <div className="flashcard-native-translation">{previewNativeText}</div>
                                     </div>
+                                    {sentencePreviewRuHint && (
+                                      <div className="flashcard-preview-ru-hint">{sentencePreviewRuHint}</div>
+                                    )}
                                     <button
                                       type="button"
                                       className={`flashcard-audio-replay flashcard-preview-listen ${previewTtsLoading ? 'is-loading' : ''}`}
@@ -11816,6 +11880,7 @@ function AppInner() {
                                 const questionWord = (isSentenceTrainingMode || isSentenceGapQuiz)
                                   ? (String(responseJson?.sentence_with_gap || '').trim() || cardTexts.sourceText || '—')
                                   : (cardTexts.sourceText || '—');
+                                const normalizedQuestionWord = String(questionWord || '').replace(/\s+/g, ' ').trim();
                                 const sentenceTranslation = String(responseJson?.translation_ru || '').trim();
                                 const context = !(isSentenceTrainingMode || isSentenceGapQuiz) && Array.isArray(responseJson.usage_examples)
                                   ? responseJson.usage_examples[0]
@@ -11887,14 +11952,32 @@ function AppInner() {
                                 const isAnswered = flashcardSelection !== null;
                                 const isCorrectAnswer = flashcardOutcome === 'correct';
                                 const screenModeLabel = isSentenceTrainingMode || isSentenceGapQuiz ? 'Satz Ergaenzen Mode' : 'Quiz Mode';
+                                const longestOptionLen = Array.isArray(flashcardOptions)
+                                  ? flashcardOptions.reduce((maxLen, optionText) => {
+                                    const normalized = String(optionText || '').replace(/\s+/g, ' ').trim();
+                                    return Math.max(maxLen, normalized.length);
+                                  }, 0)
+                                  : 0;
+                                const quizNeedsCompact = normalizedQuestionWord.length > 90 || longestOptionLen > 90;
+                                const quizNeedsUltraCompact = normalizedQuestionWord.length > 150 || longestOptionLen > 130;
+                                const quizLayoutClassName = [
+                                  'flashcard flashcard-quiz-layout',
+                                  quizNeedsCompact ? 'is-compact' : '',
+                                  quizNeedsUltraCompact ? 'is-ultra-compact' : '',
+                                ].filter(Boolean).join(' ');
+                                const quizStudyCardClassName = [
+                                  'quiz-study-card',
+                                  quizNeedsCompact ? 'is-compact' : '',
+                                  quizNeedsUltraCompact ? 'is-ultra-compact' : '',
+                                ].filter(Boolean).join(' ');
                                 return (
-                                  <div className="flashcard flashcard-quiz-layout">
+                                  <div className={quizLayoutClassName}>
                                     <div className="quiz-layout-head">
                                       <span>{screenModeLabel}</span>
                                       <span className="flashcard-counter">{flashcardIndex + 1} / {flashcards.length}</span>
                                     </div>
 
-                                    <div className="quiz-study-card">
+                                    <div className={quizStudyCardClassName}>
                                       <div className="quiz-study-mode-title">{isSentenceTrainingMode || isSentenceGapQuiz ? 'Satz Ergaenzen' : 'Quiz Mode'}</div>
                                       <div className={`quiz-study-question ${(isSentenceTrainingMode || isSentenceGapQuiz) ? 'is-sentence-gap' : ''}`}>
                                         {(isSentenceTrainingMode || isSentenceGapQuiz) && isAnswered
@@ -12009,7 +12092,7 @@ function AppInner() {
                                               advanceFlashcard();
                                             }}
                                           >
-                                            {isCorrectAnswer ? 'Continue' : 'Try Again'}
+                                            Continue
                                           </button>
                                         </div>
                                       )}
