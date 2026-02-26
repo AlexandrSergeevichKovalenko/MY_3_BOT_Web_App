@@ -25,6 +25,39 @@ SUPPORTED_LEARNING_LANGUAGES = {"de", "en", "es", "it"}
 SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
 DEFAULT_NATIVE_LANGUAGE = "ru"
+DICTIONARY_ORIGIN_ALLOWED = {
+    "unknown",
+    "unknown_legacy",
+    "webapp_dictionary_save",
+    "mobile_dictionary_save",
+    "bot_private_save",
+    "sentence_gpt_seed",
+    "translations_block",
+    "youtube",
+    "reader",
+    "assistant",
+    "import",
+}
+
+
+def _normalize_dictionary_origin_process(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in DICTIONARY_ORIGIN_ALLOWED:
+        return normalized
+    return "unknown"
+
+
+def _coerce_json_object(value) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return dict(parsed)
+        except Exception:
+            return {}
+    return {}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -713,6 +746,8 @@ def ensure_webapp_tables() -> None:
                     translation_ru TEXT,
                     source_lang TEXT,
                     target_lang TEXT,
+                    origin_process TEXT NOT NULL DEFAULT 'unknown',
+                    origin_meta JSONB,
                     response_json JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -743,6 +778,27 @@ def ensure_webapp_tables() -> None:
             """)
             cursor.execute("""
                 ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS origin_process TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS origin_meta JSONB;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ALTER COLUMN origin_process SET DEFAULT 'unknown';
+            """)
+            cursor.execute("""
+                UPDATE bt_3_webapp_dictionary_queries
+                SET origin_process = 'unknown_legacy'
+                WHERE origin_process IS NULL OR origin_process = '';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ALTER COLUMN origin_process SET NOT NULL;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
                 ADD COLUMN IF NOT EXISTS is_learned BOOLEAN NOT NULL DEFAULT FALSE;
             """)
             cursor.execute("""
@@ -766,6 +822,10 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_pair_created
                 ON bt_3_webapp_dictionary_queries (user_id, source_lang, target_lang, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_origin_created
+                ON bt_3_webapp_dictionary_queries (user_id, origin_process, created_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_schema_migrations (
@@ -2383,7 +2443,11 @@ def save_webapp_dictionary_query(
     folder_id: int | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
 ) -> None:
+    normalized_origin = _normalize_dictionary_origin_process(origin_process)
+    normalized_meta = _coerce_json_object(origin_meta)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -2396,9 +2460,11 @@ def save_webapp_dictionary_query(
                     translation_ru,
                     source_lang,
                     target_lang,
+                    origin_process,
+                    origin_meta,
                     response_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
             """, (
                 user_id,
                 word_ru,
@@ -2408,6 +2474,8 @@ def save_webapp_dictionary_query(
                 translation_ru,
                 source_lang,
                 target_lang,
+                normalized_origin,
+                json.dumps(normalized_meta, ensure_ascii=False) if normalized_meta else None,
                 json.dumps(response_json, ensure_ascii=False),
             ))
 
@@ -2422,7 +2490,11 @@ def save_webapp_dictionary_query_returning_id(
     folder_id: int | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
 ) -> int:
+    normalized_origin = _normalize_dictionary_origin_process(origin_process)
+    normalized_meta = _coerce_json_object(origin_meta)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -2436,9 +2508,11 @@ def save_webapp_dictionary_query_returning_id(
                     translation_ru,
                     source_lang,
                     target_lang,
+                    origin_process,
+                    origin_meta,
                     response_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id;
                 """,
                 (
@@ -2450,6 +2524,8 @@ def save_webapp_dictionary_query_returning_id(
                     translation_ru,
                     source_lang,
                     target_lang,
+                    normalized_origin,
+                    json.dumps(normalized_meta, ensure_ascii=False) if normalized_meta else None,
                     json.dumps(response_json, ensure_ascii=False),
                 ),
             )
@@ -2480,7 +2556,7 @@ def get_webapp_dictionary_entries(
                 where_clause += " AND folder_id IS NULL"
             params.append(limit)
             cursor.execute(f"""
-                SELECT id, word_ru, translation_de, word_de, translation_ru, source_lang, target_lang, response_json, folder_id, created_at
+                SELECT id, word_ru, translation_de, word_de, translation_ru, source_lang, target_lang, origin_process, origin_meta, response_json, folder_id, created_at
                 FROM bt_3_webapp_dictionary_queries
                 {where_clause}
                 ORDER BY created_at DESC
@@ -2498,9 +2574,11 @@ def get_webapp_dictionary_entries(
             "translation_ru": row[4],
             "source_lang": row[5],
             "target_lang": row[6],
-            "response_json": row[7],
-            "folder_id": row[8],
-            "created_at": row[9].isoformat() if row[9] else None,
+            "origin_process": row[7],
+            "origin_meta": row[8],
+            "response_json": row[9],
+            "folder_id": row[10],
+            "created_at": row[11].isoformat() if row[11] else None,
         })
     return items
 
@@ -2660,6 +2738,8 @@ def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
                     translation_ru,
                     source_lang,
                     target_lang,
+                    origin_process,
+                    origin_meta,
                     response_json,
                     folder_id,
                     created_at
@@ -2678,9 +2758,11 @@ def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
                 "translation_ru": row[4],
                 "source_lang": row[5],
                 "target_lang": row[6],
-                "response_json": row[7],
-                "folder_id": row[8],
-                "created_at": row[9].isoformat() if row[9] else None,
+                "origin_process": row[7],
+                "origin_meta": row[8],
+                "response_json": row[9],
+                "folder_id": row[10],
+                "created_at": row[11].isoformat() if row[11] else None,
             }
 
 

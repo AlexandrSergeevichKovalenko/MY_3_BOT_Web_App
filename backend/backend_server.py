@@ -4185,6 +4185,11 @@ def _ensure_sentence_gpt_seed_entries(
                 folder_id=None,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                origin_process="sentence_gpt_seed",
+                origin_meta={
+                    "flow": "sentence_training",
+                    "sentence_origin": "gpt_seed",
+                },
             )
         except Exception as exc:
             logging.warning("Failed to persist GPT seed sentence: %s", exc)
@@ -10190,6 +10195,8 @@ def save_webapp_dictionary_entry():
     payload_source_lang = payload.get("source_lang")
     payload_target_lang = payload.get("target_lang")
     payload_direction = payload.get("direction")
+    payload_origin_process = payload.get("origin_process")
+    payload_origin_meta = payload.get("origin_meta")
     response_json = payload.get("response_json") or {}
     folder_id = payload.get("folder_id")
 
@@ -10258,6 +10265,13 @@ def save_webapp_dictionary_entry():
         except Exception:
             folder_id = None
 
+    origin_process = str(payload_origin_process or "webapp_dictionary_save").strip().lower() or "webapp_dictionary_save"
+    origin_meta = payload_origin_meta if isinstance(payload_origin_meta, dict) else {}
+    if "endpoint" not in origin_meta:
+        origin_meta["endpoint"] = "/api/webapp/dictionary/save"
+    if payload_direction and "direction" not in origin_meta:
+        origin_meta["direction"] = str(payload_direction)
+
     try:
         resolved_word_ru = word_ru or response_json.get("word_ru")
         resolved_word_de = word_de or response_json.get("word_de")
@@ -10278,6 +10292,8 @@ def save_webapp_dictionary_entry():
             folder_id=int(folder_id) if folder_id is not None else None,
             source_lang=source_lang,
             target_lang=target_lang,
+            origin_process=origin_process,
+            origin_meta=origin_meta,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
@@ -10306,6 +10322,8 @@ def save_mobile_dictionary_entry():
     payload_source_lang = payload.get("source_lang")
     payload_target_lang = payload.get("target_lang")
     payload_direction = payload.get("direction")
+    payload_origin_process = payload.get("origin_process")
+    payload_origin_meta = payload.get("origin_meta")
     response_json = payload.get("response_json") or {}
     folder_id = payload.get("folder_id")
     profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
@@ -10360,6 +10378,13 @@ def save_mobile_dictionary_entry():
         except Exception:
             folder_id = None
 
+    origin_process = str(payload_origin_process or "mobile_dictionary_save").strip().lower() or "mobile_dictionary_save"
+    origin_meta = payload_origin_meta if isinstance(payload_origin_meta, dict) else {}
+    if "endpoint" not in origin_meta:
+        origin_meta["endpoint"] = "/api/mobile/dictionary/save"
+    if payload_direction and "direction" not in origin_meta:
+        origin_meta["direction"] = str(payload_direction)
+
     try:
         resolved_word_ru = word_ru or (response_json.get("word_ru") if isinstance(response_json, dict) else None)
         resolved_word_de = word_de or (response_json.get("word_de") if isinstance(response_json, dict) else None)
@@ -10383,6 +10408,8 @@ def save_mobile_dictionary_entry():
             folder_id=int(folder_id) if folder_id is not None else None,
             source_lang=source_lang,
             target_lang=target_lang,
+            origin_process=origin_process,
+            origin_meta=origin_meta,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500

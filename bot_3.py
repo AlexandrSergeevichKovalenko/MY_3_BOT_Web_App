@@ -3150,6 +3150,11 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
             folder_id=int(folder_id) if folder_id is not None else None,
             source_lang=source_lang,
             target_lang=target_lang,
+            origin_process="bot_private_save",
+            origin_meta={
+                "flow": "dictionary_select",
+                "source": "private_bot",
+            },
         )
     except Exception as exc:
         logging.exception(f"❌ Ошибка сохранения выбранного варианта user_id={user_id}: {exc}")

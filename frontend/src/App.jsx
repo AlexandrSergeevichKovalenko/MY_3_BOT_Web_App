@@ -402,6 +402,7 @@ function AppInner() {
   const srsReviewBufferRef = useRef([]);
   const srsReviewDrainInFlightRef = useRef(false);
   const srsReviewRetryTimerRef = useRef(null);
+  const srsInitSignatureRef = useRef('');
   const ttsCacheRef = useRef(new Map());
   const ttsInFlightRef = useRef(new Map());
   const ttsBlobUrlsRef = useRef(new Set());
@@ -477,7 +478,7 @@ function AppInner() {
 
   const [uiLang, setUiLang] = useState('ru');
   const t = useMemo(() => createTranslator(uiLang), [uiLang]);
-  const tr = (ru, de) => (uiLang === 'de' ? de : ru);
+  const tr = useCallback((ru, de) => (uiLang === 'de' ? de : ru), [uiLang]);
   const readApiError = useCallback(async (response, fallbackRu, fallbackDe) => {
     const fallback = tr(fallbackRu, fallbackDe);
     const formatBillingLimitError = (payload) => {
@@ -4602,10 +4603,23 @@ function AppInner() {
     loadFolders();
   }, [initData, isWebAppMode]);
 
+  const fsrsSectionActive = Boolean(
+    initData
+    && isSectionVisible('flashcards')
+    && flashcardsVisible
+    && flashcardActiveMode === 'fsrs'
+  );
+  const fsrsInitSignature = `${String(initData || '')}|${flashcardsVisible ? 1 : 0}|${String(flashcardActiveMode || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}|${isSectionVisible('flashcards') ? 1 : 0}`;
+
   useEffect(() => {
-    if (!initData || !isSectionVisible('flashcards') || !flashcardsVisible || flashcardActiveMode !== 'fsrs') {
+    if (!fsrsSectionActive) {
+      srsInitSignatureRef.current = '';
       return;
     }
+    if (srsInitSignatureRef.current === fsrsInitSignature) {
+      return;
+    }
+    srsInitSignatureRef.current = fsrsInitSignature;
     clearSrsReviewRetryTimer();
     srsReviewBufferRef.current = [];
     srsReviewDrainInFlightRef.current = false;
@@ -4623,15 +4637,11 @@ function AppInner() {
       clearSrsReviewRetryTimer();
     };
   }, [
+    fsrsSectionActive,
+    fsrsInitSignature,
     clearSrsReviewRetryTimer,
-    initData,
-    flashcardsVisible,
-    flashcardActiveMode,
-    languageProfile?.native_language,
-    languageProfile?.learning_language,
     loadSrsNextCard,
     prefetchSrsCards,
-    selectedSections,
     updateSrsPrefetchQueue,
   ]);
 
@@ -6047,6 +6057,16 @@ function AppInner() {
         setDictionaryDirection(detectedDirection);
         scrollToDictionary();
       }
+      const saveOriginProcess = inlineMode
+        ? (youtubeAppFullscreen ? 'youtube' : 'reader')
+        : 'webapp_dictionary_save';
+      const saveOriginMeta = {
+        endpoint: '/api/webapp/dictionary/save',
+        flow: inlineMode ? 'quick_add_inline' : 'quick_add',
+        from: inlineMode
+          ? (youtubeAppFullscreen ? 'youtube_selection' : 'reader_selection')
+          : 'dictionary_lookup',
+      };
 
       const saveResponse = await fetch('/api/webapp/dictionary/save', {
         method: 'POST',
@@ -6064,6 +6084,8 @@ function AppInner() {
           direction: detectedDirection || undefined,
           response_json: data.item || {},
           folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
+          origin_process: saveOriginProcess,
+          origin_meta: saveOriginMeta,
         }),
       });
       if (!saveResponse.ok) {
@@ -7969,6 +7991,12 @@ function AppInner() {
             target_lang: saveTargetLang || undefined,
             direction: dictionaryDirection || undefined,
             folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
+            origin_process: 'webapp_dictionary_save',
+            origin_meta: {
+              endpoint: '/api/webapp/dictionary/save',
+              flow: 'dictionary_collocations',
+              from: 'dictionary_manual',
+            },
           }),
         });
         if (!response.ok) {
