@@ -1074,17 +1074,16 @@ def _resolve_dictionary_save_pair(
     response_json: dict | None = None,
 ) -> tuple[str, str]:
     profile_forward = (profile_source_lang, profile_target_lang)
-    profile_reverse = (profile_target_lang, profile_source_lang)
 
     payload_src = _normalize_short_lang_code(payload_source_lang, fallback="")
     payload_tgt = _normalize_short_lang_code(payload_target_lang, fallback="")
     if payload_src and payload_tgt and payload_src != payload_tgt:
         candidate = (payload_src, payload_tgt)
-        if candidate in {profile_forward, profile_reverse}:
+        if candidate == profile_forward:
             return candidate
 
     dir_pair = _parse_direction_pair(payload_direction)
-    if dir_pair and dir_pair in {profile_forward, profile_reverse}:
+    if dir_pair and dir_pair == profile_forward:
         return dir_pair
 
     if isinstance(response_json, dict):
@@ -1092,10 +1091,10 @@ def _resolve_dictionary_save_pair(
         rj_tgt = _normalize_short_lang_code(response_json.get("target_lang"), fallback="")
         if rj_src and rj_tgt and rj_src != rj_tgt:
             candidate = (rj_src, rj_tgt)
-            if candidate in {profile_forward, profile_reverse}:
+            if candidate == profile_forward:
                 return candidate
         rj_dir_pair = _parse_direction_pair(response_json.get("direction"))
-        if rj_dir_pair and rj_dir_pair in {profile_forward, profile_reverse}:
+        if rj_dir_pair and rj_dir_pair == profile_forward:
             return rj_dir_pair
 
     return profile_forward
