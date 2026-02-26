@@ -39,6 +39,7 @@ const AUTO_NEXT_DELAY_OK_MS = 1100;
 const AUTO_NEXT_DELAY_FAIL_MS = 4500;
 const TILE_WIDTH = 76;
 const TILE_HEIGHT = 62;
+const WORD_WRAP_THRESHOLD = 7;
 
 const GERMAN_ARTICLES = new Set([
   'der', 'die', 'das', 'den', 'dem', 'des',
@@ -133,6 +134,9 @@ export default function BlocksTrainer({
   const allSlotsFilled = slots.length > 0 && slots.every((item) => item !== null);
   const isFinished = status !== 'idle';
   const tileWidthPx = type === 'WORD' ? 60 : TILE_WIDTH;
+  const isWordMode = type === 'WORD';
+  const shouldWrapWordSlots = isWordMode && targetTokens.length >= WORD_WRAP_THRESHOLD;
+  const wordWrapColumns = shouldWrapWordSlots ? Math.ceil(targetTokens.length / 2) : targetTokens.length;
 
   const syncSlotRects = () => {
     const containerRect = containerRef.current?.getBoundingClientRect();
@@ -724,7 +728,15 @@ export default function BlocksTrainer({
         )}
       </div>
 
-      <div className="blocks-target" ref={slotsRowRef}>
+      <div
+        className={[
+          'blocks-target',
+          isWordMode ? 'is-word' : '',
+          shouldWrapWordSlots ? 'is-word-wrap' : '',
+        ].filter(Boolean).join(' ')}
+        ref={slotsRowRef}
+        style={shouldWrapWordSlots ? { '--blocks-word-cols': wordWrapColumns } : undefined}
+      >
         {targetTokens.map((_token, idx) => {
           const tileId = slots[idx];
           const placed = tiles.find((item) => item.id === tileId);

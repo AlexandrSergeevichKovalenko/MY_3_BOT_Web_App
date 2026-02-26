@@ -3682,6 +3682,8 @@ HARD RULES:
 8) focus_type MUST be one of: "verb", "noun", "preposition" (do NOT use "separable_verb" in this mode).
 9) translation_ru MUST be Russian and correspond to correct_full_sentence.
 10) Keep grammar natural; no nonsense distractors.
+11) If focus_type is "verb", DO NOT choose "haben"/"sein" or their finite/participle forms as correct_word
+    (e.g. haben, habe, hast, hat, hatte, gehabt, sein, bin, bist, ist, war, gewesen, etc.).
 
 Return STRICT JSON with keys in this exact order:
 {
@@ -3700,6 +3702,7 @@ SELF-CHECK BEFORE OUTPUT:
 - replacing ___ with correct_word reconstructs correct_full_sentence exactly (after whitespace normalization)
 - no Cyrillic in sentence_with_gap, correct_full_sentence, options, correct_word
 - Cyrillic is present in translation_ru
+- if focus_type == "verb", correct_word is NOT a form of haben/sein
 """
 
 
@@ -3715,6 +3718,23 @@ _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
 _GERMAN_OPTION_RE = re.compile(
     r"^[A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?(?: [A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?){0,3}$"
 )
+_AUX_HABEN_FORMS = {
+    "haben", "habe", "hast", "hat", "habt",
+    "hatte", "hattest", "hatten", "hattet",
+    "habest", "habet",
+    "hätte", "hättest", "hätten", "hättet",
+    "haette", "haettest", "haetten", "haettet",
+    "gehabt", "habend",
+}
+_AUX_SEIN_FORMS = {
+    "sein", "bin", "bist", "ist", "sind", "seid",
+    "war", "warst", "waren", "wart",
+    "sei", "seiest", "seien", "seiet",
+    "wäre", "wärest", "wären", "wäret",
+    "waere", "waerest", "waeren", "waeret",
+    "gewesen", "seiend",
+}
+_BLOCKED_AUX_VERB_FORMS = _AUX_HABEN_FORMS | _AUX_SEIN_FORMS
 
 
 def _looks_like_german_sentence(value: str | None) -> bool:
@@ -3735,6 +3755,13 @@ def _is_valid_german_option(value: str | None) -> bool:
     if "___" in text:
         return False
     return _GERMAN_OPTION_RE.match(text) is not None
+
+
+def _contains_blocked_auxiliary_form(value: str | None) -> bool:
+    tokens = re.findall(r"[A-Za-zÄÖÜäöüß]+", _normalize_space(value).lower())
+    if not tokens:
+        return False
+    return any(token in _BLOCKED_AUX_VERB_FORMS for token in tokens)
 
 
 def _coerce_response_json(value: object) -> dict:
@@ -3863,6 +3890,8 @@ def _validate_sentence_context_quiz(item: dict) -> dict:
         raise ValueError("correct_word mismatch")
     if focus_type not in {"verb", "noun", "preposition"}:
         focus_type = "verb"
+    if focus_type == "verb" and _contains_blocked_auxiliary_form(correct_word):
+        raise ValueError("correct_word must not be a haben/sein auxiliary form in verb focus")
 
     left, right = sentence_with_gap.split("___", 1)
     reconstructed = _normalize_space(f"{left}{correct_word}{right}")
@@ -3929,9 +3958,14 @@ def _build_fallback_sentence_context_quiz(german_sentence: str, translation_ru: 
     translation = _normalize_space(translation_ru)
     words = re.findall(r"[A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?", sentence)
     stop = {"und", "oder", "aber", "ich", "du", "er", "sie", "wir", "ihr", "sie", "der", "die", "das", "ein", "eine"}
-    candidates = [w for w in words if len(w) >= 4 and w.lower() not in stop]
+    candidates = [
+        w for w in words
+        if len(w) >= 4
+        and w.lower() not in stop
+        and not _contains_blocked_auxiliary_form(w)
+    ]
     if not candidates:
-        candidates = words
+        candidates = [w for w in words if not _contains_blocked_auxiliary_form(w)] or words
     correct_word = candidates[0] if candidates else "Wort"
     sentence_with_gap = re.sub(rf"\b{re.escape(correct_word)}\b", "___", sentence, count=1)
     distractor_pool = [w for w in words if w.lower() != correct_word.lower() and len(w) >= 3]
