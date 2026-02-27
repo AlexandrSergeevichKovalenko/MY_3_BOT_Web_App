@@ -336,7 +336,7 @@ function AppInner() {
   const [newFolderIcon, setNewFolderIcon] = useState('book');
   const [userAvatar, setUserAvatar] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
-  const [menuMultiSelect, setMenuMultiSelect] = useState(true);
+  const [menuMultiSelect, setMenuMultiSelect] = useState(false);
   const [analyticsPeriod, setAnalyticsPeriod] = useState('week');
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [analyticsError, setAnalyticsError] = useState('');
@@ -2885,6 +2885,7 @@ function AppInner() {
   const isSkillTrainingReady = Boolean(skillTrainingData?.package);
 
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
+  const isYoutubeSelectionMenu = String(selectionType || '').startsWith('youtube_');
   const readerHasContent = Boolean(String(readerContent || '').trim());
   const readerDisplayPages = useMemo(() => {
     if (Array.isArray(readerPages) && readerPages.length > 0) {
@@ -6220,21 +6221,20 @@ function AppInner() {
 
   const handleSelectionSave = async (text) => {
     const inReaderSection = Boolean(isSectionVisible('reader') && readerHasContent && !readerArchiveOpen);
-    const inYoutubeOverlaySection = Boolean(
+    const inYoutubeSelectionSection = Boolean(
       isSectionVisible('youtube')
-      && youtubeOverlayEnabled
       && (
-        String(selectionType || '').startsWith('youtube_overlay')
+        String(selectionType || '').startsWith('youtube_')
         || selectionInlineMode
       )
     );
-    if (inReaderSection || inYoutubeOverlaySection) {
+    if (inReaderSection || inYoutubeSelectionSection) {
       const snapshot = normalizeSelectionText(text);
       clearSelection();
       if (!snapshot) return;
       void handleQuickAddToDictionary(snapshot, {
         inlineMode: true,
-        inlineOrigin: inYoutubeOverlaySection ? 'youtube' : 'reader',
+        inlineOrigin: inYoutubeSelectionSection ? 'youtube' : 'reader',
       });
       return;
     }
@@ -7579,7 +7579,12 @@ function AppInner() {
 
   const renderSubtitleText = (text) => renderClickableText(
     normalizeSubtitleText(text),
-    { lookupLang: getNormalizeLookupLang(), compact: true, inlineLookup: youtubeAppFullscreen }
+    {
+      lookupLang: getNormalizeLookupLang(),
+      compact: true,
+      inlineLookup: true,
+      selectionType: youtubeOverlayEnabled ? 'youtube_overlay_word' : 'youtube_word',
+    }
   );
 
   const getActiveSubtitleIndex = () => {
@@ -13260,7 +13265,8 @@ function AppInner() {
                 >
                   {selectionText}
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: isYoutubeSelectionMenu ? '1fr' : '1fr 1fr', gap: 6 }}>
+                  {!isYoutubeSelectionMenu && (
                   <button
                     type="button"
                     className="secondary-button"
@@ -13270,6 +13276,7 @@ function AppInner() {
                   >
                     {selectionLookupLoading || selectionInlineLookup.loading ? tr('Quick...', 'Quick...') : 'Quick'}
                   </button>
+                  )}
                   <button
                     type="button"
                     className="secondary-button"
