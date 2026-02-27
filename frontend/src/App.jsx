@@ -6017,6 +6017,11 @@ function AppInner() {
 
   const handleQuickAddToDictionary = async (text, options = {}) => {
     const inlineMode = Boolean(options?.inlineMode);
+    const inlineOrigin = String(options?.inlineOrigin || '').trim().toLowerCase();
+    const isYoutubeInline = inlineMode && (
+      inlineOrigin === 'youtube'
+      || youtubeAppFullscreen
+    );
     const cleaned = normalizeSelectionText(text);
     if (!cleaned) return;
     if (!initData) {
@@ -6067,7 +6072,7 @@ function AppInner() {
       const saveWordRu = isLegacyPair && detectedDirection === 'ru-de'
         ? (canonicalWordRu || normalized)
         : '';
-      const autoFolder = inlineMode && youtubeAppFullscreen
+      const autoFolder = isYoutubeInline
         ? await ensureYoutubeAutoFolderId()
         : null;
       const autoFolderId = autoFolder?.id || null;
@@ -6077,13 +6082,13 @@ function AppInner() {
         scrollToDictionary();
       }
       const saveOriginProcess = inlineMode
-        ? (youtubeAppFullscreen ? 'youtube' : 'reader')
+        ? (isYoutubeInline ? 'youtube' : 'reader')
         : 'webapp_dictionary_save';
       const saveOriginMeta = {
         endpoint: '/api/webapp/dictionary/save',
         flow: inlineMode ? 'quick_add_inline' : 'quick_add',
         from: inlineMode
-          ? (youtubeAppFullscreen ? 'youtube_selection' : 'reader_selection')
+          ? (isYoutubeInline ? 'youtube_selection' : 'reader_selection')
           : 'dictionary_lookup',
       };
 
@@ -6124,7 +6129,7 @@ function AppInner() {
         ...prev,
         translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
       }));
-        if (youtubeAppFullscreen) {
+        if (isYoutubeInline) {
           showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
         }
       } else {
@@ -6215,11 +6220,22 @@ function AppInner() {
 
   const handleSelectionSave = async (text) => {
     const inReaderSection = Boolean(isSectionVisible('reader') && readerHasContent && !readerArchiveOpen);
-    if (inReaderSection) {
+    const inYoutubeOverlaySection = Boolean(
+      isSectionVisible('youtube')
+      && youtubeOverlayEnabled
+      && (
+        String(selectionType || '').startsWith('youtube_overlay')
+        || selectionInlineMode
+      )
+    );
+    if (inReaderSection || inYoutubeOverlaySection) {
       const snapshot = normalizeSelectionText(text);
       clearSelection();
       if (!snapshot) return;
-      void handleQuickAddToDictionary(snapshot, { inlineMode: true });
+      void handleQuickAddToDictionary(snapshot, {
+        inlineMode: true,
+        inlineOrigin: inYoutubeOverlaySection ? 'youtube' : 'reader',
+      });
       return;
     }
     await handleSelectionOpenDictionary(text);
@@ -7537,6 +7553,7 @@ function AppInner() {
     const compact = Boolean(options.compact);
     const inlineLookup = Boolean(options.inlineLookup);
     const lookupLang = options.lookupLang || '';
+    const selectionTypeOption = String(options.selectionType || '').trim();
     if (!text) return null;
     return text.split(/\s+/).map((word, index) => {
       const cleaned = word.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё'’-]/g, '');
@@ -7547,7 +7564,12 @@ function AppInner() {
         <span
           key={`w-${index}`}
           className={className}
-          onClick={(event) => handleSelection(event, cleaned, { compact, inlineLookup, lookupLang })}
+          onClick={(event) => handleSelection(event, cleaned, {
+            compact,
+            inlineLookup,
+            lookupLang,
+            selectionType: selectionTypeOption,
+          })}
         >
           {word}{' '}
         </span>
@@ -10970,6 +10992,7 @@ function AppInner() {
                                           compact: true,
                                           inlineLookup: true,
                                           lookupLang: getNormalizeLookupLang(),
+                                          selectionType: 'youtube_overlay_word',
                                         })}
                                       </p>
                                     )}
