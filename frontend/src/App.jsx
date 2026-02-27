@@ -10817,8 +10817,8 @@ function AppInner() {
                             disabled={!youtubeTranscript.length}
                           >
                             {youtubeTranslationEnabled
-                              ? `${tr('Скрыть', 'Ausblenden')} ${getNativeSubtitleCode()}`
-                              : `${tr('Показать', 'Anzeigen')} ${getNativeSubtitleCode()}`}
+                              ? tr('RU субтитры: ON', 'RU-Untertitel: ON')
+                              : tr('RU субтитры: OFF', 'RU-Untertitel: OFF')}
                           </button>
                           <button
                             type="button"
@@ -10950,8 +10950,8 @@ function AppInner() {
                           disabled={!youtubeId || youtubeTranscriptLoading || youtubeManualOverride}
                         >
                           {youtubeTranscriptLoading
-                            ? tr('Загружаем субтитры...', 'Untertitel werden geladen...')
-                            : tr('Загрузить субтитры', 'Untertitel laden')}
+                            ? tr('Загружаем оригинальные субтитры...', 'Original-Untertitel werden geladen...')
+                            : tr('Загрузить оригинальные субтитры', 'Original-Untertitel laden')}
                         </button>
                       </div>
                       <div className="youtube-toolbar-row">
@@ -10962,8 +10962,8 @@ function AppInner() {
                           disabled={!youtubeTranscript.length}
                         >
                           {youtubeTranslationEnabled
-                            ? `${tr('Скрыть', 'Ausblenden')} ${getNativeSubtitleCode()}`
-                            : `${tr('Показать', 'Anzeigen')} ${getNativeSubtitleCode()}`}
+                            ? tr('RU субтитры: ON', 'RU-Untertitel: ON')
+                            : tr('RU субтитры: OFF', 'RU-Untertitel: OFF')}
                         </button>
                         <button
                           type="button"

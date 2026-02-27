@@ -8453,6 +8453,10 @@ body {
   background: #2563eb;
   color: #ffffff;
   box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
+  white-space: normal;
+  text-align: center;
+  line-height: 1.2;
+  padding: 10px 16px;
 }
 
 .youtube-toolbar-btn-main:hover:not(:disabled) {

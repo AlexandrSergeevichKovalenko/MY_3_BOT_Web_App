@@ -15170,35 +15170,143 @@ def cleanup_flashcard_feel_now():
 def _format_selection_dictionary_explanation(result: dict, source_lang: str, target_lang: str) -> str:
     if not isinstance(result, dict):
         return "Перевод не найден."
+
+    def _clean(value: object) -> str:
+        return str(value or "").strip()
+
+    def _collect_non_empty(mapping: dict | None, keys: list[str]) -> list[str]:
+        if not isinstance(mapping, dict):
+            return []
+        values: list[str] = []
+        for key in keys:
+            value = _clean(mapping.get(key))
+            if value:
+                values.append(value)
+        return values
+
     source_text = str(result.get("word_source") or "").strip()
     target_text = str(result.get("word_target") or "").strip()
     detected = str(result.get("detected_language") or "").strip().lower()
     detected_side = "source" if detected == "source" else ("target" if detected == "target" else "unknown")
-    lines = []
-    lines.append(f"Перевод: {target_text or '—'}")
-    lines.append(f"Исходное слово: {source_text or '—'}")
+
+    lines: list[str] = []
+    lines.append(f"Основной перевод: {target_text or '—'}")
+    if source_text:
+        lines.append(f"Исходный текст: {source_text}")
     lines.append(
-        f"Язык слова: {detected_side} ({(source_lang or '').lower()} -> {(target_lang or '').lower()})"
+        f"Направление: {detected_side} ({(source_lang or '').lower()} -> {(target_lang or '').lower()})"
     )
+
+    translations = result.get("translations")
+    translation_lines: list[str] = []
+    if isinstance(translations, list):
+        for item in translations[:3]:
+            if not isinstance(item, dict):
+                continue
+            value = _clean(item.get("value"))
+            context = _clean(item.get("context"))
+            if not value:
+                continue
+            suffix = f" ({context})" if context else ""
+            translation_lines.append(f"- {value}{suffix}")
+    if translation_lines:
+        lines.append("")
+        lines.append("Варианты перевода:")
+        lines.extend(translation_lines)
+
     meanings = result.get("meanings") or {}
     primary = meanings.get("primary") if isinstance(meanings, dict) else None
     if isinstance(primary, dict):
-        val = str(primary.get("value") or "").strip()
-        ctx = str(primary.get("context") or "").strip()
+        val = _clean(primary.get("value"))
+        ctx = _clean(primary.get("context"))
         if val:
-            lines.append(f"Основной вариант: {val}" + (f" ({ctx})" if ctx else ""))
-    usage_note = str(result.get("usage_note") or "").strip()
+            lines.append("")
+            lines.append("Основное значение:")
+            lines.append(f"- {val}" + (f" ({ctx})" if ctx else ""))
+        example_source = _clean(primary.get("example_source"))
+        example_target = _clean(primary.get("example_target"))
+        if example_source or example_target:
+            lines.append(f"- Пример: {example_source or '—'} -> {example_target or '—'}")
+
+    secondary = meanings.get("secondary") if isinstance(meanings, dict) else None
+    secondary_lines: list[str] = []
+    if isinstance(secondary, list):
+        for item in secondary[:2]:
+            if not isinstance(item, dict):
+                continue
+            val = _clean(item.get("value"))
+            ctx = _clean(item.get("context"))
+            example_source = _clean(item.get("example_source"))
+            example_target = _clean(item.get("example_target"))
+            if not val:
+                continue
+            chunk = f"- {val}" + (f" ({ctx})" if ctx else "")
+            if example_source or example_target:
+                chunk += f"; пример: {example_source or '—'} -> {example_target or '—'}"
+            secondary_lines.append(chunk)
+    if secondary_lines:
+        lines.append("")
+        lines.append("Дополнительные значения:")
+        lines.extend(secondary_lines)
+
+    part_of_speech = _clean(result.get("part_of_speech"))
+    article = _clean(result.get("article"))
+    pronunciation = result.get("pronunciation") if isinstance(result.get("pronunciation"), dict) else {}
+    pronunciation_bits = _collect_non_empty(pronunciation, ["ipa", "stress"])
+    forms = result.get("forms") if isinstance(result.get("forms"), dict) else {}
+    form_lines = []
+    for label, key in (
+        ("Plural", "plural"),
+        ("Praeteritum", "praeteritum"),
+        ("Perfekt", "perfekt"),
+        ("Konjunktiv I", "konjunktiv1"),
+        ("Konjunktiv II", "konjunktiv2"),
+    ):
+        value = _clean(forms.get(key))
+        if value:
+            form_lines.append(f"- {label}: {value}")
+    if part_of_speech or article or pronunciation_bits or form_lines:
+        lines.append("")
+        lines.append("Грамматика и форма:")
+        if part_of_speech:
+            lines.append(f"- Часть речи: {part_of_speech}")
+        if article:
+            lines.append(f"- Артикль: {article}")
+        if pronunciation_bits:
+            lines.append(f"- Произношение: {'; '.join(pronunciation_bits)}")
+        lines.extend(form_lines)
+
+    usage_note = _clean(result.get("usage_note"))
     if usage_note:
-        lines.append(f"Примечание: {usage_note}")
+        lines.append("")
+        lines.append(f"Употребление: {usage_note}")
+    etymology_note = _clean(result.get("etymology_note"))
+    if etymology_note:
+        lines.append(f"Происхождение: {etymology_note}")
+    memory_tip = _clean(result.get("memory_tip"))
+    if memory_tip:
+        lines.append(f"Памятка: {memory_tip}")
+
     examples = result.get("usage_examples") or []
+    example_lines: list[str] = []
     if isinstance(examples, list):
         for item in examples[:3]:
             if not isinstance(item, dict):
                 continue
-            src = str(item.get("source") or "").strip()
-            tgt = str(item.get("target") or "").strip()
+            src = _clean(item.get("source"))
+            tgt = _clean(item.get("target"))
             if src or tgt:
-                lines.append(f"- {src} -> {tgt}")
+                example_lines.append(f"- {src or '—'} -> {tgt or '—'}")
+    if example_lines:
+        lines.append("")
+        lines.append("Примеры:")
+        lines.extend(example_lines)
+
+    raw_text = _clean(result.get("raw_text"))
+    if raw_text:
+        lines.append("")
+        lines.append(f"Комментарий: {raw_text}")
+
     return "\n".join(lines)
 
 
