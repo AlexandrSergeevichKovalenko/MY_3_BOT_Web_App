@@ -11302,9 +11302,22 @@ function AppInner() {
                           <div className="dictionary-examples">
                             <strong>{tr('Примеры:', 'Beispiele:')}</strong>
                             <ul>
-                              {dictionaryResult.usage_examples.map((example, index) => (
-                                <li key={`${index}-${example}`}>{example}</li>
-                              ))}
+                              {dictionaryResult.usage_examples.map((example, index) => {
+                                let exampleText = '';
+                                if (typeof example === 'string') {
+                                  exampleText = example.trim();
+                                } else if (example && typeof example === 'object') {
+                                  const source = String(example.source || '').trim();
+                                  const target = String(example.target || '').trim();
+                                  if (source && target) {
+                                    exampleText = `${source} → ${target}`;
+                                  } else {
+                                    exampleText = source || target;
+                                  }
+                                }
+                                if (!exampleText) return null;
+                                return <li key={`example-${index}-${exampleText}`}>{exampleText}</li>;
+                              })}
                             </ul>
                           </div>
                         )}
