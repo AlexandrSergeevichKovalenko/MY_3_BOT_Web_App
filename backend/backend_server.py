@@ -172,6 +172,7 @@ from backend.database import (
     get_or_create_dictionary_folder,
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
+    create_flashcard_feel_feedback_token,
     get_tts_chunk_cache,
     upsert_tts_chunk_cache,
     get_tts_audio_cache,
@@ -452,6 +453,7 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/webapp/dictionary": {"cap": True},
     "/api/webapp/dictionary/collocations": {"cap": True},
     "/api/webapp/flashcards/feel": {"cap": True},
+    "/api/webapp/flashcards/feel/dispatch": {"cap": True},
     "/api/webapp/flashcards/enrich": {"cap": True},
     "/api/webapp/explain": {"cap": True},
     "/api/webapp/tts": {"cap": True, "feature_code": "tts_chars_daily"},
@@ -5271,6 +5273,98 @@ def _generate_audio_grammar_explanation(
     return cleaned
 
 
+def _prettify_grammar_explanation_text(text: str) -> str:
+    lines = [str(line or "").strip() for line in str(text or "").splitlines()]
+    rendered: list[str] = []
+    for line in lines:
+        line = re.sub(r"</?[^>\n]+>", "", line).strip()
+        if not line:
+            if rendered and rendered[-1] != "":
+                rendered.append("")
+            continue
+        if re.match(r"^part\s+\d+:", line, flags=re.IGNORECASE):
+            if rendered and rendered[-1] != "":
+                rendered.append("")
+            rendered.append(f"🔹 {line}")
+            continue
+        if re.match(r"^original sentence:", line, flags=re.IGNORECASE):
+            rendered.append(f"📌 {line}")
+            continue
+        if re.match(r"^structure name:", line, flags=re.IGNORECASE):
+            rendered.append(f"• {line}")
+            continue
+        if re.match(r"^why used:", line, flags=re.IGNORECASE):
+            rendered.append(f"• {line}")
+            continue
+        if re.match(r"^construction in ", line, flags=re.IGNORECASE):
+            rendered.append(f"• {line}")
+            continue
+        if re.match(r"^breakdown:", line, flags=re.IGNORECASE):
+            rendered.append(f"• {line}")
+            continue
+        if re.match(r"^final\s+", line, flags=re.IGNORECASE):
+            if rendered and rendered[-1] != "":
+                rendered.append("")
+            rendered.append(f"✅ {line}")
+            continue
+        rendered.append(line)
+    return "\n".join(rendered).strip()
+
+
+def _build_private_grammar_message(
+    *,
+    sentence_number: int | None,
+    original_text: str,
+    correct_translation: str,
+    explanation_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    src = _normalize_short_lang_code(source_lang, fallback="ru").upper()
+    tgt = _normalize_short_lang_code(target_lang, fallback="de").upper()
+    title = "🧠 Грамматический разбор"
+    if sentence_number is not None and int(sentence_number) > 0:
+        title = f"{title} · Satz {int(sentence_number)}"
+    pretty_explanation = _prettify_grammar_explanation_text(explanation_text)
+    return (
+        f"{title}\n"
+        f"Пара: {src} → {tgt}\n\n"
+        f"Исходное предложение:\n{(original_text or '—').strip()}\n\n"
+        f"Корректный вариант:\n{(correct_translation or '—').strip()}\n\n"
+        f"Разбор:\n{pretty_explanation or '—'}"
+    )
+
+
+def _dispatch_private_grammar_explanation(
+    *,
+    user_id: int,
+    sentence_number: int | None,
+    original_text: str,
+    correct_translation: str,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    try:
+        explanation_text = _generate_audio_grammar_explanation(
+            sentence=str(correct_translation or ""),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        if not explanation_text:
+            return
+        text = _build_private_grammar_message(
+            sentence_number=sentence_number,
+            original_text=original_text,
+            correct_translation=correct_translation,
+            explanation_text=explanation_text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        _send_private_message_chunks(int(user_id), text, limit=3500)
+    except Exception as exc:
+        logging.warning("Private grammar text send failed for user %s: %s", user_id, exc)
+
+
 def _tts_cache_key(lang: str, voice: str, speed: float, text: str) -> str:
     normalized = _normalize_utterance_text(text)
     raw = f"{lang}|{voice}|{speed}|{normalized}"
@@ -7184,6 +7278,7 @@ def process_webapp_message():
     user_translation = payload.get("user_translation")
     session_id = payload.get("session_id")
     translations = payload.get("translations") or []
+    send_private_grammar_text = bool(payload.get("send_private_grammar_text"))
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -7216,10 +7311,45 @@ def process_webapp_message():
             )
         except Exception as exc:
             return jsonify({"error": f"Ошибка обработки запроса: {exc}"}), 500
+        private_grammar_queued = 0
+        if send_private_grammar_text:
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("error") or "").strip():
+                    continue
+                correct_translation = str(
+                    item.get("correct_translation")
+                    or _extract_correct_translation(str(item.get("feedback") or ""))
+                    or item.get("user_translation")
+                    or ""
+                ).strip()
+                if not correct_translation:
+                    continue
+                sentence_number_raw = item.get("sentence_number")
+                try:
+                    sentence_number = int(sentence_number_raw) if sentence_number_raw is not None else None
+                except Exception:
+                    sentence_number = None
+                original_sentence = str(item.get("original_text") or "").strip()
+                threading.Thread(
+                    target=_dispatch_private_grammar_explanation,
+                    kwargs={
+                        "user_id": int(user_id),
+                        "sentence_number": sentence_number,
+                        "original_text": original_sentence,
+                        "correct_translation": correct_translation,
+                        "source_lang": source_lang,
+                        "target_lang": target_lang,
+                    },
+                    daemon=True,
+                ).start()
+                private_grammar_queued += 1
         return jsonify(
             {
                 "ok": True,
                 "results": results,
+                "private_grammar_queued": private_grammar_queued,
                 "language_pair": _build_language_pair_payload(source_lang, target_lang),
             }
         )
@@ -11147,6 +11277,248 @@ def get_flashcard_feel():
         {
             "ok": True,
             "feel_explanation": feel_text,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+
+
+def _fetch_flashcard_feel_entries_for_user(
+    *,
+    user_id: int,
+    entry_ids: list[int],
+) -> dict[int, dict]:
+    if not entry_ids:
+        return {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    word_ru,
+                    translation_de,
+                    word_de,
+                    translation_ru,
+                    source_lang,
+                    target_lang,
+                    response_json
+                FROM bt_3_webapp_dictionary_queries
+                WHERE user_id = %s
+                  AND id = ANY(%s::bigint[]);
+                """,
+                (int(user_id), entry_ids),
+            )
+            rows = cursor.fetchall()
+    result: dict[int, dict] = {}
+    for row in rows:
+        response_json = row[7]
+        if isinstance(response_json, str):
+            try:
+                response_json = json.loads(response_json)
+            except Exception:
+                response_json = {}
+        if not isinstance(response_json, dict):
+            response_json = {}
+        result[int(row[0])] = {
+            "id": int(row[0]),
+            "word_ru": row[1],
+            "translation_de": row[2],
+            "word_de": row[3],
+            "translation_ru": row[4],
+            "source_lang": row[5],
+            "target_lang": row[6],
+            "response_json": response_json,
+        }
+    return result
+
+
+def _build_flashcard_feel_private_message(
+    *,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+    feel_text: str,
+) -> str:
+    source_code = str(source_lang or "").strip().upper() or "SRC"
+    target_code = str(target_lang or "").strip().upper() or "TGT"
+    compact_feel = str(feel_text or "").strip()
+    if len(compact_feel) > 2800:
+        compact_feel = compact_feel[:2797].rstrip() + "..."
+    lines = [
+        "🧠 Feel the Word",
+        f"{source_code} → {target_code}",
+        "",
+        f"{source_text}",
+        f"→ {target_text}",
+        "",
+        compact_feel,
+        "",
+        "Оцени ответ кнопкой ниже:",
+    ]
+    return "\n".join(lines)
+
+
+def _dispatch_flashcard_feel_messages(
+    *,
+    user_id: int,
+    entry_ids: list[int],
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    try:
+        entries_by_id = _fetch_flashcard_feel_entries_for_user(
+            user_id=int(user_id),
+            entry_ids=entry_ids,
+        )
+        sent_count = 0
+        for entry_id in entry_ids:
+            entry = entries_by_id.get(int(entry_id))
+            if not entry:
+                continue
+            response_json = entry.get("response_json") if isinstance(entry.get("response_json"), dict) else {}
+            source_text, target_text = _resolve_entry_texts_for_pair(
+                entry=entry,
+                response_json=response_json,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                source_text_hint=str(entry.get("word_ru") or ""),
+                target_text_hint=str(entry.get("word_de") or entry.get("translation_de") or ""),
+            )
+            source_text = str(source_text or "").strip()
+            target_text = str(target_text or "").strip()
+            if not source_text:
+                continue
+
+            feel_text = str(response_json.get("feel_explanation") or "").strip()
+            if not feel_text:
+                try:
+                    if _is_legacy_ru_de_pair(source_lang, target_lang):
+                        feel_text = asyncio.run(run_feel_word(source_text, target_text))
+                    else:
+                        feel_text = asyncio.run(
+                            run_feel_word_multilang(
+                                source_text=source_text,
+                                target_text=target_text,
+                                source_lang=source_lang,
+                                target_lang=target_lang,
+                            )
+                        )
+                except Exception:
+                    logging.exception(
+                        "❌ feel dispatch failed for user_id=%s entry_id=%s",
+                        int(user_id),
+                        int(entry_id),
+                    )
+                    continue
+            feel_text = str(feel_text or "").strip()
+            if not feel_text:
+                continue
+
+            try:
+                token = create_flashcard_feel_feedback_token(
+                    user_id=int(user_id),
+                    entry_id=int(entry_id),
+                    feel_explanation=feel_text,
+                )
+            except Exception:
+                logging.exception(
+                    "❌ feel feedback token save failed for user_id=%s entry_id=%s",
+                    int(user_id),
+                    int(entry_id),
+                )
+                continue
+
+            reply_markup = {
+                "inline_keyboard": [[
+                    {"text": "👍 Like", "callback_data": f"feelfb:{token}:like"},
+                    {"text": "👎 Dislike", "callback_data": f"feelfb:{token}:dislike"},
+                ]]
+            }
+            text = _build_flashcard_feel_private_message(
+                source_text=source_text,
+                target_text=target_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                feel_text=feel_text,
+            )
+            try:
+                _send_private_message(
+                    user_id=int(user_id),
+                    text=text,
+                    reply_markup=reply_markup,
+                )
+                sent_count += 1
+            except Exception:
+                logging.exception(
+                    "❌ feel private send failed for user_id=%s entry_id=%s",
+                    int(user_id),
+                    int(entry_id),
+                )
+        logging.info(
+            "✅ feel dispatch done: user_id=%s requested=%s sent=%s",
+            int(user_id),
+            len(entry_ids),
+            sent_count,
+        )
+    except Exception:
+        logging.exception("❌ feel dispatch crashed: user_id=%s", int(user_id))
+
+
+@app.route("/api/webapp/flashcards/feel/dispatch", methods=["POST"])
+def dispatch_flashcard_feel():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    raw_entry_ids = payload.get("entry_ids")
+    trigger = str(payload.get("trigger") or "").strip().lower() or "manual"
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not isinstance(raw_entry_ids, list):
+        return jsonify({"error": "entry_ids должен быть массивом"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    entry_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for raw_id in raw_entry_ids:
+        try:
+            entry_id = int(raw_id)
+        except Exception:
+            continue
+        if entry_id <= 0 or entry_id in seen_ids:
+            continue
+        entry_ids.append(entry_id)
+        seen_ids.add(entry_id)
+        if len(entry_ids) >= 50:
+            break
+
+    if not entry_ids:
+        return jsonify({"ok": True, "queued": 0, "trigger": trigger})
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    threading.Thread(
+        target=_dispatch_flashcard_feel_messages,
+        kwargs={
+            "user_id": int(user_id),
+            "entry_ids": entry_ids,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+        },
+        daemon=True,
+    ).start()
+
+    return jsonify(
+        {
+            "ok": True,
+            "queued": len(entry_ids),
+            "trigger": trigger,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )

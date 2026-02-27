@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, date, timedelta, time as dt_time
 from pathlib import Path
 import time
+from uuid import uuid4
 from calendar import monthrange
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -1300,6 +1301,21 @@ def ensure_webapp_tables() -> None:
                     seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (user_id, entry_id, seen_at)
                 );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_flashcard_feel_feedback_queue (
+                    token TEXT PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    entry_id BIGINT NOT NULL,
+                    feel_explanation TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    consumed_at TIMESTAMPTZ,
+                    feedback_action TEXT
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_flashcard_feel_feedback_queue_user_pending
+                ON bt_3_flashcard_feel_feedback_queue (user_id, consumed_at, created_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_telegram_system_messages (
@@ -2936,6 +2952,163 @@ def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translati
                     json.dumps(response_json, ensure_ascii=False),
                     entry_id,
                 ))
+
+
+def create_flashcard_feel_feedback_token(
+    *,
+    user_id: int,
+    entry_id: int,
+    feel_explanation: str,
+) -> str:
+    safe_user_id = int(user_id)
+    safe_entry_id = int(entry_id)
+    safe_text = str(feel_explanation or "").strip()
+    if not safe_text:
+        raise ValueError("feel_explanation is required")
+    token = uuid4().hex
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_flashcard_feel_feedback_queue (
+                    token,
+                    user_id,
+                    entry_id,
+                    feel_explanation
+                )
+                VALUES (%s, %s, %s, %s);
+                """,
+                (token, safe_user_id, safe_entry_id, safe_text),
+            )
+    return token
+
+
+def apply_flashcard_feel_feedback(
+    *,
+    token: str,
+    user_id: int,
+    liked: bool,
+) -> dict | None:
+    safe_token = str(token or "").strip()
+    if not safe_token:
+        return None
+    safe_user_id = int(user_id)
+    action = "like" if bool(liked) else "dislike"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    entry_id,
+                    feel_explanation,
+                    consumed_at,
+                    feedback_action
+                FROM bt_3_flashcard_feel_feedback_queue
+                WHERE token = %s
+                  AND user_id = %s
+                FOR UPDATE;
+                """,
+                (safe_token, safe_user_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            entry_id = int(row[0] or 0)
+            feel_explanation = str(row[1] or "").strip()
+            consumed_at = row[2]
+            previous_action = str(row[3] or "").strip().lower()
+            if consumed_at is not None:
+                return {
+                    "ok": True,
+                    "already_processed": True,
+                    "action": previous_action or action,
+                    "entry_id": entry_id,
+                }
+            if not entry_id:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_flashcard_feel_feedback_queue
+                    SET consumed_at = NOW(),
+                        feedback_action = %s
+                    WHERE token = %s;
+                    """,
+                    (action, safe_token),
+                )
+                return {
+                    "ok": True,
+                    "already_processed": False,
+                    "action": action,
+                    "entry_id": 0,
+                }
+
+            cursor.execute(
+                """
+                SELECT response_json
+                FROM bt_3_webapp_dictionary_queries
+                WHERE id = %s
+                  AND user_id = %s
+                FOR UPDATE;
+                """,
+                (entry_id, safe_user_id),
+            )
+            entry_row = cursor.fetchone()
+            if not entry_row:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_flashcard_feel_feedback_queue
+                    SET consumed_at = NOW(),
+                        feedback_action = %s
+                    WHERE token = %s;
+                    """,
+                    (action, safe_token),
+                )
+                return {
+                    "ok": True,
+                    "already_processed": False,
+                    "action": action,
+                    "entry_id": entry_id,
+                }
+
+            response_json = entry_row[0]
+            if isinstance(response_json, str):
+                try:
+                    response_json = json.loads(response_json)
+                except Exception:
+                    response_json = {}
+            if not isinstance(response_json, dict):
+                response_json = {}
+
+            if action == "like":
+                response_json["feel_explanation"] = feel_explanation
+                response_json["feel_feedback"] = "like"
+            else:
+                response_json.pop("feel_explanation", None)
+                response_json["feel_feedback"] = "dislike"
+
+            cursor.execute(
+                """
+                UPDATE bt_3_webapp_dictionary_queries
+                SET response_json = %s
+                WHERE id = %s
+                  AND user_id = %s;
+                """,
+                (json.dumps(response_json, ensure_ascii=False), entry_id, safe_user_id),
+            )
+            cursor.execute(
+                """
+                UPDATE bt_3_flashcard_feel_feedback_queue
+                SET consumed_at = NOW(),
+                    feedback_action = %s
+                WHERE token = %s;
+                """,
+                (action, safe_token),
+            )
+    return {
+        "ok": True,
+        "already_processed": False,
+        "action": action,
+        "entry_id": entry_id,
+    }
 
 
 def get_dictionary_cache(word_ru: str) -> dict | None:

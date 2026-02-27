@@ -71,6 +71,7 @@ from backend.database import (
     get_access_request_by_id,
     list_pending_access_requests,
     update_webapp_dictionary_entry,
+    apply_flashcard_feel_feedback,
     get_dictionary_cache,
     upsert_dictionary_cache,
     save_webapp_dictionary_query,
@@ -2961,6 +2962,65 @@ async def handle_dictionary_pair_callback(update: Update, context: CallbackConte
         target_lang=target_lang,
     )
     pending_dictionary_lookup_requests.pop(request_key, None)
+
+
+async def handle_flashcard_feel_feedback_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 3:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+
+    token = parts[1].strip()
+    action = parts[2].strip().lower()
+    if action not in {"like", "dislike"}:
+        await query.answer("Неизвестное действие.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user:
+        await query.answer("Пользователь не определён.", show_alert=True)
+        return
+
+    try:
+        result = await asyncio.to_thread(
+            apply_flashcard_feel_feedback,
+            token=token,
+            user_id=int(user.id),
+            liked=(action == "like"),
+        )
+    except Exception as exc:
+        logging.exception(f"❌ Ошибка сохранения feel feedback: {exc}")
+        await query.answer("Не удалось сохранить feedback.", show_alert=True)
+        return
+
+    if not result:
+        await query.answer("Эта оценка уже недоступна.", show_alert=True)
+        return
+
+    already_processed = bool(result.get("already_processed"))
+    resolved_action = str(result.get("action") or action).strip().lower()
+    if already_processed:
+        text = "Уже сохранено ранее."
+    elif resolved_action == "like":
+        text = "✅ Сохранили. Это объяснение останется в базе."
+    else:
+        text = "🗑 Удалили. Это объяснение больше не будет храниться."
+
+    try:
+        await query.answer("Готово")
+    except Exception:
+        pass
+    try:
+        if query.message:
+            await query.message.edit_reply_markup(reply_markup=None)
+            await query.message.reply_text(text)
+    except Exception:
+        logging.debug("Failed to update feel feedback message", exc_info=True)
 
 
 async def handle_dictionary_save_callback(update: Update, context: CallbackContext) -> None:
@@ -6910,6 +6970,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_explain_request, pattern=r"^explain:"))
     application.add_handler(CallbackQueryHandler(handle_pending_access_list, pattern=r"^access:pending:list$"))
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
+    application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_pair_callback, pattern=r"^dictpair:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_toggle_callback, pattern=r"^dictseltoggle:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_all_callback, pattern=r"^dictselall:"))

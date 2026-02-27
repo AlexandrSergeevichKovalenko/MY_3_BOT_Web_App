@@ -227,6 +227,7 @@ function AppInner() {
   const [theoryChecking, setTheoryChecking] = useState(false);
   const [theoryFeedback, setTheoryFeedback] = useState(null);
   const [theoryItemId, setTheoryItemId] = useState(null);
+  const [translationPrivateGrammarTextOptIn, setTranslationPrivateGrammarTextOptIn] = useState(false);
   const [translationAudioGrammarOptIn, setTranslationAudioGrammarOptIn] = useState({});
   const [translationAudioGrammarSaving, setTranslationAudioGrammarSaving] = useState({});
   const [skillReport, setSkillReport] = useState(null);
@@ -264,10 +265,9 @@ function AppInner() {
   const [srsRevealStartedAt, setSrsRevealStartedAt] = useState(0);
   const [srsRevealElapsedSec, setSrsRevealElapsedSec] = useState(0);
   const [srsError, setSrsError] = useState('');
-  const [flashcardFeelMap, setFlashcardFeelMap] = useState({});
-  const [flashcardFeelVisibleMap, setFlashcardFeelVisibleMap] = useState({});
-  const [flashcardFeelLoadingMap, setFlashcardFeelLoadingMap] = useState({});
-  const [flashcardFeelFeedbackLoading, setFlashcardFeelFeedbackLoading] = useState({});
+  const [flashcardFeelQueuedMap, setFlashcardFeelQueuedMap] = useState({});
+  const [flashcardFeelStatusMap, setFlashcardFeelStatusMap] = useState({});
+  const [flashcardFeelDispatching, setFlashcardFeelDispatching] = useState(false);
   const [previewAudioReady, setPreviewAudioReady] = useState(false);
   const [previewAudioPlaying, setPreviewAudioPlaying] = useState(false);
   const [flashcardTimerKey, setFlashcardTimerKey] = useState(0);
@@ -436,7 +436,8 @@ function AppInner() {
   const youtubeAutoFolderCacheRef = useRef(new Map());
   const youtubeAutoFolderPendingRef = useRef(new Map());
   const ttsPendingKeysRef = useRef(new Set());
-  const flashcardFeelInFlightRef = useRef(new Map());
+  const flashcardFeelQueueRef = useRef(new Map());
+  const flashcardFeelDispatchInFlightRef = useRef(false);
   const inlineToastTimeoutRef = useRef(null);
   const readerSessionStartingRef = useRef(false);
   const readerStateSaveTimeoutRef = useRef(null);
@@ -1042,41 +1043,6 @@ function AppInner() {
     return null;
   };
 
-  const formatFeelLines = (text) => {
-    const raw = String(text || '').trim();
-    if (!raw) return [];
-    const byNewline = raw
-      .split(/\n+/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (byNewline.length > 1) return byNewline;
-    return raw
-      .split(/(?<=[.!?])\s+(?=[A-ZА-ЯЁ])/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-  };
-
-  const renderFeelLine = (line, keyPrefix = 'feel') => {
-    const chunks = [];
-    const raw = String(line || '');
-    const regex = /\*\*(.+?)\*\*/g;
-    let lastIndex = 0;
-    let match;
-    let index = 0;
-    while ((match = regex.exec(raw)) !== null) {
-      if (match.index > lastIndex) {
-        chunks.push(raw.slice(lastIndex, match.index));
-      }
-      chunks.push(<strong key={`${keyPrefix}-b-${index}`}>{match[1]}</strong>);
-      lastIndex = regex.lastIndex;
-      index += 1;
-    }
-    if (lastIndex < raw.length) {
-      chunks.push(raw.slice(lastIndex));
-    }
-    return chunks.length ? chunks : raw;
-  };
-
   const getLearningTtsLocale = () => {
     const lang = normalizeLangCode(languageProfile?.learning_language);
     if (lang === 'en') return 'en-US';
@@ -1141,137 +1107,91 @@ function AppInner() {
     return resolveFlashcardTexts(entry).targetText;
   };
 
-  const fetchFlashcardFeel = useCallback(async (entry, options = {}) => {
-    const {
-      revealOnSuccess = false,
-      showError = false,
-      setLoading = false,
-    } = options;
-    const entryId = entry?.id;
-    if (!entryId) return '';
-
-    let responseJson = entry?.response_json;
-    if (typeof responseJson === 'string') {
-      try {
-        responseJson = JSON.parse(responseJson);
-      } catch (_error) {
-        responseJson = {};
-      }
-    }
-    if (!responseJson || typeof responseJson !== 'object') {
-      responseJson = {};
-    }
-
-    const cachedFeel = String(
-      flashcardFeelMap[entryId]
-      || responseJson.feel_explanation
-      || ''
-    ).trim();
-    if (cachedFeel) {
-      if (!flashcardFeelMap[entryId]) {
-        setFlashcardFeelMap((prev) => ({
-          ...prev,
-          [entryId]: cachedFeel,
-        }));
-      }
-      if (revealOnSuccess) {
-        setFlashcardFeelVisibleMap((prev) => ({
-          ...prev,
-          [entryId]: true,
-        }));
-      }
-      return cachedFeel;
-    }
-
-    if (!initData) {
-      if (showError) setWebappError(initDataMissingMsg);
-      return '';
-    }
-
-    if (setLoading) {
-      setFlashcardFeelLoadingMap((prev) => ({
+  const queueFlashcardFeel = useCallback((entry) => {
+    const entryId = Number(entry?.id || 0);
+    if (!entryId) return;
+    if (flashcardFeelQueueRef.current.has(entryId)) {
+      setFlashcardFeelStatusMap((prev) => ({
         ...prev,
-        [entryId]: true,
+        [entryId]: tr(
+          'Уже в очереди: отправим в личку после завершения тренировки.',
+          'Bereits in der Warteschlange: wird nach dem Training per Privatnachricht gesendet.'
+        ),
       }));
+      return;
+    }
+    flashcardFeelQueueRef.current.set(entryId, true);
+    setFlashcardFeelQueuedMap((prev) => ({ ...prev, [entryId]: true }));
+    setFlashcardFeelStatusMap((prev) => ({
+      ...prev,
+      [entryId]: tr(
+        'Принято. Отправим объяснение в личку после завершения тренировки.',
+        'Verstanden. Wir senden die Erklaerung nach dem Training per Privatnachricht.'
+      ),
+    }));
+  }, [tr]);
+
+  const dispatchQueuedFlashcardFeel = useCallback(async (trigger = 'manual') => {
+    if (!initData) {
+      return 0;
+    }
+    if (flashcardFeelDispatchInFlightRef.current) {
+      return 0;
+    }
+    const entryIds = Array.from(flashcardFeelQueueRef.current.keys())
+      .map((value) => Number(value || 0))
+      .filter((value) => Number.isInteger(value) && value > 0);
+    if (!entryIds.length) {
+      return 0;
     }
 
-    let requestPromise = flashcardFeelInFlightRef.current.get(entryId);
-    if (!requestPromise) {
-      const sourceText = String(
-        responseJson.source_text
-        || entry?.word_ru
-        || responseJson.word_ru
-        || entry?.translation_ru
-        || responseJson.translation_ru
-        || entry?.word_de
-        || responseJson.word_de
-        || ''
-      ).trim();
-      const targetText = String(
-        responseJson.target_text
-        || entry?.translation_de
-        || responseJson.translation_de
-        || entry?.word_de
-        || responseJson.word_de
-        || entry?.translation_ru
-        || responseJson.translation_ru
-        || ''
-      ).trim();
-
-      requestPromise = (async () => {
-        const response = await fetch('/api/webapp/flashcards/feel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            initData,
-            entry_id: entryId,
-            word_ru: sourceText,
-            word_de: targetText,
-            source_text: sourceText,
-            target_text: targetText,
-          }),
-        });
-        if (!response.ok) {
-          throw new Error(await response.text());
-        }
-        const data = await response.json();
-        const feelText = String(data?.feel_explanation || '').trim();
-        if (feelText) {
-          setFlashcardFeelMap((prev) => ({
-            ...prev,
-            [entryId]: feelText,
-          }));
-        }
-        return feelText;
-      })().finally(() => {
-        flashcardFeelInFlightRef.current.delete(entryId);
-      });
-      flashcardFeelInFlightRef.current.set(entryId, requestPromise);
-    }
-
+    flashcardFeelDispatchInFlightRef.current = true;
+    setFlashcardFeelDispatching(true);
     try {
-      const feelText = await requestPromise;
-      if (feelText && revealOnSuccess) {
-        setFlashcardFeelVisibleMap((prev) => ({
-          ...prev,
-          [entryId]: true,
-        }));
+      const response = await fetch('/api/webapp/flashcards/feel/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          entry_ids: entryIds,
+          trigger,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
       }
-      return feelText;
+      const data = await response.json();
+      const queued = Math.max(0, Number(data?.queued || entryIds.length));
+      for (const entryId of entryIds) {
+        flashcardFeelQueueRef.current.delete(entryId);
+      }
+      setFlashcardFeelQueuedMap((prev) => {
+        const next = { ...prev };
+        for (const entryId of entryIds) {
+          delete next[entryId];
+        }
+        return next;
+      });
+      setFlashcardFeelStatusMap((prev) => {
+        const next = { ...prev };
+        for (const entryId of entryIds) {
+          next[entryId] = tr(
+            'Отправлено в обработку. Сообщение придёт в личку.',
+            'Zur Verarbeitung gesendet. Die Nachricht kommt in die Privatnachricht.'
+          );
+        }
+        return next;
+      });
+      return queued;
     } catch (error) {
-      if (showError) {
-        setWebappError(`${tr('Ошибка feel', 'Feel-Fehler')}: ${error.message}`);
-      }
-      return '';
+      const message = normalizeNetworkErrorMessage(error, 'Не удалось отправить Feel в очередь.', 'Feel konnte nicht in die Warteschlange gestellt werden.');
+      setWebappError(`${tr('Ошибка Feel', 'Feel-Fehler')}: ${message}`);
+      return 0;
     } finally {
-      if (setLoading) {
-        setFlashcardFeelLoadingMap((prev) => ({
-          ...prev,
-          [entryId]: false,
-        }));
-      }
+      flashcardFeelDispatchInFlightRef.current = false;
+      setFlashcardFeelDispatching(false);
     }
-  }, [flashcardFeelMap, initData, initDataMissingMsg, tr]);
+  }, [initData, normalizeNetworkErrorMessage, tr]);
 
   const preloadTts = useCallback((text, language = 'de-DE') => {
     if (!initData) return;
@@ -3287,6 +3207,7 @@ function AppInner() {
   };
 
   const exitFlashcardsTraining = async () => {
+    void dispatchQueuedFlashcardFeel('exit_session');
     setFlashcardsOnly(false);
     setFlashcardActiveMode(null);
     setFlashcardSettingsModalMode(null);
@@ -4788,35 +4709,6 @@ function AppInner() {
   }, [flashcardPreviewActive, flashcardsOnly, flashcards, flashcardPreviewIndex]);
 
   useEffect(() => {
-    if (!flashcardPreviewActive || !flashcardsOnly) return;
-    const entry = flashcards[flashcardPreviewIndex];
-    if (!entry?.id) return;
-    setFlashcardFeelVisibleMap((prev) => ({
-      ...prev,
-      [entry.id]: false,
-    }));
-  }, [flashcardPreviewActive, flashcardsOnly, flashcards, flashcardPreviewIndex]);
-
-  useEffect(() => {
-    if (!flashcardPreviewActive || !flashcardsOnly) return;
-    if (flashcardActiveMode !== 'quiz') return;
-    const entry = flashcards[flashcardPreviewIndex];
-    if (!entry?.id) return;
-    void fetchFlashcardFeel(entry, {
-      revealOnSuccess: false,
-      showError: false,
-      setLoading: false,
-    });
-  }, [
-    flashcardPreviewActive,
-    flashcardsOnly,
-    flashcardActiveMode,
-    flashcards,
-    flashcardPreviewIndex,
-    fetchFlashcardFeel,
-  ]);
-
-  useEffect(() => {
     flashcardIndexRef.current = flashcardIndex;
   }, [flashcardIndex]);
 
@@ -5159,6 +5051,7 @@ function AppInner() {
               ],
               original_text: numberedOriginal,
               user_translation: numberedTranslations,
+              send_private_grammar_text: translationPrivateGrammarTextOptIn,
             };
             let response = null;
             let lastError = null;
@@ -7499,6 +7392,7 @@ function AppInner() {
     const nextIndex = flashcardIndex + 1;
     if (nextIndex >= flashcards.length) {
       setFlashcardSetComplete(true);
+      void dispatchQueuedFlashcardFeel('set_complete');
       return;
     }
     setFlashcardIndex(nextIndex);
@@ -10501,6 +10395,30 @@ function AppInner() {
                       />
                     </label>
                   )}
+                  {!isStorySession && (
+                    <label className="translation-private-grammar-optin">
+                      <div className="translation-private-grammar-optin-copy">
+                        <span>
+                          {tr(
+                            'Отправлять текстовое объяснение грамматики в личку сразу после проверки',
+                            'Textuelle Grammatikerklaerung sofort nach der Pruefung in den privaten Chat senden'
+                          )}
+                        </span>
+                        <small>
+                          {tr(
+                            'Разбор приходит отдельным сообщением по каждому проверенному предложению.',
+                            'Die Analyse kommt als separate Nachricht fuer jeden geprueften Satz.'
+                          )}
+                        </small>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={translationPrivateGrammarTextOptIn}
+                        onChange={(event) => setTranslationPrivateGrammarTextOptIn(event.target.checked)}
+                        disabled={webappLoading}
+                      />
+                    </label>
+                  )}
 
                   <button className="primary-button" type="submit" disabled={webappLoading}>
                     {webappLoading
@@ -10585,17 +10503,21 @@ function AppInner() {
                           ) : (
                             <>
                               {Number(item?.translation_id || 0) > 0 && (
-                                <label className="result-audio-optin">
-                                  <span>{tr('Аудио-объяснение для этого предложения', 'Audio-Erklaerung fuer diesen Satz')}</span>
-                                  <input
-                                    type="checkbox"
-                                    checked={Boolean(
-                                      translationAudioGrammarOptIn[Number(item.translation_id)] ?? item?.audio_grammar_opt_in
-                                    )}
-                                    onChange={(event) => handleToggleResultAudioGrammar(item, event.target.checked)}
-                                    disabled={Boolean(translationAudioGrammarSaving[Number(item.translation_id)])}
-                                  />
-                                </label>
+                                <>
+                                  {/*
+                                  <label className="result-audio-optin">
+                                    <span>{tr('Аудио-объяснение для этого предложения', 'Audio-Erklaerung fuer diesen Satz')}</span>
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(
+                                        translationAudioGrammarOptIn[Number(item.translation_id)] ?? item?.audio_grammar_opt_in
+                                      )}
+                                      onChange={(event) => handleToggleResultAudioGrammar(item, event.target.checked)}
+                                      disabled={Boolean(translationAudioGrammarSaving[Number(item.translation_id)])}
+                                    />
+                                  </label>
+                                  */}
+                                </>
                               )}
                               <div
                                 className="webapp-result-text"
@@ -12102,11 +12024,8 @@ function AppInner() {
                                 : flashcardActiveMode === 'sentence'
                                   ? 'Satz Ergaenzen Mode'
                                   : 'Quiz 4 Options Mode';
-                              const feel = flashcardFeelMap[entry.id]
-                                || (entry.response_json || {}).feel_explanation
-                                || '';
-                              const feelVisible = !!flashcardFeelVisibleMap[entry.id];
-                              const feelLines = formatFeelLines(feel);
+                              const feelQueued = !!flashcardFeelQueuedMap[entry.id];
+                              const feelStatus = String(flashcardFeelStatusMap[entry.id] || '').trim();
                               const previewNavLocked = previewAudioPlaying;
                               const previewTtsKey = `flashcard-preview-${entry.id}`;
                               const previewTtsLoading = previewAudioPlaying || isTtsPending(previewTtsKey);
@@ -12158,117 +12077,22 @@ function AppInner() {
                                       <button
                                         type="button"
                                         className="secondary-button flashcard-preview-feel-btn"
-                                        disabled={!!flashcardFeelLoadingMap[entry.id]}
+                                        disabled={feelQueued || flashcardFeelDispatching}
                                         onClick={() => {
-                                          void fetchFlashcardFeel(entry, {
-                                            revealOnSuccess: true,
-                                            showError: true,
-                                            setLoading: true,
-                                          });
+                                          queueFlashcardFeel(entry);
                                         }}
                                       >
-                                        {flashcardFeelLoadingMap[entry.id]
-                                          ? tr('Загружаем...', 'Laden...')
+                                        {feelQueued
+                                          ? tr('В очереди', 'In Warteschlange')
                                           : tr('Почувствовать слово', 'Feel the Word')}
                                       </button>
                                     </div>
-                                  </div>
-                                  {feelVisible && feel && (
-                                    <div className="flashcard-feel flashcard-preview-feel">
-                                      <strong>{tr('Почувствовать слово', 'Wort fuehlen')}</strong>
-                                      <div className="flashcard-feel-content">
-                                        {feelLines.map((line, idx) => (
-                                          <p key={`${entry.id}-feel-${idx}`}>{renderFeelLine(line, `${entry.id}-feel-${idx}`)}</p>
-                                        ))}
+                                    {feelStatus && (
+                                      <div className="flashcard-preview-feel-status">
+                                        {feelStatus}
                                       </div>
-                                      {entry.id && (
-                                        <div className="flashcard-feel-feedback">
-                                          <button
-                                            type="button"
-                                            className="secondary-button"
-                                            disabled={!!flashcardFeelFeedbackLoading[entry.id]}
-                                            onClick={async () => {
-                                              try {
-                                                setFlashcardFeelFeedbackLoading((prev) => ({ ...prev, [entry.id]: true }));
-                                                const response = await fetch('/api/webapp/flashcards/feel/feedback', {
-                                                  method: 'POST',
-                                                  headers: { 'Content-Type': 'application/json' },
-                                                  body: JSON.stringify({
-                                                    initData,
-                                                    entry_id: entry.id,
-                                                    liked: true,
-                                                  }),
-                                                });
-                                                if (!response.ok) {
-                                                  throw new Error(await response.text());
-                                                }
-                                                setFlashcardFeelVisibleMap((prev) => ({
-                                                  ...prev,
-                                                  [entry.id]: false,
-                                                }));
-                                                setFlashcards((prev) => prev.map((item) => {
-                                                  if (item.id !== entry.id) return item;
-                                                  const nextResponse = { ...(item.response_json || {}) };
-                                                  nextResponse.feel_feedback = 'like';
-                                                  return { ...item, response_json: nextResponse };
-                                                }));
-                                              } catch (error) {
-                                                setWebappError(`${tr('Ошибка feedback', 'Feedback-Fehler')}: ${error.message}`);
-                                              } finally {
-                                                setFlashcardFeelFeedbackLoading((prev) => ({ ...prev, [entry.id]: false }));
-                                              }
-                                            }}
-                                          >
-                                            {tr('👍 Нравится', '👍 Gefaellt mir')}
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="secondary-button"
-                                            disabled={!!flashcardFeelFeedbackLoading[entry.id]}
-                                            onClick={async () => {
-                                              try {
-                                                setFlashcardFeelFeedbackLoading((prev) => ({ ...prev, [entry.id]: true }));
-                                                const response = await fetch('/api/webapp/flashcards/feel/feedback', {
-                                                  method: 'POST',
-                                                  headers: { 'Content-Type': 'application/json' },
-                                                  body: JSON.stringify({
-                                                    initData,
-                                                    entry_id: entry.id,
-                                                    liked: false,
-                                                  }),
-                                                });
-                                                if (!response.ok) {
-                                                  throw new Error(await response.text());
-                                                }
-                                                setFlashcardFeelMap((prev) => {
-                                                  const next = { ...prev };
-                                                  delete next[entry.id];
-                                                  return next;
-                                                });
-                                                setFlashcardFeelVisibleMap((prev) => ({
-                                                  ...prev,
-                                                  [entry.id]: false,
-                                                }));
-                                                setFlashcards((prev) => prev.map((item) => {
-                                                  if (item.id !== entry.id) return item;
-                                                  const nextResponse = { ...(item.response_json || {}) };
-                                                  delete nextResponse.feel_explanation;
-                                                  nextResponse.feel_feedback = 'dislike';
-                                                  return { ...item, response_json: nextResponse };
-                                                }));
-                                              } catch (error) {
-                                                setWebappError(`${tr('Ошибка feedback', 'Feedback-Fehler')}: ${error.message}`);
-                                              } finally {
-                                                setFlashcardFeelFeedbackLoading((prev) => ({ ...prev, [entry.id]: false }));
-                                              }
-                                            }}
-                                          >
-                                            {tr('👎 Не нравится', '👎 Gefaellt mir nicht')}
-                                          </button>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
+                                    )}
+                                  </div>
                                   <div className="flashcard-actions-row flashcard-preview-footer-row">
                                     <button
                                       type="button"
@@ -12351,7 +12175,10 @@ function AppInner() {
                                   <button
                                     type="button"
                                     className="primary-button"
-                                    onClick={loadFlashcards}
+                                    onClick={async () => {
+                                      await dispatchQueuedFlashcardFeel('next_set');
+                                      await loadFlashcards();
+                                    }}
                                   >
                                     {tr('Next Set', 'Next Set')}
                                   </button>

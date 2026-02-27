@@ -1673,6 +1673,40 @@ body {
   height: 16px;
 }
 
+.translation-private-grammar-optin {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(102, 225, 235, 0.35);
+  background: rgba(9, 32, 44, 0.62);
+}
+
+.translation-private-grammar-optin-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.translation-private-grammar-optin-copy span {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: rgba(231, 248, 255, 0.96);
+}
+
+.translation-private-grammar-optin-copy small {
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: rgba(174, 214, 231, 0.9);
+}
+
+.translation-private-grammar-optin input {
+  width: 18px;
+  height: 18px;
+  accent-color: #27c0c8;
+}
+
 .result-inline-audio-row {
   display: inline-flex;
   align-items: center;
@@ -4678,6 +4712,15 @@ body {
   box-shadow: inset 0 1px 0 rgba(192, 211, 248, 0.11);
   font-size: 31px;
   font-weight: 500;
+}
+
+.flashcard-preview-feel-status {
+  width: 100%;
+  margin-top: 10px;
+  text-align: center;
+  font-size: 23px;
+  font-weight: 500;
+  color: rgba(190, 209, 244, 0.82);
 }
 
 .flashcard-preview-feel {
@@ -9033,6 +9076,13 @@ body {
   padding: 10px 16px !important;
   font-size: 14px !important;
   font-weight: 600 !important;
+}
+
+.webapp-flashcards .flashcard-preview-feel-status {
+  margin-top: 8px !important;
+  font-size: 13px !important;
+  line-height: 1.45 !important;
+  color: var(--t-text-muted) !important;
 }
 
 .webapp-flashcards .flashcard-feel,
