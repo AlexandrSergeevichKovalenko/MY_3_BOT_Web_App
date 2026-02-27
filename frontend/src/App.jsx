@@ -3886,6 +3886,16 @@ function AppInner() {
       return isTabletUserAgent || viewportWidth >= 700 || (maxSide >= 1000 && minSide >= 600);
     };
 
+    const isTelegramIOSClient = () => {
+      const tgPlatform = String(telegramApp?.platform || '').toLowerCase();
+      if (tgPlatform === 'ios') return true;
+      const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
+      const platform = typeof navigator !== 'undefined' ? String(navigator.platform || '') : '';
+      const maxTouchPoints = typeof navigator !== 'undefined' ? Number(navigator.maxTouchPoints || 0) : 0;
+      const isIPadDesktopUA = platform === 'MacIntel' && maxTouchPoints > 1;
+      return /iPad|iPhone|iPod/i.test(userAgent) || isIPadDesktopUA;
+    };
+
     const tryEnterTelegramFullscreen = () => {
       if (stopped) return;
       if (typeof telegramApp.requestFullscreen !== 'function') {
@@ -3932,7 +3942,11 @@ function AppInner() {
           }
           telegramApp.expand?.();
         }
-        telegramApp.disableVerticalSwipes?.();
+        if (isTelegramIOSClient()) {
+          telegramApp.disableVerticalSwipes?.();
+        } else {
+          telegramApp.enableVerticalSwipes?.();
+        }
       } catch (error) {
         setTelegramFullscreenMode(false);
         setTelegramTabletLike(false);
