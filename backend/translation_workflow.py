@@ -16,9 +16,8 @@ from backend.config_mistakes_data import (
     VALID_SUBCATEGORIES,
 )
 from backend.openai_manager import (
-    client,
-    get_or_create_openai_resources,
     generate_sentences_multilang,
+    llm_execute,
     run_check_translation_multilang,
     run_check_translation_story,
     run_check_story_guess_semantic,
@@ -243,10 +242,6 @@ async def generate_mystery_story(
 ) -> dict[str, Any]:
     task_name = "generate_mystery_story"
     system_instruction_key = "generate_mystery_story"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     user_message = f"""
     Story Type: "{story_type}"
@@ -256,31 +251,12 @@ async def generate_mystery_story(
 
     for attempt in range(4):
         try:
-            await client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=user_message,
+            content = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
             )
-
-            run = await client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-            )
-
-            while True:
-                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-                if run_status.status == "completed":
-                    break
-                await asyncio.sleep(1)
-
-            messages = await client.beta.threads.messages.list(thread_id=thread_id)
-            last_message = messages.data[0]
-            content = last_message.content[0].text.value
-
-            try:
-                await client.beta.threads.delete(thread_id=thread_id)
-            except Exception:
-                pass
 
             payload = _extract_json_payload(content)
             if payload:
@@ -795,10 +771,6 @@ async def generate_sentences_webapp(
     task_name = "generate_sentences"
     level_key = _normalize_level(level)
     system_instruction_key = f"generate_sentences_{level_key}"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     user_message = f"""
     Number of sentences: {num_sentences}. Topic: "{topic}".
@@ -806,31 +778,12 @@ async def generate_sentences_webapp(
 
     for attempt in range(5):
         try:
-            await client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=user_message,
+            sentences = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
             )
-
-            run = await client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-            )
-
-            while True:
-                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-                if run_status.status == "completed":
-                    break
-                await asyncio.sleep(1)
-
-            messages = await client.beta.threads.messages.list(thread_id=thread_id)
-            last_message = messages.data[0]
-            sentences = last_message.content[0].text.value
-
-            try:
-                await client.beta.threads.delete(thread_id=thread_id)
-            except Exception:
-                pass
 
             filtered = [s.strip() for s in sentences.split("\n") if s.strip()]
             if filtered:
@@ -1137,10 +1090,6 @@ async def check_translation(
 
     task_name = "check_translation"
     system_instruction_key = "check_translation"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     score = None
     categories: list[str] = []
@@ -1157,30 +1106,12 @@ async def check_translation(
     for attempt in range(3):
         try:
             logging.info("GPT started working on sentence %s", original_text)
-            await client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=user_message,
+            collected_text = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=2.0,
             )
-
-            run = await client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-            )
-            while True:
-                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-                if run_status.status == "completed":
-                    break
-                await asyncio.sleep(2)
-
-            messages = await client.beta.threads.messages.list(thread_id=thread_id)
-            last_message = messages.data[0]
-            collected_text = last_message.content[0].text.value
-
-            try:
-                await client.beta.threads.delete(thread_id=thread_id)
-            except Exception as exc:
-                logging.warning("Не удалось удалить thread: %s", exc)
 
             logging.info("GPT response for sentence %s: %s", original_text, collected_text)
 
@@ -1258,7 +1189,6 @@ async def check_translation(
 async def recheck_score_only(original_text: str, user_translation: str) -> int:
     task_name = "recheck_translation"
     system_instruction_key = "recheck_translation"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
 
     user_message = (
         f'Original sentence (Russian): "{original_text}"\n'
@@ -1266,30 +1196,13 @@ async def recheck_score_only(original_text: str, user_translation: str) -> int:
     )
 
     for attempt in range(3):
-        thread = await client.beta.threads.create()
-        thread_id = thread.id
         try:
-            await client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=user_message,
+            collected_text = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
             )
-            run = await client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-            )
-            while True:
-                run_status = await client.beta.threads.runs.retrieve(
-                    thread_id=thread_id,
-                    run_id=run.id,
-                )
-                if run_status.status == "completed":
-                    break
-                await asyncio.sleep(1)
-
-            messages = await client.beta.threads.messages.list(thread_id=thread_id)
-            last_message = messages.data[0]
-            collected_text = last_message.content[0].text.value
 
             match = re.search(r"Score:\s*(\d+)", collected_text, flags=re.IGNORECASE)
             if match:
@@ -1297,11 +1210,6 @@ async def recheck_score_only(original_text: str, user_translation: str) -> int:
 
         except Exception as exc:
             logging.warning("Recheck failed (attempt %s): %s", attempt + 1, exc)
-        finally:
-            try:
-                await client.beta.threads.delete(thread_id=thread_id)
-            except Exception as exc:
-                logging.warning("Не удалось удалить thread при recheck: %s", exc)
 
     return 0
 

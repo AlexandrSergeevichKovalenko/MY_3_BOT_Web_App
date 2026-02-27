@@ -51,6 +51,7 @@ from backend.openai_manager import (
     run_dictionary_collocations_multilang,
     run_generate_word_quiz,
     run_translate_subtitles_ru,
+    run_translate_subtitles_multilang,
 )
 from backend.database import (
     init_db,
@@ -1914,6 +1915,113 @@ def _detect_dictionary_direction(text: str) -> str | None:
     return None
 
 
+def _is_sentence_like_lookup(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return False
+    if "\n" in cleaned:
+        return True
+    tokens = re.findall(r"\S+", cleaned)
+    if len(tokens) >= 4:
+        return True
+    if len(tokens) >= 2 and any(ch in cleaned for ch in ".!?;:"):
+        return True
+    return False
+
+
+async def _coerce_sentence_lookup_payload(
+    payload: dict,
+    lookup_input: str,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    normalized_input = str(lookup_input or "").strip()
+    if not _is_sentence_like_lookup(normalized_input):
+        return payload if isinstance(payload, dict) else {}
+
+    forced_target = ""
+    try:
+        translated_lines = await run_translate_subtitles_multilang(
+            lines=[normalized_input],
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        if isinstance(translated_lines, list) and translated_lines:
+            forced_target = str(translated_lines[0] or "").strip()
+    except Exception:
+        logging.debug("Sentence translation fallback failed", exc_info=True)
+
+    if not forced_target or forced_target.casefold() == normalized_input.casefold():
+        return payload if isinstance(payload, dict) else {}
+
+    result = dict(payload or {})
+    result["word_source"] = normalized_input
+    result["word_target"] = forced_target
+    result["part_of_speech"] = "phrase"
+
+    if source_lang == "ru" and target_lang == "de":
+        result["word_ru"] = normalized_input
+        result["translation_de"] = forced_target
+    elif source_lang == "de" and target_lang == "ru":
+        result["word_de"] = normalized_input
+        result["translation_ru"] = forced_target
+
+    dedup_values: set[str] = {forced_target.casefold()}
+    merged_translations = [{"value": forced_target, "context": "full_sentence", "is_primary": True}]
+    existing = result.get("translations")
+    if isinstance(existing, list):
+        for item in existing:
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get("value") or "").strip()
+            if not value:
+                continue
+            key = value.casefold()
+            if key in dedup_values:
+                continue
+            dedup_values.add(key)
+            merged_translations.append(
+                {
+                    "value": value,
+                    "context": str(item.get("context") or "").strip(),
+                    "is_primary": False,
+                }
+            )
+            if len(merged_translations) >= 4:
+                break
+    result["translations"] = merged_translations
+
+    result["meanings"] = {
+        "primary": {
+            "value": forced_target,
+            "priority": 1,
+            "context": "full_sentence",
+            "example_source": normalized_input,
+            "example_target": forced_target,
+        },
+        "secondary": [],
+    }
+
+    usage_examples = [{"source": normalized_input, "target": forced_target}]
+    existing_examples = result.get("usage_examples")
+    if isinstance(existing_examples, list):
+        for item in existing_examples:
+            if not isinstance(item, dict):
+                continue
+            src = str(item.get("source") or "").strip()
+            tgt = str(item.get("target") or "").strip()
+            if not src or not tgt:
+                continue
+            if src.casefold() == normalized_input.casefold() and tgt.casefold() == forced_target.casefold():
+                continue
+            usage_examples.append({"source": src, "target": tgt})
+            if len(usage_examples) >= 3:
+                break
+    result["usage_examples"] = usage_examples
+
+    return result
+
+
 async def _detect_latin_source_language(text: str) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
@@ -2688,7 +2796,7 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
         target_value = str((raw or {}).get("translation_de") or "").strip()
         if target_value and not translations:
             translations = [{"value": target_value, "context": "base", "is_primary": True}]
-        return {
+        result = {
             **(raw if isinstance(raw, dict) else {}),
             "word_source": str((raw or {}).get("word_ru") or lookup_input).strip(),
             "word_target": target_value,
@@ -2700,6 +2808,7 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
             "source_lang": source_lang,
             "target_lang": target_lang,
         }
+        return await _coerce_sentence_lookup_payload(result, lookup_input, source_lang, target_lang)
     if direction == "de-ru":
         raw = await run_dictionary_lookup_de(lookup_input)
         translations = raw.get("translations") if isinstance(raw, dict) else []
@@ -2708,7 +2817,7 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
         target_value = str((raw or {}).get("translation_ru") or "").strip()
         if target_value and not translations:
             translations = [{"value": target_value, "context": "base", "is_primary": True}]
-        return {
+        result = {
             **(raw if isinstance(raw, dict) else {}),
             "word_source": str((raw or {}).get("word_de") or lookup_input).strip(),
             "word_target": target_value,
@@ -2720,6 +2829,7 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
             "source_lang": source_lang,
             "target_lang": target_lang,
         }
+        return await _coerce_sentence_lookup_payload(result, lookup_input, source_lang, target_lang)
     raw = await run_dictionary_lookup_multilang(
         word=lookup_input,
         source_lang=source_lang,
@@ -2727,7 +2837,7 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
     )
     if not isinstance(raw, dict):
         raw = {}
-    return {
+    result = {
         **raw,
         "word_source": str(raw.get("word_source") or lookup_input).strip(),
         "word_target": str(raw.get("word_target") or "").strip(),
@@ -2751,6 +2861,7 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
         "source_lang": source_lang,
         "target_lang": target_lang,
     }
+    return await _coerce_sentence_lookup_payload(result, lookup_input, source_lang, target_lang)
 
 
 def _lookup_tts_lang(lang_code: str) -> str:

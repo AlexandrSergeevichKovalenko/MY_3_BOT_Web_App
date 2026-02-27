@@ -26,7 +26,10 @@ _DEFAULT_RESPONSES_TASKS = {
     "feel_word_multilang",
     "check_translation",
     "check_translation_multilang",
+    "recheck_translation",
+    "generate_sentences",
     "generate_sentences_multilang",
+    "generate_mystery_story",
     "translate_subtitles_ru",
     "translate_subtitles_multilang",
 }
@@ -1224,6 +1227,14 @@ For verbs, phrases and sentences:
 - If the word has multiple meanings, clearly separate the most common meaning from secondary meanings.
 - Include slang meaning if it is frequently used in modern language.
 
+Sentence handling (CRITICAL):
+- If user input is a full sentence, translate the whole sentence literally.
+- Do NOT collapse sentence input into a single lemma/word.
+- In this case:
+  - word_ru must stay the full original sentence (normalized),
+  - translation_de must be the full sentence translation,
+  - translations[0].value must be the same full sentence translation and is_primary=true.
+
 Return a STRICT JSON object with the following fields:
 word_ru: string
 part_of_speech: string (noun/verb/adjective/adverb/phrase/other)
@@ -1292,6 +1303,14 @@ If it is a verb or phrase:
 - Show the most frequent everyday meaning as primary.
 - If multiple meanings exist, separate common usage from secondary meanings.
 - Include slang meaning if it is widely used.
+
+Sentence handling (CRITICAL):
+- If user input is a full sentence, translate the whole sentence literally.
+- Do NOT reduce a sentence to one keyword/lemma.
+- In this case:
+  - word_de must stay the full original sentence (normalized),
+  - translation_ru must be the full sentence translation,
+  - translations[0].value must be the same full sentence translation and is_primary=true.
 
 Return a STRICT JSON object with the following fields:
 word_de: string
@@ -1399,6 +1418,8 @@ Task:
 - Provide clear structured lexical explanation.
 - Focus on real-life usage, not abstract dictionary theory.
 - If slang meaning is common in modern speech, include it.
+- If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
+- Never collapse sentence input to a single word/lemma.
 
 Return STRICT JSON with keys:
 {
@@ -1452,6 +1473,7 @@ Return STRICT JSON with keys:
 
 Rules:
 - Output ONLY JSON.
+- For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
 - Provide 3 most frequent real-life translation variants in "translations" whenever possible.
   - First must be most common (is_primary=true).
   - Others reflect nuance (formal, informal, slang, emotional).

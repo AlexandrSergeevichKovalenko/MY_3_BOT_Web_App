@@ -8673,6 +8673,30 @@ body {
   background: rgba(220, 38, 38, 0.12);
 }
 
+.today-plan-item-actions.is-video-task {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+.today-plan-item-actions.is-video-task .today-video-start-btn {
+  white-space: nowrap;
+  padding: 0 14px;
+}
+
+.today-plan-item-actions.is-video-task .today-video-progress-badge {
+  min-width: 72px;
+  min-height: 40px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.today-plan-item-actions.is-video-task .today-video-vote {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 10px;
+  font-size: 15px;
+}
+
 .skill-report-panel {
   margin: 0 0 24px;
   padding: 24px;

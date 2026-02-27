@@ -4072,8 +4072,13 @@ function AppInner() {
       translations: !flashcardsOnly && selectedSections.has('translations'),
       theory: !flashcardsOnly && selectedSections.has('theory'),
       youtube: !flashcardsOnly && selectedSections.has('youtube'),
-      // Reader timer is active only in immersive reading mode.
-      reader: !flashcardsOnly && selectedSections.has('reader') && readerImmersive,
+      // Reader timer is active only while an opened book is actually being read:
+      // immersive mode + reader section visible + no archive/settings overlays.
+      reader: !flashcardsOnly
+        && selectedSections.has('reader')
+        && readerImmersive
+        && !readerArchiveOpen
+        && !readerSettingsOpen,
     };
 
     const prevVisibility = sectionVisibilitySnapshotRef.current;
@@ -4170,7 +4175,15 @@ function AppInner() {
       }
       return;
     }
-    if (!readerWasVisible && readerIsVisible && readerHasContent && readerTimerPaused && readerImmersive) {
+    if (
+      !readerWasVisible
+      && readerIsVisible
+      && readerHasContent
+      && readerTimerPaused
+      && readerImmersive
+      && !readerArchiveOpen
+      && !readerSettingsOpen
+    ) {
       setReaderTimerPaused(false);
       void startReaderSessionTracking();
       setGlobalPauseReason('');
@@ -4182,6 +4195,8 @@ function AppInner() {
     todayPlan,
     readerHasContent,
     readerImmersive,
+    readerArchiveOpen,
+    readerSettingsOpen,
     readerTimerPaused,
     readerSessionStartedAt,
     readerSessionId,
@@ -4473,6 +4488,8 @@ function AppInner() {
       && !flashcardsOnly
       && selectedSections.has('reader')
       && readerImmersive
+      && !readerArchiveOpen
+      && !readerSettingsOpen
       && String(readerContent || '').trim()
       && !readerTimerPaused
     );
@@ -4483,7 +4500,17 @@ function AppInner() {
     if (readerSessionId) {
       stopReaderSessionTracking(readerSessionId);
     }
-  }, [isWebAppMode, initData, flashcardsOnly, selectedSections, readerImmersive, readerContent, readerTimerPaused]);
+  }, [
+    isWebAppMode,
+    initData,
+    flashcardsOnly,
+    selectedSections,
+    readerImmersive,
+    readerArchiveOpen,
+    readerSettingsOpen,
+    readerContent,
+    readerTimerPaused,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -9816,16 +9843,16 @@ function AppInner() {
                               </div>
                             )}
                           </div>
-                          <div className="today-plan-item-actions">
+                          <div className={`today-plan-item-actions ${isVideoTask ? 'is-video-task' : ''}`}>
                             <button
                               type="button"
-                              className="secondary-button"
+                              className={`secondary-button ${isVideoTask ? 'today-video-start-btn' : ''}`}
                               onClick={() => startTodayTask(item)}
                               disabled={Boolean(loadingAction) || (!isVideoTask && done)}
                             >
                               {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
                             </button>
-                            <div className={`today-task-progress-badge ${done ? 'is-done' : ''}`} title={done ? tr('Задача выполнена', 'Aufgabe erledigt') : `${Math.round(progressPercent)}%`}>
+                            <div className={`today-task-progress-badge ${isVideoTask ? 'today-video-progress-badge' : ''} ${done ? 'is-done' : ''}`} title={done ? tr('Задача выполнена', 'Aufgabe erledigt') : `${Math.round(progressPercent)}%`}>
                               {done ? '✅' : `⭕ ${Math.round(progressPercent)}%`}
                             </div>
                             {isVideoTask && (
