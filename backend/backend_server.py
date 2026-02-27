@@ -10910,6 +10910,7 @@ def get_webapp_flashcard_set():
             )
             profile_payload["server_items"] = len(decorated_items)
         else:
+            selection_diagnostics: dict[str, object] = {}
             items = get_flashcard_set(
                 user_id=user_id,
                 set_size=set_size,
@@ -10918,9 +10919,13 @@ def get_webapp_flashcard_set():
                 folder_id=resolved_folder_id,
                 source_lang=source_lang,
                 target_lang=target_lang,
-                randomize_pool=(training_mode == "blocks"),
+                randomize_pool=(training_mode in {"blocks", "quiz"}),
+                exclude_recent_seen=(training_mode != "quiz"),
+                wrong_source=("fsrs_review_log" if training_mode == "quiz" else "legacy"),
+                diagnostics=selection_diagnostics,
             )
             profile_payload["server_items"] = len(items)
+            profile_payload["selection"] = selection_diagnostics
             direction = f"{source_lang}-{target_lang}"
             decorated_items = [
                 _decorate_dictionary_item(

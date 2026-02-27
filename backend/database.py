@@ -3428,43 +3428,89 @@ def get_flashcard_set(
     source_lang: str | None = None,
     target_lang: str | None = None,
     randomize_pool: bool = False,
+    exclude_recent_seen: bool = True,
+    wrong_source: str = "legacy",
+    diagnostics: dict | None = None,
 ) -> list[dict]:
     if not user_id:
         return []
+    debug_info = diagnostics if isinstance(diagnostics, dict) else None
     wrong_ids: list[int] = []
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            wrong_where = (
-                "s.user_id = %s "
-                "AND s.last_result = FALSE "
-                "AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'"
-            )
-            wrong_params = [user_id]
             language_filter_sql_q, language_params = _build_language_pair_filter(
                 source_lang,
                 target_lang,
                 table_alias="q",
             )
-            if language_filter_sql_q:
-                wrong_where += language_filter_sql_q
-                wrong_params.extend(language_params)
-            if folder_mode == "folder" and folder_id is not None:
-                wrong_where += " AND q.folder_id = %s"
-                wrong_params.append(folder_id)
-            elif folder_mode == "none":
-                wrong_where += " AND q.folder_id IS NULL"
-            wrong_params.append(wrong_size)
-            cursor.execute(f"""
-                SELECT s.entry_id
-                FROM bt_3_flashcard_stats s
-                JOIN bt_3_webapp_dictionary_queries q ON q.id = s.entry_id
-                WHERE {wrong_where}
-                ORDER BY s.updated_at DESC
-                LIMIT %s;
-            """, wrong_params)
-            wrong_ids = [row[0] for row in cursor.fetchall()]
+            normalized_wrong_source = str(wrong_source or "legacy").strip().lower()
+            if normalized_wrong_source == "fsrs_review_log":
+                wrong_where = (
+                    "l.user_id = %s "
+                    "AND l.rating = 1 "
+                    "AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'"
+                )
+                wrong_params = [user_id]
+                if language_filter_sql_q:
+                    wrong_where += language_filter_sql_q
+                    wrong_params.extend(language_params)
+                if folder_mode == "folder" and folder_id is not None:
+                    wrong_where += " AND q.folder_id = %s"
+                    wrong_params.append(folder_id)
+                elif folder_mode == "none":
+                    wrong_where += " AND q.folder_id IS NULL"
+                wrong_params.append(wrong_size)
+                cursor.execute(f"""
+                    WITH latest_review AS (
+                        SELECT
+                            l.card_id,
+                            l.rating,
+                            l.reviewed_at,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY l.card_id
+                                ORDER BY l.reviewed_at DESC
+                            ) AS rn
+                        FROM bt_3_card_review_log l
+                        JOIN bt_3_webapp_dictionary_queries q ON q.id = l.card_id
+                        WHERE {wrong_where}
+                    )
+                    SELECT card_id
+                    FROM latest_review
+                    WHERE rn = 1
+                    ORDER BY reviewed_at DESC
+                    LIMIT %s;
+                """, wrong_params)
+                wrong_ids = [row[0] for row in cursor.fetchall()]
+            else:
+                wrong_where = (
+                    "s.user_id = %s "
+                    "AND s.last_result = FALSE "
+                    "AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'"
+                )
+                wrong_params = [user_id]
+                if language_filter_sql_q:
+                    wrong_where += language_filter_sql_q
+                    wrong_params.extend(language_params)
+                if folder_mode == "folder" and folder_id is not None:
+                    wrong_where += " AND q.folder_id = %s"
+                    wrong_params.append(folder_id)
+                elif folder_mode == "none":
+                    wrong_where += " AND q.folder_id IS NULL"
+                wrong_params.append(wrong_size)
+                cursor.execute(f"""
+                    SELECT s.entry_id
+                    FROM bt_3_flashcard_stats s
+                    JOIN bt_3_webapp_dictionary_queries q ON q.id = s.entry_id
+                    WHERE {wrong_where}
+                    ORDER BY s.updated_at DESC
+                    LIMIT %s;
+                """, wrong_params)
+                wrong_ids = [row[0] for row in cursor.fetchall()]
+            if debug_info is not None:
+                debug_info["wrong_source"] = normalized_wrong_source
+                debug_info["wrong_ids_initial"] = len(wrong_ids)
 
-            if len(wrong_ids) < wrong_size:
+            if normalized_wrong_source != "fsrs_review_log" and len(wrong_ids) < wrong_size:
                 extra_where = (
                     "s.user_id = %s "
                     "AND s.entry_id <> ALL(%s::bigint[]) "
@@ -3489,6 +3535,8 @@ def get_flashcard_set(
                     LIMIT %s;
                 """, extra_params)
                 wrong_ids.extend([row[0] for row in cursor.fetchall()])
+            if debug_info is not None:
+                debug_info["wrong_ids_final"] = len(wrong_ids)
 
             base_where = (
                 "user_id = %s "
@@ -3508,24 +3556,43 @@ def get_flashcard_set(
             needed = max(set_size - len(wrong_ids), 0)
             random_rows = []
             if needed > 0:
-                sample_cap = max(needed * 12, 300)
+                if randomize_pool and not exclude_recent_seen:
+                    sample_cap = max(needed * 40, 2000)
+                else:
+                    sample_cap = max(needed * 12, 300)
+                if debug_info is not None:
+                    debug_info["needed_after_wrong_ids"] = needed
+                    debug_info["sample_cap"] = sample_cap
+                    debug_info["randomize_pool"] = bool(randomize_pool)
+                    debug_info["exclude_recent_seen"] = bool(exclude_recent_seen)
                 sample_order_sql = "ORDER BY RANDOM()" if randomize_pool else "ORDER BY created_at DESC"
+                sample_where = base_where
+                sample_params = list(base_params)
+                if exclude_recent_seen:
+                    sample_where += (
+                        " AND id NOT IN ("
+                        " SELECT entry_id"
+                        " FROM bt_3_flashcard_seen"
+                        " WHERE user_id = %s"
+                        "   AND seen_at >= NOW() - (%s * INTERVAL '1 hour')"
+                        " )"
+                    )
+                    sample_params.extend([user_id, FLASHCARD_RECENT_SEEN_HOURS])
+                sample_params.append(sample_cap)
                 cursor.execute(f"""
                     SELECT id, word_ru, translation_de, word_de, translation_ru, response_json
                     FROM bt_3_webapp_dictionary_queries
-                    WHERE {base_where}
-                      AND id NOT IN (
-                          SELECT entry_id
-                          FROM bt_3_flashcard_seen
-                          WHERE user_id = %s
-                            AND seen_at >= NOW() - (%s * INTERVAL '1 hour')
-                      )
+                    WHERE {sample_where}
                     {sample_order_sql}
                     LIMIT %s;
-                """, [*base_params, user_id, FLASHCARD_RECENT_SEEN_HOURS, sample_cap])
+                """, sample_params)
                 candidate_rows = list(cursor.fetchall())
+                if debug_info is not None:
+                    debug_info["sample_candidates"] = len(candidate_rows)
                 random.shuffle(candidate_rows)
                 random_rows = candidate_rows[:needed]
+                if debug_info is not None:
+                    debug_info["sample_selected"] = len(random_rows)
 
                 if len(random_rows) < needed:
                     fallback_where = (
@@ -3542,7 +3609,10 @@ def get_flashcard_set(
                         fallback_params.append(folder_id)
                     elif folder_mode == "none":
                         fallback_where += " AND folder_id IS NULL"
-                    fallback_cap = max(needed * 20, 600)
+                    if randomize_pool and not exclude_recent_seen:
+                        fallback_cap = max(needed * 80, 4000)
+                    else:
+                        fallback_cap = max(needed * 20, 600)
                     fallback_order_sql = "ORDER BY RANDOM()" if randomize_pool else "ORDER BY created_at DESC"
                     fallback_params.append(fallback_cap)
                     cursor.execute(f"""
@@ -3553,6 +3623,9 @@ def get_flashcard_set(
                         LIMIT %s;
                     """, fallback_params)
                     fallback_rows = list(cursor.fetchall())
+                    if debug_info is not None:
+                        debug_info["fallback_cap"] = fallback_cap
+                        debug_info["fallback_candidates"] = len(fallback_rows)
                     existing_ids = {row[0] for row in random_rows}
                     for row in fallback_rows:
                         if row[0] in existing_ids:
@@ -3561,6 +3634,8 @@ def get_flashcard_set(
                         existing_ids.add(row[0])
                         if len(random_rows) >= needed:
                             break
+                    if debug_info is not None:
+                        debug_info["fallback_selected_total"] = len(random_rows)
 
             if wrong_ids:
                 wrong_where = (
@@ -3597,6 +3672,10 @@ def get_flashcard_set(
             "translation_ru": row[4],
             "response_json": row[5],
         })
+    if debug_info is not None:
+        debug_info["wrong_rows_returned"] = len(wrong_rows)
+        debug_info["random_rows_returned"] = len(random_rows)
+        debug_info["returned_items"] = len(items)
     return items
 
 
@@ -5542,6 +5621,17 @@ def update_daily_plan_item_status(
                 """
                 UPDATE bt_3_daily_plan_items i
                 SET
+                    payload = CASE
+                        WHEN %s = 'done' THEN
+                            COALESCE(i.payload, '{}'::jsonb)
+                            || jsonb_build_object(
+                                'timer_running', false,
+                                'timer_paused', false,
+                                'timer_started_at', NULL,
+                                'timer_updated_at', NOW() AT TIME ZONE 'UTC'
+                            )
+                        ELSE COALESCE(i.payload, '{}'::jsonb)
+                    END,
                     status = %s,
                     completed_at = CASE
                         WHEN %s = 'done' THEN NOW()
@@ -5562,7 +5652,7 @@ def update_daily_plan_item_status(
                     i.status,
                     i.completed_at;
                 """,
-                (normalized, normalized, int(item_id), int(user_id)),
+                (normalized, normalized, normalized, int(item_id), int(user_id)),
             )
             row = cursor.fetchone()
             if not row:

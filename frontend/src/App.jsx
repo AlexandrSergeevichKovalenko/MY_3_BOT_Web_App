@@ -1994,6 +1994,8 @@ function AppInner() {
   const getTodayItemElapsedSeconds = (item, nowMs = Date.now()) => {
     const payload = getTodayItemTimerPayload(item);
     const baseSeconds = Math.max(0, Math.floor(Number(payload?.timer_seconds || 0)));
+    const isDone = String(item?.status || '').toLowerCase() === 'done';
+    if (isDone) return baseSeconds;
     const timerRunning = Boolean(payload?.timer_running);
     const startedAtRaw = String(payload?.timer_started_at || '').trim();
     if (!timerRunning || !startedAtRaw) return baseSeconds;
@@ -10054,34 +10056,51 @@ function AppInner() {
 
             {!flashcardsOnly && isSectionVisible('skill_training') && (
               <section className="webapp-section theory-section skill-training-section" ref={skillTrainingRef}>
-                <div className="webapp-section-title webapp-section-title-with-logo">
-                  <h2>
-                    {tr('Тренируем навык', 'Skill-Training')}: {String(
-                      skillTrainingData?.package?.focus?.skill_name
-                      || skillTrainingData?.skill?.title
-                      || tr('Навык', 'Skill')
-                    )}
-                  </h2>
-                  <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                    {tr('← Назад', '← Zurueck')}
-                  </button>
-                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
-                </div>
-                <div className="theory-actions-top">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => startSkillPractice(skillTrainingData?.skill, { forceRefresh: true })}
-                    disabled={skillTrainingLoading || !skillTrainingData?.skill?.skill_id}
-                  >
-                    {skillTrainingLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
-                  </button>
-                  <button type="button" className="primary-button" onClick={finishSkillTraining}>
-                    {tr('Закончить тренировку навыка', 'Skill-Training beenden')}
-                  </button>
+                <div className="skill-training-top-card">
+                  <div className="skill-training-top-head">
+                    <div className="skill-training-top-copy">
+                      <h2>
+                        {tr('Тренируем навык', 'Skill-Training')}: {String(
+                          skillTrainingData?.package?.focus?.skill_name
+                          || skillTrainingData?.skill?.title
+                          || tr('Навык', 'Skill')
+                        )}
+                      </h2>
+                    </div>
+                    <img src={heroStickerSrc} alt="" aria-hidden="true" className="skill-training-mascot" />
+                  </div>
+
+                  <div className="skill-training-action-row">
+                    <button type="button" className="section-home-back skill-training-back-btn" onClick={goHomeScreen}>
+                      {tr('← Назад', '← Zurueck')}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button skill-training-refresh-btn"
+                      onClick={() => startSkillPractice(skillTrainingData?.skill, { forceRefresh: true })}
+                      disabled={skillTrainingLoading || !skillTrainingData?.skill?.skill_id}
+                    >
+                      {skillTrainingLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
+                    </button>
+                    <button type="button" className="primary-button skill-training-finish-btn" onClick={finishSkillTraining}>
+                      {tr('Закончить тренировку навыка', 'Skill-Training beenden')}
+                    </button>
+                  </div>
+
+                  {skillTrainingLoading && (
+                    <div className="skill-training-status-block" role="status" aria-live="polite">
+                      <div className="skill-training-status-row">
+                        <span className="skill-training-status-indicator" aria-hidden="true" />
+                        <span>{tr('Обновляем...', 'Aktualisieren...')}</span>
+                      </div>
+                      <div className="skill-training-status-row">
+                        <span className="skill-training-status-indicator is-subtle" aria-hidden="true" />
+                        <span>{tr('Готовим тренировку навыка...', 'Skill-Training wird vorbereitet...')}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {skillTrainingLoading && <div className="webapp-muted">{tr('Готовим тренировку навыка...', 'Skill-Training wird vorbereitet...')}</div>}
                 {skillTrainingError && <div className="webapp-error">{skillTrainingError}</div>}
 
                 {!skillTrainingLoading && !skillTrainingError && skillTrainingData?.package && (
@@ -10775,15 +10794,51 @@ function AppInner() {
                 {isSectionVisible('youtube') && (
                   <section className={`webapp-video ${youtubeWatchFocusMode ? 'is-watch-focus' : ''}`} ref={youtubeRef}>
                     {youtubeWatchFocusMode && (
-                      <div className="youtube-focus-actions">
-                        <button
-                          type="button"
-                          className="youtube-restore-panel-btn"
-                          onClick={() => setYoutubeForceShowPanel(true)}
-                          title={tr('Назад к настройкам', 'Zurueck zu den Einstellungen')}
-                        >
-                          <span aria-hidden="true">←</span> {tr('Назад', 'Zurueck')}
-                        </button>
+                      <div className="youtube-learning-topbar">
+                        <div className="youtube-learning-topbar-main">
+                          <button
+                            type="button"
+                            className="youtube-restore-panel-btn"
+                            onClick={() => setYoutubeForceShowPanel(true)}
+                            title={tr('Назад к настройкам', 'Zurueck zu den Einstellungen')}
+                          >
+                            <span aria-hidden="true">←</span> {tr('Назад', 'Zurueck')}
+                          </button>
+                          <div className="youtube-learning-topbar-copy">
+                            <strong>{tr('Видео YouTube', 'YouTube Video')}</strong>
+                            <span>{formatCompactTimer(youtubeCurrentTime || 0)}</span>
+                          </div>
+                        </div>
+                        <div className="youtube-learning-topbar-actions">
+                          <button
+                            type="button"
+                            className={`youtube-toolbar-btn ${youtubeTranslationEnabled ? 'is-active' : ''}`}
+                            onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
+                            disabled={!youtubeTranscript.length}
+                          >
+                            {youtubeTranslationEnabled
+                              ? `${tr('Скрыть', 'Ausblenden')} ${getNativeSubtitleCode()}`
+                              : `${tr('Показать', 'Anzeigen')} ${getNativeSubtitleCode()}`}
+                          </button>
+                          <button
+                            type="button"
+                            className={`youtube-toolbar-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
+                            onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
+                            disabled={!youtubeTranscript.length}
+                          >
+                            {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
+                          </button>
+                          <button
+                            type="button"
+                            className={`youtube-toolbar-btn ${youtubeAppFullscreen ? 'is-active' : ''}`}
+                            onClick={() => setYoutubeAppFullscreen((prev) => !prev)}
+                            disabled={!youtubeId}
+                          >
+                            {youtubeAppFullscreen
+                              ? tr('Свернуть', 'Minimieren')
+                              : tr('Развернуть во весь экран', 'Vollbildmodus')}
+                          </button>
+                        </div>
                       </div>
                     )}
                     {!youtubeWatchFocusMode && (
@@ -11049,7 +11104,11 @@ function AppInner() {
                       </div>
                     )}
                     {youtubeTranscript.length > 0 && !youtubeOverlayEnabled && (
-                      <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
+                      <div className="youtube-subtitles-card youtube-subtitles-card-primary">
+                        <div className="youtube-subtitles-card-head">
+                          <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
+                        </div>
+                        <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
                         <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
                           {(() => {
                             const activeIndex = getActiveSubtitleIndex();
@@ -11064,9 +11123,14 @@ function AppInner() {
                           })()}
                         </div>
                       </div>
+                      </div>
                     )}
                     {youtubeTranscript.length > 0 && youtubeTranslationEnabled && !youtubeOverlayEnabled && (
-                      <div className="webapp-subtitles is-translation">
+                      <div className="youtube-subtitles-card youtube-subtitles-card-translation">
+                        <div className="youtube-subtitles-card-head">
+                          <span>{getNativeSubtitleCode()}</span>
+                        </div>
+                        <div className="webapp-subtitles is-translation">
                         <div className="webapp-subtitles-list">
                           {(() => {
                             const activeIndex = getActiveSubtitleIndex();
@@ -11083,6 +11147,7 @@ function AppInner() {
                             });
                           })()}
                         </div>
+                      </div>
                       </div>
                     )}
                   </section>
@@ -11557,7 +11622,6 @@ function AppInner() {
                                 const progress = Math.max(0, Math.min(100, Number(item?.progress_percent || 0)));
                                 const coverUrl = getReaderCoverUrl(item);
                                 const initials = getReaderCoverInitials(item?.title);
-                                const [fromColor, toColor] = getReaderCoverGradient(item);
                                 const meta = buildReaderArchiveMeta(item);
                                 return (
                                   <button
@@ -11568,7 +11632,7 @@ function AppInner() {
                                   >
                                     <div
                                       className="reader-library-cover"
-                                      style={{ background: `linear-gradient(160deg, ${fromColor}, ${toColor})` }}
+                                      style={coverUrl ? undefined : { background: '#111827' }}
                                     >
                                       {coverUrl ? (
                                         <img src={coverUrl} alt="" loading="lazy" className="reader-archive-cover-img" />
