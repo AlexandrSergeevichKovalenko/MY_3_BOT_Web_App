@@ -319,6 +319,18 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
+.webapp-page.is-android-scroll {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
 .webapp-page.is-telegram-fullscreen {
   padding-top: calc(env(safe-area-inset-top, 0px) + 64px);
 }

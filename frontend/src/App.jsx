@@ -67,6 +67,12 @@ function AppInner() {
       window.location.pathname === '/webapp/review';
     return Boolean(telegramApp?.initData) || params.get('mode') === 'webapp' || isWebappPath;
   }, [telegramApp]);
+  const isAndroidTelegramClient = useMemo(() => {
+    const tgPlatform = String(telegramApp?.platform || '').toLowerCase();
+    if (tgPlatform.includes('android')) return true;
+    const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
+    return /Android/i.test(userAgent);
+  }, [telegramApp]);
 
   const [initData, setInitData] = useState(telegramApp?.initData || '');
   const [browserAuthLoading, setBrowserAuthLoading] = useState(false);
@@ -9052,7 +9058,7 @@ function AppInner() {
 
   if (isWebAppMode) {
     return (
-      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''}`}>
+      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${isAndroidTelegramClient ? 'is-android-scroll' : ''}`}>
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
             <div className="webapp-brand">
