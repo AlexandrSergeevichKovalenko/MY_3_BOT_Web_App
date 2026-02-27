@@ -43,9 +43,7 @@ from datetime import datetime
 import logging
 import sys
 from backend.openai_manager import (
-    client,
-    get_or_create_openai_resources,
-    system_message,
+    llm_execute,
     run_dictionary_lookup,
     run_dictionary_lookup_de,
     run_dictionary_lookup_multilang,
@@ -3585,11 +3583,6 @@ async def generate_sentences(user_id, num_sentances, context: CallbackContext = 
     
     task_name = f"generate_sentences"
     system_instruction_key = f"generate_sentences"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-            
-    # ✅ Создаём новый thread каждый раз
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     chosen_topic = context.user_data.get("chosen_topic", "Random sentences")  # Default: General topic
 
@@ -3602,34 +3595,12 @@ async def generate_sentences(user_id, num_sentances, context: CallbackContext = 
     #Генерация с помощью GPT     
     for attempt in range(5): # Пробуем до 5 раз при ошибке
         try:
-            await client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=user_message
+            sentences = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
             )
-
-            run = await client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id
-            )
-            while True:
-                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-                if run_status.status == "completed":
-                    break
-                await asyncio.sleep(1)  # подожди чуть-чуть
-            
-
-            # Получаем сообщения после завершения run
-            messages = await client.beta.threads.messages.list(thread_id=thread_id)
-            last_message = messages.data[0]  # обычно последнее — ответ
-            sentences = last_message.content[0].text.value
-
-            try:
-                await client.beta.threads.delete(thread_id=thread_id)
-                logging.info(f"🗑️ Thread удалён: {thread_id}")
-
-            except Exception as e:
-                logging.warning(f"Не удалось удалить thread: {e}")
 
             # response = await client.chat.completions.create(
             #     model = "gpt-4-turbo",
@@ -3689,11 +3660,6 @@ async def recheck_score_only(original_text, user_translation):
 
     task_name = "recheck_translation"
     system_instruction_key = "recheck_translation"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-            
-    # ✅ Создаём новый thread каждый раз
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     user_message = f"""
     Original sentence (Russian): "{original_text}"  
@@ -3703,34 +3669,12 @@ async def recheck_score_only(original_text, user_translation):
     #Генерация с помощью GPT     
     for attempt in range(3): # Пробуем до 3 раз при ошибке
         try:
-            await client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=user_message
+            text = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
             )
-
-            run = await client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id
-            )
-            while True:
-                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-                if run_status.status == "completed":
-                    break
-                await asyncio.sleep(1)  # подожди чуть-чуть
-            
-
-            # Получаем сообщения после завершения run
-            messages = await client.beta.threads.messages.list(thread_id=thread_id)
-            last_message = messages.data[0]  # обычно последнее — ответ
-            text = last_message.content[0].text.value
-
-            try:
-                await client.beta.threads.delete(thread_id=thread_id)
-                logging.info(f"🗑️ Thread удалён: {thread_id}")
-
-            except Exception as e:
-                logging.warning(f"Не удалось удалить thread: {e}")
 
             
             print(f"🔁 Ответ на перепроверку оценки:\n{text}")
@@ -3755,11 +3699,6 @@ async def check_translation(original_text, user_translation, update: Update | No
 
     task_name = f"check_translation"
     system_instruction_key = f"check_translation"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    # ✅ Создаём новый thread каждый раз
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     # Initialize variables with default values at the beginning of the function
     score = None  # Default score
@@ -3790,35 +3729,13 @@ async def check_translation(original_text, user_translation, update: Update | No
             logging.info(f" GPT started working on {original_text} sentence. Passing data to GPT model")
             start_time = asyncio.get_running_loop().time()
             
-            await client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=user_message
+            collected_text = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=2.0,
             )
-
-            run = await client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id
-            )
-            while True:
-                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-                if run_status.status == "completed":
-                    break
-                await asyncio.sleep(2)  # подожди чуть-чуть
-
-
-            # Получаем сообщения после завершения run
-            messages = await client.beta.threads.messages.list(thread_id=thread_id)
-            last_message = messages.data[0]  # обычно последнее — ответ
-            collected_text = last_message.content[0].text.value
             logging.info(f"We got a reply from GPT model for sentence {original_text}")
-            
-            try:
-                await client.beta.threads.delete(thread_id=thread_id)
-                logging.info(f"🗑️ Thread удалён: {thread_id}")
-
-            except Exception as e:
-                logging.warning(f"Не удалось удалить thread: {e}")
                 
 
             # ✅ Логируем полный ответ для анализа
@@ -4068,11 +3985,6 @@ async def handle_explain_request(update: Update, context: CallbackContext):
 async def check_translation_with_claude(original_text, user_translation, update, context):
     task_name = f"check_translation_with_claude"
     system_instruction_key = f"check_translation_with_claude"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-            
-    # ✅ Создаём новый thread каждый раз
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     if update.callback_query:
         user = update.callback_query.from_user
@@ -4118,35 +4030,12 @@ Possible Synonyms: ...
             #     max_tokens=500,
             #     temperature=0.2
             # )
-            
-            await client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=user_message
+            response = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
             )
-
-            run = await client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id
-            )
-            while True:
-                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-                if run_status.status == "completed":
-                    break
-                await asyncio.sleep(1)  # подожди чуть-чуть
-            
-
-            # Получаем сообщения после завершения run
-            messages = await client.beta.threads.messages.list(thread_id=thread_id)
-            last_message = messages.data[0]  # обычно последнее — ответ
-            response = last_message.content[0].text.value
-
-            try:
-                await client.beta.threads.delete(thread_id=thread_id)
-                logging.info(f"🗑️ Thread удалён: {thread_id}")
-
-            except Exception as e:
-                logging.warning(f"Не удалось удалить thread: {e}")
 
             logging.info(f"📥 FULL RESPONSE BODY: {response}")
 
@@ -5071,8 +4960,6 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
     #client = openai.AsyncOpenAI(api_key=openai.api_key)
     task_name = f"send_me_analytics_and_recommend_me"
     system_instruction_key = f"send_me_analytics_and_recommend_me"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-            
 
     #get all user_id's from _DB to itterate over them and send them recommendations
     with get_db_connection() as conn:
@@ -5097,10 +4984,6 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
                     result = cursor.fetchone()
                     username = result[0] if result else "Unknown User"
 
-                # ✅ Создаём новый thread каждый раз
-                thread = await client.beta.threads.create()
-                thread_id = thread.id
-
             # ✅ Запрашиваем тему у OpenAI
             user_message = f"""
             - **Категория ошибки:** {top_mistake_category}  
@@ -5110,39 +4993,18 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
 
             for attempt in range(5):
                 try:
-                    await client.beta.threads.messages.create(
-                    thread_id=thread_id,
-                    role="user",
-                    content=user_message
-                )
-
-                    run = await client.beta.threads.runs.create(
-                        thread_id=thread_id,
-                        assistant_id=assistant_id
+                    topic = await llm_execute(
+                        task_name=task_name,
+                        system_instruction_key=system_instruction_key,
+                        user_message=user_message,
+                        poll_interval_seconds=1.0,
                     )
-                    while True:
-                        run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-                        if run_status.status == "completed":
-                            break
-                        await asyncio.sleep(1)  # подожди чуть-чуть
-
-                    # Получаем сообщения после завершения run
-                    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-                    last_message = messages.data[0]  # обычно последнее — ответ
-                    topic = last_message.content[0].text.value
 
                     # response = await client.chat.completions.create(
                     # model="gpt-4-turbo",
                     # messages=[{"role": "user", "content": prompt}]
                     # )
                     # topic = response.choices[0].message.content.strip()
-                    
-                    try:
-                        await client.beta.threads.delete(thread_id=thread_id)
-                        logging.info(f"🗑️ Thread удалён: {thread_id}")
-
-                    except Exception as e:
-                        logging.warning(f"Не удалось удалить thread: {e}")
 
                     print(f"📌 Определена тема: {topic}")
                     break
@@ -5649,37 +5511,16 @@ async def mistakes_to_voice(username, sentence_pairs):
             return []
         system_instruction_key = "tts_chunk_de"
         task_name = "tts_chunk_de"
-        assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-        thread = await client.beta.threads.create()
-        thread_id = thread.id
 
         try:
-            await client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=sentence,
+            text = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=sentence,
+                poll_interval_seconds=1.0,
             )
-
-            run = await client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-            )
-
-            while True:
-                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-                if run_status.status == "completed":
-                    break
-                await asyncio.sleep(1)
-
-            messages = await client.beta.threads.messages.list(thread_id=thread_id)
-            last_message = messages.data[0]
-            text = last_message.content[0].text.value.strip()
-        finally:
-            try:
-                await client.beta.threads.delete(thread_id=thread_id)
-            except Exception:
-                pass
+        except Exception:
+            text = ""
 
         try:
             chunks = json.loads(text)

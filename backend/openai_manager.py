@@ -12,8 +12,44 @@ from contextlib import contextmanager
 from dotenv import load_dotenv
 from pathlib import Path
 
+# Загружаем переменные окружения как можно раньше, чтобы режим gateway
+# корректно читался из backend/.env и из окружения Railway.
+load_dotenv(dotenv_path=Path(__file__).parent / ".env")
+
 FEEL_POLL_INTERVAL_SECONDS = 1.0
 FEEL_THREAD_DELETE_TIMEOUT_SECONDS = 0.75
+_DEFAULT_GATEWAY_MODE = "assistants"
+_DEFAULT_GATEWAY_MODEL = "gpt-4.1-2025-04-14"
+_DEFAULT_RESPONSES_TASKS = {
+    "dictionary_assistant_multilang",
+    "feel_word",
+    "feel_word_multilang",
+    "check_translation",
+    "check_translation_multilang",
+    "generate_sentences_multilang",
+    "translate_subtitles_ru",
+    "translate_subtitles_multilang",
+}
+
+
+def _get_gateway_mode() -> str:
+    return str(os.getenv("LLM_GATEWAY_MODE") or _DEFAULT_GATEWAY_MODE).strip().lower() or _DEFAULT_GATEWAY_MODE
+
+
+def _get_gateway_model() -> str:
+    return (
+        str(os.getenv("LLM_GATEWAY_MODEL") or os.getenv("OPENAI_MODEL") or _DEFAULT_GATEWAY_MODEL).strip()
+        or _DEFAULT_GATEWAY_MODEL
+    )
+
+
+def _get_responses_tasks() -> set[str]:
+    raw = str(os.getenv("LLM_RESPONSES_TASKS") or "").strip()
+    if raw:
+        parsed = {part.strip().lower() for part in raw.split(",") if part.strip()}
+        if parsed:
+            return parsed
+    return set(_DEFAULT_RESPONSES_TASKS)
 
 
 system_message = {
@@ -1644,9 +1680,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
-# Загружаем переменные окружения из .env-файла
-load_dotenv(dotenv_path=Path(__file__).parent/".env")
-
 # --- Базовая функция для получения соединения с БД ---
 # Дублируем, так как openai_manager.py может быть импортирован раньше database.py,
 # или для обеспечения самодостаточности модуля.
@@ -1695,23 +1728,30 @@ def _extract_usage_dict(run_status, *, task_name: str | None = None) -> dict | N
             "completion_tokens": getattr(usage_obj, "completion_tokens", None),
             "total_tokens": getattr(usage_obj, "total_tokens", None),
         }
-    prompt_tokens = int(usage_data.get("prompt_tokens") or 0)
-    completion_tokens = int(usage_data.get("completion_tokens") or 0)
+    prompt_tokens = int(usage_data.get("prompt_tokens") or usage_data.get("input_tokens") or 0)
+    completion_tokens = int(usage_data.get("completion_tokens") or usage_data.get("output_tokens") or 0)
     total_tokens = int(usage_data.get("total_tokens") or (prompt_tokens + completion_tokens))
     if prompt_tokens <= 0 and completion_tokens <= 0 and total_tokens <= 0:
         return None
+    prompt_details = usage_data.get("prompt_tokens_details") or usage_data.get("input_tokens_details") or {}
+    cached_prompt_tokens = int(
+        (prompt_details.get("cached_tokens") if isinstance(prompt_details, dict) else 0) or 0
+    )
     model = str(
         getattr(run_status, "model", None)
         or (run_status.get("model") if isinstance(run_status, dict) else "")
         or ""
     ).strip()
-    return {
+    result = {
         "task_name": task_name or "",
         "model": model,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
     }
+    if cached_prompt_tokens > 0:
+        result["cached_prompt_tokens"] = cached_prompt_tokens
+    return result
 
 
 def _store_last_usage(run_status, *, task_name: str | None = None) -> dict | None:
@@ -1841,24 +1881,95 @@ async def get_or_create_openai_resources(system_instruction: str, task_name: str
         raise # Пробрасываем ошибку
 
 
-async def run_check_translation(original_text: str, user_translation: str) -> str:
-    task_name = "check_translation"
-    system_instruction_key = "check_translation"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
+def _should_use_responses(task_name: str) -> bool:
+    mode = _get_gateway_mode()
+    if mode == "responses":
+        return True
+    if mode == "hybrid":
+        return str(task_name or "").strip().lower() in _get_responses_tasks()
+    return False
 
+
+def _extract_response_text(response_obj) -> str:
+    direct = getattr(response_obj, "output_text", None)
+    if isinstance(direct, str) and direct.strip():
+        return direct
+
+    def _extract_from_output_item(item) -> list[str]:
+        texts: list[str] = []
+        if isinstance(item, dict):
+            content = item.get("content")
+        else:
+            content = getattr(item, "content", None)
+        if not isinstance(content, list):
+            return texts
+        for part in content:
+            if isinstance(part, dict):
+                part_type = str(part.get("type") or "").strip().lower()
+                if part_type in {"output_text", "text"}:
+                    value = part.get("text")
+                    if isinstance(value, str) and value.strip():
+                        texts.append(value)
+                    elif isinstance(value, dict):
+                        nested = value.get("value")
+                        if isinstance(nested, str) and nested.strip():
+                            texts.append(nested)
+            else:
+                part_type = str(getattr(part, "type", "") or "").strip().lower()
+                if part_type in {"output_text", "text"}:
+                    value = getattr(part, "text", None)
+                    if isinstance(value, str) and value.strip():
+                        texts.append(value)
+                    elif hasattr(value, "value"):
+                        nested = getattr(value, "value", None)
+                        if isinstance(nested, str) and nested.strip():
+                            texts.append(nested)
+        return texts
+
+    output = getattr(response_obj, "output", None)
+    if not isinstance(output, list) and isinstance(response_obj, dict):
+        output = response_obj.get("output")
+    if isinstance(output, list):
+        chunks: list[str] = []
+        for item in output:
+            chunks.extend(_extract_from_output_item(item))
+        if chunks:
+            return "\n".join(chunks).strip()
+    return ""
+
+
+async def _run_task_text_via_responses(
+    *,
+    task_name: str,
+    system_instruction_key: str,
+    user_message: str,
+) -> str:
+    system_instruction_content = system_message.get(system_instruction_key)
+    if not system_instruction_content:
+        raise ValueError(f"Системная инструкция '{system_instruction_key}' не найдена")
+    response = await client.responses.create(
+        model=_get_gateway_model(),
+        instructions=system_instruction_content,
+        input=user_message,
+    )
+    _store_last_usage(response, task_name=task_name)
+    content = _extract_response_text(response).strip()
+    if not content:
+        raise RuntimeError(f"Responses API вернул пустой ответ для task='{task_name}'")
+    return content
+
+
+async def _run_task_text_via_assistants(
+    *,
+    task_name: str,
+    system_instruction_key: str,
+    user_message: str,
+    poll_interval_seconds: float = 2.0,
+    fast_delete: bool = False,
+) -> str:
+    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
     thread = await client.beta.threads.create()
     thread_id = thread.id
-
-    user_message = (
-        "Analyze the translation and return output in this strict format.\n"
-        "For each error (Error 1/2/3), include all fields in ONE line:\n"
-        "Error N: User fragment: \"<exact wrong fragment from user's German translation>\"; "
-        "Issue: <what is wrong>; Correct fragment: \"<how this fragment should be translated>\"; "
-        "Rule: <short grammar/lexical rule and why>.\n"
-        "Then provide: Correct Translation, Grammar Explanation, Alternative Sentence Construction, Synonyms.\n\n"
-        f'**Original sentence (Russian):** "{original_text}"\n'
-        f'**User\'s translation (German):** "{user_translation}"'
-    )
 
     await client.beta.threads.messages.create(
         thread_id=thread_id,
@@ -1876,18 +1987,82 @@ async def run_check_translation(original_text: str, user_translation: str) -> st
             thread_id=thread_id,
             run_id=run.id,
         )
-        if run_status.status == "completed":
+        status = str(getattr(run_status, "status", "") or "").strip().lower()
+        if status == "completed":
             break
-        await asyncio.sleep(2)
+        if status in {"failed", "cancelled", "expired", "incomplete"}:
+            raise RuntimeError(f"Assistant run завершился статусом '{status}' для task='{task_name}'")
+        await asyncio.sleep(max(0.1, float(poll_interval_seconds)))
+    _store_last_usage(run_status, task_name=task_name)
 
     messages = await client.beta.threads.messages.list(thread_id=thread_id)
     last_message = messages.data[0]
-    collected_text = last_message.content[0].text.value
+    content = str(last_message.content[0].text.value or "").strip()
 
     try:
-        await client.beta.threads.delete(thread_id=thread_id)
+        if fast_delete:
+            await _delete_feel_thread_fast(thread_id)
+        else:
+            await client.beta.threads.delete(thread_id=thread_id)
     except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
+        logging.warning("Не удалось удалить thread: %s", exc)
+
+    if not content:
+        raise RuntimeError(f"Assistants API вернул пустой ответ для task='{task_name}'")
+    return content
+
+
+async def llm_execute(
+    *,
+    task_name: str,
+    system_instruction_key: str,
+    user_message: str,
+    poll_interval_seconds: float = 2.0,
+    fast_delete: bool = False,
+) -> str:
+    _LAST_LLM_USAGE.set(None)
+    if _should_use_responses(task_name):
+        try:
+            return await _run_task_text_via_responses(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+            )
+        except Exception as exc:
+            logging.warning(
+                "Responses path failed for task='%s', fallback to assistants: %s",
+                task_name,
+                exc,
+            )
+    return await _run_task_text_via_assistants(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=user_message,
+        poll_interval_seconds=poll_interval_seconds,
+        fast_delete=fast_delete,
+    )
+
+
+async def run_check_translation(original_text: str, user_translation: str) -> str:
+    task_name = "check_translation"
+    system_instruction_key = "check_translation"
+
+    user_message = (
+        "Analyze the translation and return output in this strict format.\n"
+        "For each error (Error 1/2/3), include all fields in ONE line:\n"
+        "Error N: User fragment: \"<exact wrong fragment from user's German translation>\"; "
+        "Issue: <what is wrong>; Correct fragment: \"<how this fragment should be translated>\"; "
+        "Rule: <short grammar/lexical rule and why>.\n"
+        "Then provide: Correct Translation, Grammar Explanation, Alternative Sentence Construction, Synonyms.\n\n"
+        f'**Original sentence (Russian):** "{original_text}"\n'
+        f'**User\'s translation (German):** "{user_translation}"'
+    )
+    collected_text = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=user_message,
+        poll_interval_seconds=2.0,
+    )
 
     score = None
     correct_translation = None
@@ -1933,10 +2108,6 @@ async def run_check_translation_multilang(
 ) -> str:
     task_name = "check_translation_multilang"
     system_instruction_key = "check_translation_multilang"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     source_name = _language_name(source_lang)
     target_name = _language_name(target_lang)
@@ -1959,35 +2130,12 @@ async def run_check_translation_multilang(
         f'user_translation ({target_name}): "{user_translation}"'
         f"{taxonomy_hint}"
     )
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=user_message,
+    collected_text = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=user_message,
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    collected_text = last_message.content[0].text.value
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning("Не удалось удалить thread: %s", exc)
 
     if any(
         marker in collected_text
@@ -2017,46 +2165,17 @@ async def run_check_translation_multilang(
 async def run_check_translation_story(original_text: str, user_translation: str) -> str:
     task_name = "check_translation_story"
     system_instruction_key = "check_translation_story"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     user_message = (
         f'**Story (Russian, 7 sentences):** "{original_text}"\n'
         f'**User\'s translation (German, 7 sentences):** "{user_translation}"'
     )
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=user_message,
+    return await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=user_message,
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    collected_text = last_message.content[0].text.value
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
-
-    return collected_text
 
 
 async def run_check_story_guess_semantic(
@@ -2066,46 +2185,18 @@ async def run_check_story_guess_semantic(
 ) -> dict:
     task_name = "check_story_guess_semantic"
     system_instruction_key = "check_story_guess_semantic"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     payload = {
         "canonical_answer": canonical_answer or "",
         "aliases": aliases or [],
         "user_guess": user_guess or "",
     }
-    user_message = json.dumps(payload, ensure_ascii=False)
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=user_message,
+    collected_text = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    collected_text = last_message.content[0].text.value
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
 
     try:
         cleaned = collected_text.strip()
@@ -2136,86 +2227,35 @@ async def _delete_feel_thread_fast(thread_id: str) -> None:
 async def run_feel_word(word_ru: str, word_de: str | None = None) -> str:
     task_name = "feel_word"
     system_instruction_key = "feel_word"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     payload = {
         "word_ru": word_ru,
         "word_de": word_de or "",
     }
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=FEEL_POLL_INTERVAL_SECONDS,
+        fast_delete=True,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(FEEL_POLL_INTERVAL_SECONDS)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value.strip()
-
-    await _delete_feel_thread_fast(thread_id)
-
-    return content
+    return content.strip()
 
 
 async def run_enrich_word(word_ru: str, word_de: str | None = None) -> dict:
     task_name = "enrich_word"
     system_instruction_key = "enrich_word"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     payload = {
         "word_ru": word_ru,
         "word_de": word_de or "",
     }
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value.strip()
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
 
     try:
         return json.loads(content)
@@ -2231,10 +2271,6 @@ async def run_feel_word_multilang(
 ) -> str:
     task_name = "feel_word_multilang"
     system_instruction_key = "feel_word_multilang"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     payload = {
         "source_language": (source_lang or "").strip().lower(),
@@ -2242,34 +2278,14 @@ async def run_feel_word_multilang(
         "source_text": (source_text or "").strip(),
         "target_text": (target_text or "").strip(),
     }
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=FEEL_POLL_INTERVAL_SECONDS,
+        fast_delete=True,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(FEEL_POLL_INTERVAL_SECONDS)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value.strip()
-
-    await _delete_feel_thread_fast(thread_id)
-
-    return content
+    return content.strip()
 
 
 async def run_enrich_word_multilang(
@@ -2280,10 +2296,6 @@ async def run_enrich_word_multilang(
 ) -> dict:
     task_name = "enrich_word_multilang"
     system_instruction_key = "enrich_word_multilang"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     payload = {
         "source_language": (source_lang or "").strip().lower(),
@@ -2291,35 +2303,12 @@ async def run_enrich_word_multilang(
         "source_text": (source_text or "").strip(),
         "target_text": (target_text or "").strip(),
     }
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value.strip()
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
 
     try:
         cleaned = content.strip()
@@ -2333,39 +2322,12 @@ async def run_enrich_word_multilang(
 async def run_dictionary_lookup(word_ru: str) -> dict:
     task_name = "dictionary_assistant"
     system_instruction_key = "dictionary_assistant"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=word_ru,
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=word_ru,
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
 
     try:
         return json.loads(content)
@@ -2397,39 +2359,12 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
 async def run_dictionary_lookup_de(word_de: str) -> dict:
     task_name = "dictionary_assistant_de"
     system_instruction_key = "dictionary_assistant_de"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=word_de,
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=word_de,
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
 
     try:
         return json.loads(content)
@@ -2462,49 +2397,20 @@ async def run_dictionary_lookup_multilang(
     source_lang: str,
     target_lang: str,
 ) -> dict:
-    _LAST_LLM_USAGE.set(None)
     task_name = "dictionary_assistant_multilang"
     system_instruction_key = "dictionary_assistant_multilang"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     payload = {
         "source_language": (source_lang or "").strip().lower(),
         "target_language": (target_lang or "").strip().lower(),
         "word": (word or "").strip(),
     }
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=1.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(1)
-    _store_last_usage(run_status, task_name=task_name)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning("Не удалось удалить thread: %s", exc)
 
     cleaned = content.strip()
     if cleaned.startswith("```"):
@@ -2549,10 +2455,6 @@ async def generate_sentences_multilang(
 ) -> list[str]:
     task_name = "generate_sentences_multilang"
     system_instruction_key = "generate_sentences_multilang"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     user_message = json.dumps(
         {
@@ -2567,79 +2469,32 @@ async def generate_sentences_multilang(
 
     for attempt in range(4):
         try:
-            await client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=user_message,
+            content = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
             )
-            run = await client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-            )
-            while True:
-                run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-                if run_status.status == "completed":
-                    break
-                await asyncio.sleep(1)
-
-            messages = await client.beta.threads.messages.list(thread_id=thread_id)
-            last_message = messages.data[0]
-            content = last_message.content[0].text.value
             lines = [re.sub(r"^\s*\d+\.\s*", "", line).strip() for line in content.splitlines()]
             filtered = [line for line in lines if line]
             if filtered:
-                try:
-                    await client.beta.threads.delete(thread_id=thread_id)
-                except Exception:
-                    pass
                 return filtered[: int(max(1, num_sentences))]
         except openai.RateLimitError:
             await asyncio.sleep((attempt + 1) * 2)
         except Exception:
             break
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception:
-        pass
     return []
 
 
 async def run_tts_chunk_de(sentence: str) -> dict:
     task_name = "tts_chunk_de"
     system_instruction_key = "tts_chunk_de"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=sentence,
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=sentence,
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
 
     try:
         return json.loads(content)
@@ -2650,45 +2505,18 @@ async def run_tts_chunk_de(sentence: str) -> dict:
 async def run_dictionary_collocations(direction: str, word: str, translation: str | None) -> dict:
     task_name = "dictionary_collocations"
     system_instruction_key = "dictionary_collocations"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
 
     payload = {
         "direction": direction,
         "word": word,
         "translation": translation or "",
     }
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
 
     try:
         return json.loads(content)
@@ -2704,7 +2532,6 @@ async def run_dictionary_collocations_multilang(
 ) -> dict:
     task_name = "dictionary_collocations_multilang"
     system_instruction_key = "dictionary_collocations_multilang"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
 
     payload = {
         "source_language": (source_lang or "").strip().lower(),
@@ -2712,38 +2539,12 @@ async def run_dictionary_collocations_multilang(
         "word_source": (word_source or "").strip(),
         "word_target": (word_target or "").strip(),
     }
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning("Не удалось удалить thread: %s", exc)
 
     try:
         return json.loads(content)
@@ -2755,42 +2556,15 @@ async def run_translate_subtitles_ru(lines: list[str]) -> list[str]:
     _LAST_LLM_USAGE.set(None)
     task_name = "translate_subtitles_ru"
     system_instruction_key = "translate_subtitles_ru"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     payload = {"lines": lines}
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-    _store_last_usage(run_status, task_name=task_name)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value.strip()
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
+    content = content.strip()
 
     try:
         parsed = json.loads(content)
@@ -2810,46 +2584,19 @@ async def run_translate_subtitles_multilang(
     _LAST_LLM_USAGE.set(None)
     task_name = "translate_subtitles_multilang"
     system_instruction_key = "translate_subtitles_multilang"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     payload = {
         "source_language": (source_lang or "de").strip().lower(),
         "target_language": (target_lang or "ru").strip().lower(),
         "lines": lines,
     }
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-    _store_last_usage(run_status, task_name=task_name)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value.strip()
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
+    content = content.strip()
 
     try:
         parsed = json.loads(content)
@@ -2864,39 +2611,12 @@ async def run_translate_subtitles_multilang(
 async def run_generate_word_quiz(prompt_payload: dict) -> dict:
     task_name = "generate_word_quiz"
     system_instruction_key = "generate_word_quiz"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(prompt_payload, ensure_ascii=False),
+    content = await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=json.dumps(prompt_payload, ensure_ascii=False),
+        poll_interval_seconds=2.0,
     )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
-        )
-        if run_status.status == "completed":
-            break
-        await asyncio.sleep(2)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = last_message.content[0].text.value
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
 
     try:
         return json.loads(content)
@@ -2911,43 +2631,14 @@ async def _run_json_assistant_task(
     payload: dict,
     poll_delay_sec: float = 1.5,
 ) -> dict:
-    _LAST_LLM_USAGE.set(None)
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
-    )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
+    content = (
+        await llm_execute(
+            task_name=task_name,
+            system_instruction_key=system_instruction_key,
+            user_message=json.dumps(payload, ensure_ascii=False),
+            poll_interval_seconds=poll_delay_sec,
         )
-        if run_status.status == "completed":
-            break
-        if run_status.status in {"failed", "cancelled", "expired"}:
-            break
-        await asyncio.sleep(poll_delay_sec)
-    _store_last_usage(run_status, task_name=task_name)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = (last_message.content[0].text.value or "").strip()
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning("Не удалось удалить thread: %s", exc)
-
+    ).strip()
     cleaned = content
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
@@ -2998,10 +2689,6 @@ async def run_beginner_topic(payload: dict) -> dict:
 async def run_translation_explanation(original_text: str, user_translation: str) -> str:
     task_name = "check_translation_with_claude"
     system_instruction_key = "check_translation_with_claude"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     user_message = (
         f'**Original sentence (Russian):** "{original_text}"\n'
@@ -3009,52 +2696,20 @@ async def run_translation_explanation(original_text: str, user_translation: str)
     )
 
     response_text = None
-    terminal_statuses = {"failed", "cancelled", "expired"}
-    deadline = asyncio.get_running_loop().time() + 60
 
     for _ in range(3):
-        await client.beta.threads.messages.create(
-            thread_id=thread_id,
-            role="user",
-            content=user_message,
-        )
-
-        run = await client.beta.threads.runs.create(
-            thread_id=thread_id,
-            assistant_id=assistant_id,
-        )
-
-        while True:
-            run_status = await client.beta.threads.runs.retrieve(
-                thread_id=thread_id,
-                run_id=run.id,
+        try:
+            response_text = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
             )
-            if run_status.status == "completed":
-                break
-            if run_status.status in terminal_statuses:
-                response_text = None
-                break
-            if asyncio.get_running_loop().time() >= deadline:
-                response_text = None
-                break
-            await asyncio.sleep(1)
-
-        if run_status.status in terminal_statuses:
-            break
-        if asyncio.get_running_loop().time() >= deadline:
-            break
-
-        messages = await client.beta.threads.messages.list(thread_id=thread_id)
-        last_message = messages.data[0]
-        response_text = last_message.content[0].text.value
+        except Exception:
+            response_text = None
         if response_text:
             break
         await asyncio.sleep(5)
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning(f"Не удалось удалить thread: {exc}")
 
     if not response_text:
         return "❌ Ошибка: Не удалось обработать ответ от Claude."
@@ -3124,10 +2779,6 @@ async def run_translation_explanation_multilang(
 ) -> str:
     task_name = "check_translation_explanation_multilang"
     system_instruction_key = "check_translation_explanation_multilang"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     payload = {
         "source_language": (source_lang or "").strip().lower(),
@@ -3136,37 +2787,14 @@ async def run_translation_explanation_multilang(
         "original_text": original_text,
         "user_translation": user_translation,
     }
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
-    )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
+    content = (
+        await llm_execute(
+            task_name=task_name,
+            system_instruction_key=system_instruction_key,
+            user_message=json.dumps(payload, ensure_ascii=False),
+            poll_interval_seconds=1.0,
         )
-        if run_status.status == "completed":
-            break
-        if run_status.status in {"failed", "cancelled", "expired"}:
-            break
-        await asyncio.sleep(1)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = (last_message.content[0].text.value or "").strip()
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning("Не удалось удалить thread: %s", exc)
+    ).strip()
 
     return content or "❌ Ошибка: Не удалось обработать объяснение."
 
@@ -3178,46 +2806,17 @@ async def run_audio_sentence_grammar_explain_multilang(
 ) -> str:
     task_name = "audio_sentence_grammar_explain_multilang"
     system_instruction_key = "audio_sentence_grammar_explain_multilang"
-    assistant_id, _ = await get_or_create_openai_resources(system_instruction_key, task_name)
-
-    thread = await client.beta.threads.create()
-    thread_id = thread.id
 
     payload = {
         "language": (language or "").strip().lower(),
         "sentence": (sentence or "").strip(),
         "explanation_language": (explanation_language or "").strip().lower(),
     }
-
-    await client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=json.dumps(payload, ensure_ascii=False),
-    )
-
-    run = await client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-
-    while True:
-        run_status = await client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id,
+    return (
+        await llm_execute(
+            task_name=task_name,
+            system_instruction_key=system_instruction_key,
+            user_message=json.dumps(payload, ensure_ascii=False),
+            poll_interval_seconds=1.0,
         )
-        if run_status.status == "completed":
-            break
-        if run_status.status in {"failed", "cancelled", "expired"}:
-            break
-        await asyncio.sleep(1)
-
-    messages = await client.beta.threads.messages.list(thread_id=thread_id)
-    last_message = messages.data[0]
-    content = (last_message.content[0].text.value or "").strip()
-
-    try:
-        await client.beta.threads.delete(thread_id=thread_id)
-    except Exception as exc:
-        logging.warning("Не удалось удалить thread: %s", exc)
-
-    return content
+    ).strip()
