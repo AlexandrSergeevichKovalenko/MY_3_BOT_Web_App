@@ -7376,11 +7376,14 @@ body {
 }
 
 .today-plan-toolbar {
-  display: flex;
-  justify-content: flex-start;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 10px;
-  flex-wrap: wrap;
+}
+
+.today-plan-toolbar .secondary-button {
+  width: 100%;
 }
 
 .today-plan-toggle {
@@ -8562,6 +8565,7 @@ body {
 }
 
 .today-plan-toolbar {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 20px;
 }

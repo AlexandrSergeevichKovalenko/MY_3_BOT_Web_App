@@ -1073,6 +1073,58 @@ function AppInner() {
     return normalizeLangCode(languageProfile?.learning_language) || 'de';
   };
 
+  const resolveDictionaryTargetTts = useCallback((item, directionValue = dictionaryDirection) => {
+    if (!item) {
+      return { text: '', locale: getLearningTtsLocale(), learningLang: normalizeLangCode(languageProfile?.learning_language) || 'de' };
+    }
+    const learningLang = normalizeLangCode(languageProfile?.learning_language) || 'de';
+    const nativeLang = normalizeLangCode(languageProfile?.native_language) || 'ru';
+    const dir = String(directionValue || '').trim().toLowerCase();
+    let sourceLang = nativeLang;
+    let targetLang = learningLang;
+    if (dir.includes('-')) {
+      const [from, to] = dir.split('-', 2);
+      sourceLang = normalizeLangCode(from || sourceLang || nativeLang || 'ru');
+      targetLang = normalizeLangCode(to || targetLang || learningLang || 'de');
+    }
+    const sourceText = String(
+      item?.source_text
+      || item?.word_de
+      || item?.word_ru
+      || item?.translation_de
+      || item?.translation_ru
+      || ''
+    ).trim();
+    const targetText = String(
+      item?.target_text
+      || item?.translation_de
+      || item?.translation_ru
+      || item?.word_de
+      || item?.word_ru
+      || ''
+    ).trim();
+    if (sourceLang === learningLang && sourceText) {
+      return { text: sourceText, locale: getTtsLocaleForLang(learningLang), learningLang };
+    }
+    if (targetLang === learningLang && targetText) {
+      return { text: targetText, locale: getTtsLocaleForLang(learningLang), learningLang };
+    }
+    if (sourceText && detectTtsLangFromText(sourceText) === learningLang) {
+      return { text: sourceText, locale: getTtsLocaleForLang(learningLang), learningLang };
+    }
+    if (targetText && detectTtsLangFromText(targetText) === learningLang) {
+      return { text: targetText, locale: getTtsLocaleForLang(learningLang), learningLang };
+    }
+    return { text: '', locale: getTtsLocaleForLang(learningLang), learningLang };
+  }, [
+    dictionaryDirection,
+    detectTtsLangFromText,
+    getLearningTtsLocale,
+    getTtsLocaleForLang,
+    languageProfile?.learning_language,
+    languageProfile?.native_language,
+  ]);
+
   const resolveFlashcardTexts = (entry) => {
     const responseJson = entry?.response_json || {};
     const sourceText = String(
@@ -1231,24 +1283,13 @@ function AppInner() {
   }, [flashcards, languageProfile?.learning_language, preloadTts]);
 
   useEffect(() => {
-    const toPrefetch = [];
-    const sourceText = String(
-      dictionaryResult?.source_text
-      || dictionaryResult?.word_de
-      || dictionaryResult?.translation_de
-      || ''
-    ).trim();
-    const targetText = String(
-      dictionaryResult?.target_text
-      || dictionaryResult?.translation_de
-      || dictionaryResult?.word_de
-      || ''
-    ).trim();
-    if (sourceText) toPrefetch.push(sourceText);
-    if (targetText && targetText !== sourceText) toPrefetch.push(targetText);
-    const locale = getLearningTtsLocale();
-    toPrefetch.slice(0, 2).forEach((text) => preloadTts(text, locale));
-  }, [dictionaryResult, languageProfile?.learning_language, preloadTts]);
+    const targetTts = resolveDictionaryTargetTts(dictionaryResult, dictionaryDirection);
+    if (!targetTts.text) return undefined;
+    const timerId = window.setTimeout(() => {
+      preloadTts(targetTts.text, targetTts.locale);
+    }, 0);
+    return () => window.clearTimeout(timerId);
+  }, [dictionaryDirection, dictionaryResult, preloadTts, resolveDictionaryTargetTts]);
 
   useEffect(() => {
     const locale = getLearningTtsLocale();
@@ -5658,21 +5699,6 @@ function AppInner() {
     }
     return getDictionaryDirectionLabel();
   };
-  const getDictionaryDirectionLangCodes = () => {
-    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
-    const dir = String(dictionaryDirection || '').trim().toLowerCase();
-    if (dir && dir.includes('-')) {
-      const [from, to] = dir.split('-', 2);
-      return {
-        sourceLang: normalizeLangCode(from || pair.source_lang || languageProfile?.native_language || 'ru'),
-        targetLang: normalizeLangCode(to || pair.target_lang || languageProfile?.learning_language || 'de'),
-      };
-    }
-    return {
-      sourceLang: normalizeLangCode(pair.source_lang || languageProfile?.native_language || 'ru'),
-      targetLang: normalizeLangCode(pair.target_lang || languageProfile?.learning_language || 'de'),
-    };
-  };
   const extractCorrectTranslationText = (item) => {
     const direct = String(item?.correct_translation || '').trim();
     if (direct && direct !== '—') return direct;
@@ -7858,10 +7884,19 @@ function AppInner() {
     setDictionarySaved('');
     setLastLookupScrollY(null);
     try {
+      const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+      const guessedLookupLang = normalizeLangCode(detectTtsLangFromText(dictionaryWord));
+      const lookupLang = guessedLookupLang && (guessedLookupLang === pair.source_lang || guessedLookupLang === pair.target_lang)
+        ? guessedLookupLang
+        : '';
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word: dictionaryWord.trim() }),
+        body: JSON.stringify({
+          initData,
+          word: dictionaryWord.trim(),
+          lookup_lang: lookupLang || undefined,
+        }),
       });
       if (!response.ok) {
         let message = await response.text();
@@ -9721,6 +9756,14 @@ function AppInner() {
                   <button
                     type="button"
                     className="secondary-button"
+                    onClick={() => { void loadTodayPlan(); }}
+                    disabled={todayPlanLoading}
+                  >
+                    {todayPlanLoading ? tr('Загружаем...', 'Laden...') : tr('Показать план', 'Plan zeigen')}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
                     onClick={sendTodayReminderTest}
                     disabled={todayTestSending}
                   >
@@ -10968,11 +11011,6 @@ function AppInner() {
                       <label className="webapp-field">
                         <span>{tr('Слово или фраза', 'Wort oder Phrase')}</span>
                         <div className="dictionary-input-wrap">
-                          {(() => {
-                            const inputTtsKey = 'dictionary-input';
-                            const inputTtsLoading = isTtsPending(inputTtsKey);
-                            return (
-                              <>
                           <input
                             className="dictionary-input"
                             type="text"
@@ -10984,19 +11022,6 @@ function AppInner() {
                             <div className="dictionary-input-tools">
                               <button
                                 type="button"
-                                className={`dictionary-tts ${inputTtsLoading ? 'is-loading' : ''}`}
-                                onClick={() => {
-                                  const detectedLang = detectTtsLangFromText(dictionaryWord);
-                                  void playTtsWithUi(inputTtsKey, dictionaryWord.trim(), getTtsLocaleForLang(detectedLang));
-                                }}
-                                aria-label={tr('Озвучить введённое слово', 'Eingegebenes Wort vorlesen')}
-                                title={tr('Озвучить введённое слово', 'Eingegebenes Wort vorlesen')}
-                                disabled={inputTtsLoading}
-                              >
-                                {renderTtsButtonContent(inputTtsLoading)}
-                              </button>
-                              <button
-                                type="button"
                                 className="dictionary-clear"
                                 onClick={() => setDictionaryWord('')}
                                 aria-label={tr('Очистить слово', 'Wort loeschen')}
@@ -11005,9 +11030,6 @@ function AppInner() {
                               </button>
                             </div>
                           )}
-                              </>
-                            );
-                          })()}
                         </div>
                       </label>
                       <div className="dictionary-actions">
@@ -11180,25 +11202,24 @@ function AppInner() {
                           <span className="dictionary-translation">
                             {getDictionaryDisplayedTranslation(dictionaryResult) || '—'}
                           </span>
-                          {getDictionaryDisplayedTranslation(dictionaryResult) && getDictionaryDisplayedTranslation(dictionaryResult) !== '—' && (() => {
-                            const translatedText = getDictionaryDisplayedTranslation(dictionaryResult);
-                            const ttsKey = `dictionary-translation-${String(dictionaryDirection || 'default')}`;
+                          {(() => {
+                            const targetTts = resolveDictionaryTargetTts(dictionaryResult, dictionaryDirection);
+                            if (!targetTts.text) return null;
+                            const ttsKey = `dictionary-target-${String(dictionaryDirection || 'default')}`;
                             const loading = isTtsPending(ttsKey);
                             return (
-                            <button
-                              type="button"
-                              className={`inline-tts-button ${loading ? 'is-loading' : ''}`}
-                              onClick={() => {
-                                const { targetLang } = getDictionaryDirectionLangCodes();
-                                if (!translatedText) return;
-                                void playTtsWithUi(ttsKey, translatedText, getTtsLocaleForLang(targetLang));
-                              }}
-                              aria-label={tr('Озвучить перевод', 'Uebersetzung vorlesen')}
-                              title={tr('Озвучить перевод', 'Uebersetzung vorlesen')}
-                              disabled={loading}
-                            >
-                              {renderTtsButtonContent(loading)}
-                            </button>
+                              <button
+                                type="button"
+                                className={`inline-tts-button ${loading ? 'is-loading' : ''}`}
+                                onClick={() => {
+                                  void playTtsWithUi(ttsKey, targetTts.text, targetTts.locale);
+                                }}
+                                aria-label={tr('Озвучить на изучаемом языке', 'In der Zielsprache vorlesen')}
+                                title={tr('Озвучить на изучаемом языке', 'In der Zielsprache vorlesen')}
+                                disabled={loading}
+                              >
+                                {renderTtsButtonContent(loading)}
+                              </button>
                             );
                           })()}
                           <span className="dictionary-direction">

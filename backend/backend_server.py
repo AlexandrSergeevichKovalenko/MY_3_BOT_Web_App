@@ -56,6 +56,7 @@
 
 
 import subprocess
+import copy
 import hashlib
 import io
 from urllib.parse import urlparse
@@ -367,7 +368,10 @@ _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 FSRS_PROFILING_ENABLED = str(os.getenv("FSRS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 FLASHCARDS_SET_PROFILING_ENABLED = str(os.getenv("FLASHCARDS_SET_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+DICTIONARY_PROFILING_ENABLED = str(os.getenv("DICTIONARY_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 LANGUAGE_PAIR_CACHE_TTL_SEC = max(30, int((os.getenv("LANGUAGE_PAIR_CACHE_TTL_SEC") or "900").strip()))
+DICTIONARY_LOOKUP_CACHE_TTL_SEC = max(30, int((os.getenv("DICTIONARY_LOOKUP_CACHE_TTL_SEC") or "7200").strip()))
+DICTIONARY_LOOKUP_CACHE_MAX_ITEMS = max(100, min(10000, int((os.getenv("DICTIONARY_LOOKUP_CACHE_MAX_ITEMS") or "2000").strip())))
 TTS_PREWARM_ENABLED = str(os.getenv("TTS_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("TTS_PREWARM_INTERVAL_MINUTES") or "60").strip()))
 TTS_PREWARM_BATCH_SIZE = max(10, min(500, int((os.getenv("TTS_PREWARM_BATCH_SIZE") or "120").strip())))
@@ -379,6 +383,8 @@ TTS_PREWARM_ALLOW_DAYTIME = str(os.getenv("TTS_PREWARM_ALLOW_DAYTIME") or "0").s
 _TTS_PREWARM_LOCK = threading.Lock()
 _LANGUAGE_PAIR_CACHE_LOCK = threading.Lock()
 _LANGUAGE_PAIR_CACHE: dict[int, dict] = {}
+_DICTIONARY_LOOKUP_CACHE_LOCK = threading.Lock()
+_DICTIONARY_LOOKUP_CACHE: dict[str, dict] = {}
 
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
@@ -933,6 +939,81 @@ def _get_user_language_pair(user_id: int) -> tuple[str, str, dict]:
 def _invalidate_user_language_pair_cache(user_id: int) -> None:
     with _LANGUAGE_PAIR_CACHE_LOCK:
         _LANGUAGE_PAIR_CACHE.pop(int(user_id), None)
+
+
+def _normalize_dictionary_lookup_word(word: str) -> str:
+    compact = re.sub(r"\s+", " ", str(word or "").strip())
+    return compact.casefold()
+
+
+def _build_dictionary_lookup_cache_key(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    query_source_lang: str,
+    query_target_lang: str,
+    lookup_lang: str,
+    word: str,
+) -> str:
+    normalized_word = _normalize_dictionary_lookup_word(word)
+    return "|".join(
+        [
+            str(int(user_id)),
+            str(source_lang or "").strip().lower(),
+            str(target_lang or "").strip().lower(),
+            str(query_source_lang or "").strip().lower(),
+            str(query_target_lang or "").strip().lower(),
+            str(lookup_lang or "").strip().lower(),
+            normalized_word,
+        ]
+    )
+
+
+def _prune_dictionary_lookup_cache(now_ts: float) -> None:
+    expired_keys = [
+        key
+        for key, payload in _DICTIONARY_LOOKUP_CACHE.items()
+        if float(payload.get("expires_at") or 0.0) <= now_ts
+    ]
+    for key in expired_keys:
+        _DICTIONARY_LOOKUP_CACHE.pop(key, None)
+
+    while len(_DICTIONARY_LOOKUP_CACHE) > DICTIONARY_LOOKUP_CACHE_MAX_ITEMS:
+        oldest_key = min(
+            _DICTIONARY_LOOKUP_CACHE.items(),
+            key=lambda item: float(item[1].get("created_at") or 0.0),
+        )[0]
+        _DICTIONARY_LOOKUP_CACHE.pop(oldest_key, None)
+
+
+def _get_cached_dictionary_lookup(cache_key: str) -> dict | None:
+    now_ts = time.time()
+    with _DICTIONARY_LOOKUP_CACHE_LOCK:
+        cached = _DICTIONARY_LOOKUP_CACHE.get(cache_key)
+        if not cached:
+            return None
+        if float(cached.get("expires_at") or 0.0) <= now_ts:
+            _DICTIONARY_LOOKUP_CACHE.pop(cache_key, None)
+            return None
+        cached["last_hit_at"] = now_ts
+        payload = copy.deepcopy(cached.get("payload") or {})
+    return payload if isinstance(payload, dict) else None
+
+
+def _set_cached_dictionary_lookup(cache_key: str, payload: dict) -> None:
+    if not cache_key or not isinstance(payload, dict):
+        return
+    now_ts = time.time()
+    cache_payload = copy.deepcopy(payload)
+    with _DICTIONARY_LOOKUP_CACHE_LOCK:
+        _DICTIONARY_LOOKUP_CACHE[cache_key] = {
+            "payload": cache_payload,
+            "created_at": now_ts,
+            "last_hit_at": now_ts,
+            "expires_at": now_ts + float(DICTIONARY_LOOKUP_CACHE_TTL_SEC),
+        }
+        _prune_dictionary_lookup_cache(now_ts)
 
 
 def _require_stripe_config(*, require_webhook_secret: bool = False) -> str | None:
@@ -4879,6 +4960,7 @@ def _send_private_message(
     text: str,
     reply_markup: dict | None = None,
     disable_web_page_preview: bool = True,
+    parse_mode: str | None = None,
 ) -> None:
     payload = {
         "chat_id": int(user_id),
@@ -4887,6 +4969,8 @@ def _send_private_message(
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = str(parse_mode).strip()
     url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendMessage"
     response = requests.post(
         url,
@@ -8282,7 +8366,46 @@ def translate_quick():
 
 @app.route("/api/webapp/dictionary", methods=["POST"])
 def lookup_webapp_dictionary():
+    started_at = time.perf_counter()
+    stage_marks: dict[str, float] = {"start": started_at}
+    user_id_for_log: int | None = None
+    cache_hit = False
+
+    def mark(stage_name: str) -> None:
+        stage_marks[stage_name] = time.perf_counter()
+
+    def _log_dictionary_profile(error_text: str | None = None) -> None:
+        if not DICTIONARY_PROFILING_ENABLED:
+            return
+        try:
+            end_ts = time.perf_counter()
+            points = {"start": started_at, **stage_marks, "end": end_ts}
+            ordered = [("start", points.get("start"))]
+            for key in ("parsed", "validated", "lang_pair", "cache_hit", "llm_main", "llm_fallback", "decorate"):
+                if key in points:
+                    ordered.append((key, points[key]))
+            ordered.append(("end", end_ts))
+            prev = ordered[0][1] or started_at
+            parts = []
+            for name, ts in ordered[1:]:
+                if ts is None:
+                    continue
+                parts.append(f"{name}={int((ts - prev) * 1000)}ms")
+                prev = ts
+            total_ms = int((end_ts - started_at) * 1000)
+            logging.info(
+                "Dictionary lookup profile: user_id=%s cache_hit=%s total=%sms %s%s",
+                user_id_for_log,
+                cache_hit,
+                total_ms,
+                " ".join(parts),
+                f" error={error_text}" if error_text else "",
+            )
+        except Exception:
+            logging.debug("Failed to log dictionary profile", exc_info=True)
+
     payload = request.get_json(silent=True) or {}
+    mark("parsed")
     init_data = payload.get("initData")
     word_ru = (payload.get("word") or "").strip()
     lookup_lang = _normalize_short_lang_code(payload.get("lookup_lang"), fallback="")
@@ -8294,6 +8417,7 @@ def lookup_webapp_dictionary():
 
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
+    mark("validated")
 
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
@@ -8302,8 +8426,12 @@ def lookup_webapp_dictionary():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    user_id_for_log = int(user_id)
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_for_log)
+    mark("lang_pair")
 
+    cache_key = ""
+    usage_main = None
     try:
         # Unified multilang lookup for all language pairs (including legacy RU<->DE)
         # to keep inline popup translation stable in reader/overlay modes.
@@ -8321,6 +8449,32 @@ def lookup_webapp_dictionary():
             query_source_lang = "ru" if is_ru else "de"
             query_target_lang = "de" if is_ru else "ru"
 
+        cache_key = _build_dictionary_lookup_cache_key(
+            user_id=user_id_for_log,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            query_source_lang=query_source_lang,
+            query_target_lang=query_target_lang,
+            lookup_lang=lookup_lang,
+            word=word_ru,
+        )
+        cached_payload = _get_cached_dictionary_lookup(cache_key)
+        if cached_payload:
+            cached_item = cached_payload.get("item")
+            cached_direction = str(cached_payload.get("direction") or "").strip().lower()
+            if isinstance(cached_item, dict) and cached_direction:
+                cache_hit = True
+                mark("cache_hit")
+                _log_dictionary_profile()
+                return jsonify(
+                    {
+                        "ok": True,
+                        "item": cached_item,
+                        "direction": cached_direction,
+                        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                    }
+                )
+
         raw = asyncio.run(
             run_dictionary_lookup_multilang(
                 word=word_ru,
@@ -8328,6 +8482,7 @@ def lookup_webapp_dictionary():
                 target_lang=query_target_lang,
             )
         )
+        mark("llm_main")
         usage_main = get_last_llm_usage(reset=True)
         result, detected, source_value, target_value = _build_multilang_dictionary_result(
             raw=raw,
@@ -8351,6 +8506,7 @@ def lookup_webapp_dictionary():
                     target_lang=query_source_lang,
                 )
             )
+            mark("llm_fallback")
             usage_reverse = get_last_llm_usage(reset=True)
             _billing_log_openai_usage(
                 user_id=int(user_id),
@@ -8393,6 +8549,7 @@ def lookup_webapp_dictionary():
                     result["word_de"] = forced_target
                     target_value = forced_target
     except Exception as exc:
+        _log_dictionary_profile(error_text=str(exc))
         return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
 
     result = _decorate_dictionary_item(
@@ -8400,6 +8557,14 @@ def lookup_webapp_dictionary():
         source_lang=source_lang,
         target_lang=target_lang,
         direction=direction,
+    )
+    mark("decorate")
+    _set_cached_dictionary_lookup(
+        cache_key,
+        {
+            "item": result,
+            "direction": direction,
+        },
     )
     _billing_log_event_safe(
         user_id=int(user_id),
@@ -8430,7 +8595,7 @@ def lookup_webapp_dictionary():
             "lookup_lang": lookup_lang or None,
         },
     )
-    return jsonify(
+    response = jsonify(
         {
             "ok": True,
             "item": result,
@@ -8438,6 +8603,8 @@ def lookup_webapp_dictionary():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
+    _log_dictionary_profile()
+    return response
 
 
 @app.route("/api/mobile/dictionary/lookup", methods=["POST"])
@@ -11332,6 +11499,39 @@ def _fetch_flashcard_feel_entries_for_user(
     return result
 
 
+def _format_flashcard_feel_html(feel_text: str) -> str:
+    compact = str(feel_text or "").strip()
+    if len(compact) > 2800:
+        compact = compact[:2797].rstrip() + "..."
+    if not compact:
+        return html.escape(compact)
+
+    def _decorate_line(raw_line: str) -> str:
+        line = str(raw_line or "").strip()
+        if not line:
+            return ""
+        escaped = html.escape(line)
+        escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+        escaped = re.sub(r"\*(.+?)\*", r"<b>\1</b>", escaped)
+
+        heading_probe = re.sub(r"<[^>]+>", "", escaped)
+        heading_probe = re.sub(r"[*_`#:\-–—\s]+", " ", heading_probe).strip().casefold()
+        if not heading_probe:
+            return escaped
+
+        if ("основ" in heading_probe) or ("main explanation" in heading_probe):
+            return f"🧠 {escaped}"
+        if ("похож" in heading_probe) or ("similar" in heading_probe):
+            return f"🧩 {escaped}"
+        if ("внутрен" in heading_probe) or ("inner logic" in heading_probe):
+            return f"🔍 {escaped}"
+        if ("пример" in heading_probe) or ("example" in heading_probe):
+            return f"📝 {escaped}"
+        return escaped
+
+    return "\n".join(_decorate_line(line) for line in compact.splitlines())
+
+
 def _build_flashcard_feel_private_message(
     *,
     source_text: str,
@@ -11342,19 +11542,23 @@ def _build_flashcard_feel_private_message(
 ) -> str:
     source_code = str(source_lang or "").strip().upper() or "SRC"
     target_code = str(target_lang or "").strip().upper() or "TGT"
-    compact_feel = str(feel_text or "").strip()
-    if len(compact_feel) > 2800:
-        compact_feel = compact_feel[:2797].rstrip() + "..."
+    source_safe = html.escape(str(source_text or "").strip())
+    target_safe = html.escape(str(target_text or "").strip())
+    formatted_feel = _format_flashcard_feel_html(feel_text)
     lines = [
-        "🧠 Feel the Word",
-        f"{source_code} → {target_code}",
+        "🧠 <b>Feel the Word</b>",
+        f"🌐 <b>{source_code} → {target_code}</b>",
         "",
-        f"{source_text}",
-        f"→ {target_text}",
+        "✨ <b>Слово и перевод</b>",
+        f"• {source_safe}",
+        f"• → {target_safe}",
         "",
-        compact_feel,
+        "━━━━━━━━━━━━",
+        "📚 <b>Разбор</b>",
+        formatted_feel,
         "",
-        "Оцени ответ кнопкой ниже:",
+        "━━━━━━━━━━━━",
+        "👍👎 <i>Оцени ответ кнопкой ниже:</i>",
     ]
     return "\n".join(lines)
 
@@ -11447,6 +11651,7 @@ def _dispatch_flashcard_feel_messages(
                     user_id=int(user_id),
                     text=text,
                     reply_markup=reply_markup,
+                    parse_mode="HTML",
                 )
                 sent_count += 1
             except Exception:

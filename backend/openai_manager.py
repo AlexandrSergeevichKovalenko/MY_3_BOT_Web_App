@@ -2494,7 +2494,7 @@ async def run_dictionary_lookup_multilang(
         )
         if run_status.status == "completed":
             break
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
     _store_last_usage(run_status, task_name=task_name)
 
     messages = await client.beta.threads.messages.list(thread_id=thread_id)
