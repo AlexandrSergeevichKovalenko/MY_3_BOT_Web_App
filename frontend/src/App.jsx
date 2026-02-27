@@ -9530,35 +9530,37 @@ function AppInner() {
                       'Waehle Lernsprache und Muttersprache. Das wird fuer Uebersetzung, Woerterbuch, Karten und Analytik genutzt.'
                     )}
                   </p>
-                  <label className="webapp-field">
-                    <span>{tr('Язык изучения', 'Lernsprache')}</span>
-                    <select
-                      value={languageProfileDraft.learning_language}
-                      onChange={(event) => setLanguageProfileDraft((prev) => ({ ...prev, learning_language: event.target.value }))}
-                      disabled={languageProfileSaving}
-                    >
-                      {learningLanguageOptions.map((item) => (
-                        <option key={item.value} value={item.value}>{item.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="webapp-field">
-                    <span>{tr('Родной язык', 'Muttersprache')}</span>
-                    <select
-                      value={languageProfileDraft.native_language}
-                      onChange={(event) => setLanguageProfileDraft((prev) => ({ ...prev, native_language: event.target.value }))}
-                      disabled={languageProfileSaving}
-                    >
-                      {nativeLanguageOptions.map((item) => (
-                        <option key={item.value} value={item.value}>{item.label}</option>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="language-profile-fields">
+                    <label className="webapp-field">
+                      <span>{tr('Язык изучения', 'Lernsprache')}</span>
+                      <select
+                        value={languageProfileDraft.learning_language}
+                        onChange={(event) => setLanguageProfileDraft((prev) => ({ ...prev, learning_language: event.target.value }))}
+                        disabled={languageProfileSaving}
+                      >
+                        {learningLanguageOptions.map((item) => (
+                          <option key={item.value} value={item.value}>{item.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="webapp-field">
+                      <span>{tr('Родной язык', 'Muttersprache')}</span>
+                      <select
+                        value={languageProfileDraft.native_language}
+                        onChange={(event) => setLanguageProfileDraft((prev) => ({ ...prev, native_language: event.target.value }))}
+                        disabled={languageProfileSaving}
+                      >
+                        {nativeLanguageOptions.map((item) => (
+                          <option key={item.value} value={item.value}>{item.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                   {languageProfileError && <div className="webapp-error">{languageProfileError}</div>}
                   <div className="language-profile-actions">
                     <button
                       type="button"
-                      className="primary-button"
+                      className="primary-button language-profile-save-btn"
                       onClick={saveLanguageProfile}
                       disabled={languageProfileSaving}
                     >
@@ -9567,7 +9569,7 @@ function AppInner() {
                     {!needsLanguageProfileChoice && (
                       <button
                         type="button"
-                        className="secondary-button"
+                        className="secondary-button language-profile-close-btn"
                         onClick={() => setLanguageProfileModalOpen(false)}
                         disabled={languageProfileSaving}
                       >
@@ -10303,15 +10305,19 @@ function AppInner() {
 
             {!flashcardsOnly && isSectionVisible('translations') && (
               <section className="webapp-section webapp-section-translations" ref={translationsRef}>
-                <div className="webapp-section-title webapp-section-title-with-logo">
-                  <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
-                  {isFocusedSection('translations') && (
-                    <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                      {tr('На главную', 'Startseite')}
-                    </button>
-                  )}
-                  {renderTodaySectionTaskHud('translations')}
-                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                <div className="webapp-section-title webapp-section-title-with-logo translations-title-row">
+                  <div className="translations-title-main">
+                    <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
+                    {isFocusedSection('translations') && (
+                      <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                        {tr('На главную', 'Startseite')}
+                      </button>
+                    )}
+                  </div>
+                  <div className="translations-title-side">
+                    {renderTodaySectionTaskHud('translations')}
+                    <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
+                  </div>
                 </div>
                 <div className="webapp-translation-start">
                   <label className="webapp-field">
@@ -10408,7 +10414,7 @@ function AppInner() {
                   )}
                   <button
                     type="button"
-                    className="primary-button"
+                    className="primary-button translation-start-cta"
                     onClick={isStoryTopic(selectedTopic) ? handleStartStory : handleStartTranslation}
                     disabled={webappLoading || topicsLoading}
                   >
@@ -10418,10 +10424,10 @@ function AppInner() {
                 {topicsError && <div className="webapp-error">{topicsError}</div>}
                 {storyHistoryError && <div className="webapp-error">{storyHistoryError}</div>}
                 {!isStoryResultMode && (
-                <form className="webapp-form" onSubmit={handleTranslationSubmit}>
+                <form className="webapp-form translation-form" onSubmit={handleTranslationSubmit}>
                   <section className="webapp-translation-list">
                     {sentences.length === 0 ? (
-                      <p className="webapp-muted">
+                      <p className="webapp-muted translation-empty-state">
                         {tr('Нет активных предложений. Нажмите «🚀 Начать перевод», чтобы получить новые.', 'Keine aktiven Saetze. Druecke «🚀 Uebersetzung starten», um neue zu laden.')}
                       </p>
                     ) : (
@@ -10481,16 +10487,22 @@ function AppInner() {
                           )}
                         </small>
                       </div>
-                      <input
-                        type="checkbox"
-                        checked={translationPrivateGrammarTextOptIn}
-                        onChange={(event) => setTranslationPrivateGrammarTextOptIn(event.target.checked)}
-                        disabled={webappLoading}
-                      />
+                      <span className="translation-private-grammar-optin-check">
+                        <input
+                          type="checkbox"
+                          checked={translationPrivateGrammarTextOptIn}
+                          onChange={(event) => setTranslationPrivateGrammarTextOptIn(event.target.checked)}
+                          disabled={webappLoading}
+                        />
+                      </span>
                     </label>
                   )}
 
-                  <button className="primary-button" type="submit" disabled={webappLoading}>
+                  <button
+                    className={`primary-button translation-check-cta ${sentences.length === 0 && !webappLoading ? 'is-disabled-empty' : ''}`}
+                    type="submit"
+                    disabled={webappLoading || sentences.length === 0}
+                  >
                     {webappLoading
                       ? (translationCheckProgress.total > 0
                           ? tr(

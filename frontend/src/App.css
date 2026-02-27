@@ -8897,6 +8897,920 @@ body {
   }
 }
 
+/* Translations Screen: Dark Minimal Premium Study Mode */
+.webapp-section.webapp-section-translations {
+  --tr-bg-app: #0f172a;
+  --tr-bg-card: #1e293b;
+  --tr-bg-card-alt: #0b1220;
+  --tr-bg-hover: #1f2937;
+  --tr-border: #334155;
+  --tr-border-subtle: #1f2937;
+  --tr-text-primary: #f8fafc;
+  --tr-text-title: #e2e8f0;
+  --tr-text-secondary: #cbd5e1;
+  --tr-text-muted: #94a3b8;
+  --tr-text-subtle: #64748b;
+  --tr-primary: #2563eb;
+  --tr-danger: #dc2626;
+  --tr-shadow-card: 0 25px 50px rgba(0, 0, 0, 0.45);
+  --tr-shadow-primary: 0 8px 20px rgba(37, 99, 235, 0.35);
+  background: var(--tr-bg-card);
+  border: 1px solid var(--tr-border);
+  border-radius: 28px;
+  box-shadow: var(--tr-shadow-card);
+  padding: 24px;
+  gap: 24px;
+  color: var(--tr-text-primary);
+}
+
+.webapp-section.webapp-section-translations .translations-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 16px;
+  padding-right: 0;
+  min-height: auto;
+}
+
+.webapp-section.webapp-section-translations .translations-title-main {
+  display: grid;
+  gap: 12px;
+}
+
+.webapp-section.webapp-section-translations .translations-title-main h2 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 600;
+  color: var(--tr-text-title);
+}
+
+.webapp-section.webapp-section-translations .translations-title-main .section-home-back {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--tr-border);
+  background: transparent;
+  color: var(--tr-text-secondary);
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.webapp-section.webapp-section-translations .translations-title-main .section-home-back:hover {
+  background: var(--tr-bg-hover);
+  border-color: var(--tr-border);
+}
+
+.webapp-section.webapp-section-translations .translations-title-side {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.webapp-section.webapp-section-translations .translations-title-side .today-section-task-hud {
+  position: static;
+  top: auto;
+  right: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.webapp-section.webapp-section-translations .today-section-timer-pill {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--tr-border);
+  background: var(--tr-bg-card-alt);
+  color: var(--tr-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.webapp-section.webapp-section-translations .today-section-timer-pill.is-paused {
+  border-color: var(--tr-border);
+  background: var(--tr-bg-card-alt);
+  color: var(--tr-text-secondary);
+}
+
+.webapp-section.webapp-section-translations .today-section-task-done {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid #16a34a;
+  background: rgba(22, 163, 74, 0.14);
+}
+
+.webapp-section.webapp-section-translations .translations-corner-logo {
+  position: static;
+  width: 50px;
+  height: 50px;
+  filter: none;
+  box-shadow: none;
+}
+
+.webapp-section.webapp-section-translations .webapp-translation-start {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: end;
+  gap: 16px;
+  margin: 0;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid var(--tr-border);
+  background: var(--tr-bg-card-alt);
+}
+
+.webapp-section.webapp-section-translations .webapp-translation-start .webapp-field {
+  min-width: 0;
+  gap: 8px;
+}
+
+.webapp-section.webapp-section-translations .webapp-translation-start .webapp-field > span {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--tr-text-muted);
+}
+
+.webapp-section.webapp-section-translations .webapp-translation-start select {
+  min-height: 44px;
+  border-radius: 16px;
+  border: 1px solid var(--tr-border);
+  background: var(--tr-bg-card-alt);
+  color: var(--tr-text-primary);
+  padding: 0 12px;
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.webapp-section.webapp-section-translations .translation-start-cta {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 56px;
+  border-radius: 16px;
+  border: 1px solid var(--tr-primary);
+  background: var(--tr-primary);
+  color: #ffffff;
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 600;
+  box-shadow: var(--tr-shadow-primary);
+}
+
+.webapp-section.webapp-section-translations .translation-start-cta:hover {
+  transform: none;
+}
+
+.webapp-section.webapp-section-translations .translation-form {
+  gap: 24px;
+}
+
+.webapp-section.webapp-section-translations .webapp-translation-list {
+  gap: 16px;
+}
+
+.webapp-section.webapp-section-translations .translation-empty-state {
+  margin: 0;
+  padding: 16px 0;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--tr-text-secondary);
+}
+
+.webapp-section.webapp-section-translations .webapp-translation-item {
+  gap: 12px;
+  padding: 20px;
+  border-radius: 20px;
+  border: 1px solid var(--tr-border);
+  background: var(--tr-bg-card-alt);
+}
+
+.webapp-section.webapp-section-translations .translation-sentence {
+  color: var(--tr-text-title);
+}
+
+.webapp-section.webapp-section-translations .webapp-translation-item textarea {
+  border-radius: 16px;
+  border: 1px solid var(--tr-border);
+  background: var(--tr-bg-card-alt);
+  color: var(--tr-text-primary);
+  padding: 12px;
+  box-shadow: none;
+}
+
+.webapp-section.webapp-section-translations .translation-actions {
+  justify-content: flex-end;
+}
+
+.webapp-section.webapp-section-translations .translation-dict-jump {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid var(--tr-border);
+  background: transparent;
+  color: var(--tr-text-secondary);
+  box-shadow: none;
+}
+
+.webapp-section.webapp-section-translations .translation-dict-jump:hover {
+  transform: none;
+  background: var(--tr-bg-hover);
+  box-shadow: none;
+}
+
+.webapp-section.webapp-section-translations .translation-private-grammar-optin {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid var(--tr-border);
+  background: var(--tr-bg-card-alt);
+}
+
+.webapp-section.webapp-section-translations .translation-private-grammar-optin-copy span {
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: var(--tr-text-primary);
+}
+
+.webapp-section.webapp-section-translations .translation-private-grammar-optin-copy small {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--tr-text-muted);
+}
+
+.webapp-section.webapp-section-translations .translation-private-grammar-optin-check {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.webapp-section.webapp-section-translations .translation-private-grammar-optin-check input {
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid var(--tr-border);
+  background: transparent;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.webapp-section.webapp-section-translations .translation-private-grammar-optin-check input::after {
+  content: "";
+  width: 10px;
+  height: 6px;
+  border-left: 2px solid #ffffff;
+  border-bottom: 2px solid #ffffff;
+  transform: rotate(-45deg) scale(0);
+  transform-origin: center;
+}
+
+.webapp-section.webapp-section-translations .translation-private-grammar-optin-check input:checked {
+  background: var(--tr-primary);
+  border-color: var(--tr-primary);
+}
+
+.webapp-section.webapp-section-translations .translation-private-grammar-optin-check input:checked::after {
+  transform: rotate(-45deg) scale(1);
+}
+
+.webapp-section.webapp-section-translations .translation-private-grammar-optin-check input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.webapp-section.webapp-section-translations .primary-button,
+.webapp-section.webapp-section-translations .translation-check-cta {
+  min-height: 56px;
+  border-radius: 16px;
+  border: 1px solid var(--tr-primary);
+  background: var(--tr-primary);
+  color: #ffffff;
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 600;
+  box-shadow: var(--tr-shadow-primary);
+}
+
+.webapp-section.webapp-section-translations .primary-button:hover,
+.webapp-section.webapp-section-translations .translation-check-cta:hover {
+  transform: none;
+}
+
+.webapp-section.webapp-section-translations .translation-check-cta.is-disabled-empty {
+  border-color: var(--tr-border-subtle);
+  background: var(--tr-bg-card-alt);
+  color: var(--tr-text-subtle);
+  box-shadow: none;
+}
+
+.webapp-section.webapp-section-translations .translation-check-cta.is-disabled-empty:disabled {
+  opacity: 1;
+}
+
+.webapp-section.webapp-section-translations .webapp-actions-footer {
+  margin-top: 0;
+  gap: 12px;
+}
+
+.webapp-section.webapp-section-translations .webapp-result-card {
+  border-radius: 20px;
+  padding: 20px;
+  border: 1px solid var(--tr-border);
+  background: var(--tr-bg-card-alt);
+  color: var(--tr-text-primary);
+}
+
+.webapp-section.webapp-section-translations .webapp-result-text,
+.webapp-section.webapp-section-translations .webapp-explanation {
+  border: 1px solid var(--tr-border);
+  border-radius: 16px;
+  background: var(--tr-bg-card-alt);
+  color: var(--tr-text-primary);
+}
+
+.webapp-section.webapp-section-translations .story-result {
+  border: 1px solid var(--tr-border);
+  background: var(--tr-bg-card-alt);
+}
+
+.webapp-section.webapp-section-translations .story-result-head {
+  border: 1px solid var(--tr-border);
+  background: transparent;
+  color: var(--tr-text-title);
+}
+
+.webapp-section.webapp-section-translations .webapp-actions-footer .secondary-button {
+  min-height: 48px;
+  border-radius: 16px;
+  border: 1px solid var(--tr-border);
+  background: transparent;
+  color: var(--tr-text-secondary);
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.webapp-section.webapp-section-translations .webapp-actions-footer .secondary-button:hover {
+  background: var(--tr-bg-hover);
+}
+
+.webapp-section.webapp-section-translations .finish-button,
+.webapp-section.webapp-section-translations .finish-button.status-done {
+  min-height: 48px;
+  border-radius: 16px;
+  border: 1px solid var(--tr-danger);
+  background: transparent;
+  color: var(--tr-danger);
+  box-shadow: none;
+}
+
+.webapp-section.webapp-section-translations .finish-button:hover,
+.webapp-section.webapp-section-translations .finish-button.status-done:hover {
+  background: rgba(220, 38, 38, 0.12);
+  box-shadow: none;
+}
+
+@media (max-width: 700px) {
+  .webapp-section.webapp-section-translations .translations-title-row {
+    grid-template-columns: 1fr;
+  }
+
+  .webapp-section.webapp-section-translations .translations-title-side {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 420px) {
+  .webapp-section.webapp-section-translations {
+    padding: 20px;
+    gap: 20px;
+  }
+
+  .webapp-section.webapp-section-translations .translations-title-row {
+    gap: 12px;
+  }
+
+  .webapp-section.webapp-section-translations .translations-title-main {
+    gap: 8px;
+  }
+
+  .webapp-section.webapp-section-translations .translations-title-main h2 {
+    font-size: 20px;
+    line-height: 1.25;
+  }
+
+  .webapp-section.webapp-section-translations .translations-title-main .section-home-back {
+    min-height: 36px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  .webapp-section.webapp-section-translations .translations-title-side {
+    justify-content: space-between;
+    width: 100%;
+    gap: 10px;
+  }
+
+  .webapp-section.webapp-section-translations .translations-title-side .today-section-task-hud {
+    flex: 1 1 auto;
+    justify-content: flex-start;
+  }
+
+  .webapp-section.webapp-section-translations .today-section-timer-pill {
+    min-height: 34px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .webapp-section.webapp-section-translations .today-section-task-done {
+    width: 34px;
+    height: 34px;
+  }
+
+  .webapp-section.webapp-section-translations .translations-corner-logo {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* Dictionary + Language Gate: Dark Minimal Premium Study Mode */
+.language-profile-gate {
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: none;
+}
+
+.language-profile-card {
+  width: min(350px, 100%);
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 28px;
+  padding: 24px;
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.45);
+  gap: 24px;
+}
+
+.language-profile-card h3 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+.language-profile-card .webapp-muted {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #94a3b8;
+}
+
+.language-profile-fields {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid #334155;
+  background: #0b1220;
+}
+
+.language-profile-card .webapp-field {
+  gap: 8px;
+}
+
+.language-profile-card .webapp-field > span {
+  font-size: 14px;
+  line-height: 1.4;
+  color: #94a3b8;
+}
+
+.language-profile-card .webapp-field select {
+  min-height: 52px;
+  border-radius: 16px;
+  border: 1px solid #334155;
+  background: #0b1220;
+  color: #f8fafc;
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.language-profile-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.language-profile-save-btn {
+  min-height: 48px;
+  border-radius: 16px;
+  border: 1px solid #2563eb;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
+}
+
+.language-profile-save-btn:hover {
+  transform: none;
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
+}
+
+.language-profile-close-btn {
+  min-height: 48px;
+  border-radius: 16px;
+  border: 1px solid #334155;
+  background: transparent;
+  color: #cbd5e1;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.language-profile-close-btn:hover {
+  background: #1f2937;
+}
+
+.webapp-dictionary {
+  --dict-bg-card: #1e293b;
+  --dict-bg-card-alt: #0b1220;
+  --dict-border: #334155;
+  --dict-text-primary: #f8fafc;
+  --dict-text-title: #e2e8f0;
+  --dict-text-muted: #94a3b8;
+  --dict-text-secondary: #cbd5e1;
+  --dict-primary: #2563eb;
+  width: min(350px, 100%);
+  margin: 0 auto;
+  padding: 24px;
+  gap: 24px;
+  border-radius: 28px;
+  border: 1px solid var(--dict-border);
+  background: var(--dict-bg-card);
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.45);
+}
+
+.webapp-dictionary .webapp-local-section-head {
+  min-height: auto;
+  padding-right: 48px;
+  gap: 0;
+}
+
+.webapp-dictionary .webapp-local-section-head h3 {
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 700;
+  color: var(--dict-text-title);
+}
+
+.webapp-dictionary .section-corner-logo {
+  width: 40px;
+  height: 40px;
+  filter: none;
+}
+
+.webapp-dictionary .webapp-dictionary-form {
+  gap: 24px;
+}
+
+.webapp-dictionary .webapp-field > span {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--dict-text-muted);
+}
+
+.webapp-dictionary .dictionary-input {
+  min-height: 54px;
+  border-radius: 20px;
+  border: 1px solid var(--dict-border);
+  background: var(--dict-bg-card-alt);
+  color: var(--dict-text-primary);
+  padding-left: 14px;
+  padding-right: 44px;
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.webapp-dictionary .dictionary-input::placeholder {
+  color: #64748b;
+}
+
+.webapp-dictionary .dictionary-clear {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  color: var(--dict-text-secondary);
+}
+
+.webapp-dictionary .dictionary-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.webapp-dictionary .dictionary-actions .dictionary-button,
+.webapp-dictionary .dictionary-actions .dictionary-save-button {
+  min-height: 48px;
+  border-radius: 16px;
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.webapp-dictionary .dictionary-actions .dictionary-button {
+  border: 1px solid var(--dict-primary);
+  background: var(--dict-primary);
+  color: #ffffff;
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
+}
+
+.webapp-dictionary .dictionary-actions .dictionary-button:hover {
+  background: var(--dict-primary);
+}
+
+.webapp-dictionary .dictionary-actions .dictionary-save-button {
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  color: var(--dict-text-secondary);
+  box-shadow: none;
+}
+
+.webapp-dictionary .dictionary-actions .dictionary-back-icon {
+  grid-column: 1 / -1;
+  min-height: 40px;
+  border-radius: 16px;
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  color: var(--dict-text-secondary);
+  box-shadow: none;
+}
+
+.webapp-dictionary .dictionary-actions .dictionary-save-button:hover,
+.webapp-dictionary .dictionary-actions .dictionary-back-icon:hover {
+  background: #1f2937;
+}
+
+.webapp-dictionary .folder-panel {
+  gap: 16px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid var(--dict-border);
+  background: var(--dict-bg-card-alt);
+}
+
+.webapp-dictionary .folder-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.webapp-dictionary .folder-select {
+  max-width: none;
+  grid-column: 1 / -1;
+}
+
+.webapp-dictionary .folder-row .webapp-field select {
+  min-height: 52px;
+  border-radius: 16px;
+  border: 1px solid var(--dict-border);
+  background: var(--dict-bg-card-alt);
+  color: var(--dict-text-primary);
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.webapp-dictionary .folder-preview {
+  grid-column: 1 / -1;
+  border-radius: 16px;
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  color: var(--dict-text-secondary);
+  padding: 10px 12px;
+}
+
+.webapp-dictionary .folder-row > .secondary-button {
+  min-height: 40px;
+  border-radius: 16px;
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  color: var(--dict-text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.webapp-dictionary .folder-row > .secondary-button:hover {
+  background: #1f2937;
+}
+
+.webapp-dictionary .webapp-dictionary-form input,
+.webapp-dictionary .folder-create input {
+  min-height: 52px;
+  border-radius: 16px;
+  border: 1px solid var(--dict-border);
+  background: var(--dict-bg-card-alt);
+  color: var(--dict-text-primary);
+  box-shadow: none;
+}
+
+.webapp-dictionary .dictionary-pdf-panel {
+  border-radius: 16px;
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  padding: 12px;
+}
+
+.webapp-dictionary .dictionary-pdf-title {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--dict-text-secondary);
+}
+
+.webapp-dictionary .dictionary-pdf-actions {
+  gap: 12px;
+}
+
+.webapp-dictionary .dictionary-pdf-actions .secondary-button {
+  min-height: 40px;
+  border-radius: 16px;
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  color: var(--dict-text-secondary);
+  box-shadow: none;
+}
+
+.webapp-dictionary .dictionary-pdf-actions .secondary-button:hover {
+  background: #1f2937;
+}
+
+.webapp-dictionary .dictionary-flashcards {
+  margin-top: 0;
+}
+
+.webapp-dictionary .dictionary-flashcards .secondary-button {
+  width: 100%;
+  min-height: 56px;
+  border-radius: 16px;
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  color: var(--dict-text-title);
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.webapp-dictionary .dictionary-flashcards .secondary-button:hover {
+  background: #1f2937;
+}
+
+.webapp-dictionary .webapp-dictionary-result,
+.webapp-dictionary .dictionary-collocations {
+  border-radius: 20px;
+  border: 1px solid var(--dict-border);
+  background: var(--dict-bg-card-alt);
+  padding: 16px;
+}
+
+.webapp-dictionary .dictionary-label,
+.webapp-dictionary .dictionary-row,
+.webapp-dictionary .dictionary-forms,
+.webapp-dictionary .dictionary-prefixes,
+.webapp-dictionary .dictionary-examples {
+  color: var(--dict-text-secondary);
+}
+
+.webapp-dictionary .dictionary-translation {
+  color: var(--dict-text-primary);
+  text-shadow: none;
+}
+
+.webapp-dictionary .dictionary-direction {
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  color: var(--dict-text-muted);
+}
+
+.webapp-dictionary .dictionary-tts,
+.webapp-dictionary .inline-tts-button {
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  color: var(--dict-text-secondary);
+}
+
+.webapp-dictionary .color-dot.is-active,
+.webapp-dictionary .icon-dot.is-active {
+  border-color: var(--dict-border);
+  box-shadow: none;
+}
+
+@media (max-width: 900px) {
+  .webapp-dictionary {
+    width: 100%;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .language-profile-card {
+    padding: 20px;
+    gap: 20px;
+  }
+
+  .language-profile-card h3 {
+    font-size: 20px;
+  }
+
+  .language-profile-fields {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .language-profile-card .webapp-field select {
+    min-height: 48px;
+    font-size: 15px;
+  }
+
+  .webapp-dictionary {
+    padding: 20px;
+    gap: 20px;
+  }
+
+  .webapp-dictionary .webapp-local-section-head h3 {
+    font-size: 20px;
+  }
+
+  .webapp-dictionary .webapp-dictionary-form {
+    gap: 20px;
+  }
+
+  .webapp-dictionary .dictionary-input {
+    min-height: 52px;
+    font-size: 15px;
+  }
+
+  .webapp-dictionary .dictionary-actions {
+    gap: 8px;
+  }
+
+  .webapp-dictionary .dictionary-actions .dictionary-button,
+  .webapp-dictionary .dictionary-actions .dictionary-save-button {
+    min-height: 52px;
+    padding: 0 10px;
+    font-size: 13px;
+    line-height: 1.2;
+    white-space: normal;
+    text-align: center;
+  }
+
+  .webapp-dictionary .folder-panel {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .webapp-dictionary .folder-row {
+    gap: 8px;
+  }
+
+  .webapp-dictionary .folder-row .webapp-field select {
+    min-height: 48px;
+    font-size: 15px;
+  }
+
+  .webapp-dictionary .folder-row > .secondary-button {
+    min-height: 40px;
+    padding: 0 10px;
+    font-size: 13px;
+    line-height: 1.2;
+    white-space: normal;
+    text-align: center;
+  }
+
+  .webapp-dictionary .dictionary-flashcards .secondary-button {
+    min-height: 52px;
+  }
+}
+
 /* Flashcards Design Token Enforcement */
 .webapp-flashcards {
   --t-bg-app: #0f172a;
