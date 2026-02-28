@@ -10113,8 +10113,152 @@ function AppInner() {
                         : ''}
                     </div>
 
+                    <div className="theory-practice-block skill-training-theory-block">
+                      <h4>{tr('1) Теория по теме', '1) Theorie zum Thema')}</h4>
+                      {skillTrainingData?.package?.theory?.title && (
+                        <h3 className="skill-training-theory-title">
+                          {String(skillTrainingData.package.theory.title)}
+                        </h3>
+                      )}
+                      {skillTrainingData?.package?.theory?.core_explanation && (
+                        <p className="skill-training-theory-lead">
+                          {String(skillTrainingData.package.theory.core_explanation)}
+                        </p>
+                      )}
+                      {skillTrainingData?.package?.theory?.what_this_topic_is && (
+                        <div className="skill-training-theory-section">
+                          <div className="skill-training-theory-section-title">
+                            {tr('Что это за тема', 'Was ist dieses Thema')}
+                          </div>
+                          <p>{String(skillTrainingData.package.theory.what_this_topic_is)}</p>
+                        </div>
+                      )}
+                      {skillTrainingData?.package?.theory?.why_mistake_happens && (
+                        <div className="skill-training-theory-section">
+                          <div className="skill-training-theory-section-title">
+                            {tr('Почему возникает ошибка', 'Warum der Fehler entsteht')}
+                          </div>
+                          <p>{String(skillTrainingData.package.theory.why_mistake_happens)}</p>
+                        </div>
+                      )}
+                      {skillTrainingData?.package?.theory?.error_connection && (
+                        <div className="skill-training-theory-section">
+                          <div className="skill-training-theory-section-title">
+                            {tr('Связь с ошибками ученика', 'Bezug zu den Fehlern')}
+                          </div>
+                          <p>{String(skillTrainingData.package.theory.error_connection)}</p>
+                        </div>
+                      )}
+                      {Array.isArray(skillTrainingData?.package?.theory?.core_rules)
+                        && skillTrainingData.package.theory.core_rules.length > 0 && (
+                          <div className="skill-training-theory-section">
+                            <div className="skill-training-theory-section-title">
+                              {tr('Ключевые правила', 'Kernregeln')}
+                            </div>
+                            <ul className="skill-training-theory-list">
+                              {skillTrainingData.package.theory.core_rules.map((item, index) => (
+                                <li key={`skill-training-rule-${index}`}>{String(item || '')}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      {Array.isArray(skillTrainingData?.package?.theory?.step_by_step)
+                        && skillTrainingData.package.theory.step_by_step.length > 0 && (
+                          <div className="skill-training-theory-section">
+                            <div className="skill-training-theory-section-title">
+                              {tr('Быстрый алгоритм', 'Schneller Ablauf')}
+                            </div>
+                            <ol className="skill-training-theory-list is-ordered">
+                              {skillTrainingData.package.theory.step_by_step.map((item, index) => (
+                                <li key={`skill-training-step-${index}`}>{String(item || '')}</li>
+                              ))}
+                            </ol>
+                          </div>
+                        )}
+                      {Array.isArray(skillTrainingData?.package?.theory?.construction_recipe)
+                        && skillTrainingData.package.theory.construction_recipe.length > 0 && (
+                          <div className="skill-training-theory-section">
+                            <div className="skill-training-theory-section-title">
+                              {tr('Пошаговая сборка предложения', 'Schritt-fuer-Schritt Aufbau')}
+                            </div>
+                            <ol className="skill-training-theory-list is-ordered">
+                              {skillTrainingData.package.theory.construction_recipe.map((item, index) => (
+                                <li key={`skill-training-recipe-${index}`}>{String(item || '')}</li>
+                              ))}
+                            </ol>
+                          </div>
+                        )}
+                      {skillTrainingData?.package?.theory?.key_rule && (
+                        <div className="theory-key-rule">
+                          <strong>{tr('Главное правило', 'Wichtigste Regel')}:</strong>{' '}
+                          {String(skillTrainingData.package.theory.key_rule)}
+                        </div>
+                      )}
+                      {Array.isArray(skillTrainingData?.package?.theory?.minimal_pairs)
+                        && skillTrainingData.package.theory.minimal_pairs.length > 0 && (
+                          <div className="skill-training-theory-section">
+                            <div className="skill-training-theory-section-title">
+                              {tr('Минимальные пары и контрасты', 'Kontrastpaare')}
+                            </div>
+                            <div className="skill-training-pairs">
+                              {skillTrainingData.package.theory.minimal_pairs.map((pair, index) => (
+                                <div className="skill-training-pair-card" key={`skill-training-pair-${index}`}>
+                                  <div className="skill-training-pair-sentence">
+                                    A: {String(pair?.sentence_a || '')}
+                                  </div>
+                                  <div className="skill-training-pair-sentence">
+                                    B: {String(pair?.sentence_b || '')}
+                                  </div>
+                                  {pair?.explanation && (
+                                    <div className="skill-training-pair-explanation">
+                                      {String(pair.explanation)}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      {Array.isArray(skillTrainingData?.package?.theory?.examples)
+                        && skillTrainingData.package.theory.examples.length > 0 && (
+                          <div className="theory-examples">
+                            <h4>{tr('Примеры', 'Beispiele')}</h4>
+                            {skillTrainingData.package.theory.examples.map((example, index) => (
+                              <div key={`skill-training-example-${index}`} className="theory-example-item">
+                                <div><strong>{String(example?.sentence || '')}</strong></div>
+                                {example?.translation && (
+                                  <div className="skill-training-example-translation">
+                                    {String(example.translation)}
+                                  </div>
+                                )}
+                                {example?.explanation && <div>{String(example.explanation)}</div>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      {skillTrainingData?.package?.theory?.memory_trick && (
+                        <div className="theory-memory-trick">
+                          <strong>{tr('Лайфхак', 'Merkhilfe')}:</strong>{' '}
+                          {String(skillTrainingData.package.theory.memory_trick)}
+                        </div>
+                      )}
+                      {Array.isArray(skillTrainingData?.package?.theory?.self_check)
+                        && skillTrainingData.package.theory.self_check.length > 0 && (
+                          <div className="skill-training-theory-section">
+                            <div className="skill-training-theory-section-title">
+                              {tr('Быстрая самопроверка', 'Selbst-Check')}
+                            </div>
+                            <ul className="skill-training-theory-list">
+                              {skillTrainingData.package.theory.self_check.map((item, index) => (
+                                <li key={`skill-training-self-check-${index}`}>{String(item || '')}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                    </div>
+
                     <div className="theory-resources">
-                      <h4>{tr('1) Теория по теме (2 ссылки)', '1) Theorie zum Thema (2 Links)')}</h4>
+                      <h4>{tr('2) Источники по теме', '2) Quellen zum Thema')}</h4>
                       {Array.isArray(skillTrainingData?.package?.theory?.resources)
                         && skillTrainingData.package.theory.resources.slice(0, 2).map((item, index) => {
                           const title = String(item?.title || '').trim();
@@ -10140,10 +10284,19 @@ function AppInner() {
                             </a>
                           );
                         })}
+                      {(!Array.isArray(skillTrainingData?.package?.theory?.resources)
+                        || skillTrainingData.package.theory.resources.length === 0) && (
+                          <div className="webapp-muted">
+                            {tr(
+                              'Источники по теме пока не подобраны. Обновите тренировку позже.',
+                              'Quellen zum Thema wurden noch nicht gefunden. Bitte spaeter aktualisieren.'
+                            )}
+                          </div>
+                        )}
                     </div>
 
                     <div className="theory-practice-block skill-training-video-block">
-                      <h4>{tr('2) Релевантное видео YouTube', '2) Relevantes YouTube-Video')}</h4>
+                      <h4>{tr('3) Релевантное видео YouTube', '3) Relevantes YouTube-Video')}</h4>
                       {skillTrainingVideoLoading ? (
                         <div className="webapp-muted">
                           {tr('Подбираем видео по теме...', 'Video zum Thema wird geladen...')}
@@ -10165,7 +10318,7 @@ function AppInner() {
                     </div>
 
                     <div className="theory-practice-block">
-                      <h4>{tr('3) Практика: 5 предложений', '3) Uebung: 5 Saetze')}</h4>
+                      <h4>{tr('4) Практика: 5 предложений', '4) Uebung: 5 Saetze')}</h4>
                       {(skillTrainingData?.package?.practice_sentences || []).map((sentence, index) => (
                         <label key={`skill-training-practice-${index}`} className="webapp-field">
                           <span>{index + 1}. {String(sentence || '')}</span>

@@ -86,7 +86,7 @@ from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConf
 from datetime import datetime, timezone
 from io import BytesIO
 from uuid import uuid4
-from urllib.parse import parse_qsl, quote_plus, urlparse, urlencode
+from urllib.parse import parse_qsl, urlparse, urlencode
 from flask import Flask, request, jsonify, send_from_directory, send_file, g, redirect
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -2020,82 +2020,248 @@ def _normalize_theory_sentences(payload: dict) -> list[str]:
     return []
 
 
-def _default_theory_resources(target_lang: str) -> list[dict]:
-    lang = _normalize_short_lang_code(target_lang, fallback="de")
-    if lang == "de":
-        return [
+_DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS = (
+    "de-online.ru",
+    "speakasap.com",
+    "studygerman.ru",
+    "anecole.com",
+    "a1c2deutschonline.com",
+)
+_SKILL_RESOURCE_DOMAIN_BLOCKLIST = {
+    "duden.de",
+    "wikipedia.org",
+    "youtube.com",
+    "youtu.be",
+    "google.com",
+    "bing.com",
+    "yandex.ru",
+    "yandex.com",
+}
+_SKILL_RESOURCE_LANGUAGE_NAMES = {
+    "de": "German",
+    "en": "English",
+    "es": "Spanish",
+    "it": "Italian",
+    "ru": "Russian",
+}
+_SKILL_RESOURCE_ALLOWLIST_CACHE: dict[str, object] = {"domains": None, "expires_at": 0.0}
+_SKILL_RESOURCE_ALLOWLIST_CACHE_TTL_SEC = 300.0
+
+
+def _invalidate_skill_resource_domain_cache() -> None:
+    _SKILL_RESOURCE_ALLOWLIST_CACHE["domains"] = None
+    _SKILL_RESOURCE_ALLOWLIST_CACHE["expires_at"] = 0.0
+
+
+def _normalize_skill_resource_domain(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    if "://" in raw:
+        try:
+            raw = urlparse(raw).netloc.lower()
+        except Exception:
+            return ""
+    raw = raw.split("@")[-1].split(":")[0].strip().lstrip(".")
+    while raw.startswith("www."):
+        raw = raw[4:]
+    if not raw or "." not in raw or " " in raw:
+        return ""
+    return raw
+
+
+def _ensure_skill_resource_domains_table() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_skill_resource_domains (
+                    domain TEXT PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'candidate',
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    note TEXT,
+                    meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    approved_at TIMESTAMPTZ
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt3_skill_resource_domains_status
+                ON bt_3_skill_resource_domains (status, updated_at DESC);
+                """
+            )
+            for domain in _DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS:
+                normalized = _normalize_skill_resource_domain(domain)
+                if not normalized:
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_skill_resource_domains (
+                        domain, status, source, note, meta, approved_at, updated_at
+                    )
+                    VALUES (
+                        %s, 'allowed', 'seed_default', %s, '{}'::jsonb, NOW(), NOW()
+                    )
+                    ON CONFLICT (domain) DO NOTHING;
+                    """,
+                    (normalized, "Seeded default trusted skill resource domain"),
+                )
+        conn.commit()
+
+
+def _list_skill_resource_domains(*, status: str | None = None, limit: int = 100) -> list[dict]:
+    _ensure_skill_resource_domains_table()
+    status_value = str(status or "").strip().lower()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if status_value:
+                cursor.execute(
+                    """
+                    SELECT domain, status, source, note, meta, created_at, updated_at, approved_at
+                    FROM bt_3_skill_resource_domains
+                    WHERE status = %s
+                    ORDER BY updated_at DESC, domain ASC
+                    LIMIT %s;
+                    """,
+                    (status_value, max(1, min(500, int(limit)))),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT domain, status, source, note, meta, created_at, updated_at, approved_at
+                    FROM bt_3_skill_resource_domains
+                    ORDER BY updated_at DESC, domain ASC
+                    LIMIT %s;
+                    """,
+                    (max(1, min(500, int(limit))),),
+                )
+            rows = cursor.fetchall() or []
+    items: list[dict] = []
+    for row in rows:
+        items.append(
             {
-                "title": "Duden Grammatik",
-                "url": "https://www.duden.de/sprachwissen/grammatik",
-                "type": "article",
-                "why": "Справочник по грамматике немецкого языка.",
-            },
-            {
-                "title": "Lingolia Deutsch Grammatik",
-                "url": "https://deutsch.lingolia.com/de/grammatik",
-                "type": "article",
-                "why": "Надежный источник с правилами и упражнениями по немецкой грамматике.",
-            },
-            {
-                "title": "Deutsch lernen (DW)",
-                "url": "https://www.youtube.com/@dwlearngerman",
-                "type": "video",
-                "why": "Известный учебный канал с объяснениями по темам.",
-            },
-        ]
-    if lang == "en":
-        return [
-            {
-                "title": "Cambridge Grammar",
-                "url": "https://dictionary.cambridge.org/grammar/",
-                "type": "article",
-                "why": "Авторитетные объяснения английской грамматики.",
-            },
-            {
-                "title": "BBC Learning English",
-                "url": "https://www.youtube.com/@bbclearningenglish",
-                "type": "video",
-                "why": "Популярный канал с практичной грамматикой.",
-            },
-        ]
-    if lang == "es":
-        return [
-            {
-                "title": "RAE - Diccionario Panhispánico de Dudas",
-                "url": "https://www.rae.es/dpd/",
-                "type": "article",
-                "why": "Официальный источник по нормам испанского.",
-            },
-            {
-                "title": "Butterfly Spanish",
-                "url": "https://www.youtube.com/@ButterflySpanish",
-                "type": "video",
-                "why": "Понятные объяснения испанской грамматики.",
-            },
-        ]
-    if lang == "it":
-        return [
-            {
-                "title": "Treccani - Grammatica italiana",
-                "url": "https://www.treccani.it/enciclopedia/grammatica-italiana/",
-                "type": "article",
-                "why": "Надежные материалы по итальянской грамматике.",
-            },
-            {
-                "title": "Learn Italian with Lucrezia",
-                "url": "https://www.youtube.com/@lucreziaoddone",
-                "type": "video",
-                "why": "Популярный канал с объяснениями по грамматике.",
-            },
-        ]
-    return [
-        {
-            "title": "Wikipedia - Grammar",
-            "url": "https://en.wikipedia.org/wiki/Grammar",
-            "type": "article",
-            "why": "Базовое введение в грамматику.",
-        }
-    ]
+                "domain": str(row[0] or ""),
+                "status": str(row[1] or ""),
+                "source": str(row[2] or ""),
+                "note": str(row[3] or "") if row[3] is not None else None,
+                "meta": row[4] if isinstance(row[4], dict) else {},
+                "created_at": row[5].isoformat() if row[5] else None,
+                "updated_at": row[6].isoformat() if row[6] else None,
+                "approved_at": row[7].isoformat() if row[7] else None,
+            }
+        )
+    return items
+
+
+def _upsert_skill_resource_domain(
+    *,
+    domain: str,
+    status: str,
+    source: str,
+    note: str | None = None,
+    meta: dict | None = None,
+) -> dict | None:
+    normalized_domain = _normalize_skill_resource_domain(domain)
+    normalized_status = str(status or "").strip().lower()
+    normalized_source = str(source or "").strip().lower() or "manual"
+    if not normalized_domain:
+        return None
+    if normalized_status not in {"candidate", "allowed", "disabled"}:
+        raise ValueError("status must be candidate, allowed or disabled")
+    _ensure_skill_resource_domains_table()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_skill_resource_domains (
+                    domain, status, source, note, meta, approved_at, updated_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s::jsonb,
+                    CASE WHEN %s = 'allowed' THEN NOW() ELSE NULL END,
+                    NOW()
+                )
+                ON CONFLICT (domain) DO UPDATE
+                SET status = EXCLUDED.status,
+                    source = EXCLUDED.source,
+                    note = EXCLUDED.note,
+                    meta = EXCLUDED.meta,
+                    updated_at = NOW(),
+                    approved_at = CASE
+                        WHEN EXCLUDED.status = 'allowed' THEN COALESCE(bt_3_skill_resource_domains.approved_at, NOW())
+                        ELSE bt_3_skill_resource_domains.approved_at
+                    END
+                RETURNING domain, status, source, note, meta, created_at, updated_at, approved_at;
+                """,
+                (
+                    normalized_domain,
+                    normalized_status,
+                    normalized_source,
+                    (str(note).strip() if note is not None else None),
+                    json.dumps(meta or {}, ensure_ascii=False),
+                    normalized_status,
+                ),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    _invalidate_skill_resource_domain_cache()
+    if not row:
+        return None
+    return {
+        "domain": str(row[0] or ""),
+        "status": str(row[1] or ""),
+        "source": str(row[2] or ""),
+        "note": str(row[3] or "") if row[3] is not None else None,
+        "meta": row[4] if isinstance(row[4], dict) else {},
+        "created_at": row[5].isoformat() if row[5] else None,
+        "updated_at": row[6].isoformat() if row[6] else None,
+        "approved_at": row[7].isoformat() if row[7] else None,
+    }
+
+
+def _get_db_allowed_skill_resource_domains() -> set[str]:
+    cached = _SKILL_RESOURCE_ALLOWLIST_CACHE.get("domains")
+    expires_at = float(_SKILL_RESOURCE_ALLOWLIST_CACHE.get("expires_at") or 0.0)
+    now_ts = time.time()
+    if isinstance(cached, set) and expires_at > now_ts:
+        return set(cached)
+    _ensure_skill_resource_domains_table()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT domain
+                FROM bt_3_skill_resource_domains
+                WHERE status = 'allowed'
+                ORDER BY domain ASC;
+                """
+            )
+            rows = cursor.fetchall() or []
+    domains = {
+        _normalize_skill_resource_domain(row[0])
+        for row in rows
+        if row and _normalize_skill_resource_domain(row[0])
+    }
+    _SKILL_RESOURCE_ALLOWLIST_CACHE["domains"] = set(domains)
+    _SKILL_RESOURCE_ALLOWLIST_CACHE["expires_at"] = now_ts + _SKILL_RESOURCE_ALLOWLIST_CACHE_TTL_SEC
+    return domains
+
+
+def _get_skill_resource_allowed_domains() -> set[str]:
+    try:
+        domains = _get_db_allowed_skill_resource_domains()
+        if domains:
+            return domains
+    except Exception as exc:
+        logging.warning("Skill resource domain registry read failed, fallback to env/default: %s", exc)
+    raw = str(os.getenv("SKILL_RESOURCE_ALLOWED_DOMAINS") or "").strip()
+    domains = [item.strip().lower() for item in raw.split(",") if item.strip()] if raw else []
+    if not domains:
+        domains = list(_DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS)
+    return {item.lstrip(".") for item in domains if item}
 
 
 def _extract_topic_keywords(*parts: str) -> list[str]:
@@ -2124,64 +2290,297 @@ def _is_resource_homepage(url: str) -> bool:
     return (not path or path == "/") and not parsed.query
 
 
-def _build_topic_fallback_resources(
+def _is_allowed_skill_resource_domain(url: str, allowed_domains: set[str]) -> bool:
+    try:
+        parsed = urlparse(str(url or "").strip())
+    except Exception:
+        return False
+    host = str(parsed.netloc or "").strip().lower()
+    if not host:
+        return False
+    if "@" in host:
+        host = host.split("@", 1)[-1]
+    if ":" in host:
+        host = host.split(":", 1)[0]
+    host = host.lstrip(".")
+    return any(host == domain or host.endswith(f".{domain}") for domain in allowed_domains)
+
+
+def _build_skill_resource_queries(
     *,
     target_lang: str,
+    native_lang: str,
+    skill_name: str,
+    error_category: str,
+    error_subcategory: str,
+) -> list[str]:
+    target_name = _SKILL_RESOURCE_LANGUAGE_NAMES.get(
+        _normalize_short_lang_code(target_lang, fallback="de"),
+        str(target_lang or "").strip() or "target language",
+    )
+    native_name = _SKILL_RESOURCE_LANGUAGE_NAMES.get(
+        _normalize_short_lang_code(native_lang, fallback="ru"),
+        str(native_lang or "").strip() or "native language",
+    )
+    topic_parts = [
+        str(skill_name or "").strip(),
+        str(error_subcategory or "").strip(),
+        str(error_category or "").strip(),
+    ]
+    topic = " ".join(part for part in topic_parts if part).strip() or "grammar topic"
+    queries = [
+        f"{topic} {target_name} grammar explanation",
+        f"{topic} {target_name} grammar rule examples",
+        f"{topic} explanation in {native_name}",
+    ]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in queries:
+        normalized = str(item or "").strip()
+        key = normalized.lower()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped[:5]
+
+
+def _build_skill_domain_seed_queries(*, target_lang: str, native_lang: str) -> list[str]:
+    target_name = _SKILL_RESOURCE_LANGUAGE_NAMES.get(
+        _normalize_short_lang_code(target_lang, fallback="de"),
+        str(target_lang or "").strip() or "target language",
+    )
+    native_name = _SKILL_RESOURCE_LANGUAGE_NAMES.get(
+        _normalize_short_lang_code(native_lang, fallback="ru"),
+        str(native_lang or "").strip() or "native language",
+    )
+    queries = [
+        f"best {target_name} grammar learning websites",
+        f"trusted {target_name} grammar reference sites for learners",
+        f"{target_name} grammar explanations in {native_name}",
+        f"{target_name} grammar handbook online for learners",
+    ]
+    return list(dict.fromkeys(item.strip() for item in queries if str(item).strip()))[:6]
+
+
+def _seed_skill_resource_domains_from_perplexity(
+    *,
+    target_lang: str = "de",
+    native_lang: str = "ru",
+    max_new_domains: int = 10,
+) -> dict:
+    api_key = str(os.getenv("PERPLEXITY_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError("PERPLEXITY_API_KEY не задан")
+
+    queries = _build_skill_domain_seed_queries(target_lang=target_lang, native_lang=native_lang)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    discovered: dict[str, dict] = {}
+
+    for query in queries:
+        payload = {
+            "query": query,
+            "max_results": 8,
+            "max_tokens_per_page": 384,
+            "search_language_filter": list({
+                _normalize_short_lang_code(native_lang, fallback="ru"),
+                _normalize_short_lang_code(target_lang, fallback="de"),
+                "en",
+            }),
+        }
+        try:
+            response = requests.post(
+                "https://api.perplexity.ai/search",
+                headers=headers,
+                json=payload,
+                timeout=12,
+            )
+            response.raise_for_status()
+            data = response.json() if response.content else {}
+        except Exception as exc:
+            logging.warning("PERPLEXITY domain seed query failed (%s): %s", query, exc)
+            continue
+
+        raw_results = data.get("results")
+        results = raw_results if isinstance(raw_results, list) else []
+        flattened: list[dict] = []
+        for item in results:
+            if isinstance(item, list):
+                flattened.extend(sub for sub in item if isinstance(sub, dict))
+            elif isinstance(item, dict):
+                flattened.append(item)
+
+        for entry in flattened:
+            url = str(entry.get("url") or "").strip()
+            title = str(entry.get("title") or "").strip()
+            snippet = str(entry.get("snippet") or "").strip()
+            domain = _normalize_skill_resource_domain(url)
+            if not domain:
+                continue
+            if any(domain == blocked or domain.endswith(f".{blocked}") for blocked in _SKILL_RESOURCE_DOMAIN_BLOCKLIST):
+                continue
+            if domain in discovered:
+                continue
+            discovered[domain] = {
+                "domain": domain,
+                "sample_url": url,
+                "sample_title": title[:200],
+                "sample_snippet": snippet[:300],
+                "query": query,
+            }
+            if len(discovered) >= max(1, min(50, int(max_new_domains) * 3)):
+                break
+        if len(discovered) >= max(1, min(50, int(max_new_domains) * 3)):
+            break
+
+    inserted: list[dict] = []
+    skipped: list[str] = []
+    existing_allowed = _get_skill_resource_allowed_domains()
+    existing_known = {item["domain"] for item in _list_skill_resource_domains(limit=500)}
+    for domain, meta in discovered.items():
+        if domain in existing_allowed or domain in existing_known:
+            skipped.append(domain)
+            continue
+        item = _upsert_skill_resource_domain(
+            domain=domain,
+            status="candidate",
+            source="perplexity_seed",
+            note="Generated from Perplexity domain discovery for skill resources",
+            meta=meta,
+        )
+        if item:
+            inserted.append(item)
+        if len(inserted) >= max(1, min(50, int(max_new_domains))):
+            break
+
+    return {
+        "inserted": inserted,
+        "inserted_count": len(inserted),
+        "skipped_existing": skipped,
+        "discovered_total": len(discovered),
+        "queries": queries,
+    }
+
+
+def _perplexity_search_skill_resources(
+    *,
+    target_lang: str,
+    native_lang: str,
     skill_name: str,
     error_category: str,
     error_subcategory: str,
 ) -> list[dict]:
-    lang = _normalize_short_lang_code(target_lang, fallback="de")
-    topic_query = " ".join(
-        part for part in [
-            str(skill_name or "").strip(),
-            str(error_subcategory or "").strip(),
-            str(error_category or "").strip(),
-        ] if part
-    ).strip() or "grammar topic"
-    encoded = quote_plus(topic_query)
-    if lang == "de":
-        return [
+    api_key = str(os.getenv("PERPLEXITY_API_KEY") or "").strip()
+    if not api_key:
+        return []
+
+    allowed_domains = sorted(_get_skill_resource_allowed_domains())
+    if not allowed_domains:
+        return []
+
+    queries = _build_skill_resource_queries(
+        target_lang=target_lang,
+        native_lang=native_lang,
+        skill_name=skill_name,
+        error_category=error_category,
+        error_subcategory=error_subcategory,
+    )
+    if not queries:
+        return []
+
+    payload = {
+        "query": queries if len(queries) > 1 else queries[0],
+        "max_results": 5,
+        "max_tokens_per_page": 512,
+        "search_domain_filter": allowed_domains[:20],
+        "search_language_filter": list({
+            _normalize_short_lang_code(native_lang, fallback="ru"),
+            _normalize_short_lang_code(target_lang, fallback="de"),
+        }),
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            "https://api.perplexity.ai/search",
+            headers=headers,
+            json=payload,
+            timeout=12,
+        )
+        response.raise_for_status()
+        data = response.json() if response.content else {}
+    except Exception as exc:
+        logging.warning("PERPLEXITY skill resource search failed: %s", exc)
+        return []
+
+    raw_results = data.get("results")
+    grouped_results = raw_results if isinstance(raw_results, list) else []
+    flattened: list[dict] = []
+    for item in grouped_results:
+        if isinstance(item, list):
+            flattened.extend(sub for sub in item if isinstance(sub, dict))
+        elif isinstance(item, dict):
+            flattened.append(item)
+
+    topic_keywords = _extract_topic_keywords(skill_name, error_category, error_subcategory)
+    results: list[dict] = []
+    seen_urls: set[str] = set()
+    for entry in flattened:
+        title = str(entry.get("title") or "").strip()
+        url = str(entry.get("url") or "").strip()
+        snippet = str(entry.get("snippet") or "").strip()
+        if not title or not url or url in seen_urls:
+            continue
+        if not _is_allowed_skill_resource_domain(url, set(allowed_domains)):
+            continue
+        if _is_resource_homepage(url):
+            continue
+        haystack = f"{title} {url} {snippet}".lower()
+        if topic_keywords and not any(keyword in haystack for keyword in topic_keywords):
+            continue
+        seen_urls.add(url)
+        results.append(
             {
-                "title": f"Duden Suche: {topic_query}",
-                "url": f"https://www.duden.de/suchen/dudenonline/{encoded}",
+                "title": title[:160],
+                "url": url,
                 "type": "article",
-                "why": "Поиск в Duden по точной теме навыка.",
-            },
-            {
-                "title": f"YouTube: {topic_query}",
-                "url": f"https://www.youtube.com/results?search_query={encoded}+Deutsch+Grammatik",
-                "type": "video",
-                "why": "Видео-материалы по конкретной теме навыка.",
-            },
-        ]
-    return [
-        {
-            "title": f"Wikipedia search: {topic_query}",
-            "url": f"https://en.wikipedia.org/w/index.php?search={encoded}",
-            "type": "article",
-            "why": "Поиск справочной статьи по точной теме навыка.",
-        },
-        {
-            "title": f"YouTube: {topic_query}",
-            "url": f"https://www.youtube.com/results?search_query={encoded}+grammar",
-            "type": "video",
-            "why": "Видео-материалы по конкретной теме навыка.",
-        },
-    ]
+                "why": (snippet[:220] or f"Источник по теме: {skill_name or error_subcategory or error_category}")[:220],
+            }
+        )
+        if len(results) >= 3:
+            break
+    return results
 
 
 def _normalize_theory_resources(
     theory: dict,
     target_lang: str,
     *,
+    native_lang: str = "",
     skill_name: str = "",
     error_category: str = "",
     error_subcategory: str = "",
 ) -> list[dict]:
     raw = theory.get("resources") if isinstance(theory, dict) else None
     resources: list[dict] = []
+    perplexity_resources = _perplexity_search_skill_resources(
+        target_lang=target_lang,
+        native_lang=native_lang,
+        skill_name=skill_name,
+        error_category=error_category,
+        error_subcategory=error_subcategory,
+    )
+    if perplexity_resources:
+        return perplexity_resources
+
     topic_keywords = _extract_topic_keywords(skill_name, error_category, error_subcategory)
+    allowed_domains = _get_skill_resource_allowed_domains()
     if isinstance(raw, list):
         for entry in raw:
             if not isinstance(entry, dict):
@@ -2197,6 +2596,8 @@ def _normalize_theory_resources(
             except Exception:
                 continue
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                continue
+            if not _is_allowed_skill_resource_domain(url, allowed_domains):
                 continue
             haystack = f"{title} {url} {why}".lower()
             if topic_keywords and not any(keyword in haystack for keyword in topic_keywords):
@@ -2215,17 +2616,7 @@ def _normalize_theory_resources(
             )
             if len(resources) >= 3:
                 break
-    if resources:
-        return resources
-    fallback_topic = _build_topic_fallback_resources(
-        target_lang=target_lang,
-        skill_name=skill_name,
-        error_category=error_category,
-        error_subcategory=error_subcategory,
-    )
-    if fallback_topic:
-        return fallback_topic[:3]
-    return _default_theory_resources(target_lang)[:3]
+    return resources
 
 
 def _ensure_skill_training_daily_table() -> None:
@@ -9457,6 +9848,7 @@ def prepare_today_theory():
     theory["resources"] = _normalize_theory_resources(
         theory,
         target_lang,
+        native_lang=source_lang,
         skill_name=skill_name,
         error_category=main_category or "",
         error_subcategory=sub_category or "",
@@ -14793,6 +15185,85 @@ def _start_audio_scheduler() -> None:
         )
     _audio_scheduler.start()
     logging.info("✅ Audio scheduler started: %02d:%02d %s", hour, minute, tz_name)
+
+
+@app.route("/api/admin/skill-resource-domains", methods=["GET"])
+def admin_list_skill_resource_domains():
+    token = request.args.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or os.getenv("ADMIN_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "ADMIN_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    status = str(request.args.get("status") or "").strip().lower() or None
+    try:
+        limit = int(request.args.get("limit", 200))
+    except Exception:
+        limit = 200
+    items = _list_skill_resource_domains(status=status, limit=limit)
+    return jsonify({"ok": True, "items": items, "count": len(items), "status": status})
+
+
+@app.route("/api/admin/skill-resource-domains/seed", methods=["POST"])
+def admin_seed_skill_resource_domains():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or os.getenv("ADMIN_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "ADMIN_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    target_lang = str(payload.get("target_language") or "de").strip().lower() or "de"
+    native_lang = str(payload.get("native_language") or "ru").strip().lower() or "ru"
+    try:
+        max_new_domains = int(payload.get("max_new_domains", 10))
+    except Exception:
+        max_new_domains = 10
+
+    try:
+        result = _seed_skill_resource_domains_from_perplexity(
+            target_lang=target_lang,
+            native_lang=native_lang,
+            max_new_domains=max_new_domains,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Не удалось выполнить Perplexity seed: {exc}"}), 500
+    return jsonify({"ok": True, "result": result})
+
+
+@app.route("/api/admin/skill-resource-domains/upsert", methods=["POST"])
+def admin_upsert_skill_resource_domain():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or os.getenv("ADMIN_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "ADMIN_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    domain = str(payload.get("domain") or "").strip()
+    status = str(payload.get("status") or "").strip().lower()
+    source = str(payload.get("source") or "admin_manual").strip().lower() or "admin_manual"
+    note = str(payload.get("note") or "").strip() or None
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    if not domain:
+        return jsonify({"error": "domain обязателен"}), 400
+    if status not in {"candidate", "allowed", "disabled"}:
+        return jsonify({"error": "status должен быть candidate, allowed или disabled"}), 400
+
+    try:
+        item = _upsert_skill_resource_domain(
+            domain=domain,
+            status=status,
+            source=source,
+            note=note,
+            meta=meta,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Не удалось сохранить домен: {exc}"}), 500
+    return jsonify({"ok": True, "item": item})
 
 
 @app.route("/api/admin/send-daily-audio", methods=["POST"])

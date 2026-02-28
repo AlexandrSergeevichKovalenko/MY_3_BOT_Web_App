@@ -1580,10 +1580,28 @@ Return STRICT JSON only:
   "title": "string",
   "core_explanation": "string",
   "why_mistake_happens": "string",
+  "what_this_topic_is": "string",
+  "error_connection": "string",
+  "core_rules": ["string", "string"],
   "step_by_step": ["string", "string"],
+  "construction_recipe": ["string", "string"],
   "key_rule": "string",
-  "examples": [{"sentence": "string", "explanation": "string"}],
+  "minimal_pairs": [
+    {
+      "sentence_a": "string",
+      "sentence_b": "string",
+      "explanation": "string"
+    }
+  ],
+  "examples": [
+    {
+      "sentence": "string",
+      "translation": "string",
+      "explanation": "string"
+    }
+  ],
   "memory_trick": "string",
+  "self_check": ["string", "string"],
   "resources": [
     {
       "title": "string",
@@ -1595,14 +1613,33 @@ Return STRICT JSON only:
 }
 
 Requirements:
-- Simple beginner-friendly style (A1-A2 language of explanation).
-- Focus only on provided skill/error.
-- The topic MUST match topic_must_match exactly (no generic grammar overviews).
-- 3-5 short examples.
-- Add 2-3 high-quality external resources about this exact topic.
-- Prefer broadly trusted sources (official grammar references, well-known educational sites/channels).
-- Links must be direct HTTPS URLs and relevant to the topic.
-- Do not return homepage/root links; each URL must lead to a topic-specific page or search result for this topic.
+- The language of ALL explanations, headings, labels and comments must be native_language.
+- The example sentences themselves must be in target_language.
+- Focus only on the provided skill / error_category / error_subcategory.
+- The topic MUST match topic_must_match exactly. Do not drift into generic grammar overviews.
+- Be detailed and pedagogically useful, not short.
+- Explain the real grammar concept behind the topic in a professional but beginner-readable way.
+- Explicitly connect the theory to the learner's likely mistakes.
+- If user_mistake_examples are present, quote 2-4 short fragments of typical mistakes and explain what is wrong.
+- If user_mistake_examples are empty, invent 2-3 realistic beginner mistakes for this exact topic and explain them.
+- core_explanation must be a compact but meaningful overview for legacy UI compatibility.
+- what_this_topic_is must clearly define the topic and what learners often confuse.
+- error_connection must explicitly describe how this topic causes the observed mistakes.
+- core_rules must contain a systematic explanation of the main rules:
+  formation, function/meaning, word order, cases/articles/prepositions, verb forms/auxiliaries, when relevant.
+- step_by_step must be a short practical checklist for quick UI display.
+- construction_recipe must be a more explicit sentence-building algorithm.
+- key_rule must be a single most important rule to remember.
+- minimal_pairs must contain at least 3 contrastive pairs that learners often confuse.
+- examples must contain 8-12 examples.
+- Every example must include:
+  - sentence in target_language
+  - translation in native_language
+  - short explanation in native_language of what is demonstrated and why it is correct
+- Include both simple examples and slightly more complex but still learner-friendly ones.
+- memory_trick must be one short vivid mnemonic.
+- self_check must contain exactly 5 short self-questions in native_language.
+- resources may be an empty array. If you include resources, only include direct HTTPS topic-specific URLs, not homepages.
 - No markdown, no extra text.
 """,
     "theory_practice_sentences": """

@@ -7803,6 +7803,85 @@ body {
   line-height: 1.4;
 }
 
+.skill-training-section .skill-training-theory-block {
+  gap: 16px;
+}
+
+.skill-training-theory-title {
+  margin: 0;
+  color: #e2e8f0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.skill-training-theory-lead {
+  margin: 0;
+  color: #f8fafc;
+  line-height: 1.6;
+}
+
+.skill-training-theory-section {
+  display: grid;
+  gap: 10px;
+}
+
+.skill-training-theory-section p {
+  margin: 0;
+  color: #cbd5e1;
+  line-height: 1.6;
+}
+
+.skill-training-theory-section-title {
+  color: #e2e8f0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.skill-training-theory-list {
+  margin: 0;
+  padding-left: 20px;
+  color: #cbd5e1;
+  display: grid;
+  gap: 8px;
+  line-height: 1.55;
+}
+
+.skill-training-theory-list.is-ordered {
+  padding-left: 22px;
+}
+
+.skill-training-pairs {
+  display: grid;
+  gap: 12px;
+}
+
+.skill-training-pair-card {
+  border: 1px solid #334155;
+  border-radius: 16px;
+  padding: 14px;
+  background: #111827;
+  display: grid;
+  gap: 8px;
+}
+
+.skill-training-pair-sentence {
+  color: #f8fafc;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.skill-training-pair-explanation {
+  color: #cbd5e1;
+  line-height: 1.55;
+}
+
+.skill-training-example-translation {
+  color: #94a3b8;
+  line-height: 1.45;
+}
+
 .skill-training-section textarea {
   border-radius: 16px;
   border: 1px solid #334155;
