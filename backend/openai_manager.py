@@ -1473,6 +1473,14 @@ Return STRICT JSON with keys:
 
 Rules:
 - Output ONLY JSON.
+- The learner-facing explanation language must ALWAYS be source_language.
+- All explanatory fields must be written in source_language:
+  translations[].value, translations[].context, meanings.primary.value, meanings.primary.context,
+  meanings.secondary[].value, meanings.secondary[].context, etymology_note, usage_note, memory_tip, raw_text.
+- Examples must help the learner read target language:
+  meanings.primary.example_target and meanings.secondary[].example_target must be in target_language.
+  meanings.primary.example_source and meanings.secondary[].example_source must be in source_language.
+  usage_examples[].target must be in target_language and usage_examples[].source must be in source_language.
 - For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
 - Provide 3 most frequent real-life translation variants in "translations" whenever possible.
   - First must be most common (is_primary=true).

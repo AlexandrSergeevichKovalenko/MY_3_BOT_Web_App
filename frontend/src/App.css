@@ -641,16 +641,6 @@ body {
   box-shadow: 0 8px 18px rgba(8, 11, 26, 0.28);
 }
 
-.timer-pause-reason-banner {
-  padding: 8px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 209, 102, 0.36);
-  background: rgba(255, 209, 102, 0.14);
-  color: #ffe29a;
-  font-size: 13px;
-  line-height: 1.35;
-}
-
 .topbar-left {
   display: flex;
   align-items: center;
@@ -7568,9 +7558,10 @@ body {
 }
 
 .skill-training-action-row {
-  display: grid;
-  grid-template-columns: auto auto minmax(220px, 1fr);
-  align-items: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
   gap: 12px;
 }
 
@@ -7579,6 +7570,7 @@ body {
 .skill-training-finish-btn {
   min-height: 48px;
   border-radius: 16px;
+  flex: 0 0 auto;
 }
 
 .skill-training-refresh-btn,
@@ -7587,6 +7579,9 @@ body {
 }
 
 .skill-training-finish-btn {
+  flex: 1 1 320px;
+  width: min(100%, 540px);
+  max-width: 540px;
   background: #2563eb;
   box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
 }
@@ -7933,11 +7928,7 @@ body {
   }
 
   .skill-training-action-row {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .skill-training-finish-btn {
-    grid-column: 1 / -1;
+    align-items: stretch;
   }
 
   .skill-training-refresh-btn,
@@ -7980,6 +7971,17 @@ body {
 
   .skill-training-action-row {
     gap: 10px;
+  }
+
+  .skill-training-back-btn,
+  .skill-training-refresh-btn {
+    flex: 1 1 calc(50% - 5px);
+  }
+
+  .skill-training-finish-btn {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: none;
   }
 
   .skill-training-back-btn,
@@ -8113,6 +8115,16 @@ body {
   align-items: center;
 }
 
+.skill-rings-legend-item.is-weak {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: linear-gradient(180deg, rgba(69, 18, 27, 0.7), rgba(36, 14, 21, 0.78));
+}
+
+.skill-rings-legend-item.is-strong {
+  border-color: rgba(52, 211, 153, 0.28);
+  background: linear-gradient(180deg, rgba(12, 44, 40, 0.7), rgba(8, 28, 28, 0.78));
+}
+
 .skill-rings-dot {
   width: 11px;
   height: 11px;
@@ -8131,6 +8143,14 @@ body {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.skill-rings-legend-item.is-weak .skill-rings-name {
+  color: #ffd5dc;
+}
+
+.skill-rings-legend-item.is-strong .skill-rings-name {
+  color: #ccfbf1;
 }
 
 .skill-train-status-badge {
@@ -8163,6 +8183,14 @@ body {
   gap: 8px;
   color: #9eb1d6;
   font-size: 0.78rem;
+}
+
+.skill-rings-legend-item.is-weak .skill-rings-meta {
+  color: #f9a8b3;
+}
+
+.skill-rings-legend-item.is-strong .skill-rings-meta {
+  color: #99f6e4;
 }
 
 .skill-rings-train-btn {
@@ -9387,6 +9415,26 @@ body {
   border-radius: 20px;
   border: 1px solid rgba(120, 94, 61, 0.08);
   pointer-events: none;
+}
+
+.webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-article {
+  padding: 10px 12px 18px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-page-sheet {
+  width: min(100%, calc(100vw - 44px));
+  max-width: none;
+  min-height: calc(100dvh - 200px);
+  height: calc(100dvh - 200px);
+  padding: clamp(26px, 3vw, 40px) clamp(20px, 3vw, 34px) 20px;
+}
+
+@media (orientation: portrait) {
+  .webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-page-sheet {
+    width: min(100%, calc(100vw - 28px));
+    min-height: calc(100dvh - 188px);
+    height: calc(100dvh - 188px);
+  }
 }
 
 .reader-clickable-word {

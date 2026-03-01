@@ -2864,65 +2864,6 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
     return await _coerce_sentence_lookup_payload(result, lookup_input, source_lang, target_lang)
 
 
-def _lookup_tts_lang(lang_code: str) -> str:
-    mapping = {
-        "de": "de-DE",
-        "ru": "ru-RU",
-        "en": "en-US",
-        "es": "es-ES",
-        "it": "it-IT",
-    }
-    return mapping.get((lang_code or "").strip().lower(), "en-US")
-
-
-def _should_send_lookup_audio(text: str) -> bool:
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return False
-    words = [w for w in re.split(r"\s+", cleaned) if w]
-    return len(words) <= 6 and len(cleaned) <= 80
-
-
-async def _send_lookup_pronunciation_audio(
-    message,
-    context: CallbackContext,
-    text: str,
-    lang_code: str,
-) -> None:
-    if not _should_send_lookup_audio(text):
-        return
-    try:
-        tts_client = texttospeech.TextToSpeechClient()
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        voice = texttospeech.VoiceSelectionParams(
-            language_code=_lookup_tts_lang(lang_code),
-            ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL,
-        )
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=0.95,
-        )
-        response = await asyncio.to_thread(
-            tts_client.synthesize_speech,
-            input=synthesis_input,
-            voice=voice,
-            audio_config=audio_config,
-        )
-        audio_content = response.audio_content if response else b""
-        if not audio_content:
-            return
-        bio = io.BytesIO(audio_content)
-        bio.name = f"pronunciation_{lang_code or 'audio'}.mp3"
-        msg = await message.reply_audio(
-            audio=bio,
-            title=f"Произношение ({str(lang_code or '').upper()})",
-            caption=f"🔊 {text}",
-        )
-        add_service_msg_id(context, msg.message_id)
-    except Exception as exc:
-        logging.debug("Failed to send lookup pronunciation audio: %s", exc, exc_info=True)
-
-
 async def _send_dictionary_lookup_result(
     message,
     context: CallbackContext,
@@ -2990,17 +2931,6 @@ async def _send_dictionary_lookup_result(
         disable_web_page_preview=True,
     )
     add_service_msg_id(context, msg.message_id)
-    pronunciation_text = str(
-        (lookup.get("pronunciation") or {}).get("audio_text")
-        if isinstance(lookup.get("pronunciation"), dict)
-        else ""
-    ).strip() or source_text
-    await _send_lookup_pronunciation_audio(
-        message=message,
-        context=context,
-        text=pronunciation_text,
-        lang_code=source_lang,
-    )
 
 
 async def _handle_private_dictionary_lookup(update: Update, context: CallbackContext, text: str) -> None:
@@ -6502,36 +6432,59 @@ def _build_word_order_options(sentence: str) -> list[str]:
     return options
 
 
+def _build_word_order_question(hint_text: str) -> str:
+    hint = str(hint_text or "").strip()
+    base = "Выберите правильный порядок слов в немецком предложении."
+    if hint:
+        return f"{base}\nПодсказка: «{hint}»."
+    return base
+
+
 async def generate_word_order_quiz(entry: dict) -> dict | None:
-    word_ru = (entry.get("word_ru") or "").strip()
     response_json = _coerce_response_json(entry.get("response_json"))
-    usage_examples = response_json.get("usage_examples") if response_json else []
-    usage_examples = [
-        ex.strip()
-        for ex in usage_examples
-        if isinstance(ex, str) and ex.strip()
-    ] + [
-        str(ex.get("source") or ex.get("text") or "").strip()
-        for ex in usage_examples
-        if isinstance(ex, dict) and str(ex.get("source") or ex.get("text") or "").strip()
-    ]
+    usage_examples_raw = response_json.get("usage_examples") if response_json else []
+    usage_examples: list[dict] = []
+    if isinstance(usage_examples_raw, list):
+        for item in usage_examples_raw:
+            if isinstance(item, str):
+                sentence = item.strip()
+                if sentence:
+                    usage_examples.append({"sentence": sentence, "hint": ""})
+                continue
+            if not isinstance(item, dict):
+                continue
+            sentence = str(item.get("source") or item.get("text") or "").strip()
+            if not sentence:
+                continue
+            hint = str(item.get("target") or item.get("translation") or "").strip()
+            usage_examples.append({"sentence": sentence, "hint": hint})
     if not usage_examples:
         return None
 
-    sentence = random.choice(usage_examples).strip()
+    selected_example = random.choice(usage_examples)
+    sentence = str(selected_example.get("sentence") or "").strip()
+    hint_text = str(selected_example.get("hint") or "").strip()
+    if not hint_text:
+        hint_text = str(
+            response_json.get("translation_ru")
+            or entry.get("translation_ru")
+            or entry.get("word_ru")
+            or response_json.get("word_ru")
+            or ""
+        ).strip()
     options = _build_word_order_options(sentence)
     if len(options) < 2:
         return None
     if len(options) > 4:
         options = options[:4]
     correct_option_id = options.index(sentence)
-    question = f"Выберите правильный порядок слов в немецком предложении.\nПодсказка: «{word_ru}»."
+    question = _build_word_order_question(hint_text)
     return {
         "question": question,
         "options": options,
         "correct_option_id": correct_option_id,
         "quiz_type": "word_order",
-        "word_ru": word_ru,
+        "word_ru": hint_text,
     }
 
 

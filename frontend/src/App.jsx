@@ -328,7 +328,7 @@ function AppInner() {
   const [flashcardTimedOut, setFlashcardTimedOut] = useState(false);
   const [flashcardOutcome, setFlashcardOutcome] = useState(null);
   const [globalTimerSuspended, setGlobalTimerSuspended] = useState(false);
-  const [globalPauseReason, setGlobalPauseReason] = useState('');
+  const [, setGlobalPauseReason] = useState('');
   const [blocksResetNonce, setBlocksResetNonce] = useState(0);
   const [blocksMenuOpen, setBlocksMenuOpen] = useState(false);
   const [blocksFinishConfirmOpen, setBlocksFinishConfirmOpen] = useState(false);
@@ -503,6 +503,20 @@ function AppInner() {
     const mm = String(now.getMonth() + 1).padStart(2, '0');
     const dd = String(now.getDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
+  };
+  const getInitDataUserId = (rawInitData) => {
+    const value = String(rawInitData || '').trim();
+    if (!value) return '';
+    try {
+      const params = new URLSearchParams(value);
+      const userRaw = params.get('user');
+      if (!userRaw) return '';
+      const parsedUser = JSON.parse(userRaw);
+      const candidate = String(parsedUser?.id || '').trim();
+      return candidate;
+    } catch (_error) {
+      return '';
+    }
   };
   const normalizeSkillTrainingSnapshot = (value) => {
     if (!value || typeof value !== 'object') return null;
@@ -738,12 +752,34 @@ function AppInner() {
       sentence: `cards_solved_today_sentence_${uid}_${dateKey}`,
     };
   }, [webappUser?.id]);
+  const stableWebappUserId = useMemo(() => {
+    const fromWebappUser = String(webappUser?.id || '').trim();
+    if (fromWebappUser) return fromWebappUser;
+    const fromInitData = getInitDataUserId(initData);
+    if (fromInitData) return fromInitData;
+    const fromTelegramUnsafe = String(telegramApp?.initDataUnsafe?.user?.id || '').trim();
+    if (fromTelegramUnsafe) return fromTelegramUnsafe;
+    return 'anon';
+  }, [initData, telegramApp, webappUser?.id]);
   const skillTrainingStorageKey = useMemo(() => {
-    const uid = webappUser?.id
-      ? String(webappUser.id)
-      : String(telegramApp?.initDataUnsafe?.user?.id || 'anon');
-    return `skill_training_sessions_${uid}_${getLocalDateKey()}`;
-  }, [telegramApp, webappUser?.id]);
+    return `skill_training_sessions_${stableWebappUserId}_${getLocalDateKey()}`;
+  }, [stableWebappUserId]);
+  const skillTrainingLegacyStorageKeys = useMemo(() => {
+    const dateKey = getLocalDateKey();
+    const candidates = [
+      stableWebappUserId,
+      String(webappUser?.id || '').trim(),
+      getInitDataUserId(initData),
+      String(telegramApp?.initDataUnsafe?.user?.id || '').trim(),
+      'anon',
+    ];
+    return Array.from(new Set(
+      candidates
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+        .map((item) => `skill_training_sessions_${item}_${dateKey}`)
+    ));
+  }, [initData, stableWebappUserId, telegramApp, webappUser?.id]);
   const skillTrainingDraftMapRef = useRef({});
 
   useEffect(() => {
@@ -4533,21 +4569,27 @@ function AppInner() {
       return;
     }
     try {
-      const raw = safeStorageGet(skillTrainingStorageKey);
-      if (!raw) {
+      const entries = skillTrainingLegacyStorageKeys.map((key) => [key, safeStorageGet(key)]);
+      const currentRaw = entries.find(([key]) => key === skillTrainingStorageKey)?.[1] || null;
+      const fallbackEntry = entries.find(([, value]) => Boolean(value));
+      const activeRaw = currentRaw || fallbackEntry?.[1] || null;
+      if (!activeRaw) {
         skillTrainingDraftMapRef.current = {};
         setSkillTrainingDraftMap({});
         return;
       }
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(activeRaw);
       const normalized = normalizeSkillTrainingDraftMap(parsed);
       skillTrainingDraftMapRef.current = normalized;
       setSkillTrainingDraftMap(normalized);
+      if (!currentRaw && Object.keys(normalized).length > 0) {
+        safeStorageSet(skillTrainingStorageKey, JSON.stringify(normalized));
+      }
     } catch (_error) {
       skillTrainingDraftMapRef.current = {};
       setSkillTrainingDraftMap({});
     }
-  }, [isWebAppMode, skillTrainingStorageKey]);
+  }, [isWebAppMode, skillTrainingLegacyStorageKeys, skillTrainingStorageKey]);
 
   useEffect(() => {
     const activeSkillId = String(
@@ -9481,12 +9523,6 @@ function AppInner() {
               </div>
             </div>
 
-            {globalPauseReason && !isSectionVisible('youtube') && !isHomeScreen && (
-              <div className="timer-pause-reason-banner">
-                {globalPauseReason}
-              </div>
-            )}
-
             {menuOpen && (
               <div className="webapp-overlay">
                 <div className="overlay-backdrop" onClick={() => setMenuOpen(false)} />
@@ -10177,7 +10213,10 @@ function AppInner() {
                         const canResumeSkillTraining = Boolean(storedTrainingSnapshot);
                         const isSkillBusy = Boolean(skillPracticeLoading[String(skill.skill_id || '')]);
                         return (
-                          <div className="skill-rings-legend-item" key={`legend-${skill.skill_id}`}>
+                          <div
+                            className={`skill-rings-legend-item ${skill.ring_type === 'weak' ? 'is-weak' : 'is-strong'}`}
+                            key={`legend-${skill.skill_id}`}
+                          >
                             <span className="skill-rings-dot" style={{ backgroundColor: color }} />
                             <div className="skill-rings-text">
                               <div className="skill-rings-name">

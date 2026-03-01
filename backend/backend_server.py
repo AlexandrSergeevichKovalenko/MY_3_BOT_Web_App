@@ -2020,12 +2020,21 @@ def _normalize_theory_sentences(payload: dict) -> list[str]:
     return []
 
 
-_DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS = (
-    "de-online.ru",
-    "speakasap.com",
-    "studygerman.ru",
-    "anecole.com",
-    "a1c2deutschonline.com",
+_DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS_BY_LANGUAGE = {
+    "de": (
+        "de-online.ru",
+        "speakasap.com",
+        "studygerman.ru",
+        "anecole.com",
+        "a1c2deutschonline.com",
+    ),
+}
+_DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS = tuple(
+    dict.fromkeys(
+        domain
+        for domains in _DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS_BY_LANGUAGE.values()
+        for domain in domains
+    )
 )
 _SKILL_RESOURCE_DOMAIN_BLOCKLIST = {
     "duden.de",
@@ -2042,10 +2051,16 @@ _SKILL_RESOURCE_LANGUAGE_NAMES = {
     "en": "English",
     "es": "Spanish",
     "it": "Italian",
+    "fr": "French",
+    "pt": "Portuguese",
     "ru": "Russian",
 }
+_SKILL_RESOURCE_TARGET_LANGUAGES = ("de", "en", "es", "it")
+_SKILL_RESOURCE_MIN_ALLOWED_DOMAINS_PER_LANGUAGE = 5
 _SKILL_RESOURCE_ALLOWLIST_CACHE: dict[str, object] = {"domains": None, "expires_at": 0.0}
 _SKILL_RESOURCE_ALLOWLIST_CACHE_TTL_SEC = 300.0
+_SKILL_RESOURCE_AUTOSEED_LOCK = threading.Lock()
+_SKILL_RESOURCE_AUTOSEED_STARTED = False
 
 
 def _invalidate_skill_resource_domain_cache() -> None:
@@ -2068,6 +2083,99 @@ def _normalize_skill_resource_domain(value: str) -> str:
     if not raw or "." not in raw or " " in raw:
         return ""
     return raw
+
+
+def _get_llm_language_name(code: str, *, emphasize_script: bool = False) -> str:
+    normalized = _normalize_short_lang_code(code, fallback=str(code or "").strip().lower() or "language")
+    base = _SKILL_RESOURCE_LANGUAGE_NAMES.get(normalized, normalized or "language")
+    if emphasize_script and normalized == "ru":
+        return "Russian (write explanations in Russian Cyrillic script)"
+    return base
+
+
+def _normalize_skill_resource_lang_codes(value) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        code = _normalize_short_lang_code(item, fallback="")
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        result.append(code)
+    return result
+
+
+def _get_skill_resource_domain_target_languages(domain: str, meta: dict | None = None) -> set[str]:
+    normalized_domain = _normalize_skill_resource_domain(domain)
+    result: set[str] = set()
+    if isinstance(meta, dict):
+        for key in ("target_languages", "target_language", "languages", "langs"):
+            raw_value = meta.get(key)
+            for code in _normalize_skill_resource_lang_codes(raw_value):
+                result.add(code)
+    if not result:
+        for target_lang, domains in _DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS_BY_LANGUAGE.items():
+            if normalized_domain in domains:
+                result.add(target_lang)
+    return result
+
+
+def _domain_supports_skill_resource_target_lang(domain: str, meta: dict | None, target_lang: str) -> bool:
+    normalized_target = _normalize_short_lang_code(target_lang, fallback="")
+    if not normalized_target:
+        return True
+    supported_langs = _get_skill_resource_domain_target_languages(domain, meta)
+    if not supported_langs:
+        return True
+    return normalized_target in supported_langs
+
+
+def _merge_skill_resource_domain_meta(existing_meta: dict | None, new_meta: dict | None) -> dict:
+    merged = copy.deepcopy(existing_meta) if isinstance(existing_meta, dict) else {}
+    incoming = new_meta if isinstance(new_meta, dict) else {}
+    merged_languages = _normalize_skill_resource_lang_codes(merged.get("target_languages") or merged.get("target_language"))
+    incoming_languages = _normalize_skill_resource_lang_codes(
+        incoming.get("target_languages") or incoming.get("target_language")
+    )
+    combined_languages = list(dict.fromkeys(merged_languages + incoming_languages))
+    if combined_languages:
+        merged["target_languages"] = combined_languages
+    merged.pop("target_language", None)
+    for key, value in incoming.items():
+        if key in {"target_languages", "target_language"}:
+            continue
+        if isinstance(value, dict):
+            current = merged.get(key) if isinstance(merged.get(key), dict) else {}
+            payload = copy.deepcopy(current)
+            payload.update(copy.deepcopy(value))
+            merged[key] = payload
+            continue
+        if isinstance(value, list):
+            current = merged.get(key) if isinstance(merged.get(key), list) else []
+            merged[key] = list(
+                dict.fromkeys(
+                    str(item).strip()
+                    for item in current + value
+                    if str(item).strip()
+                )
+            )
+            continue
+        if value not in (None, "", [], {}):
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _flatten_perplexity_search_results(data: dict) -> list[dict]:
+    raw_results = data.get("results")
+    grouped_results = raw_results if isinstance(raw_results, list) else []
+    flattened: list[dict] = []
+    for item in grouped_results:
+        if isinstance(item, list):
+            flattened.extend(sub for sub in item if isinstance(sub, dict))
+        elif isinstance(item, dict):
+            flattened.append(item)
+    return flattened
 
 
 def _ensure_skill_resource_domains_table() -> None:
@@ -2093,22 +2201,27 @@ def _ensure_skill_resource_domains_table() -> None:
                 ON bt_3_skill_resource_domains (status, updated_at DESC);
                 """
             )
-            for domain in _DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS:
-                normalized = _normalize_skill_resource_domain(domain)
-                if not normalized:
-                    continue
-                cursor.execute(
-                    """
-                    INSERT INTO bt_3_skill_resource_domains (
-                        domain, status, source, note, meta, approved_at, updated_at
+            for target_lang, domains in _DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS_BY_LANGUAGE.items():
+                for domain in domains:
+                    normalized = _normalize_skill_resource_domain(domain)
+                    if not normalized:
+                        continue
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_skill_resource_domains (
+                            domain, status, source, note, meta, approved_at, updated_at
+                        )
+                        VALUES (
+                            %s, 'allowed', 'seed_default', %s, %s::jsonb, NOW(), NOW()
+                        )
+                        ON CONFLICT (domain) DO NOTHING;
+                        """,
+                        (
+                            normalized,
+                            "Seeded default trusted skill resource domain",
+                            json.dumps({"target_languages": [target_lang]}, ensure_ascii=False),
+                        ),
                     )
-                    VALUES (
-                        %s, 'allowed', 'seed_default', %s, '{}'::jsonb, NOW(), NOW()
-                    )
-                    ON CONFLICT (domain) DO NOTHING;
-                    """,
-                    (normalized, "Seeded default trusted skill resource domain"),
-                )
         conn.commit()
 
 
@@ -2222,6 +2335,22 @@ def _upsert_skill_resource_domain(
     }
 
 
+def _get_allowed_skill_resource_domain_items(*, target_lang: str | None = None, limit: int = 500) -> list[dict]:
+    items = _list_skill_resource_domains(status="allowed", limit=limit)
+    normalized_target = _normalize_short_lang_code(target_lang, fallback="") if target_lang else ""
+    if not normalized_target:
+        return items
+    return [
+        item
+        for item in items
+        if _domain_supports_skill_resource_target_lang(
+            str(item.get("domain") or ""),
+            item.get("meta") if isinstance(item.get("meta"), dict) else {},
+            normalized_target,
+        )
+    ]
+
+
 def _get_db_allowed_skill_resource_domains() -> set[str]:
     cached = _SKILL_RESOURCE_ALLOWLIST_CACHE.get("domains")
     expires_at = float(_SKILL_RESOURCE_ALLOWLIST_CACHE.get("expires_at") or 0.0)
@@ -2250,7 +2379,35 @@ def _get_db_allowed_skill_resource_domains() -> set[str]:
     return domains
 
 
-def _get_skill_resource_allowed_domains() -> set[str]:
+def _get_skill_resource_allowed_domains(target_lang: str | None = None) -> set[str]:
+    normalized_target = _normalize_short_lang_code(target_lang, fallback="") if target_lang else ""
+    if normalized_target:
+        try:
+            domains = {
+                _normalize_skill_resource_domain(item.get("domain"))
+                for item in _get_allowed_skill_resource_domain_items(target_lang=normalized_target, limit=500)
+                if _normalize_skill_resource_domain(item.get("domain"))
+            }
+            if domains:
+                return domains
+        except Exception as exc:
+            logging.warning(
+                "Skill resource domain registry read failed for target=%s, fallback to env/default: %s",
+                normalized_target,
+                exc,
+            )
+        raw = str(os.getenv("SKILL_RESOURCE_ALLOWED_DOMAINS") or "").strip()
+        if raw:
+            return {
+                _normalize_skill_resource_domain(item)
+                for item in raw.split(",")
+                if _normalize_skill_resource_domain(item)
+            }
+        return {
+            _normalize_skill_resource_domain(item)
+            for item in _DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS_BY_LANGUAGE.get(normalized_target, ())
+            if _normalize_skill_resource_domain(item)
+        }
     try:
         domains = _get_db_allowed_skill_resource_domains()
         if domains:
@@ -2261,7 +2418,7 @@ def _get_skill_resource_allowed_domains() -> set[str]:
     domains = [item.strip().lower() for item in raw.split(",") if item.strip()] if raw else []
     if not domains:
         domains = list(_DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS)
-    return {item.lstrip(".") for item in domains if item}
+    return {_normalize_skill_resource_domain(item) for item in domains if _normalize_skill_resource_domain(item)}
 
 
 def _extract_topic_keywords(*parts: str) -> list[str]:
@@ -2363,6 +2520,219 @@ def _build_skill_domain_seed_queries(*, target_lang: str, native_lang: str) -> l
     return list(dict.fromkeys(item.strip() for item in queries if str(item).strip()))[:6]
 
 
+def _fetch_perplexity_results(
+    *,
+    payload: dict,
+    stage: str,
+    log_context: str,
+) -> list[dict]:
+    api_key = str(os.getenv("PERPLEXITY_API_KEY") or "").strip()
+    if not api_key:
+        logging.warning("Skill resources [%s] skipped: PERPLEXITY_API_KEY is missing (%s)", stage, log_context)
+        return []
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        response = requests.post(
+            "https://api.perplexity.ai/search",
+            headers=headers,
+            json=payload,
+            timeout=12,
+        )
+        response.raise_for_status()
+        data = response.json() if response.content else {}
+    except Exception as exc:
+        logging.warning("Skill resources [%s] request failed (%s): %s", stage, log_context, exc)
+        return []
+    flattened = _flatten_perplexity_search_results(data if isinstance(data, dict) else {})
+    logging.info(
+        "Skill resources [%s]: raw_results=%s query_count=%s domain_filter_count=%s (%s)",
+        stage,
+        len(flattened),
+        len(payload.get("query")) if isinstance(payload.get("query"), list) else 1,
+        len(payload.get("search_domain_filter") or []),
+        log_context,
+    )
+    return flattened
+
+
+def _format_skill_resource_entry(
+    *,
+    title: str,
+    url: str,
+    snippet: str,
+    fallback_reason: str,
+) -> dict:
+    return {
+        "title": title[:160],
+        "url": url,
+        "type": "article",
+        "why": (snippet[:220] or fallback_reason)[:220],
+    }
+
+
+def _filter_skill_resource_candidates(
+    entries: list[dict],
+    *,
+    stage: str,
+    topic_keywords: list[str],
+    required_domains: set[str] | None = None,
+    fallback_reason: str,
+    max_items: int = 3,
+    relax_topic_match_if_empty: bool = False,
+) -> list[dict]:
+    results: list[dict] = []
+    relaxed: list[dict] = []
+    seen_urls: set[str] = set()
+    stats = {
+        "missing_title_or_url": 0,
+        "duplicate_url": 0,
+        "blocked_domain": 0,
+        "not_allowed_domain": 0,
+        "homepage": 0,
+        "topic_mismatch": 0,
+    }
+    for entry in entries:
+        title = str(entry.get("title") or "").strip()
+        url = str(entry.get("url") or "").strip()
+        snippet = str(entry.get("snippet") or "").strip()
+        if not title or not url:
+            stats["missing_title_or_url"] += 1
+            continue
+        if url in seen_urls:
+            stats["duplicate_url"] += 1
+            continue
+        domain = _normalize_skill_resource_domain(url)
+        if not domain:
+            stats["missing_title_or_url"] += 1
+            continue
+        if any(domain == blocked or domain.endswith(f".{blocked}") for blocked in _SKILL_RESOURCE_DOMAIN_BLOCKLIST):
+            stats["blocked_domain"] += 1
+            continue
+        if required_domains and not _is_allowed_skill_resource_domain(url, required_domains):
+            stats["not_allowed_domain"] += 1
+            continue
+        if _is_resource_homepage(url):
+            stats["homepage"] += 1
+            continue
+        payload = _format_skill_resource_entry(
+            title=title,
+            url=url,
+            snippet=snippet,
+            fallback_reason=fallback_reason,
+        )
+        haystack = f"{title} {url} {snippet}".lower()
+        if topic_keywords and not any(keyword in haystack for keyword in topic_keywords):
+            stats["topic_mismatch"] += 1
+            if relax_topic_match_if_empty:
+                relaxed.append(payload)
+            continue
+        seen_urls.add(url)
+        results.append(payload)
+        if len(results) >= max_items:
+            break
+    if len(results) < max_items and relax_topic_match_if_empty and relaxed:
+        for item in relaxed:
+            url = str(item.get("url") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            results.append(item)
+            if len(results) >= max_items:
+                break
+    logging.info(
+        "Skill resources [%s]: accepted=%s missing=%s duplicate=%s blocked=%s not_allowed=%s homepage=%s topic_mismatch=%s relaxed=%s",
+        stage,
+        len(results),
+        stats["missing_title_or_url"],
+        stats["duplicate_url"],
+        stats["blocked_domain"],
+        stats["not_allowed_domain"],
+        stats["homepage"],
+        stats["topic_mismatch"],
+        1 if relax_topic_match_if_empty and bool(relaxed) else 0,
+    )
+    return results[:max_items]
+
+
+def _append_unique_skill_resources(target: list[dict], items: list[dict], *, max_items: int = 3) -> list[dict]:
+    seen = {
+        _normalize_resource_url(item.get("url"))
+        for item in target
+        if isinstance(item, dict) and _normalize_resource_url(item.get("url"))
+    }
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        normalized_url = _normalize_resource_url(item.get("url"))
+        if not normalized_url or normalized_url in seen:
+            continue
+        seen.add(normalized_url)
+        target.append(item)
+        if len(target) >= max_items:
+            break
+    return target[:max_items]
+
+
+def _discover_skill_resource_domains_from_perplexity(
+    *,
+    target_lang: str,
+    native_lang: str,
+    max_new_domains: int = 10,
+) -> list[dict]:
+    queries = _build_skill_domain_seed_queries(target_lang=target_lang, native_lang=native_lang)
+    if not queries:
+        return []
+    payload = {
+        "query": queries if len(queries) > 1 else queries[0],
+        "max_results": max(6, min(10, int(max_new_domains) * 2)),
+        "max_tokens_per_page": 384,
+        "search_language_filter": list({
+            _normalize_short_lang_code(native_lang, fallback="en"),
+            _normalize_short_lang_code(target_lang, fallback="de"),
+            "en",
+        }),
+        "search_domain_filter": [f"-{item}" for item in sorted(_SKILL_RESOURCE_DOMAIN_BLOCKLIST)],
+    }
+    flattened = _fetch_perplexity_results(
+        payload=payload,
+        stage="domain_discovery",
+        log_context=f"target={target_lang} native={native_lang}",
+    )
+    discovered: list[dict] = []
+    seen_domains: set[str] = set()
+    for entry in flattened:
+        url = str(entry.get("url") or "").strip()
+        title = str(entry.get("title") or "").strip()
+        snippet = str(entry.get("snippet") or "").strip()
+        domain = _normalize_skill_resource_domain(url)
+        if not domain or domain in seen_domains:
+            continue
+        if any(domain == blocked or domain.endswith(f".{blocked}") for blocked in _SKILL_RESOURCE_DOMAIN_BLOCKLIST):
+            continue
+        seen_domains.add(domain)
+        discovered.append(
+            {
+                "domain": domain,
+                "sample_url": url,
+                "sample_title": title[:200],
+                "sample_snippet": snippet[:300],
+                "target_languages": [_normalize_short_lang_code(target_lang, fallback="de")],
+                "queries": queries[:4],
+            }
+        )
+        if len(discovered) >= max(1, min(50, int(max_new_domains) * 3)):
+            break
+    logging.info(
+        "Skill resources [domain_discovery]: target=%s discovered_domains=%s",
+        _normalize_short_lang_code(target_lang, fallback="de"),
+        len(discovered),
+    )
+    return discovered
+
+
 def _seed_skill_resource_domains_from_perplexity(
     *,
     target_lang: str = "de",
@@ -2374,73 +2744,20 @@ def _seed_skill_resource_domains_from_perplexity(
         raise RuntimeError("PERPLEXITY_API_KEY не задан")
 
     queries = _build_skill_domain_seed_queries(target_lang=target_lang, native_lang=native_lang)
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    discovered: dict[str, dict] = {}
-
-    for query in queries:
-        payload = {
-            "query": query,
-            "max_results": 8,
-            "max_tokens_per_page": 384,
-            "search_language_filter": list({
-                _normalize_short_lang_code(native_lang, fallback="ru"),
-                _normalize_short_lang_code(target_lang, fallback="de"),
-                "en",
-            }),
-        }
-        try:
-            response = requests.post(
-                "https://api.perplexity.ai/search",
-                headers=headers,
-                json=payload,
-                timeout=12,
-            )
-            response.raise_for_status()
-            data = response.json() if response.content else {}
-        except Exception as exc:
-            logging.warning("PERPLEXITY domain seed query failed (%s): %s", query, exc)
-            continue
-
-        raw_results = data.get("results")
-        results = raw_results if isinstance(raw_results, list) else []
-        flattened: list[dict] = []
-        for item in results:
-            if isinstance(item, list):
-                flattened.extend(sub for sub in item if isinstance(sub, dict))
-            elif isinstance(item, dict):
-                flattened.append(item)
-
-        for entry in flattened:
-            url = str(entry.get("url") or "").strip()
-            title = str(entry.get("title") or "").strip()
-            snippet = str(entry.get("snippet") or "").strip()
-            domain = _normalize_skill_resource_domain(url)
-            if not domain:
-                continue
-            if any(domain == blocked or domain.endswith(f".{blocked}") for blocked in _SKILL_RESOURCE_DOMAIN_BLOCKLIST):
-                continue
-            if domain in discovered:
-                continue
-            discovered[domain] = {
-                "domain": domain,
-                "sample_url": url,
-                "sample_title": title[:200],
-                "sample_snippet": snippet[:300],
-                "query": query,
-            }
-            if len(discovered) >= max(1, min(50, int(max_new_domains) * 3)):
-                break
-        if len(discovered) >= max(1, min(50, int(max_new_domains) * 3)):
-            break
+    discovered = _discover_skill_resource_domains_from_perplexity(
+        target_lang=target_lang,
+        native_lang=native_lang,
+        max_new_domains=max_new_domains,
+    )
 
     inserted: list[dict] = []
     skipped: list[str] = []
     existing_allowed = _get_skill_resource_allowed_domains()
     existing_known = {item["domain"] for item in _list_skill_resource_domains(limit=500)}
-    for domain, meta in discovered.items():
+    for meta in discovered:
+        domain = str(meta.get("domain") or "").strip()
+        if not domain:
+            continue
         if domain in existing_allowed or domain in existing_known:
             skipped.append(domain)
             continue
@@ -2472,15 +2789,11 @@ def _perplexity_search_skill_resources(
     skill_name: str,
     error_category: str,
     error_subcategory: str,
+    search_domain_filter: list[str] | None = None,
+    required_domains: set[str] | None = None,
+    stage: str = "perplexity",
+    relax_topic_match_if_empty: bool = False,
 ) -> list[dict]:
-    api_key = str(os.getenv("PERPLEXITY_API_KEY") or "").strip()
-    if not api_key:
-        return []
-
-    allowed_domains = sorted(_get_skill_resource_allowed_domains())
-    if not allowed_domains:
-        return []
-
     queries = _build_skill_resource_queries(
         target_lang=target_lang,
         native_lang=native_lang,
@@ -2489,73 +2802,170 @@ def _perplexity_search_skill_resources(
         error_subcategory=error_subcategory,
     )
     if not queries:
+        logging.warning("Skill resources [%s] skipped: no queries for topic=%s", stage, skill_name or error_subcategory or error_category)
         return []
 
     payload = {
         "query": queries if len(queries) > 1 else queries[0],
-        "max_results": 5,
+        "max_results": 6,
         "max_tokens_per_page": 512,
-        "search_domain_filter": allowed_domains[:20],
         "search_language_filter": list({
             _normalize_short_lang_code(native_lang, fallback="ru"),
             _normalize_short_lang_code(target_lang, fallback="de"),
         }),
     }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
+    if search_domain_filter:
+        payload["search_domain_filter"] = search_domain_filter[:20]
+    flattened = _fetch_perplexity_results(
+        payload=payload,
+        stage=stage,
+        log_context=f"target={target_lang} native={native_lang} topic={skill_name or error_subcategory or error_category}",
+    )
+    topic_keywords = _extract_topic_keywords(skill_name, error_category, error_subcategory)
+    return _filter_skill_resource_candidates(
+        flattened,
+        stage=stage,
+        topic_keywords=topic_keywords,
+        required_domains=required_domains,
+        fallback_reason=f"Источник по теме: {skill_name or error_subcategory or error_category}",
+        max_items=3,
+        relax_topic_match_if_empty=relax_topic_match_if_empty,
+    )
+
+
+def _ensure_min_allowed_skill_resource_domains(
+    *,
+    target_lang: str,
+    native_lang: str,
+    min_allowed: int = _SKILL_RESOURCE_MIN_ALLOWED_DOMAINS_PER_LANGUAGE,
+    force: bool = False,
+) -> dict:
+    normalized_target = _normalize_short_lang_code(target_lang, fallback="de")
+    min_required = max(1, int(min_allowed))
+    allowed_items = _get_allowed_skill_resource_domain_items(target_lang=normalized_target, limit=500)
+    allowed_domains = {
+        _normalize_skill_resource_domain(item.get("domain"))
+        for item in allowed_items
+        if _normalize_skill_resource_domain(item.get("domain"))
+    }
+    if not force and len(allowed_domains) >= min_required:
+        logging.info(
+            "Skill resources [autoseed]: target=%s skipped current_allowed=%s min_required=%s",
+            normalized_target,
+            len(allowed_domains),
+            min_required,
+        )
+        return {
+            "target_lang": normalized_target,
+            "allowed_before": len(allowed_domains),
+            "allowed_after": len(allowed_domains),
+            "inserted_count": 0,
+            "status": "already_sufficient",
+        }
+    discovered = _discover_skill_resource_domains_from_perplexity(
+        target_lang=normalized_target,
+        native_lang=native_lang,
+        max_new_domains=max(min_required, 8),
+    )
+    if not discovered:
+        logging.warning(
+            "Skill resources [autoseed]: target=%s no domains discovered current_allowed=%s",
+            normalized_target,
+            len(allowed_domains),
+        )
+        return {
+            "target_lang": normalized_target,
+            "allowed_before": len(allowed_domains),
+            "allowed_after": len(allowed_domains),
+            "inserted_count": 0,
+            "status": "no_discovered_domains",
+        }
+    known_items = {
+        str(item.get("domain") or ""): item
+        for item in _list_skill_resource_domains(limit=500)
+        if str(item.get("domain") or "").strip()
+    }
+    inserted: list[dict] = []
+    for meta in discovered:
+        domain = str(meta.get("domain") or "").strip()
+        if not domain or domain in allowed_domains:
+            continue
+        existing_item = known_items.get(domain) or {}
+        if str(existing_item.get("status") or "").strip().lower() == "disabled":
+            logging.info("Skill resources [autoseed]: target=%s skip disabled domain=%s", normalized_target, domain)
+            continue
+        merged_meta = _merge_skill_resource_domain_meta(
+            existing_item.get("meta") if isinstance(existing_item.get("meta"), dict) else {},
+            {
+                "target_languages": [normalized_target],
+                "autoseed_queries": meta.get("queries") if isinstance(meta.get("queries"), list) else [],
+                "sample_url": meta.get("sample_url"),
+                "sample_title": meta.get("sample_title"),
+                "sample_snippet": meta.get("sample_snippet"),
+            },
+        )
+        item = _upsert_skill_resource_domain(
+            domain=domain,
+            status="allowed",
+            source="perplexity_autoseed",
+            note=f"Auto-approved Perplexity domain for {normalized_target} skill resources",
+            meta=merged_meta,
+        )
+        if not item:
+            continue
+        known_items[domain] = item
+        allowed_domains.add(domain)
+        inserted.append(item)
+        if len(allowed_domains) >= min_required:
+            break
+    logging.info(
+        "Skill resources [autoseed]: target=%s inserted=%s allowed_after=%s min_required=%s",
+        normalized_target,
+        len(inserted),
+        len(allowed_domains),
+        min_required,
+    )
+    return {
+        "target_lang": normalized_target,
+        "allowed_before": len(allowed_items),
+        "allowed_after": len(allowed_domains),
+        "inserted_count": len(inserted),
+        "status": "updated" if inserted else "unchanged",
     }
 
-    try:
-        response = requests.post(
-            "https://api.perplexity.ai/search",
-            headers=headers,
-            json=payload,
-            timeout=12,
-        )
-        response.raise_for_status()
-        data = response.json() if response.content else {}
-    except Exception as exc:
-        logging.warning("PERPLEXITY skill resource search failed: %s", exc)
-        return []
 
-    raw_results = data.get("results")
-    grouped_results = raw_results if isinstance(raw_results, list) else []
-    flattened: list[dict] = []
-    for item in grouped_results:
-        if isinstance(item, list):
-            flattened.extend(sub for sub in item if isinstance(sub, dict))
-        elif isinstance(item, dict):
-            flattened.append(item)
+def _start_skill_resource_domain_autoseed() -> None:
+    global _SKILL_RESOURCE_AUTOSEED_STARTED
+    enabled = str(os.getenv("SKILL_RESOURCE_AUTOSEED_ON_STARTUP") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        logging.info("Skill resources [autoseed]: startup autoseed disabled by env")
+        return
+    with _SKILL_RESOURCE_AUTOSEED_LOCK:
+        if _SKILL_RESOURCE_AUTOSEED_STARTED:
+            return
+        _SKILL_RESOURCE_AUTOSEED_STARTED = True
 
-    topic_keywords = _extract_topic_keywords(skill_name, error_category, error_subcategory)
-    results: list[dict] = []
-    seen_urls: set[str] = set()
-    for entry in flattened:
-        title = str(entry.get("title") or "").strip()
-        url = str(entry.get("url") or "").strip()
-        snippet = str(entry.get("snippet") or "").strip()
-        if not title or not url or url in seen_urls:
-            continue
-        if not _is_allowed_skill_resource_domain(url, set(allowed_domains)):
-            continue
-        if _is_resource_homepage(url):
-            continue
-        haystack = f"{title} {url} {snippet}".lower()
-        if topic_keywords and not any(keyword in haystack for keyword in topic_keywords):
-            continue
-        seen_urls.add(url)
-        results.append(
-            {
-                "title": title[:160],
-                "url": url,
-                "type": "article",
-                "why": (snippet[:220] or f"Источник по теме: {skill_name or error_subcategory or error_category}")[:220],
-            }
-        )
-        if len(results) >= 3:
-            break
-    return results
+    def _worker() -> None:
+        api_key = str(os.getenv("PERPLEXITY_API_KEY") or "").strip()
+        if not api_key:
+            logging.warning("Skill resources [autoseed]: startup skipped because PERPLEXITY_API_KEY is missing")
+            return
+        for target_lang in _SKILL_RESOURCE_TARGET_LANGUAGES:
+            try:
+                _ensure_min_allowed_skill_resource_domains(
+                    target_lang=target_lang,
+                    native_lang="en",
+                    min_allowed=_SKILL_RESOURCE_MIN_ALLOWED_DOMAINS_PER_LANGUAGE,
+                    force=False,
+                )
+            except Exception as exc:
+                logging.warning("Skill resources [autoseed]: target=%s failed: %s", target_lang, exc)
+
+    threading.Thread(
+        target=_worker,
+        name="skill-resource-autoseed",
+        daemon=True,
+    ).start()
 
 
 def _normalize_theory_resources(
@@ -2568,20 +2978,77 @@ def _normalize_theory_resources(
     error_subcategory: str = "",
 ) -> list[dict]:
     raw = theory.get("resources") if isinstance(theory, dict) else None
+    desired_count = 3
     resources: list[dict] = []
+    normalized_target = _normalize_short_lang_code(target_lang, fallback="de")
+    normalized_native = _normalize_short_lang_code(native_lang, fallback="ru")
+    logging.info(
+        "Skill resources: start target=%s native=%s skill=%s category=%s subcategory=%s",
+        normalized_target,
+        normalized_native,
+        skill_name,
+        error_category,
+        error_subcategory,
+    )
     perplexity_resources = _perplexity_search_skill_resources(
         target_lang=target_lang,
         native_lang=native_lang,
         skill_name=skill_name,
         error_category=error_category,
         error_subcategory=error_subcategory,
+        search_domain_filter=[f"-{item}" for item in sorted(_SKILL_RESOURCE_DOMAIN_BLOCKLIST)],
+        required_domains=None,
+        stage="perplexity_open_web",
+        relax_topic_match_if_empty=True,
     )
-    if perplexity_resources:
-        return perplexity_resources
+    _append_unique_skill_resources(resources, perplexity_resources, max_items=desired_count)
+
+    allowed_domains = _get_skill_resource_allowed_domains(target_lang=normalized_target)
+    if len(resources) < desired_count:
+        ensure_result = _ensure_min_allowed_skill_resource_domains(
+            target_lang=normalized_target,
+            native_lang=normalized_native or "en",
+            min_allowed=_SKILL_RESOURCE_MIN_ALLOWED_DOMAINS_PER_LANGUAGE,
+            force=False,
+        )
+        logging.info(
+            "Skill resources [autoseed]: target=%s status=%s before=%s after=%s inserted=%s",
+            ensure_result.get("target_lang"),
+            ensure_result.get("status"),
+            ensure_result.get("allowed_before"),
+            ensure_result.get("allowed_after"),
+            ensure_result.get("inserted_count"),
+        )
+        allowed_domains = _get_skill_resource_allowed_domains(target_lang=normalized_target)
+        if allowed_domains:
+            domain_fallback_resources = _perplexity_search_skill_resources(
+                target_lang=target_lang,
+                native_lang=native_lang,
+                skill_name=skill_name,
+                error_category=error_category,
+                error_subcategory=error_subcategory,
+                search_domain_filter=sorted(allowed_domains),
+                required_domains=set(allowed_domains),
+                stage="perplexity_allowed_domains",
+                relax_topic_match_if_empty=True,
+            )
+            _append_unique_skill_resources(resources, domain_fallback_resources, max_items=desired_count)
+        else:
+            logging.warning(
+                "Skill resources [perplexity_allowed_domains] skipped: no allowed domains for target=%s",
+                normalized_target,
+            )
 
     topic_keywords = _extract_topic_keywords(skill_name, error_category, error_subcategory)
-    allowed_domains = _get_skill_resource_allowed_domains()
-    if isinstance(raw, list):
+    llm_stats = {
+        "accepted": 0,
+        "missing_title_or_url": 0,
+        "invalid_url": 0,
+        "not_allowed_domain": 0,
+        "topic_mismatch": 0,
+        "homepage": 0,
+    }
+    if len(resources) < desired_count and isinstance(raw, list):
         for entry in raw:
             if not isinstance(entry, dict):
                 continue
@@ -2590,33 +3057,95 @@ def _normalize_theory_resources(
             kind = str(entry.get("type") or "").strip().lower()
             why = str(entry.get("why") or "").strip()
             if not title or not url:
+                llm_stats["missing_title_or_url"] += 1
                 continue
             try:
                 parsed = urlparse(url)
             except Exception:
+                llm_stats["invalid_url"] += 1
                 continue
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                llm_stats["invalid_url"] += 1
                 continue
-            if not _is_allowed_skill_resource_domain(url, allowed_domains):
+            if allowed_domains and not _is_allowed_skill_resource_domain(url, allowed_domains):
+                llm_stats["not_allowed_domain"] += 1
                 continue
             haystack = f"{title} {url} {why}".lower()
             if topic_keywords and not any(keyword in haystack for keyword in topic_keywords):
+                llm_stats["topic_mismatch"] += 1
                 continue
             if _is_resource_homepage(url):
+                llm_stats["homepage"] += 1
                 continue
             if kind not in {"article", "video"}:
                 kind = "article"
-            resources.append(
+            before_count = len(resources)
+            _append_unique_skill_resources(resources, [
                 {
                     "title": title[:160],
                     "url": url,
                     "type": kind,
                     "why": why[:220],
                 }
-            )
-            if len(resources) >= 3:
+            ], max_items=desired_count)
+            if len(resources) > before_count:
+                llm_stats["accepted"] += 1
+            if len(resources) >= desired_count:
                 break
-    return resources
+    logging.info(
+        "Skill resources [llm_fallback]: accepted=%s missing=%s invalid=%s not_allowed=%s homepage=%s topic_mismatch=%s",
+        llm_stats["accepted"],
+        llm_stats["missing_title_or_url"],
+        llm_stats["invalid_url"],
+        llm_stats["not_allowed_domain"],
+        llm_stats["homepage"],
+        llm_stats["topic_mismatch"],
+    )
+    if not resources:
+        logging.warning(
+            "Skill resources: no links selected target=%s skill=%s category=%s subcategory=%s",
+            normalized_target,
+            skill_name,
+            error_category,
+            error_subcategory,
+        )
+    else:
+        logging.info(
+            "Skill resources: final_count=%s target=%s urls=%s",
+            len(resources),
+            normalized_target,
+            [str(item.get("url") or "") for item in resources[:desired_count]],
+        )
+    return resources[:desired_count]
+
+
+def _theory_primary_explanation_text(theory: dict) -> str:
+    if not isinstance(theory, dict):
+        return ""
+    parts = [
+        str(theory.get("title") or "").strip(),
+        str(theory.get("core_explanation") or "").strip(),
+        str(theory.get("why_mistake_happens") or "").strip(),
+        str(theory.get("what_this_topic_is") or "").strip(),
+        str(theory.get("error_connection") or "").strip(),
+        str(theory.get("key_rule") or "").strip(),
+        str(theory.get("memory_trick") or "").strip(),
+    ]
+    return " ".join(part for part in parts if part).strip()
+
+
+def _theory_needs_native_language_retry(theory: dict, native_lang: str) -> bool:
+    normalized_native = _normalize_short_lang_code(native_lang, fallback="")
+    sample = _theory_primary_explanation_text(theory)
+    if not sample:
+        return False
+    if normalized_native == "ru":
+        letters = re.findall(r"[A-Za-zА-Яа-яЁё]", sample)
+        if len(letters) < 24:
+            return False
+        cyrillic = re.findall(r"[А-Яа-яЁё]", sample)
+        return (len(cyrillic) / max(1, len(letters))) < 0.2
+    return False
 
 
 def _ensure_skill_training_daily_table() -> None:
@@ -9861,9 +10390,12 @@ def prepare_today_theory():
     if not skill_name:
         skill_name = sub_category or main_category or "Grammar basics"
 
+    target_lang_name = _get_llm_language_name(target_lang)
+    source_lang_name = _get_llm_language_name(source_lang, emphasize_script=True)
+
     theory_payload = {
-        "target_language": target_lang,
-        "native_language": source_lang,
+        "target_language": target_lang_name,
+        "native_language": source_lang_name,
         "skill_name": skill_name,
         "error_category": main_category or "Other mistake",
         "error_subcategory": sub_category or "Unclassified mistake",
@@ -9873,8 +10405,8 @@ def prepare_today_theory():
         "user_mistake_examples": formatted_examples[:8],
     }
     practice_payload = {
-        "target_language": target_lang,
-        "native_language": source_lang,
+        "target_language": target_lang_name,
+        "native_language": source_lang_name,
         "skill_name": skill_name,
         "error_category": main_category or "Other mistake",
         "error_subcategory": sub_category or "Unclassified mistake",
@@ -9899,6 +10431,23 @@ def prepare_today_theory():
     get_last_llm_usage(reset=True)
     if not isinstance(theory, dict):
         theory = {}
+    if _theory_needs_native_language_retry(theory, source_lang):
+        logging.warning(
+            "Skill theory language retry: user_id=%s native=%s target=%s skill=%s",
+            user_id,
+            source_lang,
+            target_lang,
+            skill_name,
+        )
+        retry_payload = dict(theory_payload)
+        retry_payload["native_language"] = _get_llm_language_name(source_lang, emphasize_script=True)
+        retry_payload["target_language"] = _get_llm_language_name(target_lang)
+        try:
+            theory_retry = asyncio.run(run_theory_generation(retry_payload))
+            if isinstance(theory_retry, dict) and theory_retry:
+                theory = theory_retry
+        except Exception as exc:
+            logging.warning("Skill theory language retry failed: %s", exc)
     theory["resources"] = _normalize_theory_resources(
         theory,
         target_lang,
@@ -15699,28 +16248,154 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
     def _clean(value: object) -> str:
         return str(value or "").strip()
 
-    def _collect_non_empty(mapping: dict | None, keys: list[str]) -> list[str]:
-        if not isinstance(mapping, dict):
-            return []
-        values: list[str] = []
-        for key in keys:
-            value = _clean(mapping.get(key))
-            if value:
-                values.append(value)
-        return values
+    def _has_expected_script(text: str, lang: str) -> bool:
+        cleaned = _clean(text)
+        if not cleaned:
+            return False
+        normalized_lang = _normalize_short_lang_code(lang, fallback="")
+        if normalized_lang == "ru":
+            letters = re.findall(r"[A-Za-zА-Яа-яЁё]", cleaned)
+            if len(letters) < 6:
+                return True
+            cyrillic = re.findall(r"[А-Яа-яЁё]", cleaned)
+            return (len(cyrillic) / max(1, len(letters))) >= 0.25
+        return True
 
-    source_text = str(result.get("word_source") or "").strip()
-    target_text = str(result.get("word_target") or "").strip()
-    detected = str(result.get("detected_language") or "").strip().lower()
+    def _native_text(value: object, lang: str) -> str:
+        text = _clean(value)
+        if not text:
+            return ""
+        return text if _has_expected_script(text, lang) else ""
+
+    def _lang_label(code: str) -> str:
+        mapping = {
+            "ru": "RU",
+            "de": "DE",
+            "en": "EN",
+            "es": "ES",
+            "it": "IT",
+        }
+        normalized = _normalize_short_lang_code(code, fallback="")
+        return mapping.get(normalized, (normalized or "??").upper())
+
+    def _labels(lang: str) -> dict[str, str]:
+        normalized = _normalize_short_lang_code(lang, fallback="ru")
+        bundles = {
+            "ru": {
+                "main_translation": "Основной перевод",
+                "input_text": "Исходный текст",
+                "direction": "Направление",
+                "translation_variants": "Варианты перевода",
+                "main_meaning": "Основное значение",
+                "secondary_meanings": "Дополнительные значения",
+                "example": "Пример",
+                "grammar": "Грамматика и форма",
+                "part_of_speech": "Часть речи",
+                "article": "Артикль",
+                "pronunciation": "Произношение",
+                "usage": "Употребление",
+                "origin": "Происхождение",
+                "memory": "Памятка",
+                "examples": "Примеры",
+                "comment": "Комментарий",
+            },
+            "de": {
+                "main_translation": "Hauptuebersetzung",
+                "input_text": "Ausgangstext",
+                "direction": "Richtung",
+                "translation_variants": "Uebersetzungsvarianten",
+                "main_meaning": "Hauptbedeutung",
+                "secondary_meanings": "Weitere Bedeutungen",
+                "example": "Beispiel",
+                "grammar": "Grammatik und Form",
+                "part_of_speech": "Wortart",
+                "article": "Artikel",
+                "pronunciation": "Aussprache",
+                "usage": "Gebrauch",
+                "origin": "Herkunft",
+                "memory": "Merkhilfe",
+                "examples": "Beispiele",
+                "comment": "Kommentar",
+            },
+            "en": {
+                "main_translation": "Main translation",
+                "input_text": "Source text",
+                "direction": "Direction",
+                "translation_variants": "Translation variants",
+                "main_meaning": "Main meaning",
+                "secondary_meanings": "Secondary meanings",
+                "example": "Example",
+                "grammar": "Grammar and form",
+                "part_of_speech": "Part of speech",
+                "article": "Article",
+                "pronunciation": "Pronunciation",
+                "usage": "Usage",
+                "origin": "Origin",
+                "memory": "Memory tip",
+                "examples": "Examples",
+                "comment": "Comment",
+            },
+            "es": {
+                "main_translation": "Traduccion principal",
+                "input_text": "Texto original",
+                "direction": "Direccion",
+                "translation_variants": "Variantes de traduccion",
+                "main_meaning": "Significado principal",
+                "secondary_meanings": "Significados adicionales",
+                "example": "Ejemplo",
+                "grammar": "Gramatica y forma",
+                "part_of_speech": "Categoria gramatical",
+                "article": "Articulo",
+                "pronunciation": "Pronunciacion",
+                "usage": "Uso",
+                "origin": "Origen",
+                "memory": "Pista mental",
+                "examples": "Ejemplos",
+                "comment": "Comentario",
+            },
+            "it": {
+                "main_translation": "Traduzione principale",
+                "input_text": "Testo di partenza",
+                "direction": "Direzione",
+                "translation_variants": "Varianti di traduzione",
+                "main_meaning": "Significato principale",
+                "secondary_meanings": "Significati aggiuntivi",
+                "example": "Esempio",
+                "grammar": "Grammatica e forma",
+                "part_of_speech": "Parte del discorso",
+                "article": "Articolo",
+                "pronunciation": "Pronuncia",
+                "usage": "Uso",
+                "origin": "Origine",
+                "memory": "Suggerimento mnemonico",
+                "examples": "Esempi",
+                "comment": "Commento",
+            },
+        }
+        return bundles.get(normalized, bundles["en"])
+
+    def _orient_example_pair(native_value: str, target_value: str) -> str:
+        native_text = _clean(native_value)
+        target_text = _clean(target_value)
+        if target_text or native_text:
+            return f"{target_text or '—'} -> {native_text or '—'}"
+        return ""
+
+    labels = _labels(source_lang)
+    source_text = _clean(result.get("word_source"))
+    target_text = _clean(result.get("word_target"))
+    detected = _clean(result.get("detected_language")).lower()
     detected_side = "source" if detected == "source" else ("target" if detected == "target" else "unknown")
+    clicked_text = target_text if detected_side == "target" else source_text
+    translated_text = source_text if detected_side == "target" else target_text
+    direction_from = target_lang if detected_side == "target" else source_lang
+    direction_to = source_lang if detected_side == "target" else target_lang
 
     lines: list[str] = []
-    lines.append(f"Основной перевод: {target_text or '—'}")
-    if source_text:
-        lines.append(f"Исходный текст: {source_text}")
-    lines.append(
-        f"Направление: {detected_side} ({(source_lang or '').lower()} -> {(target_lang or '').lower()})"
-    )
+    lines.append(f"{labels['main_translation']}: {translated_text or '—'}")
+    if clicked_text:
+        lines.append(f"{labels['input_text']}: {clicked_text}")
+    lines.append(f"{labels['direction']}: {_lang_label(direction_from)} -> {_lang_label(direction_to)}")
 
     translations = result.get("translations")
     translation_lines: list[str] = []
@@ -15728,30 +16403,28 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
         for item in translations[:3]:
             if not isinstance(item, dict):
                 continue
-            value = _clean(item.get("value"))
-            context = _clean(item.get("context"))
+            value = _native_text(item.get("value"), source_lang)
+            context = _native_text(item.get("context"), source_lang)
             if not value:
                 continue
-            suffix = f" ({context})" if context else ""
-            translation_lines.append(f"- {value}{suffix}")
+            translation_lines.append(f"- {value}" + (f" ({context})" if context else ""))
     if translation_lines:
         lines.append("")
-        lines.append("Варианты перевода:")
+        lines.append(f"{labels['translation_variants']}:")
         lines.extend(translation_lines)
 
     meanings = result.get("meanings") or {}
     primary = meanings.get("primary") if isinstance(meanings, dict) else None
     if isinstance(primary, dict):
-        val = _clean(primary.get("value"))
-        ctx = _clean(primary.get("context"))
+        val = _native_text(primary.get("value"), source_lang)
+        ctx = _native_text(primary.get("context"), source_lang)
         if val:
             lines.append("")
-            lines.append("Основное значение:")
+            lines.append(f"{labels['main_meaning']}:")
             lines.append(f"- {val}" + (f" ({ctx})" if ctx else ""))
-        example_source = _clean(primary.get("example_source"))
-        example_target = _clean(primary.get("example_target"))
-        if example_source or example_target:
-            lines.append(f"- Пример: {example_source or '—'} -> {example_target or '—'}")
+        example_line = _orient_example_pair(primary.get("example_source"), primary.get("example_target"))
+        if example_line:
+            lines.append(f"- {labels['example']}: {example_line}")
 
     secondary = meanings.get("secondary") if isinstance(meanings, dict) else None
     secondary_lines: list[str] = []
@@ -15759,25 +16432,28 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
         for item in secondary[:2]:
             if not isinstance(item, dict):
                 continue
-            val = _clean(item.get("value"))
-            ctx = _clean(item.get("context"))
-            example_source = _clean(item.get("example_source"))
-            example_target = _clean(item.get("example_target"))
+            val = _native_text(item.get("value"), source_lang)
+            ctx = _native_text(item.get("context"), source_lang)
             if not val:
                 continue
             chunk = f"- {val}" + (f" ({ctx})" if ctx else "")
-            if example_source or example_target:
-                chunk += f"; пример: {example_source or '—'} -> {example_target or '—'}"
+            example_line = _orient_example_pair(item.get("example_source"), item.get("example_target"))
+            if example_line:
+                chunk += f"; {labels['example'].lower()}: {example_line}"
             secondary_lines.append(chunk)
     if secondary_lines:
         lines.append("")
-        lines.append("Дополнительные значения:")
+        lines.append(f"{labels['secondary_meanings']}:")
         lines.extend(secondary_lines)
 
     part_of_speech = _clean(result.get("part_of_speech"))
     article = _clean(result.get("article"))
     pronunciation = result.get("pronunciation") if isinstance(result.get("pronunciation"), dict) else {}
-    pronunciation_bits = _collect_non_empty(pronunciation, ["ipa", "stress"])
+    pronunciation_bits = []
+    for key in ("ipa", "stress"):
+        value = _clean(pronunciation.get(key))
+        if value:
+            pronunciation_bits.append(value)
     forms = result.get("forms") if isinstance(result.get("forms"), dict) else {}
     form_lines = []
     for label, key in (
@@ -15792,25 +16468,25 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
             form_lines.append(f"- {label}: {value}")
     if part_of_speech or article or pronunciation_bits or form_lines:
         lines.append("")
-        lines.append("Грамматика и форма:")
+        lines.append(f"{labels['grammar']}:")
         if part_of_speech:
-            lines.append(f"- Часть речи: {part_of_speech}")
+            lines.append(f"- {labels['part_of_speech']}: {part_of_speech}")
         if article:
-            lines.append(f"- Артикль: {article}")
+            lines.append(f"- {labels['article']}: {article}")
         if pronunciation_bits:
-            lines.append(f"- Произношение: {'; '.join(pronunciation_bits)}")
+            lines.append(f"- {labels['pronunciation']}: {'; '.join(pronunciation_bits)}")
         lines.extend(form_lines)
 
-    usage_note = _clean(result.get("usage_note"))
+    usage_note = _native_text(result.get("usage_note"), source_lang)
     if usage_note:
         lines.append("")
-        lines.append(f"Употребление: {usage_note}")
-    etymology_note = _clean(result.get("etymology_note"))
+        lines.append(f"{labels['usage']}: {usage_note}")
+    etymology_note = _native_text(result.get("etymology_note"), source_lang)
     if etymology_note:
-        lines.append(f"Происхождение: {etymology_note}")
-    memory_tip = _clean(result.get("memory_tip"))
+        lines.append(f"{labels['origin']}: {etymology_note}")
+    memory_tip = _native_text(result.get("memory_tip"), source_lang)
     if memory_tip:
-        lines.append(f"Памятка: {memory_tip}")
+        lines.append(f"{labels['memory']}: {memory_tip}")
 
     examples = result.get("usage_examples") or []
     example_lines: list[str] = []
@@ -15818,21 +16494,20 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
         for item in examples[:3]:
             if not isinstance(item, dict):
                 continue
-            src = _clean(item.get("source"))
-            tgt = _clean(item.get("target"))
-            if src or tgt:
-                example_lines.append(f"- {src or '—'} -> {tgt or '—'}")
+            example_line = _orient_example_pair(item.get("source"), item.get("target"))
+            if example_line:
+                example_lines.append(f"- {example_line}")
     if example_lines:
         lines.append("")
-        lines.append("Примеры:")
+        lines.append(f"{labels['examples']}:")
         lines.extend(example_lines)
 
-    raw_text = _clean(result.get("raw_text"))
+    raw_text = _native_text(result.get("raw_text"), source_lang)
     if raw_text:
         lines.append("")
-        lines.append(f"Комментарий: {raw_text}")
+        lines.append(f"{labels['comment']}: {raw_text}")
 
-    return "\n".join(lines)
+    return "\n".join(line for line in lines if str(line).strip())
 
 
 @app.route("/api/webapp/explain", methods=["POST"])
@@ -15947,6 +16622,7 @@ except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 
 _start_audio_scheduler()
+_start_skill_resource_domain_autoseed()
 
 
 if __name__ == "__main__":
