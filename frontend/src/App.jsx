@@ -256,6 +256,7 @@ function AppInner() {
   const [skillTrainingChecking, setSkillTrainingChecking] = useState(false);
   const [skillTrainingFeedback, setSkillTrainingFeedback] = useState(null);
   const [skillTrainingVideoLoading, setSkillTrainingVideoLoading] = useState(false);
+  const [skillTrainingDraftMap, setSkillTrainingDraftMap] = useState({});
   const [weeklyPlan, setWeeklyPlan] = useState(null);
   const [weeklyPlanLoading, setWeeklyPlanLoading] = useState(false);
   const [weeklyPlanSaving, setWeeklyPlanSaving] = useState(false);
@@ -503,6 +504,47 @@ function AppInner() {
     const dd = String(now.getDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
   };
+  const normalizeSkillTrainingSnapshot = (value) => {
+    if (!value || typeof value !== 'object') return null;
+    const pack = value?.package && typeof value.package === 'object' ? value.package : null;
+    const skillId = String(
+      value?.skill?.skill_id
+      || pack?.focus?.skill_id
+      || value?.skill_id
+      || ''
+    ).trim();
+    if (!skillId || !pack) return null;
+    const answersRaw = Array.isArray(value?.answers) ? value.answers : [];
+    const answers = Array.from({ length: 5 }, (_, index) => String(answersRaw[index] || ''));
+    return {
+      skill: value?.skill && typeof value.skill === 'object'
+        ? {
+          skill_id: skillId,
+          title: String(value.skill.title || pack?.focus?.skill_name || '').trim(),
+          mastery: value.skill.mastery ?? null,
+        }
+        : {
+          skill_id: skillId,
+          title: String(pack?.focus?.skill_name || '').trim(),
+          mastery: null,
+        },
+      package: pack,
+      video: value?.video && typeof value.video === 'object' ? value.video : null,
+      answers,
+      feedback: value?.feedback && typeof value.feedback === 'object' ? value.feedback : null,
+      saved_at: String(value?.saved_at || '').trim() || new Date().toISOString(),
+    };
+  };
+  const normalizeSkillTrainingDraftMap = (value) => {
+    const payload = value && typeof value === 'object' ? value : {};
+    const normalized = {};
+    Object.entries(payload).forEach(([skillId, item]) => {
+      const snapshot = normalizeSkillTrainingSnapshot(item);
+      if (!snapshot) return;
+      normalized[String(skillId).trim()] = snapshot;
+    });
+    return normalized;
+  };
 
   const [uiLang, setUiLang] = useState('ru');
   const t = useMemo(() => createTranslator(uiLang), [uiLang]);
@@ -696,6 +738,44 @@ function AppInner() {
       sentence: `cards_solved_today_sentence_${uid}_${dateKey}`,
     };
   }, [webappUser?.id]);
+  const skillTrainingStorageKey = useMemo(() => {
+    const uid = webappUser?.id
+      ? String(webappUser.id)
+      : String(telegramApp?.initDataUnsafe?.user?.id || 'anon');
+    return `skill_training_sessions_${uid}_${getLocalDateKey()}`;
+  }, [telegramApp, webappUser?.id]);
+  const skillTrainingDraftMapRef = useRef({});
+
+  useEffect(() => {
+    skillTrainingDraftMapRef.current = skillTrainingDraftMap;
+  }, [skillTrainingDraftMap]);
+
+  const persistSkillTrainingDraftMap = useCallback((nextMap) => {
+    const normalized = normalizeSkillTrainingDraftMap(nextMap);
+    skillTrainingDraftMapRef.current = normalized;
+    setSkillTrainingDraftMap(normalized);
+    if (Object.keys(normalized).length > 0) {
+      safeStorageSet(skillTrainingStorageKey, JSON.stringify(normalized));
+    } else {
+      safeStorageRemove(skillTrainingStorageKey);
+    }
+  }, [skillTrainingStorageKey]);
+
+  const removeSkillTrainingSnapshot = useCallback((skillId) => {
+    const normalizedSkillId = String(skillId || '').trim();
+    if (!normalizedSkillId) return;
+    const current = skillTrainingDraftMapRef.current || {};
+    if (!current[normalizedSkillId]) return;
+    const next = { ...current };
+    delete next[normalizedSkillId];
+    persistSkillTrainingDraftMap(next);
+  }, [persistSkillTrainingDraftMap]);
+
+  const getStoredSkillTrainingSnapshot = useCallback((skillId) => {
+    const normalizedSkillId = String(skillId || '').trim();
+    if (!normalizedSkillId) return null;
+    return normalizeSkillTrainingSnapshot((skillTrainingDraftMapRef.current || {})[normalizedSkillId]);
+  }, []);
 
   const readSolvedTodaySet = useCallback((mode) => {
     const modeKey = String(mode || '').toLowerCase();
@@ -1808,6 +1888,26 @@ function AppInner() {
     }
   };
 
+  const resumeSkillPractice = (skill) => {
+    const skillId = String(skill?.skill_id || '').trim();
+    if (!skillId) return;
+    const snapshot = getStoredSkillTrainingSnapshot(skillId);
+    if (!snapshot) return;
+    setSkillTrainingLoading(false);
+    setSkillTrainingVideoLoading(false);
+    setSkillTrainingError('');
+    setSkillTrainingFeedback(snapshot.feedback || null);
+    setSkillTrainingAnswers(
+      Array.from({ length: 5 }, (_, index) => String(snapshot.answers?.[index] || ''))
+    );
+    setSkillTrainingData({
+      skill: snapshot.skill,
+      package: snapshot.package,
+      video: snapshot.video || null,
+    });
+    openSingleSectionAndScroll('skill_training', skillTrainingRef);
+  };
+
   const checkSkillTraining = async () => {
     if (!initData || !skillTrainingData?.package) return;
     const sentences = Array.isArray(skillTrainingData?.package?.practice_sentences)
@@ -1863,6 +1963,14 @@ function AppInner() {
   };
 
   const finishSkillTraining = () => {
+    const activeSkillId = String(
+      skillTrainingData?.skill?.skill_id
+      || skillTrainingData?.package?.focus?.skill_id
+      || ''
+    ).trim();
+    if (activeSkillId) {
+      removeSkillTrainingSnapshot(activeSkillId);
+    }
     setSkillTrainingLoading(false);
     setSkillTrainingVideoLoading(false);
     setSkillTrainingError('');
@@ -4417,6 +4525,60 @@ function AppInner() {
     }, 150);
     return () => window.clearTimeout(timer);
   }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+
+  useEffect(() => {
+    if (!isWebAppMode) {
+      skillTrainingDraftMapRef.current = {};
+      setSkillTrainingDraftMap({});
+      return;
+    }
+    try {
+      const raw = safeStorageGet(skillTrainingStorageKey);
+      if (!raw) {
+        skillTrainingDraftMapRef.current = {};
+        setSkillTrainingDraftMap({});
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      const normalized = normalizeSkillTrainingDraftMap(parsed);
+      skillTrainingDraftMapRef.current = normalized;
+      setSkillTrainingDraftMap(normalized);
+    } catch (_error) {
+      skillTrainingDraftMapRef.current = {};
+      setSkillTrainingDraftMap({});
+    }
+  }, [isWebAppMode, skillTrainingStorageKey]);
+
+  useEffect(() => {
+    const activeSkillId = String(
+      skillTrainingData?.skill?.skill_id
+      || skillTrainingData?.package?.focus?.skill_id
+      || ''
+    ).trim();
+    if (!activeSkillId || !skillTrainingData?.package) return;
+    const snapshot = normalizeSkillTrainingSnapshot({
+      skill: skillTrainingData?.skill || {},
+      package: skillTrainingData?.package,
+      video: skillTrainingData?.video || null,
+      answers: skillTrainingAnswers,
+      feedback: skillTrainingFeedback,
+      saved_at: new Date().toISOString(),
+    });
+    if (!snapshot) return;
+    const current = skillTrainingDraftMapRef.current || {};
+    const currentSerialized = JSON.stringify(current[activeSkillId] || null);
+    const nextSerialized = JSON.stringify(snapshot);
+    if (currentSerialized === nextSerialized) return;
+    persistSkillTrainingDraftMap({
+      ...current,
+      [activeSkillId]: snapshot,
+    });
+  }, [
+    persistSkillTrainingDraftMap,
+    skillTrainingAnswers,
+    skillTrainingData,
+    skillTrainingFeedback,
+  ]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -10011,6 +10173,9 @@ function AppInner() {
                         const trainingStatus = getSkillTrainingStatus(skill?.skill_id);
                         const isSkillComplete = Boolean(trainingStatus?.is_complete);
                         const showSkillInProgress = Boolean(trainingStatus && !isSkillComplete);
+                        const storedTrainingSnapshot = getStoredSkillTrainingSnapshot(skill?.skill_id);
+                        const canResumeSkillTraining = Boolean(storedTrainingSnapshot);
+                        const isSkillBusy = Boolean(skillPracticeLoading[String(skill.skill_id || '')]);
                         return (
                           <div className="skill-rings-legend-item" key={`legend-${skill.skill_id}`}>
                             <span className="skill-rings-dot" style={{ backgroundColor: color }} />
@@ -10041,16 +10206,28 @@ function AppInner() {
                                 )}
                               </div>
                             </div>
-                            <button
-                              type="button"
-                              className="secondary-button skill-rings-train-btn"
-                              onClick={() => startSkillPractice(skill, { forceRefresh: false })}
-                              disabled={Boolean(skillPracticeLoading[String(skill.skill_id || '')])}
-                            >
-                              {skillPracticeLoading[String(skill.skill_id || '')]
-                                ? tr('Запуск...', 'Start...')
-                                : tr('Прокачать', 'Trainieren')}
-                            </button>
+                            <div className="skill-rings-actions">
+                              <button
+                                type="button"
+                                className="secondary-button skill-rings-train-btn"
+                                onClick={() => startSkillPractice(skill, { forceRefresh: false })}
+                                disabled={isSkillBusy}
+                              >
+                                {isSkillBusy
+                                  ? tr('Запуск...', 'Start...')
+                                  : tr('Прокачать', 'Trainieren')}
+                              </button>
+                              {canResumeSkillTraining && (
+                                <button
+                                  type="button"
+                                  className="secondary-button skill-rings-resume-btn"
+                                  onClick={() => resumeSkillPractice(skill)}
+                                  disabled={isSkillBusy}
+                                >
+                                  {tr('Вернуться к тренировке', 'Zum Training zurueck')}
+                                </button>
+                              )}
+                            </div>
                           </div>
                         );
                       })}
@@ -11208,7 +11385,7 @@ function AppInner() {
                                 return (
                                   <div key={`overlay-line-${idx}`} className={`youtube-subtitles-overlay-row ${isCurrent ? 'is-current' : 'is-history'}`}>
                                     {overlayDeText && (
-                                      <p className="youtube-subtitles-overlay-line is-de">
+                                      <p className="youtube-subtitles-overlay-line is-target-language">
                                         {renderClickableText(overlayDeText, {
                                           className: 'overlay-clickable-word',
                                           compact: true,
@@ -11219,7 +11396,7 @@ function AppInner() {
                                       </p>
                                     )}
                                     {youtubeTranslationEnabled && overlayTranslationText && (
-                                      <p className="youtube-subtitles-overlay-line is-translation">{overlayTranslationText}</p>
+                                      <p className="youtube-subtitles-overlay-line is-user-language">{overlayTranslationText}</p>
                                     )}
                                   </div>
                                 );

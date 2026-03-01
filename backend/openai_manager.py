@@ -1615,6 +1615,16 @@ Return STRICT JSON only:
 Requirements:
 - The language of ALL explanations, headings, labels and comments must be native_language.
 - The example sentences themselves must be in target_language.
+- This rule is absolute:
+  all fields except example sentences and minimal-pair sentences must be written in native_language.
+- Allowed in target_language only:
+  minimal_pairs[].sentence_a, minimal_pairs[].sentence_b, examples[].sentence.
+- Must be in native_language:
+  title, core_explanation, why_mistake_happens, what_this_topic_is, error_connection,
+  core_rules, step_by_step, construction_recipe, key_rule, memory_trick, self_check,
+  examples[].translation, examples[].explanation, minimal_pairs[].explanation, resources[].title, resources[].why.
+- If native_language and target_language differ, never switch explanatory text into target_language.
+- Do not write the theory block in target_language even partially. The learner explanation must stay in native_language.
 - Focus only on the provided skill / error_category / error_subcategory.
 - The topic MUST match topic_must_match exactly. Do not drift into generic grammar overviews.
 - Be detailed and pedagogically useful, not short.
@@ -2555,10 +2565,26 @@ async def run_tts_chunk_de(sentence: str) -> dict:
         poll_interval_seconds=2.0,
     )
 
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
     try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return {"language": "de", "chunks": []}
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match:
+        try:
+            parsed = json.loads(match.group(0))
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    return {"language": "de", "chunks": []}
 
 
 async def run_dictionary_collocations(direction: str, word: str, translation: str | None) -> dict:

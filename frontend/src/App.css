@@ -2853,14 +2853,23 @@ body {
     0 0 8px rgba(0, 0, 0, 0.7);
 }
 
+.youtube-subtitles-overlay-line.is-target-language,
 .youtube-subtitles-overlay-line.is-de {
   color: #f8fafc;
-  font-size: 20px;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: 0.015em;
 }
 
+.youtube-subtitles-overlay-line.is-user-language,
 .youtube-subtitles-overlay-line.is-translation {
-  color: #fde68a;
-  font-size: 17px;
+  color: #facc15;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.98),
+    0 0 10px rgba(0, 0, 0, 0.82);
 }
 
 .overlay-clickable-word {
@@ -6544,10 +6553,12 @@ body {
     right: 6px;
   }
 
+  .youtube-subtitles-overlay-line.is-target-language,
   .youtube-subtitles-overlay-line.is-de {
     font-size: 16px;
   }
 
+  .youtube-subtitles-overlay-line.is-user-language,
   .youtube-subtitles-overlay-line.is-translation {
     font-size: 14px;
   }
@@ -6559,10 +6570,12 @@ body {
     height: min(calc((100vw - 8px) * 9 / 16), calc(100dvh - 8px));
   }
 
+  .youtube-subtitles-overlay-line.is-target-language,
   .youtube-subtitles-overlay-line.is-de {
     font-size: 15px;
   }
 
+  .youtube-subtitles-overlay-line.is-user-language,
   .youtube-subtitles-overlay-line.is-translation {
     font-size: 13px;
   }
@@ -8156,6 +8169,17 @@ body {
   white-space: nowrap;
 }
 
+.skill-rings-actions {
+  display: grid;
+  gap: 8px;
+  justify-self: end;
+}
+
+.skill-rings-train-btn,
+.skill-rings-resume-btn {
+  white-space: nowrap;
+}
+
 .skill-report-top-list {
   display: grid;
   gap: 8px;
@@ -8347,7 +8371,7 @@ body {
   .skill-rings-legend-item {
     grid-template-columns: auto 1fr;
   }
-  .skill-rings-train-btn {
+  .skill-rings-actions {
     grid-column: 2;
     justify-self: start;
   }
@@ -8683,13 +8707,15 @@ body {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
 
+.youtube-subtitles-overlay-line.is-target-language,
 .youtube-subtitles-overlay-line.is-de {
   color: #f8fafc;
   font-size: 18px;
 }
 
+.youtube-subtitles-overlay-line.is-user-language,
 .youtube-subtitles-overlay-line.is-translation {
-  color: #cbd5e1;
+  color: #facc15;
   font-size: 15px;
 }
 
@@ -10463,7 +10489,7 @@ body {
     grid-template-columns: auto 1fr;
   }
 
-  .skill-rings-train-btn {
+  .skill-rings-actions {
     grid-column: 2;
     justify-self: start;
   }

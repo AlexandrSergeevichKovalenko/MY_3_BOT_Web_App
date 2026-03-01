@@ -6195,6 +6195,20 @@ def chunk_sentence_llm_de(de_sentence: str) -> list[str]:
     cache_key = hashlib.sha256(f"de|{normalized}".encode("utf-8")).hexdigest()
     cached_chunks = get_tts_chunk_cache(cache_key)
     if cached_chunks:
+        if len(cached_chunks) > 1:
+            return cached_chunks
+        rule_chunks = _chunk_sentence_rules_for_language(cleaned, "de")
+        if len(rule_chunks) > 1:
+            try:
+                upsert_tts_chunk_cache(
+                    cache_key=cache_key,
+                    language="de",
+                    source_text=normalized,
+                    chunks=rule_chunks,
+                )
+            except Exception as exc:
+                logging.warning("Failed to refresh chunk cache: %s", exc)
+            return rule_chunks
         return cached_chunks
 
     try:
@@ -6205,15 +6219,23 @@ def chunk_sentence_llm_de(de_sentence: str) -> list[str]:
     chunks = []
     try:
         for item in result.get("chunks", []):
-            text = (item.get("text") or "").strip()
+            if isinstance(item, dict):
+                text = (item.get("text") or "").strip()
+            else:
+                text = str(item or "").strip()
             if text:
                 chunks.append(text)
     except Exception:
         chunks = []
     if not chunks:
-        return _chunk_sentence_simple(cleaned)
+        rule_chunks = _chunk_sentence_rules_for_language(cleaned, "de")
+        return rule_chunks or _chunk_sentence_simple(cleaned)
     if len(chunks) > _MAX_CHUNKS:
         chunks = _merge_smallest_chunks(chunks, _MAX_CHUNKS)
+    if len(chunks) <= 1:
+        rule_chunks = _chunk_sentence_rules_for_language(cleaned, "de")
+        if len(rule_chunks) > 1:
+            chunks = rule_chunks
     try:
         upsert_tts_chunk_cache(
             cache_key=cache_key,
@@ -6472,6 +6494,35 @@ def _split_explanation_fragments_with_lang(
     return segments
 
 
+def _sanitize_audio_explanation_text(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    cleaned = re.sub(r"```[a-zA-Z]*", "", raw).replace("```", "")
+    lines = [str(line or "").strip() for line in cleaned.splitlines()]
+    sanitized: list[str] = []
+    for line in lines:
+        if not line:
+            if sanitized and sanitized[-1] != "":
+                sanitized.append("")
+            continue
+        if re.match(r"^language\s+chunks\s*:?\s*$", line, flags=re.IGNORECASE):
+            continue
+        if re.match(r"^original sentence\s*:", line, flags=re.IGNORECASE):
+            continue
+        if re.match(r"^part\s+\d+\s*:", line, flags=re.IGNORECASE):
+            continue
+        if re.match(r"^breakdown\s*:?\s*$", line, flags=re.IGNORECASE):
+            continue
+        line = re.sub(r"^structure name\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+        line = re.sub(r"^why used\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+        line = re.sub(r"^construction in [^:]+:\s*", "", line, flags=re.IGNORECASE).strip()
+        line = re.sub(r"^final\s+[^:]+sentence\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+        if line:
+            sanitized.append(line)
+    return "\n".join(sanitized).strip()
+
+
 def _split_mixed_fragment_by_script(
     text: str,
     source_lang: str,
@@ -6541,8 +6592,11 @@ def build_explanation_mixed_script(
     source_lang: str,
     target_lang: str,
 ) -> list[dict]:
+    cleaned_explanation = _sanitize_audio_explanation_text(explanation_text)
+    if not cleaned_explanation:
+        return []
     segments = _split_explanation_fragments_with_lang(
-        text=explanation_text,
+        text=cleaned_explanation,
         source_lang=source_lang,
         target_lang=target_lang,
     )
