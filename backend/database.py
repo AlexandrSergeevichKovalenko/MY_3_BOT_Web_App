@@ -1,6 +1,7 @@
 import psycopg2
 from psycopg2 import Binary
 from psycopg2 import OperationalError
+from psycopg2.extras import Json
 import os
 import hashlib
 from contextlib import contextmanager
@@ -6617,7 +6618,7 @@ def upsert_billing_price_snapshot(
     currency_value = _normalize_billing_currency(currency)
     source_value = str(source or "manual").strip() or "manual"
     valid_from_value = valid_from or datetime.now(timezone.utc)
-    payload_value = raw_payload if isinstance(raw_payload, dict) else None
+    payload_value = Json(raw_payload) if isinstance(raw_payload, dict) else None
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(

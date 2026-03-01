@@ -319,7 +319,7 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
-.webapp-page.is-android-scroll {
+.webapp-page.is-contained-scroll {
   height: 100vh;
   height: 100dvh;
   min-height: 100vh;
