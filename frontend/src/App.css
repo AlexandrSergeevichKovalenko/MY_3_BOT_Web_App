@@ -514,6 +514,7 @@ body {
 
 .menu-item-translations.is-active .menu-icon { color: #8fc5ff; }
 .menu-item-today.is-active .menu-icon { color: #7bf1b3; }
+.menu-item-guide.is-active .menu-icon { color: #facc15; }
 .menu-item-youtube.is-active .menu-icon { color: #ff7676; }
 .menu-item-movies.is-active .menu-icon { color: #ffc97b; }
 .menu-item-dictionary.is-active .menu-icon { color: #7fe2ff; }
@@ -662,6 +663,25 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.topbar-help-button {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(250, 204, 21, 0.4);
+  background: rgba(250, 204, 21, 0.14);
+  color: #fef3c7;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.topbar-help-button:hover {
+  border-color: rgba(253, 224, 71, 0.68);
+  background: rgba(250, 204, 21, 0.2);
 }
 
 .telegram-fullscreen-button {
@@ -887,6 +907,124 @@ body {
   font-weight: 500;
 }
 
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.onboarding-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: rgba(15, 23, 42, 0.84);
+  backdrop-filter: blur(6px);
+}
+
+.onboarding-modal {
+  position: relative;
+  z-index: 1;
+  width: min(760px, 100%);
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  border-radius: 28px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: linear-gradient(145deg, rgba(17, 25, 49, 0.98), rgba(9, 15, 34, 0.98));
+  box-shadow: 0 30px 80px rgba(8, 11, 26, 0.5);
+}
+
+.onboarding-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+}
+
+.onboarding-eyebrow {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #7dd3fc;
+}
+
+.onboarding-modal-head h3 {
+  margin: 6px 0 0;
+  font-size: clamp(24px, 3.6vw, 34px);
+  line-height: 1.08;
+}
+
+.onboarding-close {
+  flex: 0 0 auto;
+}
+
+.onboarding-modal-body {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+}
+
+.onboarding-mascot {
+  width: 100%;
+  max-width: 220px;
+  justify-self: center;
+  object-fit: contain;
+}
+
+.onboarding-modal-body p {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.5;
+  color: rgba(226, 232, 240, 0.86);
+}
+
+.onboarding-bullets {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.onboarding-bullet {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 8px;
+  color: rgba(226, 232, 240, 0.82);
+}
+
+.onboarding-bullet-mark {
+  color: #facc15;
+  font-weight: 800;
+}
+
+.onboarding-progress {
+  display: flex;
+  gap: 8px;
+}
+
+.onboarding-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.28);
+}
+
+.onboarding-dot.is-active {
+  width: 28px;
+  background: linear-gradient(135deg, #7dd3fc, #facc15);
+}
+
+.onboarding-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .webapp-page.is-telegram-tablet .overlay-panel {
   width: min(460px, 92vw);
   border-radius: 22px;
@@ -1045,6 +1183,84 @@ body {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hero-guide-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(220px, 1fr);
+  gap: 14px;
+  align-items: start;
+  background: linear-gradient(135deg, rgba(20, 83, 45, 0.42), rgba(8, 47, 73, 0.42));
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 20px;
+  padding: 14px;
+  box-shadow: 0 16px 34px rgba(8, 11, 26, 0.24);
+}
+
+.hero-guide-card-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.hero-guide-card-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: #f8fafc;
+}
+
+.hero-guide-card p {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.82);
+  line-height: 1.45;
+}
+
+.hero-guide-card-actions {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.section-help-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.88), rgba(15, 23, 42, 0.84));
+  box-shadow: 0 12px 28px rgba(8, 11, 26, 0.2);
+}
+
+.section-help-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.section-help-card p {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.8);
+  line-height: 1.45;
+}
+
+.section-help-card-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.section-help-card-steps span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  background: rgba(12, 18, 36, 0.76);
+  color: #e0f2fe;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .hero-card {
@@ -1234,6 +1450,130 @@ body {
   top: 6px;
   right: 8px;
   z-index: 3;
+}
+
+.webapp-guide {
+  background: linear-gradient(145deg, rgba(17, 25, 49, 0.96), rgba(9, 15, 34, 0.96));
+  border: 1px solid rgba(250, 204, 21, 0.12);
+}
+
+.guide-intro-card,
+.guide-step-card,
+.guide-purpose-card,
+.guide-routine-card {
+  background: rgba(12, 18, 36, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 18px;
+  padding: 14px;
+  box-shadow: 0 10px 24px rgba(8, 11, 26, 0.22);
+}
+
+.guide-intro-card {
+  display: grid;
+  gap: 8px;
+}
+
+.guide-intro-card p,
+.guide-step-text,
+.guide-purpose-card p,
+.guide-routine-card p {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.8);
+  line-height: 1.45;
+}
+
+.guide-step-grid,
+.guide-purpose-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.guide-faq-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
+.guide-step-card {
+  display: grid;
+  gap: 10px;
+}
+
+.guide-step-number {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #7dd3fc, #facc15);
+  color: #08111f;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.guide-step-title,
+.guide-routine-title,
+.guide-purpose-label {
+  font-size: 15px;
+  font-weight: 800;
+  color: #f8fafc;
+}
+
+.guide-purpose-card {
+  display: grid;
+  gap: 8px;
+}
+
+.guide-faq-card {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(12, 18, 36, 0.72);
+  box-shadow: 0 10px 24px rgba(8, 11, 26, 0.18);
+}
+
+.guide-faq-card.is-open {
+  border-color: rgba(250, 204, 21, 0.22);
+}
+
+.guide-faq-question {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: #f8fafc;
+  font-size: 15px;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+
+.guide-faq-chevron {
+  color: #facc15;
+  transition: transform 0.2s ease;
+}
+
+.guide-faq-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.guide-faq-answer {
+  padding: 0 10px 10px;
+  color: rgba(226, 232, 240, 0.8);
+  line-height: 1.45;
+}
+
+.guide-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .webapp-analytics {
@@ -3254,6 +3594,14 @@ body {
     gap: 8px;
   }
 
+  .hero-guide-card {
+    grid-template-columns: 1fr;
+  }
+
+  .section-help-card-head {
+    align-items: stretch;
+  }
+
   .hero-card {
     min-height: 100px;
     padding: 8px;
@@ -3312,6 +3660,30 @@ body {
     align-items: center;
     justify-content: center;
     letter-spacing: 0.02em;
+  }
+
+  .topbar-help-button {
+    min-width: 30px;
+    min-height: 30px;
+    padding: 0 9px;
+    font-size: 14px;
+  }
+
+  .onboarding-overlay {
+    padding: 12px;
+  }
+
+  .onboarding-modal {
+    padding: 16px;
+    border-radius: 24px;
+  }
+
+  .onboarding-modal-body {
+    grid-template-columns: 1fr;
+  }
+
+  .onboarding-mascot {
+    max-width: 150px;
   }
 
   .topbar-profile {
@@ -9831,6 +10203,20 @@ body {
     letter-spacing: 0;
   }
 
+  .topbar-help-button {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0 14px;
+    border-color: #334155;
+    background: transparent;
+    color: #f8fafc;
+    font-size: 16px;
+  }
+
+  .topbar-help-button:active {
+    background: #1f2937;
+  }
+
   .topbar-controls .language-pair-button:active {
     background: #1f2937;
   }
@@ -10261,6 +10647,63 @@ body {
   color: var(--home-text-primary);
 }
 
+.home-next-step-card {
+  margin: 16px 0 24px;
+  padding: 24px;
+  border-radius: 28px;
+  border: 1px solid var(--home-border);
+  background:
+    radial-gradient(circle at 0% 100%, rgba(125, 211, 252, 0.12), transparent 34%),
+    radial-gradient(circle at 100% 0%, rgba(250, 204, 21, 0.1), transparent 30%),
+    var(--home-bg-card);
+  box-shadow: var(--home-shadow-card);
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.home-next-step-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.home-next-step-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  background: rgba(15, 23, 42, 0.78);
+  color: #dbeafe;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.home-next-step-copy h2 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
+  color: var(--home-text-title);
+}
+
+.home-next-step-copy p {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--home-text-secondary);
+  max-width: 760px;
+}
+
+.home-next-step-actions {
+  display: grid;
+  gap: 10px;
+}
+
 .today-plan-panel {
   margin: 16px 0 24px;
   padding: 24px;
@@ -10303,6 +10746,41 @@ body {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 20px;
+}
+
+.today-plan-start-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) auto;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid var(--home-border);
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.88));
+}
+
+.today-plan-start-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.today-plan-start-copy strong {
+  font-size: 16px;
+  line-height: 1.3;
+  color: var(--home-text-title);
+}
+
+.today-plan-start-copy p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--home-text-secondary);
+}
+
+.today-plan-start-actions {
+  display: grid;
+  gap: 8px;
 }
 
 .today-plan-items {
@@ -10594,6 +11072,16 @@ body {
 }
 
 @media (max-width: 860px) {
+  .home-next-step-card,
+  .today-plan-start-card {
+    grid-template-columns: 1fr;
+  }
+
+  .home-next-step-actions,
+  .today-plan-start-actions {
+    justify-items: start;
+  }
+
   .weekly-plan-head-actions {
     width: 100%;
     grid-template-columns: 1fr;

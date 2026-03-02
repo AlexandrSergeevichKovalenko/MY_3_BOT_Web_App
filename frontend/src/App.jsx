@@ -379,6 +379,11 @@ function AppInner() {
   const [supportSending, setSupportSending] = useState(false);
   const [supportError, setSupportError] = useState('');
   const [supportDraft, setSupportDraft] = useState('');
+  const [guideQuickCardDismissed, setGuideQuickCardDismissed] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [guideFaqOpenKey, setGuideFaqOpenKey] = useState('start');
+  const [visitedSections, setVisitedSections] = useState([]);
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
   const BLOCKS_SINGLE_WORD_MAX_LEN = 10;
@@ -445,6 +450,7 @@ function AppInner() {
   const billingRef = useRef(null);
   const assistantRef = useRef(null);
   const supportRef = useRef(null);
+  const guideRef = useRef(null);
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
   const selectionMenuRef = useRef(null);
@@ -504,7 +510,7 @@ function AppInner() {
     const dd = String(now.getDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
   };
-  const getInitDataUserId = (rawInitData) => {
+  function getInitDataUserId(rawInitData) {
     const value = String(rawInitData || '').trim();
     if (!value) return '';
     try {
@@ -517,7 +523,19 @@ function AppInner() {
     } catch (_error) {
       return '';
     }
-  };
+  }
+  const guideQuickCardStorageKey = useMemo(() => {
+    const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
+    return `guide_quick_card_dismissed_${stableId}`;
+  }, [webappUser?.id, initData]);
+  const onboardingSeenStorageKey = useMemo(() => {
+    const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
+    return `webapp_onboarding_seen_${stableId}`;
+  }, [webappUser?.id, initData]);
+  const visitedSectionsStorageKey = useMemo(() => {
+    const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
+    return `webapp_visited_sections_${stableId}`;
+  }, [webappUser?.id, initData]);
   const normalizeSkillTrainingSnapshot = (value) => {
     if (!value || typeof value !== 'object') return null;
     const pack = value?.package && typeof value.package === 'object' ? value.package : null;
@@ -856,6 +874,53 @@ function AppInner() {
   useEffect(() => {
     safeStorageSet('ui_lang', uiLang);
   }, [uiLang]);
+
+  useEffect(() => {
+    const stored = safeStorageGet(guideQuickCardStorageKey);
+    setGuideQuickCardDismissed(stored === '1');
+  }, [guideQuickCardStorageKey]);
+
+  useEffect(() => {
+    if (!initData) return;
+    if (needsLanguageProfileChoice || languageProfileGateOpen) return;
+    const seen = safeStorageGet(onboardingSeenStorageKey) === '1';
+    if (!seen) {
+      setOnboardingStep(0);
+      setOnboardingOpen(true);
+    }
+  }, [initData, needsLanguageProfileChoice, languageProfileGateOpen, onboardingSeenStorageKey]);
+
+  useEffect(() => {
+    const raw = safeStorageGet(visitedSectionsStorageKey);
+    try {
+      const parsed = JSON.parse(raw || '[]');
+      const normalized = Array.isArray(parsed)
+        ? parsed.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+      setVisitedSections(Array.from(new Set(normalized)));
+    } catch (_error) {
+      setVisitedSections([]);
+    }
+  }, [visitedSectionsStorageKey]);
+
+  useEffect(() => {
+    safeStorageSet(visitedSectionsStorageKey, JSON.stringify(visitedSections));
+  }, [visitedSections, visitedSectionsStorageKey]);
+
+  useEffect(() => {
+    const keys = Array.from(selectedSections).map((item) => String(item || '').trim()).filter(Boolean);
+    if (flashcardsOnly) {
+      keys.push('flashcards');
+    }
+    if (!keys.length) return;
+    setVisitedSections((prev) => {
+      const next = Array.from(new Set([...prev, ...keys]));
+      if (next.length === prev.length && next.every((item, index) => item === prev[index])) {
+        return prev;
+      }
+      return next;
+    });
+  }, [selectedSections, flashcardsOnly]);
 
   useEffect(() => {
     const refreshMode = () => {
@@ -3040,6 +3105,146 @@ function AppInner() {
   const isSkillTrainingReady = Boolean(skillTrainingData?.package);
 
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
+  const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
+  const onboardingSlides = useMemo(() => ([
+    {
+      eyebrow: tr('Шаг 1 из 4', 'Schritt 1 von 4'),
+      title: tr('Начните с переводов', 'Starte mit Uebersetzungen'),
+      body: tr(
+        'Выберите тему и уровень, переведите предложения и сразу читайте разбор ошибок. Это главный вход в грамматику и структуру языка.',
+        'Waehle Thema und Niveau, uebersetze Saetze und lies sofort die Fehleranalyse. Das ist dein Haupteinstieg in Grammatik und Satzstruktur.'
+      ),
+      bullets: [
+        tr('Тема задаёт контекст упражнений.', 'Das Thema gibt den Kontext der Uebungen vor.'),
+        tr('Уровень влияет на сложность предложений.', 'Das Niveau steuert die Schwierigkeit der Saetze.'),
+        tr('После проверки разбирайте ошибки, а не только балл.', 'Nach dem Pruefen zaehlt nicht nur der Score, sondern die Fehleranalyse.'),
+      ],
+    },
+    {
+      eyebrow: tr('Шаг 2 из 4', 'Schritt 2 von 4'),
+      title: tr('Сохраняйте слова и повторяйте их', 'Speichere Woerter und wiederhole sie'),
+      body: tr(
+        'Полезные слова и выражения отправляйте в словарь, а затем закрепляйте их через карточки и FSRS-повторение.',
+        'Speichere nuetzliche Woerter und Ausdruecke im Woerterbuch und festige sie dann mit Karten und FSRS-Wiederholung.'
+      ),
+      bullets: [
+        tr('Словарь хранит лексику и формы слова.', 'Das Woerterbuch speichert Wortschatz und Wortformen.'),
+        tr('Карточки закрепляют слова в памяти.', 'Karten verankern Woerter im Gedaechtnis.'),
+        tr('FSRS сам рассчитывает интервалы повторения.', 'FSRS berechnet die Wiederholungsabstaende automatisch.'),
+      ],
+    },
+    {
+      eyebrow: tr('Шаг 3 из 4', 'Schritt 3 von 4'),
+      title: tr('Переходите к живому немецкому', 'Wechsle zu echtem Deutsch'),
+      body: tr(
+        'YouTube и Reader нужны, чтобы видеть язык в реальном контексте: видео, субтитры, тексты, аудио и чтение.',
+        'YouTube und Reader zeigen dir die Sprache im echten Kontext: Videos, Untertitel, Texte, Audio und Lesen.'
+      ),
+      bullets: [
+        tr('В YouTube можно искать видео и включать субтитры.', 'In YouTube kannst du Videos suchen und Untertitel aktivieren.'),
+        tr('По словам из субтитров и текста можно делать быстрый lookup.', 'Woerter aus Untertiteln und Texten kannst du direkt nachschlagen.'),
+        tr('Reader подходит для спокойного чтения и аудио.', 'Der Reader eignet sich fuer ruhiges Lesen und Audio.'),
+      ],
+    },
+    {
+      eyebrow: tr('Шаг 4 из 4', 'Schritt 4 von 4'),
+      title: tr('Прокачивайте слабые места точечно', 'Trainiere gezielt deine Schwachstellen'),
+      body: tr(
+        'Голосовой ассистент, теория и тренировка навыка помогают закрепить именно те темы, где у вас больше всего ошибок.',
+        'Sprachassistent, Theorie und Skill-Training helfen dir genau bei den Themen, in denen du die meisten Fehler machst.'
+      ),
+      bullets: [
+        tr('Голосовой ассистент нужен для разговорной практики.', 'Der Sprachassistent ist fuer muendliche Praxis da.'),
+        tr('Skill-Training собирает теорию, видео и упражнения в одном месте.', 'Skill-Training kombiniert Theorie, Video und Uebungen an einem Ort.'),
+        tr('Даже 10–15 минут в день дают стабильный прогресс.', 'Schon 10 bis 15 Minuten pro Tag bringen stabilen Fortschritt.'),
+      ],
+    },
+  ]), [tr]);
+  const guideFaqItems = useMemo(() => ([
+    {
+      key: 'start',
+      question: tr('С чего начать?', 'Womit anfangen?'),
+      answer: tr(
+        'Начните с переводов. Это самый быстрый способ понять ваш текущий уровень и слабые места.',
+        'Starte mit Uebersetzungen. So siehst du am schnellsten dein aktuelles Niveau und deine Schwachstellen.'
+      ),
+    },
+    {
+      key: 'save_words',
+      question: tr('Как сохранять слова?', 'Wie speichere ich Woerter?'),
+      answer: tr(
+        'Сохраняйте полезные слова и выражения в словарь после переводов, чтения или YouTube.',
+        'Speichere nuetzliche Woerter und Ausdruecke nach Uebersetzungen, Lesen oder YouTube ins Woerterbuch.'
+      ),
+    },
+    {
+      key: 'fsrs',
+      question: tr('Зачем FSRS?', 'Wozu FSRS?'),
+      answer: tr(
+        'FSRS помогает повторять слова не хаотично, а в правильный момент, чтобы они запоминались надолго.',
+        'FSRS hilft dir, Woerter nicht chaotisch, sondern im richtigen Moment zu wiederholen, damit sie lange bleiben.'
+      ),
+    },
+    {
+      key: 'youtube',
+      question: tr('Как работает YouTube?', 'Wie funktioniert YouTube?'),
+      answer: tr(
+        'Вы ищете видео на немецком, включаете субтитры, смотрите контекст и разбираете незнакомые слова прямо по ходу.',
+        'Du suchst Videos auf Deutsch, aktivierst Untertitel, siehst den Kontext und analysierst unbekannte Woerter direkt waehrend des Schauens.'
+      ),
+    },
+  ]), [tr]);
+  const recommendedHomeStep = useMemo(() => {
+    const seen = new Set(visitedSections);
+    const options = [
+      {
+        key: 'translations',
+        title: tr('Начать с переводов', 'Mit Uebersetzungen starten'),
+        body: tr('Это базовая точка входа: здесь вы сразу увидите свой уровень, ошибки и реальную пользу от приложения.', 'Das ist dein Basiseinstieg: Hier siehst du sofort dein Niveau, deine Fehler und den direkten Nutzen der App.'),
+        cta: tr('Открыть переводы', 'Uebersetzungen oeffnen'),
+      },
+      {
+        key: 'dictionary',
+        title: tr('Сохранить первые слова', 'Erste Woerter speichern'),
+        body: tr('После переводов перенесите полезные слова и выражения в словарь, чтобы они не потерялись.', 'Nach den Uebersetzungen speicherst du nuetzliche Woerter und Ausdruecke im Woerterbuch, damit sie nicht verloren gehen.'),
+        cta: tr('Открыть словарь', 'Woerterbuch oeffnen'),
+      },
+      {
+        key: 'flashcards',
+        title: tr('Закрепить через карточки', 'Mit Karten festigen'),
+        body: tr('Карточки и FSRS переводят лексику из краткосрочной памяти в устойчивое знание.', 'Karten und FSRS ueberfuehren Wortschatz vom Kurzzeitgedaechtnis in stabiles Wissen.'),
+        cta: tr('Перейти к карточкам', 'Zu Karten gehen'),
+      },
+      {
+        key: 'youtube',
+        title: tr('Подключить живой немецкий', 'Echtes Deutsch einschalten'),
+        body: tr('Переходите к YouTube с субтитрами, чтобы видеть язык в естественном темпе и контексте.', 'Wechsle zu YouTube mit Untertiteln, damit du die Sprache im natuerlichen Tempo und Kontext siehst.'),
+        cta: tr('Открыть YouTube', 'YouTube oeffnen'),
+      },
+      {
+        key: 'assistant',
+        title: tr('Попробовать speaking practice', 'Speaking Practice ausprobieren'),
+        body: tr('Когда база уже разогрета, переходите к голосовому ассистенту и начинайте говорить короткими фразами.', 'Wenn die Basis schon warm ist, gehst du zum Sprachassistenten und beginnst mit kurzen echten Saetzen.'),
+        cta: tr('Открыть ассистента', 'Assistent oeffnen'),
+      },
+    ];
+    const next = options.find((item) => !seen.has(item.key));
+    if (next) return next;
+    if (isSkillTrainingReady) {
+      return {
+        key: 'skill_training',
+        title: tr('Перейти к точечной прокачке', 'Zum gezielten Training wechseln'),
+        body: tr('Базовый маршрут уже пройден. Теперь полезно закреплять слабые места через тренировку навыка.', 'Der Basisweg ist bereits absolviert. Jetzt lohnt sich gezieltes Training fuer deine Schwachstellen.'),
+        cta: tr('Открыть тренировку навыка', 'Skill-Training oeffnen'),
+      };
+    }
+    return {
+      key: 'guide',
+      title: tr('Повторить маршрут по приложению', 'Den App-Pfad wiederholen'),
+      body: tr('Вы уже посмотрели основные разделы. Можно заново открыть гид и выбрать удобный маршрут под себя.', 'Du hast die wichtigsten Bereiche schon gesehen. Jetzt kannst du den Guide erneut oeffnen und deinen eigenen Lernweg waehlen.'),
+      cta: tr('Открыть гид', 'Guide oeffnen'),
+    };
+  }, [isSkillTrainingReady, tr, visitedSections]);
   const isYoutubeSelectionMenu = String(selectionType || '').startsWith('youtube_');
   const readerHasContent = Boolean(String(readerContent || '').trim());
   const readerDisplayPages = useMemo(() => {
@@ -3359,6 +3564,7 @@ function AppInner() {
   };
 
   const getSectionRefByKey = (key) => {
+    if (key === 'guide') return guideRef;
     if (key === 'translations') return translationsRef;
     if (key === 'youtube') return youtubeRef;
     if (key === 'movies') return moviesRef;
@@ -3373,6 +3579,13 @@ function AppInner() {
     if (key === 'theory') return theoryRef;
     if (key === 'skill_training') return skillTrainingRef;
     return null;
+  };
+
+  const openSectionByKey = (key) => {
+    const normalizedKey = String(key || '').trim();
+    if (!normalizedKey) return;
+    const targetRef = getSectionRefByKey(normalizedKey);
+    openSingleSectionAndScroll(normalizedKey, targetRef);
   };
 
   const goBackFromYoutube = () => {
@@ -3446,7 +3659,7 @@ function AppInner() {
   };
 
   const showAllSections = () => {
-    const next = ['translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'support', 'analytics', 'economics', 'subscription', 'theory'];
+    const next = ['guide', 'translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'support', 'analytics', 'economics', 'subscription', 'theory'];
     if (isSkillTrainingReady) {
       next.push('skill_training');
     }
@@ -3629,6 +3842,15 @@ function AppInner() {
   };
 
   const renderMenuIcon = (kind) => {
+    if (kind === 'guide') {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
+          <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          <path d="M9.7 9.2a2.4 2.4 0 1 1 4.1 1.7c-.8.8-1.5 1.2-1.5 2.3" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+          <circle cx="12" cy="16.8" r="1.1" fill="currentColor" />
+        </svg>
+      );
+    }
     if (kind === 'today') {
       return (
         <svg viewBox="0 0 24 24" aria-hidden="true" className="menu-icon-svg">
@@ -3768,6 +3990,40 @@ function AppInner() {
     const displayName = fullName || webappUser?.username || (userId ? `user_${userId}` : '');
     return { userId, displayName };
   }, [webappUser]);
+
+  const openGuideSection = useCallback(() => {
+    setGuideQuickCardDismissed(true);
+    safeStorageSet(guideQuickCardStorageKey, '1');
+    openSingleSectionAndScroll('guide', guideRef);
+    setMenuOpen(false);
+  }, [guideQuickCardStorageKey]);
+
+  const startOnboardingTour = useCallback(() => {
+    setOnboardingStep(0);
+    setOnboardingOpen(true);
+    setMenuOpen(false);
+  }, []);
+
+  const dismissOnboarding = useCallback(() => {
+    safeStorageSet(onboardingSeenStorageKey, '1');
+    setOnboardingOpen(false);
+    setOnboardingStep(0);
+  }, [onboardingSeenStorageKey]);
+
+  const finishOnboarding = useCallback((target = '') => {
+    safeStorageSet(onboardingSeenStorageKey, '1');
+    setGuideQuickCardDismissed(true);
+    safeStorageSet(guideQuickCardStorageKey, '1');
+    setOnboardingOpen(false);
+    setOnboardingStep(0);
+    if (target === 'translations') {
+      openSingleSectionAndScroll('translations', translationsRef);
+      return;
+    }
+    if (target === 'guide') {
+      openSingleSectionAndScroll('guide', guideRef);
+    }
+  }, [guideQuickCardStorageKey, onboardingSeenStorageKey]);
 
   const handleConnect = async (e) => {
     e.preventDefault();
@@ -9563,6 +9819,15 @@ function AppInner() {
               </button>
               <button
                 type="button"
+                className={`menu-item menu-item-guide ${selectedSections.has('guide') ? 'is-active' : ''}`}
+                onClick={openGuideSection}
+                disabled={flashcardsOnly}
+              >
+                <span className="menu-icon menu-icon-guide">{renderMenuIcon('guide')}</span>
+                <span>{t('menu_guide')}</span>
+              </button>
+              <button
+                type="button"
                 className={`menu-item menu-item-translations ${selectedSections.has('translations') ? 'is-active' : ''}`}
                 onClick={() => toggleSection('translations')}
                 disabled={flashcardsOnly}
@@ -9761,6 +10026,15 @@ function AppInner() {
                   >
                     {getActiveLanguagePairLabel()}
                   </button>
+                  <button
+                    type="button"
+                    className="topbar-help-button"
+                    onClick={openGuideSection}
+                    title={t('guide_topbar_button')}
+                    aria-label={t('guide_topbar_button')}
+                  >
+                    ?
+                  </button>
                 </div>
               </div>
             </div>
@@ -9818,6 +10092,15 @@ function AppInner() {
                     >
                       <span className="menu-icon menu-icon-today">{renderMenuIcon('today')}</span>
                       <span>{tr('Сегодня', 'Heute')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item menu-item-guide ${selectedSections.has('guide') ? 'is-active' : ''}`}
+                      onClick={openGuideSection}
+                      disabled={flashcardsOnly}
+                    >
+                      <span className="menu-icon menu-icon-guide">{renderMenuIcon('guide')}</span>
+                      <span>{t('menu_guide')}</span>
                     </button>
                     <button
                       type="button"
@@ -9942,6 +10225,88 @@ function AppInner() {
               </div>
             )}
 
+            {onboardingOpen && onboardingSlides[onboardingStep] && (
+              <div className="onboarding-overlay" role="dialog" aria-modal="true" aria-label={tr('Быстрый старт', 'Schnellstart')}>
+                <button
+                  type="button"
+                  className="onboarding-backdrop"
+                  aria-label={tr('Пропустить быстрый старт', 'Schnellstart ueberspringen')}
+                  onClick={dismissOnboarding}
+                />
+                <div className="onboarding-modal">
+                  <div className="onboarding-modal-head">
+                    <div>
+                      <div className="onboarding-eyebrow">{onboardingSlides[onboardingStep].eyebrow}</div>
+                      <h3>{onboardingSlides[onboardingStep].title}</h3>
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary-button onboarding-close"
+                      onClick={dismissOnboarding}
+                    >
+                      {tr('Пропустить', 'Ueberspringen')}
+                    </button>
+                  </div>
+                  <div className="onboarding-modal-body">
+                    <img src={heroStickerSrc} alt="" aria-hidden="true" className="onboarding-mascot" />
+                    <p>{onboardingSlides[onboardingStep].body}</p>
+                    <div className="onboarding-bullets">
+                      {onboardingSlides[onboardingStep].bullets.map((item, index) => (
+                        <div key={`onboarding-bullet-${onboardingStep}-${index}`} className="onboarding-bullet">
+                          <span className="onboarding-bullet-mark">•</span>
+                          <span>{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="onboarding-progress" aria-hidden="true">
+                    {onboardingSlides.map((_, index) => (
+                      <span
+                        key={`onboarding-dot-${index}`}
+                        className={`onboarding-dot ${index === onboardingStep ? 'is-active' : ''}`}
+                      />
+                    ))}
+                  </div>
+                  <div className="onboarding-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => setOnboardingStep((prev) => Math.max(0, prev - 1))}
+                      disabled={onboardingStep === 0}
+                    >
+                      {tr('Назад', 'Zurueck')}
+                    </button>
+                    {onboardingStep < onboardingSlides.length - 1 ? (
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => setOnboardingStep((prev) => Math.min(onboardingSlides.length - 1, prev + 1))}
+                      >
+                        {tr('Далее', 'Weiter')}
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => finishOnboarding('guide')}
+                        >
+                          {tr('Открыть гид', 'Guide oeffnen')}
+                        </button>
+                        <button
+                          type="button"
+                          className="primary-button"
+                          onClick={() => finishOnboarding('translations')}
+                        >
+                          {tr('Начать с переводов', 'Mit Uebersetzungen starten')}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {showHero && (
             <header className="webapp-hero">
               <div className="webapp-hero-copy webapp-hero-copy-landing">
@@ -9973,6 +10338,30 @@ function AppInner() {
                 <p>{t('card_watch_body')}</p>
               </div>
             </section>
+            )}
+
+            {showHomeGuideQuickCard && (
+              <section className="hero-guide-card">
+                <div className="hero-guide-card-copy">
+                  <div className="hero-guide-card-title">{t('guide_quick_title')}</div>
+                  <p>{t('guide_quick_body')}</p>
+                </div>
+                <div className="hero-guide-card-actions">
+                  <button type="button" className="primary-button" onClick={openGuideSection}>
+                    {t('guide_open_button')}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      setGuideQuickCardDismissed(true);
+                      safeStorageSet(guideQuickCardStorageKey, '1');
+                    }}
+                  >
+                    {tr('Скрыть', 'Ausblenden')}
+                  </button>
+                </div>
+              </section>
             )}
 
             
@@ -10077,6 +10466,28 @@ function AppInner() {
                   </div>
                 </div>
               </div>
+            )}
+
+            {isHomeScreen && initData && recommendedHomeStep && (
+              <section className="home-next-step-card">
+                <div className="home-next-step-copy">
+                  <span className="home-next-step-badge">{tr('Recommended next step', 'Empfohlener naechster Schritt')}</span>
+                  <h2>{recommendedHomeStep.title}</h2>
+                  <p>{recommendedHomeStep.body}</p>
+                </div>
+                <div className="home-next-step-actions">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => openSectionByKey(recommendedHomeStep.key)}
+                  >
+                    {recommendedHomeStep.cta}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={openGuideSection}>
+                    {tr('Открыть гид', 'Guide oeffnen')}
+                  </button>
+                </div>
+              </section>
             )}
 
             {isHomeScreen && initData && (
@@ -10297,6 +10708,26 @@ function AppInner() {
                     {todayTestSending ? tr('Отправка...', 'Senden...') : tr('Проверить личку', 'Privat testen')}
                   </button>
                 </div>
+                {recommendedHomeStep && (
+                  <div className="today-plan-start-card">
+                    <div className="today-plan-start-copy">
+                      <strong>{tr('Start here', 'Start here')}</strong>
+                      <p>{recommendedHomeStep.body}</p>
+                    </div>
+                    <div className="today-plan-start-actions">
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => openSectionByKey(recommendedHomeStep.key)}
+                      >
+                        {recommendedHomeStep.cta}
+                      </button>
+                      <button type="button" className="secondary-button" onClick={openGuideSection}>
+                        {tr('Гид', 'Guide')}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
                 {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
                 {!todayPlanLoading && !todayPlanError && (!todayPlan?.items || todayPlan.items.length === 0) && (
@@ -10521,6 +10952,155 @@ function AppInner() {
               </section>
             )}
 
+            {!flashcardsOnly && isSectionVisible('guide') && (
+              <section className="webapp-section webapp-guide" ref={guideRef}>
+                <div className="webapp-section-title webapp-section-title-with-logo">
+                  <h2>{tr('Как пользоваться', 'So benutzt du DeutschFlow')}</h2>
+                  <p>
+                    {tr(
+                      'Короткий маршрут по приложению: с чего начать, куда нажимать и какой раздел за что отвечает.',
+                      'Kurzer Startpfad durch die App: womit du beginnst, wohin du tippst und welcher Bereich wofuer da ist.'
+                    )}
+                  </p>
+                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                </div>
+
+                <div className="guide-intro-card">
+                  <strong>{tr('Если вы впервые здесь', 'Wenn du neu hier bist')}</strong>
+                  <p>
+                    {tr(
+                      'Начните с переводов, затем сохраняйте полезные слова в словарь и закрепляйте их в карточках. После этого переходите к видео, чтению и голосовой практике.',
+                      'Starte mit Uebersetzungen, speichere dann nuetzliche Woerter ins Woerterbuch und festige sie mit Karten. Danach gehst du zu Video, Lesen und Sprechpraxis ueber.'
+                    )}
+                  </p>
+                </div>
+
+                <div className="guide-step-grid">
+                  <article className="guide-step-card">
+                    <div className="guide-step-number">1</div>
+                    <div className="guide-step-title">{tr('Переводы', 'Uebersetzungen')}</div>
+                    <p className="guide-step-text">
+                      {tr(
+                        'Тренируйте построение предложений и сразу смотрите разбор ошибок.',
+                        'Trainiere den Satzbau und sieh dir sofort die Fehleranalyse an.'
+                      )}
+                    </p>
+                  </article>
+                  <article className="guide-step-card">
+                    <div className="guide-step-number">2</div>
+                    <div className="guide-step-title">{tr('Словарь', 'Woerterbuch')}</div>
+                    <p className="guide-step-text">
+                      {tr(
+                        'Сохраняйте новые слова, выражения и свои полезные находки.',
+                        'Speichere neue Woerter, Ausdruecke und alles, was dir spaeter hilft.'
+                      )}
+                    </p>
+                  </article>
+                  <article className="guide-step-card">
+                    <div className="guide-step-number">3</div>
+                    <div className="guide-step-title">{tr('Карточки', 'Karten')}</div>
+                    <p className="guide-step-text">
+                      {tr(
+                        'Закрепляйте лексику через повторение, FSRS и быстрые режимы тренировки.',
+                        'Festige deinen Wortschatz mit Wiederholung, FSRS und schnellen Trainingsmodi.'
+                      )}
+                    </p>
+                  </article>
+                  <article className="guide-step-card">
+                    <div className="guide-step-number">4</div>
+                    <div className="guide-step-title">{tr('Видео, чтение и голос', 'Video, Lesen und Sprechen')}</div>
+                    <p className="guide-step-text">
+                      {tr(
+                        'Переходите к реальному немецкому: YouTube, Reader и живой разговорный ассистент.',
+                        'Wechsle dann zu echtem Deutsch: YouTube, Reader und Live-Sprechassistent.'
+                      )}
+                    </p>
+                  </article>
+                </div>
+
+                <div className="guide-purpose-grid">
+                  <article className="guide-purpose-card">
+                    <div className="guide-purpose-label">{tr('Для грамматики', 'Fuer Grammatik')}</div>
+                    <p>{tr('Раздел “Переводы” помогает строить фразы и понимать свои ошибки.', 'Der Bereich Uebersetzungen hilft dir beim Satzbau und beim Verstehen deiner Fehler.')}</p>
+                  </article>
+                  <article className="guide-purpose-card">
+                    <div className="guide-purpose-label">{tr('Для слов', 'Fuer Woerter')}</div>
+                    <p>{tr('“Словарь” и “Карточки” переносят лексику в долговременную память.', 'Woerterbuch und Karten uebertragen Wortschatz ins Langzeitgedaechtnis.')}</p>
+                  </article>
+                  <article className="guide-purpose-card">
+                    <div className="guide-purpose-label">{tr('Для понимания речи', 'Fuer Hoerverstehen')}</div>
+                    <p>{tr('YouTube и фильмы дают живую речь, субтитры и контекст.', 'YouTube und Filme geben dir echte Sprache, Untertitel und Kontext.')}</p>
+                  </article>
+                  <article className="guide-purpose-card">
+                    <div className="guide-purpose-label">{tr('Для чтения', 'Fuer Lesen')}</div>
+                    <p>{tr('Reader подходит для текстов, озвучки, перевода и спокойного погружения.', 'Der Reader ist fuer Texte, Audio, Uebersetzung und ruhiges Eintauchen geeignet.')}</p>
+                  </article>
+                  <article className="guide-purpose-card">
+                    <div className="guide-purpose-label">{tr('Для разговора', 'Fuer Sprechen')}</div>
+                    <p>{tr('Голосовой ассистент нужен для устной практики и уверенности в речи.', 'Der Sprachassistent ist fuer muendliche Praxis und mehr Sicherheit beim Sprechen da.')}</p>
+                  </article>
+                  <article className="guide-purpose-card">
+                    <div className="guide-purpose-label">{tr('Для точечной прокачки', 'Fuer gezieltes Training')}</div>
+                    <p>{tr('“Тренировка навыка” собирает теорию, видео и практику по слабому месту.', 'Skill-Training sammelt Theorie, Video und Praxis fuer deinen schwachen Punkt.')}</p>
+                  </article>
+                </div>
+
+                <div className="guide-routine-card">
+                  <div className="guide-routine-title">{tr('Маршрут на 15 минут', '15-Minuten-Route')}</div>
+                  <p>
+                    {tr(
+                      '5 минут переводы → 3 минуты словарь → 5 минут карточки → 2 минуты видео или чтение.',
+                      '5 Min Uebersetzungen → 3 Min Woerterbuch → 5 Min Karten → 2 Min Video oder Lesen.'
+                    )}
+                  </p>
+                </div>
+
+                <div className="guide-faq-grid">
+                  {guideFaqItems.map((item) => {
+                    const isOpen = guideFaqOpenKey === item.key;
+                    return (
+                      <article key={item.key} className={`guide-faq-card ${isOpen ? 'is-open' : ''}`}>
+                        <button
+                          type="button"
+                          className="guide-faq-question"
+                          onClick={() => setGuideFaqOpenKey((prev) => (prev === item.key ? '' : item.key))}
+                          aria-expanded={isOpen}
+                        >
+                          <span>{item.question}</span>
+                          <span className={`guide-faq-chevron ${isOpen ? 'is-open' : ''}`}>⌄</span>
+                        </button>
+                        {isOpen && <div className="guide-faq-answer">{item.answer}</div>}
+                      </article>
+                    );
+                  })}
+                </div>
+
+                <div className="guide-actions">
+                  <button type="button" className="primary-button" onClick={startOnboardingTour}>
+                    {tr('Показать быстрый тур', 'Schnellstart zeigen')}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('translations', translationsRef)}>
+                    {tr('Начать с переводов', 'Mit Uebersetzungen starten')}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('dictionary', dictionaryRef)}>
+                    {tr('Открыть словарь', 'Woerterbuch oeffnen')}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('flashcards', flashcardsRef)}>
+                    {tr('Перейти к карточкам', 'Zu Karten gehen')}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('youtube', youtubeRef)}>
+                    {tr('Смотреть YouTube', 'YouTube ansehen')}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('reader', readerRef)}>
+                    {tr('Открыть Reader', 'Reader oeffnen')}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('assistant', assistantRef)}>
+                    {tr('Поговорить с ассистентом', 'Mit dem Assistenten sprechen')}
+                  </button>
+                </div>
+              </section>
+            )}
+
             {!flashcardsOnly && isSectionVisible('skill_training') && (
               <section className="webapp-section theory-section skill-training-section" ref={skillTrainingRef}>
                 <div className="skill-training-top-card">
@@ -10552,6 +11132,20 @@ function AppInner() {
                     <button type="button" className="primary-button skill-training-finish-btn" onClick={finishSkillTraining}>
                       {tr('Закончить тренировку навыка', 'Skill-Training beenden')}
                     </button>
+                  </div>
+
+                  <div className="section-help-card">
+                    <div className="section-help-card-head">
+                      <strong>{tr('Как проходить тренировку навыка', 'So nutzt du Skill-Training')}</strong>
+                    </div>
+                    <p>{tr('Двигайтесь по порядку: сначала теория, затем источники, потом видео и практика из 5 предложений. В конце обязательно читайте feedback.', 'Gehe der Reihe nach vor: zuerst Theorie, dann Quellen, danach Video und die Uebung mit 5 Saetzen. Lies am Ende unbedingt das Feedback.')}</p>
+                    <div className="section-help-card-steps">
+                      <span>{tr('1. Теория', '1. Theorie')}</span>
+                      <span>{tr('2. Источники', '2. Quellen')}</span>
+                      <span>{tr('3. Видео', '3. Video')}</span>
+                      <span>{tr('4. Практика', '4. Uebung')}</span>
+                      <span>{tr('5. Feedback', '5. Feedback')}</span>
+                    </div>
                   </div>
 
                   {skillTrainingLoading && (
@@ -11003,6 +11597,21 @@ function AppInner() {
                   <div className="translations-title-side">
                     {renderTodaySectionTaskHud('translations')}
                     <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
+                  </div>
+                </div>
+                <div className="section-help-card">
+                  <div className="section-help-card-head">
+                    <strong>{tr('Что здесь делать', 'Was du hier machst')}</strong>
+                    <button type="button" className="secondary-button" onClick={startOnboardingTour}>
+                      {tr('Быстрый тур', 'Schnellstart')}
+                    </button>
+                  </div>
+                  <p>{tr('Выберите тему и уровень, переведите предложения и после проверки обязательно прочитайте разбор ошибок.', 'Waehle Thema und Niveau, uebersetze die Saetze und lies nach dem Pruefen unbedingt die Fehleranalyse.')}</p>
+                  <div className="section-help-card-steps">
+                    <span>{tr('1. Тема', '1. Thema')}</span>
+                    <span>{tr('2. Уровень', '2. Niveau')}</span>
+                    <span>{tr('3. Перевод', '3. Uebersetzung')}</span>
+                    <span>{tr('4. Разбор ошибок', '4. Fehleranalyse')}</span>
                   </div>
                 </div>
                 <div className="webapp-translation-start">
@@ -11480,6 +12089,20 @@ function AppInner() {
                     </div>
                     )}
                     {!youtubeWatchFocusMode && (
+                    <div className="section-help-card">
+                      <div className="section-help-card-head">
+                        <strong>{tr('Как учиться через YouTube', 'So lernst du mit YouTube')}</strong>
+                      </div>
+                      <p>{tr('Вставьте ссылку или найдите видео по теме, затем загрузите субтитры, включите overlay и нажимайте на непонятные слова.', 'Fuege einen Link ein oder finde ein Video zum Thema, lade dann Untertitel, aktiviere das Overlay und tippe auf unbekannte Woerter.')}</p>
+                      <div className="section-help-card-steps">
+                        <span>{tr('1. Найти видео', '1. Video finden')}</span>
+                        <span>{tr('2. Загрузить субтитры', '2. Untertitel laden')}</span>
+                        <span>{tr('3. Включить overlay', '3. Overlay aktivieren')}</span>
+                        <span>{tr('4. Разбирать слова', '4. Woerter analysieren')}</span>
+                      </div>
+                    </div>
+                    )}
+                    {!youtubeWatchFocusMode && (
                     <div className="webapp-video-form">
                       <label className="webapp-field">
                         <span>{tr('Ссылка, ID или поисковый запрос', 'Link, Video-ID oder Suchanfrage')}</span>
@@ -11773,6 +12396,18 @@ function AppInner() {
                     <div className="webapp-local-section-head">
                       <h3>{tr('Словарь', 'Woerterbuch')}</h3>
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                    </div>
+                    <div className="section-help-card">
+                      <div className="section-help-card-head">
+                        <strong>{tr('Как использовать словарь', 'So nutzt du das Woerterbuch')}</strong>
+                      </div>
+                      <p>{tr('Ищите слово или фразу, смотрите перевод и формы, затем сохраняйте полезную лексику в папку для дальнейшего повторения.', 'Suche ein Wort oder eine Phrase, sieh dir Uebersetzung und Formen an und speichere nuetzlichen Wortschatz danach in einen Ordner fuer spaetere Wiederholung.')}</p>
+                      <div className="section-help-card-steps">
+                        <span>{tr('1. Ввести слово', '1. Wort eingeben')}</span>
+                        <span>{tr('2. Проверить формы', '2. Formen pruefen')}</span>
+                        <span>{tr('3. Выбрать папку', '3. Ordner waehlen')}</span>
+                        <span>{tr('4. Сохранить в словарь', '4. Ins Woerterbuch speichern')}</span>
+                      </div>
                     </div>
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
@@ -12150,6 +12785,19 @@ function AppInner() {
                             <button type="button" className="secondary-button" onClick={() => loadReaderLibrary()}>
                               {readerLibraryLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
                             </button>
+                          </div>
+                        </div>
+
+                        <div className="section-help-card">
+                          <div className="section-help-card-head">
+                            <strong>{tr('Как работать с Reader', 'So nutzt du den Reader')}</strong>
+                          </div>
+                          <p>{tr('Вставьте текст, URL или загрузите файл, откройте документ в читалке и используйте чтение, аудио и быстрый перевод по словам.', 'Fuege Text, URL oder eine Datei ein, oeffne das Dokument im Reader und nutze Lesen, Audio und schnelle Wortuebersetzung.')}</p>
+                          <div className="section-help-card-steps">
+                            <span>{tr('1. Добавить текст или файл', '1. Text oder Datei hinzufuegen')}</span>
+                            <span>{tr('2. Открыть документ', '2. Dokument oeffnen')}</span>
+                            <span>{tr('3. Читать и слушать', '3. Lesen und hoeren')}</span>
+                            <span>{tr('4. Сохранять слова', '4. Woerter speichern')}</span>
                           </div>
                         </div>
 
@@ -12627,6 +13275,20 @@ function AppInner() {
                 )}
                 {flashcardsVisible && (
                   <div className={`flashcards-panel ${flashcardsOnly ? 'is-session' : 'is-setup'}`}>
+                    {!flashcardsOnly && !flashcardActiveMode && (
+                      <div className="section-help-card">
+                        <div className="section-help-card-head">
+                          <strong>{tr('Как учиться по карточкам', 'So lernst du mit Karten')}</strong>
+                        </div>
+                        <p>{tr('Сначала выберите режим: FSRS для умного повторения, Quiz для проверки, Blocks для сборки слова и Sentence для фраз.', 'Waehle zuerst einen Modus: FSRS fuer smarte Wiederholung, Quiz zum Testen, Blocks zum Bauen des Wortes und Sentence fuer ganze Phrasen.')}</p>
+                        <div className="section-help-card-steps">
+                          <span>{tr('FSRS: повторение', 'FSRS: Wiederholen')}</span>
+                          <span>{tr('Quiz: проверка', 'Quiz: Test')}</span>
+                          <span>{tr('Blocks: сборка', 'Blocks: Bauen')}</span>
+                          <span>{tr('Sentence: фразы', 'Sentence: Phrasen')}</span>
+                        </div>
+                      </div>
+                    )}
                     {!flashcardsOnly && !flashcardActiveMode && (
                       <div className="flashcard-mode-menu">
                         <div className="flashcard-mode-title-wrap">
@@ -13437,6 +14099,19 @@ function AppInner() {
                   <h2>{tr('Голосовой ассистент', 'Sprachassistent')}</h2>
                   <p>{tr('Практика разговорного немецкого в реальном времени.', 'Sprechtraining Deutsch in Echtzeit.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                </div>
+
+                <div className="section-help-card">
+                  <div className="section-help-card-head">
+                    <strong>{tr('Как начать speaking practice', 'So startest du Speaking Practice')}</strong>
+                  </div>
+                  <p>{tr('Подключите ассистента, нажмите на микрофон и отвечайте короткими живыми фразами. Лучше говорить просто, но регулярно.', 'Verbinde den Assistenten, druecke auf das Mikrofon und antworte mit kurzen, echten Saetzen. Besser einfach sprechen, aber regelmaessig.')}</p>
+                  <div className="section-help-card-steps">
+                    <span>{tr('1. Подключить ассистента', '1. Assistent verbinden')}</span>
+                    <span>{tr('2. Нажать на микрофон', '2. Mikrofon starten')}</span>
+                    <span>{tr('3. Говорить коротко и ясно', '3. Kurz und klar sprechen')}</span>
+                    <span>{tr('4. Повторять каждый день', '4. Taeglich wiederholen')}</span>
+                  </div>
                 </div>
 
                 {!assistantToken ? (
