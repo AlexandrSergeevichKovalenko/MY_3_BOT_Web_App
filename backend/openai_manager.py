@@ -573,6 +573,10 @@ Hard constraints:
 5) Avoid chunks that start with dangling punctuation or end with dangling conjunctions.
 6) Keep original casing and German punctuation, but do NOT end every chunk with a period unless it exists in the original sentence.
 7) Prefer chunk boundaries at commas, clause boundaries, and phrase boundaries.
+8) Coverage is mandatory:
+   - The chunks, concatenated in order with spaces, must reconstruct the FULL original sentence with no omitted words.
+   - Never drop, summarize, paraphrase, or merge away any word.
+   - Before returning JSON, verify internally that every content word from the original sentence appears in the chunk list exactly in order.
 
 Quality targets:
 - The chunk list should allow progressive chaining (chunk1, chunk1+chunk2, ...), so early chunks should be foundational and not too tiny.
@@ -1563,7 +1567,18 @@ Input fields:
 Task:
 - Generate exactly count distinct natural sentences in source_language.
 - Sentences should be suitable for translation into target_language.
-- Keep sentences short and practical for learning.
+- The requested level is mandatory and must strongly affect difficulty.
+- Keep all sentences on the requested topic.
+- Use these level constraints:
+  - a2: very simple everyday sentences, mostly one clause, short and concrete, typically 4-12 words.
+  - b1: moderately simple sentences, occasional light subordinate clause, typically 6-18 words.
+  - b2: clearly more developed sentences with visible clause structure, typically 9-24 words.
+  - c1: advanced sentences with clear syntactic complexity and richer vocabulary, typically 12-30 words.
+  - c2: very advanced, nuanced, dense sentences with sophisticated structure, typically 15-36 words.
+- Do not mix levels:
+  - for a2/b1, avoid sentences that feel advanced, literary, overloaded, or syntactically dense;
+  - for c1/c2, avoid childish or overly trivial textbook lines.
+- Prefer natural, real-life utterances, not grammar labels or isolated phrasebook fragments.
 - Output one sentence per line, no numbering, no markdown, no extra commentary.
 """,
 }
@@ -1684,6 +1699,15 @@ Rules:
 - Sentences must be in learner native language.
 - Must trigger target grammar concept.
 - Every sentence MUST stay on the topic in topic_must_match (no generic/off-topic lines).
+- Sentences must be fully natural, idiomatic, and grammatically correct in native_language.
+- Never use broken learner language, telegraphic phrasing, dictionary-style fragments, or literal calques from target_language.
+- If native_language is Russian, write only standard fluent Russian as an educated native speaker would say it.
+- For Russian specifically:
+  - never use infinitives after personal pronouns unless Russian grammar truly requires an infinitive construction;
+  - never produce patterns like "я идти", "они ездить", "вчера я готовить", "ты знать";
+  - prefer normal finite verb forms and natural word order.
+- The sentences should sound like realistic everyday utterances, not grammar labels.
+- Vary subjects, time references, and sentence shapes, but keep them easy to translate.
 - No explanations and no translations.
 """,
     "theory_check_feedback": """
@@ -2532,14 +2556,23 @@ async def generate_sentences_multilang(
 ) -> list[str]:
     task_name = "generate_sentences_multilang"
     system_instruction_key = "generate_sentences_multilang"
+    normalized_level = (level or "b1").strip().lower()
+    level_notes = {
+        "a2": "Return only very simple everyday sentences.",
+        "b1": "Return only moderately simple sentences with limited complexity.",
+        "b2": "Return only upper-intermediate sentences with visible clause structure.",
+        "c1": "Return only advanced sentences with noticeable syntactic complexity.",
+        "c2": "Return only highly advanced, nuanced sentences.",
+    }
 
     user_message = json.dumps(
         {
             "source_language": (source_lang or "").strip().lower(),
             "target_language": (target_lang or "").strip().lower(),
-            "level": (level or "b1").strip().lower(),
+            "level": normalized_level,
             "topic": (topic or "General").strip(),
             "count": int(max(1, num_sentences)),
+            "level_note": level_notes.get(normalized_level, ""),
         },
         ensure_ascii=False,
     )

@@ -95,6 +95,100 @@ def _normalize_level(level: str | None) -> str:
     return normalized if normalized in allowed else "c1"
 
 
+def _sentence_word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-zÀ-ÿА-Яа-яЁё0-9]+(?:[-'][A-Za-zÀ-ÿА-Яа-яЁё0-9]+)*", str(text or ""), flags=re.UNICODE))
+
+
+def _sentence_has_any_marker(text: str, markers: list[str]) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in markers)
+
+
+def _sentence_fits_level(sentence: str, level: str | None) -> bool:
+    text = " ".join(str(sentence or "").strip().split())
+    if not text:
+        return False
+    level_key = _normalize_level(level)
+    word_count = _sentence_word_count(text)
+    comma_count = text.count(",")
+    hard_punctuation = sum(text.count(mark) for mark in ";:()")
+    dash_count = text.count(" — ") + text.count(" - ")
+
+    medium_markers = [
+        " если ", " когда ", " потому что ", " чтобы ", " который", " которая", " которые",
+        " although ", " because ", " when ", " if ", " that ", " which ",
+        " obwohl ", " weil ", " wenn ", " dass ", " damit ",
+        " aunque ", " porque ", " cuando ", " para que ",
+        " sebbene ", " perché ", " quando ", " affinché ",
+    ]
+    advanced_markers = [
+        " несмотря на", " в то время как", " едва ", " поскольку ", " хотя ", " так как ",
+        " whereby ", " whereas ", " provided that ", " unless ", " however ",
+        " während ", " nachdem ", " sofern ", " indem ", " weshalb ",
+        " sin embargo ", " por lo tanto ", " cuyo ", " cuya ",
+        " nonostante ", " pertanto ", " qualora ", " il quale ",
+    ]
+    has_medium = _sentence_has_any_marker(text, medium_markers)
+    has_advanced = _sentence_has_any_marker(text, advanced_markers)
+
+    if level_key == "a2":
+        if word_count < 4 or word_count > 12:
+            return False
+        if comma_count > 1 or hard_punctuation > 0 or dash_count > 0:
+            return False
+        if has_advanced:
+            return False
+        return True
+
+    if level_key == "b1":
+        if word_count < 6 or word_count > 18:
+            return False
+        if comma_count > 2 or hard_punctuation > 1:
+            return False
+        if has_advanced and word_count > 14:
+            return False
+        return True
+
+    if level_key == "b2":
+        if word_count < 9 or word_count > 24:
+            return False
+        if comma_count > 3 or hard_punctuation > 2:
+            return False
+        return has_medium or has_advanced or word_count >= 12
+
+    if level_key == "c1":
+        if word_count < 12 or word_count > 30:
+            return False
+        if comma_count < 1 and not has_medium and not has_advanced and word_count < 16:
+            return False
+        return True
+
+    if level_key == "c2":
+        if word_count < 15 or word_count > 36:
+            return False
+        if comma_count < 1 and not has_advanced and word_count < 20:
+            return False
+        return True
+
+    return True
+
+
+def _filter_sentences_for_level(items: list[str], level: str | None) -> list[str]:
+    accepted: list[str] = []
+    seen: set[str] = set()
+    for item in items or []:
+        text = " ".join(str(item or "").strip().split())
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if _sentence_fits_level(text, level):
+            accepted.append(text)
+    return accepted
+
+
 def _is_legacy_ru_de_pair(source_lang: str | None, target_lang: str | None) -> bool:
     return (source_lang or "").strip().lower() == "ru" and (target_lang or "").strip().lower() == "de"
 
@@ -771,9 +865,20 @@ async def generate_sentences_webapp(
     task_name = "generate_sentences"
     level_key = _normalize_level(level)
     system_instruction_key = f"generate_sentences_{level_key}"
+    target_count = int(max(1, num_sentences))
+    level_notes = {
+        "a2": "A2 only: short, concrete, everyday sentences. No heavy subordinate clauses. Prefer 4-12 words.",
+        "b1": "B1 only: moderately simple sentences with at most one light subordinate clause. Prefer 6-18 words.",
+        "b2": "B2 only: clearly more developed sentences with some clause complexity. Prefer 9-24 words.",
+        "c1": "C1 only: advanced sentences with visible syntactic complexity. Prefer 12-30 words.",
+        "c2": "C2 only: very advanced, nuanced, syntactically dense sentences. Prefer 15-36 words.",
+    }
 
     user_message = f"""
-    Number of sentences: {num_sentences}. Topic: "{topic}".
+    Number of sentences: {target_count}. Topic: "{topic}".
+    Required level: {level_key.upper()}.
+    {level_notes.get(level_key, "")}
+    Reject sentences that are clearly easier or harder than the requested level.
     """
 
     for attempt in range(5):
@@ -785,9 +890,10 @@ async def generate_sentences_webapp(
                 poll_interval_seconds=1.0,
             )
 
-            filtered = [s.strip() for s in sentences.split("\n") if s.strip()]
-            if filtered:
-                return filtered
+            raw_lines = [s.strip() for s in sentences.split("\n") if s.strip()]
+            filtered = _filter_sentences_for_level(raw_lines, level_key)
+            if len(filtered) >= target_count:
+                return filtered[:target_count]
         except openai.RateLimitError:
             wait_time = (attempt + 1) * 2
             await asyncio.sleep(wait_time)
@@ -798,12 +904,17 @@ async def generate_sentences_webapp(
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT sentence FROM bt_3_spare_sentences ORDER BY RANDOM() LIMIT 7;
+                SELECT sentence FROM bt_3_spare_sentences ORDER BY RANDOM() LIMIT 30;
                 """
             )
             spare_rows = cursor.fetchall()
     if spare_rows:
-        return [row[0].strip() for row in spare_rows if row[0] and row[0].strip()]
+        spare_filtered = _filter_sentences_for_level(
+            [row[0].strip() for row in spare_rows if row[0] and row[0].strip()],
+            level_key,
+        )
+        if spare_filtered:
+            return spare_filtered[:target_count]
     return []
 
 
@@ -814,10 +925,11 @@ async def get_original_sentences_webapp(
 ) -> list[str]:
     conn = get_db_connection()
     cursor = conn.cursor()
+    level_key = _normalize_level(level)
 
     try:
-        cursor.execute("SELECT sentence FROM bt_3_sentences ORDER BY RANDOM() LIMIT 1;")
-        rows = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT sentence FROM bt_3_sentences ORDER BY RANDOM() LIMIT 20;")
+        rows = _filter_sentences_for_level([row[0] for row in cursor.fetchall()], level_key)[:1]
 
         cursor.execute(
             """
@@ -836,6 +948,8 @@ async def get_original_sentences_webapp(
         for sentence, sentence_id in cursor.fetchall():
             if sentence_id and sentence_id not in already_given_sentence_ids:
                 if sentence_id not in unique_sentences:
+                    if not _sentence_fits_level(sentence, level_key):
+                        continue
                     unique_sentences.add(sentence_id)
                     mistake_sentences.append(sentence)
                     already_given_sentence_ids.add(sentence_id)
@@ -859,6 +973,8 @@ async def get_original_sentences_webapp(
                 for line in text.split("\n"):
                     candidate = re.sub(r"^\s*\d+\.\s*", "", line).strip()
                     if not candidate or candidate in seen:
+                        continue
+                    if not _sentence_fits_level(candidate, level_key):
                         continue
                     seen.add(candidate)
                     normalized.append(candidate)
@@ -969,7 +1085,7 @@ async def start_translation_session_webapp(
                 source_lang=source_lang,
                 target_lang=target_lang,
             )
-            sentences = [s.strip() for s in generated if s.strip()]
+            sentences = _filter_sentences_for_level([s.strip() for s in generated if s.strip()], level)
         sentences = correct_numbering(sentences)
 
         if not sentences:
@@ -1214,12 +1330,40 @@ async def recheck_score_only(original_text: str, user_translation: str) -> int:
     return 0
 
 
-def _extract_correct_translation(feedback: str | None) -> str | None:
+def _extract_correct_translation(feedback: str | None, sentence_number: int | None = None) -> str | None:
     if not feedback:
         return None
-    match = re.search(r"Correct Translation:\*?\s*(.+)", feedback)
-    if match:
-        return match.group(1).strip()
+    text = str(feedback or "")
+    if sentence_number is not None:
+        try:
+            sentence_idx = int(sentence_number)
+        except Exception:
+            sentence_idx = None
+        if sentence_idx:
+            story_patterns = [
+                rf"(?ms)^{sentence_idx}\)\s*Верный вариант\s*\(DE\):\s*(.+?)\s*$",
+                rf"(?ms)^Satz\s*{sentence_idx}\s*[:\-].*?^3\)\s*Верный вариант\s*\(DE\):\s*(.+?)\s*$",
+                rf"(?ms)^Sentence\s*{sentence_idx}\s*[:\-].*?^3\)\s*Correct Translation\s*:\s*(.+?)\s*$",
+            ]
+            for pattern in story_patterns:
+                match = re.search(pattern, text, flags=re.IGNORECASE)
+                if match:
+                    candidate = str(match.group(1) or "").strip()
+                    if candidate:
+                        return candidate
+
+    generic_patterns = [
+        r"Correct Translation:\*?\s*(.+?)(?:\n|\Z)",
+        r"Korrigierte Version:\*?\s*(.+?)(?:\n|\Z)",
+        r"Исправленный вариант:\*?\s*(.+?)(?:\n|\Z)",
+        r"Верный вариант\s*\(DE\):\s*(.+?)(?:\n|\Z)",
+    ]
+    for pattern in generic_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            candidate = str(match.group(1) or "").strip()
+            if candidate:
+                return candidate
     return None
 
 
@@ -1269,7 +1413,7 @@ def get_daily_translation_history(
                 "created_at": row[4].isoformat() if row[4] else None,
                 "original_text": row[5],
                 "sentence_number": row[6],
-                "correct_translation": _extract_correct_translation(feedback),
+                "correct_translation": _extract_correct_translation(feedback, row[6]),
                 "source_lang": row[7] or source_lang,
                 "target_lang": row[8] or target_lang,
             }

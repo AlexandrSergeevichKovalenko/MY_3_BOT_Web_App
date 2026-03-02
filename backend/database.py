@@ -4793,7 +4793,17 @@ def get_plan_progress(
                                 0,
                                 EXTRACT(
                                     EPOCH FROM (
-                                        LEAST(COALESCE(ended_at, %s), %s)
+                                        LEAST(
+                                            COALESCE(
+                                                ended_at,
+                                                CASE
+                                                    WHEN duration_seconds IS NOT NULL
+                                                        THEN started_at + (GREATEST(duration_seconds, 0) * INTERVAL '1 second')
+                                                    ELSE started_at
+                                                END
+                                            ),
+                                            %s
+                                        )
                                         - GREATEST(started_at, %s)
                                     )
                                 )
@@ -4806,16 +4816,21 @@ def get_plan_progress(
                       AND source_lang = %s
                       AND target_lang = %s
                       AND started_at < %s
-                      AND COALESCE(ended_at, %s) > %s;
+                      AND COALESCE(
+                          ended_at,
+                          CASE
+                              WHEN duration_seconds IS NOT NULL
+                                  THEN started_at + (GREATEST(duration_seconds, 0) * INTERVAL '1 second')
+                              ELSE started_at
+                          END
+                      ) > %s;
                     """,
                     (
-                        cap_dt,
                         cap_dt,
                         period_start_dt,
                         int(user_id),
                         normalized_source,
                         normalized_target,
-                        cap_dt,
                         cap_dt,
                         period_start_dt,
                     ),
@@ -4834,7 +4849,17 @@ def get_plan_progress(
                                 0,
                                 EXTRACT(
                                     EPOCH FROM (
-                                        LEAST(COALESCE(ended_at, %s), %s)
+                                        LEAST(
+                                            COALESCE(
+                                                ended_at,
+                                                CASE
+                                                    WHEN duration_seconds IS NOT NULL
+                                                        THEN started_at + (GREATEST(duration_seconds, 0) * INTERVAL '1 second')
+                                                    ELSE started_at
+                                                END
+                                            ),
+                                            %s
+                                        )
                                         - GREATEST(started_at, %s)
                                     )
                                 )
@@ -4847,16 +4872,21 @@ def get_plan_progress(
                       AND source_lang = %s
                       AND target_lang = %s
                       AND started_at < %s
-                      AND COALESCE(ended_at, %s) > %s;
+                      AND COALESCE(
+                          ended_at,
+                          CASE
+                              WHEN duration_seconds IS NOT NULL
+                                  THEN started_at + (GREATEST(duration_seconds, 0) * INTERVAL '1 second')
+                              ELSE started_at
+                          END
+                      ) > %s;
                     """,
                     (
-                        cap_dt,
                         cap_dt,
                         period_start_dt,
                         int(user_id),
                         normalized_source,
                         normalized_target,
-                        cap_dt,
                         cap_dt,
                         period_start_dt,
                     ),

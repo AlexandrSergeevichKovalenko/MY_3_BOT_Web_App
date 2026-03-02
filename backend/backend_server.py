@@ -1814,19 +1814,29 @@ def _youtube_fill_view_counts(
             vid = (item.get("id") or "").strip()
             if not vid:
                 continue
+            snippet = item.get("snippet") or {}
             by_id[vid] = {
                 "views": int(((item.get("statistics") or {}).get("viewCount") or 0)),
-                "title": ((item.get("snippet") or {}).get("title") or "").strip(),
+                "title": (snippet.get("title") or "").strip(),
+                "description": (snippet.get("description") or "").strip(),
+                "channel_title": (snippet.get("channelTitle") or "").strip(),
+                "default_audio_language": str(snippet.get("defaultAudioLanguage") or "").strip(),
+                "default_language": str(snippet.get("defaultLanguage") or "").strip(),
                 "duration": str(((item.get("contentDetails") or {}).get("duration") or "")).strip(),
             }
         enriched = []
         for video in videos:
             vid = str(video.get("video_id") or "").strip()
             row = dict(video)
-            row["views"] = int((by_id.get(vid) or {}).get("views") or 0)
+            meta = by_id.get(vid) or {}
+            row["views"] = int(meta.get("views") or 0)
             if not row.get("title"):
-                row["title"] = (by_id.get(vid) or {}).get("title") or ""
-            row["duration"] = (by_id.get(vid) or {}).get("duration") or ""
+                row["title"] = meta.get("title") or ""
+            row["description"] = str(meta.get("description") or row.get("description") or "").strip()
+            row["channel_title"] = str(meta.get("channel_title") or row.get("channel_title") or "").strip()
+            row["default_audio_language"] = str(meta.get("default_audio_language") or row.get("default_audio_language") or "").strip()
+            row["default_language"] = str(meta.get("default_language") or row.get("default_language") or "").strip()
+            row["duration"] = meta.get("duration") or ""
             enriched.append(row)
         return enriched
     except Exception:
@@ -1862,6 +1872,8 @@ def _filter_videos_for_today_task(
     videos: list[dict],
     *,
     min_seconds: int | None = None,
+    target_lang: str = "de",
+    native_lang: str = "",
 ) -> list[dict]:
     min_seconds = int(min_seconds or MIN_RECOMMENDED_VIDEO_SECONDS)
     filtered: list[dict] = []
@@ -1874,6 +1886,8 @@ def _filter_videos_for_today_task(
         if duration_seconds < min_seconds:
             continue
         if _is_youtube_short_like(video):
+            continue
+        if _video_conflicts_with_target_language(video, target_lang=target_lang, native_lang=native_lang):
             continue
         filtered.append(video)
     return filtered
@@ -1947,7 +1961,11 @@ def _pick_today_recommended_video(
             billing_source_lang=billing_source_lang,
             billing_target_lang=billing_target_lang,
         )
-        videos = _filter_videos_for_today_task(videos, min_seconds=MIN_RECOMMENDED_VIDEO_SECONDS)
+        videos = _filter_videos_for_today_task(
+            videos,
+            min_seconds=MIN_RECOMMENDED_VIDEO_SECONDS,
+            target_lang=target_lang,
+        )
         if not videos:
             continue
         videos.sort(key=lambda x: int(x.get("views") or 0), reverse=True)
@@ -1974,7 +1992,11 @@ def _pick_today_recommended_video(
         billing_source_lang=billing_source_lang,
         billing_target_lang=billing_target_lang,
     )
-    local_fallback = _filter_videos_for_today_task(local_fallback, min_seconds=MIN_RECOMMENDED_VIDEO_SECONDS)
+    local_fallback = _filter_videos_for_today_task(
+        local_fallback,
+        min_seconds=MIN_RECOMMENDED_VIDEO_SECONDS,
+        target_lang=target_lang,
+    )
     if local_fallback:
         best = local_fallback[0]
         video_id = str(best.get("video_id") or "").strip()
@@ -2011,13 +2033,146 @@ def _format_theory_mistake_examples(examples: list[dict] | None) -> list[str]:
     return rows[:8]
 
 
-def _normalize_theory_sentences(payload: dict) -> list[str]:
+def _contains_cjk_chars(text: str) -> bool:
+    return bool(re.search(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", str(text or "")))
+
+
+_LANGUAGE_CONTENT_HINTS = {
+    "de": ("german", "deutsch", "немец", "deutsche", "deutsch"),
+    "en": ("english", "englisch", "англий", "ingles", "inglese"),
+    "es": ("spanish", "espanol", "español", "spanisch", "испан"),
+    "it": ("italian", "italiano", "italienisch", "итальян"),
+    "ru": ("russian", "russisch", "русск"),
+    "fr": ("french", "francais", "français", "franzoesisch", "француз"),
+    "pt": ("portuguese", "portugues", "português", "portugiesisch", "португал"),
+    "zh": ("chinese", "mandarin", "中文", "汉语", "漢語", "китай"),
+    "ja": ("japanese", "日本語", "япон"),
+    "ko": ("korean", "한국어", "корей"),
+}
+
+
+def _detect_explicit_language_mentions(text: str) -> set[str]:
+    haystack = str(text or "").lower()
+    mentions: set[str] = set()
+    for code, hints in _LANGUAGE_CONTENT_HINTS.items():
+        if any(hint in haystack for hint in hints):
+            mentions.add(code)
+    if _contains_cjk_chars(haystack):
+        mentions.add("zh")
+    return mentions
+
+
+def _resource_conflicts_with_target_language(
+    *,
+    title: str,
+    url: str,
+    snippet: str,
+    target_lang: str,
+    native_lang: str = "",
+) -> bool:
+    target = _normalize_short_lang_code(target_lang, fallback="de")
+    native = _normalize_short_lang_code(native_lang, fallback="")
+    mentions = _detect_explicit_language_mentions(" ".join([title, url, snippet]))
+    if target in mentions:
+        return False
+    if native and mentions == {native}:
+        return True
+    conflicting = {code for code in mentions if code not in {target, native}}
+    return bool(conflicting)
+
+
+def _normalize_metadata_language_code(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    primary = raw.split("-", 1)[0].split("_", 1)[0].strip()
+    return _normalize_short_lang_code(primary, fallback="")
+
+
+def _video_conflicts_with_target_language(
+    video: dict,
+    *,
+    target_lang: str,
+    native_lang: str = "",
+) -> bool:
+    target = _normalize_short_lang_code(target_lang, fallback="de")
+    native = _normalize_short_lang_code(native_lang, fallback="")
+    metadata_langs = {
+        _normalize_metadata_language_code(video.get("default_audio_language") or ""),
+        _normalize_metadata_language_code(video.get("default_language") or ""),
+    }
+    metadata_langs.discard("")
+    if metadata_langs and target not in metadata_langs:
+        return True
+
+    title = str(video.get("title") or "").strip()
+    description = str(video.get("description") or "").strip()
+    channel_title = str(video.get("channel_title") or "").strip()
+    mentions = _detect_explicit_language_mentions(" ".join([title, description, channel_title]))
+    if target in mentions:
+        return False
+    if native and mentions == {native}:
+        return True
+    conflicting = {code for code in mentions if code not in {target, native}}
+    if conflicting:
+        return True
+    if target != "zh" and _contains_cjk_chars(title) and target not in mentions:
+        return True
+    return False
+
+
+def _is_bad_russian_practice_sentence(sentence: str) -> bool:
+    text = " ".join(str(sentence or "").strip().split())
+    lower = text.lower()
+    if not text or not re.search(r"[А-Яа-яЁё]", text):
+        return True
+    if len(re.findall(r"[А-Яа-яЁё-]+", text)) < 3:
+        return True
+    # Reject broken calques like "я идти", "они часто ездить", "вчера я готовить".
+    if re.search(
+        r"\b(я|ты|он|она|оно|мы|вы|они)\s+(?:(?:не|часто|редко|обычно|иногда|всегда|уже|снова|сейчас|здесь|там|дома|потом|сегодня|вчера|завтра)\s+){0,2}[а-яё-]+(?:ть|ти|чь)\b",
+        lower,
+    ):
+        return True
+    if re.search(
+        r"\b(сегодня|вчера|завтра|часто|обычно|иногда|каждый день|по выходным)\s+(я|ты|он|она|оно|мы|вы|они)\s+(?:не\s+)?[а-яё-]+(?:ть|ти|чь)\b",
+        lower,
+    ):
+        return True
+    if re.search(r"\bкогда\s+(я|ты|он|она|оно|мы|вы|они)\s+[а-яё-]+(?:ть|ти|чь)\b", lower):
+        return True
+    if re.search(r"\b(я|ты|он|она|оно|мы|вы|они)\s+знать\b", lower):
+        return True
+    return False
+
+
+def _is_bad_native_practice_sentence(sentence: str, native_lang: str) -> bool:
+    normalized_native = _normalize_short_lang_code(native_lang, fallback="")
+    if normalized_native == "ru":
+        return _is_bad_russian_practice_sentence(sentence)
+    return False
+
+
+def _normalize_theory_sentences(payload: dict, *, native_lang: str = "") -> list[str]:
     raw = payload.get("sentences")
-    if isinstance(raw, list):
-        cleaned = [str(item or "").strip() for item in raw if str(item or "").strip()]
-        if len(cleaned) >= 5:
-            return cleaned[:5]
-    return []
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = " ".join(str(item or "").strip().split())
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if _is_bad_native_practice_sentence(text, native_lang):
+            continue
+        cleaned.append(text)
+    if len(cleaned) >= 5:
+        return cleaned[:5]
+    return cleaned
 
 
 _DEFAULT_SKILL_RESOURCE_ALLOWED_DOMAINS_BY_LANGUAGE = {
@@ -2486,9 +2641,9 @@ def _build_skill_resource_queries(
     ]
     topic = " ".join(part for part in topic_parts if part).strip() or "grammar topic"
     queries = [
-        f"{topic} {target_name} grammar explanation",
+        f"{topic} {target_name} grammar explanation for learners",
         f"{topic} {target_name} grammar rule examples",
-        f"{topic} explanation in {native_name}",
+        f"{topic} {target_name} explained for {native_name} speakers",
     ]
     deduped: list[str] = []
     seen: set[str] = set()
@@ -2514,7 +2669,7 @@ def _build_skill_domain_seed_queries(*, target_lang: str, native_lang: str) -> l
     queries = [
         f"best {target_name} grammar learning websites",
         f"trusted {target_name} grammar reference sites for learners",
-        f"{target_name} grammar explanations in {native_name}",
+        f"{target_name} grammar for {native_name} speakers",
         f"{target_name} grammar handbook online for learners",
     ]
     return list(dict.fromkeys(item.strip() for item in queries if str(item).strip()))[:6]
@@ -2578,6 +2733,8 @@ def _filter_skill_resource_candidates(
     *,
     stage: str,
     topic_keywords: list[str],
+    target_lang: str,
+    native_lang: str = "",
     required_domains: set[str] | None = None,
     fallback_reason: str,
     max_items: int = 3,
@@ -2593,6 +2750,7 @@ def _filter_skill_resource_candidates(
         "not_allowed_domain": 0,
         "homepage": 0,
         "topic_mismatch": 0,
+        "language_conflict": 0,
     }
     for entry in entries:
         title = str(entry.get("title") or "").strip()
@@ -2616,6 +2774,15 @@ def _filter_skill_resource_candidates(
             continue
         if _is_resource_homepage(url):
             stats["homepage"] += 1
+            continue
+        if _resource_conflicts_with_target_language(
+            title=title,
+            url=url,
+            snippet=snippet,
+            target_lang=target_lang,
+            native_lang=native_lang,
+        ):
+            stats["language_conflict"] += 1
             continue
         payload = _format_skill_resource_entry(
             title=title,
@@ -2654,6 +2821,8 @@ def _filter_skill_resource_candidates(
         stats["topic_mismatch"],
         1 if relax_topic_match_if_empty and bool(relaxed) else 0,
     )
+    if stats["language_conflict"]:
+        logging.info("Skill resources [%s]: language_conflict=%s", stage, stats["language_conflict"])
     return results[:max_items]
 
 
@@ -2826,6 +2995,8 @@ def _perplexity_search_skill_resources(
         flattened,
         stage=stage,
         topic_keywords=topic_keywords,
+        target_lang=target_lang,
+        native_lang=native_lang,
         required_domains=required_domains,
         fallback_reason=f"Источник по теме: {skill_name or error_subcategory or error_category}",
         max_items=3,
@@ -3076,6 +3247,15 @@ def _normalize_theory_resources(
                 continue
             if _is_resource_homepage(url):
                 llm_stats["homepage"] += 1
+                continue
+            if _resource_conflicts_with_target_language(
+                title=title,
+                url=url,
+                snippet=why,
+                target_lang=normalized_target,
+                native_lang=normalized_native,
+            ):
+                llm_stats["topic_mismatch"] += 1
                 continue
             if kind not in {"article", "video"}:
                 kind = "article"
@@ -6715,6 +6895,28 @@ def _merge_smallest_chunks(chunks: list[str], max_chunks: int) -> list[str]:
     return items
 
 
+def _normalize_chunk_validation_tokens(text: str) -> list[str]:
+    normalized = _normalize_utterance_text(text)
+    if not normalized:
+        return []
+    return re.findall(r"[A-Za-zÀ-ÿÄÖÜäöüß0-9]+", normalized.lower(), flags=re.UNICODE)
+
+
+def _chunks_preserve_sentence_content(chunks: list[str], sentence: str) -> bool:
+    normalized_chunks = [_normalize_utterance_text(chunk) for chunk in (chunks or []) if _normalize_utterance_text(chunk)]
+    if not normalized_chunks:
+        return False
+    source_tokens = _normalize_chunk_validation_tokens(sentence)
+    chunk_tokens = _normalize_chunk_validation_tokens(" ".join(normalized_chunks))
+    if not source_tokens or not chunk_tokens:
+        return False
+    if source_tokens != chunk_tokens:
+        return False
+    if any(len(chunk.split()) == 1 for chunk in normalized_chunks) and len(source_tokens) >= 6:
+        return False
+    return True
+
+
 def chunk_sentence_llm_de(de_sentence: str) -> list[str]:
     cleaned = (de_sentence or "").strip()
     if not cleaned:
@@ -6724,10 +6926,10 @@ def chunk_sentence_llm_de(de_sentence: str) -> list[str]:
     cache_key = hashlib.sha256(f"de|{normalized}".encode("utf-8")).hexdigest()
     cached_chunks = get_tts_chunk_cache(cache_key)
     if cached_chunks:
-        if len(cached_chunks) > 1:
+        if len(cached_chunks) > 1 and _chunks_preserve_sentence_content(cached_chunks, cleaned):
             return cached_chunks
         rule_chunks = _chunk_sentence_rules_for_language(cleaned, "de")
-        if len(rule_chunks) > 1:
+        if len(rule_chunks) > 1 and _chunks_preserve_sentence_content(rule_chunks, cleaned):
             try:
                 upsert_tts_chunk_cache(
                     cache_key=cache_key,
@@ -6756,15 +6958,24 @@ def chunk_sentence_llm_de(de_sentence: str) -> list[str]:
                 chunks.append(text)
     except Exception:
         chunks = []
-    if not chunks:
+    if not chunks or not _chunks_preserve_sentence_content(chunks, cleaned):
         rule_chunks = _chunk_sentence_rules_for_language(cleaned, "de")
-        return rule_chunks or _chunk_sentence_simple(cleaned)
+        if _chunks_preserve_sentence_content(rule_chunks, cleaned):
+            chunks = rule_chunks
+        else:
+            chunks = _chunk_sentence_simple(cleaned)
     if len(chunks) > _MAX_CHUNKS:
         chunks = _merge_smallest_chunks(chunks, _MAX_CHUNKS)
     if len(chunks) <= 1:
         rule_chunks = _chunk_sentence_rules_for_language(cleaned, "de")
-        if len(rule_chunks) > 1:
+        if len(rule_chunks) > 1 and _chunks_preserve_sentence_content(rule_chunks, cleaned):
             chunks = rule_chunks
+    if not _chunks_preserve_sentence_content(chunks, cleaned):
+        simple_chunks = _chunk_sentence_simple(cleaned)
+        if _chunks_preserve_sentence_content(simple_chunks, cleaned):
+            chunks = simple_chunks
+        else:
+            chunks = [cleaned]
     try:
         upsert_tts_chunk_cache(
             cache_key=cache_key,
@@ -10083,7 +10294,12 @@ def recommend_today_video():
             billing_source_lang=source_lang,
             billing_target_lang=target_lang,
         )
-        validated = _filter_videos_for_today_task(validated, min_seconds=MIN_RECOMMENDED_VIDEO_SECONDS)
+        validated = _filter_videos_for_today_task(
+            validated,
+            min_seconds=MIN_RECOMMENDED_VIDEO_SECONDS,
+            target_lang=target_lang,
+            native_lang=source_lang,
+        )
         if validated:
             cache_hit = True
             recommended_video = validated[0]
@@ -10457,7 +10673,20 @@ def prepare_today_theory():
         error_subcategory=sub_category or "",
     )
 
-    practice_sentences = _normalize_theory_sentences(practice_raw)
+    practice_sentences = _normalize_theory_sentences(practice_raw, native_lang=source_lang)
+    if len(practice_sentences) < 5:
+        retry_payload = dict(practice_payload)
+        retry_payload["quality_note"] = (
+            f"Write only fluent, idiomatic {source_lang_name}. "
+            "Reject broken learner-like phrasing. Use natural finite verb forms."
+        )
+        try:
+            practice_retry_raw = asyncio.run(run_theory_practice_sentences(retry_payload))
+            retry_sentences = _normalize_theory_sentences(practice_retry_raw, native_lang=source_lang)
+            if len(retry_sentences) >= len(practice_sentences):
+                practice_sentences = retry_sentences
+        except Exception as exc:
+            logging.warning("Skill practice retry failed: %s", exc)
     if len(practice_sentences) < 5:
         practice_sentences = [
             "Я живу в большом городе.",
@@ -14385,7 +14614,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         display = (username or "").strip()
         if display:
             daily_names[user_id] = display
-        correct = _extract_correct_translation(feedback)
+        correct = _extract_correct_translation(feedback, _unique_id)
         ru_original = (_sentence or "").strip()
         de_correct = (correct or user_translation or "").strip()
         if not de_correct:
@@ -14434,7 +14663,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                         display = (username or "").strip()
                         if display:
                             story_names[uid] = display
-                        correct = _extract_correct_translation(feedback)
+                        correct = _extract_correct_translation(feedback, _unique_id)
                         ru_original = (_sentence or "").strip()
                         de_correct = (correct or user_translation or "").strip()
                         if not de_correct:
@@ -14871,12 +15100,26 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                         SELECT DISTINCT a.user_id
                         FROM bt_3_agent_voice_sessions a
                         WHERE a.started_at < %s
-                          AND COALESCE(a.ended_at, %s) > %s
+                          AND COALESCE(
+                              a.ended_at,
+                              CASE
+                                  WHEN a.duration_seconds IS NOT NULL
+                                      THEN a.started_at + (GREATEST(a.duration_seconds, 0) * INTERVAL '1 second')
+                                  ELSE a.started_at
+                              END
+                          ) > %s
                         UNION
                         SELECT DISTINCT r.user_id
                         FROM bt_3_reader_sessions r
                         WHERE r.started_at < %s
-                          AND COALESCE(r.ended_at, %s) > %s
+                          AND COALESCE(
+                              r.ended_at,
+                              CASE
+                                  WHEN r.duration_seconds IS NOT NULL
+                                      THEN r.started_at + (GREATEST(r.duration_seconds, 0) * INTERVAL '1 second')
+                                  ELSE r.started_at
+                              END
+                          ) > %s
                     ) x
                 ),
                 latest_name AS (
@@ -14904,7 +15147,17 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                                     0,
                                     EXTRACT(
                                         EPOCH FROM (
-                                            LEAST(COALESCE(a.ended_at, %s), %s)
+                                            LEAST(
+                                                COALESCE(
+                                                    a.ended_at,
+                                                    CASE
+                                                        WHEN a.duration_seconds IS NOT NULL
+                                                            THEN a.started_at + (GREATEST(a.duration_seconds, 0) * INTERVAL '1 second')
+                                                        ELSE a.started_at
+                                                    END
+                                                ),
+                                                %s
+                                            )
                                             - GREATEST(a.started_at, %s)
                                         )
                                     )
@@ -14914,7 +15167,14 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                         ) AS agent_minutes
                     FROM bt_3_agent_voice_sessions a
                     WHERE a.started_at < %s
-                      AND COALESCE(a.ended_at, %s) > %s
+                      AND COALESCE(
+                          a.ended_at,
+                          CASE
+                              WHEN a.duration_seconds IS NOT NULL
+                                  THEN a.started_at + (GREATEST(a.duration_seconds, 0) * INTERVAL '1 second')
+                              ELSE a.started_at
+                          END
+                      ) > %s
                     GROUP BY a.user_id
                 ),
                 reader_time AS (
@@ -14926,7 +15186,17 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                                     0,
                                     EXTRACT(
                                         EPOCH FROM (
-                                            LEAST(COALESCE(r.ended_at, %s), %s)
+                                            LEAST(
+                                                COALESCE(
+                                                    r.ended_at,
+                                                    CASE
+                                                        WHEN r.duration_seconds IS NOT NULL
+                                                            THEN r.started_at + (GREATEST(r.duration_seconds, 0) * INTERVAL '1 second')
+                                                        ELSE r.started_at
+                                                    END
+                                                ),
+                                                %s
+                                            )
                                             - GREATEST(r.started_at, %s)
                                         )
                                     )
@@ -14936,7 +15206,14 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                         ) AS reader_minutes
                     FROM bt_3_reader_sessions r
                     WHERE r.started_at < %s
-                      AND COALESCE(r.ended_at, %s) > %s
+                      AND COALESCE(
+                          r.ended_at,
+                          CASE
+                              WHEN r.duration_seconds IS NOT NULL
+                                  THEN r.started_at + (GREATEST(r.duration_seconds, 0) * INTERVAL '1 second')
+                              ELSE r.started_at
+                          END
+                      ) > %s
                     GROUP BY r.user_id
                 ),
                 score_base AS (
@@ -14998,23 +15275,17 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                     week_start,
                     week_end,
                     period_end_exclusive,
-                    period_end_exclusive,
                     period_start_dt,
-                    period_end_exclusive,
                     period_end_exclusive,
                     period_start_dt,
                     week_start,
                     week_end,
                     period_end_exclusive,
+                    period_start_dt,
                     period_end_exclusive,
                     period_start_dt,
                     period_end_exclusive,
-                    period_end_exclusive,
                     period_start_dt,
-                    period_end_exclusive,
-                    period_end_exclusive,
-                    period_start_dt,
-                    period_end_exclusive,
                     period_end_exclusive,
                     period_start_dt,
                     week_start,
@@ -15091,7 +15362,7 @@ def _format_weekly_user_label(row: dict | None) -> str:
         return "участник"
     username = str(row.get("username") or "").strip().lstrip("@")
     if username:
-        return f"@{username}"
+        return username
     return f"user_{int(row.get('user_id') or 0)}"
 
 

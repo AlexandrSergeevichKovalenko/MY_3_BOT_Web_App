@@ -746,7 +746,7 @@ async def send_main_menu(update: Update, context: CallbackContext):
     await update.message.reply_text("⏳ Обновляем меню...", reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
 
     # 2️⃣ Отправляем новое меню (только в личке)
-    await update.message.reply_text("Используйте кнопки:", reply_markup=reply_markup)
+    #await update.message.reply_text("Используйте кнопки:", reply_markup=reply_markup)
 
 async def debug_message_handler(update: Update, context: CallbackContext):
     print(f"🔹 Получено сообщение (DEBUG): {update.message.text}")
@@ -6996,20 +6996,20 @@ def main():
     for hour in [7,12,16]:
         scheduler.add_job(lambda: submit_async(send_progress_report), "cron", hour=hour, minute=5)
 
-    scheduler.add_job(lambda: submit_async(get_yesterdays_mistakes_for_audio_message, CallbackContext(application=application)), "cron", hour=4, minute=15)
+    #scheduler.add_job(lambda: submit_async(get_yesterdays_mistakes_for_audio_message, CallbackContext(application=application)), "cron", hour=4, minute=15)
 
     # scheduler.add_job(lambda: submit_async(send_user_analytics_bar_charts, CallbackContext(application=application), period="day"), "cron", hour= 22, minute=39, day_of_week = "sun")
 
     # планировщик по отправке аналитике:
-    scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="day"), "cron", hour=22, minute=40, day_of_week="sun")
+    # scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="day"), "cron", hour=22, minute=40, day_of_week="sun")
     
-    scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="week"), "cron", day="last", hour= 22, minute=2)
+    # scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="week"), "cron", day="last", hour= 22, minute=2)
 
-    scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="month"), "cron", day="last", month="3,6,9,12", hour= 7, minute=2)
+    # scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="month"), "cron", day="last", month="3,6,9,12", hour= 7, minute=2)
 
-    scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="half_year"), "cron", day="last", month="6,12", hour= 10, minute=2)
+    # scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="half_year"), "cron", day="last", month="6,12", hour= 10, minute=2)
 
-    scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="quarter"), "cron", day="last", month="12", hour= 23, minute=2)
+    # scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="quarter"), "cron", day="last", month="12", hour= 23, minute=2)
     scheduler.add_job(
         lambda: submit_async(cleanup_system_messages, CallbackContext(application=application)),
         "cron",
