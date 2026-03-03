@@ -1511,77 +1511,119 @@ body {
   box-shadow: var(--dmps-shadow-card);
 }
 
-.guide-step-row {
+.guide-step-card.is-open {
+  background: var(--dmps-hover);
+}
+
+.guide-step-question {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 16px 20px;
+  padding: 14px 16px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
 }
 
 .guide-step-leading {
   min-width: 0;
   display: flex;
   align-items: flex-start;
-  gap: 16px;
+  gap: 12px;
 }
 
 .guide-step-number {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 999px;
   display: grid;
   place-items: center;
   background: var(--dmps-card);
   color: var(--dmps-text-secondary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   flex: 0 0 auto;
 }
 
 .guide-step-title,
-.guide-routine-title,
-.guide-purpose-label,
 .guide-faq-head h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.25;
   font-weight: 700;
   color: var(--dmps-text-title);
 }
 
 .guide-step-text,
-.guide-purpose-card p,
-.guide-routine-card p,
 .guide-faq-answer {
-  margin: 4px 0 0;
-  font-size: 14px;
+  margin: 2px 0 0;
+  font-size: 13px;
   line-height: 1.4;
   color: var(--dmps-text-muted);
 }
 
+.guide-step-question .guide-step-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .guide-step-chevron {
   color: var(--dmps-text-subtle);
-  font-size: 24px;
+  font-size: 20px;
   line-height: 1;
   flex: 0 0 auto;
+  transition: transform 0.2s ease;
 }
 
-.guide-purpose-grid {
+.guide-step-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.guide-step-answer {
+  padding: 0 20px 20px;
+}
+
+.guide-step-details {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.guide-purpose-card,
-.guide-routine-card {
+.guide-step-detail-block {
   display: grid;
   gap: 8px;
   padding: 16px;
-  border-radius: var(--dmps-radius-inner);
+  border-radius: 16px;
   border: 1px solid var(--dmps-border);
-  background: var(--dmps-card);
-  box-shadow: var(--dmps-shadow-card);
+  background: rgba(15, 23, 42, 0.68);
+}
+
+.guide-step-detail-title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.4;
+  font-weight: 700;
+  color: var(--dmps-text-secondary);
+}
+
+.guide-step-detail-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: var(--dmps-text-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.guide-step-detail-list li {
+  margin: 0;
 }
 
 .guide-faq-grid {
@@ -3885,11 +3927,7 @@ body {
     justify-content: flex-end;
   }
 
-  .guide-purpose-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .guide-step-row {
+  .guide-step-question {
     padding: 16px;
   }
 
@@ -3897,6 +3935,14 @@ body {
   .guide-faq-answer {
     padding-left: 16px;
     padding-right: 16px;
+  }
+
+  .guide-step-answer {
+    padding: 0 16px 16px;
+  }
+
+  .guide-step-detail-block {
+    padding: 12px;
   }
 
   .guide-quick-actions-grid {
@@ -8865,31 +8911,33 @@ body {
 }
 
 .skill-rings-legend-item {
-  border: 1px solid rgba(136, 177, 245, 0.2);
-  background: rgba(5, 14, 31, 0.58);
-  border-radius: 10px;
-  padding: 10px;
+  position: relative;
+  border: 1px solid var(--home-border);
+  background: var(--home-bg-card-alt);
+  border-radius: 20px;
+  padding: 16px;
   display: grid;
   grid-template-columns: auto 1fr auto;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
+  box-shadow: none;
 }
 
 .skill-rings-legend-item.is-weak {
-  border-color: rgba(248, 113, 113, 0.28);
-  background: linear-gradient(180deg, rgba(69, 18, 27, 0.7), rgba(36, 14, 21, 0.78));
+  border-color: rgba(220, 38, 38, 0.34);
+  box-shadow: inset 3px 0 0 rgba(220, 38, 38, 0.82);
 }
 
 .skill-rings-legend-item.is-strong {
-  border-color: rgba(52, 211, 153, 0.28);
-  background: linear-gradient(180deg, rgba(12, 44, 40, 0.7), rgba(8, 28, 28, 0.78));
+  border-color: rgba(22, 163, 74, 0.34);
+  box-shadow: inset 3px 0 0 rgba(22, 163, 74, 0.82);
 }
 
 .skill-rings-dot {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.92);
 }
 
 .skill-rings-text {
@@ -8903,14 +8951,7 @@ body {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-}
-
-.skill-rings-legend-item.is-weak .skill-rings-name {
-  color: #ffd5dc;
-}
-
-.skill-rings-legend-item.is-strong .skill-rings-name {
-  color: #ccfbf1;
+  color: var(--home-text-title);
 }
 
 .skill-train-status-badge {
@@ -8941,16 +8982,30 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  color: #9eb1d6;
+  color: var(--home-text-muted);
   font-size: 0.78rem;
 }
 
-.skill-rings-legend-item.is-weak .skill-rings-meta {
-  color: #f9a8b3;
+.skill-rings-meta span:first-child {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--home-border);
+  background: rgba(15, 23, 42, 0.78);
+  color: var(--home-text-secondary);
+  font-weight: 600;
 }
 
-.skill-rings-legend-item.is-strong .skill-rings-meta {
-  color: #99f6e4;
+.skill-rings-legend-item.is-weak .skill-rings-meta span:first-child {
+  border-color: rgba(220, 38, 38, 0.34);
+  color: #fca5a5;
+}
+
+.skill-rings-legend-item.is-strong .skill-rings-meta span:first-child {
+  border-color: rgba(22, 163, 74, 0.34);
+  color: #86efac;
 }
 
 .skill-rings-train-btn {
@@ -10572,14 +10627,24 @@ body {
     backdrop-filter: none;
   }
 
+  .webapp-overlay {
+    place-items: stretch;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
   .overlay-panel {
-    width: min(326px, 92vw);
-    padding: 12px;
-    gap: 8px;
+    width: 100vw;
+    min-height: 100dvh;
+    max-height: 100dvh;
+    padding: calc(env(safe-area-inset-top, 0px) + 12px) 12px calc(env(safe-area-inset-bottom, 0px) + 12px);
+    gap: 10px;
     background: #111827;
     border: 1px solid #334155;
-    border-radius: 28px;
+    border-radius: 0;
     box-shadow: none;
+    grid-template-rows: auto 1fr auto;
+    overflow: hidden;
   }
 
   .overlay-header {
@@ -10603,6 +10668,8 @@ body {
   }
 
   .overlay-menu {
+    min-height: 0;
+    overflow-y: auto;
     border-radius: 14px;
     border: 1px solid #334155;
     background: #111827;
@@ -10695,14 +10762,15 @@ body {
   }
 
   .webapp-page.is-telegram-tablet .overlay-panel {
-    width: min(420px, 92vw);
-    border-radius: 28px;
-    padding: 16px;
+    width: 100vw;
+    min-height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+    padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
   }
 }
 
 @media (max-width: 560px) {
-  .guide-purpose-grid,
   .guide-quick-actions-grid {
     grid-template-columns: 1fr;
   }
@@ -10726,8 +10794,6 @@ body {
   }
 
   .guide-step-text,
-  .guide-purpose-card p,
-  .guide-routine-card p,
   .guide-faq-answer {
     font-size: 13px;
   }
@@ -11193,15 +11259,15 @@ body {
 }
 
 .skill-rings-legend {
-  gap: 16px;
+  gap: 12px;
 }
 
 .skill-rings-legend-item {
-  padding: 20px;
+  padding: 16px;
   border-radius: 20px;
   border: 1px solid var(--home-border);
   background: var(--home-bg-card-alt);
-  gap: 16px;
+  gap: 12px;
 }
 
 .skill-rings-dot {
@@ -11212,25 +11278,25 @@ body {
 }
 
 .skill-rings-name {
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1.3;
   font-weight: 600;
   color: var(--home-text-title);
-  gap: 8px;
+  gap: 6px;
 }
 
 .skill-rings-meta {
-  margin-top: 8px;
-  gap: 12px;
-  font-size: 14px;
+  margin-top: 6px;
+  gap: 8px;
+  font-size: 13px;
   line-height: 1.4;
   color: var(--home-text-muted);
 }
 
 .skill-rings-train-btn {
-  min-height: 44px;
+  min-height: 40px;
   border-radius: 16px;
-  padding: 0 16px;
+  padding: 0 14px;
   white-space: nowrap;
 }
 
@@ -11320,7 +11386,7 @@ body {
   .skill-rings-train-btn,
   .skill-rings-resume-btn {
     min-height: 34px;
-    padding: 0 10px;
+    padding: 0 9px;
     border-radius: 12px;
     font-size: 12px;
     line-height: 1.2;

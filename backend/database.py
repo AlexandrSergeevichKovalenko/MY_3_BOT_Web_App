@@ -2786,7 +2786,11 @@ def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
             }
 
 
-def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
+def get_random_dictionary_entry(
+    cooldown_days: int = 5,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -2795,9 +2799,13 @@ def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
                     user_id,
                     word_ru,
                     translation_de,
-                    response_json
+                    response_json,
+                    source_lang,
+                    target_lang
                 FROM bt_3_webapp_dictionary_queries
                 WHERE response_json IS NOT NULL
+                  AND COALESCE(NULLIF(source_lang, ''), response_json->>'source_lang') = %s
+                  AND COALESCE(NULLIF(target_lang, ''), response_json->>'target_lang') = %s
                   AND NOT EXISTS (
                       SELECT 1
                       FROM bt_3_quiz_history h
@@ -2806,7 +2814,7 @@ def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
                   )
                 ORDER BY RANDOM()
                 LIMIT 1;
-            """, (f"{cooldown_days} days",))
+            """, (source_lang, target_lang, f"{cooldown_days} days",))
             row = cursor.fetchone()
             if not row:
                 cursor.execute("""
@@ -2815,12 +2823,16 @@ def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
                         user_id,
                         word_ru,
                         translation_de,
-                        response_json
+                        response_json,
+                        source_lang,
+                        target_lang
                     FROM bt_3_webapp_dictionary_queries
                     WHERE response_json IS NOT NULL
+                      AND COALESCE(NULLIF(source_lang, ''), response_json->>'source_lang') = %s
+                      AND COALESCE(NULLIF(target_lang, ''), response_json->>'target_lang') = %s
                     ORDER BY RANDOM()
                     LIMIT 1;
-                """)
+                """, (source_lang, target_lang))
                 row = cursor.fetchone()
                 if not row:
                     return None
@@ -2830,10 +2842,17 @@ def get_random_dictionary_entry(cooldown_days: int = 5) -> dict | None:
                 "word_ru": row[2],
                 "translation_de": row[3],
                 "response_json": row[4],
+                "source_lang": row[5],
+                "target_lang": row[6],
             }
 
 
-def get_random_dictionary_entry_for_quiz_type(quiz_type: str, cooldown_days: int = 5) -> dict | None:
+def get_random_dictionary_entry_for_quiz_type(
+    quiz_type: str,
+    cooldown_days: int = 5,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> dict | None:
     quiz_type = (quiz_type or "").strip().lower()
 
     usage_examples_count_expr = (
@@ -2869,9 +2888,13 @@ def get_random_dictionary_entry_for_quiz_type(quiz_type: str, cooldown_days: int
                     user_id,
                     word_ru,
                     translation_de,
-                    response_json
+                    response_json,
+                    source_lang,
+                    target_lang
                 FROM bt_3_webapp_dictionary_queries
                 WHERE response_json IS NOT NULL
+                  AND COALESCE(NULLIF(source_lang, ''), response_json->>'source_lang') = %s
+                  AND COALESCE(NULLIF(target_lang, ''), response_json->>'target_lang') = %s
                   AND {extra_where}
                   AND NOT EXISTS (
                       SELECT 1
@@ -2882,7 +2905,7 @@ def get_random_dictionary_entry_for_quiz_type(quiz_type: str, cooldown_days: int
                 ORDER BY RANDOM()
                 LIMIT 1;
                 """,
-                (f"{cooldown_days} days",),
+                (source_lang, target_lang, f"{cooldown_days} days"),
             )
             row = cursor.fetchone()
             if not row:
@@ -2893,13 +2916,18 @@ def get_random_dictionary_entry_for_quiz_type(quiz_type: str, cooldown_days: int
                         user_id,
                         word_ru,
                         translation_de,
-                        response_json
+                        response_json,
+                        source_lang,
+                        target_lang
                     FROM bt_3_webapp_dictionary_queries
                     WHERE response_json IS NOT NULL
+                      AND COALESCE(NULLIF(source_lang, ''), response_json->>'source_lang') = %s
+                      AND COALESCE(NULLIF(target_lang, ''), response_json->>'target_lang') = %s
                       AND {extra_where}
                     ORDER BY RANDOM()
                     LIMIT 1;
-                    """
+                    """,
+                    (source_lang, target_lang),
                 )
                 row = cursor.fetchone()
                 if not row:
@@ -2911,6 +2939,8 @@ def get_random_dictionary_entry_for_quiz_type(quiz_type: str, cooldown_days: int
         "word_ru": row[2],
         "translation_de": row[3],
         "response_json": row[4],
+        "source_lang": row[5],
+        "target_lang": row[6],
     }
 
 

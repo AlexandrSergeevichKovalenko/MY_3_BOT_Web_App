@@ -6191,6 +6191,27 @@ def _shuffle_quiz_options(quiz: dict) -> dict | None:
     return shuffled
 
 
+def _is_ru_de_quiz_entry(entry: dict | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+
+    response_json = _coerce_response_json(entry.get("response_json"))
+    source_lang = str(
+        entry.get("source_lang")
+        or response_json.get("source_lang")
+        or ((response_json.get("language_pair") or {}).get("source_lang") if isinstance(response_json.get("language_pair"), dict) else "")
+        or ""
+    ).strip().lower()
+    target_lang = str(
+        entry.get("target_lang")
+        or response_json.get("target_lang")
+        or ((response_json.get("language_pair") or {}).get("target_lang") if isinstance(response_json.get("language_pair"), dict) else "")
+        or ""
+    ).strip().lower()
+
+    return source_lang == "ru" and target_lang == "de"
+
+
 def _extract_german_word(entry: dict) -> str | None:
     response_json = _coerce_response_json(entry.get("response_json"))
     candidate = (
@@ -6691,11 +6712,28 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
     max_entries_per_generator = 4
     for quiz_type, generator in ordered:
         for _ in range(max_entries_per_generator):
-            entry = get_random_dictionary_entry_for_quiz_type(quiz_type, cooldown_days=5)
+            entry = get_random_dictionary_entry_for_quiz_type(
+                quiz_type,
+                cooldown_days=5,
+                source_lang="ru",
+                target_lang="de",
+            )
             if not entry:
-                entry = get_random_dictionary_entry(cooldown_days=5)
+                entry = get_random_dictionary_entry(
+                    cooldown_days=5,
+                    source_lang="ru",
+                    target_lang="de",
+                )
             if not entry:
                 break
+            if not _is_ru_de_quiz_entry(entry):
+                logging.warning(
+                    "⚠️ Пропускаем quiz entry с неверной языковой парой: source=%s target=%s word=%s",
+                    entry.get("source_lang"),
+                    entry.get("target_lang"),
+                    entry.get("word_ru"),
+                )
+                continue
             try:
                 quiz = await generator(entry)
             except Exception as exc:

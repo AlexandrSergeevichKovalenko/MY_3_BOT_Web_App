@@ -269,10 +269,10 @@ function AppInner() {
   const [planAnalyticsLoading, setPlanAnalyticsLoading] = useState(false);
   const [planAnalyticsError, setPlanAnalyticsError] = useState('');
   const [weeklyMetricExpanded, setWeeklyMetricExpanded] = useState({
-    translations: true,
-    learned_words: true,
-    agent_minutes: true,
-    reading_minutes: true,
+    translations: false,
+    learned_words: false,
+    agent_minutes: false,
+    reading_minutes: false,
   });
   const [srsLoading, setSrsLoading] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
@@ -382,6 +382,7 @@ function AppInner() {
   const [guideQuickCardDismissed, setGuideQuickCardDismissed] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
+  const [guideStepOpenKey, setGuideStepOpenKey] = useState('translations');
   const [guideFaqOpenKey, setGuideFaqOpenKey] = useState('start');
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
@@ -3158,6 +3159,345 @@ function AppInner() {
       ),
     },
   ]), [tr]);
+  const guideStepItems = useMemo(() => {
+    if (uiLang === 'de') {
+      return [
+        {
+          key: 'translations',
+          number: '1',
+          title: 'Übersetzungen',
+          summary: 'Trainiere Satzbau, Grammatik und Fehleranalyse Schritt für Schritt.',
+          sections: [
+            {
+              title: 'So startest du',
+              items: [
+                'Wähle zuerst Thema und Niveau und tippe danach auf „Übersetzung starten“.',
+                'Danach öffnet die App deinen aktuellen Satzsatz und du gibst deine Übersetzungen direkt in die Felder ein.',
+                'Im normalen Modus besteht ein Standardsatz aus 7 Sätzen.',
+              ],
+            },
+            {
+              title: 'Während der Übersetzung',
+              items: [
+                'Wenn dir ein Wort fehlt, kannst du den Wörterbuch-Sprung über den kleinen Pfeil neben dem Satzfeld nutzen.',
+                'Du kannst den Bereich „Wörterbuch“ auch parallel geöffnet lassen und dort Wörter nachschlagen, während du weiterübersetzt.',
+                'Wenn alle Felder fertig sind, tippst du auf „Prüfen“, um Score, Korrekturen und Feedback zu bekommen.',
+              ],
+            },
+            {
+              title: 'Nach dem Prüfen',
+              items: [
+                'Vor dem Prüfen kannst du die Checkbox aktivieren, damit textuelle Grammatik-Erklärungen zusätzlich in den privaten Bot-Chat gesendet werden.',
+                'Nach dem Prüfen siehst du Score, richtige Variante, Erklärungen und später auch den Verlauf über den Button für die Tagesergebnisse.',
+                'Am nächsten Tag kann der Bot dir zusätzlich Audio-Erklärungen zu Fehlern schicken, damit du dich besser auf die nächste Runde vorbereitest.',
+              ],
+            },
+            {
+              title: 'Wie Sätze, Fehlerdatenbank und Skill-Map funktionieren',
+              items: [
+                'Standardmäßig werden bis zu 5 Sätze aus deiner persönlichen Fehlerdatenbank und die restlichen Sätze als neue Sätze kombiniert.',
+                'Ein Satz landet in der Fehlerdatenbank, wenn dein Ergebnis unter 80 Punkten bleibt.',
+                'Ein Satz wird aus der Fehlerdatenbank entfernt, wenn er bereits dort war und du ihn später mit 85 Punkten oder mehr korrekt schaffst.',
+                'Die Skill-Map arbeitet nach Fehlerkategorien: Fehler geben in der Regel minus 3 Punkte, korrekte Treffer plus 2 Punkte in der passenden Kategorie.',
+              ],
+            },
+          ],
+        },
+        {
+          key: 'dictionary',
+          number: '2',
+          title: 'Wörterbuch',
+          summary: 'Suche Wörter in beide Richtungen und speichere sie für später.',
+          sections: [
+            {
+              title: 'Was du eingeben kannst',
+              items: [
+                'Du kannst ein Wort oder eine Phrase sowohl in deiner Muttersprache als auch in der Zielsprache eingeben.',
+                'Nach dem Klick auf „Übersetzen“ braucht die App kurz Zeit, um Ergebnis und Zusatzinfos zu laden.',
+              ],
+            },
+            {
+              title: 'Was du als Ergebnis bekommst',
+              items: [
+                'Du bekommst nicht nur die Übersetzung, sondern oft auch Wortformen, Varianten und nützliche Zusatzinformationen.',
+                'Viele Einträge lassen sich direkt anhören, damit du Aussprache und Rhythmus mitlernst.',
+              ],
+            },
+            {
+              title: 'So speicherst du sinnvoll',
+              items: [
+                'Nach dem Übersetzen kannst du auf „Speichern“ tippen.',
+                'Die App zeigt dir dazu häufige Kombinationen, passende Kollokationen oder Beispielvarianten zum Wort bzw. zur Phrase.',
+                'Du kannst eine oder mehrere davon auswählen und in einem Ordner speichern, damit sie später im Training auftauchen.',
+              ],
+            },
+            {
+              title: 'Wofür das im Alltag gut ist',
+              items: [
+                'Das Wörterbuch ist besonders praktisch parallel zu Übersetzungen, YouTube und Reader.',
+                'Alles, was du dort speicherst, kann später in Karten und Wiederholung übernommen werden.',
+              ],
+            },
+          ],
+        },
+        {
+          key: 'flashcards',
+          number: '3',
+          title: 'Karten',
+          summary: 'Vier Trainingsmodi für Wiederholung, Erkennen, Bauen und Ergänzen.',
+          sections: [
+            {
+              title: 'Die 4 Modi',
+              items: [
+                'FSRS: intelligentes spaced repetition für langfristiges Behalten.',
+                'Quiz: 4 Antwortoptionen, damit du schnell Bedeutung und Form erkennst.',
+                'Blocks: du baust die richtige Antwort aus Teilen auf.',
+                'Sentence: du ergänzt eine Phrase oder einen Satz im passenden Kontext.',
+              ],
+            },
+            {
+              title: 'Welche Einstellungen es gibt',
+              items: [
+                'Für Quiz, Blocks und Sentence kannst du Set-Größe, Ordner, Geschwindigkeit und automatischen oder manuellen Übergang wählen.',
+                'Im Blocks-Modus stellst du zusätzlich den Timer ein: adaptiv, fest oder ohne Timer.',
+                'Im Sentence-Modus kannst du die Schwierigkeit wählen: easy, medium oder hard.',
+                'Im FSRS-Modus siehst du vor allem Queue-Infos wie „Due“ und „New Today“.',
+              ],
+            },
+            {
+              title: 'Wie Karten entstehen',
+              items: [
+                'Quiz, Blocks und Sentence arbeiten mit deinem gespeicherten Material aus dem Wörterbuch und berücksichtigen Ordner und Modus-Einstellungen.',
+                'Vor dem eigentlichen Training zeigt die App zuerst Karten zur kurzen Orientierung, danach startet die Session.',
+                'FSRS arbeitet anders: dort holt die App fällige Karten direkt aus der Wiederholungs-Warteschlange.',
+              ],
+            },
+            {
+              title: 'So benutzt du FSRS richtig',
+              items: [
+                'In FSRS siehst du zuerst die Karte in deiner Muttersprache. Versuche die Übersetzung zuerst laut oder innerlich selbst abzurufen.',
+                'Dann drehst du die Karte um und bewertest, wie gut du die Antwort wirklich aus dem Kopf holen konntest.',
+                'Again: du konntest nicht antworten oder lagst daneben. Die Karte kommt sehr bald wieder.',
+                'Hard: du hast es geschafft, aber mit viel Mühe oder Unsicherheit. Die Wiederholung kommt früher.',
+                'Good: du hast korrekt erinnert. Das ist der Standard-Schritt für normales Lernen.',
+                'Easy: du wusstest es sofort und sicher. Dann legt FSRS ein längeres Intervall fest.',
+              ],
+            },
+          ],
+        },
+        {
+          key: 'media',
+          number: '4',
+          title: 'Video, Lesen und Sprechen',
+          summary: 'YouTube, Reader und Sprachassistent für echtes Sprachmaterial.',
+          sections: [
+            {
+              title: 'YouTube: Einstieg und Modi',
+              items: [
+                'Du kannst entweder einen YouTube-Link einfügen oder eine Suchanfrage schreiben. Bei der Suche braucht die App etwas Zeit.',
+                'Nach dem Öffnen des Videos drückst du Play und lädst dann die Untertitel.',
+                'Der Fullscreen-Button vergrößert den Videobereich, damit Video, Overlay und Untertitel angenehmer lesbar werden.',
+                'Im Overlay-Modus liegen die Untertitel direkt auf dem Video. Dort kannst du die Originalsprache und – wenn verfügbar – auch deine Muttersprache sehen.',
+              ],
+            },
+            {
+              title: 'Wenn Untertitel nicht automatisch kommen',
+              items: [
+                'Wenn nach etwa 2 Minuten keine Untertitel erscheinen, kannst du das Transcript auf YouTube manuell kopieren.',
+                'Am besten kopierst du die Version mit Zeitmarken und fügst sie in den speziellen Transcript-Block der App ein.',
+                'Danach können die Zeilen mit dem Video synchronisiert werden und du kannst wieder die Übersetzung in deiner Muttersprache einschalten.',
+              ],
+            },
+            {
+              title: 'Reader: lesen, übersetzen, Audio',
+              items: [
+                'Im Reader kannst du Text oder Link einfügen oder eine Datei laden und danach ein Dokument aus der Bibliothek öffnen.',
+                'Beim Lesen kannst du Wörter oder ganze Sätze antippen und sofort Kontext-Hilfe nutzen.',
+                'Die obere Leiste lässt sich einklappen und später wieder aufklappen, wenn du ohne Ablenkung lesen willst.',
+                'Zusätzlich kannst du Audio für das ganze Dokument oder für bestimmte Seiten erzeugen.',
+              ],
+            },
+            {
+              title: 'Sprachassistent',
+              items: [
+                'Im Bereich Sprachpraxis verbindest du zuerst den Assistenten und erlaubst Mikrofon-Zugriff.',
+                'Danach sprichst du in kurzen Phrasen oder ganzen Antworten und trainierst freies Sprechen in Echtzeit.',
+                'Der Assistent ist gut für Aussprache, Reaktionsgeschwindigkeit, freies Formulieren und mündliche Routine.',
+              ],
+            },
+          ],
+        },
+      ];
+    }
+
+    return [
+      {
+        key: 'translations',
+        number: '1',
+        title: 'Переводы',
+        summary: 'Тренируйте построение предложений и сразу смотрите разбор ошибок.',
+        sections: [
+          {
+            title: 'Как начать',
+            items: [
+              'Сначала выберите тему и уровень, затем нажмите «Начать перевод».',
+              'После запуска приложение откроет ваш текущий набор предложений, и вы будете вводить переводы прямо в поля.',
+              'В обычном режиме стандартный набор состоит из 7 предложений.',
+            ],
+          },
+          {
+            title: 'Во время перевода',
+            items: [
+              'Если вы не знаете слово, можно открыть словарь через маленькую стрелку рядом с полем предложения.',
+              'Можно держать раздел «Словарь» открытым параллельно и смотреть слова прямо по ходу перевода.',
+              'Когда все поля заполнены, нажмите «Проверить перевод», чтобы получить балл, исправления и разбор.',
+            ],
+          },
+          {
+            title: 'После проверки',
+            items: [
+              'Перед проверкой можно поставить галочку, чтобы текстовые объяснения грамматики дополнительно приходили в личку по каждому предложению.',
+              'После проверки вы увидите балл, эталонный вариант, объяснения и сможете открыть историю результатов за сегодня той же кнопкой внизу.',
+              'На следующий день бот может прислать аудиосообщения с разбором ошибок, чтобы вам было легче подготовиться к следующему переводу.',
+            ],
+          },
+          {
+            title: 'Как формируются предложения, ошибки и skill',
+            items: [
+              'Обычно набор собирается так: до 5 предложений из вашей личной базы ошибок и оставшиеся предложения как новые.',
+              'Предложение попадает в базу ошибок, если результат за него ниже 80 баллов.',
+              'Предложение удаляется из базы ошибок, если оно уже было там и позже вы перевели его на 85 баллов или выше.',
+              'Skill-карта работает по категориям ошибок: за ошибку категория обычно получает −3, а за успешный результат +2.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'dictionary',
+        number: '2',
+        title: 'Словарь',
+        summary: 'Сохраняйте новые слова, выражения и свои полезные находки.',
+        sections: [
+          {
+            title: 'Что можно вводить',
+            items: [
+              'Можно вводить как слово или фразу на родном языке, так и слово на языке, который вы учите.',
+              'После нажатия на перевод подождите немного: приложению нужно время, чтобы получить результат и дополнительные данные.',
+            ],
+          },
+          {
+            title: 'Что показывает словарь',
+            items: [
+              'Система показывает не только перевод, но и формы слова, варианты употребления и дополнительные подсказки.',
+              'Для многих слов можно сразу прослушать произношение.',
+            ],
+          },
+          {
+            title: 'Как сохранять',
+            items: [
+              'После перевода нажмите «Сохранить».',
+              'Программа может предложить частые сочетания, коллокации и полезные варианты с этим словом или выражением.',
+              'Вы можете выбрать один или несколько вариантов и записать их в словарь, при желании сразу в нужную папку.',
+            ],
+          },
+          {
+            title: 'Как использовать дальше',
+            items: [
+              'Словарь удобно держать рядом с переводами, YouTube и Reader, когда попадаются незнакомые слова.',
+              'Всё сохранённое затем можно повторять в карточках и FSRS.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'flashcards',
+        number: '3',
+        title: 'Карточки',
+        summary: 'Закрепляйте лексику через повторение, FSRS и быстрые режимы тренировки.',
+        sections: [
+          {
+            title: '4 режима тренировки',
+            items: [
+              'FSRS: интервальное повторение для долгой памяти.',
+              'Quiz: 4 варианта ответа для быстрой проверки знания слова.',
+              'Blocks: сборка правильного ответа из частей.',
+              'Sentence: дополнение фразы или предложения по контексту.',
+            ],
+          },
+          {
+            title: 'Какие настройки есть',
+            items: [
+              'Для Quiz, Blocks и Sentence можно выбрать размер набора, папку, скорость и режим перехода: автоматический или ручной.',
+              'В режиме Blocks дополнительно настраивается таймер: adaptive, fixed или без таймера.',
+              'В режиме Sentence можно выбрать сложность: easy, medium или hard.',
+              'В FSRS-режиме показывается очередь карточек: сколько due и сколько new today.',
+            ],
+          },
+          {
+            title: 'Как формируются карточки',
+            items: [
+              'Quiz, Blocks и Sentence берут материал из вашего словаря с учётом выбранной папки и настроек режима.',
+              'Перед самой тренировкой приложение сначала показывает карточки для быстрого ознакомления, а затем уже запускает quiz, blocks или sentence session.',
+              'FSRS работает иначе: он сразу достаёт карточки из очереди интервального повторения.',
+            ],
+          },
+          {
+            title: 'Как работать в FSRS',
+            items: [
+              'В FSRS вы сначала видите карточку на родном языке. Сначала попробуйте сами произнести перевод вслух или про себя.',
+              'Потом переверните карточку и честно оцените, насколько легко вы достали ответ из памяти.',
+              'Снова / Again: не смогли ответить или ответили неверно. Карточка вернётся очень скоро.',
+              'Сложно / Hard: вспомнили, но с большим усилием или ошибками. Повтор придёт раньше обычного.',
+              'Хорошо / Good: вспомнили правильно. Это стандартный шаг нормального обучения.',
+              'Легко / Easy: ответ появился сразу и уверенно. Тогда интервал до следующего повтора будет длиннее.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'media',
+        number: '4',
+        title: 'Видео, чтение и голос',
+        summary: 'Переходите к реальному немецкому: YouTube, Reader и живой разговорный ассистент.',
+        sections: [
+          {
+            title: 'YouTube: как начать',
+            items: [
+              'Можно вставить ссылку на видео с YouTube или написать поисковый запрос в строке. Если вы ищете по запросу, нужно немного подождать.',
+              'После открытия видео нажмите Play, затем загрузите субтитры.',
+              'Кнопка разворота на весь экран увеличивает рабочую область, чтобы удобнее смотреть видео, overlay и субтитры.',
+              'В режиме Overlay субтитры показываются прямо поверх видео: оригинал и, при наличии, перевод на родной язык.',
+            ],
+          },
+          {
+            title: 'Если субтитры не загрузились',
+            items: [
+              'Если субтитры не появились примерно за 2 минуты, можно взять транскрипт вручную на странице YouTube.',
+              'Лучше копировать вариант с метками времени и вставить его в специальный блок для субтитров в приложении.',
+              'После этого строки можно синхронизировать с видео и затем включить отображение субтитров на родном языке.',
+            ],
+          },
+          {
+            title: 'Reader: как пользоваться',
+            items: [
+              'В Reader можно вставить текст или ссылку, загрузить файл и потом открыть документ из библиотеки.',
+              'Во время чтения можно нажимать на слова и предложения и получать контекстный перевод или подсказку.',
+              'Верхняя панель в Reader сворачивается и разворачивается отдельной кнопкой, если вы хотите читать без лишнего шума.',
+              'Также можно создавать аудио для всего текста или для выбранных страниц.',
+            ],
+          },
+          {
+            title: 'Разговорная практика',
+            items: [
+              'В блоке агента сначала подключите ассистента и разрешите микрофон.',
+              'Дальше говорите короткими фразами или полными ответами и тренируйте устную речь в реальном времени.',
+              'Этот режим нужен для спонтанной речи, произношения, скорости реакции и уверенности в разговоре.',
+            ],
+          },
+        ],
+      },
+    ];
+  }, [uiLang]);
   const isYoutubeSelectionMenu = String(selectionType || '').startsWith('youtube_');
   const readerHasContent = Boolean(String(readerContent || '').trim());
   const readerDisplayPages = useMemo(() => {
@@ -3414,6 +3754,16 @@ function AppInner() {
   const weeklyPlanCollapseStorageKey = useMemo(() => {
     const uid = webappUser?.id ? String(webappUser.id) : 'anon';
     return `weekly_plan_collapsed_${uid}`;
+  }, [webappUser]);
+  const defaultWeeklyMetricExpanded = useMemo(() => ({
+    translations: false,
+    learned_words: false,
+    agent_minutes: false,
+    reading_minutes: false,
+  }), []);
+  const weeklyMetricExpandedStorageKey = useMemo(() => {
+    const uid = webappUser?.id ? String(webappUser.id) : 'anon';
+    return `weekly_metric_expanded_${uid}`;
   }, [webappUser]);
 
   const toggleSection = (key) => {
@@ -4887,6 +5237,38 @@ function AppInner() {
     if (!isWebAppMode) return;
     safeStorageSet(weeklyPlanCollapseStorageKey, weeklyPlanCollapsed ? '1' : '0');
   }, [isWebAppMode, weeklyPlanCollapseStorageKey, weeklyPlanCollapsed]);
+
+  useEffect(() => {
+    if (!isWebAppMode) return;
+    const saved = safeStorageGet(weeklyMetricExpandedStorageKey);
+    if (!saved) {
+      setWeeklyMetricExpanded(defaultWeeklyMetricExpanded);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(saved);
+      setWeeklyMetricExpanded({
+        ...defaultWeeklyMetricExpanded,
+        ...(parsed && typeof parsed === 'object'
+          ? Object.fromEntries(
+              Object.entries(parsed).map(([key, value]) => [key, Boolean(value)])
+            )
+          : {}),
+      });
+    } catch (_error) {
+      setWeeklyMetricExpanded(defaultWeeklyMetricExpanded);
+    }
+  }, [defaultWeeklyMetricExpanded, isWebAppMode, weeklyMetricExpandedStorageKey]);
+
+  useEffect(() => {
+    if (!isWebAppMode) return;
+    safeStorageSet(weeklyMetricExpandedStorageKey, JSON.stringify({
+      translations: Boolean(weeklyMetricExpanded.translations),
+      learned_words: Boolean(weeklyMetricExpanded.learned_words),
+      agent_minutes: Boolean(weeklyMetricExpanded.agent_minutes),
+      reading_minutes: Boolean(weeklyMetricExpanded.reading_minutes),
+    }));
+  }, [isWebAppMode, weeklyMetricExpanded, weeklyMetricExpandedStorageKey]);
 
   useEffect(() => {
     if (flashcardsOnly || !selectedSections.has('assistant')) {
@@ -9139,14 +9521,16 @@ function AppInner() {
   }, [youtubeAppFullscreen]);
 
   useEffect(() => {
-    if (!youtubeAppFullscreen || !selectionText || !selectionPos) {
+    if (!selectionText || !selectionPos) {
       return undefined;
     }
     const onPointerDown = (event) => {
       const target = event.target;
-      if (!(target instanceof Element)) return;
+      if (!(target instanceof Element)) {
+        clearSelection();
+        return;
+      }
       if (selectionMenuRef.current?.contains(target)) return;
-      if (target.closest('.overlay-clickable-word')) return;
       clearSelection();
     };
     const onKeyDown = (event) => {
@@ -9160,7 +9544,7 @@ function AppInner() {
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [youtubeAppFullscreen, selectionText, selectionPos]);
+  }, [selectionText, selectionPos]);
 
   useEffect(() => {
     if (!selectionGptOpen) return undefined;
@@ -9286,6 +9670,11 @@ function AppInner() {
   }, [youtubeCurrentTime, youtubeTranscript.length, youtubeId, initData, youtubeTranslations, youtubeTranslationEnabled]);
 
   const handleLoadDailyHistory = async () => {
+    if (historyVisible) {
+      setHistoryVisible(false);
+      setHistoryError('');
+      return;
+    }
     if (!initData) {
       setHistoryError(initDataMissingMsg);
       return;
@@ -10827,111 +11216,44 @@ function AppInner() {
                 </div>
 
                 <div className="guide-step-grid">
-                  <article className="guide-step-card">
-                    <div className="guide-step-row">
-                      <div className="guide-step-leading">
-                        <div className="guide-step-number">1</div>
-                        <div>
-                          <div className="guide-step-title">{tr('Переводы', 'Uebersetzungen')}</div>
-                          <p className="guide-step-text">
-                            {tr(
-                              'Тренируйте построение предложений и сразу смотрите разбор ошибок.',
-                              'Trainiere den Satzbau und sieh dir sofort die Fehleranalyse an.'
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      <span className="guide-step-chevron" aria-hidden="true">›</span>
-                    </div>
-                  </article>
-                  <article className="guide-step-card">
-                    <div className="guide-step-row">
-                      <div className="guide-step-leading">
-                        <div className="guide-step-number">2</div>
-                        <div>
-                          <div className="guide-step-title">{tr('Словарь', 'Woerterbuch')}</div>
-                          <p className="guide-step-text">
-                            {tr(
-                              'Сохраняйте новые слова, выражения и свои полезные находки.',
-                              'Speichere neue Woerter, Ausdruecke und alles, was dir spaeter hilft.'
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      <span className="guide-step-chevron" aria-hidden="true">›</span>
-                    </div>
-                  </article>
-                  <article className="guide-step-card">
-                    <div className="guide-step-row">
-                      <div className="guide-step-leading">
-                        <div className="guide-step-number">3</div>
-                        <div>
-                          <div className="guide-step-title">{tr('Карточки', 'Karten')}</div>
-                          <p className="guide-step-text">
-                            {tr(
-                              'Закрепляйте лексику через повторение, FSRS и быстрые режимы тренировки.',
-                              'Festige deinen Wortschatz mit Wiederholung, FSRS und schnellen Trainingsmodi.'
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      <span className="guide-step-chevron" aria-hidden="true">›</span>
-                    </div>
-                  </article>
-                  <article className="guide-step-card">
-                    <div className="guide-step-row">
-                      <div className="guide-step-leading">
-                        <div className="guide-step-number">4</div>
-                        <div>
-                          <div className="guide-step-title">{tr('Видео, чтение и голос', 'Video, Lesen und Sprechen')}</div>
-                          <p className="guide-step-text">
-                            {tr(
-                              'Переходите к реальному немецкому: YouTube, Reader и живой разговорный ассистент.',
-                              'Wechsle dann zu echtem Deutsch: YouTube, Reader und Live-Sprechassistent.'
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      <span className="guide-step-chevron" aria-hidden="true">›</span>
-                    </div>
-                  </article>
-                </div>
-
-                <div className="guide-purpose-grid" aria-label={tr('Преимущества по блокам', 'Werte nach Bereichen')}>
-                  <article className="guide-purpose-card">
-                    <div className="guide-purpose-label">{tr('Для грамматики', 'Fuer Grammatik')}</div>
-                    <p>{tr('Раздел “Переводы” помогает строить фразы и понимать свои ошибки.', 'Der Bereich Uebersetzungen hilft dir beim Satzbau und beim Verstehen deiner Fehler.')}</p>
-                  </article>
-                  <article className="guide-purpose-card">
-                    <div className="guide-purpose-label">{tr('Для слов', 'Fuer Woerter')}</div>
-                    <p>{tr('“Словарь” и “Карточки” переносят лексику в долговременную память.', 'Woerterbuch und Karten uebertragen Wortschatz ins Langzeitgedaechtnis.')}</p>
-                  </article>
-                  <article className="guide-purpose-card">
-                    <div className="guide-purpose-label">{tr('Для понимания речи', 'Fuer Hoerverstehen')}</div>
-                    <p>{tr('YouTube и фильмы дают живую речь, субтитры и контекст.', 'YouTube und Filme geben dir echte Sprache, Untertitel und Kontext.')}</p>
-                  </article>
-                  <article className="guide-purpose-card">
-                    <div className="guide-purpose-label">{tr('Для чтения', 'Fuer Lesen')}</div>
-                    <p>{tr('Reader подходит для текстов, озвучки, перевода и спокойного погружения.', 'Der Reader ist fuer Texte, Audio, Uebersetzung und ruhiges Eintauchen geeignet.')}</p>
-                  </article>
-                  <article className="guide-purpose-card">
-                    <div className="guide-purpose-label">{tr('Для разговора', 'Fuer Sprechen')}</div>
-                    <p>{tr('Голосовой ассистент нужен для устной практики и уверенности в речи.', 'Der Sprachassistent ist fuer muendliche Praxis und mehr Sicherheit beim Sprechen da.')}</p>
-                  </article>
-                  <article className="guide-purpose-card">
-                    <div className="guide-purpose-label">{tr('Для точечной прокачки', 'Fuer gezieltes Training')}</div>
-                    <p>{tr('“Тренировка навыка” собирает теорию, видео и практику по слабому месту.', 'Skill-Training sammelt Theorie, Video und Praxis fuer deinen schwachen Punkt.')}</p>
-                  </article>
-                </div>
-
-                <div className="guide-routine-card">
-                  <div className="guide-routine-title">{tr('Маршрут на 15 минут', '15-Minuten-Route')}</div>
-                  <p>
-                    {tr(
-                      '5 минут переводы → 3 минуты словарь → 5 минут карточки → 2 минуты видео или чтение.',
-                      '5 Min Uebersetzungen → 3 Min Woerterbuch → 5 Min Karten → 2 Min Video oder Lesen.'
-                    )}
-                  </p>
+                  {guideStepItems.map((item) => {
+                    const isOpen = guideStepOpenKey === item.key;
+                    return (
+                      <article key={item.key} className={`guide-step-card ${isOpen ? 'is-open' : ''}`}>
+                        <button
+                          type="button"
+                          className="guide-step-question"
+                          onClick={() => setGuideStepOpenKey((prev) => (prev === item.key ? '' : item.key))}
+                          aria-expanded={isOpen}
+                        >
+                          <div className="guide-step-leading">
+                            <div className="guide-step-number">{item.number}</div>
+                            <div>
+                              <div className="guide-step-title">{item.title}</div>
+                              <p className="guide-step-text">{item.summary}</p>
+                            </div>
+                          </div>
+                          <span className={`guide-step-chevron ${isOpen ? 'is-open' : ''}`} aria-hidden="true">⌄</span>
+                        </button>
+                        {isOpen && (
+                          <div className="guide-step-answer">
+                            <div className="guide-step-details">
+                              {item.sections.map((section) => (
+                                <div key={`${item.key}-${section.title}`} className="guide-step-detail-block">
+                                  <div className="guide-step-detail-title">{section.title}</div>
+                                  <ul className="guide-step-detail-list">
+                                    {section.items.map((detail, index) => (
+                                      <li key={`${item.key}-${section.title}-${index}`}>{detail}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
                 </div>
 
                 <div className="guide-faq-grid">
@@ -11833,7 +12155,11 @@ function AppInner() {
                     className="secondary-button"
                     disabled={webappLoading || historyLoading}
                   >
-                    {historyLoading ? tr('Загружаем...', 'Laden...') : tr('Посмотреть результат за сегодня', 'Ergebnis fuer heute anzeigen')}
+                    {historyLoading
+                      ? tr('Загружаем...', 'Laden...')
+                      : historyVisible
+                        ? tr('Скрыть результаты', 'Ergebnisse ausblenden')
+                        : tr('Посмотреть результат за сегодня', 'Ergebnis fuer heute anzeigen')}
                   </button>
                   {results.length === 0 && !storyResult && !webappLoading && (
                     <div className="webapp-muted">{tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst pruefen, dann beenden.')}</div>
