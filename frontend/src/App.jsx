@@ -9965,19 +9965,6 @@ function AppInner() {
                       {t('menu_close')}
                     </button>
                   </div>
-                  <div className="overlay-profile-head">
-                    <div className="overlay-profile-avatar">
-                      {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
-                    </div>
-                    <div className="overlay-profile-meta">
-                      <div className="overlay-profile-name">
-                        {[webappUser?.first_name, webappUser?.last_name].filter(Boolean).join(' ').trim()
-                          || webappUser?.username
-                          || t('guest')}
-                      </div>
-                      <div className="overlay-profile-sub">{getActiveLanguagePairLabel()}</div>
-                    </div>
-                  </div>
                   <div className="overlay-menu">
                     <label className="menu-toggle-row">
                       <input
