@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { detectAppMode } from './utils/appMode.js'
 // ./ в начале пути означает, что файл App.jsx находится в той же папке, что и текущий файл main.jsx
 import App from './App.jsx'
+import './theme.css'
 
 // Импортируем стили для компонентов LiveKit для красивого отображения
 import '@livekit/components-styles';

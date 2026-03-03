@@ -1,0 +1,28 @@
+:root {
+  --dmps-bg: #0F172A;
+  --dmps-panel: #111827;
+  --dmps-card: #1E293B;
+  --dmps-card-alt: #0B1220;
+  --dmps-hover: #1F2937;
+  --dmps-overlay: rgba(15, 23, 42, 0.85);
+  --dmps-border: #334155;
+  --dmps-text-primary: #F8FAFC;
+  --dmps-text-title: #E2E8F0;
+  --dmps-text-secondary: #CBD5E1;
+  --dmps-text-muted: #94A3B8;
+  --dmps-text-subtle: #64748B;
+  --dmps-primary: #2563EB;
+  --dmps-success: #16A34A;
+  --dmps-danger: #DC2626;
+  --dmps-warning: #EA580C;
+  --dmps-on-accent: #FFFFFF;
+  --dmps-shadow-card: 0 25px 50px rgba(0, 0, 0, 0.45);
+  --dmps-shadow-card-strong: 0 30px 60px rgba(0, 0, 0, 0.50);
+  --dmps-shadow-button-primary: 0 8px 20px rgba(37, 99, 235, 0.35);
+  --dmps-radius-screen: 28px;
+  --dmps-radius-inner: 20px;
+  --dmps-radius-button: 16px;
+  --dmps-radius-tile: 14px;
+  --dmps-radius-chip: 999px;
+  --dmps-font-family: "SF Pro Text", "SF Pro Display", Inter, system-ui, sans-serif;
+}

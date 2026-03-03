@@ -3068,6 +3068,7 @@ function AppInner() {
   const isSkillTrainingReady = Boolean(skillTrainingData?.package);
 
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
+  const isGuideScreen = !flashcardsOnly && selectedSections.size === 1 && selectedSections.has('guide');
   const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
   const onboardingSlides = useMemo(() => ([
     {
@@ -9703,7 +9704,7 @@ function AppInner() {
 
   if (isWebAppMode) {
     return (
-      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''}`}>
+      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isGuideScreen ? 'is-guide-screen' : ''}`}>
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
             <div className="webapp-brand">
@@ -10804,71 +10805,99 @@ function AppInner() {
 
             {!flashcardsOnly && isSectionVisible('guide') && (
               <section className="webapp-section webapp-guide" ref={guideRef}>
-                <div className="webapp-section-title webapp-section-title-with-logo">
-                  <h2>{tr('Как пользоваться', 'So benutzt du DeutschFlow')}</h2>
-                  <p>
-                    {tr(
-                      'Короткий маршрут по приложению: с чего начать, куда нажимать и какой раздел за что отвечает.',
-                      'Kurzer Startpfad durch die App: womit du beginnst, wohin du tippst und welcher Bereich wofuer da ist.'
-                    )}
-                  </p>
-                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
-                </div>
-
-                <div className="guide-intro-card">
-                  <strong>{tr('Если вы впервые здесь', 'Wenn du neu hier bist')}</strong>
-                  <p>
-                    {tr(
-                      'Начните с переводов, затем сохраняйте полезные слова в словарь и закрепляйте их в карточках. После этого переходите к видео, чтению и голосовой практике.',
-                      'Starte mit Uebersetzungen, speichere dann nuetzliche Woerter ins Woerterbuch und festige sie mit Karten. Danach gehst du zu Video, Lesen und Sprechpraxis ueber.'
-                    )}
-                  </p>
+                <div className="guide-hero-card">
+                  <div className="guide-hero-copy">
+                    <h2>{tr('Как пользоваться', 'So benutzt du DeutschFlow')}</h2>
+                    <p className="guide-hero-subtitle">
+                      {tr(
+                        'Короткий маршрут по приложению: с чего начать, куда нажимать и какой раздел за что отвечает.',
+                        'Kurzer Startpfad durch die App: womit du beginnst, wohin du tippst und welcher Bereich wofuer da ist.'
+                      )}
+                    </p>
+                    <p className="guide-hero-body">
+                      {tr(
+                        'Начните с переводов, затем сохраняйте полезные слова в словарь и закрепляйте их в карточках. После этого переходите к видео, чтению и голосовой практике.',
+                        'Starte mit Uebersetzungen, speichere dann nuetzliche Woerter ins Woerterbuch und festige sie mit Karten. Danach gehst du zu Video, Lesen und Sprechpraxis ueber.'
+                      )}
+                    </p>
+                  </div>
+                  <div className="guide-hero-mascot-wrap" aria-hidden="true">
+                    <img src={heroStickerSrc} alt="" className="guide-hero-mascot" />
+                  </div>
                 </div>
 
                 <div className="guide-step-grid">
                   <article className="guide-step-card">
-                    <div className="guide-step-number">1</div>
-                    <div className="guide-step-title">{tr('Переводы', 'Uebersetzungen')}</div>
-                    <p className="guide-step-text">
-                      {tr(
-                        'Тренируйте построение предложений и сразу смотрите разбор ошибок.',
-                        'Trainiere den Satzbau und sieh dir sofort die Fehleranalyse an.'
-                      )}
-                    </p>
+                    <div className="guide-step-row">
+                      <div className="guide-step-leading">
+                        <div className="guide-step-number">1</div>
+                        <div>
+                          <div className="guide-step-title">{tr('Переводы', 'Uebersetzungen')}</div>
+                          <p className="guide-step-text">
+                            {tr(
+                              'Тренируйте построение предложений и сразу смотрите разбор ошибок.',
+                              'Trainiere den Satzbau und sieh dir sofort die Fehleranalyse an.'
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="guide-step-chevron" aria-hidden="true">›</span>
+                    </div>
                   </article>
                   <article className="guide-step-card">
-                    <div className="guide-step-number">2</div>
-                    <div className="guide-step-title">{tr('Словарь', 'Woerterbuch')}</div>
-                    <p className="guide-step-text">
-                      {tr(
-                        'Сохраняйте новые слова, выражения и свои полезные находки.',
-                        'Speichere neue Woerter, Ausdruecke und alles, was dir spaeter hilft.'
-                      )}
-                    </p>
+                    <div className="guide-step-row">
+                      <div className="guide-step-leading">
+                        <div className="guide-step-number">2</div>
+                        <div>
+                          <div className="guide-step-title">{tr('Словарь', 'Woerterbuch')}</div>
+                          <p className="guide-step-text">
+                            {tr(
+                              'Сохраняйте новые слова, выражения и свои полезные находки.',
+                              'Speichere neue Woerter, Ausdruecke und alles, was dir spaeter hilft.'
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="guide-step-chevron" aria-hidden="true">›</span>
+                    </div>
                   </article>
                   <article className="guide-step-card">
-                    <div className="guide-step-number">3</div>
-                    <div className="guide-step-title">{tr('Карточки', 'Karten')}</div>
-                    <p className="guide-step-text">
-                      {tr(
-                        'Закрепляйте лексику через повторение, FSRS и быстрые режимы тренировки.',
-                        'Festige deinen Wortschatz mit Wiederholung, FSRS und schnellen Trainingsmodi.'
-                      )}
-                    </p>
+                    <div className="guide-step-row">
+                      <div className="guide-step-leading">
+                        <div className="guide-step-number">3</div>
+                        <div>
+                          <div className="guide-step-title">{tr('Карточки', 'Karten')}</div>
+                          <p className="guide-step-text">
+                            {tr(
+                              'Закрепляйте лексику через повторение, FSRS и быстрые режимы тренировки.',
+                              'Festige deinen Wortschatz mit Wiederholung, FSRS und schnellen Trainingsmodi.'
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="guide-step-chevron" aria-hidden="true">›</span>
+                    </div>
                   </article>
                   <article className="guide-step-card">
-                    <div className="guide-step-number">4</div>
-                    <div className="guide-step-title">{tr('Видео, чтение и голос', 'Video, Lesen und Sprechen')}</div>
-                    <p className="guide-step-text">
-                      {tr(
-                        'Переходите к реальному немецкому: YouTube, Reader и живой разговорный ассистент.',
-                        'Wechsle dann zu echtem Deutsch: YouTube, Reader und Live-Sprechassistent.'
-                      )}
-                    </p>
+                    <div className="guide-step-row">
+                      <div className="guide-step-leading">
+                        <div className="guide-step-number">4</div>
+                        <div>
+                          <div className="guide-step-title">{tr('Видео, чтение и голос', 'Video, Lesen und Sprechen')}</div>
+                          <p className="guide-step-text">
+                            {tr(
+                              'Переходите к реальному немецкому: YouTube, Reader и живой разговорный ассистент.',
+                              'Wechsle dann zu echtem Deutsch: YouTube, Reader und Live-Sprechassistent.'
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="guide-step-chevron" aria-hidden="true">›</span>
+                    </div>
                   </article>
                 </div>
 
-                <div className="guide-purpose-grid">
+                <div className="guide-purpose-grid" aria-label={tr('Преимущества по блокам', 'Werte nach Bereichen')}>
                   <article className="guide-purpose-card">
                     <div className="guide-purpose-label">{tr('Для грамматики', 'Fuer Grammatik')}</div>
                     <p>{tr('Раздел “Переводы” помогает строить фразы и понимать свои ошибки.', 'Der Bereich Uebersetzungen hilft dir beim Satzbau und beim Verstehen deiner Fehler.')}</p>
@@ -10906,6 +10935,9 @@ function AppInner() {
                 </div>
 
                 <div className="guide-faq-grid">
+                  <div className="guide-faq-head">
+                    <h3>{tr('Частые вопросы', 'Haeufige Fragen')}</h3>
+                  </div>
                   {guideFaqItems.map((item) => {
                     const isOpen = guideFaqOpenKey === item.key;
                     return (
@@ -10926,27 +10958,29 @@ function AppInner() {
                 </div>
 
                 <div className="guide-actions">
-                  <button type="button" className="primary-button" onClick={startOnboardingTour}>
-                    {tr('Показать быстрый тур', 'Schnellstart zeigen')}
-                  </button>
-                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('translations', translationsRef)}>
+                  <button type="button" className="primary-button guide-primary-cta" onClick={() => openSingleSectionAndScroll('translations', translationsRef)}>
                     {tr('Начать с переводов', 'Mit Uebersetzungen starten')}
                   </button>
-                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('dictionary', dictionaryRef)}>
-                    {tr('Открыть словарь', 'Woerterbuch oeffnen')}
+                  <button type="button" className="secondary-button guide-tour-button" onClick={startOnboardingTour}>
+                    {tr('Показать быстрый тур', 'Schnellstart zeigen')}
                   </button>
-                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('flashcards', flashcardsRef)}>
-                    {tr('Перейти к карточкам', 'Zu Karten gehen')}
-                  </button>
-                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('youtube', youtubeRef)}>
-                    {tr('Смотреть YouTube', 'YouTube ansehen')}
-                  </button>
-                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('reader', readerRef)}>
-                    {tr('Открыть Reader', 'Reader oeffnen')}
-                  </button>
-                  <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('assistant', assistantRef)}>
-                    {tr('Поговорить с ассистентом', 'Mit dem Assistenten sprechen')}
-                  </button>
+                  <div className="guide-quick-actions-grid">
+                    <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('dictionary', dictionaryRef)}>
+                      {tr('Открыть словарь', 'Woerterbuch oeffnen')}
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('flashcards', flashcardsRef)}>
+                      {tr('Перейти к карточкам', 'Zu Karten gehen')}
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('youtube', youtubeRef)}>
+                      {tr('Смотреть YouTube', 'YouTube ansehen')}
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('reader', readerRef)}>
+                      {tr('Открыть Reader', 'Reader oeffnen')}
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('assistant', assistantRef)}>
+                      {tr('Поговорить с ассистентом', 'Mit dem Assistenten sprechen')}
+                    </button>
+                  </div>
                 </div>
               </section>
             )}
