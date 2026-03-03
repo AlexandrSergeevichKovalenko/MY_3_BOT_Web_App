@@ -383,7 +383,6 @@ function AppInner() {
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [guideFaqOpenKey, setGuideFaqOpenKey] = useState('start');
-  const [visitedSections, setVisitedSections] = useState([]);
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
   const BLOCKS_SINGLE_WORD_MAX_LEN = 10;
@@ -531,10 +530,6 @@ function AppInner() {
   const onboardingSeenStorageKey = useMemo(() => {
     const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
     return `webapp_onboarding_seen_${stableId}`;
-  }, [webappUser?.id, initData]);
-  const visitedSectionsStorageKey = useMemo(() => {
-    const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
-    return `webapp_visited_sections_${stableId}`;
   }, [webappUser?.id, initData]);
   const normalizeSkillTrainingSnapshot = (value) => {
     if (!value || typeof value !== 'object') return null;
@@ -889,38 +884,6 @@ function AppInner() {
       setOnboardingOpen(true);
     }
   }, [initData, needsLanguageProfileChoice, languageProfileGateOpen, onboardingSeenStorageKey]);
-
-  useEffect(() => {
-    const raw = safeStorageGet(visitedSectionsStorageKey);
-    try {
-      const parsed = JSON.parse(raw || '[]');
-      const normalized = Array.isArray(parsed)
-        ? parsed.map((item) => String(item || '').trim()).filter(Boolean)
-        : [];
-      setVisitedSections(Array.from(new Set(normalized)));
-    } catch (_error) {
-      setVisitedSections([]);
-    }
-  }, [visitedSectionsStorageKey]);
-
-  useEffect(() => {
-    safeStorageSet(visitedSectionsStorageKey, JSON.stringify(visitedSections));
-  }, [visitedSections, visitedSectionsStorageKey]);
-
-  useEffect(() => {
-    const keys = Array.from(selectedSections).map((item) => String(item || '').trim()).filter(Boolean);
-    if (flashcardsOnly) {
-      keys.push('flashcards');
-    }
-    if (!keys.length) return;
-    setVisitedSections((prev) => {
-      const next = Array.from(new Set([...prev, ...keys]));
-      if (next.length === prev.length && next.every((item, index) => item === prev[index])) {
-        return prev;
-      }
-      return next;
-    });
-  }, [selectedSections, flashcardsOnly]);
 
   useEffect(() => {
     const refreshMode = () => {
@@ -3194,57 +3157,6 @@ function AppInner() {
       ),
     },
   ]), [tr]);
-  const recommendedHomeStep = useMemo(() => {
-    const seen = new Set(visitedSections);
-    const options = [
-      {
-        key: 'translations',
-        title: tr('Начать с переводов', 'Mit Uebersetzungen starten'),
-        body: tr('Это базовая точка входа: здесь вы сразу увидите свой уровень, ошибки и реальную пользу от приложения.', 'Das ist dein Basiseinstieg: Hier siehst du sofort dein Niveau, deine Fehler und den direkten Nutzen der App.'),
-        cta: tr('Открыть переводы', 'Uebersetzungen oeffnen'),
-      },
-      {
-        key: 'dictionary',
-        title: tr('Сохранить первые слова', 'Erste Woerter speichern'),
-        body: tr('После переводов перенесите полезные слова и выражения в словарь, чтобы они не потерялись.', 'Nach den Uebersetzungen speicherst du nuetzliche Woerter und Ausdruecke im Woerterbuch, damit sie nicht verloren gehen.'),
-        cta: tr('Открыть словарь', 'Woerterbuch oeffnen'),
-      },
-      {
-        key: 'flashcards',
-        title: tr('Закрепить через карточки', 'Mit Karten festigen'),
-        body: tr('Карточки и FSRS переводят лексику из краткосрочной памяти в устойчивое знание.', 'Karten und FSRS ueberfuehren Wortschatz vom Kurzzeitgedaechtnis in stabiles Wissen.'),
-        cta: tr('Перейти к карточкам', 'Zu Karten gehen'),
-      },
-      {
-        key: 'youtube',
-        title: tr('Подключить живой немецкий', 'Echtes Deutsch einschalten'),
-        body: tr('Переходите к YouTube с субтитрами, чтобы видеть язык в естественном темпе и контексте.', 'Wechsle zu YouTube mit Untertiteln, damit du die Sprache im natuerlichen Tempo und Kontext siehst.'),
-        cta: tr('Открыть YouTube', 'YouTube oeffnen'),
-      },
-      {
-        key: 'assistant',
-        title: tr('Попробовать speaking practice', 'Speaking Practice ausprobieren'),
-        body: tr('Когда база уже разогрета, переходите к голосовому ассистенту и начинайте говорить короткими фразами.', 'Wenn die Basis schon warm ist, gehst du zum Sprachassistenten und beginnst mit kurzen echten Saetzen.'),
-        cta: tr('Открыть ассистента', 'Assistent oeffnen'),
-      },
-    ];
-    const next = options.find((item) => !seen.has(item.key));
-    if (next) return next;
-    if (isSkillTrainingReady) {
-      return {
-        key: 'skill_training',
-        title: tr('Перейти к точечной прокачке', 'Zum gezielten Training wechseln'),
-        body: tr('Базовый маршрут уже пройден. Теперь полезно закреплять слабые места через тренировку навыка.', 'Der Basisweg ist bereits absolviert. Jetzt lohnt sich gezieltes Training fuer deine Schwachstellen.'),
-        cta: tr('Открыть тренировку навыка', 'Skill-Training oeffnen'),
-      };
-    }
-    return {
-      key: 'guide',
-      title: tr('Повторить маршрут по приложению', 'Den App-Pfad wiederholen'),
-      body: tr('Вы уже посмотрели основные разделы. Можно заново открыть гид и выбрать удобный маршрут под себя.', 'Du hast die wichtigsten Bereiche schon gesehen. Jetzt kannst du den Guide erneut oeffnen und deinen eigenen Lernweg waehlen.'),
-      cta: tr('Открыть гид', 'Guide oeffnen'),
-    };
-  }, [isSkillTrainingReady, tr, visitedSections]);
   const isYoutubeSelectionMenu = String(selectionType || '').startsWith('youtube_');
   const readerHasContent = Boolean(String(readerContent || '').trim());
   const readerDisplayPages = useMemo(() => {
@@ -3579,13 +3491,6 @@ function AppInner() {
     if (key === 'theory') return theoryRef;
     if (key === 'skill_training') return skillTrainingRef;
     return null;
-  };
-
-  const openSectionByKey = (key) => {
-    const normalizedKey = String(key || '').trim();
-    if (!normalizedKey) return;
-    const targetRef = getSectionRefByKey(normalizedKey);
-    openSingleSectionAndScroll(normalizedKey, targetRef);
   };
 
   const goBackFromYoutube = () => {
@@ -10468,28 +10373,6 @@ function AppInner() {
               </div>
             )}
 
-            {isHomeScreen && initData && recommendedHomeStep && (
-              <section className="home-next-step-card">
-                <div className="home-next-step-copy">
-                  <span className="home-next-step-badge">{tr('Recommended next step', 'Empfohlener naechster Schritt')}</span>
-                  <h2>{recommendedHomeStep.title}</h2>
-                  <p>{recommendedHomeStep.body}</p>
-                </div>
-                <div className="home-next-step-actions">
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => openSectionByKey(recommendedHomeStep.key)}
-                  >
-                    {recommendedHomeStep.cta}
-                  </button>
-                  <button type="button" className="secondary-button" onClick={openGuideSection}>
-                    {tr('Открыть гид', 'Guide oeffnen')}
-                  </button>
-                </div>
-              </section>
-            )}
-
             {isHomeScreen && initData && (
               <section className="weekly-plan-panel">
                 <div className="weekly-plan-head">
@@ -10708,26 +10591,6 @@ function AppInner() {
                     {todayTestSending ? tr('Отправка...', 'Senden...') : tr('Проверить личку', 'Privat testen')}
                   </button>
                 </div>
-                {recommendedHomeStep && (
-                  <div className="today-plan-start-card">
-                    <div className="today-plan-start-copy">
-                      <strong>{tr('Start here', 'Start here')}</strong>
-                      <p>{recommendedHomeStep.body}</p>
-                    </div>
-                    <div className="today-plan-start-actions">
-                      <button
-                        type="button"
-                        className="primary-button"
-                        onClick={() => openSectionByKey(recommendedHomeStep.key)}
-                      >
-                        {recommendedHomeStep.cta}
-                      </button>
-                      <button type="button" className="secondary-button" onClick={openGuideSection}>
-                        {tr('Гид', 'Guide')}
-                      </button>
-                    </div>
-                  </div>
-                )}
                 {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
                 {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
                 {!todayPlanLoading && !todayPlanError && (!todayPlan?.items || todayPlan.items.length === 0) && (
@@ -11132,20 +10995,6 @@ function AppInner() {
                     <button type="button" className="primary-button skill-training-finish-btn" onClick={finishSkillTraining}>
                       {tr('Закончить тренировку навыка', 'Skill-Training beenden')}
                     </button>
-                  </div>
-
-                  <div className="section-help-card">
-                    <div className="section-help-card-head">
-                      <strong>{tr('Как проходить тренировку навыка', 'So nutzt du Skill-Training')}</strong>
-                    </div>
-                    <p>{tr('Двигайтесь по порядку: сначала теория, затем источники, потом видео и практика из 5 предложений. В конце обязательно читайте feedback.', 'Gehe der Reihe nach vor: zuerst Theorie, dann Quellen, danach Video und die Uebung mit 5 Saetzen. Lies am Ende unbedingt das Feedback.')}</p>
-                    <div className="section-help-card-steps">
-                      <span>{tr('1. Теория', '1. Theorie')}</span>
-                      <span>{tr('2. Источники', '2. Quellen')}</span>
-                      <span>{tr('3. Видео', '3. Video')}</span>
-                      <span>{tr('4. Практика', '4. Uebung')}</span>
-                      <span>{tr('5. Feedback', '5. Feedback')}</span>
-                    </div>
                   </div>
 
                   {skillTrainingLoading && (
@@ -11597,21 +11446,6 @@ function AppInner() {
                   <div className="translations-title-side">
                     {renderTodaySectionTaskHud('translations')}
                     <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
-                  </div>
-                </div>
-                <div className="section-help-card">
-                  <div className="section-help-card-head">
-                    <strong>{tr('Что здесь делать', 'Was du hier machst')}</strong>
-                    <button type="button" className="secondary-button" onClick={startOnboardingTour}>
-                      {tr('Быстрый тур', 'Schnellstart')}
-                    </button>
-                  </div>
-                  <p>{tr('Выберите тему и уровень, переведите предложения и после проверки обязательно прочитайте разбор ошибок.', 'Waehle Thema und Niveau, uebersetze die Saetze und lies nach dem Pruefen unbedingt die Fehleranalyse.')}</p>
-                  <div className="section-help-card-steps">
-                    <span>{tr('1. Тема', '1. Thema')}</span>
-                    <span>{tr('2. Уровень', '2. Niveau')}</span>
-                    <span>{tr('3. Перевод', '3. Uebersetzung')}</span>
-                    <span>{tr('4. Разбор ошибок', '4. Fehleranalyse')}</span>
                   </div>
                 </div>
                 <div className="webapp-translation-start">
@@ -12089,20 +11923,6 @@ function AppInner() {
                     </div>
                     )}
                     {!youtubeWatchFocusMode && (
-                    <div className="section-help-card">
-                      <div className="section-help-card-head">
-                        <strong>{tr('Как учиться через YouTube', 'So lernst du mit YouTube')}</strong>
-                      </div>
-                      <p>{tr('Вставьте ссылку или найдите видео по теме, затем загрузите субтитры, включите overlay и нажимайте на непонятные слова.', 'Fuege einen Link ein oder finde ein Video zum Thema, lade dann Untertitel, aktiviere das Overlay und tippe auf unbekannte Woerter.')}</p>
-                      <div className="section-help-card-steps">
-                        <span>{tr('1. Найти видео', '1. Video finden')}</span>
-                        <span>{tr('2. Загрузить субтитры', '2. Untertitel laden')}</span>
-                        <span>{tr('3. Включить overlay', '3. Overlay aktivieren')}</span>
-                        <span>{tr('4. Разбирать слова', '4. Woerter analysieren')}</span>
-                      </div>
-                    </div>
-                    )}
-                    {!youtubeWatchFocusMode && (
                     <div className="webapp-video-form">
                       <label className="webapp-field">
                         <span>{tr('Ссылка, ID или поисковый запрос', 'Link, Video-ID oder Suchanfrage')}</span>
@@ -12396,18 +12216,6 @@ function AppInner() {
                     <div className="webapp-local-section-head">
                       <h3>{tr('Словарь', 'Woerterbuch')}</h3>
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
-                    </div>
-                    <div className="section-help-card">
-                      <div className="section-help-card-head">
-                        <strong>{tr('Как использовать словарь', 'So nutzt du das Woerterbuch')}</strong>
-                      </div>
-                      <p>{tr('Ищите слово или фразу, смотрите перевод и формы, затем сохраняйте полезную лексику в папку для дальнейшего повторения.', 'Suche ein Wort oder eine Phrase, sieh dir Uebersetzung und Formen an und speichere nuetzlichen Wortschatz danach in einen Ordner fuer spaetere Wiederholung.')}</p>
-                      <div className="section-help-card-steps">
-                        <span>{tr('1. Ввести слово', '1. Wort eingeben')}</span>
-                        <span>{tr('2. Проверить формы', '2. Formen pruefen')}</span>
-                        <span>{tr('3. Выбрать папку', '3. Ordner waehlen')}</span>
-                        <span>{tr('4. Сохранить в словарь', '4. Ins Woerterbuch speichern')}</span>
-                      </div>
                     </div>
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
@@ -12785,19 +12593,6 @@ function AppInner() {
                             <button type="button" className="secondary-button" onClick={() => loadReaderLibrary()}>
                               {readerLibraryLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
                             </button>
-                          </div>
-                        </div>
-
-                        <div className="section-help-card">
-                          <div className="section-help-card-head">
-                            <strong>{tr('Как работать с Reader', 'So nutzt du den Reader')}</strong>
-                          </div>
-                          <p>{tr('Вставьте текст, URL или загрузите файл, откройте документ в читалке и используйте чтение, аудио и быстрый перевод по словам.', 'Fuege Text, URL oder eine Datei ein, oeffne das Dokument im Reader und nutze Lesen, Audio und schnelle Wortuebersetzung.')}</p>
-                          <div className="section-help-card-steps">
-                            <span>{tr('1. Добавить текст или файл', '1. Text oder Datei hinzufuegen')}</span>
-                            <span>{tr('2. Открыть документ', '2. Dokument oeffnen')}</span>
-                            <span>{tr('3. Читать и слушать', '3. Lesen und hoeren')}</span>
-                            <span>{tr('4. Сохранять слова', '4. Woerter speichern')}</span>
                           </div>
                         </div>
 
@@ -13275,20 +13070,6 @@ function AppInner() {
                 )}
                 {flashcardsVisible && (
                   <div className={`flashcards-panel ${flashcardsOnly ? 'is-session' : 'is-setup'}`}>
-                    {!flashcardsOnly && !flashcardActiveMode && (
-                      <div className="section-help-card">
-                        <div className="section-help-card-head">
-                          <strong>{tr('Как учиться по карточкам', 'So lernst du mit Karten')}</strong>
-                        </div>
-                        <p>{tr('Сначала выберите режим: FSRS для умного повторения, Quiz для проверки, Blocks для сборки слова и Sentence для фраз.', 'Waehle zuerst einen Modus: FSRS fuer smarte Wiederholung, Quiz zum Testen, Blocks zum Bauen des Wortes und Sentence fuer ganze Phrasen.')}</p>
-                        <div className="section-help-card-steps">
-                          <span>{tr('FSRS: повторение', 'FSRS: Wiederholen')}</span>
-                          <span>{tr('Quiz: проверка', 'Quiz: Test')}</span>
-                          <span>{tr('Blocks: сборка', 'Blocks: Bauen')}</span>
-                          <span>{tr('Sentence: фразы', 'Sentence: Phrasen')}</span>
-                        </div>
-                      </div>
-                    )}
                     {!flashcardsOnly && !flashcardActiveMode && (
                       <div className="flashcard-mode-menu">
                         <div className="flashcard-mode-title-wrap">
@@ -14099,19 +13880,6 @@ function AppInner() {
                   <h2>{tr('Голосовой ассистент', 'Sprachassistent')}</h2>
                   <p>{tr('Практика разговорного немецкого в реальном времени.', 'Sprechtraining Deutsch in Echtzeit.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
-                </div>
-
-                <div className="section-help-card">
-                  <div className="section-help-card-head">
-                    <strong>{tr('Как начать speaking practice', 'So startest du Speaking Practice')}</strong>
-                  </div>
-                  <p>{tr('Подключите ассистента, нажмите на микрофон и отвечайте короткими живыми фразами. Лучше говорить просто, но регулярно.', 'Verbinde den Assistenten, druecke auf das Mikrofon und antworte mit kurzen, echten Saetzen. Besser einfach sprechen, aber regelmaessig.')}</p>
-                  <div className="section-help-card-steps">
-                    <span>{tr('1. Подключить ассистента', '1. Assistent verbinden')}</span>
-                    <span>{tr('2. Нажать на микрофон', '2. Mikrofon starten')}</span>
-                    <span>{tr('3. Говорить коротко и ясно', '3. Kurz und klar sprechen')}</span>
-                    <span>{tr('4. Повторять каждый день', '4. Taeglich wiederholen')}</span>
-                  </div>
                 </div>
 
                 {!assistantToken ? (
