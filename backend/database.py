@@ -96,6 +96,8 @@ FLASHCARD_RECENT_SEEN_HOURS = max(1, _env_int("FLASHCARD_RECENT_SEEN_HOURS", 24)
 FX_USD_TO_EUR = _env_decimal("FX_USD_TO_EUR", "0.92") or Decimal("0.92")
 TRIAL_POLICY_DAYS = max(0, _env_int("TRIAL_DAYS", 3))
 TRIAL_POLICY_TZ = "Europe/Vienna"
+GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS", 1_000_000))
+READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS = max(1, _env_int("READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS", 10_000))
 
 
 def convert_cost_to_eur(amount, currency: str | None) -> float:
@@ -740,6 +742,69 @@ def ensure_webapp_tables() -> None:
                     COALESCE((SELECT MAX(id) FROM bt_3_webapp_checks), 1),
                     true
                 );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_translation_check_sessions (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    username TEXT,
+                    source_session_id TEXT,
+                    source_lang TEXT,
+                    target_lang TEXT,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    total_items INT NOT NULL DEFAULT 0,
+                    completed_items INT NOT NULL DEFAULT 0,
+                    failed_items INT NOT NULL DEFAULT 0,
+                    send_private_grammar_text BOOLEAN NOT NULL DEFAULT FALSE,
+                    original_text_bundle TEXT,
+                    user_translation_bundle TEXT,
+                    last_error TEXT,
+                    started_at TIMESTAMPTZ,
+                    finished_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (status IN ('queued', 'running', 'done', 'failed', 'canceled')),
+                    CHECK (total_items >= 0),
+                    CHECK (completed_items >= 0),
+                    CHECK (failed_items >= 0)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_check_sessions_user_created
+                ON bt_3_translation_check_sessions (user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_check_sessions_status_created
+                ON bt_3_translation_check_sessions (status, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_translation_check_items (
+                    id BIGSERIAL PRIMARY KEY,
+                    check_session_id BIGINT NOT NULL REFERENCES bt_3_translation_check_sessions(id) ON DELETE CASCADE,
+                    item_order INT NOT NULL DEFAULT 0,
+                    sentence_number INT,
+                    sentence_id_for_mistake_table BIGINT,
+                    original_text TEXT NOT NULL,
+                    user_translation TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    result_json JSONB,
+                    result_text TEXT,
+                    error_text TEXT,
+                    webapp_check_id BIGINT,
+                    started_at TIMESTAMPTZ,
+                    finished_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (status IN ('pending', 'running', 'done', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_translation_check_items_session_order
+                ON bt_3_translation_check_items (check_session_id, item_order);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_check_items_status
+                ON bt_3_translation_check_items (check_session_id, status, item_order);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_dictionary_queries (
@@ -1781,6 +1846,27 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_billing_fixed_costs (currency, period_start, period_end);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_provider_budget_controls (
+                    provider TEXT NOT NULL,
+                    period_month DATE NOT NULL,
+                    base_limit_units BIGINT NOT NULL DEFAULT 0,
+                    extra_limit_units BIGINT NOT NULL DEFAULT 0,
+                    is_blocked BOOLEAN NOT NULL DEFAULT FALSE,
+                    block_reason TEXT,
+                    notified_thresholds JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (base_limit_units >= 0),
+                    CHECK (extra_limit_units >= 0),
+                    PRIMARY KEY (provider, period_month)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_provider_budget_controls_period
+                ON bt_3_provider_budget_controls (period_month DESC, provider);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS plans (
                     plan_code TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -2451,6 +2537,336 @@ def get_webapp_translation_history(user_id: int, limit: int = 20) -> list[dict]:
                 }
                 for row in rows
             ]
+
+
+def _map_translation_check_session_row(row) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]),
+        "username": str(row[2] or "") or None,
+        "source_session_id": str(row[3] or "") or None,
+        "source_lang": str(row[4] or "") or None,
+        "target_lang": str(row[5] or "") or None,
+        "status": str(row[6] or "queued"),
+        "total_items": int(row[7] or 0),
+        "completed_items": int(row[8] or 0),
+        "failed_items": int(row[9] or 0),
+        "send_private_grammar_text": bool(row[10]),
+        "original_text_bundle": str(row[11] or "") or None,
+        "user_translation_bundle": str(row[12] or "") or None,
+        "last_error": str(row[13] or "") or None,
+        "started_at": row[14].isoformat() if row[14] else None,
+        "finished_at": row[15].isoformat() if row[15] else None,
+        "created_at": row[16].isoformat() if row[16] else None,
+        "updated_at": row[17].isoformat() if row[17] else None,
+    }
+
+
+def _map_translation_check_item_row(row) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "check_session_id": int(row[1]),
+        "item_order": int(row[2] or 0),
+        "sentence_number": int(row[3]) if row[3] is not None else None,
+        "sentence_id_for_mistake_table": int(row[4]) if row[4] is not None else None,
+        "original_text": str(row[5] or ""),
+        "user_translation": str(row[6] or ""),
+        "status": str(row[7] or "pending"),
+        "result_json": row[8] if isinstance(row[8], dict) else None,
+        "result_text": str(row[9] or "") or None,
+        "error_text": str(row[10] or "") or None,
+        "webapp_check_id": int(row[11]) if row[11] is not None else None,
+        "started_at": row[12].isoformat() if row[12] else None,
+        "finished_at": row[13].isoformat() if row[13] else None,
+        "created_at": row[14].isoformat() if row[14] else None,
+        "updated_at": row[15].isoformat() if row[15] else None,
+    }
+
+
+def create_translation_check_session(
+    *,
+    user_id: int,
+    username: str | None,
+    source_session_id: str | None,
+    source_lang: str | None,
+    target_lang: str | None,
+    items: list[dict],
+    send_private_grammar_text: bool = False,
+    original_text_bundle: str | None = None,
+    user_translation_bundle: str | None = None,
+) -> dict | None:
+    normalized_items = items if isinstance(items, list) else []
+    total_items = len(normalized_items)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_translation_check_sessions (
+                    user_id,
+                    username,
+                    source_session_id,
+                    source_lang,
+                    target_lang,
+                    status,
+                    total_items,
+                    completed_items,
+                    failed_items,
+                    send_private_grammar_text,
+                    original_text_bundle,
+                    user_translation_bundle,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'queued', %s, 0, 0, %s, %s, %s, NOW(), NOW())
+                RETURNING
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at;
+                """,
+                (
+                    int(user_id),
+                    str(username or "").strip() or None,
+                    str(source_session_id or "").strip() or None,
+                    str(source_lang or "").strip().lower() or None,
+                    str(target_lang or "").strip().lower() or None,
+                    max(0, int(total_items)),
+                    bool(send_private_grammar_text),
+                    str(original_text_bundle or "").strip() or None,
+                    str(user_translation_bundle or "").strip() or None,
+                ),
+            )
+            session_row = cursor.fetchone()
+            if not session_row:
+                return None
+            session_id = int(session_row[0])
+
+            for index, item in enumerate(normalized_items):
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_translation_check_items (
+                        check_session_id,
+                        item_order,
+                        sentence_number,
+                        sentence_id_for_mistake_table,
+                        original_text,
+                        user_translation,
+                        status,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, 'pending', NOW(), NOW());
+                    """,
+                    (
+                        session_id,
+                        int(item.get("item_order", index)),
+                        int(item["sentence_number"]) if item.get("sentence_number") is not None else None,
+                        int(item["id_for_mistake_table"]) if item.get("id_for_mistake_table") is not None else None,
+                        str(item.get("original_text") or "").strip(),
+                        str(item.get("translation") or item.get("user_translation") or "").strip(),
+                    ),
+                )
+
+    return get_translation_check_session(session_id=session_id, user_id=int(user_id))
+
+
+def get_translation_check_session(*, session_id: int, user_id: int | None = None) -> dict | None:
+    where_sql = "WHERE id = %s"
+    params: list = [int(session_id)]
+    if user_id is not None:
+        where_sql += " AND user_id = %s"
+        params.append(int(user_id))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at
+                FROM bt_3_translation_check_sessions
+                {where_sql}
+                LIMIT 1;
+                """,
+                params,
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
+
+
+def list_translation_check_items(*, session_id: int) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
+                    original_text, user_translation, status, result_json, result_text, error_text,
+                    webapp_check_id, started_at, finished_at, created_at, updated_at
+                FROM bt_3_translation_check_items
+                WHERE check_session_id = %s
+                ORDER BY item_order ASC, id ASC;
+                """,
+                (int(session_id),),
+            )
+            rows = cursor.fetchall() or []
+    return [_map_translation_check_item_row(row) for row in rows if row]
+
+
+def get_latest_translation_check_session(
+    *,
+    user_id: int,
+    only_active: bool = False,
+) -> dict | None:
+    status_sql = "AND status IN ('queued', 'running')" if only_active else ""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at
+                FROM bt_3_translation_check_sessions
+                WHERE user_id = %s
+                  {status_sql}
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
+
+
+def update_translation_check_session_status(
+    *,
+    session_id: int,
+    status: str,
+    last_error: str | None = None,
+    started: bool = False,
+    finished: bool = False,
+) -> dict | None:
+    normalized = str(status or "").strip().lower()
+    if normalized not in {"queued", "running", "done", "failed", "canceled"}:
+        raise ValueError("Invalid translation check session status")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions
+                SET
+                    status = %s,
+                    last_error = %s,
+                    started_at = CASE WHEN %s THEN COALESCE(started_at, NOW()) ELSE started_at END,
+                    finished_at = CASE WHEN %s THEN NOW() ELSE finished_at END,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at;
+                """,
+                (
+                    normalized,
+                    str(last_error or "").strip() or None,
+                    bool(started),
+                    bool(finished),
+                    int(session_id),
+                ),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
+
+
+def update_translation_check_item_result(
+    *,
+    item_id: int,
+    status: str,
+    result_json: dict | None = None,
+    result_text: str | None = None,
+    error_text: str | None = None,
+    webapp_check_id: int | None = None,
+    started: bool = False,
+    finished: bool = False,
+) -> dict | None:
+    normalized = str(status or "").strip().lower()
+    if normalized not in {"pending", "running", "done", "failed"}:
+        raise ValueError("Invalid translation check item status")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_items
+                SET
+                    status = %s,
+                    result_json = %s,
+                    result_text = %s,
+                    error_text = %s,
+                    webapp_check_id = %s,
+                    started_at = CASE WHEN %s THEN COALESCE(started_at, NOW()) ELSE started_at END,
+                    finished_at = CASE WHEN %s THEN NOW() ELSE finished_at END,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING
+                    id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
+                    original_text, user_translation, status, result_json, result_text, error_text,
+                    webapp_check_id, started_at, finished_at, created_at, updated_at;
+                """,
+                (
+                    normalized,
+                    Json(result_json) if isinstance(result_json, dict) else None,
+                    str(result_text or "").strip() or None,
+                    str(error_text or "").strip() or None,
+                    int(webapp_check_id) if webapp_check_id is not None else None,
+                    bool(started),
+                    bool(finished),
+                    int(item_id),
+                ),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_item_row(row)
+
+
+def refresh_translation_check_session_counters(*, session_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions s
+                SET
+                    total_items = counts.total_items,
+                    completed_items = counts.completed_items,
+                    failed_items = counts.failed_items,
+                    updated_at = NOW()
+                FROM (
+                    SELECT
+                        check_session_id,
+                        COUNT(*) AS total_items,
+                        COUNT(*) FILTER (WHERE status = 'done') AS completed_items,
+                        COUNT(*) FILTER (WHERE status = 'failed') AS failed_items
+                    FROM bt_3_translation_check_items
+                    WHERE check_session_id = %s
+                    GROUP BY check_session_id
+                ) AS counts
+                WHERE s.id = counts.check_session_id
+                RETURNING
+                    s.id, s.user_id, s.username, s.source_session_id, s.source_lang, s.target_lang,
+                    s.status, s.total_items, s.completed_items, s.failed_items, s.send_private_grammar_text,
+                    s.original_text_bundle, s.user_translation_bundle, s.last_error, s.started_at,
+                    s.finished_at, s.created_at, s.updated_at;
+                """,
+                (int(session_id),),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
 
 
 def save_webapp_dictionary_query(
@@ -6634,6 +7050,44 @@ def _billing_period_bounds(period: str, as_of_date: date | None = None) -> tuple
     return _period_bounds(normalized, as_of_date)
 
 
+def _month_period_start(as_of: date | datetime | None = None, tz: str = TRIAL_POLICY_TZ) -> date:
+    if isinstance(as_of, datetime):
+        local_dt = _to_aware_datetime(as_of).astimezone(_resolve_timezone(tz))
+        base_date = local_dt.date()
+    elif isinstance(as_of, date):
+        base_date = as_of
+    else:
+        base_date = datetime.now(timezone.utc).astimezone(_resolve_timezone(tz)).date()
+    return base_date.replace(day=1)
+
+
+def _provider_budget_default_base_limit(provider: str) -> int:
+    normalized = str(provider or "").strip().lower()
+    if normalized == "google_tts":
+        return int(GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS)
+    return 0
+
+
+def _provider_budget_row_to_dict(row) -> dict | None:
+    if not row:
+        return None
+    base_limit = int(row[2] or 0)
+    extra_limit = int(row[3] or 0)
+    return {
+        "provider": str(row[0] or ""),
+        "period_month": row[1].isoformat() if row[1] else None,
+        "base_limit_units": base_limit,
+        "extra_limit_units": extra_limit,
+        "effective_limit_units": max(0, base_limit + extra_limit),
+        "is_blocked": bool(row[4]),
+        "block_reason": str(row[5] or "").strip() or None,
+        "notified_thresholds": row[6] if isinstance(row[6], dict) else {},
+        "metadata": row[7] if isinstance(row[7], dict) else {},
+        "created_at": row[8].isoformat() if row[8] else None,
+        "updated_at": row[9].isoformat() if row[9] else None,
+    }
+
+
 def _billing_event_row_to_dict(row: tuple) -> dict:
     return {
         "id": int(row[0]),
@@ -7018,6 +7472,265 @@ def upsert_billing_fixed_cost(
         "created_at": row[9].isoformat() if row[9] else None,
         "updated_at": row[10].isoformat() if row[10] else None,
     }
+
+
+def get_or_create_provider_budget_control(
+    *,
+    provider: str,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    provider_value = str(provider or "").strip().lower()
+    if not provider_value:
+        return None
+    period_value = _month_period_start(period_month, tz=tz)
+    base_limit_units = _provider_budget_default_base_limit(provider_value)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_provider_budget_controls (
+                    provider,
+                    period_month,
+                    base_limit_units,
+                    extra_limit_units,
+                    is_blocked,
+                    block_reason,
+                    notified_thresholds,
+                    metadata,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, 0, FALSE, NULL, '{}'::jsonb, '{}'::jsonb, NOW())
+                ON CONFLICT (provider, period_month) DO UPDATE
+                SET
+                    base_limit_units = GREATEST(bt_3_provider_budget_controls.base_limit_units, EXCLUDED.base_limit_units),
+                    updated_at = NOW()
+                RETURNING
+                    provider,
+                    period_month,
+                    base_limit_units,
+                    extra_limit_units,
+                    is_blocked,
+                    block_reason,
+                    notified_thresholds,
+                    metadata,
+                    created_at,
+                    updated_at;
+                """,
+                (provider_value, period_value, int(base_limit_units)),
+            )
+            row = cursor.fetchone()
+    return _provider_budget_row_to_dict(row)
+
+
+def get_provider_budget_month_usage(
+    *,
+    provider: str,
+    units_type: str = "chars",
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> float:
+    provider_value = str(provider or "").strip().lower()
+    units_type_value = str(units_type or "").strip().lower() or "chars"
+    if not provider_value:
+        return 0.0
+    period_start = _month_period_start(period_month, tz=tz)
+    if period_start.month == 12:
+        period_end = date(period_start.year + 1, 1, 1)
+    else:
+        period_end = date(period_start.year, period_start.month + 1, 1)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(units_value), 0)
+                FROM bt_3_billing_events
+                WHERE provider = %s
+                  AND units_type = %s
+                  AND event_time >= %s
+                  AND event_time < %s
+                  AND COALESCE(metadata->>'cached', 'false') <> 'true';
+                """,
+                (
+                    provider_value,
+                    units_type_value,
+                    datetime.combine(period_start, dt_time.min, tzinfo=timezone.utc),
+                    datetime.combine(period_end, dt_time.min, tzinfo=timezone.utc),
+                ),
+            )
+            row = cursor.fetchone()
+    return float((row or [0])[0] or 0.0)
+
+
+def get_google_tts_monthly_budget_status(
+    *,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    control = get_or_create_provider_budget_control(
+        provider="google_tts",
+        period_month=period_month,
+        tz=tz,
+    )
+    if not control:
+        return None
+    used_units = get_provider_budget_month_usage(
+        provider="google_tts",
+        units_type="chars",
+        period_month=period_month,
+        tz=tz,
+    )
+    effective_limit = float(control.get("effective_limit_units") or 0.0)
+    usage_ratio = (used_units / effective_limit) if effective_limit > 0 else 0.0
+    result = dict(control)
+    result["used_units"] = float(round(used_units, 3))
+    result["remaining_units"] = max(0.0, float(round(effective_limit - used_units, 3)))
+    result["usage_ratio"] = max(0.0, usage_ratio)
+    result["unit"] = "chars"
+    return result
+
+
+def set_provider_budget_extra_limit(
+    *,
+    provider: str,
+    extra_limit_units: int,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+    metadata: dict | None = None,
+) -> dict | None:
+    provider_value = str(provider or "").strip().lower()
+    if not provider_value:
+        return None
+    base = get_or_create_provider_budget_control(provider=provider_value, period_month=period_month, tz=tz)
+    if not base:
+        return None
+    extra_value = max(0, int(extra_limit_units or 0))
+    metadata_value = metadata if isinstance(metadata, dict) else {}
+    period_value = _month_period_start(period_month, tz=tz)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_provider_budget_controls
+                SET
+                    extra_limit_units = %s,
+                    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                    updated_at = NOW()
+                WHERE provider = %s
+                  AND period_month = %s
+                RETURNING
+                    provider,
+                    period_month,
+                    base_limit_units,
+                    extra_limit_units,
+                    is_blocked,
+                    block_reason,
+                    notified_thresholds,
+                    metadata,
+                    created_at,
+                    updated_at;
+                """,
+                (extra_value, Json(metadata_value), provider_value, period_value),
+            )
+            row = cursor.fetchone()
+    return _provider_budget_row_to_dict(row)
+
+
+def set_provider_budget_block_state(
+    *,
+    provider: str,
+    is_blocked: bool,
+    block_reason: str | None = None,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    provider_value = str(provider or "").strip().lower()
+    if not provider_value:
+        return None
+    base = get_or_create_provider_budget_control(provider=provider_value, period_month=period_month, tz=tz)
+    if not base:
+        return None
+    period_value = _month_period_start(period_month, tz=tz)
+    reason_value = str(block_reason or "").strip() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_provider_budget_controls
+                SET
+                    is_blocked = %s,
+                    block_reason = %s,
+                    updated_at = NOW()
+                WHERE provider = %s
+                  AND period_month = %s
+                RETURNING
+                    provider,
+                    period_month,
+                    base_limit_units,
+                    extra_limit_units,
+                    is_blocked,
+                    block_reason,
+                    notified_thresholds,
+                    metadata,
+                    created_at,
+                    updated_at;
+                """,
+                (bool(is_blocked), reason_value, provider_value, period_value),
+            )
+            row = cursor.fetchone()
+    return _provider_budget_row_to_dict(row)
+
+
+def mark_provider_budget_threshold_notified(
+    *,
+    provider: str,
+    threshold_percent: int | float,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+    metadata: dict | None = None,
+) -> dict | None:
+    provider_value = str(provider or "").strip().lower()
+    if not provider_value:
+        return None
+    base = get_or_create_provider_budget_control(provider=provider_value, period_month=period_month, tz=tz)
+    if not base:
+        return None
+    try:
+        threshold_value = int(round(float(threshold_percent)))
+    except Exception:
+        threshold_value = 0
+    if threshold_value <= 0:
+        return base
+    period_value = _month_period_start(period_month, tz=tz)
+    metadata_value = metadata if isinstance(metadata, dict) else {}
+    threshold_key = str(threshold_value)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_provider_budget_controls
+                SET
+                    notified_thresholds = COALESCE(notified_thresholds, '{}'::jsonb) || jsonb_build_object(%s, NOW()::text),
+                    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                    updated_at = NOW()
+                WHERE provider = %s
+                  AND period_month = %s
+                RETURNING
+                    provider,
+                    period_month,
+                    base_limit_units,
+                    extra_limit_units,
+                    is_blocked,
+                    block_reason,
+                    notified_thresholds,
+                    metadata,
+                    created_at,
+                    updated_at;
+                """,
+                (threshold_key, Json(metadata_value), provider_value, period_value),
+            )
+            row = cursor.fetchone()
+    return _provider_budget_row_to_dict(row)
 
 
 def get_user_billing_summary(
@@ -7794,6 +8507,18 @@ def _next_local_midnight_iso(now_ts_utc: datetime | None = None, tz: str = TRIAL
     return next_midnight_local.isoformat()
 
 
+def _next_local_month_start_iso(now_ts_utc: datetime | None = None, tz: str = TRIAL_POLICY_TZ) -> str:
+    tzinfo = _resolve_timezone(tz)
+    now_utc = _to_aware_datetime(now_ts_utc)
+    local_now = now_utc.astimezone(tzinfo)
+    if local_now.month == 12:
+        next_month_date = date(local_now.year + 1, 1, 1)
+    else:
+        next_month_date = date(local_now.year, local_now.month + 1, 1)
+    next_month_local = datetime.combine(next_month_date, dt_time.min, tzinfo=tzinfo)
+    return next_month_local.isoformat()
+
+
 def resolve_entitlement(
     user_id: int,
     now_ts_utc: datetime | None = None,
@@ -8002,6 +8727,98 @@ def enforce_feature_limit(
                 "action": "checkout",
                 "endpoint": "/api/billing/create-checkout-session",
             },
+        }
+    return None
+
+
+def get_user_action_month_usage(
+    user_id: int,
+    action_type: str,
+    *,
+    units_type: str = "chars",
+    provider: str | None = None,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> float:
+    action_value = str(action_type or "").strip().lower()
+    units_type_value = str(units_type or "").strip().lower() or "chars"
+    provider_value = str(provider or "").strip().lower() or None
+    if not action_value:
+        return 0.0
+    period_start = _month_period_start(period_month, tz=tz)
+    if period_start.month == 12:
+        period_end = date(period_start.year + 1, 1, 1)
+    else:
+        period_end = date(period_start.year, period_start.month + 1, 1)
+
+    provider_sql = ""
+    provider_params: list = []
+    if provider_value:
+        provider_sql = " AND provider = %s"
+        provider_params.append(provider_value)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(units_value), 0)
+                FROM bt_3_billing_events
+                WHERE user_id = %s
+                  AND action_type = %s
+                  AND units_type = %s
+                  {provider_sql}
+                  AND event_time >= %s
+                  AND event_time < %s;
+                """,
+                (
+                    int(user_id),
+                    action_value,
+                    units_type_value,
+                    *provider_params,
+                    datetime.combine(period_start, dt_time.min, tzinfo=timezone.utc),
+                    datetime.combine(period_end, dt_time.min, tzinfo=timezone.utc),
+                ),
+            )
+            row = cursor.fetchone()
+    return float((row or [0])[0] or 0.0)
+
+
+def enforce_reader_audio_pro_monthly_limit(
+    user_id: int,
+    *,
+    requested_units: float = 1.0,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    used_units = float(
+        get_user_action_month_usage(
+            int(user_id),
+            "reader_audio_tts",
+            units_type="chars",
+            provider="google_tts",
+            period_month=now_ts_utc,
+            tz=tz,
+        )
+    )
+    requested = max(0.0, float(requested_units or 0.0))
+    limit_value = float(READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS)
+    if used_units + requested > limit_value:
+        used_out = int(round(used_units))
+        limit_out = int(round(limit_value))
+        remaining_out = max(0, limit_out - used_out)
+        return {
+            "error": "reader_audio_monthly_limit_exceeded",
+            "feature": "reader_audio_tts_monthly",
+            "limit": limit_out,
+            "used": used_out,
+            "requested": int(round(requested)),
+            "remaining": remaining_out,
+            "unit": "chars",
+            "reset_at": _next_local_month_start_iso(now_ts_utc, tz=tz),
+            "message": (
+                f"Лимит Reader Audio на месяц исчерпан: {used_out} / {limit_out} chars. "
+                f"Следующий сброс: {_next_local_month_start_iso(now_ts_utc, tz=tz)}"
+            ),
         }
     return None
 

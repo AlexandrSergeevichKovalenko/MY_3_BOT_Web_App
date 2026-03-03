@@ -1517,6 +1517,7 @@ async def check_user_translation_webapp(
     translations: list[dict[str, Any]],
     source_lang: str = "ru",
     target_lang: str = "de",
+    daily_session_id: str | int | None = None,
 ) -> list[dict[str, Any]]:
     if not translations:
         return []
@@ -1526,23 +1527,35 @@ async def check_user_translation_webapp(
     language_categories, language_subcategories, language_subcategories_lower = _get_language_taxonomy(target_lang)
 
     try:
-        cursor.execute(
-            """
-            SELECT session_id
-            FROM bt_3_daily_sentences
-            WHERE user_id = %s
-              AND COALESCE(source_lang, 'ru') = %s
-              AND COALESCE(target_lang, 'de') = %s
-            ORDER BY id DESC
-            LIMIT 1;
-            """,
-            (user_id, (source_lang or "ru"), (target_lang or "de")),
-        )
-        latest_session = cursor.fetchone()
-        if not latest_session:
+        latest_session_id = daily_session_id
+        if isinstance(latest_session_id, str):
+            stripped_session_id = latest_session_id.strip()
+            if not stripped_session_id:
+                latest_session_id = None
+            elif stripped_session_id.isdigit():
+                latest_session_id = int(stripped_session_id)
+            else:
+                latest_session_id = stripped_session_id
+        if latest_session_id is None:
+            cursor.execute(
+                """
+                SELECT session_id
+                FROM bt_3_daily_sentences
+                WHERE user_id = %s
+                  AND COALESCE(source_lang, 'ru') = %s
+                  AND COALESCE(target_lang, 'de') = %s
+                ORDER BY id DESC
+                LIMIT 1;
+                """,
+                (user_id, (source_lang or "ru"), (target_lang or "de")),
+            )
+            latest_session = cursor.fetchone()
+            if not latest_session:
+                return []
+            latest_session_id = latest_session[0]
+        if latest_session_id is None:
             return []
 
-        latest_session_id = latest_session[0]
         cursor.execute(
             """
             SELECT unique_id, id_for_mistake_table, id, sentence, session_id

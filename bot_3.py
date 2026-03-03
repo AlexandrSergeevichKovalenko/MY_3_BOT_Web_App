@@ -34,6 +34,7 @@ import sys
 import livekit.api # Нужен для LiveKit комнат
 from google.cloud import texttospeech
 from backend.analytics import fetch_user_summary, get_period_bounds
+from backend.backend_server import _synthesize_mp3, GoogleTTSBudgetBlockedError
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -79,6 +80,9 @@ from backend.database import (
     record_telegram_system_message,
     get_pending_telegram_system_messages,
     mark_telegram_system_message_deleted,
+    get_google_tts_monthly_budget_status,
+    set_provider_budget_extra_limit,
+    set_provider_budget_block_state,
     upsert_active_quiz,
     get_active_quiz,
     delete_active_quiz,
@@ -105,6 +109,8 @@ quiz_ru_translation_cache = {}
 pending_dictionary_cards = {}
 pending_dictionary_save_options = {}
 pending_dictionary_lookup_requests = {}
+pending_tts_budget_custom = {}
+TTS_BUDGET_CUSTOM_TTL_SECONDS = 60 * 5
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
 SYSTEM_MESSAGE_CLEANUP_TZ = (os.getenv("SYSTEM_MESSAGE_CLEANUP_TZ") or os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
 SYSTEM_MESSAGE_CLEANUP_HOUR = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "23").strip())
@@ -1324,6 +1330,226 @@ async def mobile_token_command(update: Update, context: CallbackContext):
     )
     await message.reply_text(text, parse_mode="Markdown")
 
+
+def _parse_budget_units(raw: str | None) -> int | None:
+    cleaned = re.sub(r"[^\d]", "", str(raw or ""))
+    if not cleaned:
+        return None
+    try:
+        value = int(cleaned)
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+def _format_google_tts_budget_status_text(status: dict) -> str:
+    used_units = int(round(float(status.get("used_units") or 0.0)))
+    base_limit = int(status.get("base_limit_units") or 0)
+    extra_limit = int(status.get("extra_limit_units") or 0)
+    effective_limit = int(status.get("effective_limit_units") or 0)
+    remaining = int(round(float(status.get("remaining_units") or 0.0)))
+    usage_ratio = float(status.get("usage_ratio") or 0.0) * 100.0
+    is_blocked = bool(status.get("is_blocked"))
+    block_reason = str(status.get("block_reason") or "").strip()
+    period_month = str(status.get("period_month") or "—")
+    notified = status.get("notified_thresholds") if isinstance(status.get("notified_thresholds"), dict) else {}
+    notified_list = ", ".join(f"{key}%" for key in sorted(notified.keys(), key=lambda item: int(item))) or "нет"
+
+    lines = [
+        "🔊 Google TTS budget status",
+        f"Month: {period_month}",
+        f"Used: {used_units} chars",
+        f"Base limit: {base_limit} chars",
+        f"Extra limit: {extra_limit} chars",
+        f"Effective limit: {effective_limit} chars",
+        f"Remaining: {remaining} chars",
+        f"Usage: {usage_ratio:.1f}%",
+        f"Blocked: {'yes' if is_blocked else 'no'}",
+        f"Threshold alerts sent: {notified_list}",
+    ]
+    if block_reason:
+        lines.append(f"Block reason: {block_reason}")
+    lines.extend(
+        [
+            "",
+            "Commands:",
+            "/ttsbudget status",
+            "/ttsbudget add 200000",
+            "/ttsbudget block",
+            "/ttsbudget unblock",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_tts_budget_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("📊 Status", callback_data="ttsbudget:status"),
+                InlineKeyboardButton("🔄 Refresh", callback_data="ttsbudget:refresh"),
+            ],
+            [
+                InlineKeyboardButton("➕ Add 200k", callback_data="ttsbudget:add:200000"),
+                InlineKeyboardButton("➕ Add 500k", callback_data="ttsbudget:add:500000"),
+            ],
+            [InlineKeyboardButton("➕ Add custom", callback_data="ttsbudget:addcustom")],
+            [
+                InlineKeyboardButton("⛔ Block", callback_data="ttsbudget:block"),
+                InlineKeyboardButton("✅ Unblock", callback_data="ttsbudget:unblock"),
+            ],
+        ]
+    )
+
+
+async def _execute_tts_budget_action(
+    *,
+    action: str,
+    admin_user_id: int,
+    delta_units: int | None = None,
+) -> str:
+    normalized_action = str(action or "status").strip().lower()
+
+    if normalized_action == "status":
+        status = await asyncio.to_thread(get_google_tts_monthly_budget_status)
+        if not status:
+            return "❌ Не удалось получить статус бюджета Google TTS."
+        return _format_google_tts_budget_status_text(status)
+
+    if normalized_action == "add":
+        if not delta_units or int(delta_units) <= 0:
+            return "❌ Укажите корректное количество символов."
+        current = await asyncio.to_thread(get_google_tts_monthly_budget_status)
+        if not current:
+            return "❌ Не удалось получить текущий статус бюджета."
+        current_extra = int(current.get("extra_limit_units") or 0)
+        new_extra = current_extra + int(delta_units)
+        updated = await asyncio.to_thread(
+            set_provider_budget_extra_limit,
+            provider="google_tts",
+            extra_limit_units=new_extra,
+            metadata={
+                "last_manual_add_by": int(admin_user_id),
+                "last_manual_add_delta": int(delta_units),
+            },
+        )
+        if not updated:
+            return "❌ Не удалось увеличить лимит Google TTS."
+        await asyncio.to_thread(
+            set_provider_budget_block_state,
+            provider="google_tts",
+            is_blocked=False,
+            block_reason=None,
+        )
+        refreshed = await asyncio.to_thread(get_google_tts_monthly_budget_status)
+        return (
+            "✅ Лимит увеличен.\n\n"
+            f"Добавлено: {int(delta_units)} chars\n"
+            f"Новый extra limit: {int(new_extra)} chars\n\n"
+            f"{_format_google_tts_budget_status_text(refreshed or updated)}"
+        )
+
+    if normalized_action == "block":
+        updated = await asyncio.to_thread(
+            set_provider_budget_block_state,
+            provider="google_tts",
+            is_blocked=True,
+            block_reason=f"Manual block by admin {int(admin_user_id)}",
+        )
+        if not updated:
+            return "❌ Не удалось вручную заблокировать Google TTS."
+        return _format_google_tts_budget_status_text(updated)
+
+    if normalized_action == "unblock":
+        updated = await asyncio.to_thread(
+            set_provider_budget_block_state,
+            provider="google_tts",
+            is_blocked=False,
+            block_reason=None,
+        )
+        if not updated:
+            return "❌ Не удалось снять блокировку Google TTS."
+        refreshed = await asyncio.to_thread(get_google_tts_monthly_budget_status)
+        return _format_google_tts_budget_status_text(refreshed or updated)
+
+    return (
+        "Использование:\n"
+        "/ttsbudget status\n"
+        "/ttsbudget add 200000\n"
+        "/ttsbudget block\n"
+        "/ttsbudget unblock"
+    )
+
+
+async def tts_budget_command(update: Update, context: CallbackContext):
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+
+    pending_tts_budget_custom.pop(int(sender.id), None)
+    args = context.args or []
+    subcommand = str(args[0] if args else "status").strip().lower()
+    delta_units = _parse_budget_units(args[1]) if subcommand == "add" and len(args) >= 2 else None
+    if subcommand == "add" and delta_units is None:
+        await message.reply_text("❌ Укажите корректное количество символов. Пример: /ttsbudget add 200000")
+        return
+    response_text = await _execute_tts_budget_action(
+        action=subcommand,
+        admin_user_id=int(sender.id),
+        delta_units=delta_units,
+    )
+    await message.reply_text(response_text, reply_markup=_build_tts_budget_keyboard())
+
+
+async def handle_tts_budget_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+
+    pending_tts_budget_custom.pop(int(admin.id), None)
+    match = re.match(r"^ttsbudget:(status|refresh|block|unblock|add|addcustom)(?::(\d+))?$", query.data or "")
+    if not match:
+        await query.answer("Некорректная кнопка.", show_alert=True)
+        return
+
+    action = str(match.group(1) or "status").strip().lower()
+    if action == "refresh":
+        action = "status"
+    if action == "addcustom":
+        pending_tts_budget_custom[int(admin.id)] = {
+            "started_at": time.time(),
+        }
+        await query.answer("Жду число в сообщении", show_alert=False)
+        if query.message:
+            await query.message.reply_text(
+                "Введите, на сколько символов увеличить лимит Google TTS.\n"
+                "Пример: `200000`\n\n"
+                "Чтобы отменить, отправьте `cancel`.",
+                parse_mode="Markdown",
+            )
+        return
+    delta_units = _parse_budget_units(match.group(2)) if action == "add" else None
+    await query.answer("Обновляю…", show_alert=False)
+    response_text = await _execute_tts_budget_action(
+        action=action,
+        admin_user_id=int(admin.id),
+        delta_units=delta_units,
+    )
+    if query.message:
+        try:
+            await query.message.edit_text(response_text, reply_markup=_build_tts_budget_keyboard())
+        except Exception:
+            await query.message.reply_text(response_text, reply_markup=_build_tts_budget_keyboard())
+
+
 async def handle_button_click(update: Update, context: CallbackContext):
     """Обрабатывает нажатия на кнопки главного меню."""
     if not ENABLE_LEGACY_REPLY_KEYBOARD:
@@ -1765,6 +1991,41 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
     if _is_admin_user(user_id):
         if await _try_handle_admin_support_reply(update, context, text):
+            return
+        pending_budget = pending_tts_budget_custom.get(int(user_id))
+        if pending_budget and update.effective_chat and update.effective_chat.type == "private":
+            started_at = float((pending_budget or {}).get("started_at") or 0.0)
+            if started_at > 0 and (time.time() - started_at) > TTS_BUDGET_CUSTOM_TTL_SECONDS:
+                pending_tts_budget_custom.pop(int(user_id), None)
+                await update.message.reply_text(
+                    "Ожидание custom лимита истекло. Нажмите `➕ Add custom` ещё раз.",
+                    parse_mode="Markdown",
+                    reply_markup=_build_tts_budget_keyboard(),
+                )
+                return
+            lowered = str(text or "").strip().lower()
+            if lowered in {"cancel", "/cancel", "отмена"}:
+                pending_tts_budget_custom.pop(int(user_id), None)
+                await update.message.reply_text(
+                    "Операция добавления custom limit отменена.",
+                    reply_markup=_build_tts_budget_keyboard(),
+                )
+                return
+            delta_units = _parse_budget_units(text)
+            if not delta_units:
+                await update.message.reply_text(
+                    "❌ Нужна только цифра. Пример: `200000`\n"
+                    "Или отправьте `cancel`, чтобы отменить.",
+                    parse_mode="Markdown",
+                )
+                return
+            pending_tts_budget_custom.pop(int(user_id), None)
+            response_text = await _execute_tts_budget_action(
+                action="add",
+                admin_user_id=int(user_id),
+                delta_units=delta_units,
+            )
+            await update.message.reply_text(response_text, reply_markup=_build_tts_budget_keyboard())
             return
 
     pending = pending_quiz_freeform.get(user_id)
@@ -5520,32 +5781,18 @@ def prepare_google_creds_file():
 
 
 async def mistakes_to_voice(username, sentence_pairs):
-    #global GOOGLE_CREDS_FILE_PATH
-    key_path = prepare_google_creds_file()
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
-
-    client = texttospeech.TextToSpeechClient()
     german_voice = "de-DE-Neural2-C"
 
     audio_segments = []
 
     def synthesize(text, language_code, voice_name):
-        input_data = texttospeech.SynthesisInput(text = text)
-
-        voice = texttospeech.VoiceSelectionParams(
-            language_code = language_code, name=voice_name
+        audio_bytes = _synthesize_mp3(
+            text,
+            language=language_code,
+            voice=voice_name,
+            speed=0.9,
         )
-
-        config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=0.9 # 90% скорости
-        )
-
-        response = client.synthesize_speech(
-            input=input_data, voice=voice, audio_config=config 
-        )
-
-        return AudioSegment.from_file_using_temporary_files(io.BytesIO(response.audio_content))
+        return AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
 
     async def split_german_sentence(sentence: str) -> list[str]:
         if not sentence:
@@ -6902,6 +7149,7 @@ def main():
     application.add_handler(CommandHandler("allowed", allowed_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))
     application.add_handler(CommandHandler("mobile_token", mobile_token_command))
+    application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
@@ -6913,6 +7161,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_explain_request, pattern=r"^explain:"))
     application.add_handler(CallbackQueryHandler(handle_pending_access_list, pattern=r"^access:pending:list$"))
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
+    application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_pair_callback, pattern=r"^dictpair:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_toggle_callback, pattern=r"^dictseltoggle:"))

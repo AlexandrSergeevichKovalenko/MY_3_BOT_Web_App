@@ -228,7 +228,11 @@ from backend.database import (
     resolve_entitlement,
     enforce_daily_cost_cap,
     enforce_feature_limit,
+    enforce_reader_audio_pro_monthly_limit,
     get_today_cost_eur,
+    get_google_tts_monthly_budget_status,
+    mark_provider_budget_threshold_notified,
+    set_provider_budget_block_state,
     get_today_reminder_settings,
     upsert_today_reminder_settings,
     list_today_reminder_users,
@@ -258,6 +262,13 @@ from backend.database import (
     rename_reader_library_document,
     archive_reader_library_document,
     delete_reader_library_document,
+    create_translation_check_session,
+    get_translation_check_session,
+    list_translation_check_items,
+    get_latest_translation_check_session,
+    update_translation_check_session_status,
+    update_translation_check_item_result,
+    refresh_translation_check_session_counters,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
 )
@@ -314,6 +325,8 @@ _YT_RETRY_SLEEP_MAX = 3.0
 _YT_REQUEST_JITTER_MIN = 1.9
 _YT_REQUEST_JITTER_MAX = 1.9
 _YT_OEMBED_CACHE: dict[str, dict] = {}
+_TRANSLATION_CHECK_RUNNERS: set[int] = set()
+_TRANSLATION_CHECK_RUNNERS_LOCK = threading.Lock()
 
 _audio_scheduler = None
 _audio_scheduler_lock = None
@@ -7401,6 +7414,128 @@ def _test_build_de_script() -> None:
     assert script[-1]["chunks"] == chunks[:3]
 
 
+class GoogleTTSBudgetBlockedError(RuntimeError):
+    def __init__(self, message: str, *, payload: dict | None = None):
+        super().__init__(message)
+        self.payload = dict(payload or {})
+
+
+def _notify_google_tts_budget_thresholds(
+    *,
+    status: dict,
+    requested_chars: int,
+) -> None:
+    effective_limit = int(status.get("effective_limit_units") or 0)
+    if effective_limit <= 0:
+        return
+
+    used_units = float(status.get("used_units") or 0.0)
+    projected_used = used_units + max(0, int(requested_chars or 0))
+    thresholds = [50, 75, 90]
+    notified = status.get("notified_thresholds") if isinstance(status.get("notified_thresholds"), dict) else {}
+    period_month = status.get("period_month")
+
+    for threshold in thresholds:
+        threshold_key = str(threshold)
+        threshold_units = effective_limit * (threshold / 100.0)
+        if projected_used < threshold_units:
+            continue
+        if notified.get(threshold_key):
+            continue
+
+        used_out = int(round(used_units))
+        projected_out = int(round(projected_used))
+        remaining_out = max(0, effective_limit - projected_out)
+        message_text = (
+            "⚠️ Google TTS budget alert\n\n"
+            f"Threshold: {threshold}%\n"
+            f"Month: {period_month or '—'}\n"
+            f"Used now: {used_out} chars\n"
+            f"Projected after current request: {projected_out} chars\n"
+            f"Limit: {effective_limit} chars\n"
+            f"Remaining after request: {remaining_out} chars\n\n"
+            "Budget tracking is active. If needed, increase the monthly limit before the hard stop is reached."
+        )
+
+        admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+        sent = False
+        for admin_id in admin_ids:
+            try:
+                _send_private_message(int(admin_id), message_text, disable_web_page_preview=True)
+                sent = True
+            except Exception:
+                logging.warning("Failed to send Google TTS budget alert to admin_id=%s", admin_id, exc_info=True)
+
+        if sent:
+            try:
+                updated = mark_provider_budget_threshold_notified(
+                    provider="google_tts",
+                    threshold_percent=threshold,
+                    metadata={
+                        "last_threshold_alert": threshold,
+                        "last_threshold_projected_used": projected_out,
+                        "last_threshold_limit": effective_limit,
+                    },
+                )
+                if isinstance(updated, dict):
+                    notified = updated.get("notified_thresholds") if isinstance(updated.get("notified_thresholds"), dict) else notified
+            except Exception:
+                logging.warning("Failed to mark Google TTS threshold=%s as notified", threshold, exc_info=True)
+
+
+def _enforce_google_tts_monthly_budget(requested_chars: int) -> dict:
+    requested_value = max(0, int(requested_chars or 0))
+    status = get_google_tts_monthly_budget_status()
+    if not status:
+        return {
+            "provider": "google_tts",
+            "unit": "chars",
+            "used_units": 0.0,
+            "effective_limit_units": 0,
+            "remaining_units": 0.0,
+            "usage_ratio": 0.0,
+            "is_blocked": False,
+        }
+
+    _notify_google_tts_budget_thresholds(status=status, requested_chars=requested_value)
+
+    effective_limit = int(status.get("effective_limit_units") or 0)
+    used_units = float(status.get("used_units") or 0.0)
+    payload = {
+        "provider": "google_tts",
+        "unit": "chars",
+        "used": int(round(used_units)),
+        "requested": requested_value,
+        "limit": effective_limit,
+        "remaining": max(0, int(round(effective_limit - used_units))),
+        "period_month": status.get("period_month"),
+        "is_blocked": bool(status.get("is_blocked")),
+    }
+
+    if bool(status.get("is_blocked")):
+        reason = str(status.get("block_reason") or "").strip() or "Google TTS monthly budget is blocked"
+        raise GoogleTTSBudgetBlockedError(reason, payload=payload)
+
+    if effective_limit > 0 and used_units + requested_value > effective_limit:
+        over_reason = (
+            f"Google TTS monthly limit reached: "
+            f"{int(round(used_units))} + {requested_value} > {effective_limit} chars"
+        )
+        try:
+            set_provider_budget_block_state(
+                provider="google_tts",
+                is_blocked=True,
+                block_reason=over_reason,
+            )
+        except Exception:
+            logging.warning("Failed to persist Google TTS budget block state", exc_info=True)
+        payload["is_blocked"] = True
+        payload["remaining"] = max(0, effective_limit - int(round(used_units)))
+        raise GoogleTTSBudgetBlockedError(over_reason, payload=payload)
+
+    return status
+
+
 def _synthesize_mp3(
     text: str,
     language: str = "de-DE",
@@ -7487,6 +7622,7 @@ def _synthesize_mp3(
     text_chunks = split_for_google_tts(normalized_text)
     if not text_chunks:
         raise RuntimeError("Google TTS не получил чанки текста")
+    _enforce_google_tts_monthly_budget(sum(len(chunk) for chunk in text_chunks))
 
     key_path = prepare_google_creds_for_tts()
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
@@ -8539,6 +8675,323 @@ def bootstrap_webapp_session():
     return jsonify({"ok": True, "session_id": session_id, **parsed})
 
 
+def _load_user_translation_sentence_map(
+    user_id: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> tuple[str | None, dict[int, dict[str, Any]]]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT session_id
+                FROM bt_3_daily_sentences
+                WHERE user_id = %s
+                  AND COALESCE(source_lang, 'ru') = %s
+                  AND COALESCE(target_lang, 'de') = %s
+                ORDER BY id DESC
+                LIMIT 1;
+                """,
+                (int(user_id), source_lang or "ru", target_lang or "de"),
+            )
+            latest_row = cursor.fetchone()
+            latest_session_id = str(latest_row[0] or "").strip() if latest_row and latest_row[0] is not None else None
+            if not latest_session_id:
+                return None, {}
+
+            cursor.execute(
+                """
+                SELECT unique_id, id_for_mistake_table, id, sentence, session_id
+                FROM bt_3_daily_sentences
+                WHERE session_id = %s
+                  AND user_id = %s
+                  AND COALESCE(source_lang, 'ru') = %s
+                  AND COALESCE(target_lang, 'de') = %s;
+                """,
+                (latest_session_id, int(user_id), source_lang or "ru", target_lang or "de"),
+            )
+            rows = cursor.fetchall() or []
+
+    allowed_by_mistake_id: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        try:
+            mistake_id = int(row[1])
+        except Exception:
+            continue
+        allowed_by_mistake_id[mistake_id] = {
+            "sentence_number": int(row[0]) if row[0] is not None else None,
+            "id_for_mistake_table": mistake_id,
+            "sentence_id": int(row[2]) if row[2] is not None else None,
+            "original_text": str(row[3] or "").strip(),
+            "source_session_id": str(row[4] or "").strip() or latest_session_id,
+        }
+    return latest_session_id, allowed_by_mistake_id
+
+
+def _normalize_translation_check_entries(
+    translations: list[Any],
+    *,
+    allowed_by_mistake_id: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized_items: list[dict[str, Any]] = []
+    seen_mistake_ids: set[int] = set()
+
+    for index, raw_entry in enumerate(translations or []):
+        if not isinstance(raw_entry, dict):
+            continue
+        raw_mistake_id = raw_entry.get("id_for_mistake_table")
+        try:
+            mistake_id = int(raw_mistake_id)
+        except Exception:
+            continue
+        if mistake_id not in allowed_by_mistake_id:
+            continue
+        user_translation = str(
+            raw_entry.get("translation")
+            or raw_entry.get("user_translation")
+            or ""
+        ).strip()
+        if not mistake_id or not user_translation or mistake_id in seen_mistake_ids:
+            continue
+
+        sentence_info = allowed_by_mistake_id.get(mistake_id) or {}
+        normalized_items.append(
+            {
+                "item_order": index,
+                "sentence_number": sentence_info.get("sentence_number"),
+                "id_for_mistake_table": mistake_id,
+                "original_text": sentence_info.get("original_text") or str(raw_entry.get("original_text") or "").strip(),
+                "translation": user_translation,
+            }
+        )
+        seen_mistake_ids.add(mistake_id)
+
+    return normalized_items
+
+
+def _build_translation_check_payload(
+    *,
+    session: dict[str, Any] | None,
+    items: list[dict[str, Any]] | None,
+    source_lang: str,
+    target_lang: str,
+) -> dict[str, Any]:
+    normalized_items = items or []
+    running_items = sum(1 for item in normalized_items if str(item.get("status") or "") == "running")
+    pending_items = sum(1 for item in normalized_items if str(item.get("status") or "") == "pending")
+    return {
+        "ok": True,
+        "check_session": session,
+        "items": normalized_items,
+        "progress": {
+            "total": int((session or {}).get("total_items") or len(normalized_items)),
+            "completed": int((session or {}).get("completed_items") or 0),
+            "failed": int((session or {}).get("failed_items") or 0),
+            "running": running_items,
+            "pending": pending_items,
+        },
+        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+    }
+
+
+def _queue_private_grammar_explanation_for_result(
+    *,
+    user_id: int,
+    result_item: dict[str, Any],
+    source_lang: str,
+    target_lang: str,
+) -> int:
+    if not isinstance(result_item, dict) or str(result_item.get("error") or "").strip():
+        return 0
+    correct_translation = str(
+        result_item.get("correct_translation")
+        or _extract_correct_translation(str(result_item.get("feedback") or ""))
+        or result_item.get("user_translation")
+        or ""
+    ).strip()
+    if not correct_translation:
+        return 0
+    sentence_number_raw = result_item.get("sentence_number")
+    try:
+        sentence_number = int(sentence_number_raw) if sentence_number_raw is not None else None
+    except Exception:
+        sentence_number = None
+    original_sentence = str(result_item.get("original_text") or "").strip()
+    threading.Thread(
+        target=_dispatch_private_grammar_explanation,
+        kwargs={
+            "user_id": int(user_id),
+            "sentence_number": sentence_number,
+            "original_text": original_sentence,
+            "correct_translation": correct_translation,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+        },
+        daemon=True,
+    ).start()
+    return 1
+
+
+def _run_translation_check_session(session_id: int) -> None:
+    try:
+        session = get_translation_check_session(session_id=int(session_id))
+        if not session:
+            return
+        items = list_translation_check_items(session_id=int(session_id))
+        if not items:
+            update_translation_check_session_status(
+                session_id=int(session_id),
+                status="failed",
+                last_error="Пустая сессия проверки перевода.",
+                started=True,
+                finished=True,
+            )
+            return
+
+        update_translation_check_session_status(
+            session_id=int(session_id),
+            status="running",
+            started=True,
+        )
+
+        for item in items:
+            item_id = int(item["id"])
+            item_status = str(item.get("status") or "").strip().lower()
+            if item_status in {"done", "failed"}:
+                continue
+            update_translation_check_item_result(
+                item_id=item_id,
+                status="running",
+                started=True,
+            )
+            try:
+                results = asyncio.run(
+                    check_user_translation_webapp(
+                        int(session["user_id"]),
+                        session.get("username"),
+                        [
+                            {
+                                "id_for_mistake_table": item.get("sentence_id_for_mistake_table"),
+                                "translation": item.get("user_translation"),
+                            }
+                        ],
+                        source_lang=str(session.get("source_lang") or "ru"),
+                        target_lang=str(session.get("target_lang") or "de"),
+                        daily_session_id=session.get("source_session_id"),
+                    )
+                )
+                result_item = results[0] if results else {
+                    "sentence_number": item.get("sentence_number"),
+                    "error": "Пустой ответ проверки перевода.",
+                }
+                item_error = str(result_item.get("error") or "").strip()
+                update_translation_check_item_result(
+                    item_id=item_id,
+                    status="failed" if item_error else "done",
+                    result_json=result_item if isinstance(result_item, dict) else None,
+                    result_text=str(result_item.get("feedback") or item_error or "").strip() or None,
+                    error_text=item_error or None,
+                    webapp_check_id=result_item.get("translation_id") if isinstance(result_item, dict) else None,
+                    finished=True,
+                )
+                if not item_error and bool(session.get("send_private_grammar_text")):
+                    _queue_private_grammar_explanation_for_result(
+                        user_id=int(session["user_id"]),
+                        result_item=result_item,
+                        source_lang=str(session.get("source_lang") or "ru"),
+                        target_lang=str(session.get("target_lang") or "de"),
+                    )
+            except Exception as exc:
+                logging.error("Translation check session item failed: session=%s item=%s error=%s", session_id, item_id, exc, exc_info=True)
+                update_translation_check_item_result(
+                    item_id=item_id,
+                    status="failed",
+                    error_text=f"Ошибка проверки: {exc}",
+                    finished=True,
+                )
+            refresh_translation_check_session_counters(session_id=int(session_id))
+
+        session = refresh_translation_check_session_counters(session_id=int(session_id))
+        last_error = None
+        if session and int(session.get("failed_items") or 0) >= int(session.get("total_items") or 0) and int(session.get("total_items") or 0) > 0:
+            last_error = "Все элементы проверки завершились с ошибкой."
+        update_translation_check_session_status(
+            session_id=int(session_id),
+            status="done",
+            last_error=last_error,
+            finished=True,
+        )
+    except Exception as exc:
+        logging.error("Translation check session failed: session=%s error=%s", session_id, exc, exc_info=True)
+        try:
+            update_translation_check_session_status(
+                session_id=int(session_id),
+                status="failed",
+                last_error=f"Ошибка фоновой проверки: {exc}",
+                started=True,
+                finished=True,
+            )
+        except Exception:
+            logging.exception("Failed to mark translation check session as failed: %s", session_id)
+    finally:
+        with _TRANSLATION_CHECK_RUNNERS_LOCK:
+            _TRANSLATION_CHECK_RUNNERS.discard(int(session_id))
+
+
+def _list_active_translation_check_session_ids(limit: int = 50) -> list[int]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM bt_3_translation_check_sessions
+                WHERE status IN ('queued', 'running')
+                ORDER BY created_at ASC
+                LIMIT %s;
+                """,
+                (max(1, int(limit)),),
+            )
+            rows = cursor.fetchall() or []
+    session_ids: list[int] = []
+    for row in rows:
+        try:
+            session_ids.append(int(row[0]))
+        except Exception:
+            continue
+    return session_ids
+
+
+def _start_translation_check_runner(session_id: int) -> None:
+    with _TRANSLATION_CHECK_RUNNERS_LOCK:
+        if int(session_id) in _TRANSLATION_CHECK_RUNNERS:
+            return
+        _TRANSLATION_CHECK_RUNNERS.add(int(session_id))
+    threading.Thread(
+        target=_run_translation_check_session,
+        args=(int(session_id),),
+        daemon=True,
+    ).start()
+
+
+def _resume_translation_check_session_if_needed(session: dict[str, Any] | None) -> None:
+    if not isinstance(session, dict):
+        return
+    status = str(session.get("status") or "").strip().lower()
+    session_id = session.get("id")
+    if status not in {"queued", "running"} or not session_id:
+        return
+    _start_translation_check_runner(int(session_id))
+
+
+def _resume_all_active_translation_check_sessions() -> None:
+    try:
+        for session_id in _list_active_translation_check_session_ids(limit=100):
+            _start_translation_check_runner(int(session_id))
+    except Exception as exc:
+        logging.warning("Translation check recovery scan failed: %s", exc)
+
+
 @app.route("/api/message", methods=["POST"])
 def process_webapp_message():
     payload = request.get_json(silent=True) or {}
@@ -8547,12 +9000,18 @@ def process_webapp_message():
     user_translation = payload.get("user_translation")
     session_id = payload.get("session_id")
     translations = payload.get("translations") or []
-    send_private_grammar_text = bool(payload.get("send_private_grammar_text"))
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
-    if not translations and (not original_text or not user_translation):
-        return jsonify({"error": "translations или original_text и user_translation обязательны"}), 400
+    if translations:
+        return jsonify(
+            {
+                "error": "Batch-проверка переводов перенесена на /api/webapp/check/start. Используйте новый endpoint.",
+                "code": "legacy_batch_translation_check_disabled",
+            }
+        ), 410
+    if not original_text or not user_translation:
+        return jsonify({"error": "original_text и user_translation обязательны"}), 400
 
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
@@ -8566,62 +9025,6 @@ def process_webapp_message():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-
-    if translations:
-        try:
-            results = asyncio.run(
-                check_user_translation_webapp(
-                    user_id,
-                    username,
-                    translations,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
-            )
-        except Exception as exc:
-            return jsonify({"error": f"Ошибка обработки запроса: {exc}"}), 500
-        private_grammar_queued = 0
-        if send_private_grammar_text:
-            for item in results:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("error") or "").strip():
-                    continue
-                correct_translation = str(
-                    item.get("correct_translation")
-                    or _extract_correct_translation(str(item.get("feedback") or ""))
-                    or item.get("user_translation")
-                    or ""
-                ).strip()
-                if not correct_translation:
-                    continue
-                sentence_number_raw = item.get("sentence_number")
-                try:
-                    sentence_number = int(sentence_number_raw) if sentence_number_raw is not None else None
-                except Exception:
-                    sentence_number = None
-                original_sentence = str(item.get("original_text") or "").strip()
-                threading.Thread(
-                    target=_dispatch_private_grammar_explanation,
-                    kwargs={
-                        "user_id": int(user_id),
-                        "sentence_number": sentence_number,
-                        "original_text": original_sentence,
-                        "correct_translation": correct_translation,
-                        "source_lang": source_lang,
-                        "target_lang": target_lang,
-                    },
-                    daemon=True,
-                ).start()
-                private_grammar_queued += 1
-        return jsonify(
-            {
-                "ok": True,
-                "results": results,
-                "private_grammar_queued": private_grammar_queued,
-                "language_pair": _build_language_pair_payload(source_lang, target_lang),
-            }
-        )
 
     try:
         if _is_legacy_ru_de_pair(source_lang, target_lang):
@@ -8655,6 +9058,115 @@ def process_webapp_message():
             "result": result,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
+    )
+
+
+@app.route("/api/webapp/check/start", methods=["POST"])
+def start_webapp_translation_check():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    translations = payload.get("translations") or []
+    send_private_grammar_text = bool(payload.get("send_private_grammar_text"))
+    original_text = str(payload.get("original_text") or "").strip() or None
+    user_translation = str(payload.get("user_translation") or "").strip() or None
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not isinstance(translations, list) or not translations:
+        return jsonify({"error": "translations обязательны"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    username = _extract_display_name(user_data)
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    source_session_id, allowed_by_mistake_id = _load_user_translation_sentence_map(
+        int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    normalized_items = _normalize_translation_check_entries(
+        translations,
+        allowed_by_mistake_id=allowed_by_mistake_id,
+    )
+    if not normalized_items:
+        return jsonify({"error": "Нет валидных предложений для проверки."}), 400
+
+    session = create_translation_check_session(
+        user_id=int(user_id),
+        username=username,
+        source_session_id=source_session_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        items=normalized_items,
+        send_private_grammar_text=send_private_grammar_text,
+        original_text_bundle=original_text,
+        user_translation_bundle=user_translation,
+    )
+    if not session:
+        return jsonify({"error": "Не удалось создать сессию проверки перевода."}), 500
+
+    _start_translation_check_runner(int(session["id"]))
+    items = list_translation_check_items(session_id=int(session["id"]))
+    return jsonify(
+        _build_translation_check_payload(
+            session=session,
+            items=items,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    )
+
+
+@app.route("/api/webapp/check/status", methods=["POST"])
+def get_webapp_translation_check_status():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    requested_session_id = payload.get("check_session_id")
+    active_only = bool(payload.get("active_only"))
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    session = None
+    if requested_session_id is not None:
+        try:
+            session = get_translation_check_session(
+                session_id=int(requested_session_id),
+                user_id=int(user_id),
+            )
+        except Exception:
+            session = None
+        if session is None:
+            return jsonify({"error": "Сессия проверки не найдена."}), 404
+    else:
+        session = get_latest_translation_check_session(user_id=int(user_id), only_active=True)
+        if session is None and not active_only:
+            session = get_latest_translation_check_session(user_id=int(user_id), only_active=False)
+
+    _resume_translation_check_session_if_needed(session)
+    items = list_translation_check_items(session_id=int(session["id"])) if session else []
+    return jsonify(
+        _build_translation_check_payload(
+            session=session,
+            items=items,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
     )
 
 
@@ -13097,18 +13609,6 @@ def webapp_tts():
         mark("db_cache_read")
         if cached_audio:
             mark("db_cache_hit")
-            _billing_log_event_safe(
-                user_id=int(user_id),
-                action_type="webapp_tts_chars",
-                provider="google_tts",
-                units_type="chars",
-                units_value=chars_count,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                idempotency_seed=f"webapp-tts-cache:{user_id}:{cache_key}:{time.time_ns()}",
-                status="estimated",
-                metadata={"cached": True, "language": language, "voice": voice},
-            )
             response = send_file(
                 BytesIO(cached_audio),
                 mimetype="audio/mpeg",
@@ -13158,6 +13658,18 @@ def webapp_tts():
         )
         mark("send_file")
         return response
+    except GoogleTTSBudgetBlockedError as exc:
+        had_error = True
+        _log_tts_profile(
+            user_id_value=int(user_id) if user_id else None,
+            normalized_text=_normalize_utterance_text(text),
+            cached=False,
+            error_text=str(exc),
+        )
+        payload = {"error": "google_tts_budget_blocked", "message": str(exc)}
+        if isinstance(getattr(exc, "payload", None), dict):
+            payload.update(exc.payload)
+        return jsonify(payload), 429
     except Exception as exc:
         had_error = True
         _log_tts_profile(
@@ -14091,7 +14603,22 @@ def reader_audio_export():
     user_id = user_data.get("id")
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    now_utc = datetime.now(timezone.utc)
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz="Europe/Vienna")
+    if str(entitlement.get("effective_mode") or "free").lower() != "pro":
+        return jsonify(
+            {
+                "error": "Аудио-конвертация книг в Reader доступна только на премиум подписке. Перейдите на премиум подписку.",
+                "error_code": "reader_audio_premium_required",
+                "upgrade": {
+                    "available": True,
+                    "plan_code": "pro",
+                    "action": "checkout",
+                    "endpoint": "/api/billing/create-checkout-session",
+                },
+            }
+        ), 403
     try:
         document = get_reader_library_document(
             user_id=int(user_id),
@@ -14129,6 +14656,14 @@ def reader_audio_export():
 
     if not text_to_read:
         return jsonify({"error": "В выбранном диапазоне нет текста"}), 422
+    reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
+        user_id=int(user_id),
+        requested_units=float(len(text_to_read)),
+        now_ts_utc=now_utc,
+        tz="Europe/Vienna",
+    )
+    if reader_audio_limit_error:
+        return jsonify(reader_audio_limit_error), 429
     language_for_tts = _normalize_short_lang_code(
         requested_language or _detect_reader_language(text_to_read, fallback=target_lang),
         fallback=_normalize_short_lang_code(target_lang, fallback="de"),
@@ -16891,6 +17426,14 @@ try:
         )
 except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
+
+try:
+    threading.Thread(
+        target=_resume_all_active_translation_check_sessions,
+        daemon=True,
+    ).start()
+except Exception as exc:
+    logging.warning("Translation check recovery startup failed: %s", exc)
 
 _start_audio_scheduler()
 _start_skill_resource_domain_autoseed()

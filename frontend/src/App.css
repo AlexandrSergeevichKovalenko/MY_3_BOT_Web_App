@@ -3753,16 +3753,40 @@ body {
 .webapp-inline-toast {
   position: fixed;
   left: 50%;
-  top: 18px;
+  top: 20px;
   transform: translateX(-50%);
   z-index: 180;
-  background: rgba(15, 23, 42, 0.92);
+  max-width: min(88vw, 420px);
+  background: rgba(15, 23, 42, 0.78);
   color: #f8fafc;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  border-radius: 10px;
-  padding: 8px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 14px;
+  padding: 10px 14px;
   font-size: 13px;
-  box-shadow: 0 10px 20px rgba(8, 11, 26, 0.35);
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 10px 24px rgba(8, 11, 26, 0.22);
+  animation: webappInlineToastFade var(--toast-duration, 3000ms) ease forwards;
+  pointer-events: none;
+}
+
+@keyframes webappInlineToastFade {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  78% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -10px);
+  }
 }
 
 .webapp-browser-auth {

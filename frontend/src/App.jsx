@@ -195,6 +195,7 @@ function AppInner() {
   const [selectionGptData, setSelectionGptData] = useState({ translation: '', notes: '', examples: [] });
   const [ttsPendingMap, setTtsPendingMap] = useState({});
   const [inlineToast, setInlineToast] = useState('');
+  const [inlineToastDurationMs, setInlineToastDurationMs] = useState(3000);
   const [lastLookupScrollY, setLastLookupScrollY] = useState(null);
   const [telegramFullscreenMode, setTelegramFullscreenMode] = useState(false);
   const [telegramTabletLike, setTelegramTabletLike] = useState(false);
@@ -407,6 +408,8 @@ function AppInner() {
   const youtubePlayerRef = useRef(null);
   const youtubePlayerShellRef = useRef(null);
   const youtubeTimeIntervalRef = useRef(null);
+  const youtubeResumeAppliedForVideoRef = useRef('');
+  const youtubeResumeLastSavedSecondRef = useRef(-1);
   const youtubeTranslateInFlightRef = useRef(false);
   const youtubeTranslateIndexRef = useRef(-1);
   const autoAdvanceTimeoutRef = useRef(null);
@@ -472,6 +475,8 @@ function AppInner() {
   const autoPausedTodayTimerIdsRef = useRef(new Set());
   const youtubeTodayTimerSyncInFlightRef = useRef(false);
   const readerAutoPausedByNavigationRef = useRef(false);
+  const translationCheckPollTokenRef = useRef(0);
+  const translationCheckUnmountedRef = useRef(false);
   const supportBottomRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.webp`;
@@ -532,6 +537,24 @@ function AppInner() {
     const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
     return `webapp_onboarding_seen_${stableId}`;
   }, [webappUser?.id, initData]);
+  const youtubeResumeStorageKey = useMemo(() => {
+    const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
+    return `webapp_youtube_resume_${stableId}`;
+  }, [webappUser?.id, initData]);
+  const persistYoutubeResumeState = useCallback((timeValue = youtubeCurrentTime) => {
+    const trimmed = String(youtubeInput || '').trim();
+    const resolvedId = String(youtubeId || extractYoutubeId(trimmed) || '').trim();
+    if (!trimmed || !resolvedId) return;
+    const safeTime = Math.max(0, Math.floor(Number(timeValue || 0)));
+    const payload = JSON.stringify({
+      input: trimmed,
+      id: resolvedId,
+      currentTime: safeTime,
+      updatedAt: Date.now(),
+    });
+    safeStorageSet(youtubeResumeStorageKey, payload);
+    safeStorageSet('webapp_youtube', payload);
+  }, [youtubeCurrentTime, youtubeId, youtubeInput, youtubeResumeStorageKey]);
   const normalizeSkillTrainingSnapshot = (value) => {
     if (!value || typeof value !== 'object') return null;
     const pack = value?.package && typeof value.package === 'object' ? value.package : null;
@@ -5798,10 +5821,36 @@ function AppInner() {
   }, [initData, isWebAppMode]);
 
   useEffect(() => {
+    translationCheckUnmountedRef.current = false;
+    return () => {
+      translationCheckUnmountedRef.current = true;
+      translationCheckPollTokenRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
     if (isStoryTopic(selectedTopic) && initData) {
       loadStoryHistory();
     }
   }, [selectedTopic, initData]);
+
+  useEffect(() => {
+    if (!initData || flashcardsOnly || !selectedSections.has('translations') || isStorySession) {
+      return undefined;
+    }
+    let cancelled = false;
+    const run = async () => {
+      try {
+        await resumeActiveTranslationCheck({ silent: true });
+      } catch (_error) {
+        if (cancelled) return;
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [initData, flashcardsOnly, selectedSections, isStorySession]);
 
   useEffect(() => {
     if (!isStoryTopic(selectedTopic)) {
@@ -5811,7 +5860,7 @@ function AppInner() {
   }, [selectedTopic]);
 
   useEffect(() => {
-    const stored = safeStorageGet('webapp_youtube');
+    const stored = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
     if (!stored) return;
     try {
       const parsed = JSON.parse(stored);
@@ -5824,7 +5873,153 @@ function AppInner() {
     } catch (error) {
       // ignore
     }
-  }, []);
+  }, [youtubeResumeStorageKey]);
+
+  const buildTranslationResultFromCheckItem = (item) => {
+    if (!item || typeof item !== 'object') return null;
+    if (item.result_json && typeof item.result_json === 'object') {
+      return item.result_json;
+    }
+    const errorText = String(item.error_text || '').trim();
+    if (!errorText) return null;
+    return {
+      sentence_number: item.sentence_number ?? null,
+      original_text: item.original_text || '',
+      user_translation: item.user_translation || '',
+      error: errorText,
+    };
+  };
+
+  const applyTranslationCheckStatusPayload = (payload) => {
+    const checkSession = payload?.check_session && typeof payload.check_session === 'object'
+      ? payload.check_session
+      : null;
+    const checkItems = Array.isArray(payload?.items) ? payload.items : [];
+    const mappedResults = checkItems
+      .map((item) => buildTranslationResultFromCheckItem(item))
+      .filter(Boolean)
+      .sort((a, b) => Number(a?.sentence_number || 0) - Number(b?.sentence_number || 0));
+    const audioOptInMap = {};
+    mappedResults.forEach((item) => {
+      const translationId = Number(item?.translation_id || 0);
+      if (translationId > 0) {
+        audioOptInMap[translationId] = Boolean(item?.audio_grammar_opt_in);
+      }
+    });
+
+    setResults(mappedResults);
+    setTranslationAudioGrammarOptIn(audioOptInMap);
+
+    const progress = payload?.progress && typeof payload.progress === 'object' ? payload.progress : {};
+    const total = Math.max(0, Number(progress.total || checkSession?.total_items || checkItems.length || 0));
+    const completed = Math.max(0, Number(progress.completed || checkSession?.completed_items || 0));
+    const failed = Math.max(0, Number(progress.failed || checkSession?.failed_items || 0));
+    const done = Math.min(total, completed + failed);
+    const status = String(checkSession?.status || '').trim().toLowerCase();
+    const active = status === 'queued' || status === 'running';
+    setTranslationCheckProgress({ active, done, total });
+
+    return {
+      status,
+      done,
+      total,
+      sessionId: checkSession?.id ?? null,
+    };
+  };
+
+  const pollTranslationCheckStatus = async ({ checkSessionId: checkSessionIdParam, pollToken }) => {
+    let attempt = 0;
+    while (!translationCheckUnmountedRef.current && translationCheckPollTokenRef.current === pollToken) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+      }
+      attempt += 1;
+      let response;
+      try {
+        response = await fetch('/api/webapp/check/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            check_session_id: checkSessionIdParam,
+          }),
+        });
+      } catch (error) {
+        if (attempt >= 3) {
+          throw error;
+        }
+        continue;
+      }
+
+      if (!response.ok) {
+        const apiMessage = await readApiError(
+          response,
+          'Не удалось получить статус проверки.',
+          'Pruefungsstatus konnte nicht geladen werden.'
+        );
+        throw new Error(apiMessage);
+      }
+
+      const data = await response.json();
+      const nextState = applyTranslationCheckStatusPayload(data);
+      if (!nextState.sessionId) {
+        throw new Error(tr('Сессия проверки не найдена.', 'Pruefungssession wurde nicht gefunden.'));
+      }
+      if (nextState.status === 'done' || nextState.status === 'failed' || nextState.status === 'canceled') {
+        return data;
+      }
+    }
+    return null;
+  };
+
+  const resumeActiveTranslationCheck = async ({ silent = false } = {}) => {
+    if (!initData || isStorySession) return false;
+    if (webappLoading && translationCheckProgress.active) return true;
+    try {
+      const response = await fetch('/api/webapp/check/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          active_only: true,
+        }),
+      });
+      if (!response.ok) {
+        const apiMessage = await readApiError(
+          response,
+          'Не удалось восстановить проверку переводов.',
+          'Uebersetzungspruefung konnte nicht wiederhergestellt werden.'
+        );
+        throw new Error(apiMessage);
+      }
+
+      const data = await response.json();
+      const activeSession = data?.check_session && typeof data.check_session === 'object'
+        ? data.check_session
+        : null;
+      if (!activeSession?.id) {
+        return false;
+      }
+
+      const pollToken = translationCheckPollTokenRef.current + 1;
+      translationCheckPollTokenRef.current = pollToken;
+      if (!silent) {
+        setWebappError('');
+      }
+      setWebappLoading(true);
+      setTranslationAudioGrammarSaving({});
+      setExplanations({});
+      setExplanationLoading({});
+      const nextState = applyTranslationCheckStatusPayload(data);
+      await pollTranslationCheckStatus({
+        checkSessionId: nextState.sessionId,
+        pollToken,
+      });
+      return true;
+    } finally {
+      setWebappLoading(false);
+    }
+  };
 
   const handleWebappSubmit = async (event) => {
     event.preventDefault();
@@ -5840,16 +6035,6 @@ function AppInner() {
       setWebappError(tr('Заполните хотя бы один перевод.', 'Bitte fuelle mindestens eine Uebersetzung aus.'));
       return;
     }
-
-    const numberedOriginal = sentences
-      .map((item) => `${item.unique_id ?? item.id_for_mistake_table}. ${item.sentence}`)
-      .join('\n');
-    const numberedTranslations = sentences
-      .map((item) => {
-        const translation = translationDrafts[String(item.id_for_mistake_table)] || '';
-        return `${item.unique_id ?? item.id_for_mistake_table}. ${translation}`;
-      })
-      .join('\n');
 
     setWebappLoading(true);
     setWebappError('');
@@ -5867,121 +6052,47 @@ function AppInner() {
       if (!submittedEntries.length) {
         throw new Error(tr('Нет переводов для проверки.', 'Keine Uebersetzungen zur Pruefung.'));
       }
+      const pollToken = translationCheckPollTokenRef.current + 1;
+      translationCheckPollTokenRef.current = pollToken;
       setTranslationCheckProgress({ active: true, done: 0, total: submittedEntries.length });
 
-      const sentenceNumberById = new Map(
-        sentences.map((item, idx) => [Number(item.id_for_mistake_table), Number(item.unique_id ?? idx + 1)])
+      const startResponse = await fetch('/api/webapp/check/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          session_id: sessionId,
+          translations: submittedEntries.map((item) => ({
+            id_for_mistake_table: item.id,
+            translation: item.translation,
+          })),
+          send_private_grammar_text: translationPrivateGrammarTextOptIn,
+        }),
+      });
+      if (!startResponse.ok) {
+        const apiMessage = await readApiError(
+          startResponse,
+          'Не удалось запустить проверку переводов.',
+          'Uebersetzungspruefung konnte nicht gestartet werden.'
+        );
+        throw new Error(apiMessage);
+      }
+      const startData = await startResponse.json();
+      const startState = applyTranslationCheckStatusPayload(startData);
+      if (!startState.sessionId) {
+        throw new Error(tr('Не удалось создать сессию проверки.', 'Pruefungssession konnte nicht erstellt werden.'));
+      }
+      showInlineToast(
+        tr(
+          'Можно подождать здесь или вернуться позже. Проверка продолжится в фоновом режиме.',
+          'Du kannst hier warten oder spaeter zurueckkommen. Die Pruefung laeuft im Hintergrund weiter.'
+        ),
+        3000,
       );
-      const upsertResultItem = (item) => {
-        const translationId = Number(item?.translation_id || 0);
-        if (translationId > 0) {
-          setTranslationAudioGrammarOptIn((prev) => ({
-            ...prev,
-            [translationId]: Boolean(item?.audio_grammar_opt_in),
-          }));
-        }
-        setResults((prev) => {
-          const indexByKey = new Map();
-          const merged = [...prev];
-          merged.forEach((entry, idx) => {
-            const key = String(entry?.sentence_number ?? entry?.id_for_mistake_table ?? entry?.original_text ?? idx);
-            indexByKey.set(key, idx);
-          });
-          const key = String(item?.sentence_number ?? item?.id_for_mistake_table ?? item?.original_text ?? `new-${merged.length}`);
-          if (indexByKey.has(key)) {
-            merged[indexByKey.get(key)] = item;
-          } else {
-            merged.push(item);
-          }
-          merged.sort((a, b) => (Number(a?.sentence_number || 0) - Number(b?.sentence_number || 0)));
-          return merged;
-        });
-      };
-
-      let nextIndex = 0;
-      const concurrency = Math.min(2, submittedEntries.length);
-      const worker = async () => {
-        while (nextIndex < submittedEntries.length) {
-          const current = submittedEntries[nextIndex];
-          nextIndex += 1;
-          const sentenceNumber = Number(sentenceNumberById.get(Number(current.id)) || 0) || null;
-          try {
-            const requestBody = {
-              initData,
-              session_id: sessionId,
-              translations: [
-                {
-                  id_for_mistake_table: current.id,
-                  translation: current.translation,
-                },
-              ],
-              original_text: numberedOriginal,
-              user_translation: numberedTranslations,
-              send_private_grammar_text: translationPrivateGrammarTextOptIn,
-            };
-            let response = null;
-            let lastError = null;
-            for (let attempt = 0; attempt < 2; attempt += 1) {
-              try {
-                response = await fetch('/api/message', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(requestBody),
-                });
-                if (response.status >= 500 && attempt === 0) {
-                  await new Promise((resolve) => setTimeout(resolve, 400));
-                  continue;
-                }
-                break;
-              } catch (fetchError) {
-                lastError = fetchError;
-                if (attempt === 0) {
-                  await new Promise((resolve) => setTimeout(resolve, 400));
-                  continue;
-                }
-                throw fetchError;
-              }
-            }
-            if (!response && lastError) {
-              throw lastError;
-            }
-            if (!response.ok) {
-              const apiMessage = await readApiError(
-                response,
-                'Не удалось проверить перевод.',
-                'Uebersetzung konnte nicht geprueft werden.'
-              );
-              throw new Error(apiMessage);
-            }
-            const data = await response.json();
-            const resultItem = Array.isArray(data?.results) && data.results.length > 0
-              ? data.results[0]
-              : {
-                  sentence_number: sentenceNumber,
-                  error: tr('Пустой ответ проверки.', 'Leere Pruefungsantwort.'),
-                };
-            upsertResultItem(resultItem);
-          } catch (error) {
-            const friendly = normalizeNetworkErrorMessage(
-              error,
-              'Не удалось проверить перевод. Повторите позже.',
-              'Uebersetzung konnte nicht geprueft werden. Bitte spaeter erneut versuchen.'
-            );
-            upsertResultItem({
-              sentence_number: sentenceNumber,
-              error: `${tr('Ошибка проверки', 'Pruefungsfehler')}: ${friendly}`,
-            });
-          } finally {
-            setTranslationCheckProgress((prev) => ({
-              active: true,
-              done: Math.min(prev.total || submittedEntries.length, (prev.done || 0) + 1),
-              total: prev.total || submittedEntries.length,
-            }));
-          }
-        }
-      };
-
-      await Promise.all(Array.from({ length: concurrency }, () => worker()));
+      await pollTranslationCheckStatus({
+        checkSessionId: startState.sessionId,
+        pollToken,
+      });
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -5991,7 +6102,6 @@ function AppInner() {
       setWebappError(`${tr('Ошибка проверки', 'Pruefungsfehler')}: ${friendly}`);
     } finally {
       setWebappLoading(false);
-      setTranslationCheckProgress((prev) => ({ ...prev, active: false }));
     }
   };
 
@@ -6341,18 +6451,20 @@ function AppInner() {
 
   const normalizeFolderKey = (value) => normalizeSelectionText(value).toLocaleLowerCase();
 
-  const showInlineToast = (text) => {
+  const showInlineToast = (text, durationMs = 3000) => {
     const value = normalizeSelectionText(text);
     if (!value) return;
     if (inlineToastTimeoutRef.current) {
       clearTimeout(inlineToastTimeoutRef.current);
       inlineToastTimeoutRef.current = null;
     }
+    const safeDurationMs = Math.max(1000, Number(durationMs || 3000));
+    setInlineToastDurationMs(safeDurationMs);
     setInlineToast(value);
     inlineToastTimeoutRef.current = setTimeout(() => {
       setInlineToast('');
       inlineToastTimeoutRef.current = null;
-    }, 1000);
+    }, safeDurationMs);
   };
 
   const resolveYoutubeAutoFolderName = () => {
@@ -9238,14 +9350,34 @@ function AppInner() {
       setYoutubeError('');
       setYoutubeSearchError('');
       setYoutubeSearchResults([]);
+      safeStorageRemove(youtubeResumeStorageKey);
       safeStorageRemove('webapp_youtube');
+      youtubeResumeAppliedForVideoRef.current = '';
+      youtubeResumeLastSavedSecondRef.current = -1;
       return;
     }
     const id = extractYoutubeId(trimmed);
     if (id) {
       setYoutubeId(id);
       setYoutubeError('');
-      safeStorageSet('webapp_youtube', JSON.stringify({ input: trimmed, id }));
+      const existingRaw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
+      let existingTime = 0;
+      try {
+        const parsed = existingRaw ? JSON.parse(existingRaw) : null;
+        if (parsed?.id === id) {
+          existingTime = Math.max(0, Number(parsed?.currentTime || 0));
+        }
+      } catch (_error) {
+        existingTime = 0;
+      }
+      const nextPayload = JSON.stringify({
+        input: trimmed,
+        id,
+        currentTime: existingTime,
+        updatedAt: Date.now(),
+      });
+      safeStorageSet(youtubeResumeStorageKey, nextPayload);
+      safeStorageSet('webapp_youtube', nextPayload);
     } else if (/(youtube\.com|youtu\.be|^https?:\/\/)/i.test(trimmed)) {
       setYoutubeError(tr('Не удалось распознать ссылку или ID видео.', 'Video-Link oder ID konnte nicht erkannt werden.'));
       setYoutubeId('');
@@ -9253,7 +9385,7 @@ function AppInner() {
       setYoutubeError('');
       setYoutubeId('');
     }
-  }, [youtubeInput]);
+  }, [youtubeInput, youtubeResumeStorageKey]);
 
   const searchYoutubeVideos = async () => {
     const query = youtubeInput.trim();
@@ -9389,12 +9521,35 @@ function AppInner() {
   }, [languageProfile?.learning_language, movieLanguageOptions]);
 
   useEffect(() => {
+    const currentSecond = Math.max(0, Math.floor(Number(youtubeCurrentTime || 0)));
+    if (youtubeId && currentSecond >= 0 && currentSecond % 3 === 0 && youtubeResumeLastSavedSecondRef.current !== currentSecond) {
+      youtubeResumeLastSavedSecondRef.current = currentSecond;
+      persistYoutubeResumeState(currentSecond);
+    }
+
+    if (!youtubeSectionVisible && youtubeId) {
+      persistYoutubeResumeState();
+    }
+  }, [persistYoutubeResumeState, youtubeCurrentTime, youtubeId, youtubeSectionVisible]);
+
+  useEffect(() => {
+    const onPageHide = () => {
+      persistYoutubeResumeState();
+    };
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [persistYoutubeResumeState]);
+
+  useEffect(() => {
     if (!youtubeId) {
       setYoutubePlayerReady(false);
       setYoutubeCurrentTime(0);
       setYoutubePlaybackStarted(false);
       setYoutubeIsPaused(true);
       setYoutubeForceShowPanel(false);
+      youtubeResumeAppliedForVideoRef.current = '';
       if (youtubeTimeIntervalRef.current) {
         clearInterval(youtubeTimeIntervalRef.current);
         youtubeTimeIntervalRef.current = null;
@@ -9451,6 +9606,25 @@ function AppInner() {
             setYoutubePlayerReady(true);
             setYoutubeIsPaused(true);
             setYoutubePlaybackStarted(false);
+            try {
+              const stored = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
+              if (stored) {
+                const parsed = JSON.parse(stored);
+                const savedId = String(parsed?.id || '').trim();
+                const savedTime = Math.max(0, Number(parsed?.currentTime || 0));
+                if (
+                  savedId === youtubeId
+                  && savedTime >= 2
+                  && youtubeResumeAppliedForVideoRef.current !== youtubeId
+                ) {
+                  youtubePlayerRef.current?.seekTo?.(savedTime, true);
+                  setYoutubeCurrentTime(savedTime);
+                  youtubeResumeAppliedForVideoRef.current = youtubeId;
+                }
+              }
+            } catch (_error) {
+              // ignore
+            }
             if (youtubeTimeIntervalRef.current) {
               clearInterval(youtubeTimeIntervalRef.current);
             }
@@ -9474,6 +9648,7 @@ function AppInner() {
                 const time = youtubePlayerRef.current?.getCurrentTime?.();
                 if (typeof time === 'number' && !Number.isNaN(time)) {
                   setYoutubeCurrentTime(time);
+                  persistYoutubeResumeState(time);
                 }
               } catch (error) {
                 // ignore
@@ -9498,7 +9673,7 @@ function AppInner() {
         youtubeTimeIntervalRef.current = null;
       }
     };
-  }, [youtubeId, youtubeSectionVisible]);
+  }, [persistYoutubeResumeState, youtubeId, youtubeResumeStorageKey, youtubeSectionVisible]);
 
   useEffect(() => {
     if (youtubeTranscript.length > 0 && youtubeSubtitlesRef.current) {
@@ -14855,7 +15030,14 @@ function AppInner() {
                 </section>
               </div>
             )}
-            {inlineToast && <div className="webapp-inline-toast">{inlineToast}</div>}
+            {inlineToast && (
+              <div
+                className="webapp-inline-toast"
+                style={{ '--toast-duration': `${inlineToastDurationMs}ms` }}
+              >
+                {inlineToast}
+              </div>
+            )}
           </div>
         </div>
       </div>
