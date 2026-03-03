@@ -227,6 +227,7 @@ Flask-Cors
 python-dotenv
 youtube-transcript-api==1.2.4
 spacy==3.7.4
+stripe==11.6.0
 
 gunicorn
 

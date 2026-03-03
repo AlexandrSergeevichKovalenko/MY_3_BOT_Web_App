@@ -68,7 +68,6 @@ import json
 import asyncio
 import logging
 import requests
-import stripe
 import tempfile
 import base64
 import time
@@ -95,6 +94,10 @@ from backend.database import get_db_connection_context
 from backend.translation_workflow import _extract_correct_translation
 from livekit.api import AccessToken, VideoGrants
 from pathlib import Path
+try:
+    import stripe
+except Exception:  # pragma: no cover - optional in bot-only deploys
+    stripe = None
 BASE_DIR = Path(__file__).resolve().parent.parent
 try:
     import spacy
@@ -399,7 +402,7 @@ _LANGUAGE_PAIR_CACHE: dict[int, dict] = {}
 _DICTIONARY_LOOKUP_CACHE_LOCK = threading.Lock()
 _DICTIONARY_LOOKUP_CACHE: dict[str, dict] = {}
 
-if STRIPE_SECRET_KEY:
+if STRIPE_SECRET_KEY and stripe is not None:
     stripe.api_key = STRIPE_SECRET_KEY
 
 _TODAY_PREFERRED_CHANNELS = [
@@ -1030,6 +1033,8 @@ def _set_cached_dictionary_lookup(cache_key: str, payload: dict) -> None:
 
 
 def _require_stripe_config(*, require_webhook_secret: bool = False) -> str | None:
+    if stripe is None:
+        return "Stripe SDK не установлен на этом deploy"
     if not STRIPE_SECRET_KEY:
         return "STRIPE_SECRET_KEY не задан"
     if require_webhook_secret and not STRIPE_WEBHOOK_SECRET:
