@@ -9622,11 +9622,16 @@ def get_webapp_analytics_scope():
                 chat_type=scope_context.get("chat_type"),
                 chat_title=scope_context.get("chat_title"),
             )
-        known_groups = list_webapp_group_contexts(user_id=int(user_id), limit=50)
+        known_groups = list_webapp_group_contexts(
+            user_id=int(user_id),
+            limit=50,
+            only_confirmed=True,
+        )
         known_group_title_map = {
             int(item.get("chat_id")): (str(item.get("chat_title") or "").strip() or None)
             for item in known_groups
         }
+        known_group_ids = {int(item.get("chat_id")) for item in known_groups if item.get("chat_id") is not None}
         saved_scope = get_webapp_scope_state(user_id=int(user_id))
         if (
             str(saved_scope.get("scope_kind")) == "group"
@@ -9673,6 +9678,18 @@ def get_webapp_analytics_scope():
     elif bool(saved_scope.get("has_state")):
         effective_reason = "saved_scope"
 
+    if effective_kind == "group":
+        if effective_chat_id is None or int(effective_chat_id) not in known_group_ids:
+            effective_kind = "personal"
+            effective_chat_id = None
+            effective_chat_title = None
+            effective_reason = "group_participation_not_confirmed"
+
+    context_chat_id = int(scope_context["chat_id"]) if scope_context.get("has_group_context") else None
+    group_confirmation_required = bool(
+        context_chat_id is not None and context_chat_id not in known_group_ids
+    )
+
     selector_required = bool(
         not scope_context.get("has_group_context")
         and len(known_groups) >= 2
@@ -9698,6 +9715,10 @@ def get_webapp_analytics_scope():
             "selector": {
                 "required": selector_required,
                 "recommended": selector_recommended,
+            },
+            "group_participation": {
+                "confirmation_required": group_confirmation_required,
+                "context_chat_id": context_chat_id,
             },
         }
     )
@@ -9729,12 +9750,34 @@ def select_webapp_analytics_scope():
                 chat_type=context.get("chat_type") or payload.get("chat_type"),
                 chat_title=payload.get("chat_title") or context.get("chat_title"),
             )
+            confirmed_groups = list_webapp_group_contexts(
+                user_id=int(user_id),
+                limit=200,
+                only_confirmed=True,
+            )
+            confirmed_group_ids = {
+                int(item.get("chat_id"))
+                for item in confirmed_groups
+                if item.get("chat_id") is not None
+            }
+            if int(scope_chat_id) not in confirmed_group_ids:
+                return jsonify(
+                    {
+                        "error": "Подтвердите участие в группе в Telegram, чтобы включить групповой режим.",
+                        "code": "group_participation_not_confirmed",
+                        "scope_chat_id": int(scope_chat_id),
+                    }
+                ), 403
         saved_scope = upsert_webapp_scope_state(
             user_id=int(user_id),
             scope_kind=scope_kind,
             scope_chat_id=int(scope_chat_id) if scope_kind == "group" else None,
         )
-        known_groups = list_webapp_group_contexts(user_id=int(user_id), limit=50)
+        known_groups = list_webapp_group_contexts(
+            user_id=int(user_id),
+            limit=50,
+            only_confirmed=True,
+        )
         if (
             str(saved_scope.get("scope_kind")) == "group"
             and saved_scope.get("scope_chat_id") is not None
@@ -9790,7 +9833,11 @@ def _resolve_analytics_scope_for_request(
             chat_title=scope_context.get("chat_title"),
         )
 
-    known_groups = list_webapp_group_contexts(user_id=int(user_id), limit=200)
+    known_groups = list_webapp_group_contexts(
+        user_id=int(user_id),
+        limit=200,
+        only_confirmed=True,
+    )
     known_group_by_chat_id: dict[int, dict] = {
         int(item.get("chat_id")): item
         for item in known_groups
@@ -9826,11 +9873,10 @@ def _resolve_analytics_scope_for_request(
             effective_kind = "personal"
             reason = "missing_group_chat_id"
         else:
-            context_chat_id = int(scope_context["chat_id"]) if scope_context.get("has_group_context") else None
-            if int(effective_chat_id) not in known_group_by_chat_id and context_chat_id != int(effective_chat_id):
+            if int(effective_chat_id) not in known_group_by_chat_id:
                 effective_kind = "personal"
                 effective_chat_id = None
-                reason = "group_not_allowed_for_user"
+                reason = "group_participation_not_confirmed"
 
     effective_title = None
     if effective_kind == "group" and effective_chat_id is not None:
@@ -9842,7 +9888,11 @@ def _resolve_analytics_scope_for_request(
         )
 
     if effective_kind == "group" and effective_chat_id is not None:
-        member_user_ids = list_webapp_group_member_user_ids(chat_id=int(effective_chat_id), limit=5000)
+        member_user_ids = list_webapp_group_member_user_ids(
+            chat_id=int(effective_chat_id),
+            limit=5000,
+            only_confirmed=True,
+        )
         if int(user_id) not in member_user_ids:
             member_user_ids = [int(user_id), *member_user_ids]
     else:

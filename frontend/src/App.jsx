@@ -431,6 +431,7 @@ function AppInner() {
   const youtubePlayerRef = useRef(null);
   const youtubePlayerShellRef = useRef(null);
   const youtubeTimeIntervalRef = useRef(null);
+  const youtubeCurrentTimeRef = useRef(0);
   const youtubeResumeAppliedForVideoRef = useRef('');
   const youtubeResumeLastSavedSecondRef = useRef(-1);
   const youtubeTranslateInFlightRef = useRef(false);
@@ -565,11 +566,12 @@ function AppInner() {
     const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
     return `webapp_youtube_resume_${stableId}`;
   }, [webappUser?.id, initData]);
-  const persistYoutubeResumeState = useCallback((timeValue = youtubeCurrentTime) => {
+  const persistYoutubeResumeState = useCallback((timeValue) => {
     const trimmed = String(youtubeInput || '').trim();
     const resolvedId = String(youtubeId || extractYoutubeId(trimmed) || '').trim();
     if (!trimmed || !resolvedId) return;
-    const safeTime = Math.max(0, Math.floor(Number(timeValue || 0)));
+    const sourceTime = timeValue ?? youtubeCurrentTimeRef.current;
+    const safeTime = Math.max(0, Math.floor(Number(sourceTime || 0)));
     const payload = JSON.stringify({
       input: trimmed,
       id: resolvedId,
@@ -578,7 +580,7 @@ function AppInner() {
     });
     safeStorageSet(youtubeResumeStorageKey, payload);
     safeStorageSet('webapp_youtube', payload);
-  }, [youtubeCurrentTime, youtubeId, youtubeInput, youtubeResumeStorageKey]);
+  }, [youtubeId, youtubeInput, youtubeResumeStorageKey]);
   const normalizeSkillTrainingSnapshot = (value) => {
     if (!value || typeof value !== 'object') return null;
     const pack = value?.package && typeof value.package === 'object' ? value.package : null;
@@ -9835,6 +9837,10 @@ function AppInner() {
       setMoviesLanguageFilter('all');
     }
   }, [languageProfile?.learning_language, movieLanguageOptions]);
+
+  useEffect(() => {
+    youtubeCurrentTimeRef.current = Number(youtubeCurrentTime || 0);
+  }, [youtubeCurrentTime]);
 
   useEffect(() => {
     const currentSecond = Math.max(0, Math.floor(Number(youtubeCurrentTime || 0)));

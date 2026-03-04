@@ -9,7 +9,7 @@ import calendar
 from datetime import datetime, time, date, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update, Poll
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes, ApplicationHandlerStop, ExtBot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes, ApplicationHandlerStop, ExtBot, ChatMemberHandler
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
@@ -86,6 +86,8 @@ from backend.database import (
     get_google_tts_monthly_budget_status,
     set_provider_budget_extra_limit,
     set_provider_budget_block_state,
+    confirm_webapp_group_participation,
+    upsert_webapp_group_context,
     upsert_active_quiz,
     get_active_quiz,
     delete_active_quiz,
@@ -1007,6 +1009,200 @@ def _command_name_from_text(text: str) -> str:
     return command.lower()
 
 
+def _build_group_enroll_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("✅ Подтвердить участие", callback_data="groupenroll:confirm")]]
+    )
+
+
+def _is_active_member_status(status: str | None) -> bool:
+    normalized = str(status or "").strip().lower()
+    return normalized in {"member", "administrator", "creator", "restricted"}
+
+
+async def _send_group_enrollment_prompt(
+    context: CallbackContext,
+    *,
+    chat_id: int,
+    chat_title: str | None = None,
+) -> None:
+    group_title = str(chat_title or "").strip()
+    prefix = f"Группа: {group_title}\n\n" if group_title else ""
+    text = (
+        "🏁 Режим соревнования в Mini App\n\n"
+        f"{prefix}"
+        "Чтобы участвовать в рейтинге и групповой статистике, нажмите кнопку ниже.\n"
+        "Кто не подтвердит участие, останется в группе, но в соревновании учитываться не будет."
+    )
+    await context.bot.send_message(
+        chat_id=int(chat_id),
+        text=text,
+        reply_markup=_build_group_enroll_keyboard(),
+    )
+
+
+async def _register_group_context_from_update(update: Update) -> None:
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    chat_type = str(getattr(chat, "type", "") or "").strip().lower()
+    if chat_type not in {"group", "supergroup"}:
+        return
+
+    chat_id = getattr(chat, "id", None)
+    if chat_id is None:
+        return
+
+    chat_title = str(getattr(chat, "title", "") or "").strip() or None
+    try:
+        await asyncio.to_thread(
+            upsert_webapp_group_context,
+            user_id=int(user.id),
+            chat_id=int(chat_id),
+            chat_type=chat_type,
+            chat_title=chat_title,
+        )
+    except Exception as exc:
+        logging.warning(
+            "⚠️ Не удалось обновить group context user_id=%s chat_id=%s: %s",
+            user.id,
+            chat_id,
+            exc,
+        )
+
+
+async def handle_group_enrollment_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    actor = update.effective_user
+    message = query.message if query else None
+    chat = message.chat if message else None
+    if not query or not actor or not chat:
+        return
+
+    chat_type = str(getattr(chat, "type", "") or "").strip().lower()
+    if chat_type not in {"group", "supergroup"}:
+        await query.answer("Эта кнопка работает только в группе.", show_alert=True)
+        return
+
+    try:
+        result = await asyncio.to_thread(
+            confirm_webapp_group_participation,
+            user_id=int(actor.id),
+            chat_id=int(chat.id),
+            chat_type=chat_type,
+            chat_title=str(getattr(chat, "title", "") or "").strip() or None,
+            source="telegram_group_callback",
+        )
+    except Exception as exc:
+        logging.warning(
+            "⚠️ Не удалось подтвердить участие user_id=%s chat_id=%s: %s",
+            actor.id,
+            chat.id,
+            exc,
+        )
+        await query.answer("Не удалось подтвердить участие. Попробуйте ещё раз.", show_alert=True)
+        return
+
+    if bool(result.get("was_confirmed_before")):
+        await query.answer("Вы уже участвуете в соревновании этой группы.", show_alert=False)
+        return
+    await query.answer("Готово! Вы участвуете в рейтинге этой группы.", show_alert=False)
+
+
+async def enroll_group_command(update: Update, context: CallbackContext) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+    if not message or not chat:
+        return
+
+    chat_type = str(getattr(chat, "type", "") or "").strip().lower()
+    if chat_type not in {"group", "supergroup"}:
+        await message.reply_text(
+            "Эта команда работает в группе.\n"
+            "Откройте группу с ботом и отправьте /enroll."
+        )
+        return
+
+    await _send_group_enrollment_prompt(
+        context,
+        chat_id=int(chat.id),
+        chat_title=str(getattr(chat, "title", "") or "").strip() or None,
+    )
+
+
+async def handle_bot_group_membership(update: Update, context: CallbackContext) -> None:
+    membership_update = getattr(update, "my_chat_member", None)
+    if not membership_update:
+        return
+
+    chat = membership_update.chat
+    chat_type = str(getattr(chat, "type", "") or "").strip().lower()
+    if chat_type not in {"group", "supergroup"}:
+        return
+
+    old_status = str(getattr(membership_update.old_chat_member, "status", "") or "").strip().lower()
+    new_status = str(getattr(membership_update.new_chat_member, "status", "") or "").strip().lower()
+    if not _is_active_member_status(new_status):
+        return
+    if _is_active_member_status(old_status):
+        return
+
+    try:
+        await _send_group_enrollment_prompt(
+            context,
+            chat_id=int(chat.id),
+            chat_title=str(getattr(chat, "title", "") or "").strip() or None,
+        )
+    except Exception as exc:
+        logging.warning("⚠️ Не удалось отправить enrollment prompt в chat_id=%s: %s", getattr(chat, "id", None), exc)
+
+
+async def track_group_member_context(update: Update, context: CallbackContext) -> None:
+    membership_update = getattr(update, "chat_member", None)
+    if not membership_update:
+        return
+
+    chat = membership_update.chat
+    chat_type = str(getattr(chat, "type", "") or "").strip().lower()
+    if chat_type not in {"group", "supergroup"}:
+        return
+
+    new_member = getattr(membership_update, "new_chat_member", None)
+    if not new_member:
+        return
+
+    new_status = str(getattr(new_member, "status", "") or "").strip().lower()
+    if new_status not in {"member", "administrator", "creator", "restricted"}:
+        return
+
+    target_user = getattr(new_member, "user", None)
+    if not target_user:
+        return
+
+    chat_id = getattr(chat, "id", None)
+    if chat_id is None:
+        return
+
+    chat_title = str(getattr(chat, "title", "") or "").strip() or None
+    try:
+        await asyncio.to_thread(
+            upsert_webapp_group_context,
+            user_id=int(target_user.id),
+            chat_id=int(chat_id),
+            chat_type=chat_type,
+            chat_title=chat_title,
+        )
+    except Exception as exc:
+        logging.warning(
+            "⚠️ Не удалось зафиксировать join context user_id=%s chat_id=%s: %s",
+            getattr(target_user, "id", None),
+            chat_id,
+            exc,
+        )
+
+
 async def enforce_user_access(update: Update, context: CallbackContext):
     user = update.effective_user
     if not user:
@@ -1015,6 +1211,8 @@ async def enforce_user_access(update: Update, context: CallbackContext):
     # Poll answers must be processed to deliver private quiz feedback.
     if getattr(update, "poll_answer", None):
         return
+
+    await _register_group_context_from_update(update)
 
     if is_telegram_user_allowed(int(user.id)):
         return
@@ -7324,8 +7522,11 @@ def main():
     application.bot.request.timeout = 60
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)
+    application.add_handler(ChatMemberHandler(handle_bot_group_membership, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER), group=-4)
+    application.add_handler(ChatMemberHandler(track_group_member_context, chat_member_types=ChatMemberHandler.CHAT_MEMBER), group=-3)
     application.add_handler(TypeHandler(Update, enforce_user_access, block=True), group=-2)
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("enroll", enroll_group_command))
     application.add_handler(CommandHandler("request_access", request_access))
     application.add_handler(CommandHandler("allow", allow_user_command))
     application.add_handler(CommandHandler("deny", deny_user_command))
@@ -7353,6 +7554,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_confirm_callback, pattern=r"^dictsaveconfirm:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_option_callback, pattern=r"^dictsaveopt:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
+    application.add_handler(CallbackQueryHandler(handle_group_enrollment_callback, pattern=r"^groupenroll:confirm$"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_translation_from_text, block=False), group=1)  # ✅ Проверяем переводы

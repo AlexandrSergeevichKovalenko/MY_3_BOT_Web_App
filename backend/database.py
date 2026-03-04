@@ -738,6 +738,9 @@ def ensure_webapp_tables() -> None:
                     chat_id BIGINT NOT NULL,
                     chat_type TEXT NOT NULL DEFAULT 'group',
                     chat_title TEXT,
+                    participation_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+                    participation_confirmed_at TIMESTAMPTZ,
+                    participation_confirmed_source TEXT,
                     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (user_id, chat_id),
@@ -745,8 +748,24 @@ def ensure_webapp_tables() -> None:
                 );
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_webapp_group_contexts
+                ADD COLUMN IF NOT EXISTS participation_confirmed BOOLEAN NOT NULL DEFAULT FALSE;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_group_contexts
+                ADD COLUMN IF NOT EXISTS participation_confirmed_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_group_contexts
+                ADD COLUMN IF NOT EXISTS participation_confirmed_source TEXT;
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_group_contexts_user_seen
                 ON bt_3_webapp_group_contexts (user_id, last_seen_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_group_contexts_chat_confirmed
+                ON bt_3_webapp_group_contexts (chat_id, participation_confirmed, last_seen_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_checks (
@@ -2569,16 +2588,28 @@ def upsert_webapp_group_context(
                     chat_id,
                     chat_type,
                     chat_title,
+                    participation_confirmed,
+                    participation_confirmed_at,
+                    participation_confirmed_source,
                     first_seen_at,
                     last_seen_at
                 )
-                VALUES (%s, %s, %s, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, FALSE, NULL, NULL, NOW(), NOW())
                 ON CONFLICT (user_id, chat_id) DO UPDATE
                 SET
                     chat_type = EXCLUDED.chat_type,
                     chat_title = COALESCE(NULLIF(EXCLUDED.chat_title, ''), bt_3_webapp_group_contexts.chat_title),
                     last_seen_at = NOW()
-                RETURNING user_id, chat_id, chat_type, chat_title, first_seen_at, last_seen_at;
+                RETURNING
+                    user_id,
+                    chat_id,
+                    chat_type,
+                    chat_title,
+                    participation_confirmed,
+                    participation_confirmed_at,
+                    participation_confirmed_source,
+                    first_seen_at,
+                    last_seen_at;
                 """,
                 (int(user_id), int(chat_id), normalized_chat_type, normalized_chat_title),
             )
@@ -2589,24 +2620,133 @@ def upsert_webapp_group_context(
         "chat_id": int(row[1]),
         "chat_type": str(row[2] or "group"),
         "chat_title": str(row[3] or "").strip() or None,
-        "first_seen_at": row[4].isoformat() if row[4] else None,
-        "last_seen_at": row[5].isoformat() if row[5] else None,
+        "participation_confirmed": bool(row[4]),
+        "participation_confirmed_at": row[5].isoformat() if row[5] else None,
+        "participation_confirmed_source": str(row[6] or "").strip() or None,
+        "first_seen_at": row[7].isoformat() if row[7] else None,
+        "last_seen_at": row[8].isoformat() if row[8] else None,
     }
 
 
-def list_webapp_group_contexts(user_id: int, limit: int = 20) -> list[dict]:
+def confirm_webapp_group_participation(
+    *,
+    user_id: int,
+    chat_id: int,
+    chat_type: str | None = None,
+    chat_title: str | None = None,
+    source: str | None = None,
+) -> dict:
+    normalized_chat_type = str(chat_type or "").strip().lower()
+    if normalized_chat_type not in {"group", "supergroup"}:
+        normalized_chat_type = "group"
+    normalized_chat_title = str(chat_title or "").strip() or None
+    normalized_source = str(source or "").strip() or None
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT participation_confirmed
+                FROM bt_3_webapp_group_contexts
+                WHERE user_id = %s AND chat_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id), int(chat_id)),
+            )
+            previous = cursor.fetchone()
+
+            cursor.execute(
+                """
+                INSERT INTO bt_3_webapp_group_contexts (
+                    user_id,
+                    chat_id,
+                    chat_type,
+                    chat_title,
+                    participation_confirmed,
+                    participation_confirmed_at,
+                    participation_confirmed_source,
+                    first_seen_at,
+                    last_seen_at
+                )
+                VALUES (%s, %s, %s, %s, TRUE, NOW(), %s, NOW(), NOW())
+                ON CONFLICT (user_id, chat_id) DO UPDATE
+                SET
+                    chat_type = EXCLUDED.chat_type,
+                    chat_title = COALESCE(NULLIF(EXCLUDED.chat_title, ''), bt_3_webapp_group_contexts.chat_title),
+                    participation_confirmed = TRUE,
+                    participation_confirmed_at = COALESCE(
+                        bt_3_webapp_group_contexts.participation_confirmed_at,
+                        NOW()
+                    ),
+                    participation_confirmed_source = COALESCE(
+                        EXCLUDED.participation_confirmed_source,
+                        bt_3_webapp_group_contexts.participation_confirmed_source
+                    ),
+                    last_seen_at = NOW()
+                RETURNING
+                    user_id,
+                    chat_id,
+                    chat_type,
+                    chat_title,
+                    participation_confirmed,
+                    participation_confirmed_at,
+                    participation_confirmed_source,
+                    first_seen_at,
+                    last_seen_at;
+                """,
+                (
+                    int(user_id),
+                    int(chat_id),
+                    normalized_chat_type,
+                    normalized_chat_title,
+                    normalized_source,
+                ),
+            )
+            row = cursor.fetchone()
+
+    was_confirmed_before = bool(previous and previous[0])
+    return {
+        "user_id": int(row[0]),
+        "chat_id": int(row[1]),
+        "chat_type": str(row[2] or "group"),
+        "chat_title": str(row[3] or "").strip() or None,
+        "participation_confirmed": bool(row[4]),
+        "participation_confirmed_at": row[5].isoformat() if row[5] else None,
+        "participation_confirmed_source": str(row[6] or "").strip() or None,
+        "first_seen_at": row[7].isoformat() if row[7] else None,
+        "last_seen_at": row[8].isoformat() if row[8] else None,
+        "was_confirmed_before": was_confirmed_before,
+    }
+
+
+def list_webapp_group_contexts(
+    user_id: int,
+    limit: int = 20,
+    *,
+    only_confirmed: bool = False,
+) -> list[dict]:
     safe_limit = max(1, min(int(limit or 20), 100))
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_id, chat_id, chat_type, chat_title, first_seen_at, last_seen_at
+                SELECT
+                    user_id,
+                    chat_id,
+                    chat_type,
+                    chat_title,
+                    participation_confirmed,
+                    participation_confirmed_at,
+                    participation_confirmed_source,
+                    first_seen_at,
+                    last_seen_at
                 FROM bt_3_webapp_group_contexts
                 WHERE user_id = %s
+                  AND (%s = FALSE OR participation_confirmed = TRUE)
                 ORDER BY last_seen_at DESC, chat_id DESC
                 LIMIT %s;
                 """,
-                (int(user_id), safe_limit),
+                (int(user_id), bool(only_confirmed), safe_limit),
             )
             rows = cursor.fetchall()
     return [
@@ -2615,14 +2755,22 @@ def list_webapp_group_contexts(user_id: int, limit: int = 20) -> list[dict]:
             "chat_id": int(row[1]),
             "chat_type": str(row[2] or "group"),
             "chat_title": str(row[3] or "").strip() or None,
-            "first_seen_at": row[4].isoformat() if row[4] else None,
-            "last_seen_at": row[5].isoformat() if row[5] else None,
+            "participation_confirmed": bool(row[4]),
+            "participation_confirmed_at": row[5].isoformat() if row[5] else None,
+            "participation_confirmed_source": str(row[6] or "").strip() or None,
+            "first_seen_at": row[7].isoformat() if row[7] else None,
+            "last_seen_at": row[8].isoformat() if row[8] else None,
         }
         for row in rows
     ]
 
 
-def list_webapp_group_member_user_ids(chat_id: int, limit: int = 2000) -> list[int]:
+def list_webapp_group_member_user_ids(
+    chat_id: int,
+    limit: int = 2000,
+    *,
+    only_confirmed: bool = True,
+) -> list[int]:
     safe_limit = max(1, min(int(limit or 2000), 10000))
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -2631,10 +2779,11 @@ def list_webapp_group_member_user_ids(chat_id: int, limit: int = 2000) -> list[i
                 SELECT user_id
                 FROM bt_3_webapp_group_contexts
                 WHERE chat_id = %s
+                  AND (%s = FALSE OR participation_confirmed = TRUE)
                 ORDER BY last_seen_at DESC, user_id DESC
                 LIMIT %s;
                 """,
-                (int(chat_id), safe_limit),
+                (int(chat_id), bool(only_confirmed), safe_limit),
             )
             rows = cursor.fetchall() or []
     seen: set[int] = set()
