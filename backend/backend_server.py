@@ -197,6 +197,11 @@ from backend.database import (
     mark_telegram_system_message_deleted,
     get_user_language_profile,
     upsert_user_language_profile,
+    get_webapp_scope_state,
+    upsert_webapp_scope_state,
+    upsert_webapp_group_context,
+    list_webapp_group_contexts,
+    list_webapp_group_member_user_ids,
     get_daily_plan,
     create_daily_plan,
     update_daily_plan_item_status,
@@ -292,9 +297,12 @@ from backend.translation_workflow import (
 from backend.analytics import (
     fetch_user_summary,
     fetch_user_timeseries,
+    fetch_scope_summary,
+    fetch_scope_timeseries,
     fetch_comparison_leaderboard,
     get_period_bounds,
     get_all_time_bounds,
+    get_all_time_bounds_for_users,
     _normalize_granularity,
     _normalize_period,
 )
@@ -865,14 +873,56 @@ def _extract_webapp_user_from_init_data(init_data: str) -> tuple[int | None, str
     return int(user_id), _extract_display_name(user_data)
 
 
-def _get_authenticated_user_from_request_init_data() -> tuple[int | None, str | None, str | None]:
-    payload = request.get_json(silent=True) or {}
-    init_data = (
+def _extract_request_init_data(payload: dict | None = None) -> str:
+    body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    return str(
         request.headers.get("X-Telegram-InitData")
         or request.headers.get("X-Telegram-Init-Data")
-        or payload.get("initData")
+        or body.get("initData")
         or request.args.get("initData")
-    )
+        or ""
+    ).strip()
+
+
+def _normalize_scope_kind_payload(value) -> str:
+    kind = str(value or "").strip().lower()
+    if kind == "group":
+        return "group"
+    return "personal"
+
+
+def _extract_scope_context_from_payload(*, init_data: str, payload: dict | None = None) -> dict:
+    body = payload if isinstance(payload, dict) else {}
+    scope_context = body.get("scope_context")
+    context_payload = scope_context if isinstance(scope_context, dict) else body
+    parsed = _parse_telegram_init_data(init_data) if init_data else {}
+    chat_type = str(
+        context_payload.get("chat_type")
+        or parsed.get("chat_type")
+        or ""
+    ).strip().lower()
+    raw_chat_id = context_payload.get("chat_id")
+    if raw_chat_id is None:
+        raw_chat_id = context_payload.get("id")
+    chat_id = _safe_int(raw_chat_id)
+    chat_title = str(
+        context_payload.get("chat_title")
+        or context_payload.get("title")
+        or ""
+    ).strip() or None
+    is_group_type = chat_type in {"group", "supergroup"}
+    has_group_context = bool(is_group_type and chat_id is not None)
+    return {
+        "chat_type": chat_type if chat_type else None,
+        "chat_id": int(chat_id) if chat_id is not None else None,
+        "chat_title": chat_title,
+        "has_group_context": has_group_context,
+    }
+
+
+def _get_authenticated_user_from_request_init_data() -> tuple[int | None, str | None, str | None]:
+    payload = request.get_json(silent=True) or {}
+    init_data = _extract_request_init_data(payload)
     if not init_data:
         return None, None, "initData обязателен"
     user_id, username = _extract_webapp_user_from_init_data(init_data)
@@ -9405,10 +9455,283 @@ def _parse_iso_date(value: str | None):
         return None
 
 
+@app.route("/api/webapp/analytics/scope", methods=["POST"])
+def get_webapp_analytics_scope():
+    payload = request.get_json(silent=True) or {}
+    init_data = _extract_request_init_data(payload)
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    try:
+        scope_context = _extract_scope_context_from_payload(init_data=init_data, payload=payload)
+        if scope_context.get("has_group_context"):
+            upsert_webapp_group_context(
+                user_id=int(user_id),
+                chat_id=int(scope_context["chat_id"]),
+                chat_type=scope_context.get("chat_type"),
+                chat_title=scope_context.get("chat_title"),
+            )
+        known_groups = list_webapp_group_contexts(user_id=int(user_id), limit=50)
+        known_group_title_map = {
+            int(item.get("chat_id")): (str(item.get("chat_title") or "").strip() or None)
+            for item in known_groups
+        }
+        saved_scope = get_webapp_scope_state(user_id=int(user_id))
+        if (
+            str(saved_scope.get("scope_kind")) == "group"
+            and saved_scope.get("scope_chat_id") is not None
+            and not saved_scope.get("scope_chat_title")
+        ):
+            saved_scope["scope_chat_title"] = known_group_title_map.get(int(saved_scope["scope_chat_id"]))
+    except Exception as exc:
+        logging.exception("analytics scope resolve failed for user_id=%s", user_id)
+        return jsonify({"error": f"Не удалось вычислить analytics scope: {exc}"}), 500
+
+    effective_kind = "personal"
+    effective_chat_id = None
+    effective_reason = "default_personal"
+    effective_chat_title = None
+
+    if scope_context.get("has_group_context"):
+        effective_kind = "group"
+        effective_chat_id = int(scope_context["chat_id"])
+        effective_reason = "telegram_group_context"
+        effective_chat_title = (
+            str(scope_context.get("chat_title") or "").strip()
+            or known_group_title_map.get(effective_chat_id)
+        )
+    elif (
+        str(saved_scope.get("scope_kind")) == "group"
+        and saved_scope.get("scope_chat_id") is not None
+    ):
+        effective_kind = "group"
+        effective_chat_id = int(saved_scope["scope_chat_id"])
+        effective_reason = "saved_scope"
+        effective_chat_title = (
+            str(saved_scope.get("scope_chat_title") or "").strip()
+            or known_group_title_map.get(effective_chat_id)
+        )
+    elif (
+        not bool(saved_scope.get("has_state"))
+        and len(known_groups) == 1
+    ):
+        effective_kind = "group"
+        effective_chat_id = int(known_groups[0]["chat_id"])
+        effective_reason = "single_known_group_default"
+        effective_chat_title = str(known_groups[0].get("chat_title") or "").strip() or None
+    elif bool(saved_scope.get("has_state")):
+        effective_reason = "saved_scope"
+
+    selector_required = bool(
+        not scope_context.get("has_group_context")
+        and len(known_groups) >= 2
+    )
+    selector_recommended = bool(
+        not scope_context.get("has_group_context")
+        and len(known_groups) >= 1
+    )
+
+    return jsonify(
+        {
+            "ok": True,
+            "scope_context": scope_context,
+            "saved_scope": saved_scope,
+            "effective_scope": {
+                "scope_kind": effective_kind,
+                "scope_chat_id": effective_chat_id,
+                "scope_chat_title": effective_chat_title,
+                "scope_key": f"group:{effective_chat_id}" if effective_kind == "group" else "personal",
+                "reason": effective_reason,
+            },
+            "available_groups": known_groups,
+            "selector": {
+                "required": selector_required,
+                "recommended": selector_recommended,
+            },
+        }
+    )
+
+
+@app.route("/api/webapp/analytics/scope/select", methods=["POST"])
+def select_webapp_analytics_scope():
+    payload = request.get_json(silent=True) or {}
+    init_data = _extract_request_init_data(payload)
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    scope_kind = _normalize_scope_kind_payload(payload.get("scope_kind") or payload.get("scope"))
+    scope_chat_id = _safe_int(payload.get("scope_chat_id"))
+    if scope_chat_id is None:
+        scope_chat_id = _safe_int(payload.get("chat_id"))
+
+    if scope_kind == "group" and scope_chat_id is None:
+        return jsonify({"error": "scope_chat_id обязателен для group scope"}), 400
+
+    try:
+        context = _extract_scope_context_from_payload(init_data=init_data, payload=payload)
+        if scope_kind == "group" and scope_chat_id is not None:
+            upsert_webapp_group_context(
+                user_id=int(user_id),
+                chat_id=int(scope_chat_id),
+                chat_type=context.get("chat_type") or payload.get("chat_type"),
+                chat_title=payload.get("chat_title") or context.get("chat_title"),
+            )
+        saved_scope = upsert_webapp_scope_state(
+            user_id=int(user_id),
+            scope_kind=scope_kind,
+            scope_chat_id=int(scope_chat_id) if scope_kind == "group" else None,
+        )
+        known_groups = list_webapp_group_contexts(user_id=int(user_id), limit=50)
+        if (
+            str(saved_scope.get("scope_kind")) == "group"
+            and saved_scope.get("scope_chat_id") is not None
+        ):
+            scope_chat_id_int = int(saved_scope["scope_chat_id"])
+            for item in known_groups:
+                if int(item.get("chat_id")) == scope_chat_id_int:
+                    saved_scope["scope_chat_title"] = str(item.get("chat_title") or "").strip() or None
+                    break
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logging.exception("analytics scope save failed for user_id=%s", user_id)
+        return jsonify({"error": f"Не удалось сохранить analytics scope: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "saved_scope": saved_scope,
+            "available_groups": known_groups,
+        }
+    )
+
+
+def _parse_requested_analytics_scope(payload: dict | None) -> tuple[str, int | None]:
+    body = payload if isinstance(payload, dict) else {}
+    scope_kind = _normalize_scope_kind_payload(body.get("scope_kind") or body.get("scope"))
+    scope_chat_id = _safe_int(body.get("scope_chat_id"))
+    if scope_chat_id is None:
+        scope_chat_id = _safe_int(body.get("chat_id"))
+    raw_scope = str(body.get("scope") or "").strip().lower()
+    if scope_chat_id is None and raw_scope.startswith("group:"):
+        scope_chat_id = _safe_int(raw_scope.split(":", 1)[1])
+        scope_kind = "group"
+    if scope_kind == "group" and scope_chat_id is None:
+        return "personal", None
+    return scope_kind, int(scope_chat_id) if scope_chat_id is not None else None
+
+
+def _resolve_analytics_scope_for_request(
+    *,
+    user_id: int,
+    init_data: str,
+    payload: dict | None = None,
+) -> dict:
+    body = payload if isinstance(payload, dict) else {}
+    scope_context = _extract_scope_context_from_payload(init_data=init_data, payload=body)
+    if scope_context.get("has_group_context"):
+        upsert_webapp_group_context(
+            user_id=int(user_id),
+            chat_id=int(scope_context["chat_id"]),
+            chat_type=scope_context.get("chat_type"),
+            chat_title=scope_context.get("chat_title"),
+        )
+
+    known_groups = list_webapp_group_contexts(user_id=int(user_id), limit=200)
+    known_group_by_chat_id: dict[int, dict] = {
+        int(item.get("chat_id")): item
+        for item in known_groups
+        if item.get("chat_id") is not None
+    }
+    saved_scope = get_webapp_scope_state(user_id=int(user_id))
+
+    requested_scope_kind, requested_scope_chat_id = _parse_requested_analytics_scope(body)
+    explicit_scope_requested = any(key in body for key in ("scope", "scope_kind", "scope_chat_id"))
+
+    effective_kind = "personal"
+    effective_chat_id = None
+    reason = "default_personal"
+
+    if explicit_scope_requested:
+        effective_kind = requested_scope_kind
+        effective_chat_id = requested_scope_chat_id if requested_scope_kind == "group" else None
+        reason = "request_scope"
+    elif scope_context.get("has_group_context"):
+        effective_kind = "group"
+        effective_chat_id = int(scope_context["chat_id"])
+        reason = "telegram_group_context"
+    elif (
+        str(saved_scope.get("scope_kind")) == "group"
+        and saved_scope.get("scope_chat_id") is not None
+    ):
+        effective_kind = "group"
+        effective_chat_id = int(saved_scope["scope_chat_id"])
+        reason = "saved_scope"
+
+    if effective_kind == "group":
+        if effective_chat_id is None:
+            effective_kind = "personal"
+            reason = "missing_group_chat_id"
+        else:
+            context_chat_id = int(scope_context["chat_id"]) if scope_context.get("has_group_context") else None
+            if int(effective_chat_id) not in known_group_by_chat_id and context_chat_id != int(effective_chat_id):
+                effective_kind = "personal"
+                effective_chat_id = None
+                reason = "group_not_allowed_for_user"
+
+    effective_title = None
+    if effective_kind == "group" and effective_chat_id is not None:
+        known_item = known_group_by_chat_id.get(int(effective_chat_id)) or {}
+        effective_title = (
+            str(scope_context.get("chat_title") or "").strip()
+            or str(known_item.get("chat_title") or "").strip()
+            or None
+        )
+
+    if effective_kind == "group" and effective_chat_id is not None:
+        member_user_ids = list_webapp_group_member_user_ids(chat_id=int(effective_chat_id), limit=5000)
+        if int(user_id) not in member_user_ids:
+            member_user_ids = [int(user_id), *member_user_ids]
+    else:
+        member_user_ids = [int(user_id)]
+
+    unique_member_ids: list[int] = []
+    seen_member_ids: set[int] = set()
+    for raw_member_id in member_user_ids:
+        try:
+            candidate = int(raw_member_id)
+        except Exception:
+            continue
+        if candidate <= 0 or candidate in seen_member_ids:
+            continue
+        seen_member_ids.add(candidate)
+        unique_member_ids.append(candidate)
+    if not unique_member_ids:
+        unique_member_ids = [int(user_id)]
+
+    return {
+        "scope_context": scope_context,
+        "saved_scope": saved_scope,
+        "available_groups": known_groups,
+        "member_user_ids": unique_member_ids,
+        "effective_scope": {
+            "scope_kind": effective_kind,
+            "scope_chat_id": int(effective_chat_id) if effective_chat_id is not None else None,
+            "scope_chat_title": effective_title,
+            "scope_key": f"group:{int(effective_chat_id)}" if effective_kind == "group" and effective_chat_id is not None else "personal",
+            "reason": reason,
+        },
+    }
+
+
 @app.route("/api/webapp/analytics/summary", methods=["POST"])
 def get_webapp_analytics_summary():
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
+    init_data = _extract_request_init_data(payload)
     period = payload.get("period", "week")
 
     if not init_data:
@@ -9422,19 +9745,31 @@ def get_webapp_analytics_summary():
     user_id = user_data.get("id")
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    user_id_int = int(user_id)
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+
+    try:
+        scope = _resolve_analytics_scope_for_request(
+            user_id=user_id_int,
+            init_data=init_data,
+            payload=payload,
+        )
+        scope_user_ids = list(scope.get("member_user_ids") or [user_id_int])
+    except Exception as exc:
+        logging.exception("analytics summary scope resolve failed for user_id=%s", user_id_int)
+        return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
 
     try:
         period = _normalize_period(period)
         if period == "all":
-            bounds = get_all_time_bounds(user_id)
+            bounds = get_all_time_bounds_for_users(scope_user_ids)
         else:
             bounds = get_period_bounds(period)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    summary = fetch_user_summary(
-        user_id,
+    summary = fetch_scope_summary(
+        scope_user_ids,
         bounds.start_date,
         bounds.end_date,
         source_lang=source_lang,
@@ -9449,6 +9784,7 @@ def get_webapp_analytics_summary():
                 "end_date": bounds.end_date.isoformat(),
             },
             "summary": summary,
+            "scope": scope.get("effective_scope"),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
@@ -9457,7 +9793,7 @@ def get_webapp_analytics_summary():
 @app.route("/api/webapp/analytics/timeseries", methods=["POST"])
 def get_webapp_analytics_timeseries():
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
+    init_data = _extract_request_init_data(payload)
     period = payload.get("period", "week")
     granularity = payload.get("granularity")
     start_date_raw = payload.get("start_date")
@@ -9474,7 +9810,19 @@ def get_webapp_analytics_timeseries():
     user_id = user_data.get("id")
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    user_id_int = int(user_id)
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+
+    try:
+        scope = _resolve_analytics_scope_for_request(
+            user_id=user_id_int,
+            init_data=init_data,
+            payload=payload,
+        )
+        scope_user_ids = list(scope.get("member_user_ids") or [user_id_int])
+    except Exception as exc:
+        logging.exception("analytics timeseries scope resolve failed for user_id=%s", user_id_int)
+        return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
 
     start_date = _parse_iso_date(start_date_raw)
     end_date = _parse_iso_date(end_date_raw)
@@ -9482,7 +9830,7 @@ def get_webapp_analytics_timeseries():
         period = _normalize_period(period)
         if not start_date or not end_date:
             if period == "all":
-                bounds = get_all_time_bounds(user_id)
+                bounds = get_all_time_bounds_for_users(scope_user_ids)
             else:
                 bounds = get_period_bounds(period)
             start_date = bounds.start_date
@@ -9491,8 +9839,8 @@ def get_webapp_analytics_timeseries():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    points = fetch_user_timeseries(
-        user_id,
+    points = fetch_scope_timeseries(
+        scope_user_ids,
         start_date,
         end_date,
         granularity,
@@ -9509,6 +9857,7 @@ def get_webapp_analytics_timeseries():
                 "end_date": end_date.isoformat(),
             },
             "points": points,
+            "scope": scope.get("effective_scope"),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
@@ -9517,7 +9866,7 @@ def get_webapp_analytics_timeseries():
 @app.route("/api/webapp/analytics/compare", methods=["POST"])
 def get_webapp_analytics_compare():
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
+    init_data = _extract_request_init_data(payload)
     period = payload.get("period", "week")
     start_date_raw = payload.get("start_date")
     end_date_raw = payload.get("end_date")
@@ -9534,7 +9883,19 @@ def get_webapp_analytics_compare():
     user_id = user_data.get("id")
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    user_id_int = int(user_id)
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+
+    try:
+        scope = _resolve_analytics_scope_for_request(
+            user_id=user_id_int,
+            init_data=init_data,
+            payload=payload,
+        )
+        scope_user_ids = list(scope.get("member_user_ids") or [user_id_int])
+    except Exception as exc:
+        logging.exception("analytics compare scope resolve failed for user_id=%s", user_id_int)
+        return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
 
     start_date = _parse_iso_date(start_date_raw)
     end_date = _parse_iso_date(end_date_raw)
@@ -9542,7 +9903,7 @@ def get_webapp_analytics_compare():
         period = _normalize_period(period)
         if not start_date or not end_date:
             if period == "all":
-                bounds = get_all_time_bounds(None)
+                bounds = get_all_time_bounds_for_users(scope_user_ids)
             else:
                 bounds = get_period_bounds(period)
             start_date = bounds.start_date
@@ -9556,10 +9917,11 @@ def get_webapp_analytics_compare():
         limit=limit,
         source_lang=source_lang,
         target_lang=target_lang,
+        cohort_user_ids=scope_user_ids,
     )
     user_rank = None
     for index, item in enumerate(leaderboard, start=1):
-        if int(item.get("user_id")) == int(user_id):
+        if int(item.get("user_id")) == int(user_id_int):
             user_rank = index
             break
 
@@ -9572,7 +9934,8 @@ def get_webapp_analytics_compare():
                 "end_date": end_date.isoformat(),
             },
             "items": leaderboard,
-            "self": {"user_id": user_id, "rank": user_rank},
+            "self": {"user_id": user_id_int, "rank": user_rank},
+            "scope": scope.get("effective_scope"),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )

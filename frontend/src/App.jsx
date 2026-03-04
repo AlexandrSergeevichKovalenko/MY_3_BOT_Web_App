@@ -374,6 +374,11 @@ function AppInner() {
   const [analyticsPoints, setAnalyticsPoints] = useState([]);
   const [analyticsCompare, setAnalyticsCompare] = useState([]);
   const [analyticsRank, setAnalyticsRank] = useState(null);
+  const [analyticsScopeData, setAnalyticsScopeData] = useState(null);
+  const [analyticsScopeKey, setAnalyticsScopeKey] = useState('personal');
+  const [analyticsScopeLoading, setAnalyticsScopeLoading] = useState(false);
+  const [analyticsScopeSaving, setAnalyticsScopeSaving] = useState(false);
+  const [analyticsScopeError, setAnalyticsScopeError] = useState('');
   const [economicsPeriod, setEconomicsPeriod] = useState('month');
   const [economicsAllocation, setEconomicsAllocation] = useState('weighted');
   const [economicsLoading, setEconomicsLoading] = useState(false);
@@ -403,7 +408,6 @@ function AppInner() {
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [guideStepOpenKey, setGuideStepOpenKey] = useState('translations');
-  const [guideFaqOpenKey, setGuideFaqOpenKey] = useState('start');
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
   const BLOCKS_SINGLE_WORD_MAX_LEN = 10;
@@ -3201,40 +3205,6 @@ function AppInner() {
       ],
     },
   ]), [tr]);
-  const guideFaqItems = useMemo(() => ([
-    {
-      key: 'start',
-      question: tr('С чего начать?', 'Womit anfangen?'),
-      answer: tr(
-        'Начните с переводов. Это самый быстрый способ понять ваш текущий уровень и слабые места.',
-        'Starte mit Uebersetzungen. So siehst du am schnellsten dein aktuelles Niveau und deine Schwachstellen.'
-      ),
-    },
-    {
-      key: 'save_words',
-      question: tr('Как сохранять слова?', 'Wie speichere ich Woerter?'),
-      answer: tr(
-        'Сохраняйте полезные слова и выражения в словарь после переводов, чтения или YouTube.',
-        'Speichere nuetzliche Woerter und Ausdruecke nach Uebersetzungen, Lesen oder YouTube ins Woerterbuch.'
-      ),
-    },
-    {
-      key: 'fsrs',
-      question: tr('Зачем FSRS?', 'Wozu FSRS?'),
-      answer: tr(
-        'FSRS помогает повторять слова не хаотично, а в правильный момент, чтобы они запоминались надолго.',
-        'FSRS hilft dir, Woerter nicht chaotisch, sondern im richtigen Moment zu wiederholen, damit sie lange bleiben.'
-      ),
-    },
-    {
-      key: 'youtube',
-      question: tr('Как работает YouTube?', 'Wie funktioniert YouTube?'),
-      answer: tr(
-        'Вы ищете видео на немецком, включаете субтитры, смотрите контекст и разбираете незнакомые слова прямо по ходу.',
-        'Du suchst Videos auf Deutsch, aktivierst Untertitel, siehst den Kontext und analysierst unbekannte Woerter direkt waehrend des Schauens.'
-      ),
-    },
-  ]), [tr]);
   const guideStepItems = useMemo(() => {
     if (uiLang === 'de') {
       return [
@@ -3250,6 +3220,16 @@ function AppInner() {
                 'Wähle zuerst Thema und Niveau und tippe danach auf „Übersetzung starten“.',
                 'Danach öffnet die App deinen aktuellen Satzsatz und du gibst deine Übersetzungen direkt in die Felder ein.',
                 'Im normalen Modus besteht ein Standardsatz aus 7 Sätzen.',
+              ],
+            },
+            {
+              title: 'Teilnahme-Modus: allein oder Gruppe',
+              items: [
+                'Waehle unbedingt deinen Teilnahme-Modus: „Nur ich“ oder eine konkrete Gruppe.',
+                'Wenn die Mini App direkt aus einer Telegram-Gruppe geoeffnet wird, kann die App diese Gruppe automatisch als Kontext nehmen.',
+                'Wenn du aus Privat-Chat, Home-Screen-Shortcut oder Browser startest, waehle den Modus bitte bewusst im Analytics-Selector.',
+                'Fuer Wettbewerbe mit Freunden: Erstelle eine Lerngruppe (oder nutze eine bestehende) und fuege den Bot in diese Gruppe ein.',
+                'Wichtig: Jeder Teilnehmer sollte den Bot auch individuell privat starten, sonst nutzt am Ende nur ein Teil der Gruppe die Funktionen korrekt.',
               ],
             },
             {
@@ -3403,6 +3383,38 @@ function AppInner() {
             },
           ],
         },
+        {
+          key: 'bot_translator_share',
+          number: '5',
+          title: 'Bot als Schnell-Übersetzer',
+          summary: 'Markiere Text in jeder App, teile ihn an den Bot und hole dir später die Auswertung an einem Ort.',
+          sections: [
+            {
+              title: 'Was der Bot hier zusätzlich kann',
+              items: [
+                'Der Bot ist nicht nur Teil der Mini App, sondern auch ein direkter Übersetzer im Alltag.',
+                'Du kannst einzelne Wörter, Phrasen oder ganze Sätze aus jedem beliebigen Text markieren und an den Bot teilen.',
+                'Das funktioniert wie normales Weiterleiten an einen Freund: einfach „Teilen“ und den Bot auswählen.',
+              ],
+            },
+            {
+              title: 'Wie der Ablauf praktisch ist',
+              items: [
+                'Du kannst mehrere Phrasen nacheinander an den Bot schicken, ohne jedes Mal sofort alles zu bearbeiten.',
+                'Danach öffnest du den Bot einmal und wählst die Übersetzungsrichtung: zum Beispiel DE→RU, DE→EN oder RU→DE.',
+                'So bleibt es flexibel, falls du nicht immer in dieselbe Zielsprache übersetzen willst.',
+              ],
+            },
+            {
+              title: 'Was du als Ergebnis bekommst',
+              items: [
+                'Der Bot gibt dir die Übersetzung der Phrase oder des Satzes.',
+                'Zusätzlich zeigt er passende Begleit-Ausdrücke und nützliche Varianten zum Kontext.',
+                'Ein Teil dieser Varianten kann direkt in dein Wörterbuch übernommen werden, damit du sie später gezielt trainierst.',
+              ],
+            },
+          ],
+        },
       ];
     }
 
@@ -3419,6 +3431,16 @@ function AppInner() {
               'Сначала выберите тему и уровень, затем нажмите «Начать перевод».',
               'После запуска приложение откроет ваш текущий набор предложений, и вы будете вводить переводы прямо в поля.',
               'В обычном режиме стандартный набор состоит из 7 предложений.',
+            ],
+          },
+          {
+            title: 'Режим участия: лично или в группе',
+            items: [
+              'Обязательно выберите режим участия: «Только я» или конкретную группу.',
+              'Если Mini App открыт прямо из Telegram-группы, приложение обычно может автоматически взять эту группу как контекст.',
+              'Если вы открываете Mini App из лички, с иконки на рабочем столе или из браузера, режим участия нужно выбирать осознанно в selector аналитики.',
+              'Чтобы соревноваться и видеть результаты друзей, создайте учебную группу (или используйте уже существующую) и добавьте туда бота.',
+              'Важно: каждый друг должен также получить индивидуальный доступ к боту и открыть его в личке, иначе полноценно пользоваться сможет не вся группа.',
             ],
           },
           {
@@ -3572,6 +3594,38 @@ function AppInner() {
           },
         ],
       },
+      {
+        key: 'bot_translator_share',
+        number: '5',
+        title: 'Бот как быстрый переводчик',
+        summary: 'Выделяйте текст где угодно, пересылайте боту и разбирайте всё в одном месте.',
+        sections: [
+          {
+            title: 'Что умеет бот дополнительно',
+            items: [
+              'Сам бот работает не только как часть Mini App, но и как отдельный повседневный переводчик.',
+              'Вы можете выделить слово, фразу или целое предложение в любом приложении и переслать это боту.',
+              'Это делается так же, как обычная пересылка другу: нажали «Поделиться» и выбрали бота.',
+            ],
+          },
+          {
+            title: 'Как это удобно использовать',
+            items: [
+              'Можно отправить боту сразу несколько фраз подряд, а потом открыть его один раз и обработать всё вместе.',
+              'Дальше выберите направление перевода: например DE→RU, DE→EN или RU→DE.',
+              'Это важно, потому что перевод нужен не всегда только на русский: иногда удобнее сразу на английский или другой язык.',
+            ],
+          },
+          {
+            title: 'Что вы получите на выходе',
+            items: [
+              'Бот вернёт перевод фразы или предложения.',
+              'Дополнительно он покажет несколько полезных сопутствующих выражений и вариантов по контексту.',
+              'Часть этих вариантов можно сразу добавить в ваш словарь для дальнейшего изучения в карточках и FSRS.',
+            ],
+          },
+        ],
+      },
     ];
   }, [uiLang]);
   const isYoutubeSelectionMenu = String(selectionType || '').startsWith('youtube_');
@@ -3621,6 +3675,49 @@ function AppInner() {
       return aTime - bTime;
     });
   }, [supportMessages, supportFailedMessages]);
+  const analyticsScopeOptions = useMemo(() => {
+    const options = [
+      {
+        key: 'personal',
+        label: tr('Только я', 'Nur ich'),
+      },
+    ];
+    const groups = Array.isArray(analyticsScopeData?.available_groups) ? analyticsScopeData.available_groups : [];
+    groups.forEach((item) => {
+      const parsedId = Number.parseInt(String(item?.chat_id ?? ''), 10);
+      if (!Number.isFinite(parsedId)) return;
+      const title = String(item?.chat_title || '').trim();
+      options.push({
+        key: `group:${parsedId}`,
+        label: title ? tr(`Группа: ${title}`, `Gruppe: ${title}`) : tr(`Группа #${parsedId}`, `Gruppe #${parsedId}`),
+      });
+    });
+    if (String(analyticsScopeKey || '').startsWith('group:') && !options.some((item) => item.key === analyticsScopeKey)) {
+      const chatId = String(analyticsScopeKey).slice('group:'.length).trim();
+      const fallbackId = Number.parseInt(chatId, 10);
+      if (Number.isFinite(fallbackId)) {
+        options.push({
+          key: `group:${fallbackId}`,
+          label: tr(`Группа #${fallbackId}`, `Gruppe #${fallbackId}`),
+        });
+      }
+    }
+    return options;
+  }, [analyticsScopeData, analyticsScopeKey, tr]);
+  const analyticsScopeStatusText = useMemo(() => {
+    if (String(analyticsScopeKey || '').startsWith('group:')) {
+      const selectedOption = analyticsScopeOptions.find((item) => item.key === analyticsScopeKey);
+      const selectedLabel = String(selectedOption?.label || '')
+        .replace(/^Группа:\s*/i, '')
+        .replace(/^Gruppe:\s*/i, '')
+        .trim();
+      return selectedLabel
+        ? tr(`Сейчас показана статистика группы: ${selectedLabel}`, `Aktuell wird Gruppen-Statistik gezeigt: ${selectedLabel}`)
+        : tr('Сейчас показана статистика группы.', 'Aktuell wird Gruppen-Statistik gezeigt.');
+    }
+    return tr('Сейчас показана статистика: только ваша.', 'Aktuell wird nur deine Statistik angezeigt.');
+  }, [analyticsScopeKey, analyticsScopeOptions, tr]);
+  const analyticsScopeSelectorRequired = Boolean(analyticsScopeData?.selector?.required);
   const readerVisibleText = useMemo(() => {
     if (readerPageCount > 0) {
       return String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '');
@@ -9984,6 +10081,168 @@ function AppInner() {
     }
   };
 
+  const buildAnalyticsScopeContextPayload = () => {
+    const unsafeChat = telegramApp?.initDataUnsafe?.chat || {};
+    const chatType = String(
+      unsafeChat?.type || telegramApp?.initDataUnsafe?.chat_type || webappChatType || ''
+    ).trim().toLowerCase();
+    const rawChatId = unsafeChat?.id ?? unsafeChat?.chat_id;
+    const parsedChatId = Number.parseInt(String(rawChatId ?? ''), 10);
+    const chatId = Number.isFinite(parsedChatId) ? parsedChatId : null;
+    const chatTitle = String(unsafeChat?.title || unsafeChat?.username || '').trim();
+    const context = {};
+    if (chatType) context.chat_type = chatType;
+    if (chatId !== null) context.chat_id = chatId;
+    if (chatTitle) context.chat_title = chatTitle;
+    return context;
+  };
+
+  const parseAnalyticsScopeKey = (rawValue) => {
+    const value = String(rawValue || '').trim();
+    if (!value || value === 'personal') {
+      return {
+        scope_key: 'personal',
+        scope_kind: 'personal',
+        scope_chat_id: null,
+      };
+    }
+    if (value.startsWith('group:')) {
+      const parsedId = Number.parseInt(value.slice('group:'.length), 10);
+      if (Number.isFinite(parsedId)) {
+        return {
+          scope_key: `group:${parsedId}`,
+          scope_kind: 'group',
+          scope_chat_id: parsedId,
+        };
+      }
+    }
+    return {
+      scope_key: 'personal',
+      scope_kind: 'personal',
+      scope_chat_id: null,
+    };
+  };
+
+  const normalizeAnalyticsScopeKeyFromPayload = (payload) => {
+    const data = payload && typeof payload === 'object' ? payload : {};
+    const effective = data.effective_scope && typeof data.effective_scope === 'object' ? data.effective_scope : {};
+    const saved = data.saved_scope && typeof data.saved_scope === 'object' ? data.saved_scope : {};
+
+    const fromEffectiveKey = parseAnalyticsScopeKey(effective.scope_key);
+    if (fromEffectiveKey.scope_key !== 'personal' || String(effective.scope_kind || '').toLowerCase() === 'personal') {
+      return fromEffectiveKey.scope_key;
+    }
+
+    const effectiveKind = String(effective.scope_kind || '').toLowerCase();
+    const effectiveChatId = Number.parseInt(String(effective.scope_chat_id ?? ''), 10);
+    if (effectiveKind === 'group' && Number.isFinite(effectiveChatId)) {
+      return `group:${effectiveChatId}`;
+    }
+
+    const fromSavedKey = parseAnalyticsScopeKey(saved.scope_key);
+    if (fromSavedKey.scope_key !== 'personal' || String(saved.scope_kind || '').toLowerCase() === 'personal') {
+      return fromSavedKey.scope_key;
+    }
+
+    const savedKind = String(saved.scope_kind || '').toLowerCase();
+    const savedChatId = Number.parseInt(String(saved.scope_chat_id ?? ''), 10);
+    if (savedKind === 'group' && Number.isFinite(savedChatId)) {
+      return `group:${savedChatId}`;
+    }
+    return 'personal';
+  };
+
+  const applyAnalyticsScopePayload = (payload) => {
+    const data = payload && typeof payload === 'object' ? payload : {};
+    const availableGroups = Array.isArray(data.available_groups) ? data.available_groups : [];
+    const normalizedPayload = { ...data, available_groups: availableGroups };
+    setAnalyticsScopeData(normalizedPayload);
+    setAnalyticsScopeKey(normalizeAnalyticsScopeKeyFromPayload(normalizedPayload));
+  };
+
+  const loadAnalyticsScope = async ({ silent = false } = {}) => {
+    if (!initData) {
+      if (!silent) {
+        setAnalyticsScopeError(initDataMissingMsg);
+      }
+      return null;
+    }
+
+    if (!silent) {
+      setAnalyticsScopeLoading(true);
+      setAnalyticsScopeError('');
+    }
+
+    try {
+      const scopeContext = buildAnalyticsScopeContextPayload();
+      const body = { initData };
+      if (Object.keys(scopeContext).length > 0) {
+        body.scope_context = scopeContext;
+      }
+      const response = await fetch('/api/webapp/analytics/scope', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки режима участия', 'Fehler beim Laden des Teilnahme-Modus'));
+      }
+      const data = await response.json();
+      applyAnalyticsScopePayload(data);
+      return data;
+    } catch (error) {
+      if (!silent) {
+        setAnalyticsScopeError(`${tr('Ошибка режима участия', 'Fehler beim Teilnahme-Modus')}: ${error.message}`);
+      }
+      return null;
+    } finally {
+      if (!silent) {
+        setAnalyticsScopeLoading(false);
+      }
+    }
+  };
+
+  const handleAnalyticsScopeSelect = async (nextScopeRaw) => {
+    if (!initData) {
+      setAnalyticsScopeError(initDataMissingMsg);
+      return;
+    }
+    const nextScope = parseAnalyticsScopeKey(nextScopeRaw);
+    if (nextScope.scope_key === analyticsScopeKey) {
+      return;
+    }
+    const previousScopeKey = analyticsScopeKey;
+    setAnalyticsScopeKey(nextScope.scope_key);
+    setAnalyticsScopeSaving(true);
+    setAnalyticsScopeError('');
+    try {
+      const scopeContext = buildAnalyticsScopeContextPayload();
+      const body = {
+        initData,
+        scope_kind: nextScope.scope_kind,
+        scope_chat_id: nextScope.scope_chat_id,
+        scope: nextScope.scope_key,
+      };
+      if (Object.keys(scopeContext).length > 0) {
+        body.scope_context = scopeContext;
+      }
+      const response = await fetch('/api/webapp/analytics/scope/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка сохранения режима участия', 'Fehler beim Speichern des Teilnahme-Modus'));
+      }
+      await loadAnalyticsScope({ silent: true });
+    } catch (error) {
+      setAnalyticsScopeKey(previousScopeKey);
+      setAnalyticsScopeError(`${tr('Ошибка режима участия', 'Fehler beim Teilnahme-Modus')}: ${error.message}`);
+    } finally {
+      setAnalyticsScopeSaving(false);
+    }
+  };
+
   const resolveAnalyticsGranularity = (periodValue) => {
     switch (periodValue) {
       case 'day':
@@ -10001,23 +10260,35 @@ function AppInner() {
     }
   };
 
-  const loadAnalytics = async (overridePeriod) => {
+  const loadAnalytics = async (overridePeriod, overrideScopeKey) => {
     if (!initData) {
       setAnalyticsError(initDataMissingMsg);
       return;
     }
     const period = overridePeriod || analyticsPeriod;
     const granularity = resolveAnalyticsGranularity(period);
+    const scope = parseAnalyticsScopeKey(overrideScopeKey || analyticsScopeKey);
+    const scopeContext = buildAnalyticsScopeContextPayload();
+    const payloadBase = {
+      initData,
+      period,
+      scope: scope.scope_key,
+      scope_kind: scope.scope_kind,
+      scope_chat_id: scope.scope_chat_id,
+    };
+    if (Object.keys(scopeContext).length > 0) {
+      payloadBase.scope_context = scopeContext;
+    }
     setAnalyticsLoading(true);
     setAnalyticsError('');
     try {
       const summaryResponse = await fetch('/api/webapp/analytics/summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, period }),
+        body: JSON.stringify(payloadBase),
       });
       if (!summaryResponse.ok) {
-        throw new Error(await summaryResponse.text());
+        throw new Error(await readApiError(summaryResponse, 'Ошибка загрузки аналитики', 'Fehler beim Laden der Analytik'));
       }
       const summaryData = await summaryResponse.json();
       setAnalyticsSummary(summaryData.summary || null);
@@ -10025,10 +10296,10 @@ function AppInner() {
       const seriesResponse = await fetch('/api/webapp/analytics/timeseries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, period, granularity }),
+        body: JSON.stringify({ ...payloadBase, granularity }),
       });
       if (!seriesResponse.ok) {
-        throw new Error(await seriesResponse.text());
+        throw new Error(await readApiError(seriesResponse, 'Ошибка загрузки динамики', 'Fehler beim Laden des Verlaufs'));
       }
       const seriesData = await seriesResponse.json();
       setAnalyticsPoints(seriesData.points || []);
@@ -10036,10 +10307,10 @@ function AppInner() {
       const compareResponse = await fetch('/api/webapp/analytics/compare', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, period, limit: 8 }),
+        body: JSON.stringify({ ...payloadBase, limit: 8 }),
       });
       if (!compareResponse.ok) {
-        throw new Error(await compareResponse.text());
+        throw new Error(await readApiError(compareResponse, 'Ошибка загрузки сравнения', 'Fehler beim Laden des Vergleichs'));
       }
       const compareData = await compareResponse.json();
       setAnalyticsCompare(compareData.items || []);
@@ -10191,9 +10462,18 @@ function AppInner() {
       return;
     }
     if (!flashcardsOnly && isSectionVisible('analytics')) {
-      loadAnalytics();
+      loadAnalyticsScope();
     }
-  }, [initData, isWebAppMode, analyticsPeriod, selectedSections, flashcardsOnly]);
+  }, [initData, isWebAppMode, selectedSections, flashcardsOnly, webappChatType]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      return;
+    }
+    if (!flashcardsOnly && isSectionVisible('analytics')) {
+      loadAnalytics(undefined, analyticsScopeKey);
+    }
+  }, [initData, isWebAppMode, analyticsPeriod, analyticsScopeKey, selectedSections, flashcardsOnly]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -11528,29 +11808,6 @@ function AppInner() {
                             </div>
                           </div>
                         )}
-                      </article>
-                    );
-                  })}
-                </div>
-
-                <div className="guide-faq-grid">
-                  <div className="guide-faq-head">
-                    <h3>{tr('Частые вопросы', 'Haeufige Fragen')}</h3>
-                  </div>
-                  {guideFaqItems.map((item) => {
-                    const isOpen = guideFaqOpenKey === item.key;
-                    return (
-                      <article key={item.key} className={`guide-faq-card ${isOpen ? 'is-open' : ''}`}>
-                        <button
-                          type="button"
-                          className="guide-faq-question"
-                          onClick={() => setGuideFaqOpenKey((prev) => (prev === item.key ? '' : item.key))}
-                          aria-expanded={isOpen}
-                        >
-                          <span>{item.question}</span>
-                          <span className={`guide-faq-chevron ${isOpen ? 'is-open' : ''}`}>⌄</span>
-                        </button>
-                        {isOpen && <div className="guide-faq-answer">{item.answer}</div>}
                       </article>
                     );
                   })}
@@ -14676,11 +14933,25 @@ function AppInner() {
                       <option value="all">{tr('Все время', 'Gesamt')}</option>
                     </select>
                   </label>
+                  <label className="webapp-field analytics-scope-field">
+                    <span>{tr('Режим участия', 'Teilnahme-Modus')}</span>
+                    <select
+                      value={analyticsScopeKey}
+                      onChange={(event) => {
+                        void handleAnalyticsScopeSelect(event.target.value);
+                      }}
+                      disabled={analyticsScopeLoading || analyticsScopeSaving}
+                    >
+                      {analyticsScopeOptions.map((item) => (
+                        <option key={item.key} value={item.key}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={() => loadAnalytics()}
-                    disabled={analyticsLoading}
+                    onClick={() => loadAnalytics(undefined, analyticsScopeKey)}
+                    disabled={analyticsLoading || analyticsScopeLoading || analyticsScopeSaving}
                   >
                     {analyticsLoading ? tr('Считаем...', 'Berechnen...') : tr('Обновить', 'Aktualisieren')}
                   </button>
@@ -14688,7 +14959,14 @@ function AppInner() {
                     <div className="analytics-rank">{tr('Ваше место', 'Dein Rang')}: #{analyticsRank}</div>
                   )}
                 </div>
+                <div className={`webapp-muted analytics-scope-hint ${analyticsScopeSelectorRequired ? 'is-warning' : ''}`}>
+                  {analyticsScopeStatusText}
+                  {analyticsScopeSelectorRequired ? ` ${tr('У вас несколько групп: выберите нужный режим участия.', 'Du hast mehrere Gruppen: waehle den passenden Teilnahme-Modus.')}` : ''}
+                  {analyticsScopeLoading ? ` ${tr('Определяем контекст...', 'Kontext wird ermittelt...')}` : ''}
+                  {analyticsScopeSaving ? ` ${tr('Сохраняем режим...', 'Modus wird gespeichert...')}` : ''}
+                </div>
 
+                {analyticsScopeError && <div className="webapp-error">{analyticsScopeError}</div>}
                 {analyticsError && <div className="webapp-error">{analyticsError}</div>}
 
                 {analyticsSummary && (

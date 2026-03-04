@@ -1868,6 +1868,18 @@ body {
   align-items: flex-end;
 }
 
+.analytics-scope-field {
+  min-width: 240px;
+}
+
+.analytics-scope-hint {
+  margin-top: 8px;
+}
+
+.analytics-scope-hint.is-warning {
+  color: #ffd166;
+}
+
 .analytics-rank {
   padding: 10px 14px;
   border-radius: 999px;
