@@ -87,6 +87,7 @@ from backend.database import (
     set_provider_budget_extra_limit,
     set_provider_budget_block_state,
     confirm_webapp_group_participation,
+    list_known_webapp_group_chats,
     upsert_webapp_group_context,
     upsert_active_quiz,
     get_active_quiz,
@@ -1015,6 +1016,28 @@ def _build_group_enroll_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _message_has_group_enrollment_button(message) -> bool:
+    if not message:
+        return False
+    reply_markup = getattr(message, "reply_markup", None)
+    inline_keyboard = getattr(reply_markup, "inline_keyboard", None)
+    if not isinstance(inline_keyboard, list):
+        return False
+    for row in inline_keyboard:
+        if not isinstance(row, list):
+            continue
+        for button in row:
+            callback_data = str(getattr(button, "callback_data", "") or "").strip()
+            if callback_data == "groupenroll:confirm":
+                return True
+    return False
+
+
+def _chat_has_group_enrollment_pin(chat) -> bool:
+    pinned_message = getattr(chat, "pinned_message", None)
+    return _message_has_group_enrollment_button(pinned_message)
+
+
 def _is_active_member_status(status: str | None) -> bool:
     normalized = str(status or "").strip().lower()
     return normalized in {"member", "administrator", "creator", "restricted"}
@@ -1034,10 +1057,134 @@ async def _send_group_enrollment_prompt(
         "Чтобы участвовать в рейтинге и групповой статистике, нажмите кнопку ниже.\n"
         "Кто не подтвердит участие, останется в группе, но в соревновании учитываться не будет."
     )
-    await context.bot.send_message(
+    sent_message = await context.bot.send_message(
         chat_id=int(chat_id),
         text=text,
         reply_markup=_build_group_enroll_keyboard(),
+    )
+    try:
+        await context.bot.pin_chat_message(
+            chat_id=int(chat_id),
+            message_id=int(sent_message.message_id),
+            disable_notification=True,
+        )
+    except BadRequest as exc:
+        error_text = str(exc or "").lower()
+        logging.info("Не удалось закрепить enrollment сообщение в chat_id=%s: %s", chat_id, exc)
+        if (
+            "not enough rights" in error_text
+            or "chat_admin_required" in error_text
+            or "manage pinned messages" in error_text
+        ):
+            try:
+                await context.bot.send_message(
+                    chat_id=int(chat_id),
+                    text=(
+                        "ℹ️ Я отправил кнопку подтверждения, но не смог закрепить сообщение автоматически.\n"
+                        "Сделайте бота администратором с правом «Закреплять сообщения» "
+                        "или закрепите это сообщение вручную."
+                    ),
+                )
+            except Exception as notify_exc:
+                logging.info("Не удалось отправить подсказку про закрепление в chat_id=%s: %s", chat_id, notify_exc)
+    except Exception as exc:
+        logging.warning("Ошибка автозакрепления enrollment сообщения в chat_id=%s: %s", chat_id, exc)
+
+
+async def _ensure_group_enrollment_prompt_for_chat(
+    context: CallbackContext,
+    *,
+    chat_id: int,
+    chat_title: str | None = None,
+    source: str = "startup_backfill",
+    force_send: bool = False,
+) -> bool:
+    if not context or not context.bot:
+        return False
+    safe_chat_id = int(chat_id)
+    safe_source = str(source or "startup_backfill").strip()[:64] or "startup_backfill"
+    run_period = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        chat = await context.bot.get_chat(safe_chat_id)
+    except Exception as exc:
+        logging.info("Skip enrollment ensure: chat недоступен chat_id=%s (%s)", safe_chat_id, exc)
+        return False
+
+    if not force_send and _chat_has_group_enrollment_pin(chat):
+        return False
+
+    if not force_send:
+        already_processed = await asyncio.to_thread(
+            has_admin_scheduler_run,
+            job_key="group_enrollment_prompt",
+            run_period=run_period,
+            target_chat_id=safe_chat_id,
+        )
+        if already_processed:
+            return False
+
+    resolved_title = (
+        str(chat_title or "").strip()
+        or str(getattr(chat, "title", "") or "").strip()
+        or None
+    )
+    await _send_group_enrollment_prompt(
+        context,
+        chat_id=safe_chat_id,
+        chat_title=resolved_title,
+    )
+    await asyncio.to_thread(
+        mark_admin_scheduler_run,
+        job_key="group_enrollment_prompt",
+        run_period=run_period,
+        target_chat_id=safe_chat_id,
+        metadata={"source": safe_source},
+    )
+    return True
+
+
+async def backfill_group_enrollment_prompts(context: CallbackContext) -> None:
+    if not context or not context.bot:
+        return
+    try:
+        limit = int((os.getenv("GROUP_ENROLL_BACKFILL_LIMIT") or "300").strip() or "300")
+    except Exception:
+        limit = 300
+    known_groups = await asyncio.to_thread(list_known_webapp_group_chats, max(1, limit))
+    if not known_groups:
+        logging.info("group enrollment backfill: known groups not found")
+        return
+
+    updated = 0
+    skipped = 0
+    for item in known_groups:
+        chat_id = item.get("chat_id")
+        if chat_id is None:
+            skipped += 1
+            continue
+        try:
+            changed = await _ensure_group_enrollment_prompt_for_chat(
+                context,
+                chat_id=int(chat_id),
+                chat_title=item.get("chat_title"),
+                source="startup_backfill",
+                force_send=False,
+            )
+            if changed:
+                updated += 1
+            else:
+                skipped += 1
+        except Exception as exc:
+            skipped += 1
+            logging.info("group enrollment backfill skip chat_id=%s: %s", chat_id, exc)
+        await asyncio.sleep(0.05)
+
+    logging.info(
+        "group enrollment backfill completed: total=%s updated=%s skipped=%s",
+        len(known_groups),
+        updated,
+        skipped,
     )
 
 
@@ -1111,27 +1258,6 @@ async def handle_group_enrollment_callback(update: Update, context: CallbackCont
     await query.answer("Готово! Вы участвуете в рейтинге этой группы.", show_alert=False)
 
 
-async def enroll_group_command(update: Update, context: CallbackContext) -> None:
-    message = update.effective_message
-    chat = update.effective_chat
-    if not message or not chat:
-        return
-
-    chat_type = str(getattr(chat, "type", "") or "").strip().lower()
-    if chat_type not in {"group", "supergroup"}:
-        await message.reply_text(
-            "Эта команда работает в группе.\n"
-            "Откройте группу с ботом и отправьте /enroll."
-        )
-        return
-
-    await _send_group_enrollment_prompt(
-        context,
-        chat_id=int(chat.id),
-        chat_title=str(getattr(chat, "title", "") or "").strip() or None,
-    )
-
-
 async def handle_bot_group_membership(update: Update, context: CallbackContext) -> None:
     membership_update = getattr(update, "my_chat_member", None)
     if not membership_update:
@@ -1150,10 +1276,12 @@ async def handle_bot_group_membership(update: Update, context: CallbackContext) 
         return
 
     try:
-        await _send_group_enrollment_prompt(
+        await _ensure_group_enrollment_prompt_for_chat(
             context,
             chat_id=int(chat.id),
             chat_title=str(getattr(chat, "title", "") or "").strip() or None,
+            source="my_chat_member",
+            force_send=False,
         )
     except Exception as exc:
         logging.warning("⚠️ Не удалось отправить enrollment prompt в chat_id=%s: %s", getattr(chat, "id", None), exc)
@@ -7526,7 +7654,6 @@ def main():
     application.add_handler(ChatMemberHandler(track_group_member_context, chat_member_types=ChatMemberHandler.CHAT_MEMBER), group=-3)
     application.add_handler(TypeHandler(Update, enforce_user_access, block=True), group=-2)
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("enroll", enroll_group_command))
     application.add_handler(CommandHandler("request_access", request_access))
     application.add_handler(CommandHandler("allow", allow_user_command))
     application.add_handler(CommandHandler("deny", deny_user_command))
@@ -7565,6 +7692,8 @@ def main():
     application.add_handler(PollAnswerHandler(handle_poll_answer))
 
     application.add_error_handler(error_handler)
+    if application.job_queue:
+        application.job_queue.run_once(backfill_group_enrollment_prompts, when=20)
     
     # --- НОВЫЕ ОБРАБОТЧИКИ ДЛЯ LIVEKIT КНОПОК ---
     #application.add_handler(MessageHandler(filters.Regex(r'🎙 Начать урок'), start_lesson)) # Теперь обрабатываем текст кнопки
@@ -7631,6 +7760,12 @@ def main():
     print("📌 Добавляем задачу в scheduler...")
     scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
     scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
+    scheduler.add_job(
+        lambda: submit_async(backfill_group_enrollment_prompts, CallbackContext(application=application)),
+        "cron",
+        hour=4,
+        minute=20,
+    )
     for hour, minute in FLASHCARD_REMINDER_TIMES:
         scheduler.add_job(
             lambda: submit_async(send_flashcard_reminder, CallbackContext(application=application)),

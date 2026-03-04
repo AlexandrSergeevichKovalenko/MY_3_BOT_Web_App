@@ -407,7 +407,7 @@ function AppInner() {
   const [guideQuickCardDismissed, setGuideQuickCardDismissed] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
-  const [guideStepOpenKey, setGuideStepOpenKey] = useState('translations');
+  const [guideStepOpenKey, setGuideStepOpenKey] = useState('start_setup');
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
   const BLOCKS_SINGLE_WORD_MAX_LEN = 10;
@@ -3328,8 +3328,42 @@ function AppInner() {
     if (uiLang === 'de') {
       return [
         {
-          key: 'translations',
+          key: 'start_setup',
           number: '1',
+          title: 'Start-Einstellungen',
+          summary: 'Einmal sauber einrichten: allein lernen oder mit Freunden im Gruppenmodus.',
+          sections: [
+            {
+              title: 'Zwei Lernformate',
+              items: [
+                'Du kannst die App allein nutzen oder gemeinsam mit Freunden im Gruppenmodus.',
+                'Im Modus „Nur ich“ lernst du individuell ohne Gruppen-Ranking.',
+                'Im Gruppenmodus vergleichst du Ergebnisse mit Freunden und siehst gemeinsame Statistik.',
+              ],
+            },
+            {
+              title: 'So bereitest du den Gruppenmodus vor',
+              items: [
+                'Erstelle eine Telegram-Gruppe fuer euer Lernen (oder nutze eine bestehende Gruppe).',
+                'Fuege den Bot in diese Gruppe hinzu.',
+                'Empfohlen: Gib dem Bot Admin-Rechte mit der Berechtigung „Nachrichten anheften“, damit die Bestaetigungsnachricht oben fixiert bleibt.',
+                'Nach dem Hinzufuegen sendet der Bot eine Nachricht „Teilnahme bestaetigen“ mit der Taste „✅ Teilnahme bestaetigen“ und versucht, diese Nachricht in der Gruppe anzupinnen.',
+              ],
+            },
+            {
+              title: 'Was jeder Teilnehmer machen muss',
+              items: [
+                'Jeder Teilnehmer tippt in der Gruppe einmal auf „✅ Teilnahme bestaetigen“.',
+                'Wer nicht bestaetigt, bleibt zwar in der Gruppe, wird aber nicht im Wettbewerb und Gruppen-Ranking beruecksichtigt.',
+                'Zusatz: Jeder Teilnehmer sollte den Bot auch privat einmal starten, damit alle Funktionen im Mini App korrekt verfuegbar sind.',
+                'Danach erscheint im Mini App bei Analytics der Gruppenmodus zur Auswahl.',
+              ],
+            },
+          ],
+        },
+        {
+          key: 'translations',
+          number: '2',
           title: 'Übersetzungen',
           summary: 'Trainiere Satzbau, Grammatik und Fehleranalyse Schritt für Schritt.',
           sections: [
@@ -3380,7 +3414,7 @@ function AppInner() {
         },
         {
           key: 'dictionary',
-          number: '2',
+          number: '3',
           title: 'Wörterbuch',
           summary: 'Suche Wörter in beide Richtungen und speichere sie für später.',
           sections: [
@@ -3417,7 +3451,7 @@ function AppInner() {
         },
         {
           key: 'flashcards',
-          number: '3',
+          number: '4',
           title: 'Karten',
           summary: 'Vier Trainingsmodi für Wiederholung, Erkennen, Bauen und Ergänzen.',
           sections: [
@@ -3462,7 +3496,7 @@ function AppInner() {
         },
         {
           key: 'media',
-          number: '4',
+          number: '5',
           title: 'Video, Lesen und Sprechen',
           summary: 'YouTube, Reader und Sprachassistent für echtes Sprachmaterial.',
           sections: [
@@ -3504,7 +3538,7 @@ function AppInner() {
         },
         {
           key: 'bot_translator_share',
-          number: '5',
+          number: '6',
           title: 'Bot als Schnell-Übersetzer',
           summary: 'Markiere Text in jeder App, teile ihn an den Bot und hole dir später die Auswertung an einem Ort.',
           sections: [
@@ -3539,8 +3573,41 @@ function AppInner() {
 
     return [
       {
-        key: 'translations',
+        key: 'start_setup',
         number: '1',
+        title: 'Стартовые настройки',
+        summary: 'Один раз настройте формат участия: индивидуально или в группе с друзьями.',
+        sections: [
+          {
+            title: 'Два формата обучения',
+            items: [
+              'Вы можете учиться в двух режимах: лично («Только я») или вместе с друзьями в группе.',
+              'Режим «Только я» нужен для индивидуального обучения без группового рейтинга.',
+              'Групповой режим нужен для соревнования, общей статистики и сравнения результатов с друзьями.',
+            ],
+          },
+          {
+            title: 'Как правильно подготовить групповой режим',
+            items: [
+              'Создайте учебную Telegram-группу (или используйте уже существующую) и добавьте туда бота.',
+              'Рекомендуется сделать бота администратором с правом «Закреплять сообщения», чтобы важная кнопка всегда была видна вверху группы.',
+              'После добавления бот отправит сообщение «Подтвердите участие» с кнопкой «✅ Подтвердить участие» и попытается автоматически закрепить это сообщение в группе.',
+            ],
+          },
+          {
+            title: 'Что должен сделать каждый участник',
+            items: [
+              'Каждый участник группы должен один раз нажать кнопку «✅ Подтвердить участие».',
+              'Кто не подтвердит участие, останется в группе, но не будет участвовать в рейтинге и групповой статистике.',
+              'Дополнительно: каждому участнику нужно хотя бы один раз открыть бота в личке, чтобы все функции Mini App работали корректно.',
+              'После подтверждения в Mini App в аналитике появится доступный групповой режим.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'translations',
+        number: '2',
         title: 'Переводы',
         summary: 'Тренируйте построение предложений и сразу смотрите разбор ошибок.',
         sections: [
@@ -3591,7 +3658,7 @@ function AppInner() {
       },
       {
         key: 'dictionary',
-        number: '2',
+        number: '3',
         title: 'Словарь',
         summary: 'Сохраняйте новые слова, выражения и свои полезные находки.',
         sections: [
@@ -3628,7 +3695,7 @@ function AppInner() {
       },
       {
         key: 'flashcards',
-        number: '3',
+        number: '4',
         title: 'Карточки',
         summary: 'Закрепляйте лексику через повторение, FSRS и быстрые режимы тренировки.',
         sections: [
@@ -3673,7 +3740,7 @@ function AppInner() {
       },
       {
         key: 'media',
-        number: '4',
+        number: '5',
         title: 'Видео, чтение и голос',
         summary: 'Переходите к реальному немецкому: YouTube, Reader и живой разговорный ассистент.',
         sections: [
@@ -3715,7 +3782,7 @@ function AppInner() {
       },
       {
         key: 'bot_translator_share',
-        number: '5',
+        number: '6',
         title: 'Бот как быстрый переводчик',
         summary: 'Выделяйте текст где угодно, пересылайте боту и разбирайте всё в одном месте.',
         sections: [

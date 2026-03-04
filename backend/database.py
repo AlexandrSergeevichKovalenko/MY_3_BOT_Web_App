@@ -2800,6 +2800,45 @@ def list_webapp_group_member_user_ids(
     return result
 
 
+def list_known_webapp_group_chats(limit: int = 500) -> list[dict]:
+    safe_limit = max(1, min(int(limit or 500), 5000))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT chat_id, chat_type, chat_title, last_seen_at
+                FROM (
+                    SELECT DISTINCT ON (chat_id)
+                        chat_id,
+                        chat_type,
+                        chat_title,
+                        last_seen_at
+                    FROM bt_3_webapp_group_contexts
+                    ORDER BY chat_id, last_seen_at DESC
+                ) latest
+                ORDER BY last_seen_at DESC, chat_id DESC
+                LIMIT %s;
+                """,
+                (safe_limit,),
+            )
+            rows = cursor.fetchall() or []
+    result: list[dict] = []
+    for row in rows:
+        try:
+            chat_id = int(row[0])
+        except Exception:
+            continue
+        result.append(
+            {
+                "chat_id": chat_id,
+                "chat_type": str(row[1] or "group"),
+                "chat_title": str(row[2] or "").strip() or None,
+                "last_seen_at": row[3].isoformat() if row[3] else None,
+            }
+        )
+    return result
+
+
 def create_access_request(
     user_id: int,
     username: str | None = None,
