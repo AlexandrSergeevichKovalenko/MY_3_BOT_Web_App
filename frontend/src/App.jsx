@@ -5915,12 +5915,20 @@ function AppInner() {
   const buildTranslationResultFromCheckItem = (item) => {
     if (!item || typeof item !== 'object') return null;
     if (item.result_json && typeof item.result_json === 'object') {
-      return item.result_json;
+      return {
+        ...item.result_json,
+        check_item_id: item.id ?? null,
+        item_order: item.item_order ?? null,
+        sentence_id_for_mistake_table: item.sentence_id_for_mistake_table ?? null,
+      };
     }
     const errorText = String(item.error_text || '').trim();
     if (!errorText) return null;
     return {
+      check_item_id: item.id ?? null,
+      item_order: item.item_order ?? null,
       sentence_number: item.sentence_number ?? null,
+      sentence_id_for_mistake_table: item.sentence_id_for_mistake_table ?? null,
       original_text: item.original_text || '',
       user_translation: item.user_translation || '',
       error: errorText,
@@ -5935,7 +5943,11 @@ function AppInner() {
     const mappedResults = checkItems
       .map((item) => buildTranslationResultFromCheckItem(item))
       .filter(Boolean)
-      .sort((a, b) => Number(a?.sentence_number || 0) - Number(b?.sentence_number || 0));
+      .sort((a, b) => {
+        const orderA = Number.isFinite(Number(a?.item_order)) ? Number(a.item_order) : Number(a?.sentence_number || 0);
+        const orderB = Number.isFinite(Number(b?.item_order)) ? Number(b.item_order) : Number(b?.sentence_number || 0);
+        return orderA - orderB;
+      });
     const audioOptInMap = {};
     mappedResults.forEach((item) => {
       const translationId = Number(item?.translation_id || 0);
@@ -5946,6 +5958,25 @@ function AppInner() {
 
     setResults(mappedResults);
     setTranslationAudioGrammarOptIn(audioOptInMap);
+    const processedSentenceIds = new Set(
+      checkItems
+        .filter((item) => {
+          const status = String(item?.status || '').trim().toLowerCase();
+          return status === 'done' || status === 'failed';
+        })
+        .map((item) => Number(item?.sentence_id_for_mistake_table || 0))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    );
+    if (processedSentenceIds.size > 0) {
+      setSentences((prev) => prev.filter((item) => !processedSentenceIds.has(Number(item?.id_for_mistake_table || 0))));
+      setTranslationDrafts((prev) => {
+        const next = { ...prev };
+        processedSentenceIds.forEach((sentenceId) => {
+          delete next[String(sentenceId)];
+        });
+        return next;
+      });
+    }
 
     const progress = payload?.progress && typeof payload.progress === 'object' ? payload.progress : {};
     const total = Math.max(0, Number(progress.total || checkSession?.total_items || checkItems.length || 0));
@@ -6083,9 +6114,14 @@ function AppInner() {
     setTranslationCheckProgress({ active: false, done: 0, total: 0 });
 
     try {
+      const currentSentenceIds = new Set(
+        sentences
+          .map((item) => Number(item?.id_for_mistake_table || 0))
+          .filter((value) => Number.isFinite(value) && value > 0)
+      );
       const submittedEntries = Object.entries(translationDrafts)
         .map(([id, translation]) => ({ id: Number(id), translation: String(translation || '').trim() }))
-        .filter((item) => item.translation);
+        .filter((item) => currentSentenceIds.has(item.id) && item.translation);
       if (!submittedEntries.length) {
         throw new Error(tr('Нет переводов для проверки.', 'Keine Uebersetzungen zur Pruefung.'));
       }
@@ -12118,7 +12154,7 @@ function AppInner() {
                       sentences.map((item, index) => {
                         const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
                         return (
-                          <label key={item.id_for_mistake_table} className="webapp-translation-item">
+                          <label key={`${item.id_for_mistake_table}-${item.unique_id ?? index}`} className="webapp-translation-item">
                             <span className="translation-sentence">
                               {item.unique_id ?? index + 1}. {item.sentence}
                             </span>
@@ -12258,7 +12294,7 @@ function AppInner() {
                       {results.map((item, index) => {
                         const correctTextForTts = extractCorrectTranslationText(item);
                         return (
-                        <div key={`${item.sentence_number ?? index}`} className="webapp-result-card">
+                        <div key={`${item.check_item_id ?? item.translation_id ?? item.sentence_id_for_mistake_table ?? item.sentence_number ?? index}-${index}`} className="webapp-result-card">
                           {item.error ? (
                             <div className="webapp-error">{item.error}</div>
                           ) : (
@@ -14819,7 +14855,7 @@ function AppInner() {
               <section className="webapp-section webapp-billing" ref={billingRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Подписка', 'Abo')}</h2>
-                  <p className="webapp-muted">{tr('Текущий тариф, лимиты и управление подпиской.', 'Aktueller Tarif, Limits und Abo-Verwaltung.')}</p>
+                  <p className="webapp-muted">{tr('Текущий тариф, лимиты и Stripe Portal: отмена подписки, смена карты и счета.', 'Aktueller Tarif, Limits und Stripe-Portal: Kuendigung, Kartenwechsel und Rechnungen.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
 

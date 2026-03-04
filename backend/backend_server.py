@@ -9617,6 +9617,11 @@ def get_billing_status():
     effective_mode = str(entitlement.get("effective_mode") or "free")
     cap_today = entitlement.get("cap_eur")
     is_pro_active = plan_code == "pro" and status_value in {"active", "trialing"}
+    has_billing_portal_context = bool(
+        str(subscription.get("stripe_customer_id") or "").strip()
+        or str(subscription.get("stripe_subscription_id") or "").strip()
+        or is_pro_active
+    )
     return jsonify(
         {
             "plan_code": plan_code,
@@ -9633,7 +9638,7 @@ def get_billing_status():
                 "endpoint": "/api/billing/create-checkout-session",
             },
             "manage": {
-                "available": bool(is_pro_active),
+                "available": has_billing_portal_context,
                 "endpoint": "/api/billing/create-portal-session",
             },
         }

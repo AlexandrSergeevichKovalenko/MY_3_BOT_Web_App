@@ -87,6 +87,21 @@ def correct_numbering(sentences: list[str]) -> list[str]:
     return corrected_sentences
 
 
+def _dedupe_sentence_texts(items: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items or []:
+        text = " ".join(str(item or "").strip().split())
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    return normalized
+
+
 def _normalize_level(level: str | None) -> str:
     normalized = (level or "c1").strip().lower().replace(" ", "")
     if normalized in {"c1-c2", "c1c2", "c1/c2"}:
@@ -1086,7 +1101,7 @@ async def start_translation_session_webapp(
                 target_lang=target_lang,
             )
             sentences = _filter_sentences_for_level([s.strip() for s in generated if s.strip()], level)
-        sentences = correct_numbering(sentences)
+        sentences = _dedupe_sentence_texts(correct_numbering(sentences))
 
         if not sentences:
             return {"session_id": session_id, "created": True, "count": 0}
@@ -1377,24 +1392,42 @@ def get_daily_translation_history(
         with conn.cursor() as cursor:
             cursor.execute(
                 """
+                WITH ranked AS (
+                    SELECT
+                        t.id,
+                        t.score,
+                        t.user_translation,
+                        t.feedback,
+                        t.timestamp,
+                        ds.sentence,
+                        ds.unique_id,
+                        t.source_lang,
+                        t.target_lang,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY t.sentence_id
+                            ORDER BY t.timestamp DESC, t.id DESC
+                        ) AS rn
+                    FROM bt_3_translations t
+                    JOIN bt_3_daily_sentences ds
+                        ON ds.id = t.sentence_id
+                    WHERE t.user_id = %s
+                      AND COALESCE(t.source_lang, 'ru') = %s
+                      AND COALESCE(t.target_lang, 'de') = %s
+                      AND t.timestamp::date = CURRENT_DATE
+                )
                 SELECT
-                    t.id,
-                    t.score,
-                    t.user_translation,
-                    t.feedback,
-                    t.timestamp,
-                    ds.sentence,
-                    ds.unique_id,
-                    t.source_lang,
-                    t.target_lang
-                FROM bt_3_translations t
-                JOIN bt_3_daily_sentences ds
-                    ON ds.id = t.sentence_id
-                WHERE t.user_id = %s
-                  AND COALESCE(t.source_lang, 'ru') = %s
-                  AND COALESCE(t.target_lang, 'de') = %s
-                  AND t.timestamp::date = CURRENT_DATE
-                ORDER BY t.timestamp DESC
+                    id,
+                    score,
+                    user_translation,
+                    feedback,
+                    timestamp,
+                    sentence,
+                    unique_id,
+                    source_lang,
+                    target_lang
+                FROM ranked
+                WHERE rn = 1
+                ORDER BY unique_id ASC, timestamp DESC
                 LIMIT %s;
                 """,
                 (user_id, source_lang, target_lang, limit),
@@ -1703,7 +1736,7 @@ async def check_user_translation_webapp(
                     )
 
                     result = cursor.fetchone()
-                    total_attempts = (result[0] or 0) + 1
+                    total_attempts = ((result[0] or 0) if result else 0) + 1
 
                     cursor.execute(
                         """
@@ -1896,7 +1929,7 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
 
         cursor.execute(
             """
-            SELECT COUNT(*)
+            SELECT COUNT(DISTINCT sentence_id)
             FROM bt_3_translations
             WHERE user_id = %s AND session_id = %s;
             """,
@@ -1948,20 +1981,37 @@ def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
+                WITH latest_translations AS (
+                    SELECT
+                        sentence_id,
+                        score
+                    FROM (
+                        SELECT
+                            t.sentence_id,
+                            t.score,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY t.sentence_id
+                                ORDER BY t.timestamp DESC, t.id DESC
+                            ) AS rn
+                        FROM bt_3_translations t
+                        WHERE t.user_id = %s
+                          AND t.timestamp::date = CURRENT_DATE
+                    ) ranked
+                    WHERE rn = 1
+                )
                 SELECT
                     COUNT(DISTINCT ds.id) AS total_sentences,
-                    COUNT(DISTINCT t.id) AS translated,
-                    (COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) AS missed,
+                    COUNT(DISTINCT lt.sentence_id) AS translated,
+                    (COUNT(DISTINCT ds.id) - COUNT(DISTINCT lt.sentence_id)) AS missed,
                     COALESCE(p.avg_time, 0) AS avg_time_minutes,
                     COALESCE(p.total_time, 0) AS total_time_minutes,
-                    COALESCE(AVG(t.score), 0) AS avg_score,
-                    COALESCE(AVG(t.score), 0)
+                    COALESCE(AVG(lt.score), 0) AS avg_score,
+                    COALESCE(AVG(lt.score), 0)
                         - (COALESCE(p.avg_time, 0) * 1)
-                        - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) * 20) AS final_score
+                        - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT lt.sentence_id)) * 20) AS final_score
                 FROM bt_3_daily_sentences ds
-                LEFT JOIN bt_3_translations t
-                    ON ds.user_id = t.user_id
-                    AND ds.id = t.sentence_id
+                LEFT JOIN latest_translations lt
+                    ON ds.id = lt.sentence_id
                 LEFT JOIN (
                     SELECT user_id,
                         AVG(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS avg_time,
@@ -1974,7 +2024,7 @@ def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
                 WHERE ds.date = CURRENT_DATE AND ds.user_id = %s
                 GROUP BY ds.user_id, p.avg_time, p.total_time;
                 """,
-                (user_id,),
+                (user_id, user_id),
             )
             row = cursor.fetchone()
 
