@@ -80,6 +80,9 @@ from backend.database import (
     record_telegram_system_message,
     get_pending_telegram_system_messages,
     mark_telegram_system_message_deleted,
+    has_admin_scheduler_run,
+    mark_admin_scheduler_run,
+    get_google_translate_monthly_budget_status,
     get_google_tts_monthly_budget_status,
     set_provider_budget_extra_limit,
     set_provider_budget_block_state,
@@ -1369,34 +1372,168 @@ def _format_google_tts_budget_status_text(status: dict) -> str:
     ]
     if block_reason:
         lines.append(f"Block reason: {block_reason}")
-    lines.extend(
-        [
-            "",
-            "Commands:",
-            "/ttsbudget status",
-            "/ttsbudget add 200000",
-            "/ttsbudget block",
-            "/ttsbudget unblock",
-        ]
-    )
+    lines.extend(["", *_format_budget_command_help_lines()])
     return "\n".join(lines)
+
+
+def _format_google_translate_budget_status_text(status: dict) -> str:
+    used_units = int(round(float(status.get("used_units") or 0.0)))
+    base_limit = int(status.get("base_limit_units") or 0)
+    extra_limit = int(status.get("extra_limit_units") or 0)
+    effective_limit = int(status.get("effective_limit_units") or 0)
+    remaining = int(round(float(status.get("remaining_units") or 0.0)))
+    usage_ratio = float(status.get("usage_ratio") or 0.0) * 100.0
+    is_blocked = bool(status.get("is_blocked"))
+    block_reason = str(status.get("block_reason") or "").strip()
+    period_month = str(status.get("period_month") or "—")
+
+    lines = [
+        "🌐 Google Translate budget status",
+        f"Month: {period_month}",
+        f"Used: {used_units} chars",
+        f"Base limit: {base_limit} chars",
+        f"Extra limit: {extra_limit} chars",
+        f"Effective limit: {effective_limit} chars",
+        f"Remaining: {remaining} chars",
+        f"Usage: {usage_ratio:.1f}%",
+        f"Blocked: {'yes' if is_blocked else 'no'}",
+    ]
+    if block_reason:
+        lines.append(f"Block reason: {block_reason}")
+    return "\n".join(lines)
+
+
+def _format_budget_command_help_lines() -> list[str]:
+    return [
+        "Commands:",
+        "/budgets",
+        "/budgets sendnow",
+        "/budgets add 200000",
+        "/budgets block",
+        "/budgets unblock",
+        "/budgets translate_add 200000",
+        "/budgets translate_block",
+        "/budgets translate_unblock",
+        "",
+        "Alias: /ttsbudget",
+    ]
+
+
+async def _format_all_translation_budget_status_text() -> str:
+    tts_status = await asyncio.to_thread(get_google_tts_monthly_budget_status)
+    google_translate_status = await asyncio.to_thread(get_google_translate_monthly_budget_status)
+    parts: list[str] = []
+    if tts_status:
+        parts.append(_format_google_tts_budget_status_text(tts_status))
+    else:
+        parts.append("❌ Не удалось получить статус бюджета Google TTS.")
+    if google_translate_status:
+        parts.append(_format_google_translate_budget_status_text(google_translate_status))
+    else:
+        parts.append("❌ Не удалось получить статус бюджета Google Translate.")
+    return "\n\n".join(parts)
+
+
+async def send_monthly_budget_report(context: CallbackContext):
+    if not context or not context.bot:
+        return
+    tz_name = (os.getenv("BUDGET_REPORT_SCHEDULER_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+    try:
+        now_local = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        tz_name = "UTC"
+        now_local = datetime.now(timezone.utc)
+    run_period = now_local.strftime("%Y-%m")
+    admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+    if not admin_ids:
+        logging.warning("⚠️ Нет admin ID для monthly budget report.")
+        return
+    summary_text = await _format_all_translation_budget_status_text()
+    message_text = (
+        "🗓 Ежемесячный budget report\n"
+        f"Period: {run_period}\n"
+        f"Timezone: {tz_name}\n\n"
+        f"{summary_text}"
+    )
+    for admin_id in admin_ids:
+        already_sent = await asyncio.to_thread(
+            has_admin_scheduler_run,
+            job_key="monthly_budget_report",
+            run_period=run_period,
+            target_chat_id=int(admin_id),
+        )
+        if already_sent:
+            continue
+        try:
+            await context.bot.send_message(
+                chat_id=int(admin_id),
+                text=message_text,
+                reply_markup=_build_tts_budget_keyboard(),
+            )
+            await asyncio.to_thread(
+                mark_admin_scheduler_run,
+                job_key="monthly_budget_report",
+                run_period=run_period,
+                target_chat_id=int(admin_id),
+                metadata={"tz": tz_name, "source": "scheduler"},
+            )
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить monthly budget report admin_id=%s: %s", admin_id, exc)
+
+
+async def send_monthly_budget_report_now(context: CallbackContext, admin_chat_id: int) -> bool:
+    if not context or not context.bot:
+        return False
+    tz_name = (os.getenv("BUDGET_REPORT_SCHEDULER_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+    try:
+        now_local = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        tz_name = "UTC"
+        now_local = datetime.now(timezone.utc)
+    run_period = now_local.strftime("%Y-%m")
+    summary_text = await _format_all_translation_budget_status_text()
+    message_text = (
+        "🧪 Budget report (manual send)\n"
+        f"Period: {run_period}\n"
+        f"Timezone: {tz_name}\n\n"
+        f"{summary_text}"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=int(admin_chat_id),
+            text=message_text,
+            reply_markup=_build_tts_budget_keyboard(),
+        )
+        return True
+    except Exception as exc:
+        logging.warning("⚠️ Не удалось отправить manual budget report admin_id=%s: %s", admin_chat_id, exc)
+        return False
 
 
 def _build_tts_budget_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📊 Status", callback_data="ttsbudget:status"),
+                InlineKeyboardButton("📊 Status All", callback_data="ttsbudget:status"),
                 InlineKeyboardButton("🔄 Refresh", callback_data="ttsbudget:refresh"),
             ],
             [
-                InlineKeyboardButton("➕ Add 200k", callback_data="ttsbudget:add:200000"),
-                InlineKeyboardButton("➕ Add 500k", callback_data="ttsbudget:add:500000"),
+                InlineKeyboardButton("➕ TTS +200k", callback_data="ttsbudget:add:200000"),
+                InlineKeyboardButton("➕ TTS +500k", callback_data="ttsbudget:add:500000"),
             ],
-            [InlineKeyboardButton("➕ Add custom", callback_data="ttsbudget:addcustom")],
+            [InlineKeyboardButton("➕ TTS custom", callback_data="ttsbudget:addcustom")],
             [
-                InlineKeyboardButton("⛔ Block", callback_data="ttsbudget:block"),
-                InlineKeyboardButton("✅ Unblock", callback_data="ttsbudget:unblock"),
+                InlineKeyboardButton("⛔ TTS Block", callback_data="ttsbudget:block"),
+                InlineKeyboardButton("✅ TTS Unblock", callback_data="ttsbudget:unblock"),
+            ],
+            [
+                InlineKeyboardButton("➕ Translate +200k", callback_data="ttsbudget:translateadd:200000"),
+                InlineKeyboardButton("➕ Translate +500k", callback_data="ttsbudget:translateadd:500000"),
+            ],
+            [InlineKeyboardButton("➕ Translate custom", callback_data="ttsbudget:translateaddcustom")],
+            [
+                InlineKeyboardButton("⛔ Translate Block", callback_data="ttsbudget:translateblock"),
+                InlineKeyboardButton("✅ Translate Unblock", callback_data="ttsbudget:translateunblock"),
             ],
         ]
     )
@@ -1409,24 +1546,33 @@ async def _execute_tts_budget_action(
     delta_units: int | None = None,
 ) -> str:
     normalized_action = str(action or "status").strip().lower()
+    provider = "google_tts"
+    provider_label = "Google TTS"
+    status_loader = get_google_tts_monthly_budget_status
+
+    if normalized_action.startswith("translate_"):
+        provider = "google_translate"
+        provider_label = "Google Translate"
+        status_loader = get_google_translate_monthly_budget_status
+        normalized_action = normalized_action[len("translate_"):]
 
     if normalized_action == "status":
-        status = await asyncio.to_thread(get_google_tts_monthly_budget_status)
-        if not status:
-            return "❌ Не удалось получить статус бюджета Google TTS."
-        return _format_google_tts_budget_status_text(status)
+        return await _format_all_translation_budget_status_text()
+
+    if normalized_action == "sendnow":
+        return "Используйте команду /budgets sendnow в личке с ботом."
 
     if normalized_action == "add":
         if not delta_units or int(delta_units) <= 0:
             return "❌ Укажите корректное количество символов."
-        current = await asyncio.to_thread(get_google_tts_monthly_budget_status)
+        current = await asyncio.to_thread(status_loader)
         if not current:
             return "❌ Не удалось получить текущий статус бюджета."
         current_extra = int(current.get("extra_limit_units") or 0)
         new_extra = current_extra + int(delta_units)
         updated = await asyncio.to_thread(
             set_provider_budget_extra_limit,
-            provider="google_tts",
+            provider=provider,
             extra_limit_units=new_extra,
             metadata={
                 "last_manual_add_by": int(admin_user_id),
@@ -1434,50 +1580,54 @@ async def _execute_tts_budget_action(
             },
         )
         if not updated:
-            return "❌ Не удалось увеличить лимит Google TTS."
+            return f"❌ Не удалось увеличить лимит {provider_label}."
         await asyncio.to_thread(
             set_provider_budget_block_state,
-            provider="google_tts",
+            provider=provider,
             is_blocked=False,
             block_reason=None,
         )
-        refreshed = await asyncio.to_thread(get_google_tts_monthly_budget_status)
         return (
             "✅ Лимит увеличен.\n\n"
+            f"Провайдер: {provider_label}\n"
             f"Добавлено: {int(delta_units)} chars\n"
             f"Новый extra limit: {int(new_extra)} chars\n\n"
-            f"{_format_google_tts_budget_status_text(refreshed or updated)}"
+            f"{await _format_all_translation_budget_status_text()}"
         )
 
     if normalized_action == "block":
         updated = await asyncio.to_thread(
             set_provider_budget_block_state,
-            provider="google_tts",
+            provider=provider,
             is_blocked=True,
             block_reason=f"Manual block by admin {int(admin_user_id)}",
         )
         if not updated:
-            return "❌ Не удалось вручную заблокировать Google TTS."
-        return _format_google_tts_budget_status_text(updated)
+            return f"❌ Не удалось вручную заблокировать {provider_label}."
+        return await _format_all_translation_budget_status_text()
 
     if normalized_action == "unblock":
         updated = await asyncio.to_thread(
             set_provider_budget_block_state,
-            provider="google_tts",
+            provider=provider,
             is_blocked=False,
             block_reason=None,
         )
         if not updated:
-            return "❌ Не удалось снять блокировку Google TTS."
-        refreshed = await asyncio.to_thread(get_google_tts_monthly_budget_status)
-        return _format_google_tts_budget_status_text(refreshed or updated)
+            return f"❌ Не удалось снять блокировку {provider_label}."
+        return await _format_all_translation_budget_status_text()
 
     return (
         "Использование:\n"
-        "/ttsbudget status\n"
-        "/ttsbudget add 200000\n"
-        "/ttsbudget block\n"
-        "/ttsbudget unblock"
+        "/budgets status\n"
+        "/budgets sendnow\n"
+        "/budgets add 200000\n"
+        "/budgets block\n"
+        "/budgets unblock\n"
+        "/budgets translate_add 200000\n"
+        "/budgets translate_block\n"
+        "/budgets translate_unblock\n\n"
+        "Alias: /ttsbudget"
     )
 
 
@@ -1493,9 +1643,16 @@ async def tts_budget_command(update: Update, context: CallbackContext):
     pending_tts_budget_custom.pop(int(sender.id), None)
     args = context.args or []
     subcommand = str(args[0] if args else "status").strip().lower()
-    delta_units = _parse_budget_units(args[1]) if subcommand == "add" and len(args) >= 2 else None
-    if subcommand == "add" and delta_units is None:
-        await message.reply_text("❌ Укажите корректное количество символов. Пример: /ttsbudget add 200000")
+    if subcommand == "sendnow":
+        sent = await send_monthly_budget_report_now(context, int(sender.id))
+        if sent:
+            await message.reply_text("✅ Budget report отправлен в эту личку.", reply_markup=_build_tts_budget_keyboard())
+        else:
+            await message.reply_text("❌ Не удалось отправить budget report в личку.")
+        return
+    delta_units = _parse_budget_units(args[1]) if subcommand in {"add", "translate_add"} and len(args) >= 2 else None
+    if subcommand in {"add", "translate_add"} and delta_units is None:
+        await message.reply_text("❌ Укажите корректное количество символов. Пример: /budgets add 200000")
         return
     response_text = await _execute_tts_budget_action(
         action=subcommand,
@@ -1503,6 +1660,10 @@ async def tts_budget_command(update: Update, context: CallbackContext):
         delta_units=delta_units,
     )
     await message.reply_text(response_text, reply_markup=_build_tts_budget_keyboard())
+
+
+async def budgets_command(update: Update, context: CallbackContext):
+    await tts_budget_command(update, context)
 
 
 async def handle_tts_budget_callback(update: Update, context: CallbackContext):
@@ -1515,7 +1676,7 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
         return
 
     pending_tts_budget_custom.pop(int(admin.id), None)
-    match = re.match(r"^ttsbudget:(status|refresh|block|unblock|add|addcustom)(?::(\d+))?$", query.data or "")
+    match = re.match(r"^ttsbudget:(status|refresh|block|unblock|add|addcustom|translateblock|translateunblock|translateadd|translateaddcustom)(?::(\d+))?$", query.data or "")
     if not match:
         await query.answer("Некорректная кнопка.", show_alert=True)
         return
@@ -1523,8 +1684,15 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
     action = str(match.group(1) or "status").strip().lower()
     if action == "refresh":
         action = "status"
+    if action == "translateblock":
+        action = "translate_block"
+    if action == "translateunblock":
+        action = "translate_unblock"
+    if action == "translateadd":
+        action = "translate_add"
     if action == "addcustom":
         pending_tts_budget_custom[int(admin.id)] = {
+            "provider": "google_tts",
             "started_at": time.time(),
         }
         await query.answer("Жду число в сообщении", show_alert=False)
@@ -1536,7 +1704,21 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
                 parse_mode="Markdown",
             )
         return
-    delta_units = _parse_budget_units(match.group(2)) if action == "add" else None
+    if action == "translateaddcustom":
+        pending_tts_budget_custom[int(admin.id)] = {
+            "provider": "google_translate",
+            "started_at": time.time(),
+        }
+        await query.answer("Жду число в сообщении", show_alert=False)
+        if query.message:
+            await query.message.reply_text(
+                "Введите, на сколько символов увеличить лимит Google Translate.\n"
+                "Пример: `200000`\n\n"
+                "Чтобы отменить, отправьте `cancel`.",
+                parse_mode="Markdown",
+            )
+        return
+    delta_units = _parse_budget_units(match.group(2)) if action in {"add", "translate_add"} else None
     await query.answer("Обновляю…", show_alert=False)
     response_text = await _execute_tts_budget_action(
         action=action,
@@ -1995,6 +2177,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
         pending_budget = pending_tts_budget_custom.get(int(user_id))
         if pending_budget and update.effective_chat and update.effective_chat.type == "private":
             started_at = float((pending_budget or {}).get("started_at") or 0.0)
+            provider = str((pending_budget or {}).get("provider") or "google_tts").strip().lower()
             if started_at > 0 and (time.time() - started_at) > TTS_BUDGET_CUSTOM_TTL_SECONDS:
                 pending_tts_budget_custom.pop(int(user_id), None)
                 await update.message.reply_text(
@@ -2021,7 +2204,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 return
             pending_tts_budget_custom.pop(int(user_id), None)
             response_text = await _execute_tts_budget_action(
-                action="add",
+                action="translate_add" if provider == "google_translate" else "add",
                 admin_user_id=int(user_id),
                 delta_units=delta_units,
             )
@@ -7149,6 +7332,7 @@ def main():
     application.add_handler(CommandHandler("allowed", allowed_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))
     application.add_handler(CommandHandler("mobile_token", mobile_token_command))
+    application.add_handler(CommandHandler("budgets", budgets_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
@@ -7303,6 +7487,24 @@ def main():
         hour=SYSTEM_MESSAGE_CLEANUP_HOUR,
         minute=SYSTEM_MESSAGE_CLEANUP_MINUTE,
     )
+    budget_report_enabled = (os.getenv("BUDGET_REPORT_SCHEDULER_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    if budget_report_enabled:
+        budget_report_day = max(1, min(28, int((os.getenv("BUDGET_REPORT_SCHEDULER_DAY") or "1").strip())))
+        budget_report_hour = max(0, min(23, int((os.getenv("BUDGET_REPORT_SCHEDULER_HOUR") or "9").strip())))
+        budget_report_minute = max(0, min(59, int((os.getenv("BUDGET_REPORT_SCHEDULER_MINUTE") or "0").strip())))
+        budget_report_tz = (os.getenv("BUDGET_REPORT_SCHEDULER_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+        try:
+            budget_report_timezone = ZoneInfo(budget_report_tz)
+        except Exception:
+            budget_report_timezone = ZoneInfo("UTC")
+        scheduler.add_job(
+            lambda: submit_async(send_monthly_budget_report, CallbackContext(application=application)),
+            "cron",
+            day=budget_report_day,
+            hour=budget_report_hour,
+            minute=budget_report_minute,
+            timezone=budget_report_timezone,
+        )
     
     scheduler.start()
     print("🚀 Бот запущен! Ожидаем сообщения...")

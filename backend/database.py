@@ -1403,6 +1403,20 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_telegram_sysmsg_pending
                 ON bt_3_telegram_system_messages (deleted_at, created_at);
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_admin_scheduler_runs (
+                    id BIGSERIAL PRIMARY KEY,
+                    job_key TEXT NOT NULL,
+                    run_period TEXT NOT NULL,
+                    target_chat_id BIGINT NOT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_bt_3_admin_scheduler_runs_unique
+                ON bt_3_admin_scheduler_runs (job_key, run_period, target_chat_id);
+            """)
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bt_3_support_messages (
@@ -4829,6 +4843,58 @@ def mark_telegram_system_message_deleted(
                     """,
                     (int(row_id),),
                 )
+
+
+def has_admin_scheduler_run(
+    *,
+    job_key: str,
+    run_period: str,
+    target_chat_id: int,
+) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM bt_3_admin_scheduler_runs
+                WHERE job_key = %s
+                  AND run_period = %s
+                  AND target_chat_id = %s
+                LIMIT 1;
+                """,
+                (
+                    str(job_key or "").strip()[:80],
+                    str(run_period or "").strip()[:32],
+                    int(target_chat_id),
+                ),
+            )
+            row = cursor.fetchone()
+    return bool(row)
+
+
+def mark_admin_scheduler_run(
+    *,
+    job_key: str,
+    run_period: str,
+    target_chat_id: int,
+    metadata: dict | None = None,
+) -> None:
+    payload = metadata if isinstance(metadata, dict) else {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_admin_scheduler_runs (job_key, run_period, target_chat_id, metadata)
+                VALUES (%s, %s, %s, %s::jsonb)
+                ON CONFLICT (job_key, run_period, target_chat_id) DO NOTHING;
+                """,
+                (
+                    str(job_key or "").strip()[:80],
+                    str(run_period or "").strip()[:32],
+                    int(target_chat_id),
+                    Json(payload),
+                ),
+            )
 
 
 def create_support_message(
