@@ -234,6 +234,7 @@ from backend.database import (
     enforce_feature_limit,
     enforce_reader_audio_pro_monthly_limit,
     get_today_cost_eur,
+    get_google_translate_monthly_budget_status,
     get_google_tts_monthly_budget_status,
     mark_provider_budget_threshold_notified,
     set_provider_budget_block_state,
@@ -1045,8 +1046,29 @@ def _require_stripe_config(*, require_webhook_secret: bool = False) -> str | Non
     return None
 
 
-def _build_billing_webapp_return_url(state: str, *, include_session_id: bool = False) -> str:
+def _build_billing_webapp_return_url(
+    state: str,
+    *,
+    include_session_id: bool = False,
+    session_id: str | None = None,
+) -> str:
     base_url = f"{APP_BASE_URL}/webapp?mode=webapp&section=subscription&billing={state}"
+    if session_id:
+        return f"{base_url}&session_id={session_id}"
+    if include_session_id:
+        return f"{base_url}&session_id={{CHECKOUT_SESSION_ID}}"
+    return base_url
+
+
+def _build_billing_telegram_start_param(state: str) -> str:
+    clean_state = str(state or "").strip().lower()
+    if clean_state not in {"success", "cancel", "portal"}:
+        clean_state = "subscription"
+    return f"billing_{clean_state}"
+
+
+def _build_billing_telegram_return_url(state: str, *, include_session_id: bool = False) -> str:
+    base_url = f"{APP_BASE_URL}/billing/telegram-return?state={state}"
     if include_session_id:
         return f"{base_url}&session_id={{CHECKOUT_SESSION_ID}}"
     return base_url
@@ -4609,6 +4631,46 @@ def _quick_translate_google(text: str, source_lang: str | None, target_lang: str
     }
 
 
+def _enforce_google_translate_monthly_budget(requested_chars: int) -> dict:
+    requested_value = max(0, int(requested_chars or 0))
+    status = get_google_translate_monthly_budget_status()
+    if not status:
+        return {
+            "provider": "google_translate",
+            "unit": "chars",
+            "used_units": 0.0,
+            "effective_limit_units": 0,
+            "remaining_units": 0.0,
+            "usage_ratio": 0.0,
+            "is_blocked": False,
+        }
+
+    effective_limit = int(status.get("effective_limit_units") or 0)
+    used_units = float(status.get("used_units") or 0.0)
+    payload = {
+        "provider": "google_translate",
+        "unit": "chars",
+        "used": int(round(used_units)),
+        "requested": requested_value,
+        "limit": effective_limit,
+        "remaining": max(0, int(round(effective_limit - used_units))),
+        "period_month": status.get("period_month"),
+        "is_blocked": bool(status.get("is_blocked")),
+    }
+
+    if effective_limit > 0 and used_units + requested_value > effective_limit:
+        payload["remaining"] = max(0, effective_limit - int(round(used_units)))
+        raise GoogleTranslateBudgetExceededError(
+            (
+                "Google Translate monthly limit reached: "
+                f"{int(round(used_units))} + {requested_value} > {effective_limit} chars"
+            ),
+            payload=payload,
+        )
+
+    return status
+
+
 def _quick_translate_argos(text: str, source_lang: str | None, target_lang: str) -> dict:
     if argos_translate is None:
         raise RuntimeError("argostranslate not installed")
@@ -7458,6 +7520,12 @@ class GoogleTTSBudgetBlockedError(RuntimeError):
         self.payload = dict(payload or {})
 
 
+class GoogleTranslateBudgetExceededError(RuntimeError):
+    def __init__(self, message: str, *, payload: dict | None = None):
+        super().__init__(message)
+        self.payload = dict(payload or {})
+
+
 def _notify_google_tts_budget_thresholds(
     *,
     status: dict,
@@ -9700,8 +9768,8 @@ def create_billing_checkout_session():
             metadata={"user_id": str(int(user_id)), "plan_code": resolved_plan_code},
             subscription_data={"metadata": {"user_id": str(int(user_id)), "plan_code": resolved_plan_code}},
             line_items=[{"price": stripe_price_id, "quantity": 1}],
-            success_url=_build_billing_webapp_return_url("success", include_session_id=True),
-            cancel_url=_build_billing_webapp_return_url("cancel"),
+            success_url=_build_billing_telegram_return_url("success", include_session_id=True),
+            cancel_url=_build_billing_telegram_return_url("cancel"),
         )
         checkout_url = str(getattr(session, "url", "") or "")
         if not checkout_url:
@@ -9729,7 +9797,7 @@ def create_billing_portal_session():
         stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
         session = stripe.billing_portal.Session.create(
             customer=stripe_customer_id,
-            return_url=_build_billing_webapp_return_url("portal"),
+            return_url=_build_billing_telegram_return_url("portal"),
         )
         portal_url = str(getattr(session, "url", "") or "")
         if not portal_url:
@@ -9738,6 +9806,130 @@ def create_billing_portal_session():
     except Exception as exc:
         logging.exception("create portal session failed user_id=%s: %s", user_id, exc)
         return jsonify({"error": f"Не удалось создать portal session: {exc}"}), 500
+
+
+@app.route("/billing/telegram-return", methods=["GET"])
+def billing_telegram_return():
+    state = str(request.args.get("state") or "").strip().lower()
+    if state not in {"success", "cancel", "portal"}:
+        state = "portal"
+    session_id = str(request.args.get("session_id") or "").strip()
+    web_fallback_url = _build_billing_webapp_return_url(
+        state,
+        session_id=session_id or None,
+    )
+    telegram_deeplink = _build_webapp_deeplink(_build_billing_telegram_start_param(state))
+    escaped_telegram_deeplink = html.escape(telegram_deeplink, quote=True)
+    escaped_web_fallback_url = html.escape(web_fallback_url, quote=True)
+    escaped_state_title = html.escape(
+        {
+            "success": "Оплата завершена",
+            "cancel": "Оплата отменена",
+            "portal": "Возврат из Stripe Portal",
+        }.get(state, "Возврат в приложение")
+    )
+    escaped_state_message = html.escape(
+        {
+            "success": "Открываю Mini App в Telegram, чтобы обновить статус подписки.",
+            "cancel": "Открываю Mini App в Telegram, чтобы вы могли вернуться к подписке.",
+            "portal": "Открываю Mini App в Telegram после Stripe Portal.",
+        }.get(state, "Открываю приложение в Telegram.")
+    )
+    html_body = f"""<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>{escaped_state_title}</title>
+    <style>
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(180deg, #071120, #0f172a);
+        color: #f8fafc;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }}
+      .card {{
+        width: min(92vw, 460px);
+        padding: 28px 22px;
+        border-radius: 22px;
+        background: rgba(15, 23, 42, 0.92);
+        border: 1px solid rgba(125, 211, 252, 0.22);
+        box-shadow: 0 20px 60px rgba(2, 6, 23, 0.38);
+      }}
+      h1 {{
+        margin: 0 0 10px;
+        font-size: 24px;
+      }}
+      p {{
+        margin: 0 0 18px;
+        color: rgba(226, 232, 240, 0.8);
+        line-height: 1.5;
+      }}
+      .actions {{
+        display: grid;
+        gap: 10px;
+      }}
+      .button {{
+        display: inline-flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 46px;
+        border-radius: 999px;
+        text-decoration: none;
+        font-weight: 600;
+        border: 1px solid rgba(125, 211, 252, 0.28);
+      }}
+      .button-primary {{
+        background: #22c55e;
+        color: #04130a;
+        border-color: transparent;
+      }}
+      .button-secondary {{
+        background: rgba(15, 23, 42, 0.55);
+        color: #f8fafc;
+      }}
+      .hint {{
+        margin-top: 14px;
+        font-size: 13px;
+        color: rgba(226, 232, 240, 0.62);
+      }}
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>{escaped_state_title}</h1>
+      <p>{escaped_state_message}</p>
+      <div class="actions">
+        <a class="button button-primary" id="telegram-open-link" href="{escaped_telegram_deeplink}">Открыть Mini App в Telegram</a>
+        <a class="button button-secondary" href="{escaped_web_fallback_url}">Открыть веб-версию</a>
+      </div>
+      <div class="hint">Если Telegram не открылся автоматически, нажмите кнопку вручную.</div>
+    </main>
+    <script>
+      (function () {{
+        var telegramUrl = {json.dumps(telegram_deeplink)};
+        var didAttempt = false;
+        function openTelegram() {{
+          if (didAttempt) return;
+          didAttempt = true;
+          window.location.replace(telegramUrl);
+        }}
+        window.setTimeout(openTelegram, 120);
+        document.getElementById('telegram-open-link')?.addEventListener('click', function () {{
+          didAttempt = true;
+        }});
+      }})();
+    </script>
+  </body>
+</html>"""
+    return html_body, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    }
 
 
 @app.route("/api/billing/webhook", methods=["POST"])
@@ -10094,11 +10286,28 @@ def translate_quick():
 
     for provider_name, translate_func in providers:
         try:
+            if provider_name == "google_translate":
+                _enforce_google_translate_monthly_budget(len(text))
             result = translate_func(text, source_lang, target_lang)
             result["provider"] = provider_name
             if not result.get("detected_source_lang") and source_lang:
                 result["detected_source_lang"] = source_lang
+            if provider_name == "google_translate":
+                _billing_log_event_safe(
+                    user_id=None,
+                    action_type="quick_translate_chars",
+                    provider="google_translate",
+                    units_type="chars",
+                    units_value=float(len(text)),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    idempotency_seed=f"quick-translate:{provider_name}:{source_lang}:{target_lang}:{hashlib.sha1(text.encode('utf-8', 'ignore')).hexdigest()}",
+                    status="estimated",
+                    metadata={"cached": False},
+                )
             return jsonify(result)
+        except GoogleTranslateBudgetExceededError as exc:
+            attempts.append({"provider": provider_name, "error": str(exc), "error_code": "MONTHLY_LIMIT_REACHED"})
         except requests.Timeout:
             attempts.append({"provider": provider_name, "error": "timeout"})
         except Exception as exc:

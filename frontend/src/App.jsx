@@ -69,16 +69,23 @@ function AppInner() {
   }, [telegramApp]);
   const billingReturnContext = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
-    const kind = String(params.get('billing') || '').trim().toLowerCase();
+    const startParam = String(telegramApp?.initDataUnsafe?.start_param || '').trim().toLowerCase();
+    let kind = String(params.get('billing') || '').trim().toLowerCase();
     const sessionId = String(params.get('session_id') || '').trim();
-    const section = String(params.get('section') || '').trim().toLowerCase();
+    let section = String(params.get('section') || '').trim().toLowerCase();
+    if (!kind && startParam.startsWith('billing_')) {
+      kind = startParam.slice('billing_'.length);
+    }
+    if (!section && kind) {
+      section = 'subscription';
+    }
     return {
       kind,
       sessionId,
       section,
       shouldHandle: ['success', 'cancel', 'portal'].includes(kind),
     };
-  }, []);
+  }, [telegramApp]);
   const isAndroidTelegramClient = useMemo(() => {
     const tgPlatform = String(telegramApp?.platform || '').toLowerCase();
     if (tgPlatform.includes('android')) return true;

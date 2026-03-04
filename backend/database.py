@@ -97,6 +97,7 @@ FX_USD_TO_EUR = _env_decimal("FX_USD_TO_EUR", "0.92") or Decimal("0.92")
 TRIAL_POLICY_DAYS = max(0, _env_int("TRIAL_DAYS", 3))
 TRIAL_POLICY_TZ = "Europe/Vienna"
 GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS", 1_000_000))
+GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS", 500_000))
 READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS = max(1, _env_int("READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS", 10_000))
 
 
@@ -7087,6 +7088,8 @@ def _provider_budget_default_base_limit(provider: str) -> int:
     normalized = str(provider or "").strip().lower()
     if normalized == "google_tts":
         return int(GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS)
+    if normalized == "google_translate":
+        return int(GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS)
     return 0
 
 
@@ -7598,6 +7601,34 @@ def get_google_tts_monthly_budget_status(
         return None
     used_units = get_provider_budget_month_usage(
         provider="google_tts",
+        units_type="chars",
+        period_month=period_month,
+        tz=tz,
+    )
+    effective_limit = float(control.get("effective_limit_units") or 0.0)
+    usage_ratio = (used_units / effective_limit) if effective_limit > 0 else 0.0
+    result = dict(control)
+    result["used_units"] = float(round(used_units, 3))
+    result["remaining_units"] = max(0.0, float(round(effective_limit - used_units, 3)))
+    result["usage_ratio"] = max(0.0, usage_ratio)
+    result["unit"] = "chars"
+    return result
+
+
+def get_google_translate_monthly_budget_status(
+    *,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    control = get_or_create_provider_budget_control(
+        provider="google_translate",
+        period_month=period_month,
+        tz=tz,
+    )
+    if not control:
+        return None
+    used_units = get_provider_budget_month_usage(
+        provider="google_translate",
         units_type="chars",
         period_month=period_month,
         tz=tz,
