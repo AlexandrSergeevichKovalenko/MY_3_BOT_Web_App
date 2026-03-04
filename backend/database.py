@@ -1891,8 +1891,14 @@ def ensure_webapp_tables() -> None:
             seed_free_daily_cap = _env_decimal("FREE_DAILY_COST_CAP_EUR", "0.50")
             seed_pro_daily_cap = _env_decimal("PRO_DAILY_COST_CAP_EUR", None)
             seed_pro_price_id = str(os.getenv("STRIPE_PRICE_ID_PRO", "")).strip() or None
+            seed_support_coffee_price_id = str(os.getenv("STRIPE_PRICE_ID_SUPPORT_COFFEE", "")).strip() or None
+            seed_support_cheesecake_price_id = str(os.getenv("STRIPE_PRICE_ID_SUPPORT_CHEESECAKE", "")).strip() or None
             if not seed_pro_price_id:
-                print("⚠️ billing config warning: STRIPE_PRICE_ID_PRO is empty, pro plan will be seeded without stripe_price_id")
+                print("⚠️ billing config warning: STRIPE_PRICE_ID_PRO is empty, legacy pro plan will be seeded without stripe_price_id")
+            if not seed_support_coffee_price_id:
+                print("⚠️ billing config warning: STRIPE_PRICE_ID_SUPPORT_COFFEE is empty, support_coffee plan will be seeded without stripe_price_id")
+            if not seed_support_cheesecake_price_id:
+                print("⚠️ billing config warning: STRIPE_PRICE_ID_SUPPORT_CHEESECAKE is empty, support_cheesecake plan will be seeded without stripe_price_id")
             if (
                 seed_free_daily_cap is not None
                 and seed_trial_daily_cap is not None
@@ -1938,6 +1944,22 @@ def ensure_webapp_tables() -> None:
                         "Pro",
                         True,
                         seed_pro_price_id,
+                        seed_pro_daily_cap,
+                        0,
+                    ),
+                    (
+                        "support_coffee",
+                        "Поддержать разработчика: кофе ☕️",
+                        True,
+                        seed_support_coffee_price_id,
+                        seed_pro_daily_cap,
+                        0,
+                    ),
+                    (
+                        "support_cheesecake",
+                        "Поддержать разработчика: кофе ☕️ и чизкейк 🍰",
+                        True,
+                        seed_support_cheesecake_price_id,
                         seed_pro_daily_cap,
                         0,
                     ),
@@ -8284,6 +8306,7 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
 
 def set_subscription_from_stripe(
     user_id: int,
+    plan_code: str,
     stripe_customer_id: str | None,
     stripe_subscription_id: str | None,
     status: str,
@@ -8291,6 +8314,7 @@ def set_subscription_from_stripe(
     db_conn=None,
 ) -> dict:
     user_id_value = int(user_id)
+    plan_code_value = str(plan_code or "pro").strip().lower() or "pro"
     status_value = _normalize_subscription_status(status)
     period_end_value = _to_aware_datetime(current_period_end) if current_period_end else None
     customer_id_value = str(stripe_customer_id or "").strip() or None
@@ -8311,10 +8335,10 @@ def set_subscription_from_stripe(
                         stripe_subscription_id,
                         updated_at
                     )
-                    VALUES (%s, 'pro', %s, NULL, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, NULL, %s, %s, %s, NOW())
                     ON CONFLICT (user_id) DO UPDATE
                     SET
-                        plan_code = 'pro',
+                        plan_code = EXCLUDED.plan_code,
                         status = EXCLUDED.status,
                         trial_ends_at = NULL,
                         current_period_end = EXCLUDED.current_period_end,
@@ -8334,6 +8358,7 @@ def set_subscription_from_stripe(
                     """,
                     (
                         user_id_value,
+                        plan_code_value,
                         status_value,
                         period_end_value,
                         customer_id_value,
@@ -8355,10 +8380,10 @@ def set_subscription_from_stripe(
                     stripe_subscription_id,
                     updated_at
                 )
-                VALUES (%s, 'pro', %s, NULL, %s, %s, %s, NOW())
-                ON CONFLICT (user_id) DO UPDATE
-                SET
-                    plan_code = 'pro',
+                    VALUES (%s, %s, %s, NULL, %s, %s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET
+                        plan_code = EXCLUDED.plan_code,
                     status = EXCLUDED.status,
                     trial_ends_at = NULL,
                     current_period_end = EXCLUDED.current_period_end,
@@ -8376,11 +8401,12 @@ def set_subscription_from_stripe(
                     created_at,
                     updated_at;
                 """,
-                (
-                    user_id_value,
-                    status_value,
-                    period_end_value,
-                    customer_id_value,
+                    (
+                        user_id_value,
+                        plan_code_value,
+                        status_value,
+                        period_end_value,
+                        customer_id_value,
                     subscription_id_value,
                 ),
             )
@@ -8540,9 +8566,11 @@ def resolve_entitlement(
         }
 
     plan_code = str(subscription.get("plan_code") or "free").strip().lower() or "free"
-    if plan_code not in {"free", "pro"}:
-        plan_code = "free"
     status = _normalize_subscription_status(subscription.get("status"))
+    current_plan = get_billing_plan(plan_code) or {}
+    if not current_plan and plan_code != "free":
+        plan_code = "free"
+        current_plan = get_billing_plan("free") or {}
 
     trial_ends_at_value = subscription.get("trial_ends_at")
     trial_ends_at_dt = None
@@ -8553,7 +8581,7 @@ def resolve_entitlement(
         except Exception:
             trial_ends_at_dt = None
 
-    if plan_code == "pro" and status in {"active", "trialing"}:
+    if bool(current_plan.get("is_paid")) and status in {"active", "trialing"}:
         effective_mode = "pro"
     elif status == "trialing" and trial_ends_at_dt is not None and now_utc < trial_ends_at_dt:
         effective_mode = "trial"
@@ -8561,7 +8589,7 @@ def resolve_entitlement(
         effective_mode = "free"
 
     free_plan = get_billing_plan("free") or {}
-    pro_plan = get_billing_plan("pro") or {}
+    pro_plan = current_plan if bool(current_plan.get("is_paid")) else (get_billing_plan("pro") or {})
     if effective_mode == "pro":
         cap_eur = pro_plan.get("daily_cost_cap_eur")
     elif effective_mode == "trial":
@@ -8575,6 +8603,7 @@ def resolve_entitlement(
     return {
         "user_id": int(user_id),
         "plan_code": plan_code,
+        "plan_name": str(current_plan.get("name") or (free_plan.get("name") if plan_code == "free" else plan_code)),
         "status": status,
         "trial_ends_at": trial_ends_at_dt.isoformat() if trial_ends_at_dt else None,
         "effective_mode": effective_mode,

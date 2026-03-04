@@ -1988,6 +1988,56 @@ body {
   color: #ffd166;
 }
 
+.billing-support-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.billing-support-card {
+  border: 1px solid rgba(93, 220, 255, 0.22);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(17, 24, 39, 0.92), rgba(10, 16, 34, 0.78)),
+    radial-gradient(circle at top right, rgba(250, 204, 21, 0.18), transparent 42%);
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+  box-shadow: 0 10px 30px rgba(2, 6, 23, 0.24);
+}
+
+.billing-support-card__eyebrow {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(125, 211, 252, 0.78);
+}
+
+.billing-support-card h3 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 16px;
+}
+
+.billing-support-card__blurb {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.72);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.billing-support-card__price {
+  color: #fde68a;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.billing-support-card__button {
+  width: 100%;
+  justify-content: center;
+}
+
 .economics-voice-card {
   border-width: 1px;
 }

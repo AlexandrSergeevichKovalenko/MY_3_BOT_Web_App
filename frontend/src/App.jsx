@@ -624,6 +624,28 @@ function AppInner() {
     }
     return '';
   }, [billingReturnContext.kind, tr]);
+  const billingSupportOffers = useMemo(() => ([
+    {
+      planCode: 'support_coffee',
+      title: tr('Поддержать разработчика: кофе ☕️', 'Entwickler unterstuetzen: Kaffee ☕️'),
+      priceLabel: '3.50 EUR / месяц',
+      priceLabelDe: '3.50 EUR / Monat',
+      blurb: tr(
+        'Я делал это приложение 1 год и 3 месяца и продолжаю улучшать его каждый день.',
+        'Ich habe diese App 1 Jahr und 3 Monate lang gebaut und verbessere sie weiterhin jeden Tag.'
+      ),
+    },
+    {
+      planCode: 'support_cheesecake',
+      title: tr('Поддержать разработчика: кофе ☕️ и чизкейк 🍰', 'Entwickler unterstuetzen: Kaffee ☕️ und Cheesecake 🍰'),
+      priceLabel: '4.99 EUR / месяц',
+      priceLabelDe: '4.99 EUR / Monat',
+      blurb: tr(
+        'Если хочешь поддержать проект сильнее, этот тариф помогает оплачивать развитие и инфраструктуру.',
+        'Wenn du das Projekt staerker unterstuetzen willst, hilft dieser Tarif bei Weiterentwicklung und Infrastruktur.'
+      ),
+    },
+  ]), [tr]);
   const readApiError = useCallback(async (response, fallbackRu, fallbackDe) => {
     const fallback = tr(fallbackRu, fallbackDe);
     const formatBillingLimitError = (payload) => {
@@ -10101,7 +10123,7 @@ function AppInner() {
     window.location.href = target;
   };
 
-  const handleBillingUpgrade = async () => {
+  const handleBillingUpgrade = async (planCode) => {
     if (!initData) {
       setBillingStatusError(initDataMissingMsg);
       return;
@@ -10111,7 +10133,7 @@ function AppInner() {
       const response = await fetch('/api/billing/create-checkout-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, plan_code: 'pro' }),
+        body: JSON.stringify({ initData, plan_code: planCode }),
       });
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка создания checkout', 'Fehler beim Erstellen von Checkout'));
@@ -14873,7 +14895,7 @@ function AppInner() {
                     <div className="analytics-cards economics-cards">
                       <div className="analytics-card">
                         <span>{tr('План', 'Plan')}</span>
-                        <strong>{String(billingStatus?.effective_mode || 'free').toUpperCase()}</strong>
+                        <strong>{String(billingStatus?.plan_name || billingStatus?.effective_mode || 'free')}</strong>
                       </div>
                       <div className="analytics-card">
                         <span>{tr('Статус', 'Status')}</span>
@@ -14898,41 +14920,50 @@ function AppInner() {
                       {tr('Сброс лимитов', 'Limits-Reset')}: {billingStatus?.reset_at ? new Date(billingStatus.reset_at).toLocaleString() : '—'}
                     </div>
 
-                    <div className="webapp-section-actions">
-                      {billingStatus?.upgrade?.available && (
-                        <button type="button" className="secondary-button" onClick={handleBillingUpgrade} disabled={billingActionLoading}>
-                          {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Перейти на Pro', 'Zu Pro wechseln')}
-                        </button>
-                      )}
-                      {billingStatus?.manage?.available && (
-                        <button type="button" className="secondary-button" onClick={handleBillingManage} disabled={billingActionLoading}>
-                          {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Управлять подпиской', 'Abo verwalten')}
-                        </button>
-                      )}
-                    </div>
-                  </>
-                )}
-
-                {Array.isArray(billingPlans) && billingPlans.length > 0 && (
-                  <div className="economics-breakdown-grid">
-                    {billingPlans.map((plan) => (
-                      <div className="economics-breakdown-card" key={`plan-${plan.plan_code}`}>
-                        <h4>{String(plan?.name || plan?.plan_code || '').trim() || 'Plan'}</h4>
-                        <div className="economics-breakdown-row">
-                          <span>{tr('Код', 'Code')}</span>
-                          <strong>{String(plan?.plan_code || '')}</strong>
-                        </div>
-                        <div className="economics-breakdown-row">
-                          <span>{tr('Тип', 'Typ')}</span>
-                          <strong>{plan?.is_paid ? tr('Платный', 'Bezahlt') : tr('Бесплатный', 'Kostenlos')}</strong>
-                        </div>
-                        <div className="economics-breakdown-row">
-                          <span>{tr('Cap / день', 'Cap / Tag')}</span>
-                          <strong>{plan?.daily_cost_cap_eur == null ? tr('Без лимита', 'Unbegrenzt') : `${Number(plan.daily_cost_cap_eur).toFixed(2)} EUR`}</strong>
-                        </div>
+                    {billingStatus?.upgrade?.available && (
+                      <div className="billing-support-grid">
+                        {billingSupportOffers.map((offer) => {
+                          const planMeta = Array.isArray(billingPlans)
+                            ? billingPlans.find((plan) => String(plan?.plan_code || '').trim().toLowerCase() === offer.planCode)
+                            : null;
+                          const isUnavailable = !planMeta || planMeta.is_active === false || !String(planMeta?.stripe_price_id || '').trim();
+                          return (
+                            <article className="billing-support-card" key={offer.planCode}>
+                              <div className="billing-support-card__eyebrow">
+                                {offer.planCode === 'support_coffee'
+                                  ? tr('Лёгкая поддержка', 'Leichte Unterstuetzung')
+                                  : tr('Расширенная поддержка', 'Erweiterte Unterstuetzung')}
+                              </div>
+                              <h3>{offer.title}</h3>
+                              <p className="billing-support-card__blurb">{offer.blurb}</p>
+                              <div className="billing-support-card__price">{uiLang === 'de' ? offer.priceLabelDe : offer.priceLabel}</div>
+                              <button
+                                type="button"
+                                className="secondary-button billing-support-card__button"
+                                onClick={() => handleBillingUpgrade(offer.planCode)}
+                                disabled={billingActionLoading || isUnavailable}
+                              >
+                                {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : offer.title}
+                              </button>
+                              {isUnavailable && (
+                                <div className="webapp-muted">
+                                  {tr('Тариф еще не подключен в Stripe.', 'Dieser Tarif ist in Stripe noch nicht verbunden.')}
+                                </div>
+                              )}
+                            </article>
+                          );
+                        })}
                       </div>
-                    ))}
-                  </div>
+                    )}
+
+                    {billingStatus?.manage?.available && (
+                      <div className="webapp-section-actions">
+                        <button type="button" className="secondary-button" onClick={handleBillingManage} disabled={billingActionLoading}>
+                          {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Управлять подпиской в Stripe Portal', 'Abo im Stripe-Portal verwalten')}
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {appMode !== 'telegram' && (

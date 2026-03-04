@@ -349,6 +349,8 @@ BILLING_ALLOCATION_DEFAULT = (os.getenv("BILLING_ALLOCATION_METHOD_DEFAULT") or 
 STRIPE_SECRET_KEY = (os.getenv("STRIPE_SECRET_KEY") or "").strip()
 STRIPE_WEBHOOK_SECRET = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
 STRIPE_PRICE_ID_PRO = (os.getenv("STRIPE_PRICE_ID_PRO") or "").strip()
+STRIPE_PRICE_ID_SUPPORT_COFFEE = (os.getenv("STRIPE_PRICE_ID_SUPPORT_COFFEE") or "").strip()
+STRIPE_PRICE_ID_SUPPORT_CHEESECAKE = (os.getenv("STRIPE_PRICE_ID_SUPPORT_CHEESECAKE") or "").strip()
 APP_BASE_URL = (os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
 BACKEND_BASE_URL = (os.getenv("BACKEND_BASE_URL") or "").strip().rstrip("/")
 DEEPL_AUTH_KEY = (os.getenv("DEEPL_AUTH_KEY") or "").strip()
@@ -1126,6 +1128,7 @@ def _get_or_create_stripe_customer_id(user_id: int, username: str | None = None)
 def _upsert_subscription_from_stripe_payload(
     *,
     user_id: int,
+    plan_code: str | None,
     stripe_customer_id: str | None,
     stripe_subscription_id: str | None,
     stripe_status: str | None,
@@ -1134,12 +1137,34 @@ def _upsert_subscription_from_stripe_payload(
 ) -> dict:
     return set_subscription_from_stripe(
         user_id=int(user_id),
+        plan_code=str(plan_code or "pro").strip().lower() or "pro",
         stripe_customer_id=stripe_customer_id,
         stripe_subscription_id=stripe_subscription_id,
         status=_map_stripe_subscription_status(stripe_status),
         current_period_end=_stripe_unix_ts_to_datetime(current_period_end_ts),
         db_conn=db_conn,
     )
+
+
+def _resolve_billing_plan_checkout_config(plan_code: str | None) -> tuple[str, str]:
+    plan_code_value = str(plan_code or "").strip().lower()
+    price_id_map = {
+        "support_coffee": STRIPE_PRICE_ID_SUPPORT_COFFEE,
+        "support_cheesecake": STRIPE_PRICE_ID_SUPPORT_CHEESECAKE,
+        "pro": STRIPE_PRICE_ID_PRO,
+    }
+    price_id = str(price_id_map.get(plan_code_value) or "").strip()
+    if not price_id:
+        raise ValueError(f"Stripe price id не задан для тарифа '{plan_code_value or 'unknown'}'")
+    return plan_code_value, price_id
+
+
+def _extract_plan_code_from_stripe_payload(payload_obj, default: str = "pro") -> str:
+    if payload_obj is None or not hasattr(payload_obj, "get"):
+        return default
+    metadata = payload_obj.get("metadata") or {}
+    value = str(metadata.get("plan_code") or payload_obj.get("plan_code") or default).strip().lower()
+    return value or default
 
 
 def _build_language_pair_payload(source_lang: str, target_lang: str) -> dict:
@@ -9613,18 +9638,20 @@ def get_billing_status():
     subscription = get_user_subscription(int(user_id)) or {}
     spent_today = float(get_today_cost_eur(user_id=int(user_id), tz="Europe/Vienna"))
     plan_code = str(entitlement.get("plan_code") or "free")
+    plan_name = str(entitlement.get("plan_name") or plan_code)
     status_value = str(entitlement.get("status") or "inactive")
     effective_mode = str(entitlement.get("effective_mode") or "free")
     cap_today = entitlement.get("cap_eur")
-    is_pro_active = plan_code == "pro" and status_value in {"active", "trialing"}
+    is_paid_active = effective_mode == "pro" and status_value in {"active", "trialing"}
     has_billing_portal_context = bool(
         str(subscription.get("stripe_customer_id") or "").strip()
         or str(subscription.get("stripe_subscription_id") or "").strip()
-        or is_pro_active
+        or is_paid_active
     )
     return jsonify(
         {
             "plan_code": plan_code,
+            "plan_name": plan_name,
             "status": status_value,
             "effective_mode": effective_mode,
             "trial_ends_at": entitlement.get("trial_ends_at"),
@@ -9634,7 +9661,7 @@ def get_billing_status():
             "currency": "EUR",
             "reset_at": entitlement.get("reset_at"),
             "upgrade": {
-                "available": not is_pro_active,
+                "available": not is_paid_active,
                 "endpoint": "/api/billing/create-checkout-session",
             },
             "manage": {
@@ -9655,25 +9682,24 @@ def create_billing_checkout_session():
     config_error = _require_stripe_config(require_webhook_secret=False)
     if config_error:
         return jsonify({"error": config_error}), 500
-    if not STRIPE_PRICE_ID_PRO:
-        return jsonify({"error": "STRIPE_PRICE_ID_PRO не задан"}), 500
     if not APP_BASE_URL:
         return jsonify({"error": "APP_BASE_URL не задан"}), 500
 
     payload = request.get_json(silent=True) or {}
-    requested_plan = str(payload.get("plan_code") or "pro").strip().lower() or "pro"
-    if requested_plan != "pro":
-        return jsonify({"error": "Поддерживается только plan_code='pro'"}), 400
+    requested_plan = str(payload.get("plan_code") or "support_coffee").strip().lower() or "support_coffee"
+    if requested_plan not in {"support_coffee", "support_cheesecake", "pro"}:
+        return jsonify({"error": "Неподдерживаемый тариф"}), 400
 
     try:
+        resolved_plan_code, stripe_price_id = _resolve_billing_plan_checkout_config(requested_plan)
         stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
         session = stripe.checkout.Session.create(
             mode="subscription",
             customer=stripe_customer_id,
             client_reference_id=str(int(user_id)),
-            metadata={"user_id": str(int(user_id)), "plan_code": "pro"},
-            subscription_data={"metadata": {"user_id": str(int(user_id)), "plan_code": "pro"}},
-            line_items=[{"price": STRIPE_PRICE_ID_PRO, "quantity": 1}],
+            metadata={"user_id": str(int(user_id)), "plan_code": resolved_plan_code},
+            subscription_data={"metadata": {"user_id": str(int(user_id)), "plan_code": resolved_plan_code}},
+            line_items=[{"price": stripe_price_id, "quantity": 1}],
             success_url=_build_billing_webapp_return_url("success", include_session_id=True),
             cancel_url=_build_billing_webapp_return_url("cancel"),
         )
@@ -9744,6 +9770,7 @@ def stripe_billing_webhook():
                 metadata = data_object.get("metadata") or {}
                 stripe_customer_id = str(data_object.get("customer") or "") or None
                 stripe_subscription_id = str(data_object.get("subscription") or "") or None
+                plan_code = _extract_plan_code_from_stripe_payload(data_object)
                 user_id = _resolve_user_id_for_stripe_event(
                     metadata_user_id=metadata.get("user_id"),
                     client_reference_id=data_object.get("client_reference_id"),
@@ -9758,10 +9785,12 @@ def stripe_billing_webhook():
                 if stripe_subscription_id:
                     try:
                         subscription_obj = stripe.Subscription.retrieve(stripe_subscription_id)
+                        plan_code = _extract_plan_code_from_stripe_payload(subscription_obj, default=plan_code)
                     except Exception as exc:
                         logging.warning("subscription retrieve failed id=%s event_id=%s: %s", stripe_subscription_id, event_id, exc)
                 _upsert_subscription_from_stripe_payload(
                     user_id=int(user_id),
+                    plan_code=plan_code,
                     stripe_customer_id=stripe_customer_id,
                     stripe_subscription_id=stripe_subscription_id,
                     stripe_status=(subscription_obj or {}).get("status") or "active",
@@ -9774,6 +9803,7 @@ def stripe_billing_webhook():
                 metadata = data_object.get("metadata") or {}
                 stripe_customer_id = str(data_object.get("customer") or "") or None
                 stripe_subscription_id = str(data_object.get("id") or "") or None
+                plan_code = _extract_plan_code_from_stripe_payload(data_object)
                 user_id = _resolve_user_id_for_stripe_event(
                     metadata_user_id=metadata.get("user_id"),
                     client_reference_id=None,
@@ -9786,6 +9816,7 @@ def stripe_billing_webhook():
 
                 _upsert_subscription_from_stripe_payload(
                     user_id=int(user_id),
+                    plan_code=plan_code,
                     stripe_customer_id=stripe_customer_id,
                     stripe_subscription_id=stripe_subscription_id,
                     stripe_status=data_object.get("status") or ("canceled" if event_type.endswith(".deleted") else "inactive"),
@@ -9798,6 +9829,7 @@ def stripe_billing_webhook():
                 metadata = data_object.get("metadata") or {}
                 stripe_customer_id = str(data_object.get("customer") or "") or None
                 stripe_subscription_id = str(data_object.get("subscription") or "") or None
+                plan_code = _extract_plan_code_from_stripe_payload(data_object)
                 user_id = _resolve_user_id_for_stripe_event(
                     metadata_user_id=metadata.get("user_id"),
                     client_reference_id=None,
@@ -9812,12 +9844,14 @@ def stripe_billing_webhook():
                 if stripe_subscription_id:
                     try:
                         subscription_obj = stripe.Subscription.retrieve(stripe_subscription_id)
+                        plan_code = _extract_plan_code_from_stripe_payload(subscription_obj, default=plan_code)
                     except Exception as exc:
                         logging.warning("invoice subscription retrieve failed id=%s event_id=%s: %s", stripe_subscription_id, event_id, exc)
 
                 fallback_status = "active" if event_type == "invoice.payment_succeeded" else "past_due"
                 _upsert_subscription_from_stripe_payload(
                     user_id=int(user_id),
+                    plan_code=plan_code,
                     stripe_customer_id=stripe_customer_id,
                     stripe_subscription_id=stripe_subscription_id,
                     stripe_status=(subscription_obj or {}).get("status") or fallback_status,
