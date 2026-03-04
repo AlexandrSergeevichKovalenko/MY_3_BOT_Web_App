@@ -182,6 +182,11 @@ from backend.database import (
     upsert_tts_chunk_cache,
     get_tts_audio_cache,
     upsert_tts_audio_cache,
+    get_tts_object_meta,
+    create_tts_object_pending,
+    requeue_tts_object_pending,
+    mark_tts_object_ready,
+    mark_tts_object_failed,
     get_next_due_srs_card,
     get_next_new_srs_candidate,
     count_due_srs_cards,
@@ -282,6 +287,7 @@ from backend.database import (
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
 )
+from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
 from backend.translation_workflow import (
     build_user_daily_summary,
@@ -394,6 +400,12 @@ SENTENCE_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("SENTENCE_PREW
 SENTENCE_PREWARM_ALLOW_DAYTIME = str(os.getenv("SENTENCE_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
 _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TTS_URL_PENDING_RETRY_MS = max(150, int((os.getenv("TTS_URL_PENDING_RETRY_MS") or "700").strip() or "700"))
+TTS_OBJECT_PREFIX = str(os.getenv("TTS_OBJECT_PREFIX") or "tts").strip().strip("/") or "tts"
+KEY_SALT = (os.getenv("KEY_SALT") or "").strip()
+_TTS_CACHE_HMAC_SECRET = KEY_SALT or TELEGRAM_Deutsch_BOT_TOKEN or "dev-unsafe-key-salt"
+if not KEY_SALT:
+    logging.warning("⚠️ KEY_SALT is not set. Using fallback secret for TTS cache keys.")
 FSRS_PROFILING_ENABLED = str(os.getenv("FSRS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 FLASHCARDS_SET_PROFILING_ENABLED = str(os.getenv("FLASHCARDS_SET_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 DICTIONARY_PROFILING_ENABLED = str(os.getenv("DICTIONARY_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -491,6 +503,7 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/webapp/flashcards/enrich": {"cap": True},
     "/api/webapp/explain": {"cap": True},
     "/api/webapp/tts": {"cap": True, "feature_code": "tts_chars_daily"},
+    "/api/webapp/tts/generate": {"cap": True, "feature_code": "tts_chars_daily"},
     "/api/webapp/youtube/transcript": {"cap": True, "feature_code": "youtube_fetch_daily"},
     "/api/webapp/youtube/translate": {"cap": True},
     "/api/webapp/submit-group": {"cap": True},
@@ -530,7 +543,7 @@ def enforce_webapp_access():
         return None
 
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
+    init_data = _extract_request_init_data(payload)
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
 
@@ -6716,6 +6729,142 @@ def _tts_cache_key(lang: str, voice: str, speed: float, text: str) -> str:
     normalized = _normalize_utterance_text(text)
     raw = f"{lang}|{voice}|{speed}|{normalized}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _sanitize_object_segment(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip())
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-.")
+    if not cleaned:
+        return fallback
+    if ".." in cleaned:
+        cleaned = cleaned.replace("..", ".")
+    return cleaned or fallback
+
+
+def _normalize_tts_language_code(language: str | None) -> tuple[str, str]:
+    short_lang = _normalize_short_lang_code(language, fallback="de")
+    language_code = _TTS_LANG_CODES.get(short_lang, _TTS_LANG_CODES["de"])
+    return short_lang, language_code
+
+
+def _normalize_tts_voice_name(voice: str | None, short_lang: str) -> str:
+    candidate = str(voice or "").strip()
+    if candidate:
+        return candidate
+    return str(_TTS_VOICES.get(short_lang, _TTS_VOICES["de"])).strip()
+
+
+def _tts_object_cache_key(short_lang: str, voice: str, speed: float, text: str) -> str:
+    normalized = _normalize_utterance_text(text)
+    material = "|".join(
+        [
+            str(short_lang or "de"),
+            str(voice or ""),
+            f"{float(speed):.3f}",
+            normalized,
+        ]
+    )
+    return hmac.new(
+        _TTS_CACHE_HMAC_SECRET.encode("utf-8"),
+        material.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _tts_object_key(short_lang: str, voice: str, cache_key: str) -> str:
+    safe_lang = _sanitize_object_segment(short_lang, "de")
+    safe_voice = _sanitize_object_segment(voice, "voice")
+    safe_key = _sanitize_object_segment(cache_key, "key")
+    return f"{TTS_OBJECT_PREFIX}/{safe_lang}/{safe_voice}/{safe_key}.mp3"
+
+
+def _read_webapp_tts_request_payload(*, payload: dict | None = None) -> tuple[dict | None, tuple[dict, int] | None]:
+    body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    init_data = _extract_request_init_data(body)
+    if not init_data:
+        return None, ({"error": "initData обязателен"}, 400)
+    if not _telegram_hash_is_valid(init_data):
+        return None, ({"error": "initData не прошёл проверку"}, 401)
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return None, ({"error": "user_id отсутствует в initData"}, 400)
+    text_raw = body.get("text")
+    if text_raw is None:
+        text_raw = request.args.get("text")
+    normalized_text = _normalize_utterance_text(str(text_raw or ""))
+    if not normalized_text:
+        return None, ({"error": "text обязателен"}, 400)
+
+    language_input = str(body.get("language") or request.args.get("language") or "de-DE").strip()
+    short_lang, language_code = _normalize_tts_language_code(language_input)
+    voice_name = _normalize_tts_voice_name(body.get("voice") or request.args.get("voice"), short_lang)
+
+    speed_raw = body.get("speed")
+    if speed_raw is None:
+        speed_raw = request.args.get("speed")
+    try:
+        speaking_rate = float(speed_raw) if speed_raw is not None else 0.95
+    except Exception:
+        speaking_rate = 0.95
+    speaking_rate = max(0.25, min(2.0, speaking_rate))
+
+    cache_key = _tts_object_cache_key(short_lang, voice_name, speaking_rate, normalized_text)
+    object_key = _tts_object_key(short_lang, voice_name, cache_key)
+    return (
+        {
+            "user_id": int(user_id),
+            "source_lang": short_lang,
+            "language": language_code,
+            "voice": voice_name,
+            "speed": speaking_rate,
+            "text": normalized_text,
+            "cache_key": cache_key,
+            "object_key": object_key,
+        },
+        None,
+    )
+
+
+def _build_tts_url_response_from_meta(meta: dict, *, fallback_object_key: str, retry_after_ms: int | None = None) -> tuple[dict, int]:
+    status = str(meta.get("status") or "").strip().lower()
+    cache_key = str(meta.get("cache_key") or "").strip()
+    object_key = str(meta.get("object_key") or "").strip() or fallback_object_key
+    if status == "ready":
+        audio_url = str(meta.get("url") or "").strip() or r2_public_url(object_key)
+        return (
+            {
+                "ok": True,
+                "status": "ready",
+                "audio_url": audio_url,
+                "cache_key": cache_key,
+                "object_key": object_key,
+            },
+            200,
+        )
+    if status == "failed":
+        return (
+            {
+                "ok": True,
+                "status": "failed",
+                "cache_key": cache_key,
+                "object_key": object_key,
+                "reason": str(meta.get("error_code") or "tts_generation_failed"),
+                "message": str(meta.get("error_msg") or "TTS generation failed"),
+            },
+            200,
+        )
+    return (
+        {
+            "ok": True,
+            "status": "pending",
+            "cache_key": cache_key,
+            "object_key": object_key,
+            "retry_after_ms": int(retry_after_ms or TTS_URL_PENDING_RETRY_MS),
+        },
+        200,
+    )
 
 
 def _get_silence(ms: int) -> AudioSegment:
@@ -14146,6 +14295,233 @@ def set_flashcard_feel_feedback():
             "kept": bool(liked),
         }
     )
+
+
+@app.route("/api/webapp/tts/url", methods=["GET"])
+def webapp_tts_url():
+    params, error = _read_webapp_tts_request_payload()
+    if error:
+        payload, status = error
+        return jsonify(payload), int(status)
+
+    cache_key = str(params["cache_key"])
+    object_key = str(params["object_key"])
+    meta = get_tts_object_meta(cache_key, touch_hit=True)
+    if meta:
+        payload, status = _build_tts_url_response_from_meta(
+            meta,
+            fallback_object_key=object_key,
+            retry_after_ms=TTS_URL_PENDING_RETRY_MS,
+        )
+        return jsonify(payload), int(status)
+
+    return jsonify(
+        {
+            "ok": True,
+            "status": "pending",
+            "cache_key": cache_key,
+            "object_key": object_key,
+            "retry_after_ms": int(TTS_URL_PENDING_RETRY_MS),
+        }
+    )
+
+
+@app.route("/api/webapp/tts/generate", methods=["POST"])
+def webapp_tts_generate():
+    params, error = _read_webapp_tts_request_payload(payload=request.get_json(silent=True) or {})
+    if error:
+        payload, status = error
+        return jsonify(payload), int(status)
+
+    user_id = int(params["user_id"])
+    language = str(params["language"])
+    tts_lang_short = str(params["source_lang"])
+    voice = str(params["voice"])
+    speaking_rate = float(params["speed"])
+    normalized_text = str(params["text"])
+    cache_key = str(params["cache_key"])
+    object_key = str(params["object_key"])
+
+    meta = get_tts_object_meta(cache_key, touch_hit=False)
+    if meta:
+        status_value = str(meta.get("status") or "").strip().lower()
+        if status_value == "ready":
+            payload, status_code = _build_tts_url_response_from_meta(
+                meta,
+                fallback_object_key=object_key,
+            )
+            payload["state"] = "already_ready"
+            return jsonify(payload), int(status_code)
+        if status_value == "pending":
+            payload, status_code = _build_tts_url_response_from_meta(
+                meta,
+                fallback_object_key=object_key,
+                retry_after_ms=TTS_URL_PENDING_RETRY_MS,
+            )
+            payload["state"] = "already_pending"
+            return jsonify(payload), int(status_code)
+
+    claimed = False
+    if meta and str(meta.get("status") or "").strip().lower() == "failed":
+        claimed = requeue_tts_object_pending(
+            cache_key=cache_key,
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+    else:
+        claimed = create_tts_object_pending(
+            cache_key=cache_key,
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+
+    if not claimed:
+        latest = get_tts_object_meta(cache_key, touch_hit=False) or {}
+        if latest:
+            payload, status_code = _build_tts_url_response_from_meta(
+                latest,
+                fallback_object_key=object_key,
+                retry_after_ms=TTS_URL_PENDING_RETRY_MS,
+            )
+            latest_status = str(payload.get("status") or "").strip().lower()
+            if latest_status == "pending":
+                payload["state"] = "already_pending"
+            elif latest_status == "ready":
+                payload["state"] = "already_ready"
+            else:
+                payload["state"] = "failed"
+            return jsonify(payload), int(status_code)
+        return jsonify(
+            {
+                "ok": True,
+                "status": "pending",
+                "state": "already_pending",
+                "cache_key": cache_key,
+                "object_key": object_key,
+                "retry_after_ms": int(TTS_URL_PENDING_RETRY_MS),
+            }
+        )
+
+    try:
+        if r2_exists(object_key):
+            url = r2_public_url(object_key)
+            ready_meta = mark_tts_object_ready(
+                cache_key=cache_key,
+                object_key=object_key,
+                url=url,
+                size_bytes=None,
+                language=language,
+                voice=voice,
+                speed=speaking_rate,
+                source_text=normalized_text,
+            )
+            payload, status_code = _build_tts_url_response_from_meta(
+                ready_meta or {"status": "ready", "cache_key": cache_key, "object_key": object_key, "url": url},
+                fallback_object_key=object_key,
+            )
+            payload["state"] = "already_ready"
+            return jsonify(payload), int(status_code)
+
+        response_audio = _synthesize_mp3(
+            normalized_text,
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+        )
+        r2_put_bytes(
+            object_key,
+            response_audio,
+            content_type="audio/mpeg",
+            cache_control="public, max-age=31536000, immutable",
+        )
+        public_url = r2_public_url(object_key)
+        ready_meta = mark_tts_object_ready(
+            cache_key=cache_key,
+            object_key=object_key,
+            url=public_url,
+            size_bytes=len(response_audio),
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+        )
+
+        user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="webapp_tts_chars",
+            provider="google_tts",
+            units_type="chars",
+            units_value=float(len(normalized_text)),
+            source_lang=user_source_lang,
+            target_lang=user_target_lang,
+            idempotency_seed=f"webapp-tts-generate:{user_id}:{cache_key}:{int(time.time())}",
+            status="estimated",
+            metadata={
+                "cached": False,
+                "language": language,
+                "tts_lang": tts_lang_short,
+                "voice": voice,
+                "storage": "r2",
+            },
+        )
+        payload, status_code = _build_tts_url_response_from_meta(
+            ready_meta or {"status": "ready", "cache_key": cache_key, "object_key": object_key, "url": public_url},
+            fallback_object_key=object_key,
+        )
+        payload["state"] = "generated"
+        return jsonify(payload), int(status_code)
+    except GoogleTTSBudgetBlockedError as exc:
+        failure = mark_tts_object_failed(
+            cache_key=cache_key,
+            error_code="google_tts_budget_blocked",
+            error_msg=str(exc),
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+        payload, _ = _build_tts_url_response_from_meta(
+            failure or {
+                "status": "failed",
+                "cache_key": cache_key,
+                "object_key": object_key,
+                "error_code": "google_tts_budget_blocked",
+                "error_msg": str(exc),
+            },
+            fallback_object_key=object_key,
+        )
+        return jsonify(payload), 429
+    except Exception as exc:
+        logging.exception("R2 TTS generation failed for cache_key=%s", cache_key)
+        failure = mark_tts_object_failed(
+            cache_key=cache_key,
+            error_code="tts_generation_failed",
+            error_msg=str(exc),
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+        payload, _ = _build_tts_url_response_from_meta(
+            failure or {
+                "status": "failed",
+                "cache_key": cache_key,
+                "object_key": object_key,
+                "error_code": "tts_generation_failed",
+                "error_msg": str(exc),
+            },
+            fallback_object_key=object_key,
+        )
+        return jsonify(payload), 500
 
 
 @app.route("/api/webapp/tts", methods=["POST"])

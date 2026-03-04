@@ -463,7 +463,8 @@ function AppInner() {
   const flashcardsLoadLastStartedAtRef = useRef(0);
   const ttsCacheRef = useRef(new Map());
   const ttsInFlightRef = useRef(new Map());
-  const ttsBlobUrlsRef = useRef(new Set());
+  const ttsPrefetchInFlightRef = useRef(new Map());
+  const ttsPendingCacheRef = useRef(new Map());
   const ttsLastRef = useRef({ key: '', ts: 0 });
   const ttsCurrentAudioRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -1137,11 +1138,56 @@ function AppInner() {
     osc.stop(now + 0.92);
   };
 
-  const playTts = async (text, language = 'de-DE') => {
+  const fetchTtsUrlStatus = useCallback(async (text, language = 'de-DE', voice = '') => {
+    const normalizedText = String(text || '').trim();
+    if (!initData || !normalizedText) return null;
+    const params = new URLSearchParams();
+    params.set('text', normalizedText);
+    params.set('language', String(language || 'de-DE').trim() || 'de-DE');
+    const normalizedVoice = String(voice || '').trim();
+    if (normalizedVoice) params.set('voice', normalizedVoice);
+    const response = await fetch(`/api/webapp/tts/url?${params.toString()}`, {
+      method: 'GET',
+      headers: {
+        'X-Telegram-InitData': initData,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(await readApiError(response, 'Ошибка запроса статуса TTS', 'Fehler beim TTS-Status'));
+    }
+    return (await response.json()) || null;
+  }, [initData, readApiError]);
+
+  const requestTtsGenerate = useCallback(async (text, language = 'de-DE', voice = '') => {
+    const normalizedText = String(text || '').trim();
+    if (!initData || !normalizedText) return null;
+    const body = {
+      initData,
+      text: normalizedText,
+      language: String(language || 'de-DE').trim() || 'de-DE',
+    };
+    const normalizedVoice = String(voice || '').trim();
+    if (normalizedVoice) {
+      body.voice = normalizedVoice;
+    }
+    const response = await fetch('/api/webapp/tts/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(await readApiError(response, 'Ошибка генерации TTS', 'Fehler bei der TTS-Generierung'));
+    }
+    return (await response.json()) || null;
+  }, [initData, readApiError]);
+
+  const playTts = useCallback(async (text, language = 'de-DE', voice = '') => {
     if (!initData || !text) return Promise.resolve();
     const normalizedText = String(text || '').trim();
     if (!normalizedText) return Promise.resolve();
-    const key = `${language}:${normalizedText}`;
+    const normalizedLang = String(language || 'de-DE').trim() || 'de-DE';
+    const normalizedVoice = String(voice || '').trim();
+    const key = `${normalizedLang}:${normalizedVoice}:${normalizedText}`;
     const now = Date.now();
     if (ttsLastRef.current.key === key && now - ttsLastRef.current.ts < 1200) {
       return Promise.resolve();
@@ -1152,7 +1198,12 @@ function AppInner() {
       ttsCurrentAudioRef.current.currentTime = 0;
       ttsCurrentAudioRef.current = null;
     }
-    const playAudio = (audio) => new Promise((resolve) => {
+    const playAudioUrl = (audioUrl) => new Promise((resolve) => {
+      if (!audioUrl) {
+        resolve();
+        return;
+      }
+      const audio = new Audio(audioUrl);
       ttsCurrentAudioRef.current = audio;
       audio.currentTime = 0;
       audio.onended = () => resolve();
@@ -1193,32 +1244,78 @@ function AppInner() {
     });
 
     if (ttsCacheRef.current.has(key)) {
-      const audio = ttsCacheRef.current.get(key);
-      return playAudio(audio);
+      const audioUrl = ttsCacheRef.current.get(key);
+      return playAudioUrl(audioUrl);
     }
 
-    const fetchAndCacheTts = async () => {
+    const ensureTtsReadyUrl = async () => {
       if (ttsCacheRef.current.has(key)) {
         return ttsCacheRef.current.get(key);
       }
       if (ttsInFlightRef.current.has(key)) {
         return ttsInFlightRef.current.get(key);
       }
-      const requestPromise = (async () => {
-        const response = await fetch('/api/webapp/tts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData, text: normalizedText, language }),
-        });
-        if (!response.ok) {
-          throw new Error(await response.text());
+      if (ttsPrefetchInFlightRef.current.has(key)) {
+        try {
+          const prefetched = await ttsPrefetchInFlightRef.current.get(key);
+          if (prefetched) {
+            ttsCacheRef.current.set(key, prefetched);
+            return prefetched;
+          }
+        } catch (error) {
+          // continue with active request flow below
         }
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        ttsBlobUrlsRef.current.add(url);
-        const audio = new Audio(url);
-        ttsCacheRef.current.set(key, audio);
-        return audio;
+      }
+      const requestPromise = (async () => {
+        const startedAt = Date.now();
+        let generationStarted = Boolean(ttsPendingCacheRef.current.get(key)?.generateStarted);
+        while (Date.now() - startedAt < 2500) {
+          let statusPayload;
+          try {
+            statusPayload = await fetchTtsUrlStatus(normalizedText, normalizedLang, normalizedVoice);
+          } catch (error) {
+            console.warn('TTS status request failed', error);
+            return null;
+          }
+          const status = String(statusPayload?.status || '').trim().toLowerCase();
+          const audioUrl = String(statusPayload?.audio_url || '').trim();
+          if (status === 'ready' && audioUrl) {
+            ttsPendingCacheRef.current.delete(key);
+            ttsCacheRef.current.set(key, audioUrl);
+            return audioUrl;
+          }
+          if (status === 'failed') {
+            ttsPendingCacheRef.current.delete(key);
+            return null;
+          }
+
+          if (!generationStarted) {
+            generationStarted = true;
+            ttsPendingCacheRef.current.set(key, { startedAt: Date.now(), generateStarted: true });
+            try {
+              const generatePayload = await requestTtsGenerate(normalizedText, normalizedLang, normalizedVoice);
+              const generateStatus = String(generatePayload?.status || '').trim().toLowerCase();
+              const generatedAudioUrl = String(generatePayload?.audio_url || '').trim();
+              if (generateStatus === 'ready' && generatedAudioUrl) {
+                ttsPendingCacheRef.current.delete(key);
+                ttsCacheRef.current.set(key, generatedAudioUrl);
+                return generatedAudioUrl;
+              }
+              if (generateStatus === 'failed') {
+                ttsPendingCacheRef.current.delete(key);
+                return null;
+              }
+            } catch (error) {
+              console.warn('TTS generate request failed', error);
+              return null;
+            }
+          }
+
+          const retryAfterMs = Number(statusPayload?.retry_after_ms || 400);
+          const pollDelay = Math.max(250, Math.min(700, retryAfterMs));
+          await new Promise((resolve) => window.setTimeout(resolve, pollDelay));
+        }
+        return null;
       })()
         .finally(() => {
           ttsInFlightRef.current.delete(key);
@@ -1228,20 +1325,17 @@ function AppInner() {
     };
 
     try {
-      const fastResult = await Promise.race([
-        fetchAndCacheTts().then((audio) => ({ audio })),
-        new Promise((resolve) => setTimeout(() => resolve({ audio: null }), 450)),
-      ]);
-      if (fastResult?.audio) {
-        return playAudio(fastResult.audio);
+      const readyUrl = await ensureTtsReadyUrl();
+      if (readyUrl) {
+        return playAudioUrl(readyUrl);
       }
-      void fetchAndCacheTts().catch(() => {});
+      console.info('TTS fallback: timeout_or_failed', { key });
       return playWebSpeech();
     } catch (error) {
       console.warn('TTS error', error);
       return playWebSpeech();
     }
-  };
+  }, [initData, fetchTtsUrlStatus, requestTtsGenerate]);
 
   const isTtsPending = useCallback((key) => Boolean(ttsPendingMap[String(key || '')]), [ttsPendingMap]);
 
@@ -1485,34 +1579,57 @@ function AppInner() {
     }
   }, [initData, normalizeNetworkErrorMessage, tr]);
 
-  const preloadTts = useCallback((text, language = 'de-DE') => {
+  const preloadTts = useCallback((text, language = 'de-DE', voice = '') => {
     if (!initData) return;
     const normalizedText = String(text || '').trim();
     if (!normalizedText) return;
-    const key = `${language}:${normalizedText}`;
-    if (ttsCacheRef.current.has(key) || ttsInFlightRef.current.has(key)) return;
+    const normalizedLang = String(language || 'de-DE').trim() || 'de-DE';
+    const normalizedVoice = String(voice || '').trim();
+    const key = `${normalizedLang}:${normalizedVoice}:${normalizedText}`;
+    if (
+      ttsCacheRef.current.has(key)
+      || ttsInFlightRef.current.has(key)
+      || ttsPrefetchInFlightRef.current.has(key)
+    ) return;
     const requestPromise = (async () => {
-      const response = await fetch('/api/webapp/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, text: normalizedText, language }),
-      });
-      if (!response.ok) {
-        throw new Error(await response.text());
+      try {
+        const statusPayload = await fetchTtsUrlStatus(normalizedText, normalizedLang, normalizedVoice);
+        const status = String(statusPayload?.status || '').trim().toLowerCase();
+        const audioUrl = String(statusPayload?.audio_url || '').trim();
+        if (status === 'ready' && audioUrl) {
+          ttsPendingCacheRef.current.delete(key);
+          ttsCacheRef.current.set(key, audioUrl);
+          return audioUrl;
+        }
+        if (status === 'failed') {
+          ttsPendingCacheRef.current.delete(key);
+          return null;
+        }
+        if (!ttsPendingCacheRef.current.has(key)) {
+          ttsPendingCacheRef.current.set(key, { startedAt: Date.now(), generateStarted: true });
+          const generated = await requestTtsGenerate(normalizedText, normalizedLang, normalizedVoice);
+          const generatedStatus = String(generated?.status || '').trim().toLowerCase();
+          const generatedUrl = String(generated?.audio_url || '').trim();
+          if (generatedStatus === 'ready' && generatedUrl) {
+            ttsPendingCacheRef.current.delete(key);
+            ttsCacheRef.current.set(key, generatedUrl);
+            return generatedUrl;
+          }
+          if (generatedStatus === 'failed') {
+            ttsPendingCacheRef.current.delete(key);
+            return null;
+          }
+        }
+      } catch (error) {
+        return null;
       }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      ttsBlobUrlsRef.current.add(url);
-      const audio = new Audio(url);
-      ttsCacheRef.current.set(key, audio);
-      return audio;
+      return null;
     })()
-      .catch(() => null)
       .finally(() => {
-        ttsInFlightRef.current.delete(key);
+        ttsPrefetchInFlightRef.current.delete(key);
       });
-    ttsInFlightRef.current.set(key, requestPromise);
-  }, [initData]);
+    ttsPrefetchInFlightRef.current.set(key, requestPromise);
+  }, [initData, fetchTtsUrlStatus, requestTtsGenerate]);
 
   useEffect(() => {
     const locale = getLearningTtsLocale();

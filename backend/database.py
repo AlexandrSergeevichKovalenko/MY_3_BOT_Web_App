@@ -2116,6 +2116,76 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_tts_audio_cache (updated_at);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_tts_object_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    language TEXT,
+                    voice TEXT,
+                    speed DOUBLE PRECISION,
+                    source_text TEXT,
+                    object_key TEXT,
+                    url TEXT,
+                    size_bytes BIGINT,
+                    error_code TEXT,
+                    error_msg TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_hit_at TIMESTAMPTZ,
+                    CHECK (status IN ('pending', 'ready', 'failed'))
+                );
+            """)
+            # Backward-compatible migration path: if table existed with older shape,
+            # add required columns lazily without destructive schema operations.
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_object_cache
+                ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_object_cache
+                ADD COLUMN IF NOT EXISTS object_key TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_object_cache
+                ADD COLUMN IF NOT EXISTS url TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_object_cache
+                ADD COLUMN IF NOT EXISTS size_bytes BIGINT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_object_cache
+                ADD COLUMN IF NOT EXISTS error_code TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_object_cache
+                ADD COLUMN IF NOT EXISTS error_msg TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_object_cache
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_object_cache
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_object_cache
+                ADD COLUMN IF NOT EXISTS last_hit_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tts_object_cache_status_updated
+                ON bt_3_tts_object_cache (status, updated_at DESC);
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_tts_object_cache_object_key
+                ON bt_3_tts_object_cache (object_key)
+                WHERE object_key IS NOT NULL;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tts_object_cache_last_hit
+                ON bt_3_tts_object_cache (last_hit_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_story_bank (
                     id SERIAL PRIMARY KEY,
                     title TEXT,
@@ -4116,6 +4186,373 @@ def upsert_tts_audio_cache(
                     Binary(audio_mp3),
                 ),
             )
+
+
+def _map_tts_object_cache_row(row: tuple) -> dict:
+    return {
+        "cache_key": str(row[0] or ""),
+        "status": str(row[1] or "pending"),
+        "language": str(row[2] or "").strip() or None,
+        "voice": str(row[3] or "").strip() or None,
+        "speed": float(row[4]) if row[4] is not None else None,
+        "source_text": str(row[5] or "").strip() or None,
+        "object_key": str(row[6] or "").strip() or None,
+        "url": str(row[7] or "").strip() or None,
+        "size_bytes": int(row[8]) if row[8] is not None else None,
+        "error_code": str(row[9] or "").strip() or None,
+        "error_msg": str(row[10] or "").strip() or None,
+        "created_at": row[11].isoformat() if row[11] else None,
+        "updated_at": row[12].isoformat() if row[12] else None,
+        "last_hit_at": row[13].isoformat() if row[13] else None,
+    }
+
+
+def get_tts_object_cache(cache_key: str, *, touch_hit: bool = True) -> dict | None:
+    if not cache_key:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    cache_key,
+                    status,
+                    language,
+                    voice,
+                    speed,
+                    source_text,
+                    object_key,
+                    url,
+                    size_bytes,
+                    error_code,
+                    error_msg,
+                    created_at,
+                    updated_at,
+                    last_hit_at
+                FROM bt_3_tts_object_cache
+                WHERE cache_key = %s
+                LIMIT 1;
+                """,
+                (str(cache_key),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            if touch_hit:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_tts_object_cache
+                    SET last_hit_at = NOW(), updated_at = NOW()
+                    WHERE cache_key = %s;
+                    """,
+                    (str(cache_key),),
+                )
+    return _map_tts_object_cache_row(row)
+
+
+def try_create_tts_object_cache_pending(
+    *,
+    cache_key: str,
+    language: str | None = None,
+    voice: str | None = None,
+    speed: float | None = None,
+    source_text: str | None = None,
+    object_key: str | None = None,
+) -> bool:
+    if not cache_key:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_tts_object_cache (
+                    cache_key,
+                    status,
+                    language,
+                    voice,
+                    speed,
+                    source_text,
+                    object_key,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, 'pending', %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (cache_key) DO NOTHING;
+                """,
+                (
+                    str(cache_key),
+                    str(language or "").strip() or None,
+                    str(voice or "").strip() or None,
+                    float(speed) if speed is not None else None,
+                    str(source_text or "").strip() or None,
+                    str(object_key or "").strip() or None,
+                ),
+            )
+            created = cursor.rowcount > 0
+    return bool(created)
+
+
+def mark_tts_object_cache_ready(
+    *,
+    cache_key: str,
+    object_key: str,
+    url: str,
+    size_bytes: int | None = None,
+    language: str | None = None,
+    voice: str | None = None,
+    speed: float | None = None,
+    source_text: str | None = None,
+) -> dict | None:
+    if not cache_key or not object_key or not url:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_tts_object_cache (
+                    cache_key,
+                    status,
+                    language,
+                    voice,
+                    speed,
+                    source_text,
+                    object_key,
+                    url,
+                    size_bytes,
+                    error_code,
+                    error_msg,
+                    created_at,
+                    updated_at,
+                    last_hit_at
+                )
+                VALUES (%s, 'ready', %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NOW(), NOW(), NOW())
+                ON CONFLICT (cache_key) DO UPDATE
+                SET
+                    status = 'ready',
+                    language = COALESCE(EXCLUDED.language, bt_3_tts_object_cache.language),
+                    voice = COALESCE(EXCLUDED.voice, bt_3_tts_object_cache.voice),
+                    speed = COALESCE(EXCLUDED.speed, bt_3_tts_object_cache.speed),
+                    source_text = COALESCE(EXCLUDED.source_text, bt_3_tts_object_cache.source_text),
+                    object_key = EXCLUDED.object_key,
+                    url = EXCLUDED.url,
+                    size_bytes = COALESCE(EXCLUDED.size_bytes, bt_3_tts_object_cache.size_bytes),
+                    error_code = NULL,
+                    error_msg = NULL,
+                    updated_at = NOW(),
+                    last_hit_at = NOW()
+                RETURNING
+                    cache_key,
+                    status,
+                    language,
+                    voice,
+                    speed,
+                    source_text,
+                    object_key,
+                    url,
+                    size_bytes,
+                    error_code,
+                    error_msg,
+                    created_at,
+                    updated_at,
+                    last_hit_at;
+                """,
+                (
+                    str(cache_key),
+                    str(language or "").strip() or None,
+                    str(voice or "").strip() or None,
+                    float(speed) if speed is not None else None,
+                    str(source_text or "").strip() or None,
+                    str(object_key).strip(),
+                    str(url).strip(),
+                    int(size_bytes) if size_bytes is not None else None,
+                ),
+            )
+            row = cursor.fetchone()
+    return _map_tts_object_cache_row(row) if row else None
+
+
+def mark_tts_object_cache_failed(
+    *,
+    cache_key: str,
+    error_code: str | None = None,
+    error_msg: str | None = None,
+    language: str | None = None,
+    voice: str | None = None,
+    speed: float | None = None,
+    source_text: str | None = None,
+    object_key: str | None = None,
+) -> dict | None:
+    if not cache_key:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_tts_object_cache (
+                    cache_key,
+                    status,
+                    language,
+                    voice,
+                    speed,
+                    source_text,
+                    object_key,
+                    error_code,
+                    error_msg,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, 'failed', %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (cache_key) DO UPDATE
+                SET
+                    status = 'failed',
+                    language = COALESCE(EXCLUDED.language, bt_3_tts_object_cache.language),
+                    voice = COALESCE(EXCLUDED.voice, bt_3_tts_object_cache.voice),
+                    speed = COALESCE(EXCLUDED.speed, bt_3_tts_object_cache.speed),
+                    source_text = COALESCE(EXCLUDED.source_text, bt_3_tts_object_cache.source_text),
+                    object_key = COALESCE(EXCLUDED.object_key, bt_3_tts_object_cache.object_key),
+                    error_code = COALESCE(EXCLUDED.error_code, bt_3_tts_object_cache.error_code),
+                    error_msg = COALESCE(EXCLUDED.error_msg, bt_3_tts_object_cache.error_msg),
+                    updated_at = NOW()
+                RETURNING
+                    cache_key,
+                    status,
+                    language,
+                    voice,
+                    speed,
+                    source_text,
+                    object_key,
+                    url,
+                    size_bytes,
+                    error_code,
+                    error_msg,
+                    created_at,
+                    updated_at,
+                    last_hit_at;
+                """,
+                (
+                    str(cache_key),
+                    str(language or "").strip() or None,
+                    str(voice or "").strip() or None,
+                    float(speed) if speed is not None else None,
+                    str(source_text or "").strip() or None,
+                    str(object_key or "").strip() or None,
+                    str(error_code or "").strip() or None,
+                    str(error_msg or "").strip() or None,
+                ),
+            )
+            row = cursor.fetchone()
+    return _map_tts_object_cache_row(row) if row else None
+
+
+def get_tts_object_meta(cache_key: str, *, touch_hit: bool = True) -> dict | None:
+    return get_tts_object_cache(cache_key, touch_hit=touch_hit)
+
+
+def create_tts_object_pending(
+    *,
+    cache_key: str,
+    language: str | None = None,
+    voice: str | None = None,
+    speed: float | None = None,
+    source_text: str | None = None,
+    object_key: str | None = None,
+) -> bool:
+    return try_create_tts_object_cache_pending(
+        cache_key=cache_key,
+        language=language,
+        voice=voice,
+        speed=speed,
+        source_text=source_text,
+        object_key=object_key,
+    )
+
+
+def requeue_tts_object_pending(
+    *,
+    cache_key: str,
+    language: str | None = None,
+    voice: str | None = None,
+    speed: float | None = None,
+    source_text: str | None = None,
+    object_key: str | None = None,
+) -> bool:
+    if not cache_key:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_tts_object_cache
+                SET
+                    status = 'pending',
+                    language = COALESCE(%s, language),
+                    voice = COALESCE(%s, voice),
+                    speed = COALESCE(%s, speed),
+                    source_text = COALESCE(%s, source_text),
+                    object_key = COALESCE(%s, object_key),
+                    error_code = NULL,
+                    error_msg = NULL,
+                    updated_at = NOW()
+                WHERE cache_key = %s
+                  AND status = 'failed';
+                """,
+                (
+                    str(language or "").strip() or None,
+                    str(voice or "").strip() or None,
+                    float(speed) if speed is not None else None,
+                    str(source_text or "").strip() or None,
+                    str(object_key or "").strip() or None,
+                    str(cache_key),
+                ),
+            )
+            claimed = cursor.rowcount > 0
+    return bool(claimed)
+
+
+def mark_tts_object_ready(
+    *,
+    cache_key: str,
+    object_key: str,
+    url: str,
+    size_bytes: int | None = None,
+    language: str | None = None,
+    voice: str | None = None,
+    speed: float | None = None,
+    source_text: str | None = None,
+) -> dict | None:
+    return mark_tts_object_cache_ready(
+        cache_key=cache_key,
+        object_key=object_key,
+        url=url,
+        size_bytes=size_bytes,
+        language=language,
+        voice=voice,
+        speed=speed,
+        source_text=source_text,
+    )
+
+
+def mark_tts_object_failed(
+    *,
+    cache_key: str,
+    error_code: str | None = None,
+    error_msg: str | None = None,
+    language: str | None = None,
+    voice: str | None = None,
+    speed: float | None = None,
+    source_text: str | None = None,
+    object_key: str | None = None,
+) -> dict | None:
+    return mark_tts_object_cache_failed(
+        cache_key=cache_key,
+        error_code=error_code,
+        error_msg=error_msg,
+        language=language,
+        voice=voice,
+        speed=speed,
+        source_text=source_text,
+        object_key=object_key,
+    )
 
 
 def record_flashcard_answer(user_id: int, entry_id: int, is_correct: bool) -> None:

@@ -186,6 +186,7 @@ referencing==0.30.2
 regex==2024.11.6
 reportlab==4.2.5
 requests==2.32.3
+boto3==1.36.26
 requests-oauthlib==2.0.0
 rfc3339-validator==0.1.4
 rfc3986-validator==0.1.1
