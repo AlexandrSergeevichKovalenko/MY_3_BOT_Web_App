@@ -1043,6 +1043,13 @@ def _require_stripe_config(*, require_webhook_secret: bool = False) -> str | Non
     return None
 
 
+def _build_billing_webapp_return_url(state: str, *, include_session_id: bool = False) -> str:
+    base_url = f"{APP_BASE_URL}/webapp?mode=webapp&section=subscription&billing={state}"
+    if include_session_id:
+        return f"{base_url}&session_id={{CHECKOUT_SESSION_ID}}"
+    return base_url
+
+
 def _safe_int(value) -> int | None:
     try:
         return int(str(value).strip())
@@ -9662,8 +9669,8 @@ def create_billing_checkout_session():
             metadata={"user_id": str(int(user_id)), "plan_code": "pro"},
             subscription_data={"metadata": {"user_id": str(int(user_id)), "plan_code": "pro"}},
             line_items=[{"price": STRIPE_PRICE_ID_PRO, "quantity": 1}],
-            success_url=f"{APP_BASE_URL}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{APP_BASE_URL}/billing/cancel",
+            success_url=_build_billing_webapp_return_url("success", include_session_id=True),
+            cancel_url=_build_billing_webapp_return_url("cancel"),
         )
         checkout_url = str(getattr(session, "url", "") or "")
         if not checkout_url:
@@ -9691,7 +9698,7 @@ def create_billing_portal_session():
         stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
         session = stripe.billing_portal.Session.create(
             customer=stripe_customer_id,
-            return_url=f"{APP_BASE_URL}/billing",
+            return_url=_build_billing_webapp_return_url("portal"),
         )
         portal_url = str(getattr(session, "url", "") or "")
         if not portal_url:

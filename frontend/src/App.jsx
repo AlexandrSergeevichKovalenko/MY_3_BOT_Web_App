@@ -67,6 +67,18 @@ function AppInner() {
       window.location.pathname === '/webapp/review';
     return Boolean(telegramApp?.initData) || params.get('mode') === 'webapp' || isWebappPath;
   }, [telegramApp]);
+  const billingReturnContext = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    const kind = String(params.get('billing') || '').trim().toLowerCase();
+    const sessionId = String(params.get('session_id') || '').trim();
+    const section = String(params.get('section') || '').trim().toLowerCase();
+    return {
+      kind,
+      sessionId,
+      section,
+      shouldHandle: ['success', 'cancel', 'portal'].includes(kind),
+    };
+  }, []);
   const isAndroidTelegramClient = useMemo(() => {
     const tgPlatform = String(telegramApp?.platform || '').toLowerCase();
     if (tgPlatform.includes('android')) return true;
@@ -600,6 +612,18 @@ function AppInner() {
   const [uiLang, setUiLang] = useState('ru');
   const t = useMemo(() => createTranslator(uiLang), [uiLang]);
   const tr = useCallback((ru, de) => (uiLang === 'de' ? de : ru), [uiLang]);
+  const billingReturnMessage = useMemo(() => {
+    if (billingReturnContext.kind === 'success') {
+      return tr('Оплата прошла успешно. Проверяю подписку и обновляю статус.', 'Zahlung erfolgreich. Ich pruefe jetzt dein Abo und aktualisiere den Status.');
+    }
+    if (billingReturnContext.kind === 'cancel') {
+      return tr('Оплата была отменена. Ты можешь попробовать еще раз в этом разделе.', 'Die Zahlung wurde abgebrochen. Du kannst es in diesem Bereich erneut versuchen.');
+    }
+    if (billingReturnContext.kind === 'portal') {
+      return tr('Возврат из Stripe Portal. Обновляю текущий статус подписки.', 'Rueckkehr aus dem Stripe-Portal. Ich aktualisiere den aktuellen Abo-Status.');
+    }
+    return '';
+  }, [billingReturnContext.kind, tr]);
   const readApiError = useCallback(async (response, fallbackRu, fallbackDe) => {
     const fallback = tr(fallbackRu, fallbackDe);
     const formatBillingLimitError = (payload) => {
@@ -5451,6 +5475,19 @@ function AppInner() {
       setFlashcardSessionActive(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!billingReturnContext.shouldHandle && billingReturnContext.section !== 'subscription') {
+      return;
+    }
+    setFlashcardsOnly(false);
+    setFlashcardSessionActive(false);
+    setSelectedSections(new Set(['subscription']));
+    const timer = setTimeout(() => {
+      scrollToRef(billingRef, { block: 'start' });
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [billingReturnContext.section, billingReturnContext.shouldHandle]);
 
   useEffect(() => {
     const storedAvatar = safeStorageGet('webapp_avatar');
@@ -14786,6 +14823,11 @@ function AppInner() {
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
 
+                {billingReturnMessage && (
+                  <div className={billingReturnContext.kind === 'cancel' ? 'webapp-muted' : 'webapp-success'}>
+                    {billingReturnMessage}
+                  </div>
+                )}
                 {billingStatusError && <div className="webapp-error">{billingStatusError}</div>}
                 {billingPlansError && <div className="webapp-error">{billingPlansError}</div>}
                 {(billingStatusLoading || billingPlansLoading) && <div className="webapp-muted">{tr('Загружаем статус подписки...', 'Abo-Status wird geladen...')}</div>}
