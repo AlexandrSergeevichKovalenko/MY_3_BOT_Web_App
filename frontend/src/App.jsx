@@ -4159,6 +4159,7 @@ function AppInner() {
   const youtubeLearningMode = Boolean((youtubePlaybackStarted || youtubeAppFullscreen) && !youtubeForceShowPanel);
   const youtubeSearchExpanded = !youtubeId || !youtubeLearningMode;
   const youtubeLoadDisabled = !youtubeId || youtubeTranscriptLoading || youtubeManualOverride;
+  const youtubeShowDockLoadButton = youtubeTranscriptLoading || !youtubeSubtitlesReady;
   const youtubeDurationLabel = formatCompactTimer(youtubeCurrentTime || 0);
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
@@ -13188,7 +13189,15 @@ function AppInner() {
                         </div>
                       )}
                       {renderTodaySectionTaskHud('youtube')}
-                      <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                      <button
+                        type="button"
+                        className="youtube-dock-icon-btn youtube-head-settings-btn"
+                        onClick={() => setYoutubeSettingsOpen(true)}
+                        aria-label={tr('Настройки', 'Settings')}
+                        title={tr('Настройки', 'Settings')}
+                      >
+                        <span aria-hidden="true">&#9881;</span>
+                      </button>
                     </div>
                     {youtubeSearchExpanded && (
                       <div className="webapp-video-form youtube-setup-form">
@@ -13344,108 +13353,112 @@ function AppInner() {
                         </div>
                       </div>
                       <div className="youtube-player-status-row">
-                        <span className={`youtube-subtitles-status-badge is-${youtubeSubtitleState}`}>
-                          {youtubeSubtitleState === 'loading' && <span className="youtube-status-spinner" aria-hidden="true" />}
-                          {youtubeSubtitleState === 'loading' && tr('Субтитры: загрузка...', 'Subtitles: loading...')}
-                          {youtubeSubtitleState === 'ready' && tr('Субтитры: готовы', 'Subtitles: ready')}
-                          {youtubeSubtitleState === 'not_loaded' && tr('Субтитры: не загружены', 'Subtitles: not loaded')}
-                        </span>
+                        <div className="youtube-player-status-main">
+                          <span className={`youtube-subtitles-status-badge is-${youtubeSubtitleState}`}>
+                            {youtubeSubtitleState === 'loading' && <span className="youtube-status-spinner" aria-hidden="true" />}
+                            {youtubeSubtitleState === 'loading' && tr('Субтитры: загрузка...', 'Subtitles: loading...')}
+                            {youtubeSubtitleState === 'ready' && tr('Субтитры: готовы', 'Subtitles: ready')}
+                            {youtubeSubtitleState === 'not_loaded' && tr('Субтитры: не загружены', 'Subtitles: not loaded')}
+                          </span>
+                          <button
+                            type="button"
+                            className={`youtube-dock-chip youtube-status-overlay-chip ${youtubeOverlayEnabled ? 'is-active' : ''}`}
+                            onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
+                            disabled={!youtubeSubtitlesReady}
+                          >
+                            {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
+                          </button>
+                        </div>
                         <span className="youtube-player-status-duration">{youtubeDurationLabel}</span>
                       </div>
                     </div>
-                    <div className="youtube-subtitles-card youtube-subtitles-panel">
-                      <div className="youtube-subtitles-panel-head">
-                        <div className="youtube-subtitles-panel-copy">
-                          <strong>{tr('Субтитры', 'Subtitles')}</strong>
-                          <span>{String(languageProfile?.learning_language || 'de').toUpperCase()} · {tr('всегда ON', 'always ON')}</span>
-                        </div>
-                        <button
-                          type="button"
-                          className={`youtube-dock-chip youtube-ru-chip ${youtubeTranslationEnabled ? 'is-active' : ''}`}
-                          onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
-                          disabled={!youtubeSubtitlesReady}
-                        >
-                          {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
-                        </button>
-                      </div>
-                      {youtubeSubtitlesReady ? (
-                        <div className="youtube-subtitles-panel-content">
-                          <div className="youtube-subtitles-block youtube-subtitles-block-de">
-                            <div className="youtube-subtitles-card-head">
-                              <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
-                            </div>
-                            <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
-                              <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
-                                {(() => {
-                                  const activeIndex = getActiveSubtitleIndex();
-                                  return youtubeTranscript.map((item, index) => (
-                                    <p
-                                      key={`${item.start}-${index}`}
-                                      className={index === activeIndex ? 'is-active' : ''}
-                                    >
-                                      {renderSubtitleText(item.text)}
-                                    </p>
-                                  ));
-                                })()}
-                              </div>
-                            </div>
+                    {!youtubeOverlayEnabled && (
+                      <div className="youtube-subtitles-card youtube-subtitles-panel">
+                        <div className="youtube-subtitles-panel-head">
+                          <div className="youtube-subtitles-panel-copy">
+                            <strong>{tr('Субтитры', 'Subtitles')}</strong>
+                            <span>{String(languageProfile?.learning_language || 'de').toUpperCase()} · {tr('всегда ON', 'always ON')}</span>
                           </div>
-                          {youtubeTranslationEnabled && (
-                            <div className="youtube-subtitles-block youtube-subtitles-block-ru">
+                          <button
+                            type="button"
+                            className={`youtube-dock-chip youtube-ru-chip ${youtubeTranslationEnabled ? 'is-active' : ''}`}
+                            onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
+                            disabled={!youtubeSubtitlesReady}
+                          >
+                            {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
+                          </button>
+                        </div>
+                        {youtubeSubtitlesReady ? (
+                          <div className="youtube-subtitles-panel-content">
+                            <div className="youtube-subtitles-block youtube-subtitles-block-de">
                               <div className="youtube-subtitles-card-head">
-                                <span>{getNativeSubtitleCode()}</span>
+                                <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
                               </div>
-                              <div className="webapp-subtitles is-translation">
-                                <div className="webapp-subtitles-list">
+                              <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
+                                <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
                                   {(() => {
                                     const activeIndex = getActiveSubtitleIndex();
-                                    return youtubeTranscript.map((item, index) => {
-                                      const translation = youtubeTranslations[String(index)] || '…';
-                                      return (
-                                        <p
-                                          key={`translation-${item.start}-${index}`}
-                                          className={index === activeIndex ? 'is-active' : ''}
-                                        >
-                                          {translation}
-                                        </p>
-                                      );
-                                    });
+                                    return youtubeTranscript.map((item, index) => (
+                                      <p
+                                        key={`${item.start}-${index}`}
+                                        className={index === activeIndex ? 'is-active' : ''}
+                                      >
+                                        {renderSubtitleText(item.text)}
+                                      </p>
+                                    ));
                                   })()}
                                 </div>
                               </div>
                             </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="youtube-subtitles-empty">
-                          {tr('Сначала загрузите субтитры, чтобы видеть текст и перевод.', 'Lade zuerst Untertitel, um Text und Uebersetzung zu sehen.')}
-                        </div>
-                      )}
-                    </div>
+                            {youtubeTranslationEnabled && (
+                              <div className="youtube-subtitles-block youtube-subtitles-block-ru">
+                                <div className="youtube-subtitles-card-head">
+                                  <span>{getNativeSubtitleCode()}</span>
+                                </div>
+                                <div className="webapp-subtitles is-translation">
+                                  <div className="webapp-subtitles-list">
+                                    {(() => {
+                                      const activeIndex = getActiveSubtitleIndex();
+                                      return youtubeTranscript.map((item, index) => {
+                                        const translation = youtubeTranslations[String(index)] || '…';
+                                        return (
+                                          <p
+                                            key={`translation-${item.start}-${index}`}
+                                            className={index === activeIndex ? 'is-active' : ''}
+                                          >
+                                            {translation}
+                                          </p>
+                                        );
+                                      });
+                                    })()}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="youtube-subtitles-empty">
+                            {tr('Сначала загрузите субтитры, чтобы видеть текст и перевод.', 'Lade zuerst Untertitel, um Text und Uebersetzung zu sehen.')}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div className="youtube-control-dock">
-                      <button
-                        type="button"
-                        className={`youtube-dock-primary ${youtubeSubtitlesReady ? 'is-secondary' : ''}`}
-                        onClick={() => fetchTranscript()}
-                        disabled={youtubeLoadDisabled}
-                      >
-                        {youtubeTranscriptLoading
-                          ? tr('Загружаем...', 'Loading...')
-                          : youtubeSubtitlesReady
-                            ? tr('Обновить', 'Reload')
+                      {youtubeShowDockLoadButton && (
+                        <button
+                          type="button"
+                          className="youtube-dock-primary"
+                          onClick={() => fetchTranscript()}
+                          disabled={youtubeLoadDisabled}
+                        >
+                          {youtubeTranscriptLoading
+                            ? tr('Загружаем...', 'Loading...')
                             : tr('Загрузить оригинальные субтитры', 'Load original subtitles')}
-                      </button>
+                        </button>
+                      )}
                       <button
                         type="button"
-                        className={`youtube-dock-chip ${youtubeOverlayEnabled ? 'is-active' : ''}`}
-                        onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
-                        disabled={!youtubeSubtitlesReady}
-                      >
-                        {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
-                      </button>
-                      <button
-                        type="button"
-                        className="youtube-dock-icon-btn"
+                        className="youtube-dock-icon-btn youtube-dock-fs-btn"
                         onClick={() => {
                           setYoutubeAppFullscreen((prev) => !prev);
                           setYoutubeSettingsOpen(false);
@@ -13455,15 +13468,6 @@ function AppInner() {
                         title={tr('Развернуть во весь экран', 'Full screen')}
                       >
                         FS
-                      </button>
-                      <button
-                        type="button"
-                        className="youtube-dock-icon-btn"
-                        onClick={() => setYoutubeSettingsOpen(true)}
-                        aria-label={tr('Настройки', 'Settings')}
-                        title={tr('Настройки', 'Settings')}
-                      >
-                        <span aria-hidden="true">&#9881;</span>
                       </button>
                     </div>
                     {youtubeSettingsOpen && (
