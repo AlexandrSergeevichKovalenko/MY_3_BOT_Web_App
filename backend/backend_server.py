@@ -401,7 +401,7 @@ SENTENCE_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("SENTENCE_PREW
 SENTENCE_PREWARM_ALLOW_DAYTIME = str(os.getenv("SENTENCE_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
 _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
-TTS_URL_PENDING_RETRY_MS = max(150, int((os.getenv("TTS_URL_PENDING_RETRY_MS") or "700").strip() or "700"))
+TTS_URL_PENDING_RETRY_MS = max(150, int((os.getenv("TTS_URL_PENDING_RETRY_MS") or "350").strip() or "350"))
 TTS_OBJECT_PREFIX = str(os.getenv("TTS_OBJECT_PREFIX") or "tts").strip().strip("/") or "tts"
 KEY_SALT = (os.getenv("KEY_SALT") or "").strip()
 _TTS_CACHE_HMAC_SECRET = KEY_SALT or TELEGRAM_Deutsch_BOT_TOKEN or "dev-unsafe-key-salt"
@@ -422,6 +422,8 @@ TTS_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFP
 TTS_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
 TTS_PREWARM_ALLOW_DAYTIME = str(os.getenv("TTS_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
 _TTS_PREWARM_LOCK = threading.Lock()
+_TTS_GENERATION_JOBS_LOCK = threading.Lock()
+_TTS_GENERATION_JOBS: set[str] = set()
 _LANGUAGE_PAIR_CACHE_LOCK = threading.Lock()
 _LANGUAGE_PAIR_CACHE: dict[int, dict] = {}
 _DICTIONARY_LOOKUP_CACHE_LOCK = threading.Lock()
@@ -14408,6 +14410,121 @@ def set_flashcard_feel_feedback():
     )
 
 
+def _run_tts_generation_job(
+    *,
+    user_id: int,
+    language: str,
+    tts_lang_short: str,
+    voice: str,
+    speaking_rate: float,
+    normalized_text: str,
+    cache_key: str,
+    object_key: str,
+    had_existing_meta: bool,
+) -> None:
+    try:
+        if had_existing_meta and r2_exists(object_key):
+            url = r2_public_url(object_key)
+            mark_tts_object_ready(
+                cache_key=cache_key,
+                object_key=object_key,
+                url=url,
+                size_bytes=None,
+                language=language,
+                voice=voice,
+                speed=speaking_rate,
+                source_text=normalized_text,
+            )
+            return
+
+        response_audio = _synthesize_mp3(
+            normalized_text,
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+        )
+        r2_put_bytes(
+            object_key,
+            response_audio,
+            content_type="audio/mpeg",
+            cache_control="public, max-age=31536000, immutable",
+        )
+        public_url = r2_public_url(object_key)
+        mark_tts_object_ready(
+            cache_key=cache_key,
+            object_key=object_key,
+            url=public_url,
+            size_bytes=len(response_audio),
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+        )
+
+        user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="webapp_tts_chars",
+            provider="google_tts",
+            units_type="chars",
+            units_value=float(len(normalized_text)),
+            source_lang=user_source_lang,
+            target_lang=user_target_lang,
+            idempotency_seed=f"webapp-tts-generate:{user_id}:{cache_key}:{int(time.time())}",
+            status="estimated",
+            metadata={
+                "cached": False,
+                "language": language,
+                "tts_lang": tts_lang_short,
+                "voice": voice,
+                "storage": "r2",
+            },
+        )
+    except GoogleTTSBudgetBlockedError as exc:
+        mark_tts_object_failed(
+            cache_key=cache_key,
+            error_code="google_tts_budget_blocked",
+            error_msg=str(exc),
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+    except Exception as exc:
+        logging.exception("R2 TTS generation failed for cache_key=%s", cache_key)
+        mark_tts_object_failed(
+            cache_key=cache_key,
+            error_code="tts_generation_failed",
+            error_msg=str(exc),
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+    finally:
+        with _TTS_GENERATION_JOBS_LOCK:
+            _TTS_GENERATION_JOBS.discard(str(cache_key))
+
+
+def _enqueue_tts_generation_job(**kwargs) -> bool:
+    cache_key = str(kwargs.get("cache_key") or "").strip()
+    if not cache_key:
+        return False
+    with _TTS_GENERATION_JOBS_LOCK:
+        if cache_key in _TTS_GENERATION_JOBS:
+            return False
+        _TTS_GENERATION_JOBS.add(cache_key)
+    threading.Thread(
+        target=_run_tts_generation_job,
+        kwargs=kwargs,
+        name=f"tts-generate-{cache_key[:10]}",
+        daemon=True,
+    ).start()
+    return True
+
+
 @app.route("/api/webapp/tts/url", methods=["GET"])
 def webapp_tts_url():
     params, error = _read_webapp_tts_request_payload()
@@ -14520,122 +14637,30 @@ def webapp_tts_generate():
             }
         )
 
-    try:
-        # For brand-new keys we skip HEAD probe to avoid extra RTT on the hot path.
-        # Existing/meta keys still probe R2 to recover from partial DB state.
-        if had_existing_meta and r2_exists(object_key):
-            url = r2_public_url(object_key)
-            ready_meta = mark_tts_object_ready(
-                cache_key=cache_key,
-                object_key=object_key,
-                url=url,
-                size_bytes=None,
-                language=language,
-                voice=voice,
-                speed=speaking_rate,
-                source_text=normalized_text,
-            )
-            payload, status_code = _build_tts_url_response_from_meta(
-                ready_meta or {"status": "ready", "cache_key": cache_key, "object_key": object_key, "url": url},
-                fallback_object_key=object_key,
-            )
-            payload["state"] = "already_ready"
-            return jsonify(payload), int(status_code)
+    _enqueue_tts_generation_job(
+        user_id=int(user_id),
+        language=language,
+        tts_lang_short=tts_lang_short,
+        voice=voice,
+        speaking_rate=speaking_rate,
+        normalized_text=normalized_text,
+        cache_key=cache_key,
+        object_key=object_key,
+        had_existing_meta=had_existing_meta,
+    )
 
-        response_audio = _synthesize_mp3(
-            normalized_text,
-            language=language,
-            voice=voice,
-            speed=speaking_rate,
-        )
-        r2_put_bytes(
-            object_key,
-            response_audio,
-            content_type="audio/mpeg",
-            cache_control="public, max-age=31536000, immutable",
-        )
-        public_url = r2_public_url(object_key)
-        ready_meta = mark_tts_object_ready(
-            cache_key=cache_key,
-            object_key=object_key,
-            url=public_url,
-            size_bytes=len(response_audio),
-            language=language,
-            voice=voice,
-            speed=speaking_rate,
-            source_text=normalized_text,
-        )
-
-        user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
-        _billing_log_event_safe(
-            user_id=int(user_id),
-            action_type="webapp_tts_chars",
-            provider="google_tts",
-            units_type="chars",
-            units_value=float(len(normalized_text)),
-            source_lang=user_source_lang,
-            target_lang=user_target_lang,
-            idempotency_seed=f"webapp-tts-generate:{user_id}:{cache_key}:{int(time.time())}",
-            status="estimated",
-            metadata={
-                "cached": False,
-                "language": language,
-                "tts_lang": tts_lang_short,
-                "voice": voice,
-                "storage": "r2",
-            },
-        )
-        payload, status_code = _build_tts_url_response_from_meta(
-            ready_meta or {"status": "ready", "cache_key": cache_key, "object_key": object_key, "url": public_url},
-            fallback_object_key=object_key,
-        )
-        payload["state"] = "generated"
-        return jsonify(payload), int(status_code)
-    except GoogleTTSBudgetBlockedError as exc:
-        failure = mark_tts_object_failed(
-            cache_key=cache_key,
-            error_code="google_tts_budget_blocked",
-            error_msg=str(exc),
-            language=language,
-            voice=voice,
-            speed=speaking_rate,
-            source_text=normalized_text,
-            object_key=object_key,
-        )
-        payload, _ = _build_tts_url_response_from_meta(
-            failure or {
-                "status": "failed",
-                "cache_key": cache_key,
-                "object_key": object_key,
-                "error_code": "google_tts_budget_blocked",
-                "error_msg": str(exc),
-            },
-            fallback_object_key=object_key,
-        )
-        return jsonify(payload), 429
-    except Exception as exc:
-        logging.exception("R2 TTS generation failed for cache_key=%s", cache_key)
-        failure = mark_tts_object_failed(
-            cache_key=cache_key,
-            error_code="tts_generation_failed",
-            error_msg=str(exc),
-            language=language,
-            voice=voice,
-            speed=speaking_rate,
-            source_text=normalized_text,
-            object_key=object_key,
-        )
-        payload, _ = _build_tts_url_response_from_meta(
-            failure or {
-                "status": "failed",
-                "cache_key": cache_key,
-                "object_key": object_key,
-                "error_code": "tts_generation_failed",
-                "error_msg": str(exc),
-            },
-            fallback_object_key=object_key,
-        )
-        return jsonify(payload), 500
+    latest = get_tts_object_meta(cache_key, touch_hit=False) or {}
+    payload, status_code = _build_tts_url_response_from_meta(
+        latest or {
+            "status": "pending",
+            "cache_key": cache_key,
+            "object_key": object_key,
+        },
+        fallback_object_key=object_key,
+        retry_after_ms=TTS_URL_PENDING_RETRY_MS,
+    )
+    payload["state"] = "queued"
+    return jsonify(payload), int(status_code)
 
 
 @app.route("/api/webapp/tts", methods=["POST"])

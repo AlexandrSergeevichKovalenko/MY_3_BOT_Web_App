@@ -15526,11 +15526,8 @@ function AppInner() {
                         const isCurrentPlan = selectedPlanCode === offer.planCode
                           || (selectedEffectiveMode === 'pro' && offer.planCode === 'pro');
                         const isPaidPlan = Boolean(planMeta?.is_paid);
-                        const hasStripePrice = Boolean(String(planMeta?.stripe_price_id || '').trim());
-                        const isUnavailable = Boolean(
-                          planMeta && planMeta.is_active !== false && isPaidPlan && !hasStripePrice
-                        );
-                        const canSelect = !isCurrentPlan && isPaidPlan && hasStripePrice && !isUnavailable;
+                        const isInactivePlan = Boolean(planMeta && planMeta.is_active === false);
+                        const canSelect = !isCurrentPlan && isPaidPlan && !isInactivePlan;
                         let buttonText = tr('Выбрать тариф', 'Tarif waehlen');
                         if (isCurrentPlan) {
                           buttonText = tr('Текущий тариф', 'Aktueller Tarif');
@@ -15553,9 +15550,9 @@ function AppInner() {
                             >
                               {buttonText}
                             </button>
-                            {hasBillingPlansCatalog && isUnavailable && (
+                            {hasBillingPlansCatalog && isInactivePlan && (
                               <div className="webapp-muted">
-                                {tr('Тариф еще не подключен в Stripe.', 'Dieser Tarif ist in Stripe noch nicht verbunden.')}
+                                {tr('Тариф временно неактивен.', 'Der Tarif ist voruebergehend inaktiv.')}
                               </div>
                             )}
                           </article>
