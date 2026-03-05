@@ -11048,7 +11048,7 @@ body {
 }
 
 .reader-page-sheet {
-  width: min(100%, 760px);
+  width: min(100%, 700px);
   height: min(78vh, 920px);
   min-height: 72vh;
   padding: 36px 30px 22px;
@@ -11063,14 +11063,14 @@ body {
 }
 
 .webapp-reader.is-immersive .reader-page-sheet {
-  width: min(100%, 840px);
-  height: min(78vh, 960px);
-  min-height: 72vh;
+  width: min(100%, 700px);
+  height: min(82vh, 980px);
+  min-height: 74vh;
 }
 
 @media (min-width: 1100px) {
   .webapp-reader.is-immersive .reader-page-sheet {
-    width: min(calc(100vw - 96px), 920px);
+    width: min(100%, 720px);
   }
 }
 
@@ -13233,6 +13233,173 @@ body {
 
   .webapp-dictionary .dictionary-flashcards .secondary-button {
     min-height: 52px;
+  }
+}
+
+/* Dictionary desktop/tablet layout refinement */
+@media (min-width: 481px) and (max-width: 1024px) {
+  .webapp-page.is-dictionary-layout {
+    padding: 16px;
+    background: #0f172a;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-shell {
+    width: min(760px, 100%);
+    margin: 0 auto;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-sidebar {
+    display: none;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-topbar {
+    display: flex;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-main {
+    width: 100%;
+    max-width: 760px;
+    margin: 0 auto;
+    gap: 12px;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary {
+    width: min(720px, 100%);
+    margin: 0 auto;
+    padding: 20px;
+    gap: 20px;
+  }
+}
+
+@media (min-width: 1025px) {
+  .webapp-page.is-dictionary-layout {
+    padding: 24px;
+    background: #0f172a;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-shell {
+    width: min(1280px, 100%);
+    margin: 0 auto;
+    min-height: min(860px, calc(100vh - 48px));
+    grid-template-columns: clamp(260px, 22vw, 300px) minmax(520px, 1fr);
+    gap: 0;
+    border-radius: 28px;
+    border: 1px solid #334155;
+    background: #111827;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-sidebar {
+    display: grid;
+    gap: 16px;
+    padding: 20px 16px;
+    margin: 0;
+    border-radius: 0;
+    border-right: 1px solid #334155;
+    background: #111827;
+    box-shadow: none;
+    position: relative;
+    top: 0;
+    height: auto;
+    max-height: min(860px, calc(100vh - 48px));
+    overflow-y: auto;
+    align-content: start;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-main {
+    padding: 24px;
+    margin: 0;
+    background: #0f172a;
+    align-content: start;
+    gap: 16px;
+    max-height: min(860px, calc(100vh - 48px));
+    overflow-y: auto;
+  }
+
+  .webapp-page.is-dictionary-layout .menu-item.is-active {
+    background: #1f2937;
+    border-color: #334155;
+    box-shadow: inset 3px 0 0 #2563eb;
+  }
+
+  .webapp-page.is-dictionary-layout .menu-item.is-active .menu-icon {
+    transform: none;
+    color: #cbd5e1;
+    filter: none;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary {
+    width: min(720px, 100%);
+    margin: 0;
+    padding: 24px;
+    gap: 20px;
+    border-radius: 28px;
+    border: 1px solid #334155;
+    background: #1e293b;
+    box-shadow: none;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary .webapp-local-section-head h3 {
+    font-size: 22px;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-input {
+    min-height: 56px;
+    border-radius: 16px;
+    font-size: 16px;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-fast-button,
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-button,
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-save-button {
+    min-height: 54px;
+    border-radius: 16px;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-fast-button,
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-save-button,
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-back-icon {
+    border-color: #334155;
+    background: transparent;
+    color: #cbd5e1;
+    box-shadow: none;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-button {
+    border-color: #2563eb;
+    background: #2563eb;
+    color: #ffffff;
+    box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary .folder-panel {
+    border-color: #334155;
+    background: #0b1220;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary .folder-row .webapp-field select {
+    min-height: 48px;
+    border-radius: 16px;
+    border-color: #334155;
+    background: #0b1220;
+    color: #f8fafc;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-dictionary .folder-row > .secondary-button {
+    min-height: 48px;
+    border-radius: 16px;
+    border-color: #334155;
+    background: transparent;
+    color: #cbd5e1;
+    box-shadow: none;
   }
 }
 

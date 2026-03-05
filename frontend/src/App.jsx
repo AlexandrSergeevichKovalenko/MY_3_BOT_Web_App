@@ -3499,6 +3499,7 @@ function AppInner() {
     return selectedSections.has(key);
   };
   const youtubeSectionVisible = isSectionVisible('youtube');
+  const dictionarySectionVisible = isSectionVisible('dictionary');
   const supportSectionVisible = !flashcardsOnly && isSectionVisible('support');
   const isSkillTrainingReady = Boolean(skillTrainingData?.package);
 
@@ -11533,7 +11534,7 @@ function AppInner() {
       );
     }
     return (
-      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isGuideScreen ? 'is-guide-screen' : ''}`}>
+      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''}`}>
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
             <div className="webapp-brand">

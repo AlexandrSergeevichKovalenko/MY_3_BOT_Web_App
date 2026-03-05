@@ -73,6 +73,7 @@ import base64
 import time
 import random
 import threading
+import sys
 import http.cookiejar
 import re
 import html
@@ -502,7 +503,13 @@ if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
 if not TELEGRAM_Deutsch_BOT_TOKEN:
     raise RuntimeError("TELEGRAM_Deutsch_BOT_TOKEN должен быть установлен")
 
-ensure_webapp_tables()
+_argv_joined = " ".join(sys.argv).lower()
+_imported_by_bot_process = "bot_3.py" in _argv_joined
+_force_backend_schema_bootstrap = str(
+    os.getenv("FORCE_BACKEND_SCHEMA_BOOTSTRAP_ON_IMPORT", "0")
+).strip().lower() in {"1", "true", "yes", "on"}
+if _force_backend_schema_bootstrap or not _imported_by_bot_process:
+    ensure_webapp_tables()
 
 # === Путь к собранному фронту (frontend/dist) ===
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"

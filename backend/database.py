@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import json
 import random
 import re
+import threading
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, date, timedelta, time as dt_time
 from pathlib import Path
@@ -35,6 +36,8 @@ DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "12"))
 DB_CONNECT_RETRIES = max(1, int(os.getenv("DB_CONNECT_RETRIES", "3")))
 DB_CONNECT_RETRY_DELAY_SECONDS = float(os.getenv("DB_CONNECT_RETRY_DELAY_SECONDS", "0.6"))
 WEBAPP_SCHEMA_MIGRATION_LOCK_KEY = 830420260305001
+_ENSURE_WEBAPP_TABLES_MUTEX = threading.Lock()
+_ENSURE_WEBAPP_TABLES_DONE = False
 SUPPORTED_LEARNING_LANGUAGES = {"de", "en", "es", "it"}
 SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
@@ -746,8 +749,14 @@ def init_db(): #
 
 
 def ensure_webapp_tables() -> None:
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
+    global _ENSURE_WEBAPP_TABLES_DONE
+    if _ENSURE_WEBAPP_TABLES_DONE:
+        return
+    with _ENSURE_WEBAPP_TABLES_MUTEX:
+        if _ENSURE_WEBAPP_TABLES_DONE:
+            return
+        with get_db_connection_context() as conn:
+            cursor = conn.cursor()
             # Serialize startup DDL across parallel workers/services to avoid
             # deadlocks on ALTER TABLE ... ADD COLUMN IF NOT EXISTS.
             cursor.execute("SELECT pg_advisory_xact_lock(%s);", (WEBAPP_SCHEMA_MIGRATION_LOCK_KEY,))
@@ -2485,6 +2494,8 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_access_requests_status
                 ON bt_3_access_requests (status, created_at DESC);
             """)
+            cursor.close()
+        _ENSURE_WEBAPP_TABLES_DONE = True
 
 
 def get_admin_telegram_ids() -> set[int]:
