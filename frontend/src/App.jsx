@@ -14538,14 +14538,28 @@ function AppInner() {
                     <>
                       {!readerTopbarCollapsed && (
                       <div className="reader-topbar reader-immersive-topbar">
-                        <div className="reader-immersive-left">
-                          <div className="reader-topbar-title">
-                            {readerTitle || tr('Читалка', 'Leser')}
+                        <div className="reader-immersive-head">
+                          <div className="reader-immersive-title-wrap">
+                            <div className="reader-topbar-title">
+                              {readerTitle || tr('Читалка', 'Leser')}
+                            </div>
+                            <div className="webapp-muted reader-topbar-meta">
+                              {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
+                              {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
+                            </div>
                           </div>
-                          <div className="webapp-muted reader-topbar-meta">
-                            {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
-                            {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
-                          </div>
+                          <button
+                            type="button"
+                            className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
+                            onClick={toggleReaderTimerPause}
+                            disabled={!readerHasContent}
+                          >
+                            {readerTimerPaused
+                              ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}`
+                              : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
+                          </button>
+                        </div>
+                        <div className="reader-immersive-dock">
                           <button
                             type="button"
                             className="section-home-back"
@@ -14558,24 +14572,6 @@ function AppInner() {
                           >
                             {tr('← Архив', '← Archiv')}
                           </button>
-                          <button
-                            type="button"
-                            className="secondary-button reader-topbar-collapse-btn"
-                            onClick={() => {
-                              const next = !readerTopbarCollapsed;
-                              setReaderTopbarCollapsed(next);
-                              if (next) {
-                                setReaderSettingsOpen(false);
-                              }
-                            }}
-                            title={readerTopbarCollapsed
-                              ? tr('Развернуть панель', 'Leiste aufklappen')
-                              : tr('Свернуть панель', 'Leiste einklappen')}
-                          >
-                            {readerTopbarCollapsed ? '▾' : '▴'}
-                          </button>
-                        </div>
-                        <div className="reader-immersive-center">
                           <button
                             type="button"
                             className={`reader-bookmark-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
@@ -14605,8 +14601,6 @@ function AppInner() {
                           >
                             {readerReadingMode === 'vertical' ? '↕︎' : '↔︎'}
                           </button>
-                        </div>
-                        <div className="reader-immersive-right">
                           <button
                             type="button"
                             className="secondary-button"
@@ -14617,13 +14611,19 @@ function AppInner() {
                           </button>
                           <button
                             type="button"
-                            className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
-                            onClick={toggleReaderTimerPause}
-                            disabled={!readerHasContent}
+                            className="secondary-button reader-topbar-collapse-btn"
+                            onClick={() => {
+                              const next = !readerTopbarCollapsed;
+                              setReaderTopbarCollapsed(next);
+                              if (next) {
+                                setReaderSettingsOpen(false);
+                              }
+                            }}
+                            title={readerTopbarCollapsed
+                              ? tr('Развернуть панель', 'Leiste aufklappen')
+                              : tr('Свернуть панель', 'Leiste einklappen')}
                           >
-                            {readerTimerPaused
-                              ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}`
-                              : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
+                            {readerTopbarCollapsed ? '▾' : '▴'}
                           </button>
                         </div>
                       </div>
