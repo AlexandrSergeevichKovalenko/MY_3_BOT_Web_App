@@ -5844,18 +5844,27 @@ function AppInner() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const startParam = String(telegramApp?.initDataUnsafe?.start_param || '').trim().toLowerCase();
     if (params.get('review') === '1') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
       setFlashcardActiveMode('fsrs');
       setFlashcardSessionActive(false);
     }
-    const startParam = telegramApp?.initDataUnsafe?.start_param;
     if (startParam === 'review' || startParam === 'flashcards') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
       setFlashcardActiveMode('fsrs');
       setFlashcardSessionActive(false);
+    }
+    if (startParam === 'analytics') {
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['analytics']));
+      const timer = setTimeout(() => {
+        scrollToRef(analyticsRef, { block: 'start' });
+      }, 120);
+      return () => clearTimeout(timer);
     }
     if (window.location.pathname === '/webapp/review') {
       setFlashcardsVisible(true);
@@ -7162,7 +7171,7 @@ function AppInner() {
     if (moviesLanguageFilter === 'all') return movies;
     return movies.filter((item) => getMovieLanguageCode(item) === moviesLanguageFilter);
   }, [movies, moviesLanguageFilter]);
-  const getDictionarySourceTarget = (item, direction = dictionaryDirection) => {
+  function getDictionarySourceTarget(item, direction = dictionaryDirection) {
     if (!item) return { sourceText: '', targetText: '' };
     const sourceTextRaw = String(
       item.source_text
@@ -7179,11 +7188,11 @@ function AppInner() {
       || ''
     ).trim();
     return applyArticleForDirection(sourceTextRaw, targetTextRaw, direction, item);
-  };
-  const getDictionaryDisplayedTranslation = (item, direction = dictionaryDirection) => {
+  }
+  function getDictionaryDisplayedTranslation(item, direction = dictionaryDirection) {
     const { sourceText, targetText } = getDictionarySourceTarget(item, direction);
     return targetText || sourceText || '';
-  };
+  }
   const getFormValue = (forms, keys) => {
     if (!forms || typeof forms !== 'object') return '';
     const candidates = Array.isArray(keys) ? keys : [keys];

@@ -1227,10 +1227,26 @@ async def check_translation(
     subcategories: list[str] = []
     correct_translation = None
 
+    taxonomy_lines = []
+    if language_categories:
+        taxonomy_lines.append(
+            "allowed_categories: " + ", ".join([str(item).strip() for item in language_categories if str(item).strip()])
+        )
+    if language_subcategories:
+        compact = []
+        for cat, values in language_subcategories.items():
+            normalized_values = [str(value).strip() for value in (values or []) if str(value).strip()]
+            if normalized_values:
+                compact.append(f"{str(cat).strip()}: {', '.join(normalized_values)}")
+        if compact:
+            taxonomy_lines.append("allowed_subcategories:")
+            taxonomy_lines.extend([f"- {row}" for row in compact])
+    taxonomy_hint = ("\n" + "\n".join(taxonomy_lines)) if taxonomy_lines else ""
+
     user_message = f"""
 
     **Original sentence (Russian):** "{original_text}"
-    **User's translation (German):** "{user_translation}"
+    **User's translation (German):** "{user_translation}"{taxonomy_hint}
 
     """
 
@@ -1258,12 +1274,12 @@ async def check_translation(
                 correct_translation = match.group(1).strip()
 
             categories = [
-                re.sub(r"[^0-9a-zA-Z\s,+\-–]", "", cat).strip()
+                re.sub(r"[^0-9a-zA-Z\u00C0-\u024F\s,+\-–&/()¿¡]", "", cat).strip()
                 for cat in categories
                 if cat.strip()
             ]
             subcategories = [
-                re.sub(r"[^0-9a-zA-Z\s,+\-–]", "", subcat).strip()
+                re.sub(r"[^0-9a-zA-Z\u00C0-\u024F\s,+\-–&/()¿¡]", "", subcat).strip()
                 for subcat in subcategories
                 if subcat.strip()
             ]

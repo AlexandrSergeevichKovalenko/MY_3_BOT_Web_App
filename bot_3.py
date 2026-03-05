@@ -4529,10 +4529,26 @@ async def check_translation(original_text, user_translation, update: Update | No
         message = await context.bot.send_message(chat_id=update.message.chat_id, text="⏳ Посмотрим на что ты способен...")
         await simulate_typing(context, update.message.chat_id, duration=3)
 
+    taxonomy_lines = []
+    if VALID_CATEGORIES:
+        taxonomy_lines.append(
+            "allowed_categories: " + ", ".join([str(item).strip() for item in VALID_CATEGORIES if str(item).strip()])
+        )
+    if VALID_SUBCATEGORIES:
+        compact = []
+        for cat, values in VALID_SUBCATEGORIES.items():
+            normalized_values = [str(value).strip() for value in (values or []) if str(value).strip()]
+            if normalized_values:
+                compact.append(f"{str(cat).strip()}: {', '.join(normalized_values)}")
+        if compact:
+            taxonomy_lines.append("allowed_subcategories:")
+            taxonomy_lines.extend([f"- {row}" for row in compact])
+    taxonomy_hint = ("\n" + "\n".join(taxonomy_lines)) if taxonomy_lines else ""
+
     user_message = f"""
 
     **Original sentence (Russian):** "{original_text}"
-    **User's translation (German):** "{user_translation}"
+    **User's translation (German):** "{user_translation}"{taxonomy_hint}
 
     """
 
@@ -4559,8 +4575,8 @@ async def check_translation(original_text, user_translation, update: Update | No
             
             #my offer to split by ", " because it is a string and take all list
             # ✅ Ограничиваем строку до конца строки с помощью split("\n")[0]
-            categories = collected_text.split("Mistake Categories: ")[-1].split("\n")[0].split(", ") if "Mistake Categories:" in collected_text else []
-            subcategories = collected_text.split("Subcategories: ")[-1].split("\n")[0].split(", ") if "Subcategories:" in collected_text else []
+            categories = collected_text.split("Mistake Categories: ")[-1].split("\n")[0].split(",") if "Mistake Categories:" in collected_text else []
+            subcategories = collected_text.split("Subcategories: ")[-1].split("\n")[0].split(",") if "Subcategories:" in collected_text else []
 
             #severity = collected_text.split("Severity: ")[-1].split("\n")[0].strip() if "Severity:" in collected_text and len(collected_text.split("Severity: ")[-1].split("\n")) > 0 else None
             
@@ -4575,9 +4591,9 @@ async def check_translation(original_text, user_translation, update: Update | No
             print(f"🔎 RAW SUBCATEGORIES BEFORE HANDLING in check_translation function (User {user_id_label}): {', '.join(subcategories)}")
             
             # my offer for category: i would reduce all unneccessary symbols not only ** except from words and commas (what do you think!?)
-            categories = [re.sub(r"[^0-9a-zA-Z\s,+\-–]", "", cat).strip() for cat in categories if cat.strip()]
+            categories = [re.sub(r"[^0-9a-zA-Z\u00C0-\u024F\s,+\-–&/()¿¡]", "", cat).strip() for cat in categories if cat.strip()]
             # my offer for subcategory: i would reduce all unneccessary symbols not only ** except from words and commas (what do you think!?)
-            subcategories = [re.sub(r"[^0-9a-zA-Z\s,+\-–]", "", subcat).strip() for subcat in subcategories if subcat.strip()]
+            subcategories = [re.sub(r"[^0-9a-zA-Z\u00C0-\u024F\s,+\-–&/()¿¡]", "", subcat).strip() for subcat in subcategories if subcat.strip()]
 
             # ✅ Преобразуем строки в списки: my offer
             categories = [cat.strip() for cat in categories if cat.strip()]
@@ -7210,6 +7226,47 @@ def _build_word_order_options(sentence: str) -> list[str]:
     return options
 
 
+def _contains_cyrillic_text(value: str) -> bool:
+    return bool(re.search(r"[А-Яа-яЁё]", str(value or "")))
+
+
+def _contains_latin_text(value: str) -> bool:
+    return bool(re.search(r"[A-Za-zÄÖÜäöüß]", str(value or "")))
+
+
+def _normalize_word_order_example(
+    sentence_raw: str,
+    hint_raw: str,
+    fallback_hint_ru: str,
+) -> tuple[str | None, str]:
+    sentence_text = str(sentence_raw or "").strip()
+    hint_text = str(hint_raw or "").strip()
+    fallback_hint = str(fallback_hint_ru or "").strip()
+
+    if not sentence_text:
+        return None, fallback_hint
+
+    sentence_has_cyr = _contains_cyrillic_text(sentence_text)
+    hint_has_cyr = _contains_cyrillic_text(hint_text)
+    hint_has_latin = _contains_latin_text(hint_text)
+
+    de_sentence = sentence_text
+    ru_hint = hint_text
+
+    # Legacy records can contain swapped source/target usage examples.
+    if sentence_has_cyr and hint_has_latin and not hint_has_cyr:
+        de_sentence = hint_text
+        ru_hint = sentence_text
+
+    if _contains_cyrillic_text(de_sentence) or not _contains_latin_text(de_sentence):
+        return None, (ru_hint or fallback_hint)
+
+    if not ru_hint or not _contains_cyrillic_text(ru_hint):
+        ru_hint = fallback_hint
+
+    return de_sentence, ru_hint
+
+
 def _build_word_order_question(hint_text: str) -> str:
     hint = str(hint_text or "").strip()
     base = "Выберите правильный порядок слов в немецком предложении."
@@ -7239,31 +7296,39 @@ async def generate_word_order_quiz(entry: dict) -> dict | None:
     if not usage_examples:
         return None
 
-    selected_example = random.choice(usage_examples)
-    sentence = str(selected_example.get("sentence") or "").strip()
-    hint_text = str(selected_example.get("hint") or "").strip()
-    if not hint_text:
-        hint_text = str(
-            response_json.get("translation_ru")
-            or entry.get("translation_ru")
-            or entry.get("word_ru")
-            or response_json.get("word_ru")
-            or ""
-        ).strip()
-    options = _build_word_order_options(sentence)
-    if len(options) < 2:
-        return None
-    if len(options) > 4:
-        options = options[:4]
-    correct_option_id = options.index(sentence)
-    question = _build_word_order_question(hint_text)
-    return {
-        "question": question,
-        "options": options,
-        "correct_option_id": correct_option_id,
-        "quiz_type": "word_order",
-        "word_ru": hint_text,
-    }
+    fallback_hint = str(
+        response_json.get("translation_ru")
+        or entry.get("translation_ru")
+        or entry.get("word_ru")
+        or response_json.get("word_ru")
+        or ""
+    ).strip()
+
+    candidates = usage_examples[:]
+    random.shuffle(candidates)
+    for selected_example in candidates:
+        sentence_raw = str(selected_example.get("sentence") or "").strip()
+        hint_raw = str(selected_example.get("hint") or "").strip()
+        sentence, hint_text = _normalize_word_order_example(sentence_raw, hint_raw, fallback_hint)
+        if not sentence:
+            continue
+
+        options = _build_word_order_options(sentence)
+        if len(options) < 2:
+            continue
+        if len(options) > 4:
+            options = options[:4]
+        correct_option_id = options.index(sentence)
+        question = _build_word_order_question(hint_text)
+        return {
+            "question": question,
+            "options": options,
+            "correct_option_id": correct_option_id,
+            "quiz_type": "word_order",
+            "word_ru": hint_text,
+        }
+
+    return None
 
 
 def _extract_prefix_variants(response_json: dict) -> list[str]:

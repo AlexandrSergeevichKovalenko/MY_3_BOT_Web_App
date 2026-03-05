@@ -7,6 +7,7 @@ import hashlib
 from contextlib import contextmanager
 import json
 import random
+import re
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, date, timedelta, time as dt_time
 from pathlib import Path
@@ -15,6 +16,16 @@ from uuid import uuid4
 from calendar import monthrange
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+try:
+    from backend.config_mistakes_data import (
+        VALID_CATEGORIES as VALID_CATEGORIES_DE,
+        VALID_SUBCATEGORIES as VALID_SUBCATEGORIES_DE,
+    )
+except Exception:
+    from config_mistakes_data import (
+        VALID_CATEGORIES as VALID_CATEGORIES_DE,
+        VALID_SUBCATEGORIES as VALID_SUBCATEGORIES_DE,
+    )
 
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
@@ -40,6 +51,44 @@ DICTIONARY_ORIGIN_ALLOWED = {
     "assistant",
     "import",
 }
+
+UNCLASSIFIED_ERROR_CATEGORY_ALIASES = {"other mistake", "other mistakes"}
+UNCLASSIFIED_ERROR_SUBCATEGORY_ALIASES = {"unclassified mistake", "unclassified mistakes"}
+EXCLUDED_UNCLASSIFIED_SKILL_IDS = {
+    "other_unclassified",
+    "en_other_unclassified",
+    "es_other_unclassified",
+    "it_other_unclassified",
+}
+
+
+def _normalize_skill_error_label(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_unclassified_error(main_category: str | None, sub_category: str | None) -> bool:
+    normalized_main = _normalize_skill_error_label(main_category)
+    normalized_sub = _normalize_skill_error_label(sub_category)
+    if normalized_sub in UNCLASSIFIED_ERROR_SUBCATEGORY_ALIASES:
+        return True
+    return (
+        normalized_main in UNCLASSIFIED_ERROR_CATEGORY_ALIASES
+        and (not normalized_sub or normalized_sub in UNCLASSIFIED_ERROR_SUBCATEGORY_ALIASES)
+    )
+
+
+def _is_unclassified_skill_seed(skill_id: str | None, title: str | None, category: str | None) -> bool:
+    normalized_skill_id = _normalize_skill_error_label(skill_id)
+    normalized_title = _normalize_skill_error_label(title)
+    normalized_category = _normalize_skill_error_label(category)
+    if normalized_skill_id in EXCLUDED_UNCLASSIFIED_SKILL_IDS:
+        return True
+    if "unclassified" in normalized_title:
+        return True
+    return (
+        normalized_category in {"other", *UNCLASSIFIED_ERROR_CATEGORY_ALIASES}
+        and "unclassified" in normalized_title
+    )
 
 
 def _normalize_dictionary_origin_process(value: str | None) -> str:
@@ -149,74 +198,7 @@ def _compute_trial_ends_at(
     trial_end_local = datetime.combine(trial_end_date, dt_time.min, tzinfo=tzinfo)
     return trial_end_local.astimezone(timezone.utc)
 
-SKILL_SEED_DE: list[tuple[str, str, str]] = [
-    ("nouns_articles_gender", "Nouns: Articles & Gender", "Nouns"),
-    ("nouns_plural", "Nouns: Plural", "Nouns"),
-    ("nouns_compounds", "Nouns: Compound Nouns", "Nouns"),
-    ("nouns_declension", "Nouns: Declension", "Nouns"),
-    ("cases_nominative", "Cases: Nominative", "Cases"),
-    ("cases_accusative", "Cases: Accusative", "Cases"),
-    ("cases_dative", "Cases: Dative", "Cases"),
-    ("cases_genitive", "Cases: Genitive", "Cases"),
-    ("cases_preposition_accusative", "Cases: Akk + Preposition", "Cases"),
-    ("cases_preposition_dative", "Cases: Dat + Preposition", "Cases"),
-    ("cases_preposition_genitive", "Cases: Gen + Preposition", "Cases"),
-    ("verbs_conjugation", "Verbs: Conjugation", "Verbs"),
-    ("verbs_weak", "Verbs: Weak", "Verbs"),
-    ("verbs_strong", "Verbs: Strong", "Verbs"),
-    ("verbs_mixed", "Verbs: Mixed", "Verbs"),
-    ("verbs_separable", "Verbs: Separable", "Verbs"),
-    ("verbs_reflexive", "Verbs: Reflexive", "Verbs"),
-    ("verbs_auxiliaries", "Verbs: Auxiliaries", "Verbs"),
-    ("verbs_modals", "Verbs: Modals", "Verbs"),
-    ("verbs_placement_general", "Verbs: Placement", "Verbs"),
-    ("verbs_placement_subordinate", "Verbs: Placement in Subordinate Clause", "Verbs"),
-    ("tenses_present", "Tenses: Present", "Tenses"),
-    ("tenses_past_general", "Tenses: Past (General)", "Tenses"),
-    ("tenses_prateritum", "Tenses: Prateritum", "Tenses"),
-    ("tenses_perfekt", "Tenses: Perfekt", "Tenses"),
-    ("tenses_plusquamperfekt", "Tenses: Plusquamperfekt", "Tenses"),
-    ("tenses_future_general", "Tenses: Future (General)", "Tenses"),
-    ("tenses_futur1", "Tenses: Futur I", "Tenses"),
-    ("tenses_futur2", "Tenses: Futur II", "Tenses"),
-    ("voice_passive_plusquamperfekt", "Passive: Plusquamperfekt", "Tenses"),
-    ("voice_passive_futur1", "Passive: Futur I", "Tenses"),
-    ("voice_passive_futur2", "Passive: Futur II", "Tenses"),
-    ("adjectives_endings_general", "Adjectives: Endings", "Adjectives"),
-    ("adjectives_declension_weak", "Adjectives: Weak Declension", "Adjectives"),
-    ("adjectives_declension_strong", "Adjectives: Strong Declension", "Adjectives"),
-    ("adjectives_declension_mixed", "Adjectives: Mixed Declension", "Adjectives"),
-    ("adjectives_placement", "Adjectives: Placement", "Adjectives"),
-    ("adjectives_comparative", "Adjectives: Comparative", "Adjectives"),
-    ("adjectives_superlative", "Adjectives: Superlative", "Adjectives"),
-    ("adjectives_case_agreement", "Adjectives: Case Agreement", "Adjectives"),
-    ("adverbs_placement", "Adverbs: Placement", "Adverbs"),
-    ("adverbs_multiple_order", "Adverbs: Multiple Adverbs", "Adverbs"),
-    ("adverbs_usage", "Adverbs: Usage", "Adverbs"),
-    ("conj_coordinating", "Conjunctions: Coordinating", "Conjunctions"),
-    ("conj_subordinating", "Conjunctions: Subordinating", "Conjunctions"),
-    ("conj_usage", "Conjunctions: Usage", "Conjunctions"),
-    ("prepositions_accusative_group", "Prepositions: Accusative Group", "Prepositions"),
-    ("prepositions_dative_group", "Prepositions: Dative Group", "Prepositions"),
-    ("prepositions_genitive_group", "Prepositions: Genitive Group", "Prepositions"),
-    ("prepositions_two_way", "Prepositions: Two-way", "Prepositions"),
-    ("prepositions_usage", "Prepositions: Usage", "Prepositions"),
-    ("moods_indicative", "Moods: Indicative", "Moods"),
-    ("moods_declarative", "Moods: Declarative", "Moods"),
-    ("moods_interrogative", "Moods: Interrogative", "Moods"),
-    ("moods_imperative", "Moods: Imperative", "Moods"),
-    ("moods_subjunctive1", "Moods: Subjunctive I", "Moods"),
-    ("moods_subjunctive2", "Moods: Subjunctive II", "Moods"),
-    ("word_order_standard", "Word Order: Standard", "Word Order"),
-    ("word_order_inverted", "Word Order: Inverted", "Word Order"),
-    ("word_order_v2_rule", "Word Order: V2 Rule", "Word Order"),
-    ("word_order_negation_position", "Word Order: Negation Position", "Word Order"),
-    ("word_order_subordinate_clause", "Word Order: Subordinate Clause", "Word Order"),
-    ("word_order_modal_structure", "Word Order: Modal Structure", "Word Order"),
-    ("other_unclassified", "Other: Unclassified", "Other"),
-]
-
-ERROR_SKILL_MAP_SEED_DE: list[tuple[str, str, str, float]] = [
+LEGACY_ERROR_SKILL_MAP_SEED_DE: list[tuple[str, str, str, float]] = [
     ("Nouns", "Gendered Articles", "nouns_articles_gender", 1.2),
     ("Nouns", "Pluralization", "nouns_plural", 1.0),
     ("Nouns", "Compound Nouns", "nouns_compounds", 0.8),
@@ -282,6 +264,97 @@ ERROR_SKILL_MAP_SEED_DE: list[tuple[str, str, str, float]] = [
     ("Word Order", "Incorrect Order with Modal Verb", "word_order_modal_structure", 1.2),
     ("Other mistake", "Unclassified mistake", "other_unclassified", 1.0),
 ]
+
+DE_TAXONOMY_ALIAS_TO_LEGACY: dict[tuple[str, str], tuple[str, str]] = {
+    ("Verbs", "Auxiliary Verbs (sein/haben/werden)"): ("Verbs", "Auxiliary Verbs"),
+    ("Verbs", "Verb Placement in Main Clause"): ("Verbs", "Placement"),
+    ("Tenses", "Present (Präsens)"): ("Tenses", "Present"),
+    ("Tenses", "Simple Past (Präteritum)"): ("Tenses", "Simple Past"),
+    ("Tenses", "Present Perfect (Perfekt)"): ("Tenses", "Present Perfect"),
+    ("Tenses", "Past Perfect (Plusquamperfekt)"): ("Tenses", "Past Perfect"),
+    ("Tenses", "Future 1 (Futur I)"): ("Tenses", "Future 1"),
+    ("Tenses", "Future 2 (Futur II)"): ("Tenses", "Future 2"),
+    ("Moods", "Subjunctive 1 (Konjunktiv I)"): ("Moods", "Subjunctive 1"),
+    ("Moods", "Subjunctive 2 (Konjunktiv II)"): ("Moods", "Subjunctive 2"),
+    ("Adverbs", "Adverb Placement"): ("Adverbs", "Placement"),
+    ("Adverbs", "Multiple Adverbs (TEKAMOLO)"): ("Adverbs", "Multiple Adverbs"),
+    ("Prepositions", "Accusative Prepositions"): ("Prepositions", "Accusative"),
+    ("Prepositions", "Dative Prepositions"): ("Prepositions", "Dative"),
+    ("Prepositions", "Genitive Prepositions"): ("Prepositions", "Genitive"),
+    ("Prepositions", "Two-way Prepositions"): ("Prepositions", "Two-way"),
+    ("Conjunctions", "Coordinating (und/aber/oder/denn)"): ("Conjunctions", "Coordinating"),
+    ("Conjunctions", "Subordinating (weil/dass/ob/wenn...)"): ("Conjunctions", "Subordinating"),
+    ("Word Order", "Verb-Second Rule (V2)"): ("Word Order", "Verb-Second Rule"),
+}
+
+DE_CATEGORY_DEFAULT_WEIGHT: dict[str, float] = {
+    "Nouns": 1.0,
+    "Articles & Determiners": 1.1,
+    "Cases": 1.1,
+    "Pronouns": 1.0,
+    "Verbs": 1.1,
+    "Voice (Active/Passive)": 1.2,
+    "Tenses": 1.0,
+    "Moods": 1.0,
+    "Adjectives": 1.0,
+    "Adverbs": 0.9,
+    "Prepositions": 1.0,
+    "Conjunctions": 1.0,
+    "Word Order": 1.1,
+    "Negation": 1.0,
+    "Particles": 0.9,
+    "Clauses & Sentence Types": 1.1,
+    "Infinitive & Participles": 1.1,
+    "Punctuation": 0.8,
+    "Orthography & Spelling": 0.8,
+    "Other mistake": 1.0,
+}
+
+
+def _slugify_skill_component(value: str) -> str:
+    normalized = str(value or "").lower().strip()
+    normalized = (
+        normalized.replace("ä", "ae")
+        .replace("ö", "oe")
+        .replace("ü", "ue")
+        .replace("ß", "ss")
+    )
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized)
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    return normalized or "x"
+
+
+def _build_de_seed_from_taxonomy() -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str, float]]]:
+    legacy_lookup: dict[tuple[str, str], tuple[str, float]] = {
+        (cat, subcat): (skill_id, float(weight))
+        for cat, subcat, skill_id, weight in LEGACY_ERROR_SKILL_MAP_SEED_DE
+    }
+    skill_seed_by_id: dict[str, tuple[str, str, str]] = {}
+    error_map_seed: list[tuple[str, str, str, float]] = []
+
+    for category in VALID_CATEGORIES_DE:
+        subcategories = list(VALID_SUBCATEGORIES_DE.get(category, []) or [])
+        for subcategory in subcategories:
+            if _is_unclassified_error(category, subcategory):
+                continue
+            key = (category, subcategory)
+            legacy_key = DE_TAXONOMY_ALIAS_TO_LEGACY.get(key, key)
+            legacy_item = legacy_lookup.get(legacy_key)
+            if legacy_item:
+                skill_id, weight = legacy_item
+            else:
+                skill_id = f"de_{_slugify_skill_component(category)}_{_slugify_skill_component(subcategory)}"
+                weight = float(DE_CATEGORY_DEFAULT_WEIGHT.get(category, 1.0))
+
+            if skill_id not in skill_seed_by_id:
+                skill_seed_by_id[skill_id] = (skill_id, f"{category}: {subcategory}", category)
+            error_map_seed.append((category, subcategory, skill_id, float(weight)))
+
+    skill_seed = list(skill_seed_by_id.values())
+    return skill_seed, error_map_seed
+
+
+SKILL_SEED_DE, ERROR_SKILL_MAP_SEED_DE = _build_de_seed_from_taxonomy()
 
 SKILL_SEED_EN: list[tuple[str, str, str]] = [
     ("en_nouns_plural", "Nouns: Pluralization", "Nouns"),
@@ -477,6 +550,40 @@ ERROR_SKILL_MAP_SEED_IT: list[tuple[str, str, str, float]] = [
     ("Orthography", "Accents", "it_orthography_accents_spelling", 1.0),
     ("Orthography", "Spelling", "it_orthography_accents_spelling", 1.0),
     ("Other mistake", "Unclassified mistake", "it_other_unclassified", 1.0),
+]
+
+SKILL_SEED_DE = [
+    row for row in SKILL_SEED_DE
+    if not _is_unclassified_skill_seed(row[0], row[1], row[2])
+]
+SKILL_SEED_EN = [
+    row for row in SKILL_SEED_EN
+    if not _is_unclassified_skill_seed(row[0], row[1], row[2])
+]
+SKILL_SEED_ES = [
+    row for row in SKILL_SEED_ES
+    if not _is_unclassified_skill_seed(row[0], row[1], row[2])
+]
+SKILL_SEED_IT = [
+    row for row in SKILL_SEED_IT
+    if not _is_unclassified_skill_seed(row[0], row[1], row[2])
+]
+
+ERROR_SKILL_MAP_SEED_DE = [
+    row for row in ERROR_SKILL_MAP_SEED_DE
+    if not _is_unclassified_error(row[0], row[1])
+]
+ERROR_SKILL_MAP_SEED_EN = [
+    row for row in ERROR_SKILL_MAP_SEED_EN
+    if not _is_unclassified_error(row[0], row[1])
+]
+ERROR_SKILL_MAP_SEED_ES = [
+    row for row in ERROR_SKILL_MAP_SEED_ES
+    if not _is_unclassified_error(row[0], row[1])
+]
+ERROR_SKILL_MAP_SEED_IT = [
+    row for row in ERROR_SKILL_MAP_SEED_IT
+    if not _is_unclassified_error(row[0], row[1])
 ]
 
 SKILL_SEED: list[tuple[str, str, str, str]] = (
@@ -1206,6 +1313,46 @@ def ensure_webapp_tables() -> None:
                     updated_at = NOW();
                 """,
                 ERROR_SKILL_MAP_SEED,
+            )
+            # Keep error->skill map aligned with current seeds for all supported learning languages.
+            valid_pairs_by_lang: dict[str, set[tuple[str, str]]] = {}
+            for lang_code, cat, subcat, _skill_id, _weight in ERROR_SKILL_MAP_SEED:
+                normalized_lang = str(lang_code or "").strip().lower()
+                if not normalized_lang:
+                    continue
+                valid_pairs_by_lang.setdefault(normalized_lang, set()).add((str(cat), str(subcat)))
+            for lang_code, pair_set in valid_pairs_by_lang.items():
+                valid_pairs = sorted(pair_set)
+                if not valid_pairs:
+                    continue
+                pair_placeholders = ", ".join(["(%s, %s)"] * len(valid_pairs))
+                pair_params: list[str] = [lang_code]
+                for cat, subcat in valid_pairs:
+                    pair_params.extend([str(cat), str(subcat)])
+                cursor.execute(
+                    f"""
+                    DELETE FROM bt_3_error_skill_map
+                    WHERE language_code = %s
+                      AND (error_category, error_subcategory) NOT IN ({pair_placeholders});
+                    """,
+                    tuple(pair_params),
+                )
+
+            # Remove uncategorizable "Unclassified" entries from skill map and deactivate legacy unclassified skills.
+            cursor.execute(
+                """
+                DELETE FROM bt_3_error_skill_map
+                WHERE LOWER(COALESCE(error_subcategory, '')) IN ('unclassified mistake', 'unclassified mistakes');
+                """
+            )
+            cursor.execute(
+                """
+                UPDATE bt_3_skills
+                SET is_active = FALSE, updated_at = NOW()
+                WHERE LOWER(COALESCE(skill_id, '')) IN ('other_unclassified', 'en_other_unclassified', 'es_other_unclassified', 'it_other_unclassified')
+                   OR LOWER(COALESCE(skill_id, '')) LIKE '%unclassified%'
+                   OR LOWER(COALESCE(title, '')) LIKE '%unclassified%';
+                """
             )
             # One-time backfill for legacy imported dictionary rows (pre-multilang).
             # Must run only once, not on every startup.
@@ -7609,6 +7756,7 @@ def get_top_weak_topic(
                     WHERE dm.user_id = %s
                       AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
                       AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
+                      AND LOWER(COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')) NOT IN ('unclassified mistake', 'unclassified mistakes')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
                     GROUP BY 1, 2
                     ORDER BY total_mistakes DESC, main_category ASC, sub_category ASC
@@ -7782,6 +7930,10 @@ def get_lowest_mastery_skill(
                       AND s.source_lang = COALESCE(%s, 'ru')
                       AND s.target_lang = COALESCE(%s, 'de')
                       AND k.language_code = COALESCE(%s, 'de')
+                      AND COALESCE(k.is_active, TRUE) = TRUE
+                      AND LOWER(COALESCE(k.skill_id, '')) NOT IN ('other_unclassified', 'en_other_unclassified', 'es_other_unclassified', 'it_other_unclassified')
+                      AND LOWER(COALESCE(k.skill_id, '')) NOT LIKE '%unclassified%'
+                      AND LOWER(COALESCE(k.title, '')) NOT LIKE '%unclassified%'
                     ORDER BY s.mastery ASC, s.total_events DESC, s.updated_at DESC
                     LIMIT 1;
                     """,
@@ -7820,6 +7972,9 @@ def get_top_error_topic_for_skill(
         return None
     lookback_days = max(1, int(lookback_days))
     normalized_skill_id = str(skill_id).strip()
+    normalized_skill_key = _normalize_skill_error_label(normalized_skill_id)
+    if normalized_skill_key in EXCLUDED_UNCLASSIFIED_SKILL_IDS or "unclassified" in normalized_skill_key:
+        return None
     normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
     try:
         with get_db_connection_context() as conn:
@@ -7843,6 +7998,7 @@ def get_top_error_topic_for_skill(
                       AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
                       AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
                       AND m.skill_id = %s
+                      AND LOWER(COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')) NOT IN ('unclassified mistake', 'unclassified mistakes')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
                     GROUP BY 1, 2
                     ORDER BY total_mistakes DESC, map_weight DESC, main_category ASC, sub_category ASC
@@ -7860,8 +8016,8 @@ def get_top_error_topic_for_skill(
                 row = cursor.fetchone()
                 if row:
                     return {
-                        "main_category": str(row[0] or "Other mistake"),
-                        "sub_category": str(row[1] or "Unclassified mistake"),
+                        "main_category": str(row[0] or ""),
+                        "sub_category": str(row[1] or ""),
                         "mistakes": int(row[2] or 0),
                         "map_weight": float(row[3] or 1.0),
                     }
@@ -7872,6 +8028,7 @@ def get_top_error_topic_for_skill(
                     FROM bt_3_error_skill_map
                     WHERE skill_id = %s
                       AND language_code = %s
+                      AND LOWER(COALESCE(error_subcategory, '')) NOT IN ('unclassified mistake', 'unclassified mistakes')
                     ORDER BY weight DESC, error_category ASC, error_subcategory ASC
                     LIMIT 1;
                     """,
@@ -7884,8 +8041,8 @@ def get_top_error_topic_for_skill(
     if not fallback:
         return None
     return {
-        "main_category": str(fallback[0] or "Other mistake"),
-        "sub_category": str(fallback[1] or "Unclassified mistake"),
+        "main_category": str(fallback[0] or ""),
+        "sub_category": str(fallback[1] or ""),
         "mistakes": 0,
         "map_weight": float(fallback[2] or 1.0),
     }
@@ -10313,14 +10470,10 @@ def get_skill_mapping_for_error(
     category = str(error_category or "").strip()
     subcategory = str(error_subcategory or "").strip()
     lang = (language_code or "de").strip().lower() or "de"
-    fallback_skill = {
-        "de": "other_unclassified",
-        "en": "en_other_unclassified",
-        "es": "es_other_unclassified",
-        "it": "it_other_unclassified",
-    }.get(lang, "other_unclassified")
     if not category:
-        return [{"skill_id": fallback_skill, "weight": 1.0}]
+        return []
+    if _is_unclassified_error(category, subcategory):
+        return []
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -10345,8 +10498,9 @@ def get_skill_mapping_for_error(
                 FROM bt_3_error_skill_map
                 WHERE language_code = %s
                   AND error_category = %s
-                  AND error_subcategory = 'Unclassified mistake'
-                ORDER BY weight DESC, skill_id ASC;
+                  AND LOWER(COALESCE(error_subcategory, '')) NOT IN ('unclassified mistake', 'unclassified mistakes')
+                ORDER BY weight DESC, skill_id ASC
+                LIMIT 3;
                 """,
                 (lang, category),
             )
@@ -10354,7 +10508,7 @@ def get_skill_mapping_for_error(
             if fallback_rows:
                 return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in fallback_rows]
 
-    return [{"skill_id": fallback_skill, "weight": 1.0}]
+    return []
 
 
 def _clamp_mastery(value: float) -> float:
@@ -10551,6 +10705,7 @@ def get_skill_progress_report(
                       AND m.language_code = %s
                       AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
                       AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
+                      AND LOWER(COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')) NOT IN ('unclassified mistake', 'unclassified mistakes')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
                     GROUP BY m.skill_id
                 ),
@@ -10569,6 +10724,7 @@ def get_skill_progress_report(
                       AND m.language_code = %s
                       AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
                       AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
+                      AND LOWER(COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')) NOT IN ('unclassified mistake', 'unclassified mistakes')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) < NOW() - (%s::text || ' days')::interval
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - ((%s * 2)::text || ' days')::interval
                     GROUP BY m.skill_id
@@ -10592,6 +10748,9 @@ def get_skill_progress_report(
                 LEFT JOIN err_prev_7d p ON p.skill_id = k.skill_id
                 WHERE k.is_active = TRUE
                   AND k.language_code = %s
+                  AND LOWER(COALESCE(k.skill_id, '')) NOT IN ('other_unclassified', 'en_other_unclassified', 'es_other_unclassified', 'it_other_unclassified')
+                  AND LOWER(COALESCE(k.skill_id, '')) NOT LIKE '%unclassified%'
+                  AND LOWER(COALESCE(k.title, '')) NOT LIKE '%unclassified%'
                 ORDER BY k.category ASC, mastery ASC, k.skill_id ASC;
                 """,
                 (

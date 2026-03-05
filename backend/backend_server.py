@@ -4339,6 +4339,12 @@ def _build_today_plan_for_user(
         except Exception:
             weak_topic = None
 
+    if weak_topic and _is_unclassified_focus_topic(
+        weak_topic.get("main_category"),
+        weak_topic.get("sub_category"),
+    ):
+        weak_topic = None
+
     if weak_topic:
         try:
             weak_sentences = get_weak_topic_sentences(
@@ -4542,6 +4548,22 @@ def _normalize_short_lang_code(value: str | None, fallback: str = "ru") -> str:
     if "-" in raw:
         raw = raw.split("-", 1)[0]
     return raw or fallback
+
+
+def _is_unclassified_focus_topic(main_category: str | None, sub_category: str | None) -> bool:
+    main = str(main_category or "").strip().lower()
+    sub = str(sub_category or "").strip().lower()
+    if sub in {"unclassified mistake", "unclassified mistakes"}:
+        return True
+    return main in {"other mistake", "other mistakes"} and not sub
+
+
+def _sanitize_focus_topic(main_category: str | None, sub_category: str | None) -> tuple[str, str]:
+    main = str(main_category or "").strip()
+    sub = str(sub_category or "").strip()
+    if _is_unclassified_focus_topic(main, sub):
+        return "", ""
+    return main, sub
 
 
 def _quick_translate_deepl(text: str, source_lang: str | None, target_lang: str) -> dict:
@@ -11614,6 +11636,7 @@ def recommend_today_video():
     skill_title = str(payload.get("skill_title") or "").strip()
     main_category = str(payload.get("main_category") or "").strip()
     sub_category = str(payload.get("sub_category") or "").strip()
+    main_category, sub_category = _sanitize_focus_topic(main_category, sub_category)
     examples_payload = payload.get("examples") if isinstance(payload.get("examples"), list) else []
     resolved_skill = None
 
@@ -11659,6 +11682,7 @@ def recommend_today_video():
             sub_category = str(weak_topic.get("sub_category") or "").strip()
         except Exception:
             pass
+    main_category, sub_category = _sanitize_focus_topic(main_category, sub_category)
 
     recommended_video = None
     recommendation_row = None
@@ -11897,6 +11921,7 @@ def prepare_today_theory():
     skill_name = str(item_payload.get("skill_title") or payload.get("skill_title") or "").strip()
     main_category = str(item_payload.get("main_category") or payload.get("main_category") or "").strip()
     sub_category = str(item_payload.get("sub_category") or payload.get("sub_category") or "").strip()
+    main_category, sub_category = _sanitize_focus_topic(main_category, sub_category)
     example_strings = [str(item).strip() for item in (item_payload.get("examples") or payload.get("examples") or []) if str(item).strip()]
 
     weakest_skill = None
@@ -11942,6 +11967,7 @@ def prepare_today_theory():
             sub_category = str(weak_topic.get("sub_category") or "").strip()
         except Exception:
             pass
+    main_category, sub_category = _sanitize_focus_topic(main_category, sub_category)
 
     detailed_examples: list[dict] = []
     if main_category and sub_category:
@@ -11984,6 +12010,7 @@ def prepare_today_theory():
         topic_name = str(beginner_topic.get("topic_name") or "").strip() or "Present tense and basic word order"
         main_category = str(beginner_topic.get("error_category") or "").strip() or "Other mistake"
         sub_category = str(beginner_topic.get("error_subcategory") or "").strip() or "Unclassified mistake"
+        main_category, sub_category = _sanitize_focus_topic(main_category, sub_category)
         skill_id = str(beginner_topic.get("skill_id") or "").strip()
         skill_name = str(beginner_topic.get("develops_skill") or "").strip() or topic_name
         formatted_examples = [
@@ -12003,6 +12030,8 @@ def prepare_today_theory():
 
     if not skill_name:
         skill_name = sub_category or main_category or "Grammar basics"
+    focus_error_category = main_category or "General grammar"
+    focus_error_subcategory = sub_category or skill_name or "Grammar basics"
 
     target_lang_name = _get_llm_language_name(target_lang)
     source_lang_name = _get_llm_language_name(source_lang, emphasize_script=True)
@@ -12011,8 +12040,8 @@ def prepare_today_theory():
         "target_language": target_lang_name,
         "native_language": source_lang_name,
         "skill_name": skill_name,
-        "error_category": main_category or "Other mistake",
-        "error_subcategory": sub_category or "Unclassified mistake",
+        "error_category": focus_error_category,
+        "error_subcategory": focus_error_subcategory,
         "topic_must_match": " | ".join(
             part for part in [skill_name, sub_category, main_category] if str(part or "").strip()
         ),
@@ -12022,8 +12051,8 @@ def prepare_today_theory():
         "target_language": target_lang_name,
         "native_language": source_lang_name,
         "skill_name": skill_name,
-        "error_category": main_category or "Other mistake",
-        "error_subcategory": sub_category or "Unclassified mistake",
+        "error_category": focus_error_category,
+        "error_subcategory": focus_error_subcategory,
         "topic_must_match": " | ".join(
             part for part in [skill_name, sub_category, main_category] if str(part or "").strip()
         ),
@@ -12098,8 +12127,8 @@ def prepare_today_theory():
         "focus": {
             "skill_id": skill_id or None,
             "skill_name": skill_name,
-            "error_category": main_category or "Other mistake",
-            "error_subcategory": sub_category or "Unclassified mistake",
+            "error_category": focus_error_category,
+            "error_subcategory": focus_error_subcategory,
             "is_beginner": bool(is_beginner),
         },
         "theory": theory,
@@ -12213,12 +12242,16 @@ def check_today_theory():
     if len(paired) < 1:
         return jsonify({"error": "Нет предложений для проверки"}), 400
 
+    focus_main_category, focus_sub_category = _sanitize_focus_topic(
+        focus.get("error_category"),
+        focus.get("error_subcategory"),
+    )
     check_payload = {
         "target_language": target_lang,
         "native_language": source_lang,
         "skill_name": str(focus.get("skill_name") or "Grammar basics"),
-        "error_category": str(focus.get("error_category") or "Other mistake"),
-        "error_subcategory": str(focus.get("error_subcategory") or "Unclassified mistake"),
+        "error_category": focus_main_category or "General grammar",
+        "error_subcategory": focus_sub_category or str(focus.get("skill_name") or "Grammar basics"),
         "pairs": paired,
     }
     try:
@@ -16492,7 +16525,7 @@ def _dispatch_private_analytics(target_date: date) -> dict:
                 f"📈 Успешность: {summary.get('success_rate', 0)}%\n"
                 f"⏱️ Среднее время: {summary.get('avg_time_min', 0)} мин\n"
                 f"🔥 Final score: {summary.get('final_score', 0)}\n\n"
-                f"Открыть графики и детали:\n{_build_webapp_deeplink('review')}"
+                f"Открыть графики и детали:\n{_build_webapp_deeplink('analytics')}"
             )
             _send_private_message(user_id, text)
 

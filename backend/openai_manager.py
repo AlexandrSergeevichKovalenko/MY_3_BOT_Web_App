@@ -4,6 +4,7 @@ import logging
 import asyncio
 import re
 import json
+import hashlib
 import contextvars
 #from openai import OpenAI
 from openai import AsyncOpenAI
@@ -11,6 +12,16 @@ import psycopg2
 from contextlib import contextmanager
 from dotenv import load_dotenv
 from pathlib import Path
+try:
+    from backend.config_mistakes_data import (
+        VALID_CATEGORIES as VALID_CATEGORIES_DE,
+        VALID_SUBCATEGORIES as VALID_SUBCATEGORIES_DE,
+    )
+except Exception:
+    from config_mistakes_data import (
+        VALID_CATEGORIES as VALID_CATEGORIES_DE,
+        VALID_SUBCATEGORIES as VALID_SUBCATEGORIES_DE,
+    )
 
 # Загружаем переменные окружения как можно раньше, чтобы режим gateway
 # корректно читался из backend/.env и из окружения Railway.
@@ -53,6 +64,27 @@ def _get_responses_tasks() -> set[str]:
         if parsed:
             return parsed
     return set(_DEFAULT_RESPONSES_TASKS)
+
+
+def _build_taxonomy_hint_block(
+    categories: list[str] | None,
+    subcategories: dict[str, list[str]] | None,
+) -> str:
+    lines: list[str] = []
+    if categories:
+        allowed = [str(item).strip() for item in categories if str(item).strip()]
+        if allowed:
+            lines.append(f"allowed_categories: {', '.join(allowed)}")
+    if subcategories:
+        compact: list[str] = []
+        for cat, values in subcategories.items():
+            normalized_values = [str(value).strip() for value in (values or []) if str(value).strip()]
+            if normalized_values:
+                compact.append(f"{str(cat).strip()}: {', '.join(normalized_values)}")
+        if compact:
+            lines.append("allowed_subcategories:")
+            lines.extend([f"- {row}" for row in compact])
+    return ("\n" + "\n".join(lines)) if lines else ""
 
 
 system_message = {
@@ -132,22 +164,19 @@ system_message = {
     Contextual Consistency: Deduct 5–15 points for translations breaking the narrative flow of the original Russian story.
     B2-Level Appropriateness: Deduct 5–10 points for overly complex/simple vocabulary or grammar not suited for B2 learners.
 
-    2. **Identify all mistake categories**  
-    (you may select multiple categories if needed, but STRICTLY from the enumeration below.  
-    Return them as a single comma-separated string, without explanations or formatting):
-    Nouns, Cases, Verbs, Tenses, Adjectives, Adverbs, Conjunctions, Prepositions, Moods, Word Order, Other mistake
+    2. **Identify all mistake categories**
+    (you may select multiple categories if needed).
+    If `allowed_categories` is present in user message, you MUST choose categories strictly from that list.
+    Return categories as one comma-separated line, without explanations.
 
-    3. **Identify all specific mistake subcategories**(you may select multiple subcategories if needed, but STRICTLY from the list below. Return them as a single comma-separated string, without grouping or explanations):
-    Gendered Articles, Pluralization, Compound Nouns, Declension Errors,  
-    Nominative, Accusative, Dative, Genitive, Akkusativ + Preposition, Dative + Preposition, Genitive + Preposition,  
-    Placement, Conjugation, Weak Verbs, Strong Verbs, Mixed Verbs, Separable Verbs, Reflexive Verbs, Auxiliary Verbs, Modal Verbs, Verb Placement in Subordinate Clause,  
-    Present, Past, Simple Past, Present Perfect, Past Perfect, Future, Future 1, Future 2, Plusquamperfekt Passive, Futur 1 Passive, Futur 2 Passive,  
-    Endings, Weak Declension, Strong Declension, Mixed Declension, Comparative, Superlative, Incorrect Adjective Case Agreement,  
-    Multiple Adverbs, Incorrect Adverb Usage,  
-    Coordinating, Subordinating, Incorrect Use of Conjunctions,  
-    Accusative, Dative, Genitive, Two-way, Incorrect Preposition Usage,  
-    Indicative, Declarative, Interrogative, Imperative, Subjunctive 1, Subjunctive 2,  
-    Standard, Inverted, Verb-Second Rule, Position of Negation, Incorrect Order in Subordinate Clause, Incorrect Order with Modal Verb
+    3. **Identify all specific mistake subcategories**
+    (you may select multiple subcategories if needed).
+    If `allowed_subcategories` is present in user message, you MUST choose subcategories strictly from that mapping,
+    and each selected subcategory must belong to at least one selected category.
+    Return subcategories as one comma-separated line, without explanations.
+    If no valid taxonomy match exists, use:
+    Mistake Categories: Other mistake
+    Subcategories: Unclassified mistake
 
     4. **Provide the correct translation.**  
 
@@ -1878,6 +1907,7 @@ else:
 # Его цель — избежать повторных запросов в базу данных за одним и тем же ID ассистента в рамках одного запуска программы. 
 # Если мы уже получили ID для задачи 'sales_assistant', он сохранится здесь, и следующий запрос возьмет его из этого словаря, а не из БД.
 global_assistants_cache = {}
+assistant_instruction_hash_cache: dict[str, str] = {}
 
 
 # === Функции для управления OpenAI Assistants ===
@@ -1946,9 +1976,34 @@ async def get_or_create_openai_resources(system_instruction: str, task_name: str
     :param task_name: Уникальное имя задачи для ассистента.
     :return: Кортеж (assistant_id, None) или вызывает исключение.
     """
+    system_instruction_content = system_message.get(system_instruction)
+    if not system_instruction_content:
+        raise ValueError(f"❌ Системная инструкция для ключа '{system_instruction}' не найдена в system_message.")
+
+    instruction_hash = hashlib.sha256(system_instruction_content.encode("utf-8")).hexdigest()
+
+    async def _sync_assistant_instructions_if_needed(current_assistant_id: str) -> None:
+        cache_key = f"{task_name}:{current_assistant_id}"
+        if assistant_instruction_hash_cache.get(cache_key) == instruction_hash:
+            return
+        await client.beta.assistants.update(
+            assistant_id=current_assistant_id,
+            model=_get_gateway_model(),
+            instructions=system_instruction_content,
+        )
+        assistant_instruction_hash_cache[cache_key] = instruction_hash
+
     # Сначала пробуем получить assistant_id из кэша
     assistant_id = global_assistants_cache.get(task_name)
     if assistant_id:
+        try:
+            await _sync_assistant_instructions_if_needed(assistant_id)
+        except Exception as exc:
+            logging.warning(
+                "⚠️ Не удалось синхронизировать инструкции cached assistant для '%s': %s",
+                task_name,
+                exc,
+            )
         logging.info(f"✅ Используется cached assistant для '{task_name}': {assistant_id}")
         return assistant_id, None
     
@@ -1956,16 +2011,19 @@ async def get_or_create_openai_resources(system_instruction: str, task_name: str
     assistant_id = get_assistant_id_from_db(task_name)
     if assistant_id:
         global_assistants_cache[task_name] = assistant_id
+        try:
+            await _sync_assistant_instructions_if_needed(assistant_id)
+        except Exception as exc:
+            logging.warning(
+                "⚠️ Не удалось синхронизировать инструкции assistant из БД для '%s': %s",
+                task_name,
+                exc,
+            )
         logging.info(f"✅ Используется assistant из базы для '{task_name}': {assistant_id}")
         return assistant_id, None
     
     # Если не найден в базе — создаём нового
     try:
-        # Получаем инструкции из глобального словаря system_message, используя system_instruction как ключ
-        system_instruction_content = system_message.get(system_instruction)
-        if not system_instruction_content:
-            raise ValueError(f"❌ Системная инструкция для ключа '{system_instruction}' не найдена в system_message.")
-
         # Используем глобальный клиент 'client'
         assistant = await client.beta.assistants.create(
             name="MyAssistant for " + task_name,
@@ -1973,6 +2031,7 @@ async def get_or_create_openai_resources(system_instruction: str, task_name: str
             instructions=system_instruction_content
         )
         global_assistants_cache[task_name] = assistant.id
+        assistant_instruction_hash_cache[f"{task_name}:{assistant.id}"] = instruction_hash
         save_assistant_id_to_db(task_name, assistant.id)
         logging.info(f"🤖 Новый assistant создан для задачи '{task_name}': {assistant.id}")
         return assistant.id, None
@@ -2148,6 +2207,10 @@ async def run_check_translation(original_text: str, user_translation: str) -> st
     task_name = "check_translation"
     system_instruction_key = "check_translation"
 
+    taxonomy_hint = _build_taxonomy_hint_block(
+        categories=VALID_CATEGORIES_DE,
+        subcategories=VALID_SUBCATEGORIES_DE,
+    )
     user_message = (
         "Analyze the translation and return output in this strict format.\n"
         "For each error (Error 1/2/3), include all fields in ONE line:\n"
@@ -2157,6 +2220,7 @@ async def run_check_translation(original_text: str, user_translation: str) -> st
         "Then provide: Correct Translation, Grammar Explanation, Alternative Sentence Construction, Synonyms.\n\n"
         f'**Original sentence (Russian):** "{original_text}"\n'
         f'**User\'s translation (German):** "{user_translation}"'
+        f"{taxonomy_hint}"
     )
     collected_text = await llm_execute(
         task_name=task_name,
@@ -2212,17 +2276,10 @@ async def run_check_translation_multilang(
 
     source_name = _language_name(source_lang)
     target_name = _language_name(target_lang)
-    taxonomy_hint = ""
-    if allowed_categories:
-        taxonomy_hint += f"\nallowed_categories: {', '.join([str(x) for x in allowed_categories if str(x).strip()])}"
-    if allowed_subcategories:
-        compact = []
-        for cat, values in allowed_subcategories.items():
-            if not values:
-                continue
-            compact.append(f"{cat}: {', '.join(values)}")
-        if compact:
-            taxonomy_hint += f"\nallowed_subcategories:\n- " + "\n- ".join(compact)
+    taxonomy_hint = _build_taxonomy_hint_block(
+        categories=allowed_categories,
+        subcategories=allowed_subcategories,
+    )
 
     user_message = (
         f"source_language: {source_lang}\n"
