@@ -168,6 +168,8 @@ from backend.database import (
     save_webapp_translation,
     get_dictionary_cache,
     upsert_dictionary_cache,
+    get_dictionary_lookup_cache,
+    upsert_dictionary_lookup_cache,
     get_youtube_transcript_cache,
     upsert_youtube_transcript_cache,
     upsert_youtube_translations,
@@ -414,6 +416,23 @@ DICTIONARY_PROFILING_ENABLED = str(os.getenv("DICTIONARY_PROFILING_ENABLED") or 
 LANGUAGE_PAIR_CACHE_TTL_SEC = max(30, int((os.getenv("LANGUAGE_PAIR_CACHE_TTL_SEC") or "900").strip()))
 DICTIONARY_LOOKUP_CACHE_TTL_SEC = max(30, int((os.getenv("DICTIONARY_LOOKUP_CACHE_TTL_SEC") or "7200").strip()))
 DICTIONARY_LOOKUP_CACHE_MAX_ITEMS = max(100, min(10000, int((os.getenv("DICTIONARY_LOOKUP_CACHE_MAX_ITEMS") or "2000").strip())))
+DICTIONARY_PERSISTENT_CACHE_ENABLED = str(os.getenv("DICTIONARY_PERSISTENT_CACHE_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+DICTIONARY_PERSISTENT_CACHE_TTL_SEC = max(60, int((os.getenv("DICTIONARY_PERSISTENT_CACHE_TTL_SEC") or "604800").strip() or "604800"))
+DICTIONARY_COALESCE_ENABLED = str(os.getenv("DICTIONARY_COALESCE_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+DICTIONARY_COALESCE_WAIT_TIMEOUT_SEC = max(
+    1.0,
+    min(25.0, float((os.getenv("DICTIONARY_COALESCE_WAIT_TIMEOUT_SEC") or "10").strip() or "10")),
+)
+DICTIONARY_COALESCE_STALE_SEC = max(
+    5.0,
+    min(120.0, float((os.getenv("DICTIONARY_COALESCE_STALE_SEC") or "45").strip() or "45")),
+)
+DICTIONARY_SHARED_CACHE_ENABLED = str(os.getenv("DICTIONARY_SHARED_CACHE_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK = str(os.getenv("DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK") or "0").strip().lower() in {"1", "true", "yes", "on"}
+QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC = max(
+    1.0,
+    min(12.0, float((os.getenv("QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC") or "3.5").strip() or "3.5")),
+)
 TTS_PREWARM_ENABLED = str(os.getenv("TTS_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("TTS_PREWARM_INTERVAL_MINUTES") or "60").strip()))
 TTS_PREWARM_BATCH_SIZE = max(10, min(500, int((os.getenv("TTS_PREWARM_BATCH_SIZE") or "120").strip())))
@@ -429,6 +448,8 @@ _LANGUAGE_PAIR_CACHE_LOCK = threading.Lock()
 _LANGUAGE_PAIR_CACHE: dict[int, dict] = {}
 _DICTIONARY_LOOKUP_CACHE_LOCK = threading.Lock()
 _DICTIONARY_LOOKUP_CACHE: dict[str, dict] = {}
+_DICTIONARY_LOOKUP_INFLIGHT_LOCK = threading.Lock()
+_DICTIONARY_LOOKUP_INFLIGHT: dict[str, dict[str, Any]] = {}
 
 if STRIPE_SECRET_KEY and stripe is not None:
     stripe.api_key = STRIPE_SECRET_KEY
@@ -1035,7 +1056,7 @@ def _normalize_dictionary_lookup_word(word: str) -> str:
 
 def _build_dictionary_lookup_cache_key(
     *,
-    user_id: int,
+    user_id: int | None,
     source_lang: str,
     target_lang: str,
     query_source_lang: str,
@@ -1044,9 +1065,10 @@ def _build_dictionary_lookup_cache_key(
     word: str,
 ) -> str:
     normalized_word = _normalize_dictionary_lookup_word(word)
+    owner = str(int(user_id)) if user_id is not None else "shared"
     return "|".join(
         [
-            str(int(user_id)),
+            owner,
             str(source_lang or "").strip().lower(),
             str(target_lang or "").strip().lower(),
             str(query_source_lang or "").strip().lower(),
@@ -1101,6 +1123,77 @@ def _set_cached_dictionary_lookup(cache_key: str, payload: dict) -> None:
             "expires_at": now_ts + float(DICTIONARY_LOOKUP_CACHE_TTL_SEC),
         }
         _prune_dictionary_lookup_cache(now_ts)
+
+
+def _get_cached_dictionary_lookup_with_tier(cache_key: str) -> tuple[dict | None, str]:
+    cached = _get_cached_dictionary_lookup(cache_key)
+    if cached:
+        return cached, "memory"
+    if not DICTIONARY_PERSISTENT_CACHE_ENABLED:
+        return None, "none"
+    persistent = get_dictionary_lookup_cache(
+        cache_key=cache_key,
+        ttl_seconds=DICTIONARY_PERSISTENT_CACHE_TTL_SEC,
+    )
+    if isinstance(persistent, dict):
+        _set_cached_dictionary_lookup(cache_key, persistent)
+        return persistent, "db"
+    return None, "none"
+
+
+def _set_cached_dictionary_lookup_all(
+    *,
+    cache_key: str,
+    payload: dict,
+    source_lang: str,
+    target_lang: str,
+    query_source_lang: str,
+    query_target_lang: str,
+    lookup_lang: str,
+    normalized_word: str,
+) -> None:
+    _set_cached_dictionary_lookup(cache_key, payload)
+    if not DICTIONARY_PERSISTENT_CACHE_ENABLED:
+        return
+    try:
+        upsert_dictionary_lookup_cache(
+            cache_key=cache_key,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            query_source_lang=query_source_lang,
+            query_target_lang=query_target_lang,
+            lookup_lang=lookup_lang,
+            normalized_word=normalized_word,
+            response_json=payload,
+        )
+    except Exception as exc:
+        logging.debug("Failed to upsert persistent dictionary cache: %s", exc)
+
+
+def _acquire_dictionary_lookup_inflight_slot(cache_key: str) -> tuple[bool, threading.Event | None]:
+    if not DICTIONARY_COALESCE_ENABLED or not cache_key:
+        return True, None
+    with _DICTIONARY_LOOKUP_INFLIGHT_LOCK:
+        existing = _DICTIONARY_LOOKUP_INFLIGHT.get(cache_key)
+        if existing and isinstance(existing.get("event"), threading.Event):
+            started_at = float(existing.get("started_at") or 0.0)
+            if started_at > 0 and (time.time() - started_at) > DICTIONARY_COALESCE_STALE_SEC:
+                _DICTIONARY_LOOKUP_INFLIGHT.pop(cache_key, None)
+            else:
+                return False, existing["event"]
+        event = threading.Event()
+        _DICTIONARY_LOOKUP_INFLIGHT[cache_key] = {"event": event, "started_at": time.time()}
+        return True, event
+
+
+def _release_dictionary_lookup_inflight_slot(cache_key: str, event: threading.Event | None) -> None:
+    if not cache_key or event is None:
+        return
+    with _DICTIONARY_LOOKUP_INFLIGHT_LOCK:
+        existing = _DICTIONARY_LOOKUP_INFLIGHT.get(cache_key)
+        if existing and existing.get("event") is event:
+            event.set()
+            _DICTIONARY_LOOKUP_INFLIGHT.pop(cache_key, None)
 
 
 def _require_stripe_config(*, require_webhook_secret: bool = False) -> str | None:
@@ -4961,7 +5054,12 @@ def _quick_translate_deepl(text: str, source_lang: str | None, target_lang: str)
     if source:
         payload["source_lang"] = source
     headers = {"Authorization": f"DeepL-Auth-Key {DEEPL_AUTH_KEY}"}
-    resp = requests.post(endpoint, data=payload, headers=headers, timeout=10)
+    resp = requests.post(
+        endpoint,
+        data=payload,
+        headers=headers,
+        timeout=QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC,
+    )
     if not resp.ok:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
     data = resp.json() if resp.content else {}
@@ -4992,7 +5090,7 @@ def _quick_translate_libretranslate(text: str, source_lang: str | None, target_l
         "target": target,
         "format": "text",
     }
-    resp = requests.post(endpoint, json=payload, timeout=10)
+    resp = requests.post(endpoint, json=payload, timeout=QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC)
     if not resp.ok:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
     data = resp.json() if resp.content else {}
@@ -5019,7 +5117,7 @@ def _quick_translate_mymemory(text: str, source_lang: str | None, target_lang: s
             "q": str(text or ""),
             "langpair": f"{source}|{target}",
         },
-        timeout=10,
+        timeout=QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC,
     )
     if not resp.ok:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
@@ -5059,7 +5157,7 @@ def _quick_translate_azure(text: str, source_lang: str | None, target_lang: str)
         params=params,
         headers=headers,
         json=[{"text": str(text or "")}],
-        timeout=10,
+        timeout=QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC,
     )
     if not resp.ok:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
@@ -5097,7 +5195,7 @@ def _quick_translate_google(text: str, source_lang: str | None, target_lang: str
     resp = requests.post(
         "https://translation.googleapis.com/language/translate/v2",
         data=payload,
-        timeout=10,
+        timeout=QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC,
     )
     if not resp.ok:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
@@ -6486,6 +6584,33 @@ def _force_translate_text(
     cleaned = str(text or "").strip()
     if not cleaned:
         return ""
+
+    # First: fast non-LLM providers (DeepL/Azure/Google/etc.).
+    quick_providers: list[tuple[str, callable]] = []
+    if DEEPL_AUTH_KEY:
+        quick_providers.append(("deepl_free", _quick_translate_deepl))
+    if LIBRETRANSLATE_URL:
+        quick_providers.append(("libretranslate", _quick_translate_libretranslate))
+    if AZURE_TRANSLATOR_KEY:
+        quick_providers.append(("azure_translator", _quick_translate_azure))
+    if GOOGLE_TRANSLATE_API_KEY:
+        quick_providers.append(("google_translate", _quick_translate_google))
+    if ARGOS_TRANSLATE_ENABLED:
+        quick_providers.append(("argos_offline", _quick_translate_argos))
+    quick_providers.append(("mymemory", _quick_translate_mymemory))
+
+    for provider_name, provider_fn in quick_providers:
+        try:
+            if provider_name == "google_translate":
+                _enforce_google_translate_monthly_budget(len(cleaned))
+            payload = provider_fn(cleaned, source_lang, target_lang)
+            translated = str((payload or {}).get("translation") or "").strip()
+            if translated:
+                return translated
+        except Exception:
+            continue
+
+    # Last resort: LLM translation (slower).
     try:
         translated = asyncio.run(
             run_translate_subtitles_multilang(
@@ -11696,6 +11821,11 @@ def lookup_webapp_dictionary():
     stage_marks: dict[str, float] = {"start": started_at}
     user_id_for_log: int | None = None
     cache_hit = False
+    cache_scope = "none"
+    llm_calls_total = 0
+    fallback_reverse_used = False
+    fallback_forced_used = False
+    gateway_path = "unknown"
 
     def mark(stage_name: str) -> None:
         stage_marks[stage_name] = time.perf_counter()
@@ -11720,9 +11850,15 @@ def lookup_webapp_dictionary():
                 prev = ts
             total_ms = int((end_ts - started_at) * 1000)
             logging.info(
-                "Dictionary lookup profile: user_id=%s cache_hit=%s total=%sms %s%s",
+                "Dictionary lookup profile: user_id=%s cache_hit=%s cache_scope=%s gateway=%s llm_calls=%s "
+                "fallback_reverse=%s fallback_forced=%s total=%sms %s%s",
                 user_id_for_log,
                 cache_hit,
+                cache_scope,
+                gateway_path,
+                llm_calls_total,
+                fallback_reverse_used,
+                fallback_forced_used,
                 total_ms,
                 " ".join(parts),
                 f" error={error_text}" if error_text else "",
@@ -11757,6 +11893,11 @@ def lookup_webapp_dictionary():
     mark("lang_pair")
 
     cache_key = ""
+    cache_key_shared = ""
+    normalized_word = _normalize_dictionary_lookup_word(word_ru)
+    coalesce_key = ""
+    coalesce_owner = False
+    coalesce_event: threading.Event | None = None
     usage_main = None
     try:
         # Unified multilang lookup for all language pairs (including legacy RU<->DE)
@@ -11784,7 +11925,39 @@ def lookup_webapp_dictionary():
             lookup_lang=lookup_lang,
             word=word_ru,
         )
-        cached_payload = _get_cached_dictionary_lookup(cache_key)
+        cache_key_shared = _build_dictionary_lookup_cache_key(
+            user_id=None,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            query_source_lang=query_source_lang,
+            query_target_lang=query_target_lang,
+            lookup_lang=lookup_lang,
+            word=word_ru,
+        )
+
+        def _load_cache_payload() -> tuple[dict | None, str]:
+            local_payload, local_tier = _get_cached_dictionary_lookup_with_tier(cache_key)
+            if local_payload:
+                return local_payload, f"user_{local_tier}"
+            if DICTIONARY_SHARED_CACHE_ENABLED:
+                shared_payload, shared_tier = _get_cached_dictionary_lookup_with_tier(cache_key_shared)
+                if shared_payload:
+                    _set_cached_dictionary_lookup(cache_key, shared_payload)
+                    return shared_payload, f"shared_{shared_tier}"
+            return None, "none"
+
+        cached_payload, cache_scope_value = _load_cache_payload()
+        if cached_payload:
+            cache_scope = cache_scope_value
+        if not cached_payload and DICTIONARY_COALESCE_ENABLED:
+            coalesce_key = cache_key_shared if DICTIONARY_SHARED_CACHE_ENABLED else cache_key
+            coalesce_owner, coalesce_event = _acquire_dictionary_lookup_inflight_slot(coalesce_key)
+            if not coalesce_owner and coalesce_event is not None:
+                coalesce_event.wait(timeout=DICTIONARY_COALESCE_WAIT_TIMEOUT_SEC)
+                cached_payload, cache_scope_value = _load_cache_payload()
+                if cached_payload:
+                    cache_scope = f"coalesced_{cache_scope_value}"
+
         if cached_payload:
             cached_item = cached_payload.get("item")
             cached_direction = str(cached_payload.get("direction") or "").strip().lower()
@@ -11801,63 +11974,103 @@ def lookup_webapp_dictionary():
                     }
                 )
 
-        raw = asyncio.run(
-            run_dictionary_lookup_multilang(
-                word=word_ru,
+        try:
+            raw = asyncio.run(
+                run_dictionary_lookup_multilang(
+                    word=word_ru,
+                    source_lang=query_source_lang,
+                    target_lang=query_target_lang,
+                )
+            )
+            llm_calls_total += 1
+            mark("llm_main")
+            usage_main = get_last_llm_usage(reset=True)
+            gateway_path = str((usage_main or {}).get("gateway") or "unknown")
+            result, detected, source_value, target_value = _build_multilang_dictionary_result(
+                raw=raw,
+                query_word=word_ru,
                 source_lang=query_source_lang,
                 target_lang=query_target_lang,
             )
-        )
-        mark("llm_main")
-        usage_main = get_last_llm_usage(reset=True)
-        result, detected, source_value, target_value = _build_multilang_dictionary_result(
-            raw=raw,
-            query_word=word_ru,
-            source_lang=query_source_lang,
-            target_lang=query_target_lang,
-        )
-        if lookup_lang and lookup_lang in {query_source_lang, query_target_lang}:
-            # Hard-fix direction from explicit UI language hint to avoid
-            # wrong reversals when model mis-detects the query language.
+            if lookup_lang and lookup_lang in {query_source_lang, query_target_lang}:
+                # Hard-fix direction from explicit UI language hint to avoid
+                # wrong reversals when model mis-detects the query language.
+                direction = f"{query_source_lang}-{query_target_lang}"
+            else:
+                direction = (
+                    f"{query_source_lang}-{query_target_lang}"
+                    if detected != "target"
+                    else f"{query_target_lang}-{query_source_lang}"
+                )
+        except Exception:
+            forced_target = _force_translate_text(
+                text=word_ru,
+                source_lang=query_source_lang,
+                target_lang=query_target_lang,
+            )
+            if not forced_target:
+                raise
+            fallback_forced_used = True
+            mark("llm_main")
+            gateway_path = "quick_fallback"
             direction = f"{query_source_lang}-{query_target_lang}"
-        else:
-            direction = f"{query_source_lang}-{query_target_lang}" if detected != "target" else f"{query_target_lang}-{query_source_lang}"
+            source_value = str(word_ru or "").strip()
+            target_value = str(forced_target or "").strip()
+            result = {
+                "word_ru": source_value,
+                "translation_de": target_value,
+                "word_de": target_value,
+                "translation_ru": source_value,
+                "source_text": source_value,
+                "target_text": target_value,
+                "part_of_speech": "",
+                "article": "",
+                "forms": {},
+                "usage_examples": [],
+                "quick_mode": True,
+            }
 
         # Fallback for cases where model returns identical source/target.
         if not source_value or source_value.casefold() == target_value.casefold():
-            reverse_raw = asyncio.run(
-                run_dictionary_lookup_multilang(
-                    word=word_ru,
-                    source_lang=query_target_lang,
-                    target_lang=query_source_lang,
+            if DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK:
+                reverse_raw = asyncio.run(
+                    run_dictionary_lookup_multilang(
+                        word=word_ru,
+                        source_lang=query_target_lang,
+                        target_lang=query_source_lang,
+                    )
                 )
-            )
-            mark("llm_fallback")
-            usage_reverse = get_last_llm_usage(reset=True)
-            _billing_log_openai_usage(
-                user_id=int(user_id),
-                action_type="dictionary_lookup_fallback",
-                source_lang=source_lang,
-                target_lang=target_lang,
-                usage=usage_reverse,
-                seed=f"dict_lookup_fallback:{user_id}:{word_ru}:{direction}:{time.time_ns()}",
-                metadata={"word": word_ru, "direction": direction},
-            )
-            reverse_target = str(reverse_raw.get("word_target") or "").strip()
-            if reverse_target and reverse_target.casefold() != target_value.casefold():
-                result["word_ru"] = reverse_target
-                result["translation_ru"] = reverse_target
-                result["source_text"] = reverse_target
-            else:
+                llm_calls_total += 1
+                fallback_reverse_used = True
+                mark("llm_fallback")
+                usage_reverse = get_last_llm_usage(reset=True)
+                _billing_log_openai_usage(
+                    user_id=int(user_id),
+                    action_type="dictionary_lookup_fallback",
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    usage=usage_reverse,
+                    seed=f"dict_lookup_fallback:{user_id}:{word_ru}:{direction}:{time.time_ns()}",
+                    metadata={"word": word_ru, "direction": direction},
+                )
+                reverse_target = str(reverse_raw.get("word_target") or "").strip()
+                if reverse_target and reverse_target.casefold() != source_value.casefold():
+                    result["target_text"] = reverse_target
+                    result["translation_de"] = reverse_target
+                    result["word_de"] = reverse_target
+                    target_value = reverse_target
+            if not target_value or target_value.casefold() == source_value.casefold():
                 forced = _force_translate_text(
                     text=word_ru,
                     source_lang=query_source_lang,
                     target_lang=query_target_lang,
                 )
-                if forced and forced.casefold() != target_value.casefold():
-                    result["word_ru"] = forced
-                    result["translation_ru"] = forced
-                    result["source_text"] = forced
+                if forced and forced.casefold() != source_value.casefold():
+                    fallback_forced_used = True
+                    result["target_text"] = forced
+                    result["translation_de"] = forced
+                    result["word_de"] = forced
+                    target_value = forced
         # If explicit lookup language is provided and selected word is from
         # query_source_lang, ensure target side is truly translated.
         if lookup_lang and lookup_lang == query_source_lang:
@@ -11877,6 +12090,9 @@ def lookup_webapp_dictionary():
     except Exception as exc:
         _log_dictionary_profile(error_text=str(exc))
         return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
+    finally:
+        if coalesce_owner:
+            _release_dictionary_lookup_inflight_slot(coalesce_key, coalesce_event)
 
     result = _decorate_dictionary_item(
         result if isinstance(result, dict) else {},
@@ -11885,13 +12101,31 @@ def lookup_webapp_dictionary():
         direction=direction,
     )
     mark("decorate")
-    _set_cached_dictionary_lookup(
-        cache_key,
-        {
-            "item": result,
-            "direction": direction,
-        },
+    cache_payload = {
+        "item": result,
+        "direction": direction,
+    }
+    _set_cached_dictionary_lookup_all(
+        cache_key=cache_key,
+        payload=cache_payload,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        query_source_lang=query_source_lang,
+        query_target_lang=query_target_lang,
+        lookup_lang=lookup_lang,
+        normalized_word=normalized_word,
     )
+    if DICTIONARY_SHARED_CACHE_ENABLED and cache_key_shared:
+        _set_cached_dictionary_lookup_all(
+            cache_key=cache_key_shared,
+            payload=cache_payload,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            query_source_lang=query_source_lang,
+            query_target_lang=query_target_lang,
+            lookup_lang=lookup_lang,
+            normalized_word=normalized_word,
+        )
     _billing_log_event_safe(
         user_id=int(user_id),
         action_type="dictionary_lookup",
@@ -11990,28 +12224,31 @@ def lookup_mobile_dictionary():
             direction = f"{source_lang}-{target_lang}" if detected != "target" else f"{target_lang}-{source_lang}"
 
             if not source_value or source_value.casefold() == target_value.casefold():
-                reverse_raw = asyncio.run(
-                    run_dictionary_lookup_multilang(
-                        word=word,
-                        source_lang=target_lang,
-                        target_lang=source_lang,
+                if DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK:
+                    reverse_raw = asyncio.run(
+                        run_dictionary_lookup_multilang(
+                            word=word,
+                            source_lang=target_lang,
+                            target_lang=source_lang,
+                        )
                     )
-                )
-                reverse_target = str(reverse_raw.get("word_target") or "").strip()
-                if reverse_target and reverse_target.casefold() != target_value.casefold():
-                    result["word_ru"] = reverse_target
-                    result["translation_ru"] = reverse_target
-                    result["source_text"] = reverse_target
-                else:
+                    reverse_target = str(reverse_raw.get("word_target") or "").strip()
+                    if reverse_target and reverse_target.casefold() != source_value.casefold():
+                        result["target_text"] = reverse_target
+                        result["translation_de"] = reverse_target
+                        result["word_de"] = reverse_target
+                        target_value = reverse_target
+                if not target_value or target_value.casefold() == source_value.casefold():
                     forced = _force_translate_text(
                         text=word,
-                        source_lang=target_lang,
-                        target_lang=source_lang,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
                     )
-                    if forced and forced.casefold() != target_value.casefold():
-                        result["word_ru"] = forced
-                        result["translation_ru"] = forced
-                        result["source_text"] = forced
+                    if forced and forced.casefold() != source_value.casefold():
+                        result["target_text"] = forced
+                        result["translation_de"] = forced
+                        result["word_de"] = forced
+                        target_value = forced
     except Exception as exc:
         return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
 

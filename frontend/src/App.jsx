@@ -14,6 +14,9 @@ import { detectAppMode } from './utils/appMode';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
+const SINGLE_INSTANCE_LOCK_KEY = 'dds_single_instance_lock_v1';
+const SINGLE_INSTANCE_HEARTBEAT_MS = 2000;
+const SINGLE_INSTANCE_STALE_MS = 12000;
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -60,6 +63,7 @@ class ErrorBoundary extends React.Component {
 function AppInner() {
   const telegramApp = useMemo(() => window.Telegram?.WebApp, []);
   const [appMode, setAppMode] = useState(() => detectAppMode());
+  const [singleInstanceBlocked, setSingleInstanceBlocked] = useState(false);
   const isWebAppMode = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     const isWebappPath =
@@ -120,6 +124,7 @@ function AppInner() {
   const [dictionaryResult, setDictionaryResult] = useState(null);
   const [dictionaryError, setDictionaryError] = useState('');
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
+  const [dictionaryLookupMode, setDictionaryLookupMode] = useState('');
   const [dictionarySaved, setDictionarySaved] = useState('');
   const [dictionaryDirection, setDictionaryDirection] = useState('ru-de');
   const [dictionaryLanguagePair, setDictionaryLanguagePair] = useState(null);
@@ -491,6 +496,9 @@ function AppInner() {
   const ttsPendingKeysRef = useRef(new Set());
   const flashcardFeelQueueRef = useRef(new Map());
   const flashcardFeelDispatchInFlightRef = useRef(false);
+  const singleInstanceTokenRef = useRef(`inst_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+  const singleInstanceOwnsLockRef = useRef(false);
+  const singleInstanceHeartbeatRef = useRef(null);
   const inlineToastTimeoutRef = useRef(null);
   const readerSessionStartingRef = useRef(false);
   const readerStateSaveTimeoutRef = useRef(null);
@@ -629,6 +637,146 @@ function AppInner() {
   const [uiLang, setUiLang] = useState('ru');
   const t = useMemo(() => createTranslator(uiLang), [uiLang]);
   const tr = useCallback((ru, de) => (uiLang === 'de' ? de : ru), [uiLang]);
+  const forceSingleInstanceTakeover = useCallback(() => {
+    if (!isWebAppMode) return;
+    const now = Date.now();
+    safeStorageSet(SINGLE_INSTANCE_LOCK_KEY, JSON.stringify({
+      owner: singleInstanceTokenRef.current,
+      lastSeen: now,
+      openedAt: now,
+      href: window.location.href,
+    }));
+    singleInstanceOwnsLockRef.current = true;
+    setSingleInstanceBlocked(false);
+  }, [isWebAppMode]);
+  useEffect(() => {
+    if (!isWebAppMode) {
+      setSingleInstanceBlocked(false);
+      singleInstanceOwnsLockRef.current = false;
+      if (singleInstanceHeartbeatRef.current) {
+        clearInterval(singleInstanceHeartbeatRef.current);
+        singleInstanceHeartbeatRef.current = null;
+      }
+      return undefined;
+    }
+
+    const parseLock = () => {
+      const raw = safeStorageGet(SINGLE_INSTANCE_LOCK_KEY);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        return {
+          owner: String(parsed.owner || '').trim(),
+          lastSeen: Number(parsed.lastSeen || 0),
+        };
+      } catch (_error) {
+        return null;
+      }
+    };
+
+    const isFreshLock = (lock) => {
+      if (!lock?.owner) return false;
+      if (!Number.isFinite(lock?.lastSeen)) return false;
+      return (Date.now() - Number(lock.lastSeen)) <= SINGLE_INSTANCE_STALE_MS;
+    };
+
+    const writeOwnLock = () => {
+      const now = Date.now();
+      safeStorageSet(SINGLE_INSTANCE_LOCK_KEY, JSON.stringify({
+        owner: singleInstanceTokenRef.current,
+        lastSeen: now,
+        openedAt: now,
+        href: window.location.href,
+      }));
+    };
+
+    const releaseOwnLock = () => {
+      const lock = parseLock();
+      if (lock?.owner === singleInstanceTokenRef.current) {
+        safeStorageRemove(SINGLE_INSTANCE_LOCK_KEY);
+      }
+      singleInstanceOwnsLockRef.current = false;
+    };
+
+    const acquireOrBlock = (force = false) => {
+      const lock = parseLock();
+      const occupiedByOther = Boolean(
+        lock?.owner
+        && lock.owner !== singleInstanceTokenRef.current
+        && isFreshLock(lock)
+      );
+      if (!force && occupiedByOther) {
+        singleInstanceOwnsLockRef.current = false;
+        setSingleInstanceBlocked(true);
+        return false;
+      }
+      writeOwnLock();
+      singleInstanceOwnsLockRef.current = true;
+      setSingleInstanceBlocked(false);
+      return true;
+    };
+
+    const heartbeat = () => {
+      const lock = parseLock();
+      if (singleInstanceOwnsLockRef.current) {
+        const otherFresh = Boolean(
+          lock?.owner
+          && lock.owner !== singleInstanceTokenRef.current
+          && isFreshLock(lock)
+        );
+        if (otherFresh) {
+          singleInstanceOwnsLockRef.current = false;
+          setSingleInstanceBlocked(true);
+          return;
+        }
+        writeOwnLock();
+        return;
+      }
+      if (!lock || !isFreshLock(lock)) {
+        acquireOrBlock(false);
+      } else if (lock.owner !== singleInstanceTokenRef.current) {
+        setSingleInstanceBlocked(true);
+      }
+    };
+
+    const onStorage = (event) => {
+      if (event.key !== SINGLE_INSTANCE_LOCK_KEY) return;
+      heartbeat();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      heartbeat();
+    };
+
+    const onPageHide = () => {
+      releaseOwnLock();
+    };
+
+    const onBeforeUnload = () => {
+      releaseOwnLock();
+    };
+
+    acquireOrBlock(false);
+    singleInstanceHeartbeatRef.current = window.setInterval(heartbeat, SINGLE_INSTANCE_HEARTBEAT_MS);
+    window.addEventListener('storage', onStorage);
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onBeforeUnload);
+
+    return () => {
+      if (singleInstanceHeartbeatRef.current) {
+        clearInterval(singleInstanceHeartbeatRef.current);
+        singleInstanceHeartbeatRef.current = null;
+      }
+      window.removeEventListener('storage', onStorage);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      releaseOwnLock();
+    };
+  }, [isWebAppMode]);
   const billingReturnMessage = useMemo(() => {
     if (billingReturnContext.kind === 'success') {
       return tr('Оплата прошла успешно. Проверяю подписку и обновляю статус.', 'Zahlung erfolgreich. Ich pruefe jetzt dein Abo und aktualisiere den Status.');
@@ -1574,8 +1722,15 @@ function AppInner() {
     return resolveFlashcardTexts(entry).targetText;
   };
 
+  const resolveFlashcardFeelEntryId = useCallback((entry) => {
+    const raw = entry?.entry_id ?? entry?.id ?? entry?.response_json?.entry_id ?? 0;
+    const normalized = Number(raw || 0);
+    if (!Number.isFinite(normalized) || normalized <= 0) return 0;
+    return Math.trunc(normalized);
+  }, []);
+
   const queueFlashcardFeel = useCallback((entry) => {
-    const entryId = Number(entry?.id || 0);
+    const entryId = resolveFlashcardFeelEntryId(entry);
     if (!entryId) return;
     if (flashcardFeelQueueRef.current.has(entryId)) {
       setFlashcardFeelStatusMap((prev) => ({
@@ -1596,7 +1751,7 @@ function AppInner() {
         'Verstanden. Wir senden die Erklaerung nach dem Training per Privatnachricht.'
       ),
     }));
-  }, [tr]);
+  }, [resolveFlashcardFeelEntryId, tr]);
 
   const dispatchQueuedFlashcardFeel = useCallback(async (trigger = 'manual') => {
     if (!initData) {
@@ -3708,6 +3863,62 @@ function AppInner() {
             },
           ],
         },
+        {
+          key: 'extra_features',
+          number: '8',
+          title: 'Zusatzfunktionen (angenehme Extras)',
+          summary: 'Quiz, tiefe Analytik, Audio-Fehlerfeedback, Ziele, Empfehlungen und Ranking auf einen Blick.',
+          sections: [
+            {
+              title: 'Quiz im Chat',
+              items: [
+                'Der Bot sendet Quizfragen direkt in den Chat/Gruppen-Thread, damit du schnell trainierst, ohne die Mini App jedes Mal zu öffnen.',
+                'In der Regel ist die Aufgabe in deiner Basissprache, und die Antwortoptionen sind in der Zielsprache.',
+                'Quiz-Ergebnisse fließen in Fortschritt, Fehleranalyse und spätere Skill-Trainingsvorschläge ein.',
+              ],
+            },
+            {
+              title: 'Detaillierte Analytik + Erinnerungen',
+              items: [
+                'Es gibt Analytik sowohl in der Mini App als auch im Bot-Chat: tägliche/wochentliche Metriken, Erfolgsquote, Zeit und Fortschritt.',
+                'Erinnerungen kommen in den Chat (und bei Gruppenmodus auch in die Gruppe): was heute noch offen ist, was bereits erledigt wurde und was Priorität hat.',
+                'Die Tagesplan-Karten in der Mini App sind mit diesen Erinnerungen synchron: Status „todo/doing/done“ wird gemeinsam aktualisiert.',
+              ],
+            },
+            {
+              title: 'Audio-Fehleranalyse',
+              items: [
+                'Nach abgeschlossenen Aufgaben kann der Bot Audio-Erklärungen zu typischen Fehlern senden, damit du die Schwachstellen schneller schließt.',
+                'Diese Audio-Hinweise ergänzen die Text-Erklärungen und helfen besonders bei Aussprache, Intonation und Sprachgefühl.',
+                'Die gleichen Fehlerkategorien werden anschließend in Skill-Map und Trainingsaufgaben berücksichtigt.',
+              ],
+            },
+            {
+              title: 'YouTube-Empfehlungen + persönliche Ziele',
+              items: [
+                'Die App kann relevante YouTube-Videos nach deinem aktuellen Skill/Thema empfehlen und den Fortschritt zu Video-Aufgaben verfolgen.',
+                'Persönliche Ziele stellst du im Bereich Analytics im Block Wochenplan ein: Übersetzungen, Wörter, Agent-Minuten und Lese-Minuten.',
+                'Danach priorisiert der Tagesplan Aufgaben in Richtung deiner Ziele und zeigt Abweichung Soll/Ist.',
+              ],
+            },
+            {
+              title: '„Fühle das Wort“ + Turnier-Tabelle',
+              items: [
+                'Die Funktion „Fühle das Wort“ stärkt Sprachgefühl: Kontext, Nuancen, typische Kollokationen und natürliche Formulierungen.',
+                'Im Gruppenmodus gibt es eine Turnier-/Ranking-Ansicht mit Vergleich zwischen Teilnehmern nach Score und Aktivität.',
+                'In der Gruppenstatistik erscheinen nur Nutzer, die ihre Teilnahme in der Gruppe bestätigt haben.',
+              ],
+            },
+            {
+              title: 'Was oft vergessen wird (wichtig)',
+              items: [
+                'Jeder Gruppen-Teilnehmer sollte den Bot einmal im Privat-Chat starten, sonst funktionieren einzelne Features bei manchen Nutzern unvollständig.',
+                'Nach Zahlung, Portal-Rückkehr oder Tarifwechsel immer kurz warten (1–3 Sekunden) und Status neu laden.',
+                'Wenn eine Funktion „still“ wirkt (kein Klick-Effekt), zuerst Netzwerk, initData und aktuellen Bereichskontext prüfen (Privat vs. Gruppe).',
+              ],
+            },
+          ],
+        },
       ];
     }
 
@@ -3996,6 +4207,62 @@ function AppInner() {
               'Бот вернёт перевод фразы или предложения.',
               'Дополнительно он покажет несколько полезных сопутствующих выражений и вариантов по контексту.',
               'Часть этих вариантов можно сразу добавить в ваш словарь для дальнейшего изучения в карточках и FSRS.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'extra_features',
+        number: '8',
+        title: 'Доп. приятные фишки',
+        summary: 'Квизы, детальная аналитика, аудио-разбор ошибок, цели, рекомендации и турнирная таблица в одном месте.',
+        sections: [
+          {
+            title: 'Квизы в чате',
+            items: [
+              'Бот отправляет квизы прямо в чат/групповой тред, чтобы можно было тренироваться быстро, не открывая каждый раз Mini App.',
+              'Обычно условие идёт на вашем базовом языке, а варианты ответа на целевом языке обучения.',
+              'Результаты квизов учитываются в прогрессе, ошибках и дальнейших рекомендациях по skill-тренировкам.',
+            ],
+          },
+          {
+            title: 'Детальная аналитика + напоминания',
+            items: [
+              'Аналитика доступна и в Mini App, и в чате бота: дневные/недельные метрики, успешность, время, динамика.',
+              'Напоминания приходят в чат (а в групповом режиме также в группу): что по плану ещё не закрыто, что уже сделано и что сейчас приоритетно.',
+              'Карточки плана на сегодня внутри Mini App синхронизированы с этими напоминаниями по статусам todo/doing/done.',
+            ],
+          },
+          {
+            title: 'Аудио ошибок',
+            items: [
+              'После завершения задач бот может присылать аудио-разборы типичных ошибок, чтобы быстрее закрывать слабые места.',
+              'Это дополняет текстовые объяснения и особенно полезно для произношения, интонации и языкового слуха.',
+              'Те же категории ошибок дальше попадают в skill-карту и тренировки.',
+            ],
+          },
+          {
+            title: 'Рекомендации YouTube + анализ личных целей',
+            items: [
+              'Система подбирает релевантные YouTube-видео под ваш текущий skill/тему и отслеживает прогресс видео-задач.',
+              'Личные цели настраиваются в разделе Аналитика в блоке «План на неделю»: переводы, слова, минуты агента и минуты чтения.',
+              'После установки целей план на сегодня приоритизирует задачи под эти цели и показывает отклонение факт/план.',
+            ],
+          },
+          {
+            title: '«Почувствуй слово» + турнирная таблица',
+            items: [
+              'Функция «Почувствуй слово» помогает прокачивать языковую интуицию: контекст, оттенки, коллокации и естественные формулировки.',
+              'В групповом режиме доступна турнирная таблица/рейтинг со сравнением участников по результатам и активности.',
+              'В общий рейтинг попадают только пользователи, которые подтвердили участие в группе.',
+            ],
+          },
+          {
+            title: 'Что ещё важно и часто забывают',
+            items: [
+              'Каждому участнику группы нужно хотя бы один раз открыть бота в личке, иначе часть функций у некоторых пользователей может работать неполно.',
+              'После оплаты, возврата из Stripe Portal или смены тарифа дайте системе 1–3 секунды и обновите статус.',
+              'Если функция визуально не срабатывает, сначала проверьте сеть, initData и контекст запуска (личка или группа).',
             ],
           },
         ],
@@ -7472,6 +7739,7 @@ function AppInner() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        initData: initData || undefined,
         text: cleaned,
         source_lang: sourceLangHint || null,
         target_lang: targetLang,
@@ -9680,6 +9948,7 @@ function AppInner() {
       return;
     }
     setDictionaryLoading(true);
+    setDictionaryLookupMode('gpt');
     setDictionaryError('');
     setDictionaryResult(null);
     setDictionarySaved('');
@@ -9717,6 +9986,66 @@ function AppInner() {
       setDictionaryError(`${tr('Ошибка словаря', 'Woerterbuchfehler')}: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
+      setDictionaryLookupMode('');
+    }
+  };
+
+  const handleDictionaryQuickLookup = async () => {
+    if (!initData) {
+      setDictionaryError(initDataMissingMsg);
+      return;
+    }
+    const sourceWord = String(dictionaryWord || '').trim();
+    if (!sourceWord) {
+      setDictionaryError(tr('Введите слово или фразу для словаря.', 'Bitte gib ein Wort oder eine Phrase fuers Woerterbuch ein.'));
+      return;
+    }
+    setDictionaryLoading(true);
+    setDictionaryLookupMode('quick');
+    setDictionaryError('');
+    setDictionaryResult(null);
+    setDictionarySaved('');
+    setLastLookupScrollY(null);
+    try {
+      const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+      const quick = await requestQuickTranslation(sourceWord);
+      const sourceLang = normalizeLangCode(
+        quick.detectedSource
+        || quick.sourceLangHint
+        || pair.source_lang
+      ) || pair.source_lang;
+      const targetLang = normalizeLangCode(
+        quick.targetLang
+        || (sourceLang === pair.source_lang ? pair.target_lang : pair.source_lang)
+      ) || pair.target_lang;
+      const sourceText = String(quick.cleaned || sourceWord).trim();
+      const targetText = String(quick.translation || '').trim();
+      if (!targetText) {
+        throw new Error(tr('Быстрый перевод не вернул результат', 'Schnelluebersetzung hat kein Ergebnis geliefert'));
+      }
+      setDictionaryResult({
+        word_ru: sourceText,
+        translation_de: targetText,
+        word_de: targetText,
+        translation_ru: sourceText,
+        source_text: sourceText,
+        target_text: targetText,
+        source_lang: sourceLang,
+        target_lang: targetLang,
+        part_of_speech: '',
+        article: '',
+        forms: {},
+        usage_examples: [],
+        provider: quick.provider || '',
+        quick_mode: true,
+      });
+      setDictionaryDirection(`${sourceLang}-${targetLang}`);
+      setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: sourceLang, target_lang: targetLang }));
+    } catch (error) {
+      setDictionaryError(`${tr('Ошибка быстрого перевода', 'Fehler bei Schnelluebersetzung')}: ${error.message}`);
+    } finally {
+      setDictionaryLoading(false);
+      setDictionaryLookupMode('');
     }
   };
 
@@ -11083,6 +11412,32 @@ function AppInner() {
   }, [analyticsCompare, webappUser]);
 
   if (isWebAppMode) {
+    if (singleInstanceBlocked) {
+      return (
+        <div className="webapp-page">
+          <div className="webapp-card">
+            <header className="webapp-header">
+              <span className="pill">Telegram Web App</span>
+              <h1>{tr('Уже открыто в другом окне', 'Bereits in einem anderen Fenster offen')}</h1>
+              <p>
+                {tr(
+                  'Сейчас активна другая копия приложения. Это защита от параллельных сессий и дублирования действий.',
+                  'Aktuell ist bereits eine andere App-Kopie aktiv. Das ist ein Schutz gegen parallele Sessions und doppelte Aktionen.'
+                )}
+              </p>
+            </header>
+            <div className="webapp-actions">
+              <button type="button" className="primary-button" onClick={forceSingleInstanceTakeover}>
+                {tr('Открыть эту копию', 'Diese Kopie öffnen')}
+              </button>
+              <button type="button" className="secondary-button" onClick={() => window.location.reload()}>
+                {tr('Проверить снова', 'Erneut prüfen')}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isGuideScreen ? 'is-guide-screen' : ''}`}>
         <div className="webapp-shell">
@@ -13630,8 +13985,20 @@ function AppInner() {
                         </div>
                       </label>
                       <div className="dictionary-actions">
+                        <button
+                          className="secondary-button dictionary-fast-button"
+                          type="button"
+                          onClick={handleDictionaryQuickLookup}
+                          disabled={dictionaryLoading}
+                        >
+                          {dictionaryLoading && dictionaryLookupMode === 'quick'
+                            ? tr('Быстро...', 'Schnell...')
+                            : tr('Быстро перевести', 'Schnell uebersetzen')}
+                        </button>
                         <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
-                          {dictionaryLoading ? tr('Ищем...', 'Suche...') : tr('Перевести', 'Uebersetzen')}
+                          {dictionaryLoading && dictionaryLookupMode === 'gpt'
+                            ? tr('GPT...', 'GPT...')
+                            : tr('Использовать GPT', 'GPT verwenden')}
                         </button>
                         {lastLookupScrollY !== null && (
                           <button
@@ -13822,6 +14189,11 @@ function AppInner() {
                           <span className="dictionary-direction">
                             {getLookupDirectionLabel()}
                           </span>
+                          {!!String(dictionaryResult?.provider || '').trim() && (
+                            <span className="dictionary-direction">
+                              {String(dictionaryResult.provider).toUpperCase()}
+                            </span>
+                          )}
                         </div>
                         <div className="dictionary-row">
                           <strong>{tr('Часть речи:', 'Wortart:')}</strong> {dictionaryResult.part_of_speech || '—'}
@@ -14538,6 +14910,9 @@ function AppInner() {
                             const srsReplayTtsKey = `srs-replay-${srsCard?.id || srsCard?.entry_id || 'current'}`;
                             const srsReplayTtsLoading = isTtsPending(srsReplayTtsKey);
                             const srsReplayLang = getTtsLocaleForLang(detectTtsLangFromText(targetText));
+                            const srsFeelEntryId = resolveFlashcardFeelEntryId(srsCard);
+                            const srsFeelQueued = srsFeelEntryId ? !!flashcardFeelQueuedMap[srsFeelEntryId] : false;
+                            const srsFeelStatus = srsFeelEntryId ? String(flashcardFeelStatusMap[srsFeelEntryId] || '').trim() : '';
                             return (
                               <>
                                 <div className={`fsrs-study-card ${srsRevealAnswer ? 'is-revealed' : ''}`}>
@@ -14582,6 +14957,25 @@ function AppInner() {
                                       >
                                         {renderTtsButtonContent(srsReplayTtsLoading)}
                                       </button>
+                                      <div className="flashcard-actions-row flashcard-preview-feel-row">
+                                        <button
+                                          type="button"
+                                          className="secondary-button flashcard-preview-feel-btn"
+                                          disabled={!srsFeelEntryId || srsFeelQueued || flashcardFeelDispatching || srsSubmitting}
+                                          onClick={() => {
+                                            queueFlashcardFeel(srsCard);
+                                          }}
+                                        >
+                                          {srsFeelQueued
+                                            ? tr('В очереди', 'In Warteschlange')
+                                            : tr('Почувствовать слово', 'Feel the Word')}
+                                        </button>
+                                      </div>
+                                      {srsFeelStatus && (
+                                        <div className="flashcard-preview-feel-status">
+                                          {srsFeelStatus}
+                                        </div>
+                                      )}
                                     </>
                                   )}
                                 </div>
@@ -14654,8 +15048,9 @@ function AppInner() {
                                 : flashcardActiveMode === 'sentence'
                                   ? 'Satz Ergaenzen Mode'
                                   : 'Quiz 4 Options Mode';
-                              const feelQueued = !!flashcardFeelQueuedMap[entry.id];
-                              const feelStatus = String(flashcardFeelStatusMap[entry.id] || '').trim();
+                              const feelEntryId = resolveFlashcardFeelEntryId(entry);
+                              const feelQueued = feelEntryId ? !!flashcardFeelQueuedMap[feelEntryId] : false;
+                              const feelStatus = feelEntryId ? String(flashcardFeelStatusMap[feelEntryId] || '').trim() : '';
                               const previewNavLocked = previewAudioPlaying;
                               const previewTtsKey = `flashcard-preview-${entry.id}`;
                               const previewTtsLoading = previewAudioPlaying || isTtsPending(previewTtsKey);
@@ -14707,7 +15102,7 @@ function AppInner() {
                                       <button
                                         type="button"
                                         className="secondary-button flashcard-preview-feel-btn"
-                                        disabled={feelQueued || flashcardFeelDispatching}
+                                        disabled={!feelEntryId || feelQueued || flashcardFeelDispatching}
                                         onClick={() => {
                                           queueFlashcardFeel(entry);
                                         }}

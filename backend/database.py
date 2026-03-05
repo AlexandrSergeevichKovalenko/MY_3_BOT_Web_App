@@ -1540,6 +1540,42 @@ def ensure_webapp_tables() -> None:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_dictionary_lookup_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    source_lang TEXT NOT NULL DEFAULT '',
+                    target_lang TEXT NOT NULL DEFAULT '',
+                    query_source_lang TEXT NOT NULL DEFAULT '',
+                    query_target_lang TEXT NOT NULL DEFAULT '',
+                    lookup_lang TEXT NOT NULL DEFAULT '',
+                    normalized_word TEXT NOT NULL DEFAULT '',
+                    response_json JSONB NOT NULL,
+                    hit_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_lookup_cache_updated
+                ON bt_3_dictionary_lookup_cache (updated_at DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_lookup_cache_word_lang
+                ON bt_3_dictionary_lookup_cache (
+                    normalized_word,
+                    source_lang,
+                    target_lang,
+                    query_source_lang,
+                    query_target_lang,
+                    lookup_lang
+                );
+                """
+            )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_youtube_transcripts (
                     video_id TEXT PRIMARY KEY,
@@ -4288,6 +4324,112 @@ def upsert_dictionary_cache(word_ru: str, response_json: dict) -> None:
                 word_ru,
                 json.dumps(response_json, ensure_ascii=False),
             ))
+
+
+def get_dictionary_lookup_cache(cache_key: str, ttl_seconds: int | None = None) -> dict | None:
+    cache_key_value = str(cache_key or "").strip()
+    if not cache_key_value:
+        return None
+    ttl_value = int(ttl_seconds or 0)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if ttl_value > 0:
+                cursor.execute(
+                    """
+                    SELECT response_json
+                    FROM bt_3_dictionary_lookup_cache
+                    WHERE cache_key = %s
+                      AND updated_at >= NOW() - (%s * INTERVAL '1 second');
+                    """,
+                    (cache_key_value, ttl_value),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT response_json
+                    FROM bt_3_dictionary_lookup_cache
+                    WHERE cache_key = %s;
+                    """,
+                    (cache_key_value,),
+                )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            response_json = row[0]
+            if isinstance(response_json, str):
+                try:
+                    response_json = json.loads(response_json)
+                except Exception:
+                    return None
+            if not isinstance(response_json, dict):
+                return None
+            try:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_dictionary_lookup_cache
+                    SET hit_count = hit_count + 1
+                    WHERE cache_key = %s;
+                    """,
+                    (cache_key_value,),
+                )
+            except Exception:
+                pass
+            return dict(response_json)
+
+
+def upsert_dictionary_lookup_cache(
+    *,
+    cache_key: str,
+    source_lang: str,
+    target_lang: str,
+    query_source_lang: str,
+    query_target_lang: str,
+    lookup_lang: str,
+    normalized_word: str,
+    response_json: dict,
+) -> None:
+    cache_key_value = str(cache_key or "").strip()
+    if not cache_key_value or not isinstance(response_json, dict):
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_dictionary_lookup_cache (
+                    cache_key,
+                    source_lang,
+                    target_lang,
+                    query_source_lang,
+                    query_target_lang,
+                    lookup_lang,
+                    normalized_word,
+                    response_json,
+                    hit_count,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, NOW(), NOW())
+                ON CONFLICT (cache_key) DO UPDATE
+                SET source_lang = EXCLUDED.source_lang,
+                    target_lang = EXCLUDED.target_lang,
+                    query_source_lang = EXCLUDED.query_source_lang,
+                    query_target_lang = EXCLUDED.query_target_lang,
+                    lookup_lang = EXCLUDED.lookup_lang,
+                    normalized_word = EXCLUDED.normalized_word,
+                    response_json = EXCLUDED.response_json,
+                    updated_at = NOW();
+                """,
+                (
+                    cache_key_value,
+                    str(source_lang or "").strip().lower(),
+                    str(target_lang or "").strip().lower(),
+                    str(query_source_lang or "").strip().lower(),
+                    str(query_target_lang or "").strip().lower(),
+                    str(lookup_lang or "").strip().lower(),
+                    str(normalized_word or "").strip(),
+                    Json(response_json),
+                ),
+            )
 
 
 def get_youtube_transcript_cache(video_id: str) -> dict | None:

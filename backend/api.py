@@ -6,7 +6,7 @@ from livekit.agents import llm
 import asyncio
 from typing import Optional, List, Dict
 from database import get_db_connection_context  
-from openai_manager import client as openai_client, system_message
+from openai_manager import llm_execute
 from config_mistakes_data import (
     VALID_CATEGORIES, 
     VALID_SUBCATEGORIES, 
@@ -414,31 +414,14 @@ class GermanTeacherTools:
         """
         logging.info(f"Tool 'explain_grammar' called for topic: {topic}")
         
-        # Оновлений системний промпт згідно Стратегії 2.0
-        system_prompt = (
-            "You are a charismatic, unconventional German language coach. "
-            "Your goal is to explain grammar using *shortcuts, mnemonics, and analogies* (lifehacks). "
-            "NEVER give a textbook definition. "
-            "Keep it extremely short (max 3-5 sentences). "
-            "Explain it as if you are sharing a secret trick with a friend. "
-            "Language: German (C1 level), but clear."
-        )
-        
-        user_prompt = f"Explain this topic using a lifehack or mnemonic: {topic}"
-
         try:
-            response = await openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.7, # Трохи більше креативності для метафор
-                max_tokens=200
+            explanation = await llm_execute(
+                task_name="explain_grammar_tool",
+                system_instruction_key="explain_grammar_tool",
+                user_message=f"Topic: {topic}",
+                poll_interval_seconds=1.0,
             )
-            
-            explanation = response.choices[0].message.content
-            return explanation
+            return str(explanation or "").strip()
 
         except Exception as e:
             logging.error(f"Error in 'explain_grammar': {e}", exc_info=True)
@@ -486,25 +469,16 @@ class GermanTeacherTools:
         """
         logging.info(f"Tool 'generate_quiz_question' called for topic: {topic}")
         
-        system_prompt = """
-        You are a German quiz generator. Create a single, clear C1-level quiz question.
-        You MUST respond ONLY with a valid JSON object matching this exact structure:
-        {"question_id": 12345, "question_text": "...", "options": ["A", "B", "C"] or null, "correct_answer": "..."}
-        """
-        user_prompt = f"Topic: {topic}"
         question_id = int(uuid4().hex[:12], 16)  # Генеруємо унікальний ідентифікатор питання
 
         try:
-            response = await openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                response_format={"type": "json_object"}, 
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.5
+            response_text = await llm_execute(
+                task_name="generate_quiz_question_tool",
+                system_instruction_key="generate_quiz_question_tool",
+                user_message=f"Topic: {topic}",
+                poll_interval_seconds=1.0,
             )
-            quiz_data = json.loads(response.choices[0].message.content)
+            quiz_data = json.loads(str(response_text or "{}"))
             quiz_data["question_id"] = question_id
             return quiz_data
 
@@ -519,33 +493,18 @@ class GermanTeacherTools:
         """
         logging.info(f"Tool 'evaluate_quiz_answer' called.")
         
-        system_prompt = """
-        You are a German quiz evaluator. 
-        Respond ONLY with a valid JSON object:
-        {"is_correct": true/false, "explanation": "Brief explanation in German."}
-        """
-        user_prompt = f"Q: {question_text}, Correct: {correct_answer}, User: {user_answer}"
-
         try:
-            response = await openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.0 
+            response_text = await llm_execute(
+                task_name="evaluate_quiz_answer_tool",
+                system_instruction_key="evaluate_quiz_answer_tool",
+                user_message=(
+                    f"Q: {question_text}\n"
+                    f"Correct: {correct_answer}\n"
+                    f"User: {user_answer}"
+                ),
+                poll_interval_seconds=1.0,
             )
-            # Ми робимо json.loads, щоб:
-            # (json.loads): Вы превращаете эту строку в словарь Python
-            # Отримати Python-об'єкт, з яким зручно працювати всередині коду (логіка, бази даних).
-            # Віддати фреймворку об'єкт, щоб він коректно запакував його назад для LLM без зайвих лапок і слешів (\).
-            # Работа Фреймворка (автоматическая): Фреймворк берет ваш словарь и выполняет json.dumps(), чтобы превратить его обратно в чистую строку JSON. 
-            # Это нужно, чтобы добавить результат в историю чата (в сообщение типа ToolMessage или FunctionMessage).
-            # Если бы вы сами вернули строку '{"is_correct": true}', Фреймворк мог бы подумать: "Ага, пользователь вернул строку. 
-            # Мне нужно превратить её в валидный JSON-формат для сообщения".
-            # И он бы сделал json.dumps() над вашей строкой. Получилось бы "двойное кодирование" (escaping):
-            return json.loads(response.choices[0].message.content)
+            return json.loads(str(response_text or "{}"))
 
         except Exception as e:
             logging.error(f"Error in 'evaluate_quiz_answer': {e}", exc_info=True)

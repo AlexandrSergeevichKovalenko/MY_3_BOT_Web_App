@@ -4260,6 +4260,13 @@ body {
   background: linear-gradient(135deg, #5ddcff, #7c5cff);
 }
 
+.webapp-dictionary .dictionary-fast-button {
+  color: #f8fafc;
+  font-weight: 700;
+  border: 1px solid rgba(93, 220, 255, 0.45);
+  background: rgba(15, 23, 42, 0.65);
+}
+
 .webapp-dictionary .dictionary-button:hover {
   background: linear-gradient(135deg, #7c5cff, #5ddcff);
 }
@@ -12659,10 +12666,11 @@ body {
 
 .webapp-dictionary .dictionary-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
+.webapp-dictionary .dictionary-actions .dictionary-fast-button,
 .webapp-dictionary .dictionary-actions .dictionary-button,
 .webapp-dictionary .dictionary-actions .dictionary-save-button {
   min-height: 48px;
@@ -12683,6 +12691,13 @@ body {
   background: var(--dict-primary);
 }
 
+.webapp-dictionary .dictionary-actions .dictionary-fast-button {
+  border: 1px solid var(--dict-border);
+  background: transparent;
+  color: var(--dict-text-secondary);
+  box-shadow: none;
+}
+
 .webapp-dictionary .dictionary-actions .dictionary-save-button {
   border: 1px solid var(--dict-border);
   background: transparent;
@@ -12700,6 +12715,7 @@ body {
   box-shadow: none;
 }
 
+.webapp-dictionary .dictionary-actions .dictionary-fast-button:hover,
 .webapp-dictionary .dictionary-actions .dictionary-save-button:hover,
 .webapp-dictionary .dictionary-actions .dictionary-back-icon:hover {
   background: #1f2937;
@@ -12909,6 +12925,7 @@ body {
     gap: 8px;
   }
 
+  .webapp-dictionary .dictionary-actions .dictionary-fast-button,
   .webapp-dictionary .dictionary-actions .dictionary-button,
   .webapp-dictionary .dictionary-actions .dictionary-save-button {
     min-height: 52px;

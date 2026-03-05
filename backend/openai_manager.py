@@ -32,15 +32,28 @@ FEEL_THREAD_DELETE_TIMEOUT_SECONDS = 0.75
 _DEFAULT_GATEWAY_MODE = "assistants"
 _DEFAULT_GATEWAY_MODEL = "gpt-4.1-2025-04-14"
 _DEFAULT_RESPONSES_TASKS = {
+    "dictionary_assistant",
+    "dictionary_assistant_de",
     "dictionary_assistant_multilang",
+    "dictionary_collocations",
+    "dictionary_collocations_multilang",
     "feel_word",
     "feel_word_multilang",
+    "enrich_word",
+    "enrich_word_multilang",
     "check_translation",
     "check_translation_multilang",
+    "check_translation_story",
+    "check_translation_with_claude",
+    "check_translation_explanation_multilang",
+    "audio_sentence_grammar_explain_multilang",
+    "check_story_guess_semantic",
     "recheck_translation",
     "generate_sentences",
     "generate_sentences_multilang",
     "generate_mystery_story",
+    "generate_word_quiz",
+    "tts_chunk_de",
     "translate_subtitles_ru",
     "translate_subtitles_multilang",
 }
@@ -64,6 +77,21 @@ def _get_responses_tasks() -> set[str]:
         if parsed:
             return parsed
     return set(_DEFAULT_RESPONSES_TASKS)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+DICTIONARY_RESPONSES_ONLY = _env_flag("DICTIONARY_RESPONSES_ONLY", True)
+DICTIONARY_ALLOW_ASSISTANTS_FALLBACK = _env_flag("DICTIONARY_ALLOW_ASSISTANTS_FALLBACK", False)
+DICTIONARY_RESPONSES_TIMEOUT_SECONDS = max(
+    2.0,
+    float(str(os.getenv("DICTIONARY_RESPONSES_TIMEOUT_SECONDS") or "9").strip() or "9"),
+)
 
 
 def _build_taxonomy_hint_block(
@@ -1243,6 +1271,47 @@ The user can trigger these modes at any time by asking:
 - `get_recent_telegram_mistakes` resolves user_id internally.
 - `generate_quiz_question` requires a topic. If user doesn't give one, ask for it.
 """,
+"explain_grammar_tool": """
+You are a charismatic German grammar coach.
+Task: explain one grammar topic using a lifehack/mnemonic, not textbook style.
+
+Rules:
+- Output language: German.
+- 3-5 short sentences.
+- Max ~80 words.
+- Practical and memorable.
+- No markdown, no bullets, no JSON.
+""",
+"generate_quiz_question_tool": """
+You are a German quiz generator.
+Return ONLY valid JSON object with this exact schema:
+{
+  "question_text": string,
+  "options": [string, string, string] | null,
+  "correct_answer": string
+}
+
+Rules:
+- One clear C1-level grammar/vocabulary question.
+- If multiple choice, provide exactly 3 plausible options and one must be correct_answer.
+- If not multiple choice, set options to null.
+- No extra keys.
+- No markdown, no comments.
+""",
+"evaluate_quiz_answer_tool": """
+You are a German quiz evaluator.
+Return ONLY valid JSON object with this exact schema:
+{
+  "is_correct": boolean,
+  "explanation": string
+}
+
+Rules:
+- Compare user answer with expected answer semantically.
+- explanation must be short, in German, and constructive.
+- No extra keys.
+- No markdown, no comments.
+""",
 "dictionary_assistant": """
 You are a German dictionary assistant. The user provides a Russian word, phrase or short sentence.
 
@@ -2112,7 +2181,12 @@ async def _run_task_text_via_responses(
         instructions=system_instruction_content,
         input=user_message,
     )
-    _store_last_usage(response, task_name=task_name)
+    usage = _store_last_usage(response, task_name=task_name)
+    usage_payload = dict(usage or {})
+    usage_payload["gateway"] = "responses"
+    if task_name and not usage_payload.get("task_name"):
+        usage_payload["task_name"] = task_name
+    _LAST_LLM_USAGE.set(usage_payload)
     content = _extract_response_text(response).strip()
     if not content:
         raise RuntimeError(f"Responses API вернул пустой ответ для task='{task_name}'")
@@ -2153,7 +2227,12 @@ async def _run_task_text_via_assistants(
         if status in {"failed", "cancelled", "expired", "incomplete"}:
             raise RuntimeError(f"Assistant run завершился статусом '{status}' для task='{task_name}'")
         await asyncio.sleep(max(0.1, float(poll_interval_seconds)))
-    _store_last_usage(run_status, task_name=task_name)
+    usage = _store_last_usage(run_status, task_name=task_name)
+    usage_payload = dict(usage or {})
+    usage_payload["gateway"] = "assistants"
+    if task_name and not usage_payload.get("task_name"):
+        usage_payload["task_name"] = task_name
+    _LAST_LLM_USAGE.set(usage_payload)
 
     messages = await client.beta.threads.messages.list(thread_id=thread_id)
     last_message = messages.data[0]
@@ -2179,21 +2258,43 @@ async def llm_execute(
     user_message: str,
     poll_interval_seconds: float = 2.0,
     fast_delete: bool = False,
+    responses_timeout_seconds: float | None = None,
+    responses_only: bool = False,
+    allow_assistants_fallback: bool = True,
 ) -> str:
     _LAST_LLM_USAGE.set(None)
+
+    async def _run_responses_with_limits() -> str:
+        coro = _run_task_text_via_responses(
+            task_name=task_name,
+            system_instruction_key=system_instruction_key,
+            user_message=user_message,
+        )
+        timeout_value = float(responses_timeout_seconds or 0.0)
+        if timeout_value > 0:
+            return await asyncio.wait_for(coro, timeout=timeout_value)
+        return await coro
+
+    if responses_only:
+        return await _run_responses_with_limits()
+
     if _should_use_responses(task_name):
         try:
-            return await _run_task_text_via_responses(
-                task_name=task_name,
-                system_instruction_key=system_instruction_key,
-                user_message=user_message,
-            )
+            return await _run_responses_with_limits()
         except Exception as exc:
+            if not allow_assistants_fallback:
+                raise
             logging.warning(
                 "Responses path failed for task='%s', fallback to assistants: %s",
                 task_name,
                 exc,
             )
+
+    if not allow_assistants_fallback:
+        raise RuntimeError(
+            f"Assistants fallback disabled for task='{task_name}' and responses path is unavailable"
+        )
+
     return await _run_task_text_via_assistants(
         task_name=task_name,
         system_instruction_key=system_instruction_key,
@@ -2568,6 +2669,9 @@ async def run_dictionary_lookup_multilang(
         system_instruction_key=system_instruction_key,
         user_message=json.dumps(payload, ensure_ascii=False),
         poll_interval_seconds=1.0,
+        responses_timeout_seconds=DICTIONARY_RESPONSES_TIMEOUT_SECONDS,
+        responses_only=DICTIONARY_RESPONSES_ONLY,
+        allow_assistants_fallback=DICTIONARY_ALLOW_ASSISTANTS_FALLBACK,
     )
 
     cleaned = content.strip()
