@@ -7,6 +7,7 @@ import json
 import hashlib
 import contextvars
 #from openai import OpenAI
+import openai
 from openai import AsyncOpenAI
 import psycopg2
 from contextlib import contextmanager
@@ -90,8 +91,13 @@ DICTIONARY_RESPONSES_ONLY = _env_flag("DICTIONARY_RESPONSES_ONLY", True)
 DICTIONARY_ALLOW_ASSISTANTS_FALLBACK = _env_flag("DICTIONARY_ALLOW_ASSISTANTS_FALLBACK", False)
 DICTIONARY_RESPONSES_TIMEOUT_SECONDS = max(
     2.0,
-    float(str(os.getenv("DICTIONARY_RESPONSES_TIMEOUT_SECONDS") or "9").strip() or "9"),
+    float(str(os.getenv("DICTIONARY_RESPONSES_TIMEOUT_SECONDS") or "14").strip() or "14"),
 )
+DICTIONARY_RESPONSES_MAX_RETRIES = max(
+    1,
+    min(3, int(str(os.getenv("DICTIONARY_RESPONSES_MAX_RETRIES") or "2").strip() or "2")),
+)
+DICTIONARY_QUICK_TRANSLATE_FALLBACK_ENABLED = _env_flag("DICTIONARY_QUICK_TRANSLATE_FALLBACK_ENABLED", False)
 LLM_ALLOW_ASSISTANTS_FALLBACK = _env_flag("LLM_ALLOW_ASSISTANTS_FALLBACK", True)
 
 
@@ -1907,6 +1913,7 @@ def get_db_connection_context():
 # === Настройка Open AI API ===
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=60)
+logging.info("OpenAI SDK version detected: %s", getattr(openai, "__version__", "unknown"))
 _LAST_LLM_USAGE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("last_llm_usage", default=None)
 
 
@@ -2177,7 +2184,10 @@ async def _run_task_text_via_responses(
     system_instruction_content = system_message.get(system_instruction_key)
     if not system_instruction_content:
         raise ValueError(f"Системная инструкция '{system_instruction_key}' не найдена")
-    response = await client.responses.create(
+    responses_api = getattr(client, "responses", None)
+    if responses_api is None or not hasattr(responses_api, "create"):
+        raise RuntimeError("OpenAI SDK does not expose AsyncOpenAI.responses API (upgrade openai package).")
+    response = await responses_api.create(
         model=_get_gateway_model(),
         instructions=system_instruction_content,
         input=user_message,
@@ -2278,7 +2288,23 @@ async def llm_execute(
         return await coro
 
     if responses_only:
-        return await _run_responses_with_limits()
+        try:
+            return await _run_responses_with_limits()
+        except Exception as exc:
+            if not fallback_allowed:
+                raise
+            logging.warning(
+                "Responses-only path failed for task='%s', fallback to assistants: %s",
+                task_name,
+                exc,
+            )
+            return await _run_task_text_via_assistants(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=poll_interval_seconds,
+                fast_delete=fast_delete,
+            )
 
     if _should_use_responses(task_name):
         try:
@@ -2666,15 +2692,53 @@ async def run_dictionary_lookup_multilang(
         "target_language": (target_lang or "").strip().lower(),
         "word": (word or "").strip(),
     }
-    content = await llm_execute(
-        task_name=task_name,
-        system_instruction_key=system_instruction_key,
-        user_message=json.dumps(payload, ensure_ascii=False),
-        poll_interval_seconds=1.0,
-        responses_timeout_seconds=DICTIONARY_RESPONSES_TIMEOUT_SECONDS,
-        responses_only=DICTIONARY_RESPONSES_ONLY,
-        allow_assistants_fallback=DICTIONARY_ALLOW_ASSISTANTS_FALLBACK,
-    )
+    quick_target = ""
+    content = ""
+    last_error: Exception | None = None
+    for attempt in range(1, DICTIONARY_RESPONSES_MAX_RETRIES + 1):
+        try:
+            content = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=json.dumps(payload, ensure_ascii=False),
+                poll_interval_seconds=1.0,
+                responses_timeout_seconds=DICTIONARY_RESPONSES_TIMEOUT_SECONDS,
+                responses_only=DICTIONARY_RESPONSES_ONLY,
+                allow_assistants_fallback=DICTIONARY_ALLOW_ASSISTANTS_FALLBACK,
+            )
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            logging.warning(
+                "dictionary_assistant_multilang attempt %s/%s failed: %s",
+                attempt,
+                DICTIONARY_RESPONSES_MAX_RETRIES,
+                exc,
+            )
+            if attempt < DICTIONARY_RESPONSES_MAX_RETRIES:
+                await asyncio.sleep(0.35 * attempt)
+
+    if last_error is not None:
+        if not DICTIONARY_QUICK_TRANSLATE_FALLBACK_ENABLED:
+            raise last_error
+        logging.warning(
+            "dictionary_assistant_multilang failed after retries, fallback to quick subtitles translate: %s",
+            last_error,
+        )
+        try:
+            translated = await asyncio.wait_for(
+                run_translate_subtitles_multilang(
+                    lines=[(word or "").strip()],
+                    source_lang=(source_lang or "").strip().lower(),
+                    target_lang=(target_lang or "").strip().lower(),
+                ),
+                timeout=max(2.0, float(DICTIONARY_RESPONSES_TIMEOUT_SECONDS)),
+            )
+            if isinstance(translated, list) and translated:
+                quick_target = str(translated[0] or "").strip()
+        except Exception as fallback_exc:
+            logging.warning("quick dictionary fallback translate failed: %s", fallback_exc)
 
     cleaned = content.strip()
     if cleaned.startswith("```"):
@@ -2689,8 +2753,12 @@ async def run_dictionary_lookup_multilang(
     return {
         "detected_language": "source",
         "word_source": word,
-        "word_target": "",
-        "translations": [],
+        "word_target": quick_target,
+        "translations": (
+            [{"value": quick_target, "context": "quick_translate", "is_primary": True}]
+            if quick_target
+            else []
+        ),
         "meanings": {"primary": {}, "secondary": []},
         "etymology_note": None,
         "usage_note": None,
