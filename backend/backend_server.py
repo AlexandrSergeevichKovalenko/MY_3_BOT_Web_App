@@ -6783,6 +6783,7 @@ def _send_private_message(
     reply_markup: dict | None = None,
     disable_web_page_preview: bool = True,
     parse_mode: str | None = None,
+    message_type: str | None = None,
 ) -> None:
     payload = {
         "chat_id": int(user_id),
@@ -6808,7 +6809,7 @@ def _send_private_message(
             record_telegram_system_message(
                 chat_id=int(user_id),
                 message_id=int(message_id),
-                message_type="text",
+                message_type=(message_type or "text"),
             )
     except Exception:
         logging.debug("Failed to track private system message", exc_info=True)
@@ -15282,6 +15283,7 @@ def _dispatch_flashcard_feel_messages(
                     text=text,
                     reply_markup=reply_markup,
                     parse_mode="HTML",
+                    message_type="feel_word",
                 )
                 sent_count += 1
             except Exception:
@@ -18542,6 +18544,11 @@ def _run_system_message_cleanup_job() -> None:
         return
     tz_name = (os.getenv("SYSTEM_MESSAGE_CLEANUP_TZ") or os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
     max_days_back = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK") or "2").strip())
+    excluded_types = [
+        item.strip().lower()
+        for item in (os.getenv("SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES") or "feel_word").split(",")
+        if item.strip()
+    ]
     try:
         now = datetime.now(ZoneInfo(tz_name))
     except Exception:
@@ -18554,6 +18561,7 @@ def _run_system_message_cleanup_job() -> None:
             tz_name=tz_name,
             max_days_back=max_days_back,
             limit=10000,
+            excluded_types=excluded_types,
         )
     except Exception:
         logging.exception("❌ System message cleanup failed while reading pending list")

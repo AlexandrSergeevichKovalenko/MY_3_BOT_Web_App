@@ -5950,26 +5950,48 @@ def get_pending_telegram_system_messages(
     tz_name: str = "UTC",
     max_days_back: int = 2,
     limit: int = 5000,
+    excluded_types: list[str] | None = None,
 ) -> list[dict]:
     max_days_back = max(0, int(max_days_back))
+    excluded = [str(item or "").strip().lower() for item in (excluded_types or []) if str(item or "").strip()]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, chat_id, message_id, message_type, created_at
-                FROM bt_3_telegram_system_messages
-                WHERE deleted_at IS NULL
-                  AND ((created_at AT TIME ZONE %s)::date BETWEEN %s AND %s)
-                ORDER BY created_at ASC
-                LIMIT %s;
-                """,
-                (
-                    tz_name,
-                    target_date - timedelta(days=max_days_back),
-                    target_date,
-                    int(limit),
-                ),
-            )
+            if excluded:
+                cursor.execute(
+                    """
+                    SELECT id, chat_id, message_id, message_type, created_at
+                    FROM bt_3_telegram_system_messages
+                    WHERE deleted_at IS NULL
+                      AND ((created_at AT TIME ZONE %s)::date BETWEEN %s AND %s)
+                      AND LOWER(COALESCE(message_type, 'text')) <> ALL(%s)
+                    ORDER BY created_at ASC
+                    LIMIT %s;
+                    """,
+                    (
+                        tz_name,
+                        target_date - timedelta(days=max_days_back),
+                        target_date,
+                        excluded,
+                        int(limit),
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, chat_id, message_id, message_type, created_at
+                    FROM bt_3_telegram_system_messages
+                    WHERE deleted_at IS NULL
+                      AND ((created_at AT TIME ZONE %s)::date BETWEEN %s AND %s)
+                    ORDER BY created_at ASC
+                    LIMIT %s;
+                    """,
+                    (
+                        tz_name,
+                        target_date - timedelta(days=max_days_back),
+                        target_date,
+                        int(limit),
+                    ),
+                )
             rows = cursor.fetchall()
     return [
         {
@@ -6008,6 +6030,26 @@ def mark_telegram_system_message_deleted(
                     """,
                     (int(row_id),),
                 )
+
+
+def update_telegram_system_message_type(
+    *,
+    chat_id: int,
+    message_id: int,
+    message_type: str,
+) -> None:
+    normalized_type = str(message_type or "").strip().lower()[:32] or "text"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_telegram_system_messages
+                SET message_type = %s
+                WHERE chat_id = %s
+                  AND message_id = %s;
+                """,
+                (normalized_type, int(chat_id), int(message_id)),
+            )
 
 
 def has_admin_scheduler_run(

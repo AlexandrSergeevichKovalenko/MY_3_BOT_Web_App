@@ -48,6 +48,8 @@ from backend.openai_manager import (
     run_dictionary_lookup,
     run_dictionary_lookup_de,
     run_dictionary_lookup_multilang,
+    run_feel_word,
+    run_feel_word_multilang,
     run_dictionary_collocations,
     run_dictionary_collocations_multilang,
     run_generate_word_quiz,
@@ -72,6 +74,7 @@ from backend.database import (
     list_pending_access_requests,
     update_webapp_dictionary_entry,
     apply_flashcard_feel_feedback,
+    create_flashcard_feel_feedback_token,
     get_dictionary_cache,
     upsert_dictionary_cache,
     save_webapp_dictionary_query,
@@ -80,6 +83,7 @@ from backend.database import (
     record_telegram_system_message,
     get_pending_telegram_system_messages,
     mark_telegram_system_message_deleted,
+    update_telegram_system_message_type,
     has_admin_scheduler_run,
     mark_admin_scheduler_run,
     get_google_translate_monthly_budget_status,
@@ -122,6 +126,11 @@ SYSTEM_MESSAGE_CLEANUP_TZ = (os.getenv("SYSTEM_MESSAGE_CLEANUP_TZ") or os.getenv
 SYSTEM_MESSAGE_CLEANUP_HOUR = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "23").strip())
 SYSTEM_MESSAGE_CLEANUP_MINUTE = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MINUTE") or "59").strip())
 SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK") or "2").strip())
+SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES = [
+    item.strip().lower()
+    for item in (os.getenv("SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES") or "feel_word").split(",")
+    if item.strip()
+]
 ENABLE_LEGACY_REPLY_KEYBOARD = (os.getenv("ENABLE_LEGACY_REPLY_KEYBOARD") or "0").strip().lower() in {"1", "true", "yes", "on"}
 DICTIONARY_CARD_THEME = (os.getenv("DICTIONARY_CARD_THEME") or "classic").strip().lower()
 
@@ -327,6 +336,7 @@ async def cleanup_system_messages(context: CallbackContext) -> None:
         SYSTEM_MESSAGE_CLEANUP_TZ,
         SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK,
         10000,
+        SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES,
     )
     deleted = 0
     failed = 0
@@ -3196,7 +3206,12 @@ def _resolve_default_dictionary_option(payload: dict) -> dict:
     return {"source": source, "target": target}
 
 
-def _build_save_variant_keyboard(option_key: str, options: list[dict], selected: list[int] | None = None) -> InlineKeyboardMarkup:
+def _build_save_variant_keyboard(
+    option_key: str,
+    options: list[dict],
+    selected: list[int] | None = None,
+    feel_card_key: str | None = None,
+) -> InlineKeyboardMarkup:
     selected_set = set(int(item) for item in (selected or []) if isinstance(item, int) or str(item).isdigit())
     rows = []
     for idx, _opt in enumerate(options[:3], start=1):
@@ -3204,6 +3219,8 @@ def _build_save_variant_keyboard(option_key: str, options: list[dict], selected:
         rows.append([InlineKeyboardButton(f"{mark} Вариант {idx}", callback_data=f"dictseltoggle:{option_key}:{idx-1}")])
     rows.append([InlineKeyboardButton("✅ Сохранить выбранные", callback_data=f"dictsaveconfirm:{option_key}")])
     rows.append([InlineKeyboardButton("☑️ Выбрать все", callback_data=f"dictselall:{option_key}")])
+    if feel_card_key:
+        rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"dictfeel:{feel_card_key}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -3218,6 +3235,70 @@ def _build_save_variants_text(source_lang: str, target_lang: str, options: list[
         lines.append(f"{idx}. <b>{source_lang.upper()}:</b> {_esc(source)}")
         lines.append(f"   <b>{target_lang.upper()}:</b> {_esc(target)}")
         lines.append("")
+    return "\n".join(lines)
+
+
+def _format_flashcard_feel_html_for_bot(feel_text: str) -> str:
+    compact = str(feel_text or "").strip()
+    if len(compact) > 2800:
+        compact = compact[:2797].rstrip() + "..."
+    if not compact:
+        return html.escape(compact)
+
+    def _decorate_line(raw_line: str) -> str:
+        line = str(raw_line or "").strip()
+        if not line:
+            return ""
+        escaped = html.escape(line)
+        escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+        escaped = re.sub(r"\*(.+?)\*", r"<b>\1</b>", escaped)
+
+        heading_probe = re.sub(r"<[^>]+>", "", escaped)
+        heading_probe = re.sub(r"[*_`#:\-–—\s]+", " ", heading_probe).strip().casefold()
+        if not heading_probe:
+            return escaped
+
+        if ("основ" in heading_probe) or ("main explanation" in heading_probe):
+            return f"🧠 {escaped}"
+        if ("похож" in heading_probe) or ("similar" in heading_probe):
+            return f"🧩 {escaped}"
+        if ("внутрен" in heading_probe) or ("inner logic" in heading_probe):
+            return f"🔍 {escaped}"
+        if ("пример" in heading_probe) or ("example" in heading_probe):
+            return f"📝 {escaped}"
+        return escaped
+
+    return "\n".join(_decorate_line(line) for line in compact.splitlines())
+
+
+def _build_dictionary_feel_private_message(
+    *,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+    feel_text: str,
+) -> str:
+    source_code = str(source_lang or "").strip().upper() or "SRC"
+    target_code = str(target_lang or "").strip().upper() or "TGT"
+    source_safe = html.escape(str(source_text or "").strip())
+    target_safe = html.escape(str(target_text or "").strip())
+    formatted_feel = _format_flashcard_feel_html_for_bot(feel_text)
+    lines = [
+        "🧠 <b>Feel the Word</b>",
+        f"🌐 <b>{source_code} → {target_code}</b>",
+        "",
+        "✨ <b>Слово и перевод</b>",
+        f"• {source_safe}",
+        f"• → {target_safe}",
+        "",
+        "━━━━━━━━━━━━",
+        "📚 <b>Разбор</b>",
+        formatted_feel,
+        "",
+        "━━━━━━━━━━━━",
+        "👍👎 <i>Оцени ответ кнопкой ниже:</i>",
+    ]
     return "\n".join(lines)
 
 
@@ -3746,7 +3827,7 @@ async def _send_dictionary_lookup_result(
     card_text = _build_dictionary_card_text(source_lang, target_lang, source_text, lookup)
     variants_text = _build_save_variants_text(source_lang, target_lang, options)
     full_text = f"{card_text}\n\n{variants_text}"
-    keyboard = _build_save_variant_keyboard(option_key, options, selected=[])
+    keyboard = _build_save_variant_keyboard(option_key, options, selected=[], feel_card_key=card_key)
     msg = await message.reply_text(
         full_text,
         reply_markup=keyboard,
@@ -3824,6 +3905,123 @@ async def handle_dictionary_pair_callback(update: Update, context: CallbackConte
         target_lang=target_lang,
     )
     pending_dictionary_lookup_requests.pop(request_key, None)
+
+
+async def handle_dictionary_feel_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+
+    card_key = parts[1].strip()
+    payload = pending_dictionary_cards.get(card_key)
+    if not payload:
+        await query.answer("Карточка устарела. Запросите перевод заново.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Кнопка доступна только автору карточки.", show_alert=True)
+        return
+
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    if (not source_lang or not target_lang) and "-" in str(payload.get("direction") or ""):
+        source_lang, target_lang = [x.strip().lower() for x in str(payload.get("direction")).split("-", 1)]
+
+    lookup = payload.get("lookup") if isinstance(payload.get("lookup"), dict) else {}
+    source_text = str(
+        lookup.get("word_source")
+        or payload.get("source_text")
+        or payload.get("original_query")
+        or ""
+    ).strip()
+    target_text = str(lookup.get("word_target") or "").strip()
+    if not target_text:
+        translations = lookup.get("translations") if isinstance(lookup.get("translations"), list) else []
+        for item in translations:
+            if not isinstance(item, dict):
+                continue
+            candidate = str(item.get("value") or "").strip()
+            if candidate:
+                target_text = candidate
+                break
+
+    if not source_text:
+        await query.answer("Не удалось определить исходное слово.", show_alert=True)
+        return
+
+    try:
+        await query.answer("Готовлю разбор…")
+    except Exception:
+        pass
+
+    try:
+        if source_lang == "ru" and target_lang == "de":
+            feel_text = await run_feel_word(source_text, target_text)
+        elif source_lang == "de" and target_lang == "ru":
+            feel_text = await run_feel_word(target_text or source_text, source_text)
+        else:
+            feel_text = await run_feel_word_multilang(
+                source_text=source_text,
+                target_text=target_text,
+                source_lang=source_lang or "auto",
+                target_lang=target_lang or "auto",
+            )
+    except Exception as exc:
+        logging.exception("❌ Ошибка dictfeel для user_id=%s card_key=%s: %s", int(user.id), card_key, exc)
+        await query.answer("Не удалось сделать разбор. Попробуйте чуть позже.", show_alert=True)
+        return
+
+    feel_text = str(feel_text or "").strip()
+    if not feel_text:
+        await query.answer("Разбор пустой. Попробуйте снова.", show_alert=True)
+        return
+
+    try:
+        token = await asyncio.to_thread(
+            create_flashcard_feel_feedback_token,
+            user_id=int(user.id),
+            entry_id=0,
+            feel_explanation=feel_text,
+        )
+    except Exception as exc:
+        logging.exception("❌ Ошибка создания feel feedback token для user_id=%s: %s", int(user.id), exc)
+        await query.answer("Не удалось подготовить feedback-кнопки.", show_alert=True)
+        return
+
+    reply_markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{token}:like"),
+        InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{token}:dislike"),
+    ]])
+    text = _build_dictionary_feel_private_message(
+        source_text=source_text,
+        target_text=target_text or "—",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        feel_text=feel_text,
+    )
+    msg = await query.message.reply_text(
+        text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=reply_markup,
+    )
+    add_service_msg_id(context, msg.message_id)
+    try:
+        await asyncio.to_thread(
+            update_telegram_system_message_type,
+            chat_id=int(query.message.chat_id),
+            message_id=int(msg.message_id),
+            message_type="feel_word",
+        )
+    except Exception:
+        logging.debug("Failed to mark dictfeel message as preserved", exc_info=True)
 
 
 async def handle_flashcard_feel_feedback_callback(update: Update, context: CallbackContext) -> None:
@@ -3934,7 +4132,7 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
         target_lang=target_lang,
     )
     variants_text = _build_save_variants_text(source_lang, target_lang, options)
-    keyboard = _build_save_variant_keyboard(option_key, options, selected=[])
+    keyboard = _build_save_variant_keyboard(option_key, options, selected=[], feel_card_key=key)
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
@@ -4122,7 +4320,12 @@ async def handle_dictionary_select_toggle_callback(update: Update, context: Call
         selected_set.add(option_idx)
     payload["selected"] = sorted(selected_set)
     pending_dictionary_save_options[option_key] = payload
-    keyboard = _build_save_variant_keyboard(option_key, options, selected=payload["selected"])
+    keyboard = _build_save_variant_keyboard(
+        option_key,
+        options,
+        selected=payload["selected"],
+        feel_card_key=str(payload.get("card_key") or "").strip() or None,
+    )
     try:
         await query.edit_message_reply_markup(reply_markup=keyboard)
     except Exception:
@@ -4151,7 +4354,12 @@ async def handle_dictionary_select_all_callback(update: Update, context: Callbac
     options = payload.get("options") or []
     payload["selected"] = list(range(len(options)))
     pending_dictionary_save_options[option_key] = payload
-    keyboard = _build_save_variant_keyboard(option_key, options, selected=payload["selected"])
+    keyboard = _build_save_variant_keyboard(
+        option_key,
+        options,
+        selected=payload["selected"],
+        feel_card_key=str(payload.get("card_key") or "").strip() or None,
+    )
     try:
         await query.edit_message_reply_markup(reply_markup=keyboard)
     except Exception:
@@ -7793,6 +8001,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_feel_callback, pattern=r"^dictfeel:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_pair_callback, pattern=r"^dictpair:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_toggle_callback, pattern=r"^dictseltoggle:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_all_callback, pattern=r"^dictselall:"))
