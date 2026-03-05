@@ -4482,8 +4482,20 @@ function AppInner() {
   const readerElapsedTotalSeconds = Math.max(0, Number(readerAccumulatedSeconds || 0) + Number(readerLiveSeconds || 0));
   const readerSwipeThreshold = readerSwipeSensitivity === 'high' ? 24 : readerSwipeSensitivity === 'low' ? 52 : 36;
   const readerSwipeLockMs = readerSwipeSensitivity === 'high' ? 180 : readerSwipeSensitivity === 'low' ? 340 : 260;
+  const youtubeTodayTask = getTodayTaskForSection('youtube');
+  const youtubeTaskProgress = youtubeTodayTask ? getTodayItemProgressPercent(youtubeTodayTask, todayTimerNowMs) : 0;
+  const youtubeTaskDone = Boolean(
+    youtubeTodayTask
+    && (
+      String(youtubeTodayTask?.status || '').toLowerCase() === 'done'
+      || youtubeTaskProgress >= 100
+    )
+  );
   const youtubeWatchFocusMode = Boolean(
-    youtubeId
+    !flashcardsOnly
+    && selectedSections.size === 1
+    && selectedSections.has('youtube')
+    && youtubeId
     && youtubePlaybackStarted
     && !youtubeForceShowPanel
     && !youtubeOverlayEnabled
@@ -13639,7 +13651,23 @@ function AppInner() {
                 {isSectionVisible('youtube') && (
                   <section className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`} ref={youtubeRef}>
                     <div className="webapp-local-section-head youtube-player-first-head">
-                      <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
+                      <div className="youtube-player-first-title-row">
+                        <div className="youtube-player-first-title-wrap">
+                          <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
+                          {youtubeTaskDone && (
+                            <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          className="youtube-dock-icon-btn youtube-head-settings-btn"
+                          onClick={() => setYoutubeSettingsOpen(true)}
+                          aria-label={tr('Настройки', 'Settings')}
+                          title={tr('Настройки', 'Settings')}
+                        >
+                          <span aria-hidden="true">&#9881;</span>
+                        </button>
+                      </div>
                       {isFocusedSection('youtube') && (
                         <div className="section-head-nav">
                           <button
@@ -13656,7 +13684,7 @@ function AppInner() {
                           </button>
                         </div>
                       )}
-                      {renderTodaySectionTaskHud('youtube')}
+                      {!youtubeTaskDone && renderTodaySectionTaskHud('youtube')}
                       <div className="youtube-player-first-head-controls">
                         <button
                           type="button"
@@ -13698,15 +13726,6 @@ function AppInner() {
                             : tr('Full screen: OFF', 'Full screen: OFF')}
                         </button>
                       </div>
-                      <button
-                        type="button"
-                        className="youtube-dock-icon-btn youtube-head-settings-btn"
-                        onClick={() => setYoutubeSettingsOpen(true)}
-                        aria-label={tr('Настройки', 'Settings')}
-                        title={tr('Настройки', 'Settings')}
-                      >
-                        <span aria-hidden="true">&#9881;</span>
-                      </button>
                     </div>
                     <div className="youtube-player-card">
                       <div

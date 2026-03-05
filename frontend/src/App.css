@@ -10040,6 +10040,30 @@ body {
   -webkit-box-orient: vertical;
 }
 
+.webapp-video.youtube-player-first .youtube-player-first-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.webapp-video.youtube-player-first .youtube-player-first-title-wrap {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.youtube-inline-done {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  font-size: 18px;
+  line-height: 1;
+}
+
 .webapp-video.youtube-player-first .webapp-video-form.youtube-setup-form {
   background: var(--yt-bg-card);
   border: 1px solid var(--yt-border-default);
@@ -10396,10 +10420,9 @@ body {
 }
 
 .youtube-head-settings-btn {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 4;
+  position: static;
+  margin-left: auto;
+  z-index: 1;
 }
 
 .youtube-dock-icon-btn:hover:not(:disabled),
@@ -10515,6 +10538,23 @@ body {
     padding: 16px;
   }
 
+  .youtube-subtitles-panel-head {
+    display: none;
+  }
+
+  .youtube-subtitles-card.youtube-subtitles-panel {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .youtube-subtitles-panel-content {
+    gap: 10px;
+  }
+
+  .youtube-subtitles-block {
+    gap: 8px;
+  }
+
   .youtube-status-action-btn {
     min-height: 28px;
     font-size: 10px;
@@ -10545,8 +10585,8 @@ body {
   }
 
   .youtube-subtitles-block .webapp-subtitles-list {
-    max-height: min(32vh, 320px);
-    padding: 16px;
+    max-height: min(44vh, 460px);
+    padding: 12px 14px;
   }
 
   .webapp-video.youtube-player-first .youtube-subtitles-block-de .webapp-subtitles-list {
@@ -10558,8 +10598,7 @@ body {
   }
 
   .youtube-head-settings-btn {
-    top: 10px;
-    right: 10px;
+    margin-left: auto;
   }
 
   .youtube-settings-sheet {
