@@ -3559,8 +3559,51 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
     source_lang = (source_lang or "").strip().lower()
     target_lang = (target_lang or "").strip().lower()
     direction = f"{source_lang}-{target_lang}"
+
+    async def _run_multilang_fallback() -> dict:
+        raw_fallback = await run_dictionary_lookup_multilang(
+            word=lookup_input,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        if not isinstance(raw_fallback, dict):
+            raw_fallback = {}
+        return {
+            **raw_fallback,
+            "word_source": str(raw_fallback.get("word_source") or lookup_input).strip(),
+            "word_target": str(raw_fallback.get("word_target") or "").strip(),
+            "translations": (
+                raw_fallback.get("translations")
+                if isinstance(raw_fallback.get("translations"), list)
+                else (
+                    [{"value": str(raw_fallback.get("word_target") or "").strip(), "context": "base", "is_primary": True}]
+                    if str(raw_fallback.get("word_target") or "").strip()
+                    else []
+                )
+            ),
+            "meanings": (
+                raw_fallback.get("meanings")
+                if isinstance(raw_fallback.get("meanings"), dict)
+                else {"primary": {}, "secondary": []}
+            ),
+            "etymology_note": str(raw_fallback.get("etymology_note") or "").strip() or None,
+            "usage_note": str(raw_fallback.get("usage_note") or "").strip() or None,
+            "memory_tip": str(raw_fallback.get("memory_tip") or "").strip() or None,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+        }
+
     if direction == "ru-de":
-        raw = await run_dictionary_lookup(lookup_input)
+        try:
+            raw = await run_dictionary_lookup(lookup_input)
+        except Exception:
+            logging.warning("Legacy dictionary_assistant failed for ru-de; fallback to multilang", exc_info=True)
+            return await _coerce_sentence_lookup_payload(
+                await _run_multilang_fallback(),
+                lookup_input,
+                source_lang,
+                target_lang,
+            )
         translations = raw.get("translations") if isinstance(raw, dict) else []
         if not isinstance(translations, list):
             translations = []
@@ -3581,7 +3624,16 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
         }
         return await _coerce_sentence_lookup_payload(result, lookup_input, source_lang, target_lang)
     if direction == "de-ru":
-        raw = await run_dictionary_lookup_de(lookup_input)
+        try:
+            raw = await run_dictionary_lookup_de(lookup_input)
+        except Exception:
+            logging.warning("Legacy dictionary_assistant_de failed for de-ru; fallback to multilang", exc_info=True)
+            return await _coerce_sentence_lookup_payload(
+                await _run_multilang_fallback(),
+                lookup_input,
+                source_lang,
+                target_lang,
+            )
         translations = raw.get("translations") if isinstance(raw, dict) else []
         if not isinstance(translations, list):
             translations = []
