@@ -64,13 +64,14 @@ function AppInner() {
   const telegramApp = useMemo(() => window.Telegram?.WebApp, []);
   const [appMode, setAppMode] = useState(() => detectAppMode());
   const [singleInstanceBlocked, setSingleInstanceBlocked] = useState(false);
+  const [initData, setInitData] = useState(telegramApp?.initData || '');
   const isWebAppMode = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     const isWebappPath =
       window.location.pathname === '/webapp' ||
       window.location.pathname === '/webapp/review';
-    return Boolean(telegramApp?.initData) || params.get('mode') === 'webapp' || isWebappPath;
-  }, [telegramApp]);
+    return Boolean(telegramApp?.initData || initData) || params.get('mode') === 'webapp' || isWebappPath;
+  }, [telegramApp, initData]);
   const billingReturnContext = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     const startParam = String(telegramApp?.initDataUnsafe?.start_param || '').trim().toLowerCase();
@@ -106,7 +107,6 @@ function AppInner() {
     return isAndroidTelegramClient || (isChromium && !isIOS);
   }, [isAndroidTelegramClient, isWebAppMode]);
 
-  const [initData, setInitData] = useState(telegramApp?.initData || '');
   const [browserAuthLoading, setBrowserAuthLoading] = useState(false);
   const [browserAuthError, setBrowserAuthError] = useState('');
   const [browserAuthBotUsername, setBrowserAuthBotUsername] = useState('');
@@ -10398,7 +10398,11 @@ function AppInner() {
 
   const searchYoutubeVideos = async () => {
     const query = youtubeInput.trim();
-    if (!query || !initData) return;
+    if (!query) return;
+    if (!initData) {
+      setYoutubeSearchError(initDataMissingMsg);
+      return;
+    }
 
     const directId = extractYoutubeId(query);
     if (directId) {
@@ -10440,7 +10444,11 @@ function AppInner() {
   };
 
   const fetchTranscript = async () => {
-    if (!youtubeId || !initData) return;
+    if (!youtubeId) return;
+    if (!initData) {
+      setYoutubeTranscriptError(initDataMissingMsg);
+      return;
+    }
     if (youtubeManualOverride) return;
     setYoutubeTranscriptLoading(true);
     setYoutubeTranscriptError('');
