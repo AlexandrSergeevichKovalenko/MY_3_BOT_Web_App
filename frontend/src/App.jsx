@@ -638,28 +638,73 @@ function AppInner() {
     }
     return '';
   }, [billingReturnContext.kind, tr]);
-  const billingSupportOffers = useMemo(() => ([
-    {
-      planCode: 'support_coffee',
-      title: tr('Поддержать разработчика: кофе ☕️', 'Entwickler unterstuetzen: Kaffee ☕️'),
+  const billingPlanMeta = useMemo(() => ({
+    free: {
+      eyebrow: tr('Базовый', 'Basis'),
+      title: tr('Free', 'Free'),
+      blurb: tr('Базовый бесплатный план.', 'Basisplan ohne Kosten.'),
+      priceLabel: '0 EUR',
+      priceLabelDe: '0 EUR',
+    },
+    pro: {
+      eyebrow: tr('Текущий флагман', 'Aktuelles Flaggschiff'),
+      title: tr('Pro', 'Pro'),
+      blurb: tr('Полный доступ без дневного лимита.', 'Voller Zugang ohne Tageslimit.'),
       priceLabel: '3.50 EUR / месяц',
       priceLabelDe: '3.50 EUR / Monat',
+    },
+    support_coffee: {
+      eyebrow: tr('Лёгкая поддержка', 'Leichte Unterstuetzung'),
+      title: tr('Поддержать разработчика: кофе ☕️', 'Entwickler unterstuetzen: Kaffee ☕️'),
       blurb: tr(
         'Я делал это приложение 1 год и 3 месяца и продолжаю улучшать его каждый день.',
         'Ich habe diese App 1 Jahr und 3 Monate lang gebaut und verbessere sie weiterhin jeden Tag.'
       ),
+      priceLabel: '3.50 EUR / месяц',
+      priceLabelDe: '3.50 EUR / Monat',
     },
-    {
-      planCode: 'support_cheesecake',
+    support_cheesecake: {
+      eyebrow: tr('Расширенная поддержка', 'Erweiterte Unterstuetzung'),
       title: tr('Поддержать разработчика: кофе ☕️ и чизкейк 🍰', 'Entwickler unterstuetzen: Kaffee ☕️ und Cheesecake 🍰'),
-      priceLabel: '4.99 EUR / месяц',
-      priceLabelDe: '4.99 EUR / Monat',
       blurb: tr(
         'Если хочешь поддержать проект сильнее, этот тариф помогает оплачивать развитие и инфраструктуру.',
         'Wenn du das Projekt staerker unterstuetzen willst, hilft dieser Tarif bei Weiterentwicklung und Infrastruktur.'
       ),
+      priceLabel: '4.99 EUR / месяц',
+      priceLabelDe: '4.99 EUR / Monat',
     },
-  ]), [tr]);
+  }), [tr]);
+  const billingPlanCards = useMemo(() => {
+    const order = {
+      free: 10,
+      pro: 20,
+      support_coffee: 30,
+      support_cheesecake: 40,
+    };
+    const rows = Array.isArray(billingPlans) ? billingPlans : [];
+    return rows
+      .filter((item) => item && String(item.plan_code || '').trim())
+      .filter((item) => item.is_active !== false)
+      .map((item) => {
+        const planCode = String(item.plan_code || '').trim().toLowerCase();
+        const meta = billingPlanMeta[planCode] || {};
+        return {
+          ...item,
+          planCode,
+          title: String(meta.title || item.name || planCode).trim(),
+          eyebrow: String(meta.eyebrow || tr('Тариф', 'Tarif')).trim(),
+          blurb: String(meta.blurb || '').trim(),
+          priceLabel: uiLang === 'de'
+            ? String(meta.priceLabelDe || meta.priceLabel || '').trim()
+            : String(meta.priceLabel || '').trim(),
+          sortOrder: Number.isFinite(order[planCode]) ? order[planCode] : 500,
+        };
+      })
+      .sort((a, b) => {
+        if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+        return String(a.planCode || '').localeCompare(String(b.planCode || ''));
+      });
+  }, [billingPlans, billingPlanMeta, uiLang, tr]);
   const readApiError = useCallback(async (response, fallbackRu, fallbackDe) => {
     const fallback = tr(fallbackRu, fallbackDe);
     const formatBillingLimitError = (payload) => {
@@ -10564,12 +10609,21 @@ function AppInner() {
     setBillingPlansLoading(true);
     setBillingPlansError('');
     try {
-      const response = await fetch('/api/billing/plans');
+      const response = await fetch(`/api/billing/plans?ts=${Date.now()}`, {
+        cache: 'no-store',
+      });
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки тарифов', 'Fehler beim Laden der Tarife'));
       }
       const data = await response.json();
-      setBillingPlans(Array.isArray(data?.plans) ? data.plans : []);
+      const normalizedPlans = Array.isArray(data?.plans)
+        ? data.plans.map((plan) => ({
+          ...plan,
+          plan_code: String(plan?.plan_code || '').trim().toLowerCase(),
+          stripe_price_id: String(plan?.stripe_price_id || '').trim() || null,
+        }))
+        : [];
+      setBillingPlans(normalizedPlans);
     } catch (error) {
       setBillingPlansError(`${tr('Ошибка тарифов', 'Tarif-Fehler')}: ${error.message}`);
     } finally {
@@ -15395,41 +15449,62 @@ function AppInner() {
                       {tr('Сброс лимитов', 'Limits-Reset')}: {billingStatus?.reset_at ? new Date(billingStatus.reset_at).toLocaleString() : '—'}
                     </div>
 
-                    {billingStatus?.upgrade?.available && (
-                      <div className="billing-support-grid">
-                        {billingSupportOffers.map((offer) => {
-                          const planMeta = Array.isArray(billingPlans)
-                            ? billingPlans.find((plan) => String(plan?.plan_code || '').trim().toLowerCase() === offer.planCode)
-                            : null;
-                          const isUnavailable = !planMeta || planMeta.is_active === false || !String(planMeta?.stripe_price_id || '').trim();
-                          return (
-                            <article className="billing-support-card" key={offer.planCode}>
-                              <div className="billing-support-card__eyebrow">
-                                {offer.planCode === 'support_coffee'
-                                  ? tr('Лёгкая поддержка', 'Leichte Unterstuetzung')
-                                  : tr('Расширенная поддержка', 'Erweiterte Unterstuetzung')}
+                    <div className="webapp-muted">
+                      {tr(
+                        'Дополнительная поддержка проекта доступна отдельно от текущего тарифа.',
+                        'Zusaetzliche Projektunterstuetzung ist separat vom aktuellen Tarif verfuegbar.'
+                      )}
+                    </div>
+                    <div className="billing-support-grid">
+                      {billingPlanCards.map((offer) => {
+                        const hasBillingPlansCatalog = !billingPlansLoading
+                          && !billingPlansError
+                          && Array.isArray(billingPlans)
+                          && billingPlans.length > 0;
+                        const planMeta = Array.isArray(billingPlans)
+                          ? billingPlans.find((plan) => String(plan?.plan_code || '').trim().toLowerCase() === offer.planCode)
+                          : null;
+                        const selectedPlanCode = String(billingStatus?.plan_code || '').trim().toLowerCase();
+                        const selectedEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
+                        const isCurrentPlan = selectedPlanCode === offer.planCode
+                          || (selectedEffectiveMode === 'pro' && offer.planCode === 'pro');
+                        const isPaidPlan = Boolean(planMeta?.is_paid);
+                        const hasStripePrice = Boolean(String(planMeta?.stripe_price_id || '').trim());
+                        const isUnavailable = Boolean(
+                          planMeta && planMeta.is_active !== false && isPaidPlan && !hasStripePrice
+                        );
+                        const canSelect = !isCurrentPlan && isPaidPlan && hasStripePrice && !isUnavailable;
+                        let buttonText = tr('Выбрать тариф', 'Tarif waehlen');
+                        if (isCurrentPlan) {
+                          buttonText = tr('Текущий тариф', 'Aktueller Tarif');
+                        } else if (!isPaidPlan) {
+                          buttonText = tr('Бесплатный план', 'Kostenloser Tarif');
+                        } else if (billingActionLoading) {
+                          buttonText = tr('Открываем...', 'Oeffnen...');
+                        }
+                        return (
+                          <article className="billing-support-card" key={offer.planCode}>
+                            <div className="billing-support-card__eyebrow">{offer.eyebrow}</div>
+                            <h3>{offer.title}</h3>
+                            {offer.blurb && <p className="billing-support-card__blurb">{offer.blurb}</p>}
+                            {offer.priceLabel && <div className="billing-support-card__price">{offer.priceLabel}</div>}
+                            <button
+                              type="button"
+                              className="secondary-button billing-support-card__button"
+                              onClick={() => canSelect && handleBillingUpgrade(offer.planCode)}
+                              disabled={billingActionLoading || !canSelect}
+                            >
+                              {buttonText}
+                            </button>
+                            {hasBillingPlansCatalog && isUnavailable && (
+                              <div className="webapp-muted">
+                                {tr('Тариф еще не подключен в Stripe.', 'Dieser Tarif ist in Stripe noch nicht verbunden.')}
                               </div>
-                              <h3>{offer.title}</h3>
-                              <p className="billing-support-card__blurb">{offer.blurb}</p>
-                              <div className="billing-support-card__price">{uiLang === 'de' ? offer.priceLabelDe : offer.priceLabel}</div>
-                              <button
-                                type="button"
-                                className="secondary-button billing-support-card__button"
-                                onClick={() => handleBillingUpgrade(offer.planCode)}
-                                disabled={billingActionLoading || isUnavailable}
-                              >
-                                {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : offer.title}
-                              </button>
-                              {isUnavailable && (
-                                <div className="webapp-muted">
-                                  {tr('Тариф еще не подключен в Stripe.', 'Dieser Tarif ist in Stripe noch nicht verbunden.')}
-                                </div>
-                              )}
-                            </article>
-                          );
-                        })}
-                      </div>
-                    )}
+                            )}
+                          </article>
+                        );
+                      })}
+                    </div>
 
                     {billingStatus?.manage?.available && (
                       <div className="webapp-section-actions">

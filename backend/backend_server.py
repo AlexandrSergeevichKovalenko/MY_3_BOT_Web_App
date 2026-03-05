@@ -232,6 +232,7 @@ from backend.database import (
     upsert_billing_fixed_cost,
     get_user_billing_summary,
     list_billing_plans,
+    get_billing_plan,
     get_or_create_user_subscription,
     get_user_subscription,
     get_user_subscription_by_customer_id,
@@ -1233,14 +1234,28 @@ def _upsert_subscription_from_stripe_payload(
 
 def _resolve_billing_plan_checkout_config(plan_code: str | None) -> tuple[str, str]:
     plan_code_value = str(plan_code or "").strip().lower()
-    price_id_map = {
-        "support_coffee": STRIPE_PRICE_ID_SUPPORT_COFFEE,
-        "support_cheesecake": STRIPE_PRICE_ID_SUPPORT_CHEESECAKE,
-        "pro": STRIPE_PRICE_ID_PRO,
-    }
-    price_id = str(price_id_map.get(plan_code_value) or "").strip()
+    if not plan_code_value:
+        raise ValueError("Код тарифа не передан")
+
+    plan = get_billing_plan(plan_code_value)
+    if not plan:
+        raise ValueError(f"Тариф '{plan_code_value}' не найден")
+    if not bool(plan.get("is_active")):
+        raise ValueError(f"Тариф '{plan_code_value}' неактивен")
+    if not bool(plan.get("is_paid")):
+        raise ValueError(f"Тариф '{plan_code_value}' не является платным")
+
+    price_id = str(plan.get("stripe_price_id") or "").strip()
     if not price_id:
-        raise ValueError(f"Stripe price id не задан для тарифа '{plan_code_value or 'unknown'}'")
+        # Legacy fallback for deployments where DB plan rows exist but Stripe ids are managed via env.
+        price_id_map = {
+            "support_coffee": STRIPE_PRICE_ID_SUPPORT_COFFEE,
+            "support_cheesecake": STRIPE_PRICE_ID_SUPPORT_CHEESECAKE,
+            "pro": STRIPE_PRICE_ID_PRO,
+        }
+        price_id = str(price_id_map.get(plan_code_value) or "").strip()
+    if not price_id:
+        raise ValueError(f"Stripe price id не задан для тарифа '{plan_code_value}'")
     return plan_code_value, price_id
 
 
@@ -10316,19 +10331,63 @@ def create_billing_checkout_session():
         return jsonify({"error": "APP_BASE_URL не задан"}), 500
 
     payload = request.get_json(silent=True) or {}
-    requested_plan = str(payload.get("plan_code") or "support_coffee").strip().lower() or "support_coffee"
-    if requested_plan not in {"support_coffee", "support_cheesecake", "pro"}:
-        return jsonify({"error": "Неподдерживаемый тариф"}), 400
+    requested_plan = str(payload.get("plan_code") or "").strip().lower()
+    if not requested_plan:
+        return jsonify({"error": "plan_code обязателен"}), 400
 
     try:
         resolved_plan_code, stripe_price_id = _resolve_billing_plan_checkout_config(requested_plan)
+        subscription_row = get_user_subscription(int(user_id)) or {}
+        current_plan_code = str(subscription_row.get("plan_code") or "").strip().lower()
+        current_status = str(subscription_row.get("status") or "").strip().lower()
+        current_subscription_id = str(subscription_row.get("stripe_subscription_id") or "").strip() or None
+
+        if current_plan_code == resolved_plan_code and current_status in {"active", "trialing"}:
+            return jsonify(
+                {
+                    "error": "Этот тариф уже активен. Используйте Stripe Portal для управления подпиской.",
+                    "code": "plan_already_active",
+                }
+            ), 409
+
         stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
+        metadata = {"user_id": str(int(user_id)), "plan_code": resolved_plan_code}
+        subscription_data: dict = {"metadata": dict(metadata)}
+        checkout_state = "new_subscription"
+
+        if current_subscription_id and current_status in {"active", "trialing"} and current_plan_code != resolved_plan_code:
+            try:
+                current_sub = stripe.Subscription.retrieve(current_subscription_id)
+                current_sub_status = str(getattr(current_sub, "status", "") or current_sub.get("status") or "").strip().lower()
+                current_period_end_ts = int(
+                    getattr(current_sub, "current_period_end", 0)
+                    or current_sub.get("current_period_end")
+                    or 0
+                )
+                now_ts = int(time.time())
+                if current_sub_status in {"active", "trialing"} and current_period_end_ts > now_ts + 300:
+                    stripe.Subscription.modify(
+                        current_subscription_id,
+                        cancel_at_period_end=True,
+                        proration_behavior="none",
+                    )
+                    # Start the newly selected plan when the current active plan naturally ends.
+                    subscription_data["trial_end"] = current_period_end_ts
+                    checkout_state = "switch_at_period_end"
+            except Exception as switch_exc:
+                logging.warning(
+                    "billing switch pre-check failed user_id=%s sub_id=%s: %s",
+                    user_id,
+                    current_subscription_id,
+                    switch_exc,
+                )
+
         session = stripe.checkout.Session.create(
             mode="subscription",
             customer=stripe_customer_id,
             client_reference_id=str(int(user_id)),
-            metadata={"user_id": str(int(user_id)), "plan_code": resolved_plan_code},
-            subscription_data={"metadata": {"user_id": str(int(user_id)), "plan_code": resolved_plan_code}},
+            metadata=metadata,
+            subscription_data=subscription_data,
             line_items=[{"price": stripe_price_id, "quantity": 1}],
             success_url=_build_billing_telegram_return_url("success", include_session_id=True),
             cancel_url=_build_billing_telegram_return_url("cancel"),
@@ -10336,7 +10395,9 @@ def create_billing_checkout_session():
         checkout_url = str(getattr(session, "url", "") or "")
         if not checkout_url:
             return jsonify({"error": "Stripe checkout session URL отсутствует"}), 500
-        return jsonify({"url": checkout_url}), 200
+        return jsonify({"url": checkout_url, "state": checkout_state, "plan_code": resolved_plan_code}), 200
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         logging.exception("create checkout session failed user_id=%s: %s", user_id, exc)
         return jsonify({"error": f"Не удалось создать checkout session: {exc}"}), 500
