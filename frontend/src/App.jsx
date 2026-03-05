@@ -3410,7 +3410,7 @@ function AppInner() {
         'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfuegbaren Plaene. Dort oeffnest du auch das Stripe-Portal zur Zahlungsverwaltung.'
       ),
       bullets: [
-        tr('Free — базовый бесплатный режим с лимитами, Pro — полный режим без дневного лимита.', 'Free ist der kostenlose Modus mit Limits, Pro ist der volle Modus ohne Tageslimit.'),
+        tr('Free — базовый бесплатный режим с лимитами, Pro — полный режим без дневного лимита; в Pro также можно отправить персональный запрос на доработку под себя.', 'Free ist der kostenlose Modus mit Limits, Pro ist der volle Modus ohne Tageslimit; in Pro kannst du zusaetzlich einen persoenlichen Anpassungswunsch einreichen.'),
         tr('«Кофе» и «Кофе + чизкейк» сейчас работают как альтернативные платные планы (не параллельные add-on).', '„Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Plaene (keine parallelen Add-ons).'),
         tr('Кнопка «Управлять подпиской» открывает Stripe Portal: там смена карты, отмена/возобновление и счета; затем возвращайтесь в Mini App.', '„Abo verwalten“ oeffnet das Stripe-Portal: Karte wechseln, kuendigen/reaktivieren und Rechnungen; danach zur Mini App zurueckkehren.'),
       ],
@@ -3646,14 +3646,14 @@ function AppInner() {
               title: 'Welche Tarife es gibt',
               items: [
                 'Free: kostenloser Basis-Modus mit Limits.',
-                'Pro: voller Modus ohne Tageslimit.',
+                'Pro: voller Modus ohne Tageslimit; zusaetzlich kannst du einen persoenlichen Wunsch fuer eine individuelle Funktionsanpassung anfragen.',
                 'Support „Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Tarife und ersetzen den aktiven bezahlten Tarif, statt parallel als Add-on zu laufen.',
               ],
             },
             {
               title: 'Was passiert bei Tarifwechsel',
               items: [
-                'Wenn bereits ein aktives Bezahl-Abo existiert, wird es auf „läuft bis Periodenende“ gestellt und der neue Tarif startet zum nächsten Abrechnungszeitpunkt.',
+                'Wenn bereits bezahlte Abos aktiv sind, werden alle auf „läuft bis Periodenende“ gestellt und der neue Tarif startet zum naechsten Abrechnungszeitpunkt.',
                 'Dadurch gibt es keine doppelte Sofortbelastung mitten im laufenden Zyklus.',
                 'Wenn du denselben aktiven Tarif noch einmal auswählst, bekommst du eine Meldung und verwaltest ihn stattdessen im Portal.',
               ],
@@ -3938,14 +3938,14 @@ function AppInner() {
             title: 'Какие варианты тарифов есть',
             items: [
               'Free: бесплатный базовый режим с лимитами.',
-              'Pro: полный режим без дневного лимита.',
+              'Pro: полный режим без дневного лимита; в Pro также можно отправить персональный запрос на индивидуальную доработку функции.',
               '«Поддержать разработчика: кофе» и «кофе + чизкейк» сейчас работают как альтернативные платные планы, а не как параллельные add-on поверх Pro.',
             ],
           },
           {
             title: 'Как работает смена тарифа',
             items: [
-              'Если у вас уже активен платный тариф, система ставит его на завершение в конце периода и включает новый тариф со следующего биллингового цикла.',
+              'Если у вас уже активны платные тарифы, система ставит их на завершение в конце периода и включает новый тариф со следующего биллингового цикла.',
               'Это сделано, чтобы не было двойного списания в середине текущего периода.',
               'Если выбрать тот же активный тариф, сервер вернёт подсказку управлять им через Stripe Portal.',
             ],
@@ -15739,14 +15739,14 @@ function AppInner() {
                             <h4>{tr('Варианты тарифов', 'Tarifvarianten')}</h4>
                             <ul>
                               <li>{tr('Free: базовый бесплатный режим с ограничениями.', 'Free: kostenloser Basis-Modus mit Limits.')}</li>
-                              <li>{tr('Pro: основной платный режим без дневного лимита.', 'Pro: der Haupt-Premium-Modus ohne Tageslimit.')}</li>
+                              <li>{tr('Pro: основной платный режим без дневного лимита; также можно отправить персональный запрос на доработку под себя (изменение поведения существующего блока или идея нового блока).', 'Pro: der Haupt-Premium-Modus ohne Tageslimit; zusaetzlich kannst du einen persoenlichen Anpassungswunsch einreichen (Verhalten eines bestehenden Blocks aendern oder Idee fuer einen neuen Block).')}</li>
                               <li>{tr('«Кофе» и «Кофе + чизкейк»: сейчас это альтернативные платные тарифы, а не add-on поверх Pro.', '„Kaffee“ und „Kaffee + Cheesecake“: aktuell sind das alternative bezahlte Tarife, keine Add-ons zusaetzlich zu Pro.')}</li>
                             </ul>
                           </div>
                           <div className="billing-info-accordion__section">
                             <h4>{tr('Что происходит при выборе нового тарифа', 'Was beim Tarifwechsel passiert')}</h4>
                             <ul>
-                              <li>{tr('Если уже есть активный платный тариф, он переводится в режим «до конца периода», а новый стартует со следующего биллингового периода.', 'Wenn bereits ein bezahlter Tarif aktiv ist, wird er auf „bis Periodenende“ gestellt und der neue startet im naechsten Abrechnungszeitraum.')}</li>
+                              <li>{tr('Если уже есть активные платные тарифы, все они переводятся в режим «до конца периода», а новый стартует со следующего биллингового периода.', 'Wenn bereits bezahlte Tarife aktiv sind, werden alle auf „bis Periodenende“ gestellt und der neue startet im naechsten Abrechnungszeitraum.')}</li>
                               <li>{tr('Это предотвращает двойное списание в середине текущего месяца.', 'Das verhindert doppelte Abbuchungen mitten im laufenden Monat.')}</li>
                               <li>{tr('Тот же тариф повторно не оформляется: используйте Stripe Portal для управления.', 'Derselbe Tarif wird nicht erneut abgeschlossen: nutze dafuer das Stripe-Portal.')}</li>
                             </ul>

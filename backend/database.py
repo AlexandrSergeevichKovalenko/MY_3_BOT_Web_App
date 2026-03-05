@@ -147,6 +147,14 @@ TRIAL_POLICY_DAYS = max(0, _env_int("TRIAL_DAYS", 3))
 TRIAL_POLICY_TZ = "Europe/Vienna"
 GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS", 1_000_000))
 GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS", 500_000))
+DEEPL_MONTHLY_BASE_LIMIT_CHARS = max(0, _env_int("DEEPL_MONTHLY_BASE_LIMIT_CHARS", 0))
+AZURE_TRANSLATOR_MONTHLY_BASE_LIMIT_CHARS = max(0, _env_int("AZURE_TRANSLATOR_MONTHLY_BASE_LIMIT_CHARS", 0))
+PERPLEXITY_MONTHLY_BASE_LIMIT_REQUESTS = max(0, _env_int("PERPLEXITY_MONTHLY_BASE_LIMIT_REQUESTS", 0))
+CLOUDFLARE_R2_CLASS_A_MONTHLY_BASE_LIMIT_OPS = max(0, _env_int("CLOUDFLARE_R2_CLASS_A_MONTHLY_BASE_LIMIT_OPS", 0))
+CLOUDFLARE_R2_CLASS_B_MONTHLY_BASE_LIMIT_OPS = max(0, _env_int("CLOUDFLARE_R2_CLASS_B_MONTHLY_BASE_LIMIT_OPS", 0))
+CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_MB = max(0, _env_int("CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_MB", 0))
+CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB = max(0, _env_int("CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB", 0))
+STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS = max(0, _env_int("STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS", 0))
 READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS = max(1, _env_int("READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS", 10_000))
 
 
@@ -7932,8 +7940,8 @@ def get_lowest_mastery_skill(
                       AND k.language_code = COALESCE(%s, 'de')
                       AND COALESCE(k.is_active, TRUE) = TRUE
                       AND LOWER(COALESCE(k.skill_id, '')) NOT IN ('other_unclassified', 'en_other_unclassified', 'es_other_unclassified', 'it_other_unclassified')
-                      AND LOWER(COALESCE(k.skill_id, '')) NOT LIKE '%unclassified%'
-                      AND LOWER(COALESCE(k.title, '')) NOT LIKE '%unclassified%'
+                      AND LOWER(COALESCE(k.skill_id, '')) NOT LIKE '%%unclassified%%'
+                      AND LOWER(COALESCE(k.title, '')) NOT LIKE '%%unclassified%%'
                     ORDER BY s.mastery ASC, s.total_events DESC, s.updated_at DESC
                     LIMIT 1;
                     """,
@@ -8181,6 +8189,22 @@ def _provider_budget_default_base_limit(provider: str) -> int:
         return int(GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS)
     if normalized == "google_translate":
         return int(GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS)
+    if normalized == "deepl_free":
+        return int(DEEPL_MONTHLY_BASE_LIMIT_CHARS)
+    if normalized == "azure_translator":
+        return int(AZURE_TRANSLATOR_MONTHLY_BASE_LIMIT_CHARS)
+    if normalized == "perplexity":
+        return int(PERPLEXITY_MONTHLY_BASE_LIMIT_REQUESTS)
+    if normalized == "cloudflare_r2_class_a":
+        return int(CLOUDFLARE_R2_CLASS_A_MONTHLY_BASE_LIMIT_OPS)
+    if normalized == "cloudflare_r2_class_b":
+        return int(CLOUDFLARE_R2_CLASS_B_MONTHLY_BASE_LIMIT_OPS)
+    if normalized == "cloudflare_r2_storage":
+        if CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB > 0:
+            return int(CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB * 1024)
+        return int(CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_MB)
+    if normalized == "stripe":
+        return int(STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS)
     return 0
 
 
@@ -8678,21 +8702,28 @@ def get_provider_budget_month_usage(
     return float((row or [0])[0] or 0.0)
 
 
-def get_google_tts_monthly_budget_status(
+def get_provider_monthly_budget_status(
     *,
+    provider: str,
+    units_type: str,
+    unit_label: str | None = None,
     period_month: date | datetime | None = None,
     tz: str = TRIAL_POLICY_TZ,
 ) -> dict | None:
+    provider_value = str(provider or "").strip().lower()
+    units_type_value = str(units_type or "").strip().lower()
+    if not provider_value or not units_type_value:
+        return None
     control = get_or_create_provider_budget_control(
-        provider="google_tts",
+        provider=provider_value,
         period_month=period_month,
         tz=tz,
     )
     if not control:
         return None
     used_units = get_provider_budget_month_usage(
-        provider="google_tts",
-        units_type="chars",
+        provider=provider_value,
+        units_type=units_type_value,
         period_month=period_month,
         tz=tz,
     )
@@ -8702,8 +8733,23 @@ def get_google_tts_monthly_budget_status(
     result["used_units"] = float(round(used_units, 3))
     result["remaining_units"] = max(0.0, float(round(effective_limit - used_units, 3)))
     result["usage_ratio"] = max(0.0, usage_ratio)
-    result["unit"] = "chars"
+    result["unit"] = str(unit_label or units_type_value).strip() or units_type_value
+    result["units_type"] = units_type_value
     return result
+
+
+def get_google_tts_monthly_budget_status(
+    *,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    return get_provider_monthly_budget_status(
+        provider="google_tts",
+        units_type="chars",
+        unit_label="chars",
+        period_month=period_month,
+        tz=tz,
+    )
 
 
 def get_google_translate_monthly_budget_status(
@@ -8711,27 +8757,13 @@ def get_google_translate_monthly_budget_status(
     period_month: date | datetime | None = None,
     tz: str = TRIAL_POLICY_TZ,
 ) -> dict | None:
-    control = get_or_create_provider_budget_control(
-        provider="google_translate",
-        period_month=period_month,
-        tz=tz,
-    )
-    if not control:
-        return None
-    used_units = get_provider_budget_month_usage(
+    return get_provider_monthly_budget_status(
         provider="google_translate",
         units_type="chars",
+        unit_label="chars",
         period_month=period_month,
         tz=tz,
     )
-    effective_limit = float(control.get("effective_limit_units") or 0.0)
-    usage_ratio = (used_units / effective_limit) if effective_limit > 0 else 0.0
-    result = dict(control)
-    result["used_units"] = float(round(used_units, 3))
-    result["remaining_units"] = max(0.0, float(round(effective_limit - used_units, 3)))
-    result["usage_ratio"] = max(0.0, usage_ratio)
-    result["unit"] = "chars"
-    return result
 
 
 def set_provider_budget_extra_limit(
@@ -10749,8 +10781,8 @@ def get_skill_progress_report(
                 WHERE k.is_active = TRUE
                   AND k.language_code = %s
                   AND LOWER(COALESCE(k.skill_id, '')) NOT IN ('other_unclassified', 'en_other_unclassified', 'es_other_unclassified', 'it_other_unclassified')
-                  AND LOWER(COALESCE(k.skill_id, '')) NOT LIKE '%unclassified%'
-                  AND LOWER(COALESCE(k.title, '')) NOT LIKE '%unclassified%'
+                  AND LOWER(COALESCE(k.skill_id, '')) NOT LIKE '%%unclassified%%'
+                  AND LOWER(COALESCE(k.title, '')) NOT LIKE '%%unclassified%%'
                 ORDER BY k.category ASC, mastery ASC, k.skill_id ASC;
                 """,
                 (

@@ -247,6 +247,7 @@ from backend.database import (
     get_today_cost_eur,
     get_google_translate_monthly_budget_status,
     get_google_tts_monthly_budget_status,
+    get_provider_monthly_budget_status,
     mark_provider_budget_threshold_notified,
     set_provider_budget_block_state,
     get_today_reminder_settings,
@@ -1267,6 +1268,205 @@ def _extract_plan_code_from_stripe_payload(payload_obj, default: str = "pro") ->
     metadata = payload_obj.get("metadata") or {}
     value = str(metadata.get("plan_code") or payload_obj.get("plan_code") or default).strip().lower()
     return value or default
+
+
+def _stripe_subscription_value(subscription_obj, field: str, default=None):
+    try:
+        value = getattr(subscription_obj, field)
+        if value is not None:
+            return value
+    except Exception:
+        pass
+    if hasattr(subscription_obj, "get"):
+        try:
+            value = subscription_obj.get(field)
+            if value is not None:
+                return value
+        except Exception:
+            pass
+    return default
+
+
+def _schedule_customer_active_subscriptions_for_period_end(
+    *,
+    stripe_customer_id: str,
+) -> dict:
+    customer_id = str(stripe_customer_id or "").strip()
+    if not customer_id:
+        return {
+            "active_count": 0,
+            "cancel_scheduled_count": 0,
+            "already_scheduled_count": 0,
+            "failed_count": 0,
+            "latest_period_end_ts": 0,
+            "cancel_scheduled_ids": [],
+            "already_scheduled_ids": [],
+            "failed_ids": [],
+        }
+    result = {
+        "active_count": 0,
+        "cancel_scheduled_count": 0,
+        "already_scheduled_count": 0,
+        "failed_count": 0,
+        "latest_period_end_ts": 0,
+        "cancel_scheduled_ids": [],
+        "already_scheduled_ids": [],
+        "failed_ids": [],
+    }
+    statuses_to_schedule = {"active", "trialing", "past_due", "unpaid"}
+    listed = stripe.Subscription.list(
+        customer=customer_id,
+        status="all",
+        limit=100,
+    )
+    if hasattr(listed, "auto_paging_iter"):
+        subscriptions = list(listed.auto_paging_iter())
+    else:
+        subscriptions = list((listed or {}).get("data") or [])
+
+    for subscription in subscriptions:
+        subscription_id = str(_stripe_subscription_value(subscription, "id", "") or "").strip()
+        if not subscription_id:
+            continue
+        status_value = str(_stripe_subscription_value(subscription, "status", "") or "").strip().lower()
+        if status_value not in statuses_to_schedule:
+            continue
+        result["active_count"] += 1
+        current_period_end_ts = _safe_int(_stripe_subscription_value(subscription, "current_period_end", 0)) or 0
+        if current_period_end_ts > int(result["latest_period_end_ts"]):
+            result["latest_period_end_ts"] = int(current_period_end_ts)
+
+        cancel_at_period_end = bool(_stripe_subscription_value(subscription, "cancel_at_period_end", False))
+        if cancel_at_period_end:
+            result["already_scheduled_ids"].append(subscription_id)
+            continue
+        try:
+            stripe.Subscription.modify(
+                subscription_id,
+                cancel_at_period_end=True,
+                proration_behavior="none",
+            )
+            result["cancel_scheduled_ids"].append(subscription_id)
+        except Exception:
+            result["failed_ids"].append(subscription_id)
+            logging.warning(
+                "Failed to schedule subscription cancel_at_period_end customer=%s sub_id=%s",
+                customer_id,
+                subscription_id,
+                exc_info=True,
+            )
+
+    result["cancel_scheduled_count"] = len(result["cancel_scheduled_ids"])
+    result["already_scheduled_count"] = len(result["already_scheduled_ids"])
+    result["failed_count"] = len(result["failed_ids"])
+    return result
+
+
+def _normalize_customer_stripe_subscriptions(
+    *,
+    stripe_customer_id: str,
+    dry_run: bool = True,
+) -> dict:
+    customer_id = str(stripe_customer_id or "").strip()
+    result = {
+        "stripe_customer_id": customer_id,
+        "dry_run": bool(dry_run),
+        "active_candidate_count": 0,
+        "non_cancelled_count": 0,
+        "already_cancelled_count": 0,
+        "kept_subscription_id": None,
+        "to_cancel_ids": [],
+        "cancelled_ids": [],
+        "failed_ids": [],
+        "status": "noop",
+    }
+    if not customer_id:
+        result["status"] = "missing_customer_id"
+        return result
+
+    statuses_to_consider = {"active", "trialing", "past_due", "unpaid"}
+    listed = stripe.Subscription.list(customer=customer_id, status="all", limit=100)
+    if hasattr(listed, "auto_paging_iter"):
+        subscriptions = list(listed.auto_paging_iter())
+    else:
+        subscriptions = list((listed or {}).get("data") or [])
+
+    candidates: list[dict] = []
+    for subscription in subscriptions:
+        subscription_id = str(_stripe_subscription_value(subscription, "id", "") or "").strip()
+        status_value = str(_stripe_subscription_value(subscription, "status", "") or "").strip().lower()
+        if not subscription_id or status_value not in statuses_to_consider:
+            continue
+        created_ts = _safe_int(_stripe_subscription_value(subscription, "created", 0)) or 0
+        period_end_ts = _safe_int(_stripe_subscription_value(subscription, "current_period_end", 0)) or 0
+        cancel_at_period_end = bool(_stripe_subscription_value(subscription, "cancel_at_period_end", False))
+        candidates.append(
+            {
+                "id": subscription_id,
+                "status": status_value,
+                "created_ts": int(created_ts),
+                "period_end_ts": int(period_end_ts),
+                "cancel_at_period_end": cancel_at_period_end,
+            }
+        )
+
+    result["active_candidate_count"] = len(candidates)
+    if not candidates:
+        result["status"] = "no_active_candidates"
+        return result
+
+    non_cancelled = [item for item in candidates if not bool(item.get("cancel_at_period_end"))]
+    already_cancelled = [item for item in candidates if bool(item.get("cancel_at_period_end"))]
+    result["non_cancelled_count"] = len(non_cancelled)
+    result["already_cancelled_count"] = len(already_cancelled)
+    if len(non_cancelled) <= 1:
+        result["status"] = "already_normalized"
+        if non_cancelled:
+            result["kept_subscription_id"] = str(non_cancelled[0].get("id") or "")
+        return result
+
+    keep_item = sorted(
+        non_cancelled,
+        key=lambda item: (
+            int(item.get("created_ts") or 0),
+            int(item.get("period_end_ts") or 0),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )[0]
+    keep_id = str(keep_item.get("id") or "")
+    result["kept_subscription_id"] = keep_id
+    to_cancel = [item for item in non_cancelled if str(item.get("id") or "") != keep_id]
+    result["to_cancel_ids"] = [str(item.get("id") or "") for item in to_cancel if str(item.get("id") or "")]
+    if not to_cancel:
+        result["status"] = "already_normalized"
+        return result
+
+    if dry_run:
+        result["status"] = "would_cancel_duplicates"
+        return result
+
+    for item in to_cancel:
+        sub_id = str(item.get("id") or "").strip()
+        if not sub_id:
+            continue
+        try:
+            stripe.Subscription.modify(
+                sub_id,
+                cancel_at_period_end=True,
+                proration_behavior="none",
+            )
+            result["cancelled_ids"].append(sub_id)
+        except Exception:
+            result["failed_ids"].append(sub_id)
+            logging.warning(
+                "Failed to normalize duplicate stripe subscription customer=%s sub_id=%s",
+                customer_id,
+                sub_id,
+                exc_info=True,
+            )
+    result["status"] = "normalized" if result["cancelled_ids"] else ("partial_failed" if result["failed_ids"] else "noop")
+    return result
 
 
 def _build_language_pair_payload(source_lang: str, target_lang: str) -> dict:
@@ -2833,6 +3033,9 @@ def _fetch_perplexity_results(
     payload: dict,
     stage: str,
     log_context: str,
+    billing_user_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> list[dict]:
     api_key = str(os.getenv("PERPLEXITY_API_KEY") or "").strip()
     if not api_key:
@@ -2863,6 +3066,50 @@ def _fetch_perplexity_results(
         len(payload.get("search_domain_filter") or []),
         log_context,
     )
+    try:
+        query_payload = payload.get("query")
+        if isinstance(query_payload, list):
+            query_texts = [str(item or "").strip() for item in query_payload if str(item or "").strip()]
+        else:
+            query_texts = [str(query_payload or "").strip()] if str(query_payload or "").strip() else []
+        query_chars = sum(len(item) for item in query_texts)
+        if query_chars > 0:
+            _billing_log_event_safe(
+                user_id=int(billing_user_id) if billing_user_id is not None else None,
+                action_type="perplexity_search_chars",
+                provider="perplexity",
+                units_type="chars",
+                units_value=float(query_chars),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                idempotency_seed=f"perplexity-chars:{stage}:{log_context}:{query_chars}:{time.time_ns()}",
+                status="estimated",
+                metadata={
+                    "query_count": len(query_texts),
+                    "result_count": len(flattened),
+                    "pricing_state": "estimated",
+                    "stage": stage,
+                },
+            )
+        _billing_log_event_safe(
+            user_id=int(billing_user_id) if billing_user_id is not None else None,
+            action_type="perplexity_search_request",
+            provider="perplexity",
+            units_type="requests",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"perplexity-req:{stage}:{log_context}:{time.time_ns()}",
+            status="estimated",
+            metadata={
+                "query_count": len(query_texts),
+                "result_count": len(flattened),
+                "pricing_state": "estimated",
+                "stage": stage,
+            },
+        )
+    except Exception:
+        logging.debug("Perplexity billing event skipped", exc_info=True)
     return flattened
 
 
@@ -3003,6 +3250,9 @@ def _discover_skill_resource_domains_from_perplexity(
     target_lang: str,
     native_lang: str,
     max_new_domains: int = 10,
+    billing_user_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang_for_billing: str | None = None,
 ) -> list[dict]:
     queries = _build_skill_domain_seed_queries(target_lang=target_lang, native_lang=native_lang)
     if not queries:
@@ -3022,6 +3272,9 @@ def _discover_skill_resource_domains_from_perplexity(
         payload=payload,
         stage="domain_discovery",
         log_context=f"target={target_lang} native={native_lang}",
+        billing_user_id=billing_user_id,
+        source_lang=source_lang,
+        target_lang=target_lang_for_billing,
     )
     discovered: list[dict] = []
     seen_domains: set[str] = set()
@@ -3115,6 +3368,7 @@ def _perplexity_search_skill_resources(
     required_domains: set[str] | None = None,
     stage: str = "perplexity",
     relax_topic_match_if_empty: bool = False,
+    billing_user_id: int | None = None,
 ) -> list[dict]:
     queries = _build_skill_resource_queries(
         target_lang=target_lang,
@@ -3142,6 +3396,9 @@ def _perplexity_search_skill_resources(
         payload=payload,
         stage=stage,
         log_context=f"target={target_lang} native={native_lang} topic={skill_name or error_subcategory or error_category}",
+        billing_user_id=billing_user_id,
+        source_lang=native_lang,
+        target_lang=target_lang,
     )
     topic_keywords = _extract_topic_keywords(skill_name, error_category, error_subcategory)
     return _filter_skill_resource_candidates(
@@ -3163,6 +3420,9 @@ def _ensure_min_allowed_skill_resource_domains(
     native_lang: str,
     min_allowed: int = _SKILL_RESOURCE_MIN_ALLOWED_DOMAINS_PER_LANGUAGE,
     force: bool = False,
+    billing_user_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang_for_billing: str | None = None,
 ) -> dict:
     normalized_target = _normalize_short_lang_code(target_lang, fallback="de")
     min_required = max(1, int(min_allowed))
@@ -3190,6 +3450,9 @@ def _ensure_min_allowed_skill_resource_domains(
         target_lang=normalized_target,
         native_lang=native_lang,
         max_new_domains=max(min_required, 8),
+        billing_user_id=billing_user_id,
+        source_lang=source_lang,
+        target_lang_for_billing=target_lang_for_billing,
     )
     if not discovered:
         logging.warning(
@@ -3300,6 +3563,7 @@ def _normalize_theory_resources(
     skill_name: str = "",
     error_category: str = "",
     error_subcategory: str = "",
+    billing_user_id: int | None = None,
 ) -> list[dict]:
     raw = theory.get("resources") if isinstance(theory, dict) else None
     desired_count = 3
@@ -3324,6 +3588,7 @@ def _normalize_theory_resources(
         required_domains=None,
         stage="perplexity_open_web",
         relax_topic_match_if_empty=True,
+        billing_user_id=billing_user_id,
     )
     _append_unique_skill_resources(resources, perplexity_resources, max_items=desired_count)
 
@@ -3334,6 +3599,9 @@ def _normalize_theory_resources(
             native_lang=normalized_native or "en",
             min_allowed=_SKILL_RESOURCE_MIN_ALLOWED_DOMAINS_PER_LANGUAGE,
             force=False,
+            billing_user_id=billing_user_id,
+            source_lang=normalized_native,
+            target_lang_for_billing=normalized_target,
         )
         logging.info(
             "Skill resources [autoseed]: target=%s status=%s before=%s after=%s inserted=%s",
@@ -3355,6 +3623,7 @@ def _normalize_theory_resources(
                 required_domains=set(allowed_domains),
                 stage="perplexity_allowed_domains",
                 relax_topic_match_if_empty=True,
+                billing_user_id=billing_user_id,
             )
             _append_unique_skill_resources(resources, domain_fallback_resources, max_items=desired_count)
         else:
@@ -3705,6 +3974,19 @@ def _billing_month_bounds(anchor_date: date | None = None) -> tuple[date, date]:
     return start, end
 
 
+def _estimate_stripe_fee_usd(amount_minor: int) -> float:
+    amount_usd = max(0.0, float(amount_minor or 0) / 100.0)
+    if amount_usd <= 0:
+        return 0.0
+    fee_percent = max(0.0, _billing_env_float("STRIPE_FEE_PERCENT"))
+    if fee_percent <= 0:
+        fee_percent = 2.9
+    fee_fixed = max(0.0, _billing_env_float("STRIPE_FEE_FIXED_USD"))
+    if fee_fixed <= 0:
+        fee_fixed = 0.30
+    return max(0.0, amount_usd * (fee_percent / 100.0) + fee_fixed)
+
+
 def _sync_billing_fixed_costs_from_env(anchor_date: date | None = None) -> dict:
     month_start, month_end = _billing_month_bounds(anchor_date)
     currency = (os.getenv("BILLING_CURRENCY") or BILLING_CURRENCY_DEFAULT or "USD").strip().upper() or "USD"
@@ -3985,6 +4267,15 @@ def _sync_aux_price_snapshots_from_env() -> dict:
         ("AGENT_TTS_PRICE_PER_MINUTE_USD", "agent_tts", "agent_tts_output", "audio_minutes", "per_minute"),
         ("LIVEKIT_PRICE_PER_MINUTE_USD", "livekit", "room_minute", "audio_minutes", "per_minute"),
         ("GOOGLE_TTS_PRICE_PER_1M_CHARS_USD", "google_tts", "google_tts_chars", "chars", "per_1m_chars"),
+        ("GOOGLE_TRANSLATE_PRICE_PER_1M_CHARS_USD", "google_translate", "google_translate_chars", "chars", "per_1m_chars"),
+        ("DEEPL_PRICE_PER_1M_CHARS_USD", "deepl_free", "deepl_chars", "chars", "per_1m_chars"),
+        ("AZURE_TRANSLATOR_PRICE_PER_1M_CHARS_USD", "azure_translator", "azure_translate_chars", "chars", "per_1m_chars"),
+        ("PERPLEXITY_PRICE_PER_REQUEST_USD", "perplexity", "perplexity_search_request", "requests", "per_request"),
+        ("CLOUDFLARE_R2_CLASS_A_PRICE_PER_1M_OPS_USD", "cloudflare_r2_class_a", "r2_class_a_ops", "operations", "per_1m_units"),
+        ("CLOUDFLARE_R2_CLASS_B_PRICE_PER_1M_OPS_USD", "cloudflare_r2_class_b", "r2_class_b_ops", "operations", "per_1m_units"),
+        ("CLOUDFLARE_R2_STORAGE_PRICE_PER_GB_MONTH_USD", "cloudflare_r2_storage", "r2_storage_mb_month", "mb_month", "per_gb_month_to_mb"),
+        ("STRIPE_API_REQUEST_PRICE_USD", "stripe", "stripe_api_request", "requests", "per_request"),
+        ("STRIPE_PRICE_PER_PAYMENT_USD", "stripe", "stripe_payment", "payments", "per_request"),
         ("YOUTUBE_API_PRICE_PER_1000_UNITS_USD", "youtube_api", "youtube_api_quota", "youtube_quota_units", "per_1000_units"),
     ]
     created: list[dict] = []
@@ -4004,10 +4295,14 @@ def _sync_aux_price_snapshots_from_env() -> dict:
         if val <= 0:
             errors.append({"env": env_name, "error": "must_be_positive"})
             continue
-        if mode == "per_1m_chars":
+        if mode in {"per_1m_chars", "per_1m_units"}:
             price_per_unit = val / 1_000_000.0
         elif mode == "per_1000_units":
             price_per_unit = val / 1000.0
+        elif mode == "per_gb_month":
+            price_per_unit = val
+        elif mode == "per_gb_month_to_mb":
+            price_per_unit = val / 1024.0
         else:
             price_per_unit = val
         status, payload = _upsert_price_snapshot_if_changed(
@@ -4070,11 +4365,30 @@ def _billing_log_event_safe(
     status: str = "estimated",
     metadata: dict | None = None,
 ) -> None:
+    def _resolve_price_mapping(provider_value: str, units_type_value: str) -> tuple[str, str, str] | None:
+        mapping = {
+            ("google_tts", "chars"): ("google_tts", "google_tts_chars", "chars"),
+            ("google_translate", "chars"): ("google_translate", "google_translate_chars", "chars"),
+            ("deepl_free", "chars"): ("deepl_free", "deepl_chars", "chars"),
+            ("azure_translator", "chars"): ("azure_translator", "azure_translate_chars", "chars"),
+            ("perplexity", "requests"): ("perplexity", "perplexity_search_request", "requests"),
+            ("youtube_api", "youtube_quota_units"): ("youtube_api", "youtube_api_quota", "youtube_quota_units"),
+            ("cloudflare_r2_class_a", "operations"): ("cloudflare_r2_class_a", "r2_class_a_ops", "operations"),
+            ("cloudflare_r2_class_b", "operations"): ("cloudflare_r2_class_b", "r2_class_b_ops", "operations"),
+            ("cloudflare_r2_storage", "mb_month"): ("cloudflare_r2_storage", "r2_storage_mb_month", "mb_month"),
+            ("stripe", "requests"): ("stripe", "stripe_api_request", "requests"),
+            ("stripe", "payments"): ("stripe", "stripe_payment", "payments"),
+        }
+        return mapping.get((provider_value, units_type_value))
+
     try:
+        provider_value = str(provider or "").strip().lower()
+        units_type_value = str(units_type or "").strip().lower()
         seed = str(idempotency_seed or "").strip() or f"{user_id}:{action_type}:{provider}:{units_type}:{units_value}:{time.time_ns()}"
         digest = hashlib.sha1(seed.encode("utf-8", "ignore")).hexdigest()[:28]
         key = f"ev_{action_type}_{digest}"
-        log_billing_event(
+        pricing = _resolve_price_mapping(provider_value, units_type_value)
+        logged = log_billing_event(
             idempotency_key=key,
             user_id=int(user_id) if user_id is not None else None,
             source_lang=source_lang,
@@ -4083,10 +4397,21 @@ def _billing_log_event_safe(
             provider=provider,
             units_type=units_type,
             units_value=float(units_value or 0.0),
+            price_provider=pricing[0] if pricing else None,
+            price_sku=pricing[1] if pricing else None,
+            price_unit=pricing[2] if pricing else None,
             currency=BILLING_CURRENCY_DEFAULT,
             status=status,
             metadata=metadata or {},
         )
+        if logged and provider_value != "google_tts":
+            unit_label = units_type_value or "units"
+            _notify_provider_budget_thresholds(
+                provider=provider,
+                units_type=units_type,
+                unit_label=unit_label,
+                requested_units=0.0,
+            )
     except Exception as exc:
         logging.debug("billing event skipped: %s", exc)
 
@@ -4181,6 +4506,56 @@ def _billing_log_openai_usage(
             logging.debug("billing tokens_out skipped: %s", exc)
 
 
+def _billing_log_stripe_payment_fee(
+    *,
+    user_id: int | None,
+    source_lang: str | None,
+    target_lang: str | None,
+    event_id: str,
+    invoice_id: str | None,
+    amount_minor: int,
+    event_type: str,
+) -> None:
+    try:
+        gross_usd = max(0.0, float(amount_minor or 0) / 100.0)
+        fee_usd = _estimate_stripe_fee_usd(int(amount_minor or 0))
+        metadata = {
+            "event_id": str(event_id or "").strip(),
+            "invoice_id": str(invoice_id or "").strip() or None,
+            "event_type": str(event_type or "").strip(),
+            "gross_amount_usd": round(gross_usd, 6),
+            "pricing_state": "estimated_formula",
+            "fee_formula": {
+                "percent": max(0.0, _billing_env_float("STRIPE_FEE_PERCENT")) or 2.9,
+                "fixed_usd": max(0.0, _billing_env_float("STRIPE_FEE_FIXED_USD")) or 0.30,
+            },
+        }
+        seed = f"stripe-fee:{event_id}:{invoice_id or ''}:{user_id or 'none'}"
+        digest = hashlib.sha1(seed.encode("utf-8", "ignore")).hexdigest()[:30]
+        log_billing_event(
+            idempotency_key=f"stripe_fee_{digest}",
+            user_id=int(user_id) if user_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            action_type="stripe_payment_fee",
+            provider="stripe",
+            units_type="payments",
+            units_value=1.0,
+            currency=BILLING_CURRENCY_DEFAULT,
+            status="estimated",
+            metadata=metadata,
+            cost_amount=max(0.0, float(fee_usd)),
+        )
+        _notify_provider_budget_thresholds(
+            provider="stripe",
+            units_type="payments",
+            unit_label="payments",
+            requested_units=0.0,
+        )
+    except Exception:
+        logging.debug("stripe billing fee event skipped", exc_info=True)
+
+
 def _billing_log_youtube_quota_usage(
     *,
     user_id: int | None,
@@ -4203,7 +4578,7 @@ def _billing_log_youtube_quota_usage(
     )
     seed = f"yt_quota:{user_id}:{action_type}:{endpoint}:{units}:{time.time_ns()}"
     try:
-        log_billing_event(
+        logged = log_billing_event(
             idempotency_key=f"ytq_{hashlib.sha1(seed.encode('utf-8', 'ignore')).hexdigest()[:32]}",
             user_id=int(user_id) if user_id is not None else None,
             source_lang=source_lang,
@@ -4223,6 +4598,13 @@ def _billing_log_youtube_quota_usage(
                 **meta,
             },
         )
+        if logged:
+            _notify_provider_budget_thresholds(
+                provider="youtube_api",
+                units_type="youtube_quota_units",
+                unit_label="youtube_quota_units",
+                requested_units=0.0,
+            )
     except Exception as exc:
         logging.debug("billing youtube quota skipped: %s", exc)
 
@@ -7764,6 +8146,110 @@ class GoogleTranslateBudgetExceededError(RuntimeError):
         self.payload = dict(payload or {})
 
 
+def _provider_budget_alert_thresholds() -> list[int]:
+    raw = str(os.getenv("BILLING_PROVIDER_ALERT_THRESHOLDS") or "50,75,90").strip()
+    values: list[int] = []
+    for item in raw.split(","):
+        try:
+            val = int(round(float(str(item).strip())))
+        except Exception:
+            continue
+        if 0 < val <= 100:
+            values.append(val)
+    return sorted(set(values)) or [50, 75, 90]
+
+
+def _notify_provider_budget_thresholds(
+    *,
+    provider: str,
+    units_type: str,
+    unit_label: str,
+    requested_units: float,
+) -> None:
+    provider_value = str(provider or "").strip().lower()
+    units_type_value = str(units_type or "").strip().lower()
+    if not provider_value or not units_type_value:
+        return
+    status = get_provider_monthly_budget_status(
+        provider=provider_value,
+        units_type=units_type_value,
+        unit_label=unit_label,
+    )
+    if not isinstance(status, dict):
+        return
+    effective_limit = float(status.get("effective_limit_units") or 0.0)
+    if effective_limit <= 0:
+        return
+
+    used_units = float(status.get("used_units") or 0.0)
+    projected_used = max(0.0, used_units + max(0.0, float(requested_units or 0.0)))
+    thresholds = _provider_budget_alert_thresholds()
+    notified = status.get("notified_thresholds") if isinstance(status.get("notified_thresholds"), dict) else {}
+    period_month = status.get("period_month")
+
+    for threshold in thresholds:
+        threshold_key = str(threshold)
+        threshold_units = effective_limit * (threshold / 100.0)
+        if projected_used < threshold_units:
+            continue
+        if notified.get(threshold_key):
+            continue
+
+        unit_text = str(unit_label or units_type_value).strip() or units_type_value
+        used_out = int(round(used_units))
+        projected_out = int(round(projected_used))
+        limit_out = int(round(effective_limit))
+        remaining_out = max(0, limit_out - projected_out)
+        message_text = (
+            "⚠️ Provider budget alert\n\n"
+            f"Provider: {provider_value}\n"
+            f"Unit: {unit_text}\n"
+            f"Threshold: {threshold}%\n"
+            f"Month: {period_month or '—'}\n"
+            f"Used now: {used_out}\n"
+            f"Projected after current request: {projected_out}\n"
+            f"Limit: {limit_out}\n"
+            f"Remaining after request: {remaining_out}\n\n"
+            "Review limits before hard stop or overrun."
+        )
+
+        admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+        sent = False
+        for admin_id in admin_ids:
+            try:
+                _send_private_message(int(admin_id), message_text, disable_web_page_preview=True)
+                sent = True
+            except Exception:
+                logging.warning(
+                    "Failed to send provider budget alert admin_id=%s provider=%s",
+                    admin_id,
+                    provider_value,
+                    exc_info=True,
+                )
+
+        if sent:
+            try:
+                updated = mark_provider_budget_threshold_notified(
+                    provider=provider_value,
+                    threshold_percent=threshold,
+                    metadata={
+                        "last_threshold_alert": threshold,
+                        "last_threshold_units_type": units_type_value,
+                        "last_threshold_projected_used": projected_out,
+                        "last_threshold_limit": limit_out,
+                    },
+                )
+                if isinstance(updated, dict):
+                    notified = updated.get("notified_thresholds") if isinstance(updated.get("notified_thresholds"), dict) else notified
+            except Exception:
+                logging.warning(
+                    "Failed to mark provider threshold=%s notified for provider=%s",
+                    threshold,
+                    provider_value,
+                    exc_info=True,
+                )
+
+
 def _notify_google_tts_budget_thresholds(
     *,
     status: dict,
@@ -10378,33 +10864,58 @@ def create_billing_checkout_session():
         metadata = {"user_id": str(int(user_id)), "plan_code": resolved_plan_code}
         subscription_data: dict = {"metadata": dict(metadata)}
         checkout_state = "new_subscription"
+        switch_summary = {
+            "active_count": 0,
+            "cancel_scheduled_count": 0,
+            "already_scheduled_count": 0,
+            "failed_count": 0,
+            "latest_period_end_ts": 0,
+        }
 
-        if current_subscription_id and current_status in {"active", "trialing"} and current_plan_code != resolved_plan_code:
+        if current_plan_code != resolved_plan_code:
             try:
-                current_sub = stripe.Subscription.retrieve(current_subscription_id)
-                current_sub_status = str(getattr(current_sub, "status", "") or current_sub.get("status") or "").strip().lower()
-                current_period_end_ts = int(
-                    getattr(current_sub, "current_period_end", 0)
-                    or current_sub.get("current_period_end")
-                    or 0
+                switch_summary = _schedule_customer_active_subscriptions_for_period_end(
+                    stripe_customer_id=stripe_customer_id,
                 )
+                current_period_end_ts = int(switch_summary.get("latest_period_end_ts") or 0)
                 now_ts = int(time.time())
-                if current_sub_status in {"active", "trialing"} and current_period_end_ts > now_ts + 300:
-                    stripe.Subscription.modify(
-                        current_subscription_id,
-                        cancel_at_period_end=True,
-                        proration_behavior="none",
-                    )
-                    # Start the newly selected plan when the current active plan naturally ends.
+                if int(switch_summary.get("active_count") or 0) > 0 and current_period_end_ts > now_ts + 300:
+                    # Start the newly selected plan when all active paid plans naturally end.
                     subscription_data["trial_end"] = current_period_end_ts
                     checkout_state = "switch_at_period_end"
             except Exception as switch_exc:
                 logging.warning(
-                    "billing switch pre-check failed user_id=%s sub_id=%s: %s",
+                    "billing switch pre-check failed user_id=%s customer=%s: %s",
                     user_id,
-                    current_subscription_id,
+                    stripe_customer_id,
                     switch_exc,
                 )
+                # Fallback to the legacy single-subscription switch path.
+                if current_subscription_id and current_status in {"active", "trialing"}:
+                    try:
+                        current_sub = stripe.Subscription.retrieve(current_subscription_id)
+                        current_sub_status = str(getattr(current_sub, "status", "") or current_sub.get("status") or "").strip().lower()
+                        current_period_end_ts = int(
+                            getattr(current_sub, "current_period_end", 0)
+                            or current_sub.get("current_period_end")
+                            or 0
+                        )
+                        now_ts = int(time.time())
+                        if current_sub_status in {"active", "trialing"} and current_period_end_ts > now_ts + 300:
+                            stripe.Subscription.modify(
+                                current_subscription_id,
+                                cancel_at_period_end=True,
+                                proration_behavior="none",
+                            )
+                            subscription_data["trial_end"] = current_period_end_ts
+                            checkout_state = "switch_at_period_end"
+                    except Exception as fallback_exc:
+                        logging.warning(
+                            "billing switch fallback failed user_id=%s sub_id=%s: %s",
+                            user_id,
+                            current_subscription_id,
+                            fallback_exc,
+                        )
 
         session = stripe.checkout.Session.create(
             mode="subscription",
@@ -10419,6 +10930,30 @@ def create_billing_checkout_session():
         checkout_url = str(getattr(session, "url", "") or "")
         if not checkout_url:
             return jsonify({"error": "Stripe checkout session URL отсутствует"}), 500
+        try:
+            user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
+            _billing_log_event_safe(
+                user_id=int(user_id),
+                action_type="stripe_checkout_session",
+                provider="stripe",
+                units_type="requests",
+                units_value=1.0,
+                source_lang=user_source_lang,
+                target_lang=user_target_lang,
+                idempotency_seed=f"stripe-checkout:{user_id}:{resolved_plan_code}:{int(time.time())}",
+                status="estimated",
+                metadata={
+                    "plan_code": resolved_plan_code,
+                    "checkout_state": checkout_state,
+                    "switch_active_count": int(switch_summary.get("active_count") or 0),
+                    "switch_cancel_scheduled_count": int(switch_summary.get("cancel_scheduled_count") or 0),
+                    "switch_already_scheduled_count": int(switch_summary.get("already_scheduled_count") or 0),
+                    "switch_failed_count": int(switch_summary.get("failed_count") or 0),
+                    "switch_latest_period_end_ts": int(switch_summary.get("latest_period_end_ts") or 0),
+                },
+            )
+        except Exception:
+            logging.debug("stripe checkout billing event skipped", exc_info=True)
         return jsonify({"url": checkout_url, "state": checkout_state, "plan_code": resolved_plan_code}), 200
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -10449,6 +10984,22 @@ def create_billing_portal_session():
         portal_url = str(getattr(session, "url", "") or "")
         if not portal_url:
             return jsonify({"error": "Stripe portal session URL отсутствует"}), 500
+        try:
+            user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
+            _billing_log_event_safe(
+                user_id=int(user_id),
+                action_type="stripe_portal_session",
+                provider="stripe",
+                units_type="requests",
+                units_value=1.0,
+                source_lang=user_source_lang,
+                target_lang=user_target_lang,
+                idempotency_seed=f"stripe-portal:{user_id}:{int(time.time())}",
+                status="estimated",
+                metadata={"customer_id": stripe_customer_id},
+            )
+        except Exception:
+            logging.debug("stripe portal billing event skipped", exc_info=True)
         return jsonify({"url": portal_url}), 200
     except Exception as exc:
         logging.exception("create portal session failed user_id=%s: %s", user_id, exc)
@@ -10697,6 +11248,22 @@ def stripe_billing_webhook():
                     current_period_end_ts=(subscription_obj or {}).get("current_period_end"),
                     db_conn=db_conn,
                 )
+                if event_type == "invoice.payment_succeeded":
+                    try:
+                        invoice_amount_minor = int(data_object.get("amount_paid") or data_object.get("amount_due") or 0)
+                    except Exception:
+                        invoice_amount_minor = 0
+                    if invoice_amount_minor > 0:
+                        user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
+                        _billing_log_stripe_payment_fee(
+                            user_id=int(user_id),
+                            source_lang=user_source_lang,
+                            target_lang=user_target_lang,
+                            event_id=event_id,
+                            invoice_id=str(data_object.get("id") or ""),
+                            amount_minor=invoice_amount_minor,
+                            event_type=event_type,
+                        )
                 return jsonify({"ok": True}), 200
 
             return jsonify({"ok": True, "ignored": event_type}), 200
@@ -10731,6 +11298,139 @@ def admin_billing_debug_entitlement():
             "entitlement": entitlement,
             "spent_today_eur": spent_today,
             "currency": "EUR",
+        }
+    ), 200
+
+
+@app.route("/api/admin/billing/normalize-stripe-subscriptions", methods=["POST"])
+def admin_billing_normalize_stripe_subscriptions():
+    payload = request.get_json(silent=True) or {}
+    required = (os.getenv("ADMIN_TOKEN") or os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+    token = str(payload.get("token") or request.headers.get("X-Admin-Token") or "").strip()
+    if not required:
+        return jsonify({"error": "ADMIN_TOKEN не задан"}), 500
+    if token != required:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    config_error = _require_stripe_config(require_webhook_secret=False)
+    if config_error:
+        return jsonify({"error": config_error}), 500
+
+    dry_run = str(payload.get("dry_run", "true")).strip().lower() in {"1", "true", "yes", "on"}
+    limit_raw = payload.get("limit", 200)
+    try:
+        limit = max(1, min(1000, int(limit_raw)))
+    except Exception:
+        limit = 200
+    user_id_raw = payload.get("user_id")
+    customer_id_filter = str(payload.get("stripe_customer_id") or "").strip()
+
+    customer_ids: list[str] = []
+    if customer_id_filter:
+        customer_ids = [customer_id_filter]
+    elif user_id_raw is not None and str(user_id_raw).strip():
+        try:
+            filtered_user_id = int(str(user_id_raw).strip())
+        except Exception:
+            return jsonify({"error": "user_id должен быть числом"}), 400
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT stripe_customer_id
+                    FROM user_subscriptions
+                    WHERE user_id = %s
+                      AND stripe_customer_id IS NOT NULL
+                      AND stripe_customer_id <> ''
+                    LIMIT 1;
+                    """,
+                    (filtered_user_id,),
+                )
+                row = cursor.fetchone()
+        if row and str(row[0] or "").strip():
+            customer_ids = [str(row[0]).strip()]
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT stripe_customer_id
+                    FROM user_subscriptions
+                    WHERE stripe_customer_id IS NOT NULL
+                      AND stripe_customer_id <> ''
+                    ORDER BY stripe_customer_id ASC
+                    LIMIT %s;
+                    """,
+                    (limit,),
+                )
+                rows = cursor.fetchall() or []
+        customer_ids = [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip()]
+
+    if not customer_ids:
+        return jsonify(
+            {
+                "ok": True,
+                "dry_run": dry_run,
+                "processed_customers": 0,
+                "summary": {
+                    "customers_with_duplicates": 0,
+                    "would_cancel_subscriptions": 0,
+                    "cancelled_subscriptions": 0,
+                    "failed_cancellations": 0,
+                },
+                "results": [],
+            }
+        ), 200
+
+    results: list[dict] = []
+    for customer_id in customer_ids:
+        try:
+            item = _normalize_customer_stripe_subscriptions(
+                stripe_customer_id=customer_id,
+                dry_run=dry_run,
+            )
+        except Exception as exc:
+            item = {
+                "stripe_customer_id": customer_id,
+                "dry_run": dry_run,
+                "status": "error",
+                "error": str(exc),
+                "to_cancel_ids": [],
+                "cancelled_ids": [],
+                "failed_ids": [],
+                "non_cancelled_count": 0,
+            }
+            logging.warning(
+                "Stripe normalize failed for customer=%s",
+                customer_id,
+                exc_info=True,
+            )
+        results.append(item)
+
+    customers_with_duplicates = 0
+    would_cancel_subscriptions = 0
+    cancelled_subscriptions = 0
+    failed_cancellations = 0
+    for item in results:
+        to_cancel_count = len(item.get("to_cancel_ids") or [])
+        if to_cancel_count > 0:
+            customers_with_duplicates += 1
+        would_cancel_subscriptions += to_cancel_count
+        cancelled_subscriptions += len(item.get("cancelled_ids") or [])
+        failed_cancellations += len(item.get("failed_ids") or [])
+
+    return jsonify(
+        {
+            "ok": True,
+            "dry_run": dry_run,
+            "processed_customers": len(results),
+            "summary": {
+                "customers_with_duplicates": customers_with_duplicates,
+                "would_cancel_subscriptions": would_cancel_subscriptions,
+                "cancelled_subscriptions": cancelled_subscriptions,
+                "failed_cancellations": failed_cancellations,
+            },
+            "results": results,
         }
     ), 200
 
@@ -10909,6 +11609,8 @@ def translate_quick():
     source_lang_raw = payload.get("source_lang")
     source_lang = _normalize_short_lang_code(source_lang_raw, fallback="") if source_lang_raw else None
     target_lang = _normalize_short_lang_code(payload.get("target_lang"), fallback="")
+    init_data = str(payload.get("initData") or "").strip()
+    user_id_for_billing: int | None = None
 
     if not text:
         return jsonify({"error": "text обязателен"}), 400
@@ -10916,6 +11618,15 @@ def translate_quick():
         return jsonify({"error": "target_lang обязателен"}), 400
     if source_lang and source_lang == target_lang:
         return jsonify({"error": "source_lang и target_lang не должны совпадать"}), 400
+
+    if init_data and _telegram_hash_is_valid(init_data):
+        try:
+            parsed = _parse_telegram_init_data(init_data)
+            candidate_user_id = (parsed.get("user") or {}).get("id")
+            if candidate_user_id is not None:
+                user_id_for_billing = int(candidate_user_id)
+        except Exception:
+            user_id_for_billing = None
 
     attempts: list[dict] = []
     providers = []
@@ -10939,18 +11650,28 @@ def translate_quick():
             result["provider"] = provider_name
             if not result.get("detected_source_lang") and source_lang:
                 result["detected_source_lang"] = source_lang
-            if provider_name == "google_translate":
+            if user_id_for_billing is not None and provider_name in {"google_translate", "deepl_free", "azure_translator"}:
+                provider_billing_map = {
+                    "google_translate": ("google_translate", "google_translate_chars"),
+                    "deepl_free": ("deepl_free", "deepl_chars"),
+                    "azure_translator": ("azure_translator", "azure_translate_chars"),
+                }
+                billing_provider, billing_sku = provider_billing_map[provider_name]
                 _billing_log_event_safe(
-                    user_id=None,
+                    user_id=int(user_id_for_billing),
                     action_type="quick_translate_chars",
-                    provider="google_translate",
+                    provider=billing_provider,
                     units_type="chars",
                     units_value=float(len(text)),
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    idempotency_seed=f"quick-translate:{provider_name}:{source_lang}:{target_lang}:{hashlib.sha1(text.encode('utf-8', 'ignore')).hexdigest()}",
+                    idempotency_seed=(
+                        "quick-translate:"
+                        f"{provider_name}:{source_lang}:{target_lang}:"
+                        f"{hashlib.sha1(text.encode('utf-8', 'ignore')).hexdigest()}:{time.time_ns()}"
+                    ),
                     status="estimated",
-                    metadata={"cached": False},
+                    metadata={"cached": False, "price_sku": billing_sku},
                 )
             return jsonify(result)
         except GoogleTranslateBudgetExceededError as exc:
@@ -12098,6 +12819,7 @@ def prepare_today_theory():
         skill_name=skill_name,
         error_category=main_category or "",
         error_subcategory=sub_category or "",
+        billing_user_id=int(user_id),
     )
 
     practice_sentences = _normalize_theory_sentences(practice_raw, native_lang=source_lang)
@@ -12660,6 +13382,7 @@ def get_skill_progress():
             lookback_days = 7
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    report_warning: str | None = None
     try:
         report = get_skill_progress_report(
             user_id=int(user_id),
@@ -12668,7 +13391,16 @@ def get_skill_progress():
             target_lang=target_lang,
         )
     except Exception as exc:
-        return jsonify({"error": f"Ошибка построения отчёта по навыкам: {exc}"}), 500
+        logging.exception("Skill progress report failed user_id=%s", user_id)
+        report_warning = f"skill_progress_report_failed: {exc}"
+        report = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "period_days": int(lookback_days),
+            "top_weak": [],
+            "groups": [],
+            "total_skills": 0,
+            "skills_with_data": 0,
+        }
     try:
         skill_training_status = _get_skill_training_status_map(int(user_id))
     except Exception as exc:
@@ -12682,6 +13414,7 @@ def get_skill_progress():
             "username": username,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
             "skill_training_status": skill_training_status,
+            **({"warning": report_warning} if report_warning else {}),
             **report,
         }
     )
@@ -14454,21 +15187,36 @@ def _run_tts_generation_job(
     cache_key: str,
     object_key: str,
     had_existing_meta: bool,
-) -> None:
+    ) -> None:
     try:
-        if had_existing_meta and r2_exists(object_key):
-            url = r2_public_url(object_key)
-            mark_tts_object_ready(
-                cache_key=cache_key,
-                object_key=object_key,
-                url=url,
-                size_bytes=None,
-                language=language,
-                voice=voice,
-                speed=speaking_rate,
-                source_text=normalized_text,
+        user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
+        if had_existing_meta:
+            object_exists = bool(r2_exists(object_key))
+            _billing_log_event_safe(
+                user_id=int(user_id),
+                action_type="r2_head_object",
+                provider="cloudflare_r2_class_b",
+                units_type="operations",
+                units_value=1.0,
+                source_lang=user_source_lang,
+                target_lang=user_target_lang,
+                idempotency_seed=f"r2-head:{user_id}:{object_key}:{time.time_ns()}",
+                status="estimated",
+                metadata={"storage": "r2", "operation": "head_object", "cached": object_exists},
             )
-            return
+            if object_exists:
+                url = r2_public_url(object_key)
+                mark_tts_object_ready(
+                    cache_key=cache_key,
+                    object_key=object_key,
+                    url=url,
+                    size_bytes=None,
+                    language=language,
+                    voice=voice,
+                    speed=speaking_rate,
+                    source_text=normalized_text,
+                )
+                return
 
         response_audio = _synthesize_mp3(
             normalized_text,
@@ -14482,6 +15230,30 @@ def _run_tts_generation_job(
             content_type="audio/mpeg",
             cache_control="public, max-age=31536000, immutable",
         )
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="r2_put_object",
+            provider="cloudflare_r2_class_a",
+            units_type="operations",
+            units_value=1.0,
+            source_lang=user_source_lang,
+            target_lang=user_target_lang,
+            idempotency_seed=f"r2-put:{user_id}:{object_key}:{time.time_ns()}",
+            status="estimated",
+            metadata={"storage": "r2", "operation": "put_object", "bytes": len(response_audio)},
+        )
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="r2_storage_allocation",
+            provider="cloudflare_r2_storage",
+            units_type="mb_month",
+            units_value=float(len(response_audio)) / (1024.0 * 1024.0),
+            source_lang=user_source_lang,
+            target_lang=user_target_lang,
+            idempotency_seed=f"r2-storage:{user_id}:{object_key}:{len(response_audio)}:{time.time_ns()}",
+            status="estimated",
+            metadata={"storage": "r2", "bytes": len(response_audio)},
+        )
         public_url = r2_public_url(object_key)
         mark_tts_object_ready(
             cache_key=cache_key,
@@ -14494,7 +15266,6 @@ def _run_tts_generation_job(
             source_text=normalized_text,
         )
 
-        user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
         _billing_log_event_safe(
             user_id=int(user_id),
             action_type="webapp_tts_chars",
@@ -14558,6 +15329,36 @@ def _enqueue_tts_generation_job(**kwargs) -> bool:
     return True
 
 
+def _billing_log_r2_delivery_estimate(
+    *,
+    user_id: int,
+    cache_key: str,
+    object_key: str,
+    reason: str,
+) -> None:
+    try:
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="r2_get_object_estimate",
+            provider="cloudflare_r2_class_b",
+            units_type="operations",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"r2-get-est:{user_id}:{cache_key}:{reason}:{time.time_ns()}",
+            status="estimated",
+            metadata={
+                "storage": "r2",
+                "operation": "get_object_estimate",
+                "reason": str(reason or "").strip() or "audio_url_ready",
+                "object_key": object_key,
+            },
+        )
+    except Exception:
+        logging.debug("r2 delivery billing event skipped", exc_info=True)
+
+
 @app.route("/api/webapp/tts/url", methods=["GET"])
 def webapp_tts_url():
     params, error = _read_webapp_tts_request_payload()
@@ -14567,6 +15368,7 @@ def webapp_tts_url():
 
     cache_key = str(params["cache_key"])
     object_key = str(params["object_key"])
+    user_id = int(params["user_id"])
     meta = get_tts_object_meta(cache_key, touch_hit=True)
     if meta:
         payload, status = _build_tts_url_response_from_meta(
@@ -14574,6 +15376,13 @@ def webapp_tts_url():
             fallback_object_key=object_key,
             retry_after_ms=TTS_URL_PENDING_RETRY_MS,
         )
+        if str(payload.get("status") or "").strip().lower() == "ready":
+            _billing_log_r2_delivery_estimate(
+                user_id=user_id,
+                cache_key=cache_key,
+                object_key=object_key,
+                reason="tts_url_ready",
+            )
         return jsonify(payload), int(status)
 
     return jsonify(
@@ -14611,6 +15420,12 @@ def webapp_tts_generate():
             payload, status_code = _build_tts_url_response_from_meta(
                 meta,
                 fallback_object_key=object_key,
+            )
+            _billing_log_r2_delivery_estimate(
+                user_id=user_id,
+                cache_key=cache_key,
+                object_key=object_key,
+                reason="tts_generate_already_ready",
             )
             payload["state"] = "already_ready"
             return jsonify(payload), int(status_code)
@@ -14655,6 +15470,12 @@ def webapp_tts_generate():
             if latest_status == "pending":
                 payload["state"] = "already_pending"
             elif latest_status == "ready":
+                _billing_log_r2_delivery_estimate(
+                    user_id=user_id,
+                    cache_key=cache_key,
+                    object_key=object_key,
+                    reason="tts_generate_claim_race_ready",
+                )
                 payload["state"] = "already_ready"
             else:
                 payload["state"] = "failed"
