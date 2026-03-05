@@ -4488,12 +4488,9 @@ function AppInner() {
     && !youtubeAppFullscreen
   );
   const youtubeSubtitlesReady = youtubeTranscript.length > 0;
-  const youtubeSubtitleState = youtubeTranscriptLoading ? 'loading' : youtubeSubtitlesReady ? 'ready' : 'not_loaded';
   const youtubeLearningMode = Boolean((youtubePlaybackStarted || youtubeAppFullscreen) && !youtubeForceShowPanel);
   const youtubeSearchExpanded = !youtubeId || !youtubeLearningMode;
   const youtubeLoadDisabled = !youtubeId || youtubeTranscriptLoading || youtubeManualOverride;
-  const youtubeShowDockLoadButton = youtubeTranscriptLoading || !youtubeSubtitlesReady;
-  const youtubeDurationLabel = formatCompactTimer(youtubeCurrentTime || 0);
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
   const uniqueSkills = (() => {
@@ -13617,7 +13614,6 @@ function AppInner() {
                   <section className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`} ref={youtubeRef}>
                     <div className="webapp-local-section-head youtube-player-first-head">
                       <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
-                      <span className="youtube-player-first-head-duration">{youtubeDurationLabel}</span>
                       {isFocusedSection('youtube') && (
                         <div className="section-head-nav">
                           <button
@@ -13635,6 +13631,47 @@ function AppInner() {
                         </div>
                       )}
                       {renderTodaySectionTaskHud('youtube')}
+                      <div className="youtube-player-first-head-controls">
+                        <button
+                          type="button"
+                          className={`youtube-status-action-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
+                          onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
+                          disabled={!youtubeSubtitlesReady}
+                        >
+                          {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
+                        </button>
+                        <button
+                          type="button"
+                          className={`youtube-status-action-btn ${youtubeTranslationEnabled ? 'is-active' : ''}`}
+                          onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
+                          disabled={!youtubeSubtitlesReady}
+                        >
+                          {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
+                        </button>
+                        <button
+                          type="button"
+                          className="youtube-status-action-btn youtube-status-load-btn"
+                          onClick={() => fetchTranscript()}
+                          disabled={youtubeLoadDisabled}
+                        >
+                          {youtubeTranscriptLoading
+                            ? tr('Загружаем...', 'Loading...')
+                            : tr('Загрузить субтитры', 'Load subtitles')}
+                        </button>
+                        <button
+                          type="button"
+                          className={`youtube-status-action-btn ${youtubeAppFullscreen ? 'is-active' : ''}`}
+                          onClick={() => {
+                            setYoutubeAppFullscreen((prev) => !prev);
+                            setYoutubeSettingsOpen(false);
+                          }}
+                          disabled={!youtubeId}
+                        >
+                          {youtubeAppFullscreen
+                            ? tr('Full screen: ON', 'Full screen: ON')
+                            : tr('Full screen: OFF', 'Full screen: OFF')}
+                        </button>
+                      </div>
                       <button
                         type="button"
                         className="youtube-dock-icon-btn youtube-head-settings-btn"
@@ -13645,6 +13682,84 @@ function AppInner() {
                         <span aria-hidden="true">&#9881;</span>
                       </button>
                     </div>
+                    <div className="youtube-player-card">
+                      <div
+                        ref={youtubePlayerShellRef}
+                        className={`webapp-video-player-shell ${youtubeAppFullscreen ? 'is-app-fullscreen' : ''}`}
+                      >
+                        {youtubeAppFullscreen && (
+                          <button
+                            type="button"
+                            className="youtube-app-fullscreen-close"
+                            onClick={() => setYoutubeAppFullscreen(false)}
+                          >
+                            {tr('Свернуть', 'Minimieren')}
+                          </button>
+                        )}
+                        <div className={`webapp-video-frame youtube-player-frame ${videoExpanded ? 'is-expanded' : ''} ${youtubeOverlayEnabled ? 'has-overlay' : ''}`}>
+                          <div
+                            id="youtube-player"
+                            className="youtube-player-host"
+                            data-video-id={youtubeId}
+                          />
+                          {!youtubeId && (
+                            <div className="youtube-player-placeholder">
+                              <strong>{tr('Плеер YouTube', 'YouTube Player')}</strong>
+                              <span>{tr('Выберите видео, чтобы начать обучение.', 'Waehle ein Video, um zu starten.')}</span>
+                            </div>
+                          )}
+                          {!youtubePlayerReady && youtubeId && (
+                            <iframe
+                              title="YouTube player"
+                              src={`https://www.youtube.com/embed/${youtubeId}`}
+                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                              allowFullScreen
+                            />
+                          )}
+                          {youtubeOverlayEnabled && youtubeTranscript.length > 0 && (() => {
+                            const activeIndex = getActiveSubtitleIndex();
+                            const resolvedIndex = activeIndex >= 0 ? activeIndex : 0;
+                            const showPausedHistory = youtubeAppFullscreen && youtubeIsPaused;
+                            const overlayIndexes = showPausedHistory
+                              ? [resolvedIndex - 2, resolvedIndex - 1, resolvedIndex].filter((idx) => idx >= 0)
+                              : [resolvedIndex];
+                            return (
+                              <div className={`youtube-subtitles-overlay ${showPausedHistory ? 'is-paused-history' : ''}`} aria-hidden="true">
+                                {overlayIndexes.map((idx) => {
+                                  const item = youtubeTranscript[idx];
+                                  const overlayDeText = normalizeSubtitleText(item?.text || '');
+                                  const overlayTranslationText = (youtubeTranslations[String(idx)] || '').trim();
+                                  if (!overlayDeText && !(youtubeTranslationEnabled && overlayTranslationText)) {
+                                    return null;
+                                  }
+                                  const isCurrent = idx === resolvedIndex;
+                                  return (
+                                    <div key={`overlay-line-${idx}`} className={`youtube-subtitles-overlay-row ${isCurrent ? 'is-current' : 'is-history'}`}>
+                                      {overlayDeText && (
+                                        <p className="youtube-subtitles-overlay-line is-target-language">
+                                          {renderClickableText(overlayDeText, {
+                                            className: 'overlay-clickable-word',
+                                            compact: true,
+                                            inlineLookup: true,
+                                            lookupLang: getNormalizeLookupLang(),
+                                            selectionType: 'youtube_overlay_word',
+                                          })}
+                                        </p>
+                                      )}
+                                      {youtubeTranslationEnabled && overlayTranslationText && (
+                                        <p className="youtube-subtitles-overlay-line is-user-language">{overlayTranslationText}</p>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    </div>
+                    {youtubeError && <div className="webapp-error">{youtubeError}</div>}
+                    {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
                     {youtubeSearchExpanded && (
                       <div className="webapp-video-form youtube-setup-form">
                         <label className="webapp-field">
@@ -13721,103 +13836,6 @@ function AppInner() {
                         )}
                       </div>
                     )}
-                    {youtubeError && <div className="webapp-error">{youtubeError}</div>}
-                    {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
-                    <div className="youtube-player-card">
-                      <div
-                        ref={youtubePlayerShellRef}
-                        className={`webapp-video-player-shell ${youtubeAppFullscreen ? 'is-app-fullscreen' : ''}`}
-                      >
-                        {youtubeAppFullscreen && (
-                          <button
-                            type="button"
-                            className="youtube-app-fullscreen-close"
-                            onClick={() => setYoutubeAppFullscreen(false)}
-                          >
-                            {tr('Свернуть', 'Minimieren')}
-                          </button>
-                        )}
-                        <div className={`webapp-video-frame youtube-player-frame ${videoExpanded ? 'is-expanded' : ''} ${youtubeOverlayEnabled ? 'has-overlay' : ''}`}>
-                          <div
-                            id="youtube-player"
-                            className="youtube-player-host"
-                            data-video-id={youtubeId}
-                          />
-                          {!youtubeId && (
-                            <div className="youtube-player-placeholder">
-                              <strong>{tr('Плеер YouTube', 'YouTube Player')}</strong>
-                              <span>{tr('Выберите видео, чтобы начать обучение.', 'Waehle ein Video, um zu starten.')}</span>
-                            </div>
-                          )}
-                          {!youtubePlayerReady && youtubeId && (
-                            <iframe
-                              title="YouTube player"
-                              src={`https://www.youtube.com/embed/${youtubeId}`}
-                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                              allowFullScreen
-                            />
-                          )}
-                          {youtubeOverlayEnabled && youtubeTranscript.length > 0 && (() => {
-                            const activeIndex = getActiveSubtitleIndex();
-                            const resolvedIndex = activeIndex >= 0 ? activeIndex : 0;
-                            const showPausedHistory = youtubeAppFullscreen && youtubeIsPaused;
-                            const overlayIndexes = showPausedHistory
-                              ? [resolvedIndex - 2, resolvedIndex - 1, resolvedIndex].filter((idx) => idx >= 0)
-                              : [resolvedIndex];
-                            return (
-                              <div className={`youtube-subtitles-overlay ${showPausedHistory ? 'is-paused-history' : ''}`} aria-hidden="true">
-                                {overlayIndexes.map((idx) => {
-                                  const item = youtubeTranscript[idx];
-                                  const overlayDeText = normalizeSubtitleText(item?.text || '');
-                                  const overlayTranslationText = (youtubeTranslations[String(idx)] || '').trim();
-                                  if (!overlayDeText && !(youtubeTranslationEnabled && overlayTranslationText)) {
-                                    return null;
-                                  }
-                                  const isCurrent = idx === resolvedIndex;
-                                  return (
-                                    <div key={`overlay-line-${idx}`} className={`youtube-subtitles-overlay-row ${isCurrent ? 'is-current' : 'is-history'}`}>
-                                      {overlayDeText && (
-                                        <p className="youtube-subtitles-overlay-line is-target-language">
-                                          {renderClickableText(overlayDeText, {
-                                            className: 'overlay-clickable-word',
-                                            compact: true,
-                                            inlineLookup: true,
-                                            lookupLang: getNormalizeLookupLang(),
-                                            selectionType: 'youtube_overlay_word',
-                                          })}
-                                        </p>
-                                      )}
-                                      {youtubeTranslationEnabled && overlayTranslationText && (
-                                        <p className="youtube-subtitles-overlay-line is-user-language">{overlayTranslationText}</p>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            );
-                          })()}
-                        </div>
-                      </div>
-                      <div className="youtube-player-status-row">
-                        <div className="youtube-player-status-main">
-                          <span className={`youtube-subtitles-status-badge is-${youtubeSubtitleState}`}>
-                            {youtubeSubtitleState === 'loading' && <span className="youtube-status-spinner" aria-hidden="true" />}
-                            {youtubeSubtitleState === 'loading' && tr('Субтитры: загрузка...', 'Subtitles: loading...')}
-                            {youtubeSubtitleState === 'ready' && tr('Субтитры: готовы', 'Subtitles: ready')}
-                            {youtubeSubtitleState === 'not_loaded' && tr('Субтитры: не загружены', 'Subtitles: not loaded')}
-                          </span>
-                          <button
-                            type="button"
-                            className={`youtube-dock-chip youtube-status-overlay-chip ${youtubeOverlayEnabled ? 'is-active' : ''}`}
-                            onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
-                            disabled={!youtubeSubtitlesReady}
-                          >
-                            {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
-                          </button>
-                        </div>
-                        <span className="youtube-player-status-duration">{youtubeDurationLabel}</span>
-                      </div>
-                    </div>
                     {!youtubeOverlayEnabled && (
                       <div className="youtube-subtitles-card youtube-subtitles-panel">
                         <div className="youtube-subtitles-panel-head">
@@ -13825,14 +13843,6 @@ function AppInner() {
                             <strong>{tr('Субтитры', 'Subtitles')}</strong>
                             <span>{String(languageProfile?.learning_language || 'de').toUpperCase()} · {tr('всегда ON', 'always ON')}</span>
                           </div>
-                          <button
-                            type="button"
-                            className={`youtube-dock-chip youtube-ru-chip ${youtubeTranslationEnabled ? 'is-active' : ''}`}
-                            onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
-                            disabled={!youtubeSubtitlesReady}
-                          >
-                            {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
-                          </button>
                         </div>
                         {youtubeSubtitlesReady ? (
                           <div className="youtube-subtitles-panel-content">
@@ -13889,33 +13899,6 @@ function AppInner() {
                         )}
                       </div>
                     )}
-                    <div className="youtube-control-dock">
-                      {youtubeShowDockLoadButton && (
-                        <button
-                          type="button"
-                          className="youtube-dock-primary"
-                          onClick={() => fetchTranscript()}
-                          disabled={youtubeLoadDisabled}
-                        >
-                          {youtubeTranscriptLoading
-                            ? tr('Загружаем...', 'Loading...')
-                            : tr('Загрузить оригинальные субтитры', 'Load original subtitles')}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="youtube-dock-icon-btn youtube-dock-fs-btn"
-                        onClick={() => {
-                          setYoutubeAppFullscreen((prev) => !prev);
-                          setYoutubeSettingsOpen(false);
-                        }}
-                        disabled={!youtubeId}
-                        aria-label={tr('Развернуть во весь экран', 'Full screen')}
-                        title={tr('Развернуть во весь экран', 'Full screen')}
-                      >
-                        FS
-                      </button>
-                    </div>
                     {youtubeSettingsOpen && (
                       <div className="youtube-settings-overlay" onClick={() => setYoutubeSettingsOpen(false)}>
                         <div
