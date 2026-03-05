@@ -3862,12 +3862,12 @@ body {
 }
 
 .webapp-subtitles.is-translation .webapp-subtitles-list p {
-  color: rgba(248, 250, 252, 0.75);
+  color: rgba(250, 204, 21, 0.92);
 }
 
 .webapp-subtitles.is-translation .webapp-subtitles-list p.is-active {
   background: rgba(253, 224, 71, 0.2);
-  color: #111827;
+  color: #fef3c7;
 }
 
 .webapp-subtitles-list {
@@ -9932,12 +9932,12 @@ body {
 }
 
 .webapp-subtitles.is-translation .webapp-subtitles-list p {
-  color: #cbd5e1;
+  color: #facc15;
 }
 
 .webapp-subtitles.is-translation .webapp-subtitles-list p.is-active {
   background: #1f2937;
-  color: #f8fafc;
+  color: #fde68a;
 }
 
 .clickable-word {
@@ -10006,6 +10006,7 @@ body {
   --yt-text-primary: #f8fafc;
   --yt-text-title: #e2e8f0;
   --yt-text-secondary: #cbd5e1;
+  --yt-text-translation: #facc15;
   --yt-text-muted: #94a3b8;
   --yt-text-subtle: #64748b;
   --yt-action-primary: #2563eb;
@@ -10172,7 +10173,7 @@ body {
 
 .webapp-video.youtube-player-first .youtube-subtitles-overlay-line.is-user-language,
 .webapp-video.youtube-player-first .youtube-subtitles-overlay-line.is-translation {
-  color: #cbd5e1;
+  color: var(--yt-text-translation);
   font-size: clamp(24px, 2vw, 36px);
   font-weight: 600;
 }
@@ -10300,7 +10301,7 @@ body {
 }
 
 .webapp-video.youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list p {
-  color: #cbd5e1;
+  color: var(--yt-text-translation);
   font-weight: 600;
   line-height: 1.32;
 }
@@ -10310,6 +10311,11 @@ body {
   color: var(--yt-text-primary);
   border-radius: 14px;
   padding: 10px 12px;
+}
+
+.webapp-video.youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list p.is-active {
+  color: #fde68a;
+  background: rgba(250, 204, 21, 0.16);
 }
 
 .youtube-subtitles-empty {
