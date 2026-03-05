@@ -436,6 +436,7 @@ function AppInner() {
   const moviesRef = useRef(null);
   const youtubeSubtitlesRef = useRef(null);
   const youtubePlayerRef = useRef(null);
+  const youtubePausedBySelectionRef = useRef(false);
   const youtubePlayerShellRef = useRef(null);
   const youtubeTimeIntervalRef = useRef(null);
   const youtubeCurrentTimeRef = useRef(0);
@@ -7706,14 +7707,23 @@ function AppInner() {
   const handleSelection = (event, overrideText = '', options = {}) => {
     const text = overrideText || normalizeSelectionText(window.getSelection()?.toString() || '');
     if (!text) {
-      setSelectionText('');
-      setSelectionPos(null);
-      setSelectionType('');
-      setSelectedMeta(null);
-      setSelectionCompact(false);
-      setSelectionLookupLang('');
-      setSelectionInlineMode(false);
+      clearSelection();
       return;
+    }
+    const nextSelectionType = String(options?.selectionType || '');
+    const isYoutubeSelection = nextSelectionType === 'youtube_word' || nextSelectionType === 'youtube_overlay_word';
+    if (isYoutubeSelection) {
+      try {
+        const playerState = youtubePlayerRef.current?.getPlayerState?.();
+        if (playerState === 1) {
+          youtubePlayerRef.current?.pauseVideo?.();
+          youtubePausedBySelectionRef.current = true;
+        } else {
+          youtubePausedBySelectionRef.current = false;
+        }
+      } catch (_playerStateError) {
+        youtubePausedBySelectionRef.current = false;
+      }
     }
     const clientX = event?.clientX ?? event?.touches?.[0]?.clientX ?? window.innerWidth / 2;
     const clientY = event?.clientY ?? event?.touches?.[0]?.clientY ?? window.innerHeight / 3;
@@ -7728,7 +7738,7 @@ function AppInner() {
     const safeY = clamp(rawY, margin, Math.max(margin, window.innerHeight - menuHeight - margin));
     setSelectionText(text);
     setSelectionPos({ x: safeX, y: safeY });
-    setSelectionType(String(options?.selectionType || ''));
+    setSelectionType(nextSelectionType);
     setSelectedMeta(options?.selectedMeta || null);
     setSelectionCompact(Boolean(options?.compact));
     setSelectionLookupLang(normalizeLangCode(options?.lookupLang || ''));
@@ -7739,6 +7749,18 @@ function AppInner() {
   };
 
   const clearSelection = () => {
+    const shouldResumeYoutube = youtubePausedBySelectionRef.current
+      && (selectionType === 'youtube_word' || selectionType === 'youtube_overlay_word');
+    youtubePausedBySelectionRef.current = false;
+    if (shouldResumeYoutube) {
+      try {
+        if (youtubeSectionVisible && youtubePlayerRef.current?.playVideo) {
+          youtubePlayerRef.current.playVideo();
+        }
+      } catch (_resumeError) {
+        // ignore resume errors
+      }
+    }
     setSelectionText('');
     setSelectionPos(null);
     setSelectionType('');
@@ -10678,6 +10700,7 @@ function AppInner() {
                 // ignore
               }
             } else if (state === 1) {
+              youtubePausedBySelectionRef.current = false;
               setYoutubeIsPaused(false);
               setYoutubePlaybackStarted(true);
               setYoutubeForceShowPanel(false);
@@ -11520,6 +11543,23 @@ function AppInner() {
                   <div className="brand-subtitle">{t('brand_subtitle')}</div>
                 </div>
               </div>
+            <div className="webapp-sidebar-top-controls">
+              <div className="language-toggle-wrap">
+                <span className="language-toggle-label">{t('language_toggle_label')}</span>
+                <button type="button" className="language-toggle" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
+                  <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
+                  <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
+                </button>
+              </div>
+              <label className="menu-toggle-row">
+                <input
+                  type="checkbox"
+                  checked={menuMultiSelect}
+                  onChange={(event) => setMenuMultiSelect(event.target.checked)}
+                />
+                <span>{t('menu_multi_select')}</span>
+              </label>
+            </div>
             <div className="webapp-menu">
               <button
                 type="button"
@@ -11656,21 +11696,6 @@ function AppInner() {
               </button>
             </div>
             <div className="webapp-menu-actions">
-              <div className="language-toggle-wrap">
-                <span className="language-toggle-label">{t('language_toggle_label')}</span>
-                <button type="button" className="language-toggle" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
-                  <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
-                  <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
-                </button>
-              </div>
-              <label className="menu-toggle-row">
-                <input
-                  type="checkbox"
-                  checked={menuMultiSelect}
-                  onChange={(event) => setMenuMultiSelect(event.target.checked)}
-                />
-                <span>{t('menu_multi_select')}</span>
-              </label>
               <button type="button" className="secondary-button" onClick={showAllSections} disabled={flashcardsOnly}>
                 {t('menu_show_all')}
               </button>
@@ -12065,8 +12090,8 @@ function AppInner() {
 
             
 
-            {!telegramApp?.initData && (
-              <section className="webapp-browser-auth">
+            {!telegramApp?.initData && isHomeScreen && (
+              <section className={`webapp-browser-auth ${initData ? 'is-compact' : ''}`}>
                 <div className="webapp-browser-auth-head">
                   <strong>{t('browser_login_title')}</strong>
                   {initData ? (
