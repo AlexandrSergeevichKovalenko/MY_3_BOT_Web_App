@@ -92,6 +92,7 @@ DICTIONARY_RESPONSES_TIMEOUT_SECONDS = max(
     2.0,
     float(str(os.getenv("DICTIONARY_RESPONSES_TIMEOUT_SECONDS") or "9").strip() or "9"),
 )
+LLM_ALLOW_ASSISTANTS_FALLBACK = _env_flag("LLM_ALLOW_ASSISTANTS_FALLBACK", True)
 
 
 def _build_taxonomy_hint_block(
@@ -2260,9 +2261,10 @@ async def llm_execute(
     fast_delete: bool = False,
     responses_timeout_seconds: float | None = None,
     responses_only: bool = False,
-    allow_assistants_fallback: bool = True,
+    allow_assistants_fallback: bool | None = None,
 ) -> str:
     _LAST_LLM_USAGE.set(None)
+    fallback_allowed = LLM_ALLOW_ASSISTANTS_FALLBACK if allow_assistants_fallback is None else bool(allow_assistants_fallback)
 
     async def _run_responses_with_limits() -> str:
         coro = _run_task_text_via_responses(
@@ -2282,7 +2284,7 @@ async def llm_execute(
         try:
             return await _run_responses_with_limits()
         except Exception as exc:
-            if not allow_assistants_fallback:
+            if not fallback_allowed:
                 raise
             logging.warning(
                 "Responses path failed for task='%s', fallback to assistants: %s",
@@ -2290,7 +2292,7 @@ async def llm_execute(
                 exc,
             )
 
-    if not allow_assistants_fallback:
+    if not fallback_allowed:
         raise RuntimeError(
             f"Assistants fallback disabled for task='{task_name}' and responses path is unavailable"
         )
