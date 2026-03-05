@@ -10776,10 +10776,19 @@ def get_skill_progress_report(
     skills: list[dict] = []
     groups_map: dict[str, list[dict]] = {}
     for row in rows:
-        mastery_raw = row[3]
-        total_events = int(row[4] or 0)
-        errors_7d = int(row[5] or 0)
-        errors_prev_7d = int(row[6] or 0)
+        if not isinstance(row, (tuple, list)):
+            continue
+        row_values = list(row)
+        if len(row_values) < 8:
+            row_values.extend([None] * (8 - len(row_values)))
+        skill_id_raw = row_values[0]
+        title_raw = row_values[1]
+        category_raw = row_values[2]
+        mastery_raw = row_values[3]
+        total_events = int(row_values[4] or 0)
+        errors_7d = int(row_values[5] or 0)
+        errors_prev_7d = int(row_values[6] or 0)
+        last_practiced_raw = row_values[7]
         has_data = total_events > 0 and mastery_raw is not None
 
         mastery: float | None = None
@@ -10806,9 +10815,9 @@ def get_skill_progress_report(
                 zone = "stable"
 
         skill = {
-            "skill_id": str(row[0]),
-            "name": str(row[1] or row[0] or ""),
-            "group": str(row[2] or "Other"),
+            "skill_id": str(skill_id_raw or ""),
+            "name": str(title_raw or skill_id_raw or ""),
+            "group": str(category_raw or "Other"),
             "mastery": round(mastery, 2) if mastery is not None else None,
             "errors_7d": errors_7d,
             "errors_prev_7d": errors_prev_7d,
@@ -10817,7 +10826,7 @@ def get_skill_progress_report(
             "confidence": round(min(1.0, total_events / 20.0), 3) if has_data else 0.0,
             "has_data": has_data,
             "total_events": total_events,
-            "last_practiced_at": row[7].isoformat() if row[7] else None,
+            "last_practiced_at": last_practiced_raw.isoformat() if hasattr(last_practiced_raw, "isoformat") else None,
         }
         skills.append(skill)
         group_name = skill["group"]
