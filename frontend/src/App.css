@@ -2007,6 +2007,76 @@ body {
   gap: 12px;
 }
 
+.billing-info-accordion {
+  margin-top: 14px;
+  border: 1px solid rgba(93, 220, 255, 0.24);
+  border-radius: 16px;
+  background: rgba(10, 16, 34, 0.62);
+  overflow: hidden;
+}
+
+.billing-info-accordion__toggle {
+  width: 100%;
+  min-height: 48px;
+  border: 0;
+  background: rgba(15, 23, 42, 0.7);
+  color: #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.billing-info-accordion__title {
+  line-height: 1.35;
+}
+
+.billing-info-accordion__chevron {
+  font-size: 18px;
+  color: rgba(148, 163, 184, 0.88);
+  transition: transform 0.18s ease;
+}
+
+.billing-info-accordion__chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.billing-info-accordion__body {
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.billing-info-accordion__section {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.52);
+  padding: 12px;
+}
+
+.billing-info-accordion__section h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #f8fafc;
+}
+
+.billing-info-accordion__section ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.billing-info-accordion__section li {
+  color: rgba(226, 232, 240, 0.86);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .billing-support-card {
   border: 1px solid rgba(93, 220, 255, 0.22);
   border-radius: 18px;

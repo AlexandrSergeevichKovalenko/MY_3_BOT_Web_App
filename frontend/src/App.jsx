@@ -392,6 +392,7 @@ function AppInner() {
   const [billingPlansError, setBillingPlansError] = useState('');
   const [billingPlans, setBillingPlans] = useState([]);
   const [billingActionLoading, setBillingActionLoading] = useState(false);
+  const [billingInfoOpen, setBillingInfoOpen] = useState(false);
   const [languageProfile, setLanguageProfile] = useState(null);
   const [languageProfileDraft, setLanguageProfileDraft] = useState({ learning_language: 'de', native_language: 'ru' });
   const [languageProfileLoading, setLanguageProfileLoading] = useState(false);
@@ -3350,7 +3351,7 @@ function AppInner() {
   const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
   const onboardingSlides = useMemo(() => ([
     {
-      eyebrow: tr('Шаг 1 из 4', 'Schritt 1 von 4'),
+      eyebrow: tr('Шаг 1 из 5', 'Schritt 1 von 5'),
       title: tr('Начните с переводов', 'Starte mit Uebersetzungen'),
       body: tr(
         'Выберите тему и уровень, переведите предложения и сразу читайте разбор ошибок. Это главный вход в грамматику и структуру языка.',
@@ -3363,7 +3364,7 @@ function AppInner() {
       ],
     },
     {
-      eyebrow: tr('Шаг 2 из 4', 'Schritt 2 von 4'),
+      eyebrow: tr('Шаг 2 из 5', 'Schritt 2 von 5'),
       title: tr('Сохраняйте слова и повторяйте их', 'Speichere Woerter und wiederhole sie'),
       body: tr(
         'Полезные слова и выражения отправляйте в словарь, а затем закрепляйте их через карточки и FSRS-повторение.',
@@ -3376,7 +3377,7 @@ function AppInner() {
       ],
     },
     {
-      eyebrow: tr('Шаг 3 из 4', 'Schritt 3 von 4'),
+      eyebrow: tr('Шаг 3 из 5', 'Schritt 3 von 5'),
       title: tr('Переходите к живому немецкому', 'Wechsle zu echtem Deutsch'),
       body: tr(
         'YouTube и Reader нужны, чтобы видеть язык в реальном контексте: видео, субтитры, тексты, аудио и чтение.',
@@ -3389,7 +3390,7 @@ function AppInner() {
       ],
     },
     {
-      eyebrow: tr('Шаг 4 из 4', 'Schritt 4 von 4'),
+      eyebrow: tr('Шаг 4 из 5', 'Schritt 4 von 5'),
       title: tr('Прокачивайте слабые места точечно', 'Trainiere gezielt deine Schwachstellen'),
       body: tr(
         'Голосовой ассистент, теория и тренировка навыка помогают закрепить именно те темы, где у вас больше всего ошибок.',
@@ -3399,6 +3400,19 @@ function AppInner() {
         tr('Голосовой ассистент нужен для разговорной практики.', 'Der Sprachassistent ist fuer muendliche Praxis da.'),
         tr('Skill-Training собирает теорию, видео и упражнения в одном месте.', 'Skill-Training kombiniert Theorie, Video und Uebungen an einem Ort.'),
         tr('Даже 10–15 минут в день дают стабильный прогресс.', 'Schon 10 bis 15 Minuten pro Tag bringen stabilen Fortschritt.'),
+      ],
+    },
+    {
+      eyebrow: tr('Шаг 5 из 5', 'Schritt 5 von 5'),
+      title: tr('Подписка и управление тарифом', 'Abo und Tarifverwaltung'),
+      body: tr(
+        'В разделе «Подписка» видны текущий тариф, лимиты и все доступные планы. Там же открывается Stripe Portal для управления оплатой.',
+        'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfuegbaren Plaene. Dort oeffnest du auch das Stripe-Portal zur Zahlungsverwaltung.'
+      ),
+      bullets: [
+        tr('Free — базовый бесплатный режим с лимитами, Pro — полный режим без дневного лимита.', 'Free ist der kostenlose Modus mit Limits, Pro ist der volle Modus ohne Tageslimit.'),
+        tr('«Кофе» и «Кофе + чизкейк» сейчас работают как альтернативные платные планы (не параллельные add-on).', '„Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Plaene (keine parallelen Add-ons).'),
+        tr('Кнопка «Управлять подпиской» открывает Stripe Portal: там смена карты, отмена/возобновление и счета; затем возвращайтесь в Mini App.', '„Abo verwalten“ oeffnet das Stripe-Portal: Karte wechseln, kuendigen/reaktivieren und Rechnungen; danach zur Mini App zurueckkehren.'),
       ],
     },
   ]), [tr]);
@@ -3615,8 +3629,56 @@ function AppInner() {
           ],
         },
         {
-          key: 'bot_translator_share',
+          key: 'subscription',
           number: '6',
+          title: 'Abo und Stripe-Portal',
+          summary: 'Verstehe Free/Pro, Support-Tarife und wie der Tarifwechsel wirklich funktioniert.',
+          sections: [
+            {
+              title: 'Was der Bereich „Abo“ zeigt',
+              items: [
+                'Hier siehst du deinen aktuellen Plan, den Status, den heutigen Verbrauch und dein Tageslimit.',
+                'Außerdem sind alle verfügbaren Tarife sichtbar, damit du direkt auswählen kannst, ohne erst das Portal zu öffnen.',
+                'Wenn ein Tarif als „nicht verbunden in Stripe“ erscheint, fehlt für diesen Plan die Stripe-Preis-Konfiguration auf dem Server.',
+              ],
+            },
+            {
+              title: 'Welche Tarife es gibt',
+              items: [
+                'Free: kostenloser Basis-Modus mit Limits.',
+                'Pro: voller Modus ohne Tageslimit.',
+                'Support „Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Tarife und ersetzen den aktiven bezahlten Tarif, statt parallel als Add-on zu laufen.',
+              ],
+            },
+            {
+              title: 'Was passiert bei Tarifwechsel',
+              items: [
+                'Wenn bereits ein aktives Bezahl-Abo existiert, wird es auf „läuft bis Periodenende“ gestellt und der neue Tarif startet zum nächsten Abrechnungszeitpunkt.',
+                'Dadurch gibt es keine doppelte Sofortbelastung mitten im laufenden Zyklus.',
+                'Wenn du denselben aktiven Tarif noch einmal auswählst, bekommst du eine Meldung und verwaltest ihn stattdessen im Portal.',
+              ],
+            },
+            {
+              title: 'Button „Abo im Stripe-Portal verwalten“',
+              items: [
+                'Der Button öffnet Stripe Billing Portal (Domain: billing.stripe.com) für deinen Customer-Kontext.',
+                'Dort kannst du Karte wechseln, Abo kündigen/reaktivieren und Rechnungen einsehen.',
+                'Zurück: im Portal auf Rückkehr zur App tippen oder Browser/WebView schließen und die Mini App erneut öffnen, dann wird der Status im Abo-Bereich aktualisiert.',
+              ],
+            },
+            {
+              title: 'Wichtige Hinweise',
+              items: [
+                'Nach Checkout oder Portal-Rückkehr immer kurz 1–3 Sekunden warten und den Abo-Bereich aktualisieren.',
+                'Wenn ein Klick auf Tarif nichts macht, zuerst prüfen: Plan ist in Stripe aktiv, Button ist nicht disabled, und es gibt keine Netzwerk-/InitData-Fehler.',
+                'Wenn du alle Tarife für bestehende Pro-Nutzer sichtbar halten willst, muss die Tarifliste immer aus `/api/billing/plans` geladen werden und nicht nur aus Stripe-Portal-UI.',
+              ],
+            },
+          ],
+        },
+        {
+          key: 'bot_translator_share',
+          number: '7',
           title: 'Bot als Schnell-Übersetzer',
           summary: 'Markiere Text in jeder App, teile ihn an den Bot und hole dir später die Auswertung an einem Ort.',
           sections: [
@@ -3856,11 +3918,59 @@ function AppInner() {
               'Этот режим нужен для спонтанной речи, произношения, скорости реакции и уверенности в разговоре.',
             ],
           },
+          ],
+        },
+      {
+        key: 'subscription',
+        number: '6',
+        title: 'Подписка и Stripe Portal',
+        summary: 'Раздел, где видно все тарифы и как правильно менять план без путаницы.',
+        sections: [
+          {
+            title: 'Что показывает блок «Подписка»',
+            items: [
+              'Текущий план, статус, расход за сегодня и дневной лимит.',
+              'Полный список доступных тарифов внутри Mini App, чтобы не искать их в Stripe вручную.',
+              'Если у плана написано «тариф не подключён в Stripe», значит для него не задан или неактивен Stripe Price ID на сервере.',
+            ],
+          },
+          {
+            title: 'Какие варианты тарифов есть',
+            items: [
+              'Free: бесплатный базовый режим с лимитами.',
+              'Pro: полный режим без дневного лимита.',
+              '«Поддержать разработчика: кофе» и «кофе + чизкейк» сейчас работают как альтернативные платные планы, а не как параллельные add-on поверх Pro.',
+            ],
+          },
+          {
+            title: 'Как работает смена тарифа',
+            items: [
+              'Если у вас уже активен платный тариф, система ставит его на завершение в конце периода и включает новый тариф со следующего биллингового цикла.',
+              'Это сделано, чтобы не было двойного списания в середине текущего периода.',
+              'Если выбрать тот же активный тариф, сервер вернёт подсказку управлять им через Stripe Portal.',
+            ],
+          },
+          {
+            title: 'Кнопка «Управлять подпиской в Stripe Portal»',
+            items: [
+              'Кнопка открывает Stripe Billing Portal (домен `billing.stripe.com`) для вашего аккаунта.',
+              'Там можно: сменить карту, отменить/возобновить подписку, посмотреть счета и платежи.',
+              'Чтобы вернуться: нажмите возврат в портале или закройте браузер/WebView и снова откройте Mini App; раздел подписки подтянет актуальный статус.',
+            ],
+          },
+          {
+            title: 'Что ещё важно пользователю',
+            items: [
+              'После оплаты/возврата из портала дайте системе 1–3 секунды и обновите блок подписки.',
+              'Если кнопка «Выбрать тариф» не реагирует, проверьте интернет, наличие initData и что тариф реально активен в `/api/billing/plans`.',
+              'Даже при активном Pro стоит показывать остальные тарифы в Mini App, иначе пользователь не узнает о доступных вариантах смены.',
+            ],
+          },
         ],
       },
       {
         key: 'bot_translator_share',
-        number: '6',
+        number: '7',
         title: 'Бот как быстрый переводчик',
         summary: 'Выделяйте текст где угодно, пересылайте боту и разбирайте всё в одном месте.',
         sections: [
@@ -12159,6 +12269,9 @@ function AppInner() {
                     <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('assistant', assistantRef)}>
                       {tr('Поговорить с ассистентом', 'Mit dem Assistenten sprechen')}
                     </button>
+                    <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('subscription', billingRef)}>
+                      {tr('Открыть подписку', 'Abo oeffnen')}
+                    </button>
                   </div>
                 </div>
               </section>
@@ -15598,6 +15711,62 @@ function AppInner() {
                       {tr(
                         'Дополнительная поддержка проекта доступна отдельно от текущего тарифа.',
                         'Zusaetzliche Projektunterstuetzung ist separat vom aktuellen Tarif verfuegbar.'
+                      )}
+                    </div>
+                    <div className={`billing-info-accordion ${billingInfoOpen ? 'is-open' : ''}`}>
+                      <button
+                        type="button"
+                        className="billing-info-accordion__toggle"
+                        onClick={() => setBillingInfoOpen((prev) => !prev)}
+                        aria-expanded={billingInfoOpen}
+                      >
+                        <span className="billing-info-accordion__title">
+                          {tr('Как устроен блок подписки и что делать в Stripe', 'Wie der Abo-Bereich funktioniert und was du in Stripe tun solltest')}
+                        </span>
+                        <span className={`billing-info-accordion__chevron ${billingInfoOpen ? 'is-open' : ''}`} aria-hidden="true">⌄</span>
+                      </button>
+                      {billingInfoOpen && (
+                        <div className="billing-info-accordion__body">
+                          <div className="billing-info-accordion__section">
+                            <h4>{tr('Что означает блок «Подписка»', 'Was der Bereich „Abo“ bedeutet')}</h4>
+                            <ul>
+                              <li>{tr('Это центр управления тарифом: текущий план, статус, дневной cap, расход за сегодня.', 'Das ist die zentrale Tarifsteuerung: aktueller Plan, Status, Tageslimit und heutiger Verbrauch.')}</li>
+                              <li>{tr('Ниже всегда должен быть виден полный список доступных тарифов.', 'Darunter sollte immer die komplette Liste aller verfuegbaren Tarife sichtbar sein.')}</li>
+                              <li>{tr('Если карточка пишет «Тариф ещё не подключён в Stripe», этот тариф сейчас нельзя оплатить — на сервере не активирован Stripe Price ID.', 'Wenn die Karte „Tarif noch nicht in Stripe verbunden“ zeigt, kann dieser Tarif aktuell nicht bezahlt werden — die Stripe Price ID ist serverseitig nicht aktiv.')}</li>
+                            </ul>
+                          </div>
+                          <div className="billing-info-accordion__section">
+                            <h4>{tr('Варианты тарифов', 'Tarifvarianten')}</h4>
+                            <ul>
+                              <li>{tr('Free: базовый бесплатный режим с ограничениями.', 'Free: kostenloser Basis-Modus mit Limits.')}</li>
+                              <li>{tr('Pro: основной платный режим без дневного лимита.', 'Pro: der Haupt-Premium-Modus ohne Tageslimit.')}</li>
+                              <li>{tr('«Кофе» и «Кофе + чизкейк»: сейчас это альтернативные платные тарифы, а не add-on поверх Pro.', '„Kaffee“ und „Kaffee + Cheesecake“: aktuell sind das alternative bezahlte Tarife, keine Add-ons zusaetzlich zu Pro.')}</li>
+                            </ul>
+                          </div>
+                          <div className="billing-info-accordion__section">
+                            <h4>{tr('Что происходит при выборе нового тарифа', 'Was beim Tarifwechsel passiert')}</h4>
+                            <ul>
+                              <li>{tr('Если уже есть активный платный тариф, он переводится в режим «до конца периода», а новый стартует со следующего биллингового периода.', 'Wenn bereits ein bezahlter Tarif aktiv ist, wird er auf „bis Periodenende“ gestellt und der neue startet im naechsten Abrechnungszeitraum.')}</li>
+                              <li>{tr('Это предотвращает двойное списание в середине текущего месяца.', 'Das verhindert doppelte Abbuchungen mitten im laufenden Monat.')}</li>
+                              <li>{tr('Тот же тариф повторно не оформляется: используйте Stripe Portal для управления.', 'Derselbe Tarif wird nicht erneut abgeschlossen: nutze dafuer das Stripe-Portal.')}</li>
+                            </ul>
+                          </div>
+                          <div className="billing-info-accordion__section">
+                            <h4>{tr('Кнопка «Управлять подпиской в Stripe Portal»', 'Button „Abo im Stripe-Portal verwalten“')}</h4>
+                            <ul>
+                              <li>{tr('Открывает Stripe Billing Portal на домене `billing.stripe.com` для вашего аккаунта.', 'Oeffnet das Stripe Billing Portal auf `billing.stripe.com` fuer deinen Account.')}</li>
+                              <li>{tr('Там доступны: смена карты, отмена/возобновление подписки, просмотр счетов.', 'Dort verfuegbar: Kartenwechsel, Kuendigung/Reaktivierung des Abos, Rechnungen ansehen.')}</li>
+                              <li>{tr('Для возврата нажмите кнопку возврата в Stripe или закройте веб-окно и снова откройте Mini App.', 'Zum Zurueckkehren in Stripe auf die Rueckkehr-Schaltflaeche tippen oder das Webfenster schliessen und die Mini App erneut oeffnen.')}</li>
+                            </ul>
+                          </div>
+                          <div className="billing-info-accordion__section">
+                            <h4>{tr('Что ещё важно', 'Was sonst wichtig ist')}</h4>
+                            <ul>
+                              <li>{tr('После оплаты или возврата из портала подождите 1–3 секунды и обновите раздел подписки.', 'Nach Zahlung oder Portal-Rueckkehr 1 bis 3 Sekunden warten und den Abo-Bereich aktualisieren.')}</li>
+                              <li>{tr('Если кнопка выбора тарифа не срабатывает, проверьте интернет, initData и фактическую активность плана в `/api/billing/plans`.', 'Wenn der Tarif-Button nicht reagiert, Internet, initData und die reale Plan-Aktivitaet in `/api/billing/plans` pruefen.')}</li>
+                            </ul>
+                          </div>
+                        </div>
                       )}
                     </div>
                     <div className="billing-support-grid">
