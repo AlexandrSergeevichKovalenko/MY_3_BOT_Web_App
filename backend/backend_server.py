@@ -14454,6 +14454,7 @@ def webapp_tts_generate():
     object_key = str(params["object_key"])
 
     meta = get_tts_object_meta(cache_key, touch_hit=False)
+    had_existing_meta = bool(meta)
     if meta:
         status_value = str(meta.get("status") or "").strip().lower()
         if status_value == "ready":
@@ -14520,7 +14521,9 @@ def webapp_tts_generate():
         )
 
     try:
-        if r2_exists(object_key):
+        # For brand-new keys we skip HEAD probe to avoid extra RTT on the hot path.
+        # Existing/meta keys still probe R2 to recover from partial DB state.
+        if had_existing_meta and r2_exists(object_key):
             url = r2_public_url(object_key)
             ready_meta = mark_tts_object_ready(
                 cache_key=cache_key,

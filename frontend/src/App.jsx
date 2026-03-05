@@ -468,6 +468,7 @@ function AppInner() {
   const ttsPendingCacheRef = useRef(new Map());
   const ttsLastRef = useRef({ key: '', ts: 0 });
   const ttsCurrentAudioRef = useRef(null);
+  const ttsPlaybackSeqRef = useRef(0);
   const audioContextRef = useRef(null);
   const positiveAudioRef = useRef(null);
   const negativeAudioRef = useRef(null);
@@ -1239,23 +1240,46 @@ function AppInner() {
     if (ttsLastRef.current.key === key && now - ttsLastRef.current.ts < 1200) {
       return Promise.resolve();
     }
+    const playbackSeq = ++ttsPlaybackSeqRef.current;
+    const isStalePlayback = () => ttsPlaybackSeqRef.current !== playbackSeq;
     ttsLastRef.current = { key, ts: now };
     if (ttsCurrentAudioRef.current) {
       ttsCurrentAudioRef.current.pause();
       ttsCurrentAudioRef.current.currentTime = 0;
       ttsCurrentAudioRef.current = null;
     }
+    if ('speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch (_error) {
+        // no-op
+      }
+    }
     const playAudioUrl = (audioUrl) => new Promise((resolve) => {
-      if (!audioUrl) {
+      if (!audioUrl || isStalePlayback()) {
         resolve();
         return;
       }
       const audio = new Audio(audioUrl);
+      audio.preload = 'auto';
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (ttsCurrentAudioRef.current === audio) {
+          ttsCurrentAudioRef.current = null;
+        }
+        resolve();
+      };
+      audio.onended = finish;
+      audio.onerror = finish;
       ttsCurrentAudioRef.current = audio;
       audio.currentTime = 0;
-      audio.onended = () => resolve();
-      audio.onerror = () => resolve();
-      audio.play().catch(() => resolve());
+      if (isStalePlayback()) {
+        finish();
+        return;
+      }
+      audio.play().catch(() => finish());
     });
     const playWebSpeech = () => new Promise((resolve) => {
       let settled = false;
@@ -1265,7 +1289,7 @@ function AppInner() {
         resolve();
       };
       const watchdog = window.setTimeout(finish, 4000);
-      if (!('speechSynthesis' in window)) {
+      if (!('speechSynthesis' in window) || isStalePlayback()) {
         window.clearTimeout(watchdog);
         finish();
         return;
@@ -1282,6 +1306,11 @@ function AppInner() {
           window.clearTimeout(watchdog);
           finish();
         };
+        if (isStalePlayback()) {
+          window.clearTimeout(watchdog);
+          finish();
+          return;
+        }
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(utterance);
       } catch (error) {
@@ -1373,6 +1402,9 @@ function AppInner() {
 
     try {
       const readyUrl = await ensureTtsReadyUrl();
+      if (isStalePlayback()) {
+        return;
+      }
       if (readyUrl) {
         return playAudioUrl(readyUrl);
       }
@@ -5929,6 +5961,31 @@ function AppInner() {
     srsCard?.entry_id,
     srsPrefetchQueue.length,
     prefetchSrsCards,
+  ]);
+
+  useEffect(() => {
+    if (!initData || !isSectionVisible('flashcards') || !flashcardsVisible || flashcardActiveMode !== 'fsrs') return;
+    const cardsToWarm = [srsCard, ...srsPrefetchQueue.slice(0, 4)];
+    cardsToWarm.forEach((card) => {
+      if (!card) return;
+      const direction = (card?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
+      const { targetText } = getDictionarySourceTarget(card, direction);
+      const text = String(targetText || '').trim();
+      if (!text) return;
+      const locale = getTtsLocaleForLang(detectTtsLangFromText(text));
+      preloadTts(text, locale);
+    });
+  }, [
+    initData,
+    flashcardsOnly,
+    selectedSections,
+    flashcardsVisible,
+    flashcardActiveMode,
+    languageProfile?.learning_language,
+    srsCard,
+    srsPrefetchQueue,
+    preloadTts,
+    getDictionarySourceTarget,
   ]);
 
   useEffect(() => {
