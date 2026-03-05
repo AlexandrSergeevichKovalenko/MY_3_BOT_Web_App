@@ -14067,12 +14067,12 @@ function AppInner() {
                         >
                           {dictionaryLoading && dictionaryLookupMode === 'quick'
                             ? tr('Быстро...', 'Schnell...')
-                            : tr('Быстро перевести', 'Schnell uebersetzen')}
+                            : tr('Быстрый перевод', 'Schnell')}
                         </button>
                         <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
                           {dictionaryLoading && dictionaryLookupMode === 'gpt'
                             ? tr('GPT...', 'GPT...')
-                            : tr('Использовать GPT', 'GPT verwenden')}
+                            : tr('GPT-разбор', 'Mit GPT')}
                         </button>
                         {lastLookupScrollY !== null && (
                           <button
@@ -14089,7 +14089,7 @@ function AppInner() {
                           onClick={handleDictionarySave}
                           disabled={dictionaryLoading || !dictionaryResult}
                         >
-                          {tr('Добавить в словарь', 'Zum Woerterbuch hinzufuegen')}
+                          {tr('В словарь', 'Speichern')}
                         </button>
                       </div>
                     </form>
