@@ -7845,7 +7845,7 @@ def main():
     
     scheduler.start()
     print("🚀 Бот запущен! Ожидаем сообщения...")
-    application.run_polling()
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 
