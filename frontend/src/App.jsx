@@ -160,6 +160,7 @@ function AppInner() {
   const [moviesCollapsed, setMoviesCollapsed] = useState(false);
   const [moviesLanguageFilter, setMoviesLanguageFilter] = useState('all');
   const [showManualTranscript, setShowManualTranscript] = useState(false);
+  const [youtubeSettingsOpen, setYoutubeSettingsOpen] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
   const [readerInput, setReaderInput] = useState('');
   const [readerSelectedFile, setReaderSelectedFile] = useState(null);
@@ -4043,6 +4044,12 @@ function AppInner() {
     && !youtubeOverlayEnabled
     && !youtubeAppFullscreen
   );
+  const youtubeSubtitlesReady = youtubeTranscript.length > 0;
+  const youtubeSubtitleState = youtubeTranscriptLoading ? 'loading' : youtubeSubtitlesReady ? 'ready' : 'not_loaded';
+  const youtubeLearningMode = Boolean((youtubePlaybackStarted || youtubeAppFullscreen) && !youtubeForceShowPanel);
+  const youtubeSearchExpanded = !youtubeId || !youtubeLearningMode;
+  const youtubeLoadDisabled = !youtubeId || youtubeTranscriptLoading || youtubeManualOverride;
+  const youtubeDurationLabel = formatCompactTimer(youtubeCurrentTime || 0);
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
   const uniqueSkills = (() => {
@@ -9975,6 +9982,12 @@ function AppInner() {
   }, [youtubeId, initData]);
 
   useEffect(() => {
+    if (!youtubeSectionVisible) {
+      setYoutubeSettingsOpen(false);
+    }
+  }, [youtubeSectionVisible]);
+
+  useEffect(() => {
     if (!isWebAppMode || flashcardsOnly || !initData) return;
     if (!isSectionVisible('movies')) return;
     if (movies.length > 0) return;
@@ -13041,58 +13054,10 @@ function AppInner() {
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
                 {isSectionVisible('youtube') && (
-                  <section className={`webapp-video ${youtubeWatchFocusMode ? 'is-watch-focus' : ''}`} ref={youtubeRef}>
-                    {youtubeWatchFocusMode && (
-                      <div className="youtube-learning-topbar">
-                        <div className="youtube-learning-topbar-main">
-                          <button
-                            type="button"
-                            className="youtube-restore-panel-btn"
-                            onClick={() => setYoutubeForceShowPanel(true)}
-                            title={tr('Назад к настройкам', 'Zurueck zu den Einstellungen')}
-                          >
-                            <span aria-hidden="true">←</span> {tr('Назад', 'Zurueck')}
-                          </button>
-                          <div className="youtube-learning-topbar-copy">
-                            <strong>{tr('Видео YouTube', 'YouTube Video')}</strong>
-                            <span>{formatCompactTimer(youtubeCurrentTime || 0)}</span>
-                          </div>
-                        </div>
-                        <div className="youtube-learning-topbar-actions">
-                          <button
-                            type="button"
-                            className={`youtube-toolbar-btn ${youtubeTranslationEnabled ? 'is-active' : ''}`}
-                            onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
-                            disabled={!youtubeTranscript.length}
-                          >
-                            {youtubeTranslationEnabled
-                              ? tr('RU субтитры: ON', 'RU-Untertitel: ON')
-                              : tr('RU субтитры: OFF', 'RU-Untertitel: OFF')}
-                          </button>
-                          <button
-                            type="button"
-                            className={`youtube-toolbar-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
-                            onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
-                            disabled={!youtubeTranscript.length}
-                          >
-                            {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
-                          </button>
-                          <button
-                            type="button"
-                            className={`youtube-toolbar-btn ${youtubeAppFullscreen ? 'is-active' : ''}`}
-                            onClick={() => setYoutubeAppFullscreen((prev) => !prev)}
-                            disabled={!youtubeId}
-                          >
-                            {youtubeAppFullscreen
-                              ? tr('Свернуть', 'Minimieren')
-                              : tr('Развернуть во весь экран', 'Vollbildmodus')}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                    {!youtubeWatchFocusMode && (
-                    <div className="webapp-local-section-head">
+                  <section className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`} ref={youtubeRef}>
+                    <div className="webapp-local-section-head youtube-player-first-head">
                       <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
+                      <span className="youtube-player-first-head-duration">{youtubeDurationLabel}</span>
                       {isFocusedSection('youtube') && (
                         <div className="section-head-nav">
                           <button
@@ -13112,142 +13077,85 @@ function AppInner() {
                       {renderTodaySectionTaskHud('youtube')}
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
-                    )}
-                    {!youtubeWatchFocusMode && (
-                    <div className="webapp-video-form">
-                      <label className="webapp-field">
-                        <span>{tr('Ссылка, ID или поисковый запрос', 'Link, Video-ID oder Suchanfrage')}</span>
-                        <div className="input-clear-wrap">
-                          <input
-                            type="text"
-                            className="input-clear-field"
-                            value={youtubeInput}
-                            onChange={(event) => setYoutubeInput(event.target.value)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                searchYoutubeVideos();
-                              }
-                            }}
-                            placeholder="https://youtu.be/VIDEO_ID или Deutsch Grammatik B1"
-                          />
-                          {youtubeInput && (
-                            <button
-                              type="button"
-                              className="input-clear-btn"
-                              onClick={() => setYoutubeInput('')}
-                              aria-label={tr('Очистить', 'Loeschen')}
-                            >
-                              ×
-                            </button>
-                          )}
-                        </div>
-                      </label>
-                    <div className="webapp-video-actions">
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={searchYoutubeVideos}
-                        disabled={!youtubeInput.trim() || youtubeSearchLoading}
-                      >
-                        {youtubeSearchLoading
-                          ? tr('Ищем в YouTube...', 'Suche auf YouTube...')
-                          : tr('Искать в YouTube', 'Auf YouTube suchen')}
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => setVideoExpanded((prev) => !prev)}
-                        style={{ display: 'none' }}
-                        >
-                          {videoExpanded ? tr('Обычный режим', 'Normalmodus') : tr('Словарь рядом', 'Woerterbuch daneben')}
-                        </button>
-                      </div>
-                      {youtubeSearchError && <div className="webapp-error">{youtubeSearchError}</div>}
-                      {youtubeSearchResults.length > 0 && (
-                        <div className="youtube-search-results">
-                          {youtubeSearchResults.map((item) => (
-                            <button
-                              type="button"
-                              key={item.video_id}
-                              className="youtube-search-item"
-                              onClick={() => {
-                                setYoutubeInput(item.video_url || `https://youtu.be/${item.video_id}`);
-                                setYoutubeSearchResults([]);
-                                setYoutubeSearchError('');
+                    {youtubeSearchExpanded && (
+                      <div className="webapp-video-form youtube-setup-form">
+                        <label className="webapp-field">
+                          <span>{tr('Ссылка, ID или поисковый запрос', 'Link, Video-ID oder Suchanfrage')}</span>
+                          <div className="input-clear-wrap">
+                            <input
+                              type="text"
+                              className="input-clear-field"
+                              value={youtubeInput}
+                              onChange={(event) => setYoutubeInput(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  searchYoutubeVideos();
+                                }
                               }}
-                            >
-                              <img
-                                src={item.thumbnail || `https://i.ytimg.com/vi/${item.video_id}/mqdefault.jpg`}
-                                alt=""
-                                loading="lazy"
-                              />
-                              <span>{item.title || item.video_id}</span>
-                            </button>
-                          ))}
+                              placeholder={tr('https://youtu.be/VIDEO_ID или Deutsch Grammatik B1', 'https://youtu.be/VIDEO_ID oder Deutsch Grammatik B1')}
+                            />
+                            {youtubeInput && (
+                              <button
+                                type="button"
+                                className="input-clear-btn"
+                                onClick={() => setYoutubeInput('')}
+                                aria-label={tr('Очистить', 'Loeschen')}
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
+                        </label>
+                        <div className="webapp-video-actions">
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={searchYoutubeVideos}
+                            disabled={!youtubeInput.trim() || youtubeSearchLoading}
+                          >
+                            {youtubeSearchLoading
+                              ? tr('Ищем в YouTube...', 'Suche auf YouTube...')
+                              : tr('Искать в YouTube', 'Auf YouTube suchen')}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => setVideoExpanded((prev) => !prev)}
+                            style={{ display: 'none' }}
+                          >
+                            {videoExpanded ? tr('Обычный режим', 'Normalmodus') : tr('Словарь рядом', 'Woerterbuch daneben')}
+                          </button>
                         </div>
-                      )}
-                    </div>
-                    )}
-                    {!youtubeWatchFocusMode && (
-                    <div className="webapp-video-actions is-subtitle-toolbar">
-                      <div className="youtube-toolbar-row youtube-toolbar-row-main">
-                        <button
-                          type="button"
-                          className="youtube-toolbar-btn youtube-toolbar-btn-main"
-                          onClick={() => fetchTranscript()}
-                          disabled={!youtubeId || youtubeTranscriptLoading || youtubeManualOverride}
-                        >
-                          {youtubeTranscriptLoading
-                            ? tr('Загружаем оригинальные субтитры...', 'Original-Untertitel werden geladen...')
-                            : tr('Загрузить оригинальные субтитры', 'Original-Untertitel laden')}
-                        </button>
+                        {youtubeSearchError && <div className="webapp-error">{youtubeSearchError}</div>}
+                        {youtubeSearchResults.length > 0 && (
+                          <div className="youtube-search-results">
+                            {youtubeSearchResults.map((item) => (
+                              <button
+                                type="button"
+                                key={item.video_id}
+                                className="youtube-search-item"
+                                onClick={() => {
+                                  setYoutubeInput(item.video_url || `https://youtu.be/${item.video_id}`);
+                                  setYoutubeSearchResults([]);
+                                  setYoutubeSearchError('');
+                                }}
+                              >
+                                <img
+                                  src={item.thumbnail || `https://i.ytimg.com/vi/${item.video_id}/mqdefault.jpg`}
+                                  alt=""
+                                  loading="lazy"
+                                />
+                                <span>{item.title || item.video_id}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      <div className="youtube-toolbar-row">
-                        <button
-                          type="button"
-                          className={`youtube-toolbar-btn ${youtubeTranslationEnabled ? 'is-active' : ''}`}
-                          onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
-                          disabled={!youtubeTranscript.length}
-                        >
-                          {youtubeTranslationEnabled
-                            ? tr('RU субтитры: ON', 'RU-Untertitel: ON')
-                            : tr('RU субтитры: OFF', 'RU-Untertitel: OFF')}
-                        </button>
-                        <button
-                          type="button"
-                          className={`youtube-toolbar-btn ${showManualTranscript ? 'is-active' : ''}`}
-                          onClick={() => setShowManualTranscript((prev) => !prev)}
-                        >
-                          {showManualTranscript
-                            ? tr('Скрыть вставку', 'Einfuegen ausblenden')
-                            : tr('Вставить транскрипцию', 'Transkript einfuegen')}
-                        </button>
-                      </div>
-                      <div className="youtube-toolbar-row">
-                        <button
-                          type="button"
-                          className={`youtube-toolbar-btn ${youtubeAppFullscreen ? 'is-active' : ''}`}
-                          onClick={() => setYoutubeAppFullscreen((prev) => !prev)}
-                          disabled={!youtubeId}
-                        >
-                          {youtubeAppFullscreen
-                            ? tr('Свернуть', 'Minimieren')
-                            : tr('Развернуть во весь экран', 'Vollbildmodus')}
-                        </button>
-                        <button
-                          type="button"
-                          className={`youtube-toolbar-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
-                          onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
-                          disabled={!youtubeTranscript.length}
-                        >
-                          {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
-                        </button>
-                      </div>
-                    </div>
                     )}
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
-                    {youtubeId ? (
+                    {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
+                    <div className="youtube-player-card">
                       <div
                         ref={youtubePlayerShellRef}
                         className={`webapp-video-player-shell ${youtubeAppFullscreen ? 'is-app-fullscreen' : ''}`}
@@ -13261,142 +13169,313 @@ function AppInner() {
                             {tr('Свернуть', 'Minimieren')}
                           </button>
                         )}
-                        <div className={`webapp-video-frame ${videoExpanded ? 'is-expanded' : ''} ${youtubeOverlayEnabled ? 'has-overlay' : ''}`}>
-                        <div
-                          id="youtube-player"
-                          className="youtube-player-host"
-                          data-video-id={youtubeId}
-                        />
-                        {!youtubePlayerReady && (
-                          <iframe
-                            title="YouTube player"
-                            src={`https://www.youtube.com/embed/${youtubeId}`}
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                            allowFullScreen
+                        <div className={`webapp-video-frame youtube-player-frame ${videoExpanded ? 'is-expanded' : ''} ${youtubeOverlayEnabled ? 'has-overlay' : ''}`}>
+                          <div
+                            id="youtube-player"
+                            className="youtube-player-host"
+                            data-video-id={youtubeId}
                           />
-                        )}
-                        {youtubeOverlayEnabled && youtubeTranscript.length > 0 && (() => {
-                          const activeIndex = getActiveSubtitleIndex();
-                          const resolvedIndex = activeIndex >= 0 ? activeIndex : 0;
-                          const showPausedHistory = youtubeAppFullscreen && youtubeIsPaused;
-                          const overlayIndexes = showPausedHistory
-                            ? [resolvedIndex - 2, resolvedIndex - 1, resolvedIndex].filter((idx) => idx >= 0)
-                            : [resolvedIndex];
-                          return (
-                            <div className={`youtube-subtitles-overlay ${showPausedHistory ? 'is-paused-history' : ''}`} aria-hidden="true">
-                              {overlayIndexes.map((idx) => {
-                                const item = youtubeTranscript[idx];
-                                const overlayDeText = normalizeSubtitleText(item?.text || '');
-                                const overlayTranslationText = (youtubeTranslations[String(idx)] || '').trim();
-                                if (!overlayDeText && !(youtubeTranslationEnabled && overlayTranslationText)) {
-                                  return null;
-                                }
-                                const isCurrent = idx === resolvedIndex;
-                                return (
-                                  <div key={`overlay-line-${idx}`} className={`youtube-subtitles-overlay-row ${isCurrent ? 'is-current' : 'is-history'}`}>
-                                    {overlayDeText && (
-                                      <p className="youtube-subtitles-overlay-line is-target-language">
-                                        {renderClickableText(overlayDeText, {
-                                          className: 'overlay-clickable-word',
-                                          compact: true,
-                                          inlineLookup: true,
-                                          lookupLang: getNormalizeLookupLang(),
-                                          selectionType: 'youtube_overlay_word',
-                                        })}
-                                      </p>
-                                    )}
-                                    {youtubeTranslationEnabled && overlayTranslationText && (
-                                      <p className="youtube-subtitles-overlay-line is-user-language">{overlayTranslationText}</p>
-                                    )}
-                                  </div>
-                                );
-                              })}
+                          {!youtubeId && (
+                            <div className="youtube-player-placeholder">
+                              <strong>{tr('Плеер YouTube', 'YouTube Player')}</strong>
+                              <span>{tr('Выберите видео, чтобы начать обучение.', 'Waehle ein Video, um zu starten.')}</span>
                             </div>
-                          );
-                        })()}
+                          )}
+                          {!youtubePlayerReady && youtubeId && (
+                            <iframe
+                              title="YouTube player"
+                              src={`https://www.youtube.com/embed/${youtubeId}`}
+                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                              allowFullScreen
+                            />
+                          )}
+                          {youtubeOverlayEnabled && youtubeTranscript.length > 0 && (() => {
+                            const activeIndex = getActiveSubtitleIndex();
+                            const resolvedIndex = activeIndex >= 0 ? activeIndex : 0;
+                            const showPausedHistory = youtubeAppFullscreen && youtubeIsPaused;
+                            const overlayIndexes = showPausedHistory
+                              ? [resolvedIndex - 2, resolvedIndex - 1, resolvedIndex].filter((idx) => idx >= 0)
+                              : [resolvedIndex];
+                            return (
+                              <div className={`youtube-subtitles-overlay ${showPausedHistory ? 'is-paused-history' : ''}`} aria-hidden="true">
+                                {overlayIndexes.map((idx) => {
+                                  const item = youtubeTranscript[idx];
+                                  const overlayDeText = normalizeSubtitleText(item?.text || '');
+                                  const overlayTranslationText = (youtubeTranslations[String(idx)] || '').trim();
+                                  if (!overlayDeText && !(youtubeTranslationEnabled && overlayTranslationText)) {
+                                    return null;
+                                  }
+                                  const isCurrent = idx === resolvedIndex;
+                                  return (
+                                    <div key={`overlay-line-${idx}`} className={`youtube-subtitles-overlay-row ${isCurrent ? 'is-current' : 'is-history'}`}>
+                                      {overlayDeText && (
+                                        <p className="youtube-subtitles-overlay-line is-target-language">
+                                          {renderClickableText(overlayDeText, {
+                                            className: 'overlay-clickable-word',
+                                            compact: true,
+                                            inlineLookup: true,
+                                            lookupLang: getNormalizeLookupLang(),
+                                            selectionType: 'youtube_overlay_word',
+                                          })}
+                                        </p>
+                                      )}
+                                      {youtubeTranslationEnabled && overlayTranslationText && (
+                                        <p className="youtube-subtitles-overlay-line is-user-language">{overlayTranslationText}</p>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
-                    ) : (
-                      <p className="webapp-muted">{tr('Вставьте ссылку на видео, чтобы смотреть прямо здесь.', 'Fuege einen Videolink ein, um hier direkt zu schauen.')}</p>
-                    )}
-                    {showManualTranscript && !youtubeWatchFocusMode && (
-                      <div className="webapp-subtitles-manual">
-                        <textarea
-                          rows={6}
-                          value={manualTranscript}
-                          onChange={(event) => setManualTranscript(event.target.value)}
-                          placeholder={tr('Вставьте .srt/.vtt с таймкодами. Если таймкодов нет — покажем статично.', 'Fuege .srt/.vtt mit Zeitcodes ein. Ohne Zeitcodes zeigen wir statisch an.')}
-                        />
-                        <div className="webapp-video-actions">
-                          <button
-                            type="button"
-                            className="primary-button"
-                            onClick={() => handleManualTranscript()}
-                          >
-                            {tr('Использовать транскрипцию', 'Transkript verwenden')}
-                          </button>
-                          {youtubeManualOverride && (
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() => {
-                                setYoutubeManualOverride(false);
-                                setManualTranscript('');
-                                setYoutubeTranscriptHasTiming(true);
-                                setShowManualTranscript(false);
-                              }}
-                            >
-                              {tr('Вернуться к авто', 'Zu Auto zurueck')}
-                            </button>
+                      <div className="youtube-player-status-row">
+                        <span className={`youtube-subtitles-status-badge is-${youtubeSubtitleState}`}>
+                          {youtubeSubtitleState === 'loading' && <span className="youtube-status-spinner" aria-hidden="true" />}
+                          {youtubeSubtitleState === 'loading' && tr('Субтитры: загрузка...', 'Subtitles: loading...')}
+                          {youtubeSubtitleState === 'ready' && tr('Субтитры: готовы', 'Subtitles: ready')}
+                          {youtubeSubtitleState === 'not_loaded' && tr('Субтитры: не загружены', 'Subtitles: not loaded')}
+                        </span>
+                        <span className="youtube-player-status-duration">{youtubeDurationLabel}</span>
+                      </div>
+                    </div>
+                    <div className="youtube-subtitles-card youtube-subtitles-panel">
+                      <div className="youtube-subtitles-panel-head">
+                        <div className="youtube-subtitles-panel-copy">
+                          <strong>{tr('Субтитры', 'Subtitles')}</strong>
+                          <span>{String(languageProfile?.learning_language || 'de').toUpperCase()} · {tr('всегда ON', 'always ON')}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className={`youtube-dock-chip youtube-ru-chip ${youtubeTranslationEnabled ? 'is-active' : ''}`}
+                          onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
+                          disabled={!youtubeSubtitlesReady}
+                        >
+                          {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
+                        </button>
+                      </div>
+                      {youtubeSubtitlesReady ? (
+                        <div className="youtube-subtitles-panel-content">
+                          <div className="youtube-subtitles-block youtube-subtitles-block-de">
+                            <div className="youtube-subtitles-card-head">
+                              <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
+                            </div>
+                            <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
+                              <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
+                                {(() => {
+                                  const activeIndex = getActiveSubtitleIndex();
+                                  return youtubeTranscript.map((item, index) => (
+                                    <p
+                                      key={`${item.start}-${index}`}
+                                      className={index === activeIndex ? 'is-active' : ''}
+                                    >
+                                      {renderSubtitleText(item.text)}
+                                    </p>
+                                  ));
+                                })()}
+                              </div>
+                            </div>
+                          </div>
+                          {youtubeTranslationEnabled && (
+                            <div className="youtube-subtitles-block youtube-subtitles-block-ru">
+                              <div className="youtube-subtitles-card-head">
+                                <span>{getNativeSubtitleCode()}</span>
+                              </div>
+                              <div className="webapp-subtitles is-translation">
+                                <div className="webapp-subtitles-list">
+                                  {(() => {
+                                    const activeIndex = getActiveSubtitleIndex();
+                                    return youtubeTranscript.map((item, index) => {
+                                      const translation = youtubeTranslations[String(index)] || '…';
+                                      return (
+                                        <p
+                                          key={`translation-${item.start}-${index}`}
+                                          className={index === activeIndex ? 'is-active' : ''}
+                                        >
+                                          {translation}
+                                        </p>
+                                      );
+                                    });
+                                  })()}
+                                </div>
+                              </div>
+                            </div>
                           )}
                         </div>
-                      </div>
-                    )}
-                    {youtubeTranscript.length > 0 && !youtubeOverlayEnabled && (
-                      <div className="youtube-subtitles-card youtube-subtitles-card-primary">
-                        <div className="youtube-subtitles-card-head">
-                          <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
+                      ) : (
+                        <div className="youtube-subtitles-empty">
+                          {tr('Сначала загрузите субтитры, чтобы видеть текст и перевод.', 'Lade zuerst Untertitel, um Text und Uebersetzung zu sehen.')}
                         </div>
-                        <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
-                        <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
-                          {(() => {
-                            const activeIndex = getActiveSubtitleIndex();
-                            return youtubeTranscript.map((item, index) => (
-                              <p
-                                key={`${item.start}-${index}`}
-                                className={index === activeIndex ? 'is-active' : ''}
-                              >
-                                {renderSubtitleText(item.text)}
-                              </p>
-                            ));
-                          })()}
-                        </div>
-                      </div>
-                      </div>
-                    )}
-                    {youtubeTranscript.length > 0 && youtubeTranslationEnabled && !youtubeOverlayEnabled && (
-                      <div className="youtube-subtitles-card youtube-subtitles-card-translation">
-                        <div className="youtube-subtitles-card-head">
-                          <span>{getNativeSubtitleCode()}</span>
-                        </div>
-                        <div className="webapp-subtitles is-translation">
-                        <div className="webapp-subtitles-list">
-                          {(() => {
-                            const activeIndex = getActiveSubtitleIndex();
-                            return youtubeTranscript.map((item, index) => {
-                              const translation = youtubeTranslations[String(index)] || '…';
-                              return (
-                                <p
-                                  key={`translation-${item.start}-${index}`}
-                                  className={index === activeIndex ? 'is-active' : ''}
+                      )}
+                    </div>
+                    <div className="youtube-control-dock">
+                      <button
+                        type="button"
+                        className={`youtube-dock-primary ${youtubeSubtitlesReady ? 'is-secondary' : ''}`}
+                        onClick={() => fetchTranscript()}
+                        disabled={youtubeLoadDisabled}
+                      >
+                        {youtubeTranscriptLoading
+                          ? tr('Загружаем...', 'Loading...')
+                          : youtubeSubtitlesReady
+                            ? tr('Обновить', 'Reload')
+                            : tr('Загрузить оригинальные субтитры', 'Load original subtitles')}
+                      </button>
+                      <button
+                        type="button"
+                        className={`youtube-dock-chip ${youtubeOverlayEnabled ? 'is-active' : ''}`}
+                        onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
+                        disabled={!youtubeSubtitlesReady}
+                      >
+                        {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
+                      </button>
+                      <button
+                        type="button"
+                        className="youtube-dock-icon-btn"
+                        onClick={() => {
+                          setYoutubeAppFullscreen((prev) => !prev);
+                          setYoutubeSettingsOpen(false);
+                        }}
+                        disabled={!youtubeId}
+                        aria-label={tr('Развернуть во весь экран', 'Full screen')}
+                        title={tr('Развернуть во весь экран', 'Full screen')}
+                      >
+                        FS
+                      </button>
+                      <button
+                        type="button"
+                        className="youtube-dock-icon-btn"
+                        onClick={() => setYoutubeSettingsOpen(true)}
+                        aria-label={tr('Настройки', 'Settings')}
+                        title={tr('Настройки', 'Settings')}
+                      >
+                        <span aria-hidden="true">&#9881;</span>
+                      </button>
+                    </div>
+                    {youtubeSettingsOpen && (
+                      <div className="youtube-settings-overlay" onClick={() => setYoutubeSettingsOpen(false)}>
+                        <div
+                          className="youtube-settings-sheet"
+                          role="dialog"
+                          aria-modal="true"
+                          aria-label={tr('Настройки YouTube', 'YouTube settings')}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <div className="youtube-settings-sheet-head">
+                            <strong>{tr('Настройки YouTube', 'YouTube settings')}</strong>
+                            <button
+                              type="button"
+                              className="youtube-dock-icon-btn youtube-settings-close"
+                              onClick={() => setYoutubeSettingsOpen(false)}
+                              aria-label={tr('Закрыть', 'Close')}
+                            >
+                              ×
+                            </button>
+                          </div>
+                          <div className="youtube-settings-sheet-list">
+                            <button
+                              type="button"
+                              className="youtube-settings-row"
+                              onClick={() => {
+                                setYoutubeForceShowPanel(true);
+                                setYoutubeSettingsOpen(false);
+                              }}
+                            >
+                              <span>{tr('Сменить видео', 'Change video')}</span>
+                              <span>{tr('Открыть поиск', 'Open search')}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="youtube-settings-row"
+                              onClick={searchYoutubeVideos}
+                              disabled={!youtubeInput.trim() || youtubeSearchLoading}
+                            >
+                              <span>{tr('Искать в YouTube', 'Search on YouTube')}</span>
+                              <span>{youtubeSearchLoading ? tr('Загрузка...', 'Loading...') : tr('Запустить', 'Run')}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className={`youtube-settings-row ${showManualTranscript ? 'is-active' : ''}`}
+                              onClick={() => setShowManualTranscript((prev) => !prev)}
+                            >
+                              <span>{tr('Вставить транскрипцию', 'Paste transcript')}</span>
+                              <span>{showManualTranscript ? tr('ON', 'ON') : tr('OFF', 'OFF')}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className={`youtube-settings-row ${youtubeTranslationEnabled ? 'is-active' : ''}`}
+                              onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
+                              disabled={!youtubeSubtitlesReady}
+                            >
+                              <span>{tr('Показать RU', 'Show RU')}</span>
+                              <span>{youtubeTranslationEnabled ? tr('ON', 'ON') : tr('OFF', 'OFF')}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className={`youtube-settings-row ${youtubeOverlayEnabled ? 'is-active' : ''}`}
+                              onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
+                              disabled={!youtubeSubtitlesReady}
+                            >
+                              <span>Overlay</span>
+                              <span>{youtubeOverlayEnabled ? 'ON' : 'OFF'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className={`youtube-settings-row ${youtubeAppFullscreen ? 'is-active' : ''}`}
+                              onClick={() => {
+                                setYoutubeAppFullscreen((prev) => !prev);
+                                setYoutubeSettingsOpen(false);
+                              }}
+                              disabled={!youtubeId}
+                            >
+                              <span>{tr('Развернуть во весь экран', 'Full screen')}</span>
+                              <span>{youtubeAppFullscreen ? tr('ON', 'ON') : tr('OFF', 'OFF')}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="youtube-settings-row"
+                              onClick={() => fetchTranscript()}
+                              disabled={youtubeLoadDisabled}
+                            >
+                              <span>{youtubeSubtitlesReady ? tr('Перезагрузить субтитры', 'Reload subtitles') : tr('Загрузить оригинальные субтитры', 'Load original subtitles')}</span>
+                              <span>{youtubeSubtitlesReady ? tr('Готово', 'Ready') : tr('Не загружено', 'Not loaded')}</span>
+                            </button>
+                          </div>
+                          {showManualTranscript && (
+                            <div className="webapp-subtitles-manual youtube-sheet-manual">
+                              <textarea
+                                rows={6}
+                                value={manualTranscript}
+                                onChange={(event) => setManualTranscript(event.target.value)}
+                                placeholder={tr('Вставьте .srt/.vtt с таймкодами. Если таймкодов нет, покажем статично.', 'Paste .srt/.vtt with timecodes. Without timecodes we show static lines.')}
+                              />
+                              <div className="webapp-video-actions">
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => handleManualTranscript()}
                                 >
-                                  {translation}
-                                </p>
-                              );
-                            });
-                          })()}
+                                  {tr('Использовать транскрипцию', 'Use transcript')}
+                                </button>
+                                {youtubeManualOverride && (
+                                  <button
+                                    type="button"
+                                    className="secondary-button"
+                                    onClick={() => {
+                                      setYoutubeManualOverride(false);
+                                      setManualTranscript('');
+                                      setYoutubeTranscriptHasTiming(true);
+                                      setShowManualTranscript(false);
+                                    }}
+                                  >
+                                    {tr('Вернуться к авто', 'Back to auto')}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      </div>
                       </div>
                     )}
                   </section>
