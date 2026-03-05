@@ -12341,6 +12341,9 @@ body {
   box-shadow: var(--tr-shadow-card);
   padding: 24px;
   gap: 24px;
+  align-self: start;
+  align-content: start;
+  grid-auto-rows: min-content;
   color: var(--tr-text-primary);
 }
 
@@ -12351,6 +12354,7 @@ body {
   gap: 16px;
   padding-right: 0;
   min-height: auto;
+  margin: 0;
 }
 
 .webapp-section.webapp-section-translations .translations-title-main {
@@ -12443,6 +12447,16 @@ body {
   border-radius: 20px;
   border: 1px solid var(--tr-border);
   background: var(--tr-bg-card-alt);
+}
+
+@media (min-width: 901px) {
+  .webapp-main {
+    align-content: start;
+  }
+
+  .webapp-main > .webapp-section.webapp-section-translations {
+    height: fit-content;
+  }
 }
 
 .webapp-section.webapp-section-translations .webapp-translation-start .webapp-field {
