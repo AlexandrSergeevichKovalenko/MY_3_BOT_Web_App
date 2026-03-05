@@ -39,6 +39,8 @@ export default defineConfig(async () => {
         injectRegister: false,
         manifest: false,
         workbox: {
+          // Main bundle is currently slightly above 2 MiB, so keep precache build stable.
+          maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {

@@ -1509,10 +1509,30 @@ body {
   border: 1px solid var(--dmps-border);
   background: var(--dmps-card-alt);
   box-shadow: var(--dmps-shadow-card);
+  cursor: pointer;
 }
 
 .guide-step-card.is-open {
   background: var(--dmps-hover);
+}
+
+.guide-step-card.is-highlight {
+  border-color: #2563eb;
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.guide-step-card.is-highlight .guide-step-title {
+  color: #bfdbfe;
+}
+
+.guide-step-card.is-highlight .guide-step-text {
+  color: #93c5fd;
+}
+
+.guide-step-card.is-highlight .guide-step-number {
+  background: rgba(37, 99, 235, 0.2);
+  color: #dbeafe;
+  border: 1px solid rgba(191, 219, 254, 0.45);
 }
 
 .guide-step-question {
@@ -1588,6 +1608,18 @@ body {
 
 .guide-step-answer {
   padding: 0 20px 20px;
+}
+
+.guide-step-answer-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.guide-step-close-btn {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 14px;
 }
 
 .guide-step-details {

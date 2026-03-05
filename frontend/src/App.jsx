@@ -3575,6 +3575,39 @@ function AppInner() {
     if (uiLang === 'de') {
       return [
         {
+          key: 'platform_access',
+          number: '1',
+          accent: true,
+          title: 'Telegram Mini App oder Website: beides ist vollwertig',
+          summary: 'Du kannst dieselbe App mit demselben Funktionsumfang in Telegram oder als Website nutzen.',
+          sections: [
+            {
+              title: 'Ein Produkt, zwei Zugänge',
+              items: [
+                'Die App funktioniert als Telegram Mini App und als Website mit dem gleichen Kern-Funktionsumfang.',
+                'Du verlierst beim Wechsel zwischen Telegram und Web keine Lernlogik: Workflows, Inhalte und Fortschritt bleiben konsistent.',
+                'Du entscheidest je nach Situation selbst, welche Oberfläche gerade praktischer ist.',
+              ],
+            },
+            {
+              title: 'Wann Telegram praktisch ist',
+              items: [
+                'Für schnellen Einstieg vom Smartphone: Bot öffnen, Aufgabe starten, Ergebnis sofort sehen.',
+                'Für Gruppenmodus, Erinnerungen und schnelle Interaktion direkt im Chat.',
+                'Für kurze tägliche Sessions unterwegs.',
+              ],
+            },
+            {
+              title: 'Wann Website/Browser praktischer ist',
+              items: [
+                'Auf Tablet oder Computer ist das Lesen, Analysieren und Video-Lernen oft komfortabler wegen größerem Bildschirm.',
+                'Für längere YouTube-/Reader-Sessions und detailreiche Infos (Analytik, Theorie, große Textblöcke).',
+                'Wenn du ruhig und fokussiert mit viel Inhalt auf einmal arbeiten willst.',
+              ],
+            },
+          ],
+        },
+        {
           key: 'start_setup',
           number: '1',
           title: 'Start-Einstellungen',
@@ -3923,6 +3956,39 @@ function AppInner() {
     }
 
     return [
+      {
+        key: 'platform_access',
+        number: '1',
+        accent: true,
+        title: 'Telegram Mini App и сайт: оба варианта полноценные',
+        summary: 'Приложение можно использовать и внутри Telegram, и как сайт — с тем же ключевым функционалом.',
+        sections: [
+          {
+            title: 'Один продукт, два формата доступа',
+            items: [
+              'Вы можете работать через Telegram Mini App или через веб-версию в браузере — логика и основные возможности одинаковые.',
+              'При смене формата вы не теряете смысл процесса: тренировки, разделы и прогресс остаются согласованными.',
+              'Формат выбирается по удобству пользователя, а не по ограничениям функционала.',
+            ],
+          },
+          {
+            title: 'Когда удобнее Telegram',
+            items: [
+              'Для быстрого старта с телефона: открыть бота, запустить задачу и сразу получить результат.',
+              'Для группового режима, напоминаний и быстрой коммуникации прямо в чате.',
+              'Для коротких ежедневных сессий «на ходу».',
+            ],
+          },
+          {
+            title: 'Когда удобнее сайт / браузер',
+            items: [
+              'На планшете и компьютере комфортнее смотреть видео, читать длинные тексты и анализировать детали из-за большего экрана.',
+              'Для длительных сессий в YouTube/Reader и работы с насыщенными блоками информации (аналитика, теория, подробные разборы).',
+              'Если вам важна спокойная, сфокусированная работа с большим объемом контента за один подход.',
+            ],
+          },
+        ],
+      },
       {
         key: 'start_setup',
         number: '1',
@@ -12562,18 +12628,23 @@ function AppInner() {
                 </div>
 
                 <div className="guide-step-grid">
-                  {guideStepItems.map((item) => {
+                  {guideStepItems.map((item, index) => {
                     const isOpen = guideStepOpenKey === item.key;
+                    const displayNumber = String(index + 1);
                     return (
-                      <article key={item.key} className={`guide-step-card ${isOpen ? 'is-open' : ''}`}>
+                      <article
+                        key={item.key}
+                        className={`guide-step-card ${isOpen ? 'is-open' : ''} ${item.accent ? 'is-highlight' : ''}`}
+                        onClick={() => setGuideStepOpenKey((prev) => (prev === item.key ? '' : item.key))}
+                      >
                         <button
                           type="button"
                           className="guide-step-question"
-                          onClick={() => setGuideStepOpenKey((prev) => (prev === item.key ? '' : item.key))}
                           aria-expanded={isOpen}
+                          aria-controls={`guide-step-answer-${item.key}`}
                         >
                           <div className="guide-step-leading">
-                            <div className="guide-step-number">{item.number}</div>
+                            <div className="guide-step-number">{displayNumber}</div>
                             <div>
                               <div className="guide-step-title">{item.title}</div>
                               <p className="guide-step-text">{item.summary}</p>
@@ -12582,7 +12653,7 @@ function AppInner() {
                           <span className={`guide-step-chevron ${isOpen ? 'is-open' : ''}`} aria-hidden="true">⌄</span>
                         </button>
                         {isOpen && (
-                          <div className="guide-step-answer">
+                          <div className="guide-step-answer" id={`guide-step-answer-${item.key}`}>
                             <div className="guide-step-details">
                               {item.sections.map((section) => (
                                 <div key={`${item.key}-${section.title}`} className="guide-step-detail-block">
@@ -12594,6 +12665,18 @@ function AppInner() {
                                   </ul>
                                 </div>
                               ))}
+                            </div>
+                            <div className="guide-step-answer-actions">
+                              <button
+                                type="button"
+                                className="secondary-button guide-step-close-btn"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setGuideStepOpenKey('');
+                                }}
+                              >
+                                {tr('Свернуть раздел', 'Abschnitt einklappen')}
+                              </button>
                             </div>
                           </div>
                         )}

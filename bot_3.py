@@ -116,6 +116,7 @@ FLASHCARD_REMINDER_TIMES = [(7, 0), (16, 30)]
 active_quizzes = {}
 pending_quiz_freeform = {}
 quiz_ru_translation_cache = {}
+pending_quiz_feel_requests = {}
 pending_dictionary_cards = {}
 pending_dictionary_save_options = {}
 pending_dictionary_lookup_requests = {}
@@ -4024,6 +4025,104 @@ async def handle_dictionary_feel_callback(update: Update, context: CallbackConte
         logging.debug("Failed to mark dictfeel message as preserved", exc_info=True)
 
 
+async def handle_quiz_feel_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+
+    key = parts[1].strip()
+    payload = pending_quiz_feel_requests.get(key)
+    if not payload:
+        await query.answer("Кнопка устарела. Пройдите квиз ещё раз.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Кнопка доступна только автору результата.", show_alert=True)
+        return
+
+    source_text = str(payload.get("source_text") or "").strip()
+    target_text = str(payload.get("target_text") or "").strip()
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    if not source_text:
+        await query.answer("Не удалось определить фразу для разбора.", show_alert=True)
+        return
+
+    try:
+        await query.answer("Готовлю разбор…")
+    except Exception:
+        pass
+
+    try:
+        if source_lang == "ru" and target_lang == "de":
+            feel_text = await run_feel_word(source_text, target_text)
+        elif source_lang == "de" and target_lang == "ru":
+            feel_text = await run_feel_word(target_text or source_text, source_text)
+        else:
+            feel_text = await run_feel_word_multilang(
+                source_text=source_text,
+                target_text=target_text,
+                source_lang=source_lang or "auto",
+                target_lang=target_lang or "auto",
+            )
+    except Exception as exc:
+        logging.exception("❌ Ошибка quizfeel для user_id=%s key=%s: %s", int(user.id), key, exc)
+        await query.answer("Не удалось сделать разбор. Попробуйте позже.", show_alert=True)
+        return
+
+    feel_text = str(feel_text or "").strip()
+    if not feel_text:
+        await query.answer("Разбор пустой. Попробуйте снова.", show_alert=True)
+        return
+
+    try:
+        token = await asyncio.to_thread(
+            create_flashcard_feel_feedback_token,
+            user_id=int(user.id),
+            entry_id=0,
+            feel_explanation=feel_text,
+        )
+    except Exception as exc:
+        logging.exception("❌ Ошибка создания feel feedback token для quiz user_id=%s: %s", int(user.id), exc)
+        await query.answer("Не удалось подготовить feedback-кнопки.", show_alert=True)
+        return
+
+    reply_markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{token}:like"),
+        InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{token}:dislike"),
+    ]])
+    text = _build_dictionary_feel_private_message(
+        source_text=source_text,
+        target_text=target_text or "—",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        feel_text=feel_text,
+    )
+    msg = await query.message.reply_text(
+        text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=reply_markup,
+    )
+    add_service_msg_id(context, msg.message_id)
+    try:
+        await asyncio.to_thread(
+            update_telegram_system_message_type,
+            chat_id=int(query.message.chat_id),
+            message_id=int(msg.message_id),
+            message_type="feel_word",
+        )
+    except Exception:
+        logging.debug("Failed to mark quizfeel message as preserved", exc_info=True)
+
+
 async def handle_flashcard_feel_feedback_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query:
@@ -7133,12 +7232,34 @@ async def _send_quiz_result_private(
         f"Перевод (RU): {ru_text or '—'}",
     ])
 
+    reply_markup = None
+    feel_source_text = (de_text or correct_text or "").strip()
+    feel_target_text = (ru_text or fallback_ru or "").strip()
+    if feel_source_text:
+        feel_key = hashlib.sha1(
+            f"{user_id}:{feel_source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
+        ).hexdigest()[:20]
+        pending_quiz_feel_requests[feel_key] = {
+            "user_id": int(user_id),
+            "source_text": feel_source_text,
+            "target_text": feel_target_text,
+            "source_lang": "de",
+            "target_lang": "ru",
+        }
+        if len(pending_quiz_feel_requests) > 500:
+            oldest_key = next(iter(pending_quiz_feel_requests))
+            pending_quiz_feel_requests.pop(oldest_key, None)
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"quizfeel:{feel_key}")]
+        ])
+
     max_attempts = 2
     for attempt in range(max_attempts):
         try:
             await context.bot.send_message(
                 chat_id=int(user_id),
                 text="\n".join(lines),
+                reply_markup=reply_markup,
             )
             return True
         except RetryAfter as exc:
@@ -8001,6 +8122,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
+    application.add_handler(CallbackQueryHandler(handle_quiz_feel_callback, pattern=r"^quizfeel:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_feel_callback, pattern=r"^dictfeel:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_pair_callback, pattern=r"^dictpair:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_toggle_callback, pattern=r"^dictseltoggle:"))
