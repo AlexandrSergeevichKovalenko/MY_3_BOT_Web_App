@@ -636,6 +636,7 @@ function AppInner() {
   };
 
   const [uiLang, setUiLang] = useState('ru');
+  const [themeMode, setThemeMode] = useState('dark');
   const t = useMemo(() => createTranslator(uiLang), [uiLang]);
   const tr = useCallback((ru, de) => (uiLang === 'de' ? de : ru), [uiLang]);
   const forceSingleInstanceTakeover = useCallback(() => {
@@ -1137,6 +1138,10 @@ function AppInner() {
     setUiLang((prev) => (prev === 'ru' ? 'de' : 'ru'));
   };
 
+  const toggleThemeMode = () => {
+    setThemeMode((prev) => (prev === 'light' ? 'dark' : 'light'));
+  };
+
   useEffect(() => {
     const stored = safeStorageGet('ui_lang');
     if (stored) {
@@ -1150,6 +1155,17 @@ function AppInner() {
   useEffect(() => {
     safeStorageSet('ui_lang', uiLang);
   }, [uiLang]);
+
+  useEffect(() => {
+    const stored = String(safeStorageGet('ui_theme_mode') || '').trim().toLowerCase();
+    if (stored === 'light' || stored === 'dark') {
+      setThemeMode(stored);
+    }
+  }, []);
+
+  useEffect(() => {
+    safeStorageSet('ui_theme_mode', themeMode);
+  }, [themeMode]);
 
   useEffect(() => {
     const stored = safeStorageGet(guideQuickCardStorageKey);
@@ -11521,7 +11537,7 @@ function AppInner() {
   if (isWebAppMode) {
     if (singleInstanceBlocked) {
       return (
-        <div className="webapp-page">
+        <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''}`}>
           <div className="webapp-card">
             <header className="webapp-header">
               <span className="pill">Telegram Web App</span>
@@ -11546,7 +11562,7 @@ function AppInner() {
       );
     }
     return (
-      <div className={`webapp-page ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''}`}>
+      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''}`}>
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
             <div className="webapp-brand">
@@ -11767,6 +11783,16 @@ function AppInner() {
                   <button type="button" className="language-toggle language-toggle-compact" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
                     <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
                     <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="language-toggle language-toggle-compact theme-toggle-compact"
+                    onClick={toggleThemeMode}
+                    title={themeMode === 'light' ? tr('Светлая тема', 'Helles Thema') : tr('Тёмная тема', 'Dunkles Thema')}
+                    aria-label={tr('Переключить тему', 'Theme wechseln')}
+                  >
+                    <span className={`language-chip theme-chip ${themeMode === 'dark' ? 'is-active' : ''}`}>DARK</span>
+                    <span className={`language-chip theme-chip ${themeMode === 'light' ? 'is-active' : ''}`}>LIGHT</span>
                   </button>
                   <button
                     type="button"
