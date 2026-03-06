@@ -2486,6 +2486,12 @@ body {
   font-size: 14px;
 }
 
+.webapp-page.is-theme-light .webapp-success {
+  color: #14532d;
+  background: rgba(34, 197, 94, 0.18);
+  border: 1px solid rgba(21, 128, 61, 0.28);
+}
+
 .webapp-actions {
   display: flex;
   flex-wrap: wrap;
