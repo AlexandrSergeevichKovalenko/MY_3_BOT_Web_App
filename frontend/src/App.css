@@ -14036,6 +14036,10 @@ body {
   color: var(--t-text-primary) !important;
 }
 
+.webapp-flashcards .flashcard-preview-word {
+  color: var(--t-text-primary) !important;
+}
+
 .webapp-flashcards .quiz-study-translation {
   font-size: 16px !important;
   color: var(--t-text-secondary) !important;
@@ -14825,6 +14829,10 @@ body {
   color: #1f1a14;
 }
 
+.webapp-page.is-theme-light .webapp-flashcards .quiz-study-question .flashcard-gap-answer:not(.is-correct):not(.is-wrong) {
+  color: #17120d;
+}
+
 .webapp-page.is-theme-light .webapp-reader .section-home-back,
 .webapp-page.is-theme-light .webapp-reader .secondary-button,
 .webapp-page.is-theme-light .webapp-reader .reader-topbar-peek-btn,
@@ -15078,22 +15086,48 @@ body {
   .topbar-controls {
     flex-wrap: nowrap;
     justify-content: center;
-    gap: 6px;
+    gap: 8px;
   }
 
+  .topbar-controls .language-toggle-compact,
   .topbar-controls .theme-toggle-compact {
-    min-width: 124px;
-    min-height: 40px;
-    height: 40px;
-    padding: 3px;
+    min-width: 90px;
+    min-height: 34px;
+    height: 34px;
+    padding: 2px;
     border-radius: 999px;
-    gap: 4px;
+    gap: 2px;
+    box-sizing: border-box;
   }
 
+  .topbar-controls .language-chip,
   .topbar-controls .theme-toggle-compact .theme-chip {
-    min-width: 56px;
-    height: 32px;
-    font-size: 11px;
+    min-width: 41px;
+    height: 28px;
+    font-size: 10px;
+    line-height: 1;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+
+  .topbar-controls .language-pair-button {
+    min-width: 90px;
+    min-height: 34px;
+    height: 34px;
+    padding: 0 10px;
+    font-size: 10px;
+    line-height: 1;
+    box-sizing: border-box;
+  }
+
+  .topbar-help-button {
+    min-width: 30px;
+    width: 30px;
+    min-height: 30px;
+    height: 30px;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1;
   }
 
   .webapp-page.is-theme-light .webapp-topbar {
@@ -15125,20 +15159,42 @@ body {
 
 @media (max-width: 460px) {
   .topbar-controls {
-    gap: 4px;
+    gap: 7px;
   }
 
   .topbar-controls .theme-toggle-compact,
   .topbar-controls .language-toggle-compact {
-    min-width: 68px;
+    min-width: 84px;
     min-height: 30px;
     height: 30px;
-    padding: 3px;
+    padding: 2px;
+    gap: 2px;
   }
 
+  .topbar-controls .language-chip,
   .topbar-controls .theme-toggle-compact .theme-chip {
-    min-width: 30px;
+    min-width: 38px;
     height: 24px;
     font-size: 9px;
+    line-height: 1;
+    letter-spacing: 0;
+  }
+
+  .topbar-controls .language-pair-button {
+    min-width: 84px;
+    min-height: 30px;
+    height: 30px;
+    padding: 0 8px;
+    font-size: 9px;
+    line-height: 1;
+  }
+
+  .topbar-help-button {
+    min-width: 28px;
+    width: 28px;
+    min-height: 28px;
+    height: 28px;
+    padding: 0;
+    font-size: 12px;
   }
 }

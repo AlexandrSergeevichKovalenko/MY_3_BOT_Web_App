@@ -7180,7 +7180,7 @@ function AppInner() {
           initData,
           topic: selectedTopic,
           level: selectedLevel,
-          force_new_session: true,
+          force_new_session: false,
         }),
       });
       if (!response.ok) {
@@ -12790,12 +12790,6 @@ function AppInner() {
                       {tr(
                         'Короткий маршрут по приложению: с чего начать, куда нажимать и какой раздел за что отвечает.',
                         'Kurzer Startpfad durch die App: womit du beginnst, wohin du tippst und welcher Bereich wofuer da ist.'
-                      )}
-                    </p>
-                    <p className="guide-hero-body">
-                      {tr(
-                        'Начните с переводов, затем сохраняйте полезные слова в словарь и закрепляйте их в карточках. После этого переходите к видео, чтению и голосовой практике.',
-                        'Starte mit Uebersetzungen, speichere dann nuetzliche Woerter ins Woerterbuch und festige sie mit Karten. Danach gehst du zu Video, Lesen und Sprechpraxis ueber.'
                       )}
                     </p>
                   </div>

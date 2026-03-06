@@ -79,6 +79,42 @@ def _get_active_session_id(
     return row[0] if row else None
 
 
+def _get_latest_pending_session_id(
+    cursor,
+    user_id: int,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> str | None:
+    cursor.execute(
+        """
+        SELECT up.session_id
+        FROM bt_3_user_progress up
+        WHERE up.user_id = %s
+          AND EXISTS (
+            SELECT 1
+            FROM bt_3_daily_sentences ds
+            LEFT JOIN bt_3_translations tr
+              ON tr.user_id = ds.user_id
+             AND tr.sentence_id = ds.id
+             AND tr.session_id = ds.session_id
+             AND COALESCE(tr.source_lang, 'ru') = %s
+             AND COALESCE(tr.target_lang, 'de') = %s
+            WHERE ds.user_id = up.user_id
+              AND ds.session_id = up.session_id
+              AND ds.date = CURRENT_DATE
+              AND COALESCE(ds.source_lang, 'ru') = %s
+              AND COALESCE(ds.target_lang, 'de') = %s
+              AND tr.id IS NULL
+          )
+        ORDER BY up.start_time DESC
+        LIMIT 1;
+        """,
+        (user_id, source_lang, target_lang, source_lang, target_lang),
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
 def correct_numbering(sentences: list[str]) -> list[str]:
     corrected_sentences = []
     for sentence in sentences:
@@ -974,11 +1010,10 @@ async def get_original_sentences_webapp(
         unique_sentences = set()
         mistake_sentences = []
 
+        # Keep personal mistake recap stable across level switches.
         for sentence, sentence_id in cursor.fetchall():
             if sentence_id and sentence_id not in already_given_sentence_ids:
                 if sentence_id not in unique_sentences:
-                    if not _sentence_fits_level(sentence, level_key):
-                        continue
                     unique_sentences.add(sentence_id)
                     mistake_sentences.append(sentence)
                     already_given_sentence_ids.add(sentence_id)
@@ -1002,8 +1037,6 @@ async def get_original_sentences_webapp(
                 for line in text.split("\n"):
                     candidate = re.sub(r"^\s*\d+\.\s*", "", line).strip()
                     if not candidate or candidate in seen:
-                        continue
-                    if not _sentence_fits_level(candidate, level_key):
                         continue
                     seen.add(candidate)
                     normalized.append(candidate)
@@ -1042,6 +1075,26 @@ async def start_translation_session_webapp(
             source_lang=source_lang,
             target_lang=target_lang,
         )
+        if not active_session_id:
+            # Recover sessions that were accidentally marked as completed but
+            # still have pending sentences.
+            recovered_session_id = _get_latest_pending_session_id(
+                cursor,
+                user_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            if recovered_session_id:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_user_progress
+                    SET completed = FALSE, end_time = NULL
+                    WHERE user_id = %s AND session_id = %s;
+                    """,
+                    (user_id, recovered_session_id),
+                )
+                conn.commit()
+                active_session_id = recovered_session_id
         if active_session_id:
             # Keep blocking only when there are still pending sentences in this
             # active session for the same language pair.
@@ -1073,17 +1126,7 @@ async def start_translation_session_webapp(
             row = cursor.fetchone()
             pending_count = int(row[0] or 0) if row else 0
             if pending_count > 0:
-                if not force_new_session:
-                    return {"session_id": active_session_id, "created": False, "blocked": True}
-                cursor.execute(
-                    """
-                    UPDATE bt_3_user_progress
-                    SET end_time = NOW(), completed = TRUE
-                    WHERE user_id = %s AND session_id = %s;
-                    """,
-                    (user_id, active_session_id),
-                )
-                conn.commit()
+                return {"session_id": active_session_id, "created": False, "blocked": True}
             else:
                 # Auto-close stale empty session and allow creating a fresh one.
                 cursor.execute(

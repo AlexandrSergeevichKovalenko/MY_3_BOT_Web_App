@@ -48,6 +48,7 @@ from backend.openai_manager import (
     run_dictionary_lookup,
     run_dictionary_lookup_de,
     run_dictionary_lookup_multilang,
+    run_check_story_guess_semantic,
     run_feel_word,
     run_feel_word_multilang,
     run_dictionary_collocations,
@@ -2617,7 +2618,9 @@ async def handle_user_message(update: Update, context: CallbackContext):
         correct_text = pending.get("correct_text") or ""
         is_correct = False
         if correct_text:
-            is_correct = _normalize_quiz_text(text) == _normalize_quiz_text(correct_text)
+            is_correct = _quiz_text_matches(text, correct_text)
+            if not is_correct:
+                is_correct = await _quiz_text_matches_semantic(text, correct_text)
         await _send_quiz_result_private(
             context=context,
             user_id=user_id,
@@ -7745,6 +7748,69 @@ def _normalize_quiz_text(value: str) -> str:
     cleaned = cleaned.replace("-", " ")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+
+_GERMAN_ARTICLE_TOKENS = {
+    "der", "die", "das", "den", "dem", "des",
+    "ein", "eine", "einen", "einem", "einer", "eines",
+}
+
+
+def _quiz_text_matches(user_text: str, correct_text: str) -> bool:
+    user_norm = _normalize_quiz_text(user_text or "")
+    correct_norm = _normalize_quiz_text(correct_text or "")
+    if not user_norm or not correct_norm:
+        return False
+    if user_norm == correct_norm:
+        return True
+
+    user_tokens = user_norm.split()
+    correct_tokens = correct_norm.split()
+    if not user_tokens or not correct_tokens:
+        return False
+
+    user_article = user_tokens[0] if user_tokens[0] in _GERMAN_ARTICLE_TOKENS else ""
+    correct_article = correct_tokens[0] if correct_tokens[0] in _GERMAN_ARTICLE_TOKENS else ""
+    allow_article_strip = not (user_article and correct_article and user_article != correct_article)
+
+    def _build_variants(tokens: list[str], strip_article: bool) -> set[str]:
+        variants: set[str] = {" ".join(tokens)}
+        if strip_article and tokens and tokens[0] in _GERMAN_ARTICLE_TOKENS:
+            no_article = tokens[1:]
+            if no_article:
+                variants.add(" ".join(no_article))
+        return {item for item in variants if item}
+
+    user_variants = _build_variants(user_tokens, strip_article=allow_article_strip)
+    correct_variants = _build_variants(correct_tokens, strip_article=allow_article_strip)
+    return bool(user_variants & correct_variants)
+
+
+async def _quiz_text_matches_semantic(user_text: str, correct_text: str) -> bool:
+    canonical = _normalize_quiz_option_for_private_message(correct_text or "")
+    guess = _normalize_quiz_option_for_private_message(user_text or "")
+    if not canonical or not guess:
+        return False
+    # Keep LLM fallback bounded to short lexical answers.
+    if len(canonical.split()) > 5 or len(guess.split()) > 5:
+        return False
+    if len(canonical) > 80 or len(guess) > 80:
+        return False
+
+    try:
+        result = await asyncio.wait_for(
+            run_check_story_guess_semantic(
+                canonical_answer=canonical,
+                aliases=[],
+                user_guess=guess,
+            ),
+            timeout=8.0,
+        )
+    except Exception as exc:
+        logging.warning("⚠️ Semantic check failed for quiz freeform: %s", exc)
+        return False
+
+    return bool((result or {}).get("is_correct"))
 
 
 def _normalize_quiz_option_for_private_message(option: str) -> str:
