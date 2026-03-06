@@ -4522,6 +4522,16 @@ function AppInner() {
   const youtubeLearningMode = Boolean((youtubePlaybackStarted || youtubeAppFullscreen) && !youtubeForceShowPanel);
   const youtubeSearchExpanded = !youtubeId || !youtubeLearningMode;
   const youtubeLoadDisabled = !youtubeId || youtubeTranscriptLoading || youtubeManualOverride;
+  const youtubeSubtitleStatusClass = youtubeTranscriptLoading
+    ? 'is-loading'
+    : youtubeSubtitlesReady
+      ? 'is-ready'
+      : 'is-empty';
+  const youtubeSubtitleStatusLabel = youtubeTranscriptLoading
+    ? tr('Субтитры: загрузка', 'Untertitel: Laden')
+    : youtubeSubtitlesReady
+      ? tr('Субтитры: готово', 'Untertitel: Bereit')
+      : tr('Субтитры: не загружены', 'Untertitel: Nicht geladen');
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
   const uniqueSkills = (() => {
@@ -13707,82 +13717,210 @@ function AppInner() {
                 {isSectionVisible('youtube') && (
                   <section className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`} ref={youtubeRef}>
                     <div className="webapp-local-section-head youtube-player-first-head">
-                      <div className="youtube-player-first-title-row">
-                        <div className="youtube-player-first-title-wrap">
-                          <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
-                          {youtubeTaskDone && (
-                            <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
-                          )}
+                      <div className="youtube-desktop-command-bar">
+                        <div className="youtube-desktop-command-row youtube-desktop-command-row-top">
+                          <div className="youtube-desktop-mainline">
+                            <div className="youtube-player-first-title-wrap">
+                              <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
+                              {youtubeTaskDone && (
+                                <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
+                              )}
+                            </div>
+                            {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
+                            <button type="button" className="youtube-command-action youtube-command-home-btn" onClick={goHomeScreen}>
+                              {tr('← На главную', '← Startseite')}
+                            </button>
+                          </div>
+                          <div className="youtube-desktop-status-chips" aria-live="polite">
+                            <span className={`youtube-status-chip ${youtubeSubtitleStatusClass}`}>{youtubeSubtitleStatusLabel}</span>
+                            <span className={`youtube-status-chip ${youtubeTranslationEnabled ? 'is-ready' : 'is-empty'}`}>
+                              {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
+                            </span>
+                            <span className={`youtube-status-chip ${youtubeOverlayEnabled ? 'is-ready' : 'is-empty'}`}>
+                              {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
+                            </span>
+                          </div>
                         </div>
-                        <div className="youtube-player-first-title-actions">
-                          {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
-                          <button
-                            type="button"
-                            className="youtube-dock-icon-btn youtube-head-settings-btn"
-                            onClick={() => setYoutubeSettingsOpen(true)}
-                            aria-label={tr('Настройки', 'Settings')}
-                            title={tr('Настройки', 'Settings')}
-                          >
-                            <span aria-hidden="true">&#9881;</span>
-                          </button>
+                        <div className="youtube-desktop-command-row youtube-desktop-command-row-controls">
+                          <div className="youtube-desktop-control-group youtube-desktop-control-group-source">
+                            <button
+                              type="button"
+                              className="youtube-command-action"
+                              onClick={() => setYoutubeForceShowPanel(true)}
+                            >
+                              {tr('Сменить видео', 'Change video')}
+                            </button>
+                            <button
+                              type="button"
+                              className="youtube-command-action"
+                              onClick={() => {
+                                setYoutubeForceShowPanel(true);
+                                if (youtubeInput.trim()) searchYoutubeVideos();
+                              }}
+                              disabled={youtubeSearchLoading}
+                            >
+                              {youtubeSearchLoading ? tr('Ищем...', 'Searching...') : tr('Искать в YouTube', 'Search on YouTube')}
+                            </button>
+                            <button
+                              type="button"
+                              className={`youtube-command-action ${showManualTranscript ? 'is-active' : ''}`}
+                              onClick={() => setShowManualTranscript((prev) => !prev)}
+                            >
+                              {tr('Вставить транскрипцию', 'Paste transcript')}
+                            </button>
+                            <button
+                              type="button"
+                              className="youtube-command-action"
+                              onClick={() => fetchTranscript()}
+                              disabled={youtubeLoadDisabled}
+                            >
+                              {youtubeTranscriptLoading
+                                ? tr('Загрузка...', 'Loading...')
+                                : youtubeSubtitlesReady
+                                  ? tr('Перезагрузить субтитры', 'Reload subtitles')
+                                  : tr('Загрузить субтитры', 'Load subtitles')}
+                            </button>
+                          </div>
+                          <div className="youtube-desktop-control-group youtube-desktop-control-group-view">
+                            <button
+                              type="button"
+                              className={`youtube-command-toggle ${youtubeTranslationEnabled ? 'is-active' : ''}`}
+                              onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
+                              disabled={!youtubeSubtitlesReady}
+                            >
+                              {tr('Показать RU', 'Show RU')}
+                            </button>
+                            <button
+                              type="button"
+                              className={`youtube-command-toggle ${youtubeOverlayEnabled ? 'is-active' : ''}`}
+                              onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
+                              disabled={!youtubeSubtitlesReady}
+                            >
+                              Overlay
+                            </button>
+                            <button
+                              type="button"
+                              className={`youtube-command-toggle ${youtubeAppFullscreen ? 'is-active' : ''}`}
+                              onClick={() => setYoutubeAppFullscreen((prev) => !prev)}
+                              disabled={!youtubeId}
+                            >
+                              {tr('Развернуть во весь экран', 'Full screen')}
+                            </button>
+                          </div>
                         </div>
+                        {showManualTranscript && (
+                          <div className="webapp-subtitles-manual youtube-sheet-manual youtube-sheet-manual-desktop">
+                            <textarea
+                              rows={6}
+                              value={manualTranscript}
+                              onChange={(event) => setManualTranscript(event.target.value)}
+                              placeholder={tr('Вставьте .srt/.vtt с таймкодами. Если таймкодов нет, покажем статично.', 'Paste .srt/.vtt with timecodes. Without timecodes we show static lines.')}
+                            />
+                            <div className="webapp-video-actions">
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => handleManualTranscript()}
+                              >
+                                {tr('Использовать транскрипцию', 'Use transcript')}
+                              </button>
+                              {youtubeManualOverride && (
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => {
+                                    setYoutubeManualOverride(false);
+                                    setManualTranscript('');
+                                    setYoutubeTranscriptHasTiming(true);
+                                    setShowManualTranscript(false);
+                                  }}
+                                >
+                                  {tr('Вернуться к авто', 'Back to auto')}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      {isFocusedSection('youtube') && (
-                        <div className="section-head-nav">
+
+                      <div className="youtube-mobile-head">
+                        <div className="youtube-player-first-title-row">
+                          <div className="youtube-player-first-title-wrap">
+                            <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
+                            {youtubeTaskDone && (
+                              <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
+                            )}
+                          </div>
+                          <div className="youtube-player-first-title-actions">
+                            {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
+                            <button
+                              type="button"
+                              className="youtube-dock-icon-btn youtube-head-settings-btn"
+                              onClick={() => setYoutubeSettingsOpen(true)}
+                              aria-label={tr('Настройки', 'Settings')}
+                              title={tr('Настройки', 'Settings')}
+                            >
+                              <span aria-hidden="true">&#9881;</span>
+                            </button>
+                          </div>
+                        </div>
+                        {isFocusedSection('youtube') && (
+                          <div className="section-head-nav">
+                            <button
+                              type="button"
+                              className="section-home-back is-compact-arrow"
+                              onClick={goBackFromYoutube}
+                              title={tr('Назад', 'Zurueck')}
+                              aria-label={tr('Назад', 'Zurueck')}
+                            >
+                              ⏪
+                            </button>
+                            <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                              {tr('На главную', 'Startseite')}
+                            </button>
+                          </div>
+                        )}
+                        <div className="youtube-player-first-head-controls">
                           <button
                             type="button"
-                            className="section-home-back is-compact-arrow"
-                            onClick={goBackFromYoutube}
-                            title={tr('Назад', 'Zurueck')}
-                            aria-label={tr('Назад', 'Zurueck')}
+                            className={`youtube-status-action-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
+                            onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
+                            disabled={!youtubeSubtitlesReady}
                           >
-                            ⏪
+                            {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
                           </button>
-                          <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                            {tr('На главную', 'Startseite')}
+                          <button
+                            type="button"
+                            className={`youtube-status-action-btn ${youtubeTranslationEnabled ? 'is-active' : ''}`}
+                            onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
+                            disabled={!youtubeSubtitlesReady}
+                          >
+                            {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
+                          </button>
+                          <button
+                            type="button"
+                            className="youtube-status-action-btn youtube-status-load-btn"
+                            onClick={() => fetchTranscript()}
+                            disabled={youtubeLoadDisabled}
+                          >
+                            {youtubeTranscriptLoading
+                              ? tr('Загружаем...', 'Loading...')
+                              : tr('Загрузить субтитры', 'Load subtitles')}
+                          </button>
+                          <button
+                            type="button"
+                            className={`youtube-status-action-btn ${youtubeAppFullscreen ? 'is-active' : ''}`}
+                            onClick={() => {
+                              setYoutubeAppFullscreen((prev) => !prev);
+                              setYoutubeSettingsOpen(false);
+                            }}
+                            disabled={!youtubeId}
+                          >
+                            {youtubeAppFullscreen
+                              ? tr('Full screen: ON', 'Full screen: ON')
+                              : tr('Full screen: OFF', 'Full screen: OFF')}
                           </button>
                         </div>
-                      )}
-                      <div className="youtube-player-first-head-controls">
-                        <button
-                          type="button"
-                          className={`youtube-status-action-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
-                          onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
-                          disabled={!youtubeSubtitlesReady}
-                        >
-                          {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
-                        </button>
-                        <button
-                          type="button"
-                          className={`youtube-status-action-btn ${youtubeTranslationEnabled ? 'is-active' : ''}`}
-                          onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
-                          disabled={!youtubeSubtitlesReady}
-                        >
-                          {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
-                        </button>
-                        <button
-                          type="button"
-                          className="youtube-status-action-btn youtube-status-load-btn"
-                          onClick={() => fetchTranscript()}
-                          disabled={youtubeLoadDisabled}
-                        >
-                          {youtubeTranscriptLoading
-                            ? tr('Загружаем...', 'Loading...')
-                            : tr('Загрузить субтитры', 'Load subtitles')}
-                        </button>
-                        <button
-                          type="button"
-                          className={`youtube-status-action-btn ${youtubeAppFullscreen ? 'is-active' : ''}`}
-                          onClick={() => {
-                            setYoutubeAppFullscreen((prev) => !prev);
-                            setYoutubeSettingsOpen(false);
-                          }}
-                          disabled={!youtubeId}
-                        >
-                          {youtubeAppFullscreen
-                            ? tr('Full screen: ON', 'Full screen: ON')
-                            : tr('Full screen: OFF', 'Full screen: OFF')}
-                        </button>
                       </div>
                     </div>
                     <div className="youtube-player-card">
