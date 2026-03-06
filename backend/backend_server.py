@@ -496,6 +496,7 @@ logging.basicConfig(level=logging.INFO)
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 TELEGRAM_GROUP_CHAT_ID = os.getenv("TELEGRAM_GROUP_CHAT_ID") or os.getenv("BOT_GROUP_CHAT_ID_Deutsch")
+DELIVERY_ROUTE_DEBUG_ENABLED = (os.getenv("DELIVERY_ROUTE_DEBUG") or "1").strip().lower() in {"1", "true", "yes", "on"}
 
 if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
     raise RuntimeError("LIVEKIT_API_KEY и LIVEKIT_API_SECRET должны быть установлены")
@@ -6753,12 +6754,14 @@ def _send_group_message(
     text: str,
     reply_markup: dict | None = None,
     disable_web_page_preview: bool = True,
+    chat_id: int | None = None,
 ) -> None:
-    if not TELEGRAM_GROUP_CHAT_ID:
+    target_chat_id = int(chat_id) if chat_id is not None else (int(TELEGRAM_GROUP_CHAT_ID) if TELEGRAM_GROUP_CHAT_ID else None)
+    if target_chat_id is None:
         raise RuntimeError("TELEGRAM_GROUP_CHAT_ID должен быть установлен")
     url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_GROUP_CHAT_ID,
+        "chat_id": int(target_chat_id),
         "text": text,
         "disable_web_page_preview": bool(disable_web_page_preview),
     }
@@ -6776,7 +6779,7 @@ def _send_group_message(
         message_id = (payload.get("result") or {}).get("message_id")
         if message_id is not None:
             record_telegram_system_message(
-                chat_id=int(TELEGRAM_GROUP_CHAT_ID),
+                chat_id=int(target_chat_id),
                 message_id=int(message_id),
                 message_type="text",
             )
@@ -6844,11 +6847,18 @@ def _send_private_photo(user_id: int, image_bytes: bytes, filename: str, caption
         logging.debug("Failed to track private photo message", exc_info=True)
 
 
-def _send_group_photo(image_bytes: bytes, filename: str, caption: str | None = None) -> None:
-    if not TELEGRAM_GROUP_CHAT_ID:
+def _send_group_photo(
+    image_bytes: bytes,
+    filename: str,
+    caption: str | None = None,
+    *,
+    chat_id: int | None = None,
+) -> None:
+    target_chat_id = int(chat_id) if chat_id is not None else (int(TELEGRAM_GROUP_CHAT_ID) if TELEGRAM_GROUP_CHAT_ID else None)
+    if target_chat_id is None:
         raise RuntimeError("TELEGRAM_GROUP_CHAT_ID должен быть установлен")
     url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendPhoto"
-    data = {"chat_id": TELEGRAM_GROUP_CHAT_ID}
+    data = {"chat_id": int(target_chat_id)}
     if caption:
         data["caption"] = caption
     files = {"photo": (filename, image_bytes, "image/png")}
@@ -6860,7 +6870,7 @@ def _send_group_photo(image_bytes: bytes, filename: str, caption: str | None = N
         message_id = (payload.get("result") or {}).get("message_id")
         if message_id is not None:
             record_telegram_system_message(
-                chat_id=int(TELEGRAM_GROUP_CHAT_ID),
+                chat_id=int(target_chat_id),
                 message_id=int(message_id),
                 message_type="photo",
             )
@@ -6868,14 +6878,14 @@ def _send_group_photo(image_bytes: bytes, filename: str, caption: str | None = N
         logging.debug("Failed to track group photo message", exc_info=True)
 
 
-def _is_user_member_of_group_chat(user_id: int) -> bool:
-    if not TELEGRAM_GROUP_CHAT_ID:
+def _is_user_member_of_chat(chat_id: int, user_id: int) -> bool:
+    if not chat_id:
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/getChatMember"
     try:
         response = requests.post(
             url,
-            json={"chat_id": TELEGRAM_GROUP_CHAT_ID, "user_id": int(user_id)},
+            json={"chat_id": int(chat_id), "user_id": int(user_id)},
             timeout=15,
         )
         if response.status_code >= 400:
@@ -6885,6 +6895,93 @@ def _is_user_member_of_group_chat(user_id: int) -> bool:
         return status in {"creator", "administrator", "member", "restricted"}
     except Exception:
         return False
+
+
+def _is_user_member_of_group_chat(user_id: int) -> bool:
+    if not TELEGRAM_GROUP_CHAT_ID:
+        return False
+    try:
+        return _is_user_member_of_chat(int(TELEGRAM_GROUP_CHAT_ID), int(user_id))
+    except Exception:
+        return False
+
+
+def _log_delivery_route(job_name: str, user_id: int, target_chat_id: int, reason: str) -> None:
+    if not DELIVERY_ROUTE_DEBUG_ENABLED:
+        return
+    logging.info(
+        "📬 Delivery route: job=%s user_id=%s target_chat_id=%s reason=%s",
+        str(job_name or "unknown"),
+        int(user_id),
+        int(target_chat_id),
+        str(reason or "unknown"),
+    )
+
+
+def _resolve_user_delivery_chat_id(user_id: int, *, job_name: str = "unknown") -> int:
+    safe_user_id = int(user_id)
+    candidate_chat_ids: list[int] = []
+
+    try:
+        scope_state = get_webapp_scope_state(safe_user_id)
+    except Exception:
+        scope_state = {}
+    if bool(scope_state.get("has_state")) and str(scope_state.get("scope_kind") or "").strip().lower() == "personal":
+        _log_delivery_route(job_name, safe_user_id, safe_user_id, "scope_personal")
+        return safe_user_id
+    if str(scope_state.get("scope_kind") or "").strip().lower() == "group":
+        try:
+            scope_chat_id = int(scope_state.get("scope_chat_id"))
+            candidate_chat_ids.append(scope_chat_id)
+        except Exception:
+            pass
+
+    for only_confirmed in (True, False):
+        try:
+            contexts = list_webapp_group_contexts(
+                user_id=safe_user_id,
+                limit=20,
+                only_confirmed=only_confirmed,
+            )
+        except Exception:
+            contexts = []
+        for item in contexts:
+            try:
+                chat_id = int(item.get("chat_id"))
+            except Exception:
+                continue
+            if chat_id not in candidate_chat_ids:
+                candidate_chat_ids.append(chat_id)
+
+    for chat_id in candidate_chat_ids:
+        if _is_user_member_of_chat(chat_id=chat_id, user_id=safe_user_id):
+            _log_delivery_route(job_name, safe_user_id, chat_id, f"group_membership:{chat_id}")
+            return int(chat_id)
+
+    _log_delivery_route(job_name, safe_user_id, safe_user_id, "fallback_private")
+    return safe_user_id
+
+
+def _send_private_audio(user_id: int, audio_bytes: bytes, filename: str, caption: str | None = None) -> None:
+    url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendAudio"
+    data = {"chat_id": int(user_id)}
+    if caption:
+        data["caption"] = caption
+    files = {"audio": (filename, audio_bytes, "audio/mpeg")}
+    response = requests.post(url, data=data, files=files, timeout=60)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Telegram API error: {response.text}")
+    try:
+        payload = response.json() if response.content else {}
+        message_id = (payload.get("result") or {}).get("message_id")
+        if message_id is not None:
+            record_telegram_system_message(
+                chat_id=int(user_id),
+                message_id=int(message_id),
+                message_type="audio",
+            )
+    except Exception:
+        logging.debug("Failed to track private audio message", exc_info=True)
 
 
 def _send_private_message_chunks(user_id: int, text: str, limit: int = 3800) -> None:
@@ -7006,11 +7103,18 @@ def _build_private_analytics_chart_png(
     return buff.read()
 
 
-def _send_group_audio(audio_bytes: bytes, filename: str, caption: str | None = None) -> None:
-    if not TELEGRAM_GROUP_CHAT_ID:
+def _send_group_audio(
+    audio_bytes: bytes,
+    filename: str,
+    caption: str | None = None,
+    *,
+    chat_id: int | None = None,
+) -> None:
+    target_chat_id = int(chat_id) if chat_id is not None else (int(TELEGRAM_GROUP_CHAT_ID) if TELEGRAM_GROUP_CHAT_ID else None)
+    if target_chat_id is None:
         raise RuntimeError("TELEGRAM_GROUP_CHAT_ID должен быть установлен")
     url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendAudio"
-    data = {"chat_id": TELEGRAM_GROUP_CHAT_ID}
+    data = {"chat_id": int(target_chat_id)}
     if caption:
         data["caption"] = caption
     files = {"audio": (filename, audio_bytes, "audio/mpeg")}
@@ -7022,7 +7126,7 @@ def _send_group_audio(audio_bytes: bytes, filename: str, caption: str | None = N
         message_id = (payload.get("result") or {}).get("message_id")
         if message_id is not None:
             record_telegram_system_message(
-                chat_id=int(TELEGRAM_GROUP_CHAT_ID),
+                chat_id=int(target_chat_id),
                 message_id=int(message_id),
                 message_type="audio",
             )
@@ -17307,9 +17411,13 @@ def submit_webapp_group_message():
         lines.append(summary)
 
     try:
-        _send_group_message("\n".join(lines))
+        target_chat_id = _resolve_user_delivery_chat_id(int(user_id), job_name="submit_webapp_group_message")
+        if int(target_chat_id) < 0:
+            _send_group_message("\n".join(lines), chat_id=int(target_chat_id))
+        else:
+            _send_private_message(user_id=int(target_chat_id), text="\n".join(lines))
     except Exception as exc:
-        return jsonify({"error": f"Ошибка отправки в группу: {exc}"}), 500
+        return jsonify({"error": f"Ошибка отправки сообщения: {exc}"}), 500
 
     return jsonify({"ok": True})
 
@@ -17486,7 +17594,11 @@ def _dispatch_daily_audio(target_date: date) -> dict:
             pair_label = _pair_code(source_lang, target_lang)
             filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
             caption = f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
-            _send_group_audio(audio, filename, caption)
+            target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.daily")
+            if int(target_chat_id) < 0:
+                _send_group_audio(audio, filename, caption, chat_id=int(target_chat_id))
+            else:
+                _send_private_audio(user_id=int(target_chat_id), audio_bytes=audio, filename=filename, caption=caption)
             sent_daily += 1
         except Exception as exc:
             errors.append(f"daily user {user_id} {source_lang}->{target_lang}: {exc}")
@@ -17514,7 +17626,11 @@ def _dispatch_daily_audio(target_date: date) -> dict:
             pair_label = _pair_code(source_lang, target_lang)
             filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
             caption = f"История за {target_date.isoformat()} — {name} ({pair_label})"
-            _send_group_audio(audio, filename, caption)
+            target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.story")
+            if int(target_chat_id) < 0:
+                _send_group_audio(audio, filename, caption, chat_id=int(target_chat_id))
+            else:
+                _send_private_audio(user_id=int(target_chat_id), audio_bytes=audio, filename=filename, caption=caption)
             sent_story += 1
         except Exception as exc:
             errors.append(f"story user {user_id} {source_lang}->{target_lang}: {exc}")
@@ -17603,7 +17719,11 @@ def _dispatch_private_analytics(target_date: date) -> dict:
                 f"🔥 Final score: {summary.get('final_score', 0)}\n\n"
                 f"Открыть графики и детали:\n{_build_webapp_deeplink('analytics')}"
             )
-            _send_private_message(user_id, text)
+            target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_private_analytics")
+            if int(target_chat_id) < 0:
+                _send_group_message(text=text, chat_id=int(target_chat_id))
+            else:
+                _send_private_message(int(target_chat_id), text)
 
             chart_png = _build_private_analytics_chart_png(
                 user_id=user_id,
@@ -17612,12 +17732,20 @@ def _dispatch_private_analytics(target_date: date) -> dict:
                 username=name,
             )
             if chart_png:
-                _send_private_photo(
-                    user_id=user_id,
-                    image_bytes=chart_png,
-                    filename=f"analytics_{user_id}_{target_date.isoformat()}.png",
-                    caption=f"📈 График прогресса за неделю\n{bounds.start_date} — {bounds.end_date}",
-                )
+                if int(target_chat_id) < 0:
+                    _send_group_photo(
+                        image_bytes=chart_png,
+                        filename=f"analytics_{user_id}_{target_date.isoformat()}.png",
+                        caption=f"📈 График прогресса за неделю\n{bounds.start_date} — {bounds.end_date}",
+                        chat_id=int(target_chat_id),
+                    )
+                else:
+                    _send_private_photo(
+                        user_id=int(target_chat_id),
+                        image_bytes=chart_png,
+                        filename=f"analytics_{user_id}_{target_date.isoformat()}.png",
+                        caption=f"📈 График прогресса за неделю\n{bounds.start_date} — {bounds.end_date}",
+                    )
             sent += 1
         except Exception as exc:
             errors.append(f"user {user_id}: {exc}")
@@ -17785,16 +17913,18 @@ def _dispatch_plan_period_progress(
                 f"Чтение (мин): {m_reading.get('actual', 0)} / {m_reading.get('goal', 0)} (прогноз {m_reading.get('forecast', 0)})"
             )
 
-            if _is_user_member_of_group_chat(user_id):
+            target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name=f"_dispatch_plan_period_progress.{normalized_period}")
+            if int(target_chat_id) < 0:
                 _send_group_photo(
                     image_bytes=chart_png,
                     filename=f"plan_{normalized_period}_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
                     caption=caption,
+                    chat_id=int(target_chat_id),
                 )
                 sent_group += 1
             else:
                 _send_private_photo(
-                    user_id=user_id,
+                    user_id=int(target_chat_id),
                     image_bytes=chart_png,
                     filename=f"plan_{normalized_period}_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
                     caption=caption,
@@ -17833,10 +17963,11 @@ def _dispatch_plan_period_progress(
                 reply_markup = {
                     "inline_keyboard": [[{"text": "Войти и поставить план", "url": plan_button_url}]],
                 }
-                if _is_user_member_of_group_chat(user_id):
-                    _send_group_message(reminder, reply_markup=reply_markup)
+                target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_plan_period_progress.weekly_reminder")
+                if int(target_chat_id) < 0:
+                    _send_group_message(reminder, reply_markup=reply_markup, chat_id=int(target_chat_id))
                 else:
-                    _send_private_message(user_id=user_id, text=reminder, reply_markup=reply_markup)
+                    _send_private_message(user_id=int(target_chat_id), text=reminder, reply_markup=reply_markup)
                 reminders_sent += 1
             except Exception as exc:
                 errors.append(f"reminder user {user_id}: {exc}")
@@ -18195,8 +18326,6 @@ def _dispatch_weekly_group_badges(
     tz_name: str = TODAY_PLAN_DEFAULT_TZ,
     include_current_week: bool = False,
 ) -> dict:
-    if not TELEGRAM_GROUP_CHAT_ID:
-        return {"ok": False, "error": "TELEGRAM_GROUP_CHAT_ID должен быть установлен"}
     if include_current_week:
         week_start = target_date - timedelta(days=target_date.weekday())
         week_end = week_start + timedelta(days=6)
@@ -18205,22 +18334,70 @@ def _dispatch_weekly_group_badges(
 
     try:
         rows = _collect_weekly_badges_rows(week_start=week_start, week_end=week_end)
-        badges_payload = _weekly_badges_payload(rows)
-        text = _format_weekly_badges_message(week_start=week_start, week_end=week_end, payload=badges_payload)
-        _send_group_message(
-            text,
-            reply_markup={
+        if not rows:
+            return {
+                "ok": True,
+                "date": target_date.isoformat(),
+                "week_start": week_start.isoformat(),
+                "week_end": week_end.isoformat(),
+                "participants": 0,
+                "top_count": 0,
+                "sent_group": 0,
+                "sent_private": 0,
+                "tz": tz_name,
+            }
+
+        grouped_rows: dict[int, list[dict]] = {}
+        for row in rows:
+            user_id = int(row.get("user_id") or 0)
+            if user_id <= 0:
+                continue
+            target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_weekly_group_badges")
+            grouped_rows.setdefault(int(target_chat_id), []).append(dict(row))
+
+        sent_group = 0
+        sent_private = 0
+        for target_chat_id, chat_rows in grouped_rows.items():
+            sorted_rows = sorted(
+                chat_rows,
+                key=lambda item: (
+                    float(item.get("total_minutes") or 0.0),
+                    float(item.get("avg_score") or 0.0),
+                    int(item.get("translations_count") or 0),
+                ),
+                reverse=True,
+            )
+            for idx, item in enumerate(sorted_rows, start=1):
+                item["rank"] = idx
+            badges_payload = _weekly_badges_payload(sorted_rows)
+            text = _format_weekly_badges_message(week_start=week_start, week_end=week_end, payload=badges_payload)
+            reply_markup = {
                 "inline_keyboard": [[{"text": "Открыть приложение", "url": _build_webapp_deeplink("webapp")}]],
-            },
-        )
+            }
+            if int(target_chat_id) < 0:
+                _send_group_message(
+                    text,
+                    reply_markup=reply_markup,
+                    chat_id=int(target_chat_id),
+                )
+                sent_group += 1
+            else:
+                _send_private_message(
+                    user_id=int(target_chat_id),
+                    text=text,
+                    reply_markup=reply_markup,
+                )
+                sent_private += 1
+
         return {
             "ok": True,
             "date": target_date.isoformat(),
             "week_start": week_start.isoformat(),
             "week_end": week_end.isoformat(),
             "participants": len(rows),
-            "top_count": len(badges_payload.get("leaderboard") or []),
-            "sent_group": 1,
+            "top_count": len(rows[:10]),
+            "sent_group": sent_group,
+            "sent_private": sent_private,
             "tz": tz_name,
         }
     except Exception as exc:
@@ -18317,10 +18494,11 @@ def _dispatch_today_evening_reminders(target_date: date, tz_name: str = TODAY_PL
                     f"{snapshot.get('done_items', 0)}/{snapshot.get('total_items', 0)} задач.\n"
                     "Если будет возможность, закрой дневной план до конца."
                 )
-                if _is_user_member_of_group_chat(user_id):
-                    _send_group_message(text, reply_markup=plan_button)
+                target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_today_evening_reminders.remind")
+                if int(target_chat_id) < 0:
+                    _send_group_message(text, reply_markup=plan_button, chat_id=int(target_chat_id))
                 else:
-                    _send_private_message(user_id=user_id, text=text, reply_markup=plan_button)
+                    _send_private_message(user_id=int(target_chat_id), text=text, reply_markup=plan_button)
                 reminded += 1
                 continue
 
@@ -18332,10 +18510,11 @@ def _dispatch_today_evening_reminders(target_date: date, tz_name: str = TODAY_PL
             )
             if badge:
                 text += f"\n{badge}"
-            if _is_user_member_of_group_chat(user_id):
-                _send_group_message(text, reply_markup=plan_button)
+            target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_today_evening_reminders.celebrate")
+            if int(target_chat_id) < 0:
+                _send_group_message(text, reply_markup=plan_button, chat_id=int(target_chat_id))
             else:
-                _send_private_message(user_id=user_id, text=text, reply_markup=plan_button)
+                _send_private_message(user_id=int(target_chat_id), text=text, reply_markup=plan_button)
             celebrated += 1
         except Exception as exc:
             errors.append(f"user {user_id}: {exc}")
@@ -18509,19 +18688,29 @@ def _dispatch_today_plans(target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_T
                 target_lang=target_lang,
             )
             try:
-                _send_today_plan_private_message(user_id=user_id, plan=plan)
-                sent_private += 1
-            except Exception as private_exc:
+                target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_today_plans")
+                if int(target_chat_id) < 0:
+                    username = str(row.get("username") or "").strip()
+                    user_label = f"@{username}" if username else f"user_{user_id}"
+                    text = _format_today_group_announcement(user_label, plan)
+                    button_url = _build_webapp_deeplink("today")
+                    reply_markup = {
+                        "inline_keyboard": [[{"text": "Открыть план", "url": button_url}]],
+                    }
+                    _send_group_message(text=text, reply_markup=reply_markup, chat_id=int(target_chat_id))
+                    sent_group_fallback += 1
+                else:
+                    _send_today_plan_private_message(user_id=int(target_chat_id), plan=plan)
+                    sent_private += 1
+            except Exception as route_exc:
                 if not group_on_private_fail:
                     raise
-                username = str(row.get("username") or "").strip()
-                user_label = f"@{username}" if username else f"user_{user_id}"
-                fallback_text = _format_today_group_announcement(user_label, plan)
-                fallback_text += "\n\n⚠️ Личное сообщение не доставлено."
-                _send_group_message(fallback_text)
-                sent_group_fallback += 1
-                logging.warning("Today private send failed for user %s: %s", user_id, private_exc)
-                errors.append(f"user {user_id}: private_send_failed: {private_exc}")
+                try:
+                    _send_private_message(user_id=user_id, text=_format_today_plan_message(plan))
+                    sent_private += 1
+                except Exception as private_exc:
+                    errors.append(f"user {user_id}: route_failed={route_exc}; private_fallback_failed={private_exc}")
+                    logging.warning("Today plan routing failed for user %s: %s / %s", user_id, route_exc, private_exc)
         except Exception as exc:
             errors.append(f"user {user_id}: {exc}")
     return {
@@ -19659,10 +19848,14 @@ def finish_webapp_translation():
     group_warning = None
     if summary:
         try:
-            _send_group_message(summary)
+            target_chat_id = _resolve_user_delivery_chat_id(int(user_id), job_name="finish_webapp_translation")
+            if int(target_chat_id) < 0:
+                _send_group_message(summary, chat_id=int(target_chat_id))
+            else:
+                _send_private_message(user_id=int(target_chat_id), text=summary)
         except Exception as exc:
-            # Group delivery is optional for WebApp flow; do not fail finish.
-            group_warning = f"Не удалось отправить сводку в группу: {exc}"
+            # Delivery is optional for WebApp flow; do not fail finish.
+            group_warning = f"Не удалось отправить сводку: {exc}"
     response_payload = {"ok": True, **result}
     if group_warning:
         response_payload["group_warning"] = group_warning

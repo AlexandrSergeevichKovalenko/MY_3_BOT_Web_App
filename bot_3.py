@@ -91,7 +91,9 @@ from backend.database import (
     set_provider_budget_extra_limit,
     set_provider_budget_block_state,
     confirm_webapp_group_participation,
+    get_webapp_scope_state,
     list_known_webapp_group_chats,
+    list_webapp_group_contexts,
     upsert_webapp_group_context,
     upsert_active_quiz,
     get_active_quiz,
@@ -368,15 +370,29 @@ if TELEGRAM_Deutsch_BOT_TOKEN:
 else:
     logging.error("❌ TELEGRAM_Deutsch_BOT_TOKEN не загружен! Проверьте переменные окружения.")
 
-# ID группы
-BOT_GROUP_CHAT_ID_Deutsch = -1002607222537
+# ID группы (берём из ENV, чтобы не держать хардкод в коде)
+_group_chat_id_raw = (
+    os.getenv("BOT_GROUP_CHAT_ID_Deutsch")
+    or os.getenv("GROUP_CHAT_ID")
+    or "-1002607222537"
+)
+try:
+    BOT_GROUP_CHAT_ID_Deutsch = int(str(_group_chat_id_raw).strip())
+    logging.info("✅ GROUP_CHAT_ID успешно загружен: %s", BOT_GROUP_CHAT_ID_Deutsch)
+except Exception:
+    BOT_GROUP_CHAT_ID_Deutsch = -1002607222537
+    logging.error(
+        "❌ Некорректный GROUP_CHAT_ID=%r. Используем fallback: %s",
+        _group_chat_id_raw,
+        BOT_GROUP_CHAT_ID_Deutsch,
+    )
 
-if BOT_GROUP_CHAT_ID_Deutsch:
-    logging.info("✅ GROUP_CHAT_ID успешно загружен!")
-else:
-    logging.error("❌ GROUP_CHAT_ID не загружен! Проверьте переменные окружения.")
-
-BOT_GROUP_CHAT_ID_Deutsch = int(BOT_GROUP_CHAT_ID_Deutsch)
+DELIVERY_ROUTE_DEBUG_ENABLED = str(os.getenv("DELIVERY_ROUTE_DEBUG") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # # === Настройка DeepSeek API ===
 # api_key_deepseek = os.getenv("DeepSeek_API_Key")
@@ -424,6 +440,16 @@ async def send_german_news(context: CallbackContext):
 
     response = requests.get(url)
 
+    try:
+        targets = await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_german_news")
+    except Exception:
+        logging.warning("⚠️ Не удалось собрать targets для news", exc_info=True)
+        targets = []
+
+    if not targets:
+        logging.info("ℹ️ send_german_news: нет targets для рассылки")
+        return
+
     if response.status_code == 200:
         data = response.json()
 
@@ -435,16 +461,31 @@ async def send_german_news(context: CallbackContext):
                 url = article.get("url", "#")
 
                 message = f"📰 {i}. *{title}*\n\n📌 {source}\n\n[Читать полностью]({url})"
-                await context.bot.send_message(
-                    chat_id=BOT_GROUP_CHAT_ID_Deutsch,
-                    text=message,
-                    parse_mode="Markdown",
-                    disable_web_page_preview=False  # Чтобы загружались превью страниц
-                )
+                for target_chat_id in targets:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=int(target_chat_id),
+                            text=message,
+                            parse_mode="Markdown",
+                            disable_web_page_preview=False  # Чтобы загружались превью страниц
+                        )
+                    except Exception as exc:
+                        logging.warning("⚠️ Не удалось отправить news в chat_id=%s: %s", target_chat_id, exc)
         else:
-            await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text="❌ Нет свежих новостей на сегодня!")
+            for target_chat_id in targets:
+                try:
+                    await context.bot.send_message(chat_id=int(target_chat_id), text="❌ Нет свежих новостей на сегодня!")
+                except Exception as exc:
+                    logging.warning("⚠️ Не удалось отправить empty news в chat_id=%s: %s", target_chat_id, exc)
     else:
-        await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text=f"❌ Ошибка: {response.status_code} - {response.text}")
+        for target_chat_id in targets:
+            try:
+                await context.bot.send_message(
+                    chat_id=int(target_chat_id),
+                    text=f"❌ Ошибка: {response.status_code} - {response.text}",
+                )
+            except Exception as exc:
+                logging.warning("⚠️ Не удалось отправить error news в chat_id=%s: %s", target_chat_id, exc)
 
 
 
@@ -2265,14 +2306,18 @@ async def send_morning_reminder(context:CallbackContext):
     )
 
     try:
-        targets = await _collect_quiz_delivery_targets(context)
+        targets = await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_morning_reminder")
     except Exception:
-        logging.warning("⚠️ Не удалось собрать targets для morning reminder, отправляем только в группу", exc_info=True)
-        targets = [int(BOT_GROUP_CHAT_ID_Deutsch)]
+        logging.warning("⚠️ Не удалось собрать targets для morning reminder", exc_info=True)
+        targets = []
+
+    if not targets:
+        logging.info("ℹ️ morning reminder: нет targets для рассылки")
+        return
 
     for target_chat_id in targets:
         try:
-            if int(target_chat_id) == int(BOT_GROUP_CHAT_ID_Deutsch):
+            if int(target_chat_id) < 0:
                 await context.bot.send_message(
                     chat_id=int(target_chat_id),
                     text=message,
@@ -2303,12 +2348,26 @@ async def send_flashcard_reminder(context: CallbackContext):
         "📌 Пора повторить слова!\n"
         f'Перейти к тренировке: <a href="{review_url}">Открыть карточки</a>'
     )
-    await context.bot.send_message(
-        chat_id=BOT_GROUP_CHAT_ID_Deutsch,
-        text=message,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
+    try:
+        targets = await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_flashcard_reminder")
+    except Exception:
+        logging.warning("⚠️ Не удалось собрать targets для flashcard reminder", exc_info=True)
+        targets = []
+
+    if not targets:
+        logging.info("ℹ️ flashcard reminder: нет targets для рассылки")
+        return
+
+    for target_chat_id in targets:
+        try:
+            await context.bot.send_message(
+                chat_id=int(target_chat_id),
+                text=message,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить flashcard reminder в chat_id=%s: %s", target_chat_id, exc)
 
 
 
@@ -6089,21 +6148,47 @@ def search_youtube_videous(topic, max_results=5):
         if not video_data:
             return ["❌ Видео не найдено. Попробуйте позже."]
         
-        # ✅ Теперь получаем количество просмотров для всех найденных видео
-        video_ids =  ",".join([video['video_id'] for video in video_data if video['video_id']])
-        if video_ids:
-            stats_request = youtube.videos().list(
-                part = "statistics",
-                id=video_ids
-            )
-            stats_response = stats_request.execute()
+        # ✅ Получаем просмотры чанками (YouTube videos.list принимает max 50 id за запрос)
+        unique_video_ids = []
+        seen_video_ids = set()
+        for video in video_data:
+            vid = str(video.get("video_id") or "").strip()
+            if not vid or vid in seen_video_ids:
+                continue
+            seen_video_ids.add(vid)
+            unique_video_ids.append(vid)
 
-            for item in stats_response.get("items", []):
-                video_id = item["id"]
-                view_count = int(item["statistics"].get("viewCount", 0))
+        if unique_video_ids:
+            try:
+                views_by_id = {}
+                chunk_total = (len(unique_video_ids) + 49) // 50
+                print(
+                    f"ℹ️ YouTube stats lookup: topic='{query}' "
+                    f"candidates={len(video_data)} unique_ids={len(unique_video_ids)} chunks={chunk_total}"
+                )
+                for offset in range(0, len(unique_video_ids), 50):
+                    chunk_ids = unique_video_ids[offset: offset + 50]
+                    if not chunk_ids:
+                        continue
+                    stats_request = youtube.videos().list(
+                        part="statistics",
+                        id=",".join(chunk_ids),
+                    )
+                    stats_response = stats_request.execute()
+                    for item in stats_response.get("items", []):
+                        video_id = str(item.get("id") or "").strip()
+                        if not video_id:
+                            continue
+                        view_count = int((item.get("statistics") or {}).get("viewCount", 0) or 0)
+                        views_by_id[video_id] = view_count
+
                 for video in video_data:
-                    if video['video_id'] == video_id:
-                        video["views"] = view_count
+                    vid = str(video.get("video_id") or "").strip()
+                    if vid in views_by_id:
+                        video["views"] = views_by_id[vid]
+            except Exception as stats_error:
+                # Не роняем рекомендации, если статистика просмотров временно недоступна.
+                print(f"⚠️ Не удалось загрузить статистику просмотров YouTube: {stats_error}")
 
         # ✅ Подставляем значение по умолчанию (если данных о просмотрах нет)
         for video in video_data:
@@ -6255,41 +6340,282 @@ def escape_html_with_bold(text):
 
 
 
-# 📌📌📌📌📌
-async def send_me_analytics_and_recommend_me(context: CallbackContext):
-    #client = openai.AsyncOpenAI(api_key=openai.api_key)
-    task_name = f"send_me_analytics_and_recommend_me"
-    system_instruction_key = f"send_me_analytics_and_recommend_me"
+def _log_delivery_route(job_name: str, user_id: int, target_chat_id: int, reason: str) -> None:
+    if not DELIVERY_ROUTE_DEBUG_ENABLED:
+        return
+    logging.info(
+        "📬 Delivery route: job=%s user_id=%s target_chat_id=%s reason=%s",
+        str(job_name or "unknown"),
+        int(user_id),
+        int(target_chat_id),
+        str(reason or "unknown"),
+    )
 
-    #get all user_id's from _DB to itterate over them and send them recommendations
+
+async def _resolve_user_delivery_chat_id(
+    context: CallbackContext,
+    user_id: int,
+    *,
+    job_name: str = "unknown",
+) -> int:
+    safe_user_id = int(user_id)
+    candidate_chat_ids: list[int] = []
+    route_reason = "fallback_private"
+
+    try:
+        scope_state = await asyncio.to_thread(get_webapp_scope_state, safe_user_id)
+    except Exception:
+        scope_state = {}
+    if bool(scope_state.get("has_state")) and str(scope_state.get("scope_kind") or "").strip().lower() == "personal":
+        _log_delivery_route(job_name, safe_user_id, safe_user_id, "scope_personal")
+        return safe_user_id
+    if str(scope_state.get("scope_kind") or "").strip().lower() == "group":
+        try:
+            scope_chat_id = int(scope_state.get("scope_chat_id"))
+            candidate_chat_ids.append(scope_chat_id)
+        except Exception:
+            pass
+
+    for only_confirmed in (True, False):
+        try:
+            contexts = await asyncio.to_thread(
+                list_webapp_group_contexts,
+                safe_user_id,
+                20,
+                only_confirmed=only_confirmed,
+            )
+        except Exception:
+            contexts = []
+        for item in contexts:
+            try:
+                chat_id = int(item.get("chat_id"))
+            except Exception:
+                continue
+            if chat_id not in candidate_chat_ids:
+                candidate_chat_ids.append(chat_id)
+
+    for chat_id in candidate_chat_ids:
+        try:
+            member = await context.bot.get_chat_member(chat_id=int(chat_id), user_id=safe_user_id)
+            status = str(getattr(member, "status", "") or "").strip().lower()
+            if status in {"creator", "administrator", "member", "restricted"}:
+                route_reason = f"group_membership:{chat_id}"
+                _log_delivery_route(job_name, safe_user_id, int(chat_id), route_reason)
+                return int(chat_id)
+        except Exception:
+            continue
+
+    _log_delivery_route(job_name, safe_user_id, safe_user_id, route_reason)
+    return safe_user_id
+
+
+async def _collect_scheduler_candidate_user_ids(
+    *,
+    lookback_days: int = 30,
+    include_allowed: bool = True,
+    include_admins: bool = True,
+) -> list[int]:
+    safe_days = max(1, int(lookback_days or 30))
+    user_ids: set[int] = set()
+
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("""
-            SELECT DISTINCT user_id FROM bt_3_detailed_mistakes;
-            """)
+            cursor.execute(
+                """
+                SELECT DISTINCT user_id
+                FROM bt_3_messages
+                WHERE timestamp >= NOW() - (%s || ' days')::interval
+                  AND user_id IS NOT NULL
+                UNION
+                SELECT DISTINCT user_id
+                FROM bt_3_translations
+                WHERE timestamp >= NOW() - (%s || ' days')::interval
+                  AND user_id IS NOT NULL
+                UNION
+                SELECT DISTINCT user_id
+                FROM bt_3_user_progress
+                WHERE start_time >= NOW() - (%s || ' days')::interval
+                  AND user_id IS NOT NULL;
+                """,
+                (safe_days, safe_days, safe_days),
+            )
+            for row in cursor.fetchall() or []:
+                try:
+                    candidate = int(row[0])
+                except Exception:
+                    continue
+                if candidate > 0:
+                    user_ids.add(candidate)
+
+    if include_allowed:
+        try:
+            allowed_rows = await asyncio.to_thread(list_allowed_telegram_users, 2000)
+        except Exception:
+            allowed_rows = []
+        for row in allowed_rows:
+            try:
+                candidate = int((row or {}).get("user_id") or 0)
+            except Exception:
+                continue
+            if candidate > 0:
+                user_ids.add(candidate)
+
+    if include_admins:
+        for admin_id in get_admin_telegram_ids():
+            try:
+                candidate = int(admin_id)
+            except Exception:
+                continue
+            if candidate > 0:
+                user_ids.add(candidate)
+
+    return sorted(user_ids)
+
+
+async def _build_user_delivery_map(
+    context: CallbackContext,
+    user_ids: list[int] | set[int] | tuple[int, ...],
+    *,
+    job_name: str = "unknown",
+) -> dict[int, int]:
+    mapping: dict[int, int] = {}
+    prepared: list[int] = []
+    for raw in user_ids:
+        try:
+            user_id = int(raw)
+        except Exception:
+            continue
+        if user_id > 0 and user_id not in mapping:
+            prepared.append(user_id)
+
+    for user_id in prepared:
+        mapping[user_id] = await _resolve_user_delivery_chat_id(
+            context,
+            user_id,
+            job_name=job_name,
+        )
+    return mapping
+
+
+async def _collect_scheduler_delivery_targets(
+    context: CallbackContext,
+    *,
+    lookback_days: int = 30,
+    job_name: str = "unknown",
+) -> list[int]:
+    user_ids = await _collect_scheduler_candidate_user_ids(
+        lookback_days=lookback_days,
+        include_allowed=True,
+        include_admins=True,
+    )
+    delivery_map = await _build_user_delivery_map(context, user_ids, job_name=job_name)
+    targets: list[int] = []
+    seen: set[int] = set()
+    for _, chat_id in sorted(delivery_map.items()):
+        try:
+            target = int(chat_id)
+        except Exception:
+            continue
+        if target in seen:
+            continue
+        seen.add(target)
+        targets.append(target)
+    return targets
+
+
+async def _send_analytics_message_with_fallback(
+    context: CallbackContext,
+    *,
+    user_id: int,
+    target_chat_id: int,
+    text: str,
+) -> None:
+    safe_user_id = int(user_id)
+    safe_target_chat_id = int(target_chat_id)
+    try:
+        await context.bot.send_message(
+            chat_id=safe_target_chat_id,
+            text=text,
+            parse_mode="HTML",
+        )
+        return
+    except Exception as primary_exc:
+        if safe_target_chat_id == safe_user_id:
+            logging.warning(
+                "⚠️ Не удалось отправить weekly analytics в личку user_id=%s: %s",
+                safe_user_id,
+                primary_exc,
+            )
+            return
+
+        logging.warning(
+            "⚠️ Не удалось отправить weekly analytics в группу chat_id=%s для user_id=%s: %s. Пробуем личку.",
+            safe_target_chat_id,
+            safe_user_id,
+            primary_exc,
+        )
+
+    try:
+        await context.bot.send_message(
+            chat_id=safe_user_id,
+            text=text,
+            parse_mode="HTML",
+        )
+    except Exception as fallback_exc:
+        logging.warning(
+            "⚠️ Не удалось отправить weekly analytics fallback в личку user_id=%s: %s",
+            safe_user_id,
+            fallback_exc,
+        )
+
+
+# 📌📌📌📌📌
+async def send_me_analytics_and_recommend_me(context: CallbackContext):
+    task_name = "send_me_analytics_and_recommend_me"
+    system_instruction_key = "send_me_analytics_and_recommend_me"
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT user_id
+                FROM bt_3_translations
+                WHERE timestamp >= NOW() - INTERVAL '6 days';
+                """
+            )
             user_ids = cursor.fetchall()
+
     if not user_ids:
-        print("❌ Нет пользователей с ошибками за последнюю неделю.")
+        print("❌ Нет активных пользователей за последнюю неделю.")
         return
 
     for user_id, in user_ids:
-        total_sentences, mistakes_week, top_mistake_category, number_of_top_category_mistakes, top_mistake_subcategory_1, top_mistake_subcategory_2 = await rate_mistakes(user_id)
+        safe_user_id = int(user_id)
+        delivery_chat_id = await _resolve_user_delivery_chat_id(
+            context,
+            safe_user_id,
+            job_name="send_me_analytics_and_recommend_me",
+        )
+
+        total_sentences, mistakes_week, top_mistake_category, number_of_top_category_mistakes, top_mistake_subcategory_1, top_mistake_subcategory_2 = await rate_mistakes(safe_user_id)
         if total_sentences:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("""
-                        SELECT DISTINCT username FROM bt_3_translations WHERE user_id = %s;""",
-                        (user_id, ))
-
+                    cursor.execute(
+                        """
+                        SELECT DISTINCT username FROM bt_3_translations WHERE user_id = %s;
+                        """,
+                        (safe_user_id,),
+                    )
                     result = cursor.fetchone()
                     username = result[0] if result else "Unknown User"
 
-            # ✅ Запрашиваем тему у OpenAI
             user_message = f"""
-            - **Категория ошибки:** {top_mistake_category}  
-            - **Первая подкатегория:** {top_mistake_subcategory_1}  
-            - **Вторая подкатегория:** {top_mistake_subcategory_2}  
+            - **Категория ошибки:** {top_mistake_category}
+            - **Первая подкатегория:** {top_mistake_subcategory_1}
+            - **Вторая подкатегория:** {top_mistake_subcategory_2}
             """
+            topic = str(top_mistake_category or "").strip() or "Deutsch Grammatik"
 
             for attempt in range(5):
                 try:
@@ -6299,46 +6625,30 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
                         user_message=user_message,
                         poll_interval_seconds=1.0,
                     )
-
-                    # response = await client.chat.completions.create(
-                    # model="gpt-4-turbo",
-                    # messages=[{"role": "user", "content": prompt}]
-                    # )
-                    # topic = response.choices[0].message.content.strip()
-
                     print(f"📌 Определена тема: {topic}")
                     break
                 except openai.RateLimitError:
-                    wait_time = (attempt + 1 )*5
+                    wait_time = (attempt + 1) * 5
                     print(f"⚠️ OpenAI API перегружен. Ждём {wait_time} сек...")
                     await asyncio.sleep(wait_time)
                 except Exception as e:
                     print(f"⚠️ Ошибка OpenAI: {e}")
                     continue
-                
-            # ✅ Ищем видео на YouTube только по конкретным каналам
+
             video_data = search_youtube_videous(topic)
 
-            # ✅ Добавляем логирование для диагностики
             if not isinstance(video_data, list):
                 print(f"❌ ОШИБКА: search_youtube_videous вернула {type(video_data)} вместо списка!")
+                video_data = []
             if not video_data:
                 print("❌ Видео не найдено. Список пуст.")
             else:
                 print(f"✅ Найдено {len(video_data)} видео:")
                 for video in video_data:
                     print(f"▶️ {video}")
-            
-            # ✅ Формируем список ссылок только если элемент является словарём
-            # ✅ Нет необходимости преобразовывать снова — список уже готов
-            valid_links = video_data
 
-            
-            if not valid_links:
-                valid_links = ["❌ Не удалось найти видео на YouTube по этой теме. Попробуйте позже."]
-
-            rounded_value = round(mistakes_week/total_sentences, 2)
-            # ✅ Формируем сообщение для пользователя
+            valid_links = video_data or ["❌ Не удалось найти видео на YouTube по этой теме. Попробуйте позже."]
+            rounded_value = round(mistakes_week / total_sentences, 2)
             recommendations = (
                 f"🧔 *{username}*,\nВы *перевели* за неделю: {total_sentences} предложений;\n"
                 f"📌 *В них допущено* {mistakes_week} ошибок;\n"
@@ -6346,44 +6656,44 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
                 f"🔴 *Больше всего ошибок:* {number_of_top_category_mistakes} штук в категории:\n {top_mistake_category or 'неизвестно'}\n"
             )
             if top_mistake_subcategory_1:
-                recommendations += (f"📜 *Основные ошибки в подкатегории:*\n {top_mistake_subcategory_1}\n\n")
+                recommendations += f"📜 *Основные ошибки в подкатегории:*\n {top_mistake_subcategory_1}\n\n"
             if top_mistake_subcategory_2:
-                recommendations += (f"📜 *Вторые по частоте ошибки в подкатегории:*\n {top_mistake_subcategory_2}\n\n")
-            
-            # ✅ Добавляем строку с рекомендацией → ЭТО ВАЖНО!
-            recommendations += (f"🟢 *Рекомендую посмотреть:*\n\n")
+                recommendations += f"📜 *Вторые по частоте ошибки в подкатегории:*\n {top_mistake_subcategory_2}\n\n"
+
+            recommendations += "🟢 *Рекомендую посмотреть:*\n\n"
             recommendations = escape_html_with_bold(recommendations)
-
-
-            # ✅ Добавляем рабочие ссылки
             recommendations += "\n\n".join(valid_links)
-            
-            #Debugging...
-            print("DEBUG: ", recommendations)
 
-
-            # ✅ Отправляем сообщение пользователю
-            await context.bot.send_message(
-                chat_id=BOT_GROUP_CHAT_ID_Deutsch, 
+            print("DEBUG:", recommendations)
+            await _send_analytics_message_with_fallback(
+                context,
+                user_id=safe_user_id,
+                target_chat_id=delivery_chat_id,
                 text=recommendations,
-                parse_mode = "HTML"
-                )
-            await asyncio.sleep(5)
-
-        else:
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("""
-                        SELECT DISTINCT username FROM bt_3_translations WHERE user_id = %s;
-                    """, (user_id, ))
-                    result = cursor.fetchone()
-                    username = result[0] if result else f"User {user_id}"
-            
-            await context.bot.send_message(
-                chat_id=BOT_GROUP_CHAT_ID_Deutsch,
-                text=escape_html_with_bold(f"⚠️ Пользователь {username} не перевёл ни одного предложения на этой неделе."),
-                parse_mode="HTML"
             )
+            await asyncio.sleep(5)
+            continue
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT username FROM bt_3_translations WHERE user_id = %s;
+                    """,
+                    (safe_user_id,),
+                )
+                result = cursor.fetchone()
+                username = result[0] if result else f"User {safe_user_id}"
+
+        no_activity_text = escape_html_with_bold(
+            f"⚠️ Пользователь {username} не перевёл ни одного предложения на этой неделе."
+        )
+        await _send_analytics_message_with_fallback(
+            context,
+            user_id=safe_user_id,
+            target_chat_id=delivery_chat_id,
+            text=no_activity_text,
+        )
 
 
 async def force_finalize_sessions(context: CallbackContext = None):
@@ -6401,8 +6711,23 @@ async def force_finalize_sessions(context: CallbackContext = None):
     cursor.close()
     conn.close()
 
-    msg = await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text="🔔 Все незавершённые сессии за сегодня автоматически закрыты!")
-    #add_service_msg_id(context, msg.message_id)
+    if context is None:
+        return
+
+    try:
+        targets = await _collect_scheduler_delivery_targets(context, lookback_days=14, job_name="force_finalize_sessions")
+    except Exception:
+        logging.warning("⚠️ Не удалось собрать targets для force finalize notice", exc_info=True)
+        targets = []
+
+    for target_chat_id in targets:
+        try:
+            await context.bot.send_message(
+                chat_id=int(target_chat_id),
+                text="🔔 Все незавершённые сессии за сегодня автоматически закрыты!",
+            )
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить finalize notice в chat_id=%s: %s", target_chat_id, exc)
 
 
 
@@ -6415,6 +6740,7 @@ async def send_weekly_summary(context: CallbackContext):
     # 🔹 Собираем статистику за неделю
     cursor.execute("""
         SELECT 
+        t.user_id,
         t.username, 
         COUNT(DISTINCT t.sentence_id) AS всего_переводов,
         COALESCE(AVG(t.score), 0) AS средняя_оценка,
@@ -6444,7 +6770,7 @@ async def send_weekly_summary(context: CallbackContext):
         GROUP BY user_id
     ) p ON t.user_id = p.user_id
     WHERE t.timestamp >= CURRENT_DATE - INTERVAL '6 days'
-    GROUP BY t.username, t.user_id, p.avg_time, p.total_time
+    GROUP BY t.user_id, t.username, p.avg_time, p.total_time
     ORDER BY итоговый_балл DESC;
 
     """)
@@ -6454,25 +6780,45 @@ async def send_weekly_summary(context: CallbackContext):
     conn.close()
 
     if not rows:
-        await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text="📊 Неделя прошла, но никто не перевел ни одного предложения!")
+        targets = await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_weekly_summary_empty")
+        for target_chat_id in targets:
+            try:
+                await context.bot.send_message(
+                    chat_id=int(target_chat_id),
+                    text="📊 Неделя прошла, но никто не перевел ни одного предложения!",
+                )
+            except Exception as exc:
+                logging.warning("⚠️ Не удалось отправить weekly summary (empty) в chat_id=%s: %s", target_chat_id, exc)
         return
 
-    summary = "🏆 Итоги недели:\n\n"
+    user_ids = [int(row[0]) for row in rows]
+    delivery_map = await _build_user_delivery_map(context, user_ids, job_name="send_weekly_summary")
+    grouped_rows: dict[int, list[tuple]] = {}
+    for row in rows:
+        user_id = int(row[0])
+        target_chat_id = int(delivery_map.get(user_id, user_id))
+        grouped_rows.setdefault(target_chat_id, []).append(row)
 
     medals = ["🥇", "🥈", "🥉"]
-    for i, (username, count, avg_score, avg_minutes, total_minutes, missed, final_score) in enumerate(rows):
-        medal = medals[i] if i < len(medals) else "💩"
-        summary += (
-            f"{medal} {username}\n"
-            f"📜 Переведено: {count}\n"
-            f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
-            f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
-            f"⏱ Время общее: {total_minutes:.1f} мин\n"
-            f"🚨 Пропущено: {missed}\n"
-            f"🏆 Итоговый балл: {final_score:.1f}\n\n"
-        )
-
-    await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text=summary)
+    for target_chat_id, chat_rows in grouped_rows.items():
+        sorted_rows = sorted(chat_rows, key=lambda item: float(item[7] or 0), reverse=True)
+        summary = "🏆 Итоги недели:\n\n"
+        for i, row in enumerate(sorted_rows):
+            _, username, count, avg_score, avg_minutes, total_minutes, missed, final_score = row
+            medal = medals[i] if i < len(medals) else "💩"
+            summary += (
+                f"{medal} {username}\n"
+                f"📜 Переведено: {count}\n"
+                f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
+                f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
+                f"⏱ Время общее: {total_minutes:.1f} мин\n"
+                f"🚨 Пропущено: {missed}\n"
+                f"🏆 Итоговый балл: {final_score:.1f}\n\n"
+            )
+        try:
+            await context.bot.send_message(chat_id=int(target_chat_id), text=summary)
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить weekly summary в chat_id=%s: %s", target_chat_id, exc)
 
 
 
@@ -6619,36 +6965,73 @@ async def send_daily_summary(context: CallbackContext):
     cursor.close()
     conn.close()
 
-    # 🔹 Формируем итоговый отчёт
-    if not rows:
-        await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text="📊 Сегодня никто не перевёл ни одного предложения!")
+    candidate_user_ids: set[int] = {int(uid) for uid in all_users.keys()}
+    candidate_user_ids.update({int(row[0]) for row in rows if row and row[0] is not None})
+    if not candidate_user_ids:
+        candidate_user_ids.update(await _collect_scheduler_candidate_user_ids(lookback_days=30))
+
+    delivery_map = await _build_user_delivery_map(context, candidate_user_ids, job_name="send_daily_summary")
+    chat_usernames: dict[int, dict[int, str]] = {}
+    for user_id, username in all_users.items():
+        target_chat_id = int(delivery_map.get(int(user_id), int(user_id)))
+        chat_usernames.setdefault(target_chat_id, {})[int(user_id)] = username
+
+    chat_rows: dict[int, list[tuple]] = {}
+    for row in rows:
+        user_id = int(row[0])
+        target_chat_id = int(delivery_map.get(user_id, user_id))
+        chat_rows.setdefault(target_chat_id, []).append(row)
+
+    all_targets: list[int] = []
+    seen_targets: set[int] = set()
+    for chat_id in list(chat_usernames.keys()) + list(chat_rows.keys()):
+        if chat_id in seen_targets:
+            continue
+        seen_targets.add(chat_id)
+        all_targets.append(chat_id)
+
+    if not all_targets:
         return
 
-    summary = "📊 Итоги дня:\n\n"
     medals = ["🥇", "🥈", "🥉"]
-    for i, (user_id, total_sentences, translated, missed, avg_minutes, total_time_minutes, avg_score, final_score) in enumerate(rows):
-        username = all_users.get(int(user_id), 'Неизвестный пользователь')  # ✅ Берём имя пользователя из словаря
-        medal = medals[i] if i < len(medals) else "💩"
-        summary += (
-            f"{medal} {username}\n"
-            f"📜 Всего предложений: {total_sentences}\n"
-            f"✅ Переведено: {translated}\n"
-            f"🚨 Не переведено: {missed}\n"
-            f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
-            f"⏱ Время общее: {total_time_minutes:.1f} мин\n"
-            f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
-            f"🏆 Итоговый балл: {final_score:.1f}\n\n"
+    for target_chat_id in all_targets:
+        current_rows = sorted(
+            chat_rows.get(target_chat_id, []),
+            key=lambda item: float(item[7] or 0),
+            reverse=True,
         )
+        summary = "📊 Итоги дня:\n\n"
+        if not current_rows:
+            summary += "📊 Сегодня никто не перевёл ни одного предложения!\n"
+        else:
+            for i, (user_id, total_sentences, translated, missed, avg_minutes, total_time_minutes, avg_score, final_score) in enumerate(current_rows):
+                username = all_users.get(int(user_id), 'Неизвестный пользователь')
+                medal = medals[i] if i < len(medals) else "💩"
+                summary += (
+                    f"{medal} {username}\n"
+                    f"📜 Всего предложений: {total_sentences}\n"
+                    f"✅ Переведено: {translated}\n"
+                    f"🚨 Не переведено: {missed}\n"
+                    f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
+                    f"⏱ Время общее: {total_time_minutes:.1f} мин\n"
+                    f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
+                    f"🏆 Итоговый балл: {final_score:.1f}\n\n"
+                )
 
+        lazy_user_map = {
+            uid: uname
+            for uid, uname in chat_usernames.get(target_chat_id, {}).items()
+            if uid not in active_users
+        }
+        if lazy_user_map:
+            summary += "\n🦥 Ленивцы (писали в чат, но не переводили):\n"
+            for username in lazy_user_map.values():
+                summary += f"👤 {username}: ничего не перевёл!\n"
 
-    # 🚨 **Добавляем блок про ленивых**
-    lazy_users = {uid: uname for uid, uname in all_users.items() if uid not in active_users}
-    if lazy_users:
-        summary += "\n🦥 Ленивцы (писали в чат, но не переводили):\n"
-        for username in lazy_users.values():
-            summary += f"👤 {username}: ничего не перевёл!\n"
-
-    await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text=summary)
+        try:
+            await context.bot.send_message(chat_id=int(target_chat_id), text=summary)
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить daily summary в chat_id=%s: %s", target_chat_id, exc)
 
 
 
@@ -6703,32 +7086,71 @@ async def send_progress_report(context: CallbackContext):
     cursor.close()
     conn.close()
 
-    # 🔹 Формируем отчёт
-    if not rows:
-        await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text="📊 Сегодня никто не перевёл ни одного предложения!")
-        return
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    progress_report = f"📊 Промежуточные итоги перевода:\n🕒 Время отчёта:\n{current_time}\n\n"
+    candidate_user_ids: set[int] = {int(uid) for uid in all_users.keys()}
+    candidate_user_ids.update({int(row[0]) for row in rows if row and row[0] is not None})
+    if not candidate_user_ids:
+        candidate_user_ids.update(await _collect_scheduler_candidate_user_ids(lookback_days=30))
 
-    for user_id, total, translated, missed, avg_minutes, total_minutes, avg_score, final_score in rows:
-        progress_report += (
-            f"👤 {all_users.get(int(user_id), 'Неизвестный пользователь')}\n"
-            f"📜 Переведено: {translated}/{total}\n"
-            f"🚨 Не переведено: {missed}\n"
-            f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
-            f"⏱ Время общ.: {total_minutes:.1f} мин\n"
-            f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
-            f"🏆 Итоговый балл: {final_score:.1f}\n\n"
+    delivery_map = await _build_user_delivery_map(context, candidate_user_ids, job_name="send_progress_report")
+    chat_usernames: dict[int, dict[int, str]] = {}
+    for user_id, username in all_users.items():
+        target_chat_id = int(delivery_map.get(int(user_id), int(user_id)))
+        chat_usernames.setdefault(target_chat_id, {})[int(user_id)] = username
+
+    chat_rows: dict[int, list[tuple]] = {}
+    for row in rows:
+        user_id = int(row[0])
+        target_chat_id = int(delivery_map.get(user_id, user_id))
+        chat_rows.setdefault(target_chat_id, []).append(row)
+
+    all_targets: list[int] = []
+    seen_targets: set[int] = set()
+    for chat_id in list(chat_usernames.keys()) + list(chat_rows.keys()):
+        if chat_id in seen_targets:
+            continue
+        seen_targets.add(chat_id)
+        all_targets.append(chat_id)
+
+    if not all_targets:
+        return
+
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for target_chat_id in all_targets:
+        progress_report = f"📊 Промежуточные итоги перевода:\n🕒 Время отчёта:\n{current_time}\n\n"
+        current_rows = sorted(
+            chat_rows.get(target_chat_id, []),
+            key=lambda item: float(item[7] or 0),
+            reverse=True,
         )
 
-    # 🚨 **Добавляем блок про ленивых (учитываем всех, кто писал в чат за месяц)**
-    lazy_users = {uid: uname for uid, uname in all_users.items() if uid not in active_users}
-    if lazy_users:
-        progress_report += "\n🦥 Ленивцы (писали в чат, но не переводили):\n"
-        for username in lazy_users.values():
-            progress_report += f"👤 {username}: ничего не перевёл!\n"
+        if not current_rows:
+            progress_report += "📊 Сегодня никто не перевёл ни одного предложения!\n"
+        else:
+            for user_id, total, translated, missed, avg_minutes, total_minutes, avg_score, final_score in current_rows:
+                progress_report += (
+                    f"👤 {all_users.get(int(user_id), 'Неизвестный пользователь')}\n"
+                    f"📜 Переведено: {translated}/{total}\n"
+                    f"🚨 Не переведено: {missed}\n"
+                    f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
+                    f"⏱ Время общ.: {total_minutes:.1f} мин\n"
+                    f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
+                    f"🏆 Итоговый балл: {final_score:.1f}\n\n"
+                )
 
-    await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text=progress_report)
+        lazy_user_map = {
+            uid: uname
+            for uid, uname in chat_usernames.get(target_chat_id, {}).items()
+            if uid not in active_users
+        }
+        if lazy_user_map:
+            progress_report += "\n🦥 Ленивцы (писали в чат, но не переводили):\n"
+            for username in lazy_user_map.values():
+                progress_report += f"👤 {username}: ничего не перевёл!\n"
+
+        try:
+            await context.bot.send_message(chat_id=int(target_chat_id), text=progress_report)
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить progress report в chat_id=%s: %s", target_chat_id, exc)
 
 
 async def error_handler(update, context):
@@ -6867,6 +7289,7 @@ async def get_yesterdays_mistakes_for_audio_message(context: CallbackContext):
             user_ids = [i[0] for i in cursor.fetchall() if i[0] is not None]
             print(user_ids)
             for user_id in user_ids:
+                safe_user_id = int(user_id)
                 original_by_id = {}
 
                 cursor.execute("""
@@ -6916,12 +7339,18 @@ async def get_yesterdays_mistakes_for_audio_message(context: CallbackContext):
                 audio_path = Path(f"{username}.mp3")
                 print(f"📦 Размер файла: {audio_path.stat().st_size / 1024 / 1024:.2f} MB ")
 
+                target_chat_id = await _resolve_user_delivery_chat_id(
+                    context,
+                    safe_user_id,
+                    job_name="get_yesterdays_mistakes_for_audio_message",
+                )
+
                 if audio_path.exists():
                     try:
                         start = asyncio.get_running_loop().time()
                         with audio_path.open("rb") as audio_file:
                             await context.bot.send_audio(
-                                chat_id=BOT_GROUP_CHAT_ID_Deutsch, 
+                                chat_id=int(target_chat_id),
                                 audio=audio_file,
                                 caption=f"🎧 Ошибки пользователя @{username} за вчерашний день."
                             )
@@ -6929,6 +7358,16 @@ async def get_yesterdays_mistakes_for_audio_message(context: CallbackContext):
                         await asyncio.sleep(5)
                     except Exception as e:
                         print(f"❌ Ошибка при отправке аудиофайла для @{username}: {e}")
+                        if int(target_chat_id) != safe_user_id:
+                            try:
+                                with audio_path.open("rb") as audio_file:
+                                    await context.bot.send_audio(
+                                        chat_id=safe_user_id,
+                                        audio=audio_file,
+                                        caption=f"🎧 Ошибки пользователя @{username} за вчерашний день."
+                                    )
+                            except Exception as fallback_error:
+                                print(f"❌ Ошибка fallback отправки аудио в личку @{username}: {fallback_error}")
 
                     try:    
                         audio_path.unlink()
@@ -6936,9 +7375,11 @@ async def get_yesterdays_mistakes_for_audio_message(context: CallbackContext):
                         print(f"⚠️ Файл уже был удалён: {audio_path}")
                 
                 else:
-                    await context.bot.send_message(
-                        chat_id=BOT_GROUP_CHAT_ID_Deutsch,
-                        text=f"❌ Для пользователя @{username} не найден аудиофайл."
+                    await _send_analytics_message_with_fallback(
+                        context,
+                        user_id=safe_user_id,
+                        target_chat_id=int(target_chat_id),
+                        text=escape_html_with_bold(f"❌ Для пользователя @{username} не найден аудиофайл."),
                     )
                     await asyncio.sleep(5)
 
@@ -7080,12 +7521,18 @@ def get_date_range(period: str) -> tuple[date, date]:
 
 
 async def send_user_analytics_bar_charts(context: CallbackContext, period="day"): # 'update' parameter removed
-    chat_id = BOT_GROUP_CHAT_ID_Deutsch
-
     start_date, end_date = get_date_range(period)
+    targets = await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_user_analytics_bar_charts")
+    if not targets:
+        logging.info("ℹ️ user analytics bar charts: нет targets для рассылки")
+        return
 
     # Send one message before starting the process
-    await context.bot.send_message(chat_id=chat_id, text="🚀 Starting to prepare analytical reports for all active users...")
+    for target_chat_id in targets:
+        try:
+            await context.bot.send_message(chat_id=int(target_chat_id), text="🚀 Starting to prepare analytical reports for all active users...")
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить старт user analytics в chat_id=%s: %s", target_chat_id, exc)
 
     try:
         with get_db_connection() as conn:
@@ -7098,10 +7545,21 @@ async def send_user_analytics_bar_charts(context: CallbackContext, period="day")
                 all_users = curr.fetchall()
         
         if not all_users:
-            await context.bot.send_message(chat_id=chat_id, text="No active users found for analysis today.")
+            for target_chat_id in targets:
+                try:
+                    await context.bot.send_message(chat_id=int(target_chat_id), text="No active users found for analysis today.")
+                except Exception as exc:
+                    logging.warning("⚠️ Не удалось отправить empty user analytics в chat_id=%s: %s", target_chat_id, exc)
             return
 
+        delivery_map = await _build_user_delivery_map(
+            context,
+            [int(user_id) for user_id, _ in all_users],
+            job_name="send_user_analytics_bar_charts",
+        )
+
         for user_id, username in all_users:
+            target_chat_id = int(delivery_map.get(int(user_id), int(user_id)))
             try:
                 # IMPORTANT: Make sure this function accepts user_id and uses it
                 full_user_data = await prepare_aggregate_data_by_period_and_draw_analytic_for_user(user_id, start_date, end_date)
@@ -7114,7 +7572,12 @@ async def send_user_analytics_bar_charts(context: CallbackContext, period="day")
                     image_path = await create_analytics_figure_async(daily_data, weekly_data, user_id)
                     
                     # FIXED: send_photo method name
-                    await context.bot.send_photo(chat_id=chat_id, photo=open(image_path, 'rb'), caption=f"📊 Analytics for user: {username}")
+                    with open(image_path, "rb") as photo_file:
+                        await context.bot.send_photo(
+                            chat_id=target_chat_id,
+                            photo=photo_file,
+                            caption=f"📊 Analytics for user: {username}",
+                        )
                     os.remove(image_path)
                 else:
                     print(f"⚠️ No data found for analysis for user {username} ({user_id}).")
@@ -7122,27 +7585,50 @@ async def send_user_analytics_bar_charts(context: CallbackContext, period="day")
             except Exception as e:
                 logging.error(f"Error creating individual report for {username} ({user_id}): {e}")
                 # Report the error, but continue the loop for other users
-                await context.bot.send_message(chat_id=chat_id, text=f"❌ Failed to create a report for {username}.")
+                await _send_analytics_message_with_fallback(
+                    context,
+                    user_id=int(user_id),
+                    target_chat_id=target_chat_id,
+                    text=escape_html_with_bold(f"❌ Failed to create a report for {username}."),
+                )
 
     except Exception as e:
         logging.error(f"Critical error during send_user_analytics_bar_charts execution: {e}")
-        # FIXED: added await
-        await context.bot.send_message(chat_id=chat_id, text="❌ A general error occurred while creating reports.")
+        for target_chat_id in targets:
+            try:
+                await context.bot.send_message(chat_id=int(target_chat_id), text="❌ A general error occurred while creating reports.")
+            except Exception as exc:
+                logging.warning("⚠️ Не удалось отправить critical user analytics в chat_id=%s: %s", target_chat_id, exc)
 
 
 async def send_users_comparison_bar_chart(context: CallbackContext, period):
-    chat_id = BOT_GROUP_CHAT_ID_Deutsch
-
     start_date, end_date = get_date_range(period)
+    targets = await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_users_comparison_bar_chart")
+    if not targets:
+        logging.info("ℹ️ users comparison analytics: нет targets для рассылки")
+        return
     # relativedelta(months=3) создаёт объект, который представляет собой интервал в "3 календарных месяца".
     # Когда вы вычитаете этот объект из даты, он корректно отсчитывает месяцы назад.
 
-    await context.bot.send_message(chat_id=chat_id, text="Starting preparation of Comparison analytics for all users..." )
+    for target_chat_id in targets:
+        try:
+            await context.bot.send_message(chat_id=int(target_chat_id), text="Starting preparation of Comparison analytics for all users..." )
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить старт comparison analytics в chat_id=%s: %s", target_chat_id, exc)
 
     try:
         image_path = await create_comparison_report_async(period=period, start_date=start_date, end_date=end_date)
         if image_path:
-            await context.bot.send_photo(chat_id=chat_id, photo=open(image_path, "rb"), caption=f"Users Comparison Analytics for the last {period}")
+            for target_chat_id in targets:
+                try:
+                    with open(image_path, "rb") as photo_file:
+                        await context.bot.send_photo(
+                            chat_id=int(target_chat_id),
+                            photo=photo_file,
+                            caption=f"Users Comparison Analytics for the last {period}",
+                        )
+                except Exception as exc:
+                    logging.warning("⚠️ Не удалось отправить comparison analytics в chat_id=%s: %s", target_chat_id, exc)
             os.remove(image_path)
         else:
             print(f"⚠️ No path found for comparison analysis for users.")
@@ -7975,41 +8461,12 @@ async def delete_temporary_message(context: CallbackContext) -> None:
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
 
 
-async def _is_user_member_of_quiz_group(context: CallbackContext, user_id: int) -> bool:
-    try:
-        member = await context.bot.get_chat_member(
-            chat_id=BOT_GROUP_CHAT_ID_Deutsch,
-            user_id=int(user_id),
-        )
-        status = str(getattr(member, "status", "") or "").strip().lower()
-        return status in {"creator", "administrator", "member", "restricted"}
-    except Exception:
-        return False
-
-
 async def _collect_quiz_delivery_targets(context: CallbackContext) -> list[int]:
-    targets: list[int] = [int(BOT_GROUP_CHAT_ID_Deutsch)]
     try:
-        allowed_rows = await asyncio.to_thread(list_allowed_telegram_users, 500)
+        return await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_scheduled_quiz")
     except Exception:
-        logging.warning("⚠️ Не удалось получить список allowed users для quiz fallback", exc_info=True)
-        allowed_rows = []
-
-    candidate_user_ids: set[int] = set()
-    for row in allowed_rows:
-        try:
-            user_id = int((row or {}).get("user_id") or 0)
-        except Exception:
-            user_id = 0
-        if user_id > 0:
-            candidate_user_ids.add(user_id)
-    candidate_user_ids.update({int(user_id) for user_id in get_admin_telegram_ids() if int(user_id) > 0})
-
-    for user_id in sorted(candidate_user_ids):
-        if await _is_user_member_of_quiz_group(context, user_id):
-            continue
-        targets.append(int(user_id))
-    return targets
+        logging.warning("⚠️ Не удалось собрать targets для scheduled quiz", exc_info=True)
+        return []
 
 
 async def send_scheduled_quiz(context: CallbackContext) -> None:
@@ -8075,6 +8532,9 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
         quiz = shuffled_quiz
 
     delivery_targets = await _collect_quiz_delivery_targets(context)
+    if not delivery_targets:
+        logging.info("ℹ️ scheduled quiz: нет targets для рассылки")
+        return
     sent_count = 0
     for target_chat_id in delivery_targets:
         try:
