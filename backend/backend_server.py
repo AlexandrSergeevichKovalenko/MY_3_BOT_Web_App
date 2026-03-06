@@ -1600,16 +1600,20 @@ def _resolve_dictionary_save_pair(
     response_json: dict | None = None,
 ) -> tuple[str, str]:
     profile_forward = (profile_source_lang, profile_target_lang)
+    profile_reverse = (profile_target_lang, profile_source_lang)
+    allowed_pairs = {profile_forward}
+    if profile_reverse[0] and profile_reverse[1] and profile_reverse[0] != profile_reverse[1]:
+        allowed_pairs.add(profile_reverse)
 
     payload_src = _normalize_short_lang_code(payload_source_lang, fallback="")
     payload_tgt = _normalize_short_lang_code(payload_target_lang, fallback="")
     if payload_src and payload_tgt and payload_src != payload_tgt:
         candidate = (payload_src, payload_tgt)
-        if candidate == profile_forward:
+        if candidate in allowed_pairs:
             return candidate
 
     dir_pair = _parse_direction_pair(payload_direction)
-    if dir_pair and dir_pair == profile_forward:
+    if dir_pair and dir_pair in allowed_pairs:
         return dir_pair
 
     if isinstance(response_json, dict):
@@ -1617,13 +1621,61 @@ def _resolve_dictionary_save_pair(
         rj_tgt = _normalize_short_lang_code(response_json.get("target_lang"), fallback="")
         if rj_src and rj_tgt and rj_src != rj_tgt:
             candidate = (rj_src, rj_tgt)
-            if candidate == profile_forward:
+            if candidate in allowed_pairs:
                 return candidate
         rj_dir_pair = _parse_direction_pair(response_json.get("direction"))
-        if rj_dir_pair and rj_dir_pair == profile_forward:
+        if rj_dir_pair and rj_dir_pair in allowed_pairs:
             return rj_dir_pair
 
     return profile_forward
+
+
+def _align_dictionary_legacy_ru_de_columns(
+    *,
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+    target_text: str,
+    word_ru: str,
+    word_de: str,
+    translation_de: str,
+    translation_ru: str,
+) -> tuple[str, str, str, str, str, str]:
+    src_text = str(source_text or "").strip()
+    tgt_text = str(target_text or "").strip()
+    ru_word = str(word_ru or "").strip()
+    de_word = str(word_de or "").strip()
+    de_translation = str(translation_de or "").strip()
+    ru_translation = str(translation_ru or "").strip()
+
+    if source_lang == "ru" and target_lang == "de":
+        src = src_text or ru_word or ru_translation
+        tgt = tgt_text or de_word or de_translation
+        if src:
+            ru_word = src
+            ru_translation = src
+            if not src_text:
+                src_text = src
+        if tgt:
+            de_word = tgt
+            de_translation = tgt
+            if not tgt_text:
+                tgt_text = tgt
+    elif source_lang == "de" and target_lang == "ru":
+        src = src_text or de_word or de_translation
+        tgt = tgt_text or ru_word or ru_translation
+        if src:
+            de_word = src
+            de_translation = src
+            if not src_text:
+                src_text = src
+        if tgt:
+            ru_word = tgt
+            ru_translation = tgt
+            if not tgt_text:
+                tgt_text = tgt
+
+    return src_text, tgt_text, ru_word, de_word, de_translation, ru_translation
 
 
 def _is_legacy_ru_de_pair(source_lang: str, target_lang: str) -> bool:
@@ -14293,6 +14345,17 @@ def save_webapp_dictionary_entry():
         if target_text and target_lang == "ru" and not translation_ru:
             translation_ru = target_text
 
+    source_text, target_text, word_ru, word_de, translation_de, translation_ru = _align_dictionary_legacy_ru_de_columns(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text=source_text,
+        target_text=target_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_de=translation_de,
+        translation_ru=translation_ru,
+    )
+
     if folder_id is None:
         try:
             default_folder = get_or_create_dictionary_folder(
@@ -14315,19 +14378,29 @@ def save_webapp_dictionary_entry():
     try:
         resolved_word_ru = word_ru or response_json.get("word_ru")
         resolved_word_de = word_de or response_json.get("word_de")
+        resolved_translation_de = translation_de or response_json.get("translation_de")
+        resolved_translation_ru = translation_ru or response_json.get("translation_ru")
         if isinstance(response_json, dict):
             response_json = dict(response_json)
-            response_json.setdefault("source_text", source_text or word_ru or word_de or "")
-            response_json.setdefault("target_text", target_text or translation_de or translation_ru or word_de or "")
+            response_json["source_text"] = source_text or resolved_word_ru or resolved_word_de or ""
+            response_json["target_text"] = target_text or resolved_translation_de or resolved_translation_ru or resolved_word_de or ""
             response_json["source_lang"] = source_lang
             response_json["target_lang"] = target_lang
             response_json["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
+            if resolved_word_ru:
+                response_json["word_ru"] = resolved_word_ru
+            if resolved_word_de:
+                response_json["word_de"] = resolved_word_de
+            if resolved_translation_de:
+                response_json["translation_de"] = resolved_translation_de
+            if resolved_translation_ru:
+                response_json["translation_ru"] = resolved_translation_ru
         save_webapp_dictionary_query(
             user_id=user_id,
             word_ru=resolved_word_ru if resolved_word_ru else None,
-            translation_de=translation_de or response_json.get("translation_de"),
+            translation_de=resolved_translation_de,
             word_de=resolved_word_de if resolved_word_de else None,
-            translation_ru=translation_ru or response_json.get("translation_ru"),
+            translation_ru=resolved_translation_ru,
             response_json=response_json,
             folder_id=int(folder_id) if folder_id is not None else None,
             source_lang=source_lang,
@@ -14406,6 +14479,17 @@ def save_mobile_dictionary_entry():
         if target_text and target_lang == "ru" and not translation_ru:
             translation_ru = target_text
 
+    source_text, target_text, word_ru, word_de, translation_de, translation_ru = _align_dictionary_legacy_ru_de_columns(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text=source_text,
+        target_text=target_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_de=translation_de,
+        translation_ru=translation_ru,
+    )
+
     if folder_id is None:
         try:
             default_folder = get_or_create_dictionary_folder(
@@ -14432,11 +14516,19 @@ def save_mobile_dictionary_entry():
         resolved_translation_ru = translation_ru or (response_json.get("translation_ru") if isinstance(response_json, dict) else None)
         if isinstance(response_json, dict):
             response_json = dict(response_json)
-            response_json.setdefault("source_text", source_text or word_ru or word_de or "")
-            response_json.setdefault("target_text", target_text or translation_de or translation_ru or word_de or "")
+            response_json["source_text"] = source_text or resolved_word_ru or resolved_word_de or ""
+            response_json["target_text"] = target_text or resolved_translation_de or resolved_translation_ru or resolved_word_de or ""
             response_json["source_lang"] = source_lang
             response_json["target_lang"] = target_lang
             response_json["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
+            if resolved_word_ru:
+                response_json["word_ru"] = resolved_word_ru
+            if resolved_word_de:
+                response_json["word_de"] = resolved_word_de
+            if resolved_translation_de:
+                response_json["translation_de"] = resolved_translation_de
+            if resolved_translation_ru:
+                response_json["translation_ru"] = resolved_translation_ru
 
         save_webapp_dictionary_query(
             user_id=user_id,
