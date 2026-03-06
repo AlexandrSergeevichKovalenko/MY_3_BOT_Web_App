@@ -13221,6 +13221,21 @@ body {
   background: #1f2937;
 }
 
+.language-profile-starter-btn {
+  min-height: 48px;
+  border-radius: 16px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.starter-dictionary-card {
+  gap: 16px;
+}
+
+.starter-dictionary-actions {
+  grid-template-columns: 1fr;
+}
+
 .webapp-dictionary {
   --dict-bg-card: #1e293b;
   --dict-bg-card-alt: #0b1220;
@@ -14394,6 +14409,44 @@ body {
   box-shadow: 0 14px 32px rgba(105, 78, 47, 0.13);
 }
 
+.webapp-page.is-theme-light .language-profile-gate {
+  background: rgba(95, 76, 53, 0.24);
+  backdrop-filter: blur(2px);
+}
+
+.webapp-page.is-theme-light .language-profile-card h3 {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .language-profile-card .webapp-muted {
+  color: rgba(46, 37, 27, 0.78);
+}
+
+.webapp-page.is-theme-light .language-profile-fields {
+  background: rgba(253, 247, 236, 0.92);
+  border-color: rgba(171, 139, 98, 0.32);
+}
+
+.webapp-page.is-theme-light .language-profile-card .webapp-field > span {
+  color: rgba(46, 37, 27, 0.82);
+}
+
+.webapp-page.is-theme-light .language-profile-card .webapp-field select {
+  border-color: rgba(130, 101, 67, 0.3);
+  background: #fff9f0;
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .language-profile-close-btn {
+  border-color: rgba(171, 126, 72, 0.4);
+  background: rgba(246, 236, 220, 0.9);
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .language-profile-close-btn:hover {
+  background: rgba(234, 215, 187, 0.92);
+}
+
 .webapp-page.is-theme-light .guide-step-card.is-highlight {
   border-color: rgba(191, 137, 71, 0.62);
   background: rgba(217, 174, 116, 0.2);
@@ -14465,6 +14518,53 @@ body {
   background: linear-gradient(135deg, #e6be8b, #d8a76a);
   color: #1f1a14;
   box-shadow: 0 10px 20px rgba(166, 121, 67, 0.22);
+}
+
+.webapp-page.is-theme-light .support-section .support-chat-shell {
+  background: rgba(255, 248, 238, 0.78);
+  border-color: rgba(171, 139, 98, 0.3);
+}
+
+.webapp-page.is-theme-light .support-bubble {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .support-bubble.is-user {
+  background: rgba(198, 222, 230, 0.58);
+  border-color: rgba(137, 166, 176, 0.52);
+}
+
+.webapp-page.is-theme-light .support-bubble.is-admin {
+  background: rgba(238, 225, 194, 0.62);
+  border-color: rgba(193, 160, 111, 0.48);
+}
+
+.webapp-page.is-theme-light .support-bubble.is-failed {
+  background: rgba(228, 153, 141, 0.22);
+  border-color: rgba(180, 74, 53, 0.42);
+}
+
+.webapp-page.is-theme-light .support-bubble-meta {
+  color: rgba(79, 63, 44, 0.82);
+}
+
+.webapp-page.is-theme-light .support-retry-button {
+  color: #8e5c2f;
+}
+
+.webapp-page.is-theme-light .support-composer {
+  background: linear-gradient(180deg, rgba(253, 247, 236, 0) 0%, rgba(253, 247, 236, 0.96) 36%);
+}
+
+.webapp-page.is-theme-light .support-composer textarea {
+  border-color: rgba(130, 101, 67, 0.3);
+  background: #fff9f0;
+  color: #1f1a14;
+  caret-color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .support-composer textarea::placeholder {
+  color: rgba(88, 72, 54, 0.64);
 }
 
 .webapp-page.is-theme-light .overlay-backdrop {

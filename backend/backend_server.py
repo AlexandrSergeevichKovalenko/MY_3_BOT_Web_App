@@ -264,6 +264,10 @@ from backend.database import (
     get_audio_grammar_settings,
     upsert_audio_grammar_settings,
     update_translation_audio_grammar_opt_in,
+    get_starter_dictionary_state,
+    upsert_starter_dictionary_state,
+    count_dictionary_entries_for_language_pair,
+    import_starter_dictionary_snapshot,
     has_youtube_proxy_subtitles_access,
     upsert_youtube_proxy_subtitles_access,
     list_youtube_proxy_subtitles_access,
@@ -443,6 +447,18 @@ TTS_PREWARM_LOOKBACK_HOURS = max(1, min(24 * 90, int((os.getenv("TTS_PREWARM_LOO
 TTS_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_START_HOUR") or "1").strip())))
 TTS_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
 TTS_PREWARM_ALLOW_DAYTIME = str(os.getenv("TTS_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
+STARTER_DICTIONARY_ENABLED = str(os.getenv("STARTER_DICTIONARY_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+try:
+    STARTER_DICTIONARY_SOURCE_USER_ID = int((os.getenv("STARTER_DICTIONARY_SOURCE_USER_ID") or "117649764").strip() or "117649764")
+except Exception:
+    STARTER_DICTIONARY_SOURCE_USER_ID = 117649764
+try:
+    STARTER_DICTIONARY_IMPORT_LIMIT = int((os.getenv("STARTER_DICTIONARY_IMPORT_LIMIT") or "1000").strip() or "1000")
+except Exception:
+    STARTER_DICTIONARY_IMPORT_LIMIT = 1000
+STARTER_DICTIONARY_IMPORT_LIMIT = max(1, min(5000, STARTER_DICTIONARY_IMPORT_LIMIT))
+STARTER_DICTIONARY_TEMPLATE_VERSION = str(os.getenv("STARTER_DICTIONARY_TEMPLATE_VERSION") or "v1").strip() or "v1"
+STARTER_DICTIONARY_FOLDER_NAME = str(os.getenv("STARTER_DICTIONARY_FOLDER_NAME") or "Базовый словарь").strip() or "Базовый словарь"
 _TTS_PREWARM_LOCK = threading.Lock()
 _TTS_GENERATION_JOBS_LOCK = threading.Lock()
 _TTS_GENERATION_JOBS: set[str] = set()
@@ -830,6 +846,168 @@ def user_language_profile():
     return jsonify({"ok": True, "profile": profile, "reset_sessions": reset_sessions})
 
 
+@app.route("/api/webapp/starter-dictionary/status", methods=["POST"])
+def webapp_starter_dictionary_status():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    try:
+        source_lang, target_lang, profile = _get_user_language_pair(int(user_id))
+        offer = _build_starter_dictionary_offer(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            profile=profile,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка статуса базового словаря: {exc}"}), 500
+    return jsonify({"ok": True, "offer": offer})
+
+
+@app.route("/api/webapp/starter-dictionary/apply", methods=["POST"])
+def webapp_starter_dictionary_apply():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    raw_action = str(
+        payload.get("action")
+        or payload.get("decision")
+        or ""
+    ).strip().lower()
+    if raw_action in {"yes", "accept", "accepted", "connect", "reconnect"}:
+        action = "accepted"
+    elif raw_action in {"no", "decline", "declined", "skip"}:
+        action = "declined"
+    else:
+        return jsonify({"error": "action должен быть accept/decline"}), 400
+
+    force_reimport = bool(payload.get("force_reimport"))
+    source_lang, target_lang, profile = _get_user_language_pair(int(user_id))
+    current_state = get_starter_dictionary_state(int(user_id))
+    previous_imported_count = max(0, int(current_state.get("last_imported_count") or 0))
+    previous_imported_at = None
+    previous_imported_at_raw = str(current_state.get("last_imported_at") or "").strip()
+    if previous_imported_count > 0 and previous_imported_at_raw:
+        try:
+            previous_imported_at = datetime.fromisoformat(previous_imported_at_raw.replace("Z", "+00:00"))
+        except Exception:
+            previous_imported_at = None
+    decided_at = datetime.now(timezone.utc)
+
+    if not STARTER_DICTIONARY_ENABLED:
+        return jsonify({"error": "Базовый словарь временно отключён"}), 400
+    if STARTER_DICTIONARY_SOURCE_USER_ID <= 0:
+        return jsonify({"error": "Не задан source_user_id базового словаря"}), 500
+
+    template_total = count_dictionary_entries_for_language_pair(
+        int(STARTER_DICTIONARY_SOURCE_USER_ID),
+        source_lang,
+        target_lang,
+    )
+
+    if action == "declined":
+        try:
+            state = upsert_starter_dictionary_state(
+                user_id=int(user_id),
+                decision_status="declined",
+                source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+                template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                last_imported_count=previous_imported_count,
+                decided_at=decided_at,
+                last_imported_at=previous_imported_at,
+            )
+            offer = _build_starter_dictionary_offer(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                profile=profile,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка сохранения решения: {exc}"}), 500
+        return jsonify(
+            {
+                "ok": True,
+                "action": "declined",
+                "state": state,
+                "offer": offer,
+                "template_total": int(template_total),
+            }
+        )
+
+    if template_total <= 0:
+        return jsonify({"error": "Для текущей языковой пары базовый словарь пока пуст"}), 400
+
+    already_accepted = str(current_state.get("decision_status") or "").strip().lower() == "accepted"
+    if already_accepted and not force_reimport:
+        offer = _build_starter_dictionary_offer(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            profile=profile,
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "action": "accepted",
+                "already_connected": True,
+                "offer": offer,
+                "import_result": {
+                    "inserted_count": 0,
+                    "template_total": int(template_total),
+                },
+            }
+        )
+
+    try:
+        import_result = import_starter_dictionary_snapshot(
+            source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+            target_user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            import_limit=int(STARTER_DICTIONARY_IMPORT_LIMIT),
+            folder_name=STARTER_DICTIONARY_FOLDER_NAME,
+            template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
+        )
+        imported_count = max(0, int(import_result.get("inserted_count") or 0))
+        imported_at = datetime.now(timezone.utc)
+        state = upsert_starter_dictionary_state(
+            user_id=int(user_id),
+            decision_status="accepted",
+            source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+            template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            last_imported_count=imported_count,
+            decided_at=decided_at,
+            last_imported_at=imported_at,
+        )
+        offer = _build_starter_dictionary_offer(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            profile=profile,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка импорта базового словаря: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "action": "accepted",
+            "state": state,
+            "offer": offer,
+            "import_result": import_result,
+            "template_total": int(template_total),
+        }
+    )
+
+
 def _build_telegram_data_check_string(init_data: str) -> str:
     pairs = parse_qsl(init_data, keep_blank_values=True)
     data = {key: value for key, value in pairs if key != "hash"}
@@ -1056,6 +1234,70 @@ def _get_user_language_pair(user_id: int) -> tuple[str, str, dict]:
 def _invalidate_user_language_pair_cache(user_id: int) -> None:
     with _LANGUAGE_PAIR_CACHE_LOCK:
         _LANGUAGE_PAIR_CACHE.pop(int(user_id), None)
+
+
+def _build_starter_dictionary_offer(
+    *,
+    user_id: int,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    profile: dict | None = None,
+) -> dict:
+    safe_user_id = int(user_id)
+    profile_payload = dict(profile or {}) if isinstance(profile, dict) else get_user_language_profile(safe_user_id)
+    has_profile = bool(profile_payload.get("has_profile"))
+    pair_source = str(
+        source_lang
+        or profile_payload.get("native_language")
+        or "ru"
+    ).strip().lower() or "ru"
+    pair_target = str(
+        target_lang
+        or profile_payload.get("learning_language")
+        or "de"
+    ).strip().lower() or "de"
+
+    state = get_starter_dictionary_state(safe_user_id)
+    user_pair_total = count_dictionary_entries_for_language_pair(
+        safe_user_id,
+        pair_source,
+        pair_target,
+    )
+
+    template_total = 0
+    if STARTER_DICTIONARY_ENABLED and STARTER_DICTIONARY_SOURCE_USER_ID > 0:
+        template_total = count_dictionary_entries_for_language_pair(
+            int(STARTER_DICTIONARY_SOURCE_USER_ID),
+            pair_source,
+            pair_target,
+        )
+
+    decision_status = str(state.get("decision_status") or "pending").strip().lower() or "pending"
+    suggested_count = min(max(0, int(template_total)), int(STARTER_DICTIONARY_IMPORT_LIMIT))
+    should_prompt = bool(
+        STARTER_DICTIONARY_ENABLED
+        and has_profile
+        and template_total > 0
+        and user_pair_total <= 0
+        and decision_status == "pending"
+    )
+
+    return {
+        "enabled": bool(STARTER_DICTIONARY_ENABLED),
+        "source_user_id": int(STARTER_DICTIONARY_SOURCE_USER_ID),
+        "template_version": STARTER_DICTIONARY_TEMPLATE_VERSION,
+        "import_limit": int(STARTER_DICTIONARY_IMPORT_LIMIT),
+        "folder_name": STARTER_DICTIONARY_FOLDER_NAME,
+        "source_lang": pair_source,
+        "target_lang": pair_target,
+        "state": state,
+        "has_profile": has_profile,
+        "user_pair_total": int(user_pair_total),
+        "template_total": int(template_total),
+        "suggested_count": int(suggested_count),
+        "should_prompt": should_prompt,
+        "can_reconnect": bool(STARTER_DICTIONARY_ENABLED and template_total > 0 and has_profile),
+    }
 
 
 def _normalize_dictionary_lookup_word(word: str) -> str:
@@ -9796,7 +10038,22 @@ def bootstrap_webapp_session():
 
     session_id = str(uuid4())
     parsed = _parse_telegram_init_data(init_data)
-    return jsonify({"ok": True, "session_id": session_id, **parsed})
+    starter_dictionary = None
+    try:
+        parsed_user = parsed.get("user") if isinstance(parsed.get("user"), dict) else {}
+        parsed_user_id = _safe_int(parsed_user.get("id"))
+        if parsed_user_id is not None and parsed_user_id > 0:
+            starter_dictionary = _build_starter_dictionary_offer(user_id=int(parsed_user_id))
+    except Exception as exc:
+        logging.warning("Starter dictionary bootstrap payload failed: %s", exc)
+    return jsonify(
+        {
+            "ok": True,
+            "session_id": session_id,
+            **parsed,
+            "starter_dictionary": starter_dictionary,
+        }
+    )
 
 
 def _load_user_translation_sentence_map(

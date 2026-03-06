@@ -404,6 +404,11 @@ function AppInner() {
   const [languageProfileSaving, setLanguageProfileSaving] = useState(false);
   const [languageProfileError, setLanguageProfileError] = useState('');
   const [languageProfileModalOpen, setLanguageProfileModalOpen] = useState(false);
+  const [starterDictionaryOffer, setStarterDictionaryOffer] = useState(null);
+  const [starterDictionaryPromptOpen, setStarterDictionaryPromptOpen] = useState(false);
+  const [starterDictionaryActionLoading, setStarterDictionaryActionLoading] = useState(false);
+  const [starterDictionaryActionError, setStarterDictionaryActionError] = useState('');
+  const [starterDictionaryActionMessage, setStarterDictionaryActionMessage] = useState('');
   const [supportMessages, setSupportMessages] = useState([]);
   const [supportFailedMessages, setSupportFailedMessages] = useState([]);
   const [supportUnreadCount, setSupportUnreadCount] = useState(0);
@@ -3385,6 +3390,102 @@ function AppInner() {
     };
   }, [srsRevealAnswer, srsCard, dictionaryDirection, languageProfile?.learning_language, languageProfile?.native_language]);
 
+  const normalizeStarterDictionaryOffer = useCallback((value) => {
+    const payload = value && typeof value === 'object' ? value : {};
+    const stateRaw = payload.state && typeof payload.state === 'object' ? payload.state : {};
+    const state = {
+      decision_status: String(stateRaw.decision_status || 'pending').trim().toLowerCase() || 'pending',
+      source_user_id: Number(stateRaw.source_user_id || 0) || null,
+      template_version: String(stateRaw.template_version || '').trim() || null,
+      source_lang: String(stateRaw.source_lang || '').trim().toLowerCase() || null,
+      target_lang: String(stateRaw.target_lang || '').trim().toLowerCase() || null,
+      last_imported_count: Math.max(0, Number(stateRaw.last_imported_count || 0) || 0),
+      decided_at: String(stateRaw.decided_at || '').trim() || null,
+      last_imported_at: String(stateRaw.last_imported_at || '').trim() || null,
+      updated_at: String(stateRaw.updated_at || '').trim() || null,
+    };
+    return {
+      enabled: Boolean(payload.enabled),
+      source_user_id: Number(payload.source_user_id || 0) || 0,
+      template_version: String(payload.template_version || '').trim() || '',
+      import_limit: Math.max(1, Number(payload.import_limit || 0) || 1000),
+      folder_name: String(payload.folder_name || '').trim() || 'Базовый словарь',
+      source_lang: String(payload.source_lang || '').trim().toLowerCase() || '',
+      target_lang: String(payload.target_lang || '').trim().toLowerCase() || '',
+      has_profile: Boolean(payload.has_profile),
+      user_pair_total: Math.max(0, Number(payload.user_pair_total || 0) || 0),
+      template_total: Math.max(0, Number(payload.template_total || 0) || 0),
+      suggested_count: Math.max(0, Number(payload.suggested_count || 0) || 0),
+      should_prompt: Boolean(payload.should_prompt),
+      can_reconnect: Boolean(payload.can_reconnect),
+      state,
+    };
+  }, []);
+
+  const loadStarterDictionaryStatus = useCallback(async () => {
+    if (!initData) return;
+    try {
+      const response = await fetch('/api/webapp/starter-dictionary/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки базового словаря', 'Fehler beim Laden des Basiswoerterbuchs'));
+      }
+      const data = await response.json();
+      const offer = normalizeStarterDictionaryOffer(data?.offer);
+      setStarterDictionaryOffer(offer);
+      setStarterDictionaryPromptOpen(Boolean(offer?.should_prompt));
+    } catch (_error) {
+      // Silent: starter dictionary is optional and should not block app bootstrap.
+    }
+  }, [initData, normalizeStarterDictionaryOffer, readApiError]);
+
+  const applyStarterDictionaryDecision = useCallback(async (accept, { forceReimport = false, closePromptOnSuccess = true } = {}) => {
+    if (!initData) {
+      setStarterDictionaryActionError(initDataMissingMsg);
+      return;
+    }
+    try {
+      setStarterDictionaryActionLoading(true);
+      setStarterDictionaryActionError('');
+      setStarterDictionaryActionMessage('');
+      const response = await fetch('/api/webapp/starter-dictionary/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          action: accept ? 'accept' : 'decline',
+          force_reimport: Boolean(forceReimport),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка базового словаря', 'Fehler beim Basiswoerterbuch'));
+      }
+      const data = await response.json();
+      const offer = normalizeStarterDictionaryOffer(data?.offer);
+      setStarterDictionaryOffer(offer);
+      if (accept) {
+        const inserted = Math.max(0, Number(data?.import_result?.inserted_count || 0) || 0);
+        const folderName = String(data?.import_result?.folder?.name || offer?.folder_name || '').trim();
+        const message = inserted > 0
+          ? tr(`Базовый словарь подключён: +${inserted} записей${folderName ? ` (${folderName})` : ''}.`, `Basiswoerterbuch verbunden: +${inserted} Eintraege${folderName ? ` (${folderName})` : ''}.`)
+          : tr('Базовый словарь уже подключён. Новых записей не найдено.', 'Basiswoerterbuch ist bereits verbunden. Keine neuen Eintraege gefunden.');
+        setStarterDictionaryActionMessage(message);
+      } else {
+        setStarterDictionaryActionMessage(tr('Ок, начинаем с пустого словаря.', 'Alles klar, wir starten mit einem leeren Woerterbuch.'));
+      }
+      if (closePromptOnSuccess) {
+        setStarterDictionaryPromptOpen(false);
+      }
+    } catch (error) {
+      setStarterDictionaryActionError(String(error?.message || tr('Не удалось применить действие по базовому словарю.', 'Aktion fuer Basiswoerterbuch fehlgeschlagen.')));
+    } finally {
+      setStarterDictionaryActionLoading(false);
+    }
+  }, [initData, initDataMissingMsg, normalizeStarterDictionaryOffer, readApiError, tr]);
+
   const loadLanguageProfile = async () => {
     if (!initData) return;
     try {
@@ -3474,6 +3575,7 @@ function AppInner() {
             await loadSrsNextCard();
           }
         }
+        await loadStarterDictionaryStatus();
         if (!needsLanguageProfileChoice) {
           setLanguageProfileModalOpen(false);
         }
@@ -3819,6 +3921,7 @@ function AppInner() {
                 'Nach dem Öffnen des Videos drückst du Play und lädst dann die Untertitel.',
                 'Der Fullscreen-Button vergrößert den Videobereich, damit Video, Overlay und Untertitel angenehmer lesbar werden.',
                 'Im Overlay-Modus liegen die Untertitel direkt auf dem Video. Dort kannst du die Originalsprache und – wenn verfügbar – auch deine Muttersprache sehen.',
+                'Beim Tippen auf ein Wort pausiert das Video: Du siehst die Übersetzung, bekommst Zusatzinfos, speicherst das Wort bei Bedarf ins Wörterbuch und setzt mit einem Tap auf den Bildschirm fort.',
               ],
             },
             {
@@ -4225,6 +4328,7 @@ function AppInner() {
               'После открытия видео нажмите Play, затем загрузите субтитры.',
               'Кнопка разворота на весь экран увеличивает рабочую область, чтобы удобнее смотреть видео, overlay и субтитры.',
               'В режиме Overlay субтитры показываются прямо поверх видео: оригинал и, при наличии, перевод на родной язык.',
+              'При нажатии на слово видео ставится на паузу: вы видите перевод, получаете доп. информацию, можете сохранить слово в словарь и продолжить, просто тапнув по любому месту экрана.',
             ],
           },
           {
@@ -6039,6 +6143,9 @@ function AppInner() {
         setWebappUser(data.user);
         const unsafeChatType = telegramApp?.initDataUnsafe?.chat?.type || telegramApp?.initDataUnsafe?.chat_type;
         setWebappChatType(data.chat_type || unsafeChatType || '');
+        const starterOffer = normalizeStarterDictionaryOffer(data?.starter_dictionary);
+        setStarterDictionaryOffer(starterOffer);
+        setStarterDictionaryPromptOpen(Boolean(starterOffer?.should_prompt));
       } catch (error) {
         if (!telegramApp?.initData && String(error?.message || '').includes('initData не прошёл')) {
           safeStorageRemove('browser_init_data');
@@ -6049,12 +6156,37 @@ function AppInner() {
     };
 
     bootstrap();
-  }, [initData, isWebAppMode]);
+  }, [initData, isWebAppMode, normalizeStarterDictionaryOffer]);
+
+  useEffect(() => {
+    if (isWebAppMode && initData) {
+      return;
+    }
+    setStarterDictionaryOffer(null);
+    setStarterDictionaryPromptOpen(false);
+    setStarterDictionaryActionLoading(false);
+    setStarterDictionaryActionError('');
+    setStarterDictionaryActionMessage('');
+  }, [isWebAppMode, initData]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) return;
     loadLanguageProfile();
   }, [isWebAppMode, initData]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || !languageProfile?.has_profile) {
+      return;
+    }
+    void loadStarterDictionaryStatus();
+  }, [
+    isWebAppMode,
+    initData,
+    languageProfile?.has_profile,
+    languageProfile?.native_language,
+    languageProfile?.learning_language,
+    loadStarterDictionaryStatus,
+  ]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -11688,6 +11820,19 @@ function AppInner() {
                   <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
                 </button>
               </div>
+              <div className="language-toggle-wrap">
+                <span className="language-toggle-label">{tr('Тема', 'Thema')}</span>
+                <button
+                  type="button"
+                  className="language-toggle theme-toggle-compact theme-toggle-sidebar"
+                  onClick={toggleThemeMode}
+                  title={themeMode === 'light' ? tr('Светлая тема', 'Helles Thema') : tr('Тёмная тема', 'Dunkles Thema')}
+                  aria-label={tr('Переключить тему', 'Theme wechseln')}
+                >
+                  <span className={`language-chip theme-chip ${themeMode === 'dark' ? 'is-active' : ''}`}>DARK</span>
+                  <span className={`language-chip theme-chip ${themeMode === 'light' ? 'is-active' : ''}`}>LIGHT</span>
+                </button>
+              </div>
               <label className="menu-toggle-row">
                 <input
                   type="checkbox"
@@ -12324,6 +12469,22 @@ function AppInner() {
                     >
                       {languageProfileSaving ? tr('Сохраняем...', 'Speichern...') : tr('Сохранить и продолжить', 'Speichern und fortsetzen')}
                     </button>
+                    {languageProfile?.has_profile && starterDictionaryOffer?.enabled && (
+                      <button
+                        type="button"
+                        className="secondary-button language-profile-starter-btn"
+                        onClick={() => void applyStarterDictionaryDecision(true, { forceReimport: true, closePromptOnSuccess: false })}
+                        disabled={languageProfileSaving || starterDictionaryActionLoading || !starterDictionaryOffer?.can_reconnect}
+                      >
+                        {starterDictionaryActionLoading
+                          ? tr('Подключаем...', 'Wird verbunden...')
+                          : !starterDictionaryOffer?.can_reconnect
+                            ? tr('Базовый словарь пока пуст', 'Basiswoerterbuch ist noch leer')
+                            : starterDictionaryOffer?.state?.decision_status === 'accepted'
+                              ? tr('Переподключить базовый словарь', 'Basiswoerterbuch neu verbinden')
+                              : tr('Подключить базовый словарь', 'Basiswoerterbuch verbinden')}
+                      </button>
+                    )}
                     {!needsLanguageProfileChoice && (
                       <button
                         type="button"
@@ -12334,6 +12495,50 @@ function AppInner() {
                         {tr('Закрыть', 'Schliessen')}
                       </button>
                     )}
+                  </div>
+                  {starterDictionaryActionError && <div className="webapp-error">{starterDictionaryActionError}</div>}
+                  {starterDictionaryActionMessage && <div className="webapp-success">{starterDictionaryActionMessage}</div>}
+                </div>
+              </div>
+            )}
+
+            {starterDictionaryPromptOpen && !languageProfileGateOpen && starterDictionaryOffer?.enabled && (
+              <div className="language-profile-gate starter-dictionary-gate" role="dialog" aria-modal="true">
+                <div className="language-profile-card starter-dictionary-card">
+                  <h3>{tr('Быстрый старт словаря', 'Schnellstart Woerterbuch')}</h3>
+                  <p className="webapp-muted">
+                    {tr(
+                      `Подключить базовый словарь (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} слов/фраз) для быстрого старта?`,
+                      `Basiswoerterbuch (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} Woerter/Phrasen) fuer Schnellstart verbinden?`
+                    )}
+                  </p>
+                  <p className="webapp-muted">
+                    {tr(
+                      'Это одноразовый импорт копии. Ваш словарь будет личным и не связан с оригиналом.',
+                      'Das ist ein einmaliger Import einer Kopie. Dein Woerterbuch bleibt persoenlich und ist nicht mit dem Original verknuepft.'
+                    )}
+                  </p>
+                  {starterDictionaryActionError && <div className="webapp-error">{starterDictionaryActionError}</div>}
+                  {starterDictionaryActionMessage && <div className="webapp-success">{starterDictionaryActionMessage}</div>}
+                  <div className="language-profile-actions starter-dictionary-actions">
+                    <button
+                      type="button"
+                      className="primary-button language-profile-save-btn"
+                      onClick={() => void applyStarterDictionaryDecision(true)}
+                      disabled={starterDictionaryActionLoading}
+                    >
+                      {starterDictionaryActionLoading
+                        ? tr('Подключаем...', 'Wird verbunden...')
+                        : tr('Да, подключить', 'Ja, verbinden')}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button language-profile-close-btn"
+                      onClick={() => void applyStarterDictionaryDecision(false)}
+                      disabled={starterDictionaryActionLoading}
+                    >
+                      {tr('Нет, начать с нуля', 'Nein, leer starten')}
+                    </button>
                   </div>
                 </div>
               </div>

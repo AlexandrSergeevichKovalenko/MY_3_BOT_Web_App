@@ -115,6 +115,54 @@ def _coerce_json_object(value) -> dict:
     return {}
 
 
+def _normalize_dictionary_text_key(value: str | None) -> str:
+    compact = re.sub(r"\s+", " ", str(value or "").strip())
+    return compact.casefold()
+
+
+def _resolve_dictionary_source_target_texts(
+    *,
+    source_lang: str,
+    target_lang: str,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict | None,
+) -> tuple[str, str]:
+    payload = _coerce_json_object(response_json)
+    source_text = str(
+        payload.get("source_text")
+        or word_ru
+        or payload.get("word_ru")
+        or translation_ru
+        or payload.get("translation_ru")
+        or word_de
+        or payload.get("word_de")
+        or ""
+    ).strip()
+    target_text = str(
+        payload.get("target_text")
+        or translation_de
+        or payload.get("translation_de")
+        or word_de
+        or payload.get("word_de")
+        or translation_ru
+        or payload.get("translation_ru")
+        or ""
+    ).strip()
+
+    source_lang_value = _normalize_lang_code(source_lang)
+    target_lang_value = _normalize_lang_code(target_lang)
+
+    if not source_text and source_lang_value == "de":
+        source_text = str(word_de or payload.get("word_de") or "").strip()
+    if not target_text and target_lang_value == "de":
+        target_text = str(translation_de or payload.get("translation_de") or "").strip()
+
+    return source_text, target_text
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(str(os.getenv(name, str(default))).strip() or str(default))
@@ -1078,6 +1126,25 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_origin_created
                 ON bt_3_webapp_dictionary_queries (user_id, origin_process, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_starter_dictionary_state (
+                    user_id BIGINT PRIMARY KEY,
+                    decision_status TEXT NOT NULL DEFAULT 'pending',
+                    source_user_id BIGINT,
+                    template_version TEXT,
+                    source_lang TEXT,
+                    target_lang TEXT,
+                    last_imported_count INT NOT NULL DEFAULT 0,
+                    decided_at TIMESTAMPTZ,
+                    last_imported_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (decision_status IN ('pending', 'accepted', 'declined'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_starter_dictionary_state_updated
+                ON bt_3_starter_dictionary_state (updated_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_schema_migrations (
@@ -3828,6 +3895,436 @@ def get_latest_dictionary_language_pair_for_user(user_id: int, cursor=None) -> t
     with get_db_connection_context() as conn:
         with conn.cursor() as own_cursor:
             return _get(own_cursor)
+
+
+def _map_starter_dictionary_state_row(row, *, user_id: int) -> dict:
+    if not row:
+        return {
+            "user_id": int(user_id),
+            "decision_status": "pending",
+            "source_user_id": None,
+            "template_version": None,
+            "source_lang": None,
+            "target_lang": None,
+            "last_imported_count": 0,
+            "decided_at": None,
+            "last_imported_at": None,
+            "updated_at": None,
+        }
+    return {
+        "user_id": int(user_id),
+        "decision_status": str(row[0] or "pending").strip().lower() or "pending",
+        "source_user_id": int(row[1]) if row[1] is not None else None,
+        "template_version": str(row[2] or "").strip() or None,
+        "source_lang": _normalize_lang_code(row[3]) or None,
+        "target_lang": _normalize_lang_code(row[4]) or None,
+        "last_imported_count": max(0, int(row[5] or 0)),
+        "decided_at": row[6].isoformat() if row[6] else None,
+        "last_imported_at": row[7].isoformat() if row[7] else None,
+        "updated_at": row[8].isoformat() if row[8] else None,
+    }
+
+
+def get_starter_dictionary_state(user_id: int, cursor=None) -> dict:
+    def _get(cur) -> dict:
+        cur.execute(
+            """
+            SELECT
+                decision_status,
+                source_user_id,
+                template_version,
+                source_lang,
+                target_lang,
+                last_imported_count,
+                decided_at,
+                last_imported_at,
+                updated_at
+            FROM bt_3_starter_dictionary_state
+            WHERE user_id = %s
+            LIMIT 1;
+            """,
+            (int(user_id),),
+        )
+        row = cur.fetchone()
+        return _map_starter_dictionary_state_row(row, user_id=int(user_id))
+
+    if cursor is not None:
+        return _get(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _get(own_cursor)
+
+
+def upsert_starter_dictionary_state(
+    *,
+    user_id: int,
+    decision_status: str,
+    source_user_id: int | None = None,
+    template_version: str | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    last_imported_count: int = 0,
+    decided_at: datetime | None = None,
+    last_imported_at: datetime | None = None,
+) -> dict:
+    normalized_decision = str(decision_status or "").strip().lower() or "pending"
+    if normalized_decision not in {"pending", "accepted", "declined"}:
+        raise ValueError("Invalid starter dictionary decision status")
+    normalized_source = _normalize_lang_code(source_lang) or None
+    normalized_target = _normalize_lang_code(target_lang) or None
+    imported_count_value = max(0, int(last_imported_count or 0))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_starter_dictionary_state (
+                    user_id,
+                    decision_status,
+                    source_user_id,
+                    template_version,
+                    source_lang,
+                    target_lang,
+                    last_imported_count,
+                    decided_at,
+                    last_imported_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET
+                    decision_status = EXCLUDED.decision_status,
+                    source_user_id = EXCLUDED.source_user_id,
+                    template_version = EXCLUDED.template_version,
+                    source_lang = EXCLUDED.source_lang,
+                    target_lang = EXCLUDED.target_lang,
+                    last_imported_count = EXCLUDED.last_imported_count,
+                    decided_at = EXCLUDED.decided_at,
+                    last_imported_at = EXCLUDED.last_imported_at,
+                    updated_at = NOW()
+                RETURNING
+                    decision_status,
+                    source_user_id,
+                    template_version,
+                    source_lang,
+                    target_lang,
+                    last_imported_count,
+                    decided_at,
+                    last_imported_at,
+                    updated_at;
+                """,
+                (
+                    int(user_id),
+                    normalized_decision,
+                    int(source_user_id) if source_user_id is not None else None,
+                    str(template_version or "").strip() or None,
+                    normalized_source,
+                    normalized_target,
+                    imported_count_value,
+                    decided_at,
+                    last_imported_at,
+                ),
+            )
+            row = cursor.fetchone()
+    return _map_starter_dictionary_state_row(row, user_id=int(user_id))
+
+
+def count_dictionary_entries_for_language_pair(
+    user_id: int,
+    source_lang: str | None,
+    target_lang: str | None,
+    cursor=None,
+) -> int:
+    def _count(cur) -> int:
+        where_clause = "WHERE user_id = %s"
+        params: list = [int(user_id)]
+        language_filter_sql, language_params = _build_language_pair_filter(source_lang, target_lang)
+        if language_filter_sql:
+            where_clause += language_filter_sql
+            params.extend(language_params)
+        cur.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM bt_3_webapp_dictionary_queries
+            {where_clause};
+            """,
+            params,
+        )
+        row = cur.fetchone()
+        return int((row or [0])[0] or 0)
+
+    if cursor is not None:
+        return _count(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _count(own_cursor)
+
+
+def import_starter_dictionary_snapshot(
+    *,
+    source_user_id: int,
+    target_user_id: int,
+    source_lang: str,
+    target_lang: str,
+    import_limit: int = 1000,
+    folder_name: str = "Базовый словарь",
+    folder_color: str = "#5ddcff",
+    folder_icon: str = "book",
+    template_version: str = "v1",
+) -> dict:
+    source_user = int(source_user_id)
+    target_user = int(target_user_id)
+    pair_source = _normalize_lang_code(source_lang) or DEFAULT_NATIVE_LANGUAGE
+    pair_target = _normalize_lang_code(target_lang) or DEFAULT_LEARNING_LANGUAGE
+    safe_limit = max(1, min(int(import_limit or 1000), 5000))
+    resolved_folder_name = str(folder_name or "Базовый словарь").strip() or "Базовый словарь"
+    resolved_folder_color = str(folder_color or "#5ddcff").strip() or "#5ddcff"
+    resolved_folder_icon = str(folder_icon or "book").strip() or "book"
+    resolved_template_version = str(template_version or "v1").strip() or "v1"
+    advisory_ns = 94231
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s, %s);", (advisory_ns, target_user))
+            cursor.execute(
+                """
+                SELECT id, name, color, icon, created_at
+                FROM bt_3_dictionary_folders
+                WHERE user_id = %s AND name = %s
+                LIMIT 1;
+                """,
+                (target_user, resolved_folder_name),
+            )
+            folder_row = cursor.fetchone()
+            if folder_row:
+                folder_id = int(folder_row[0])
+                folder_payload = {
+                    "id": folder_id,
+                    "name": folder_row[1],
+                    "color": folder_row[2],
+                    "icon": folder_row[3],
+                    "created_at": folder_row[4].isoformat() if folder_row[4] else None,
+                }
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_dictionary_folders (user_id, name, color, icon)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id, name, color, icon, created_at;
+                    """,
+                    (target_user, resolved_folder_name, resolved_folder_color, resolved_folder_icon),
+                )
+                created_row = cursor.fetchone()
+                folder_id = int(created_row[0])
+                folder_payload = {
+                    "id": folder_id,
+                    "name": created_row[1],
+                    "color": created_row[2],
+                    "icon": created_row[3],
+                    "created_at": created_row[4].isoformat() if created_row[4] else None,
+                }
+
+            language_filter_sql, language_params = _build_language_pair_filter(pair_source, pair_target)
+            source_where = "WHERE user_id = %s"
+            source_params: list = [source_user]
+            if language_filter_sql:
+                source_where += language_filter_sql
+                source_params.extend(language_params)
+            source_params.append(safe_limit)
+            cursor.execute(
+                f"""
+                SELECT
+                    id,
+                    word_ru,
+                    translation_de,
+                    word_de,
+                    translation_ru,
+                    source_lang,
+                    target_lang,
+                    response_json
+                FROM bt_3_webapp_dictionary_queries
+                {source_where}
+                ORDER BY created_at ASC, id ASC
+                LIMIT %s;
+                """,
+                source_params,
+            )
+            source_rows = cursor.fetchall() or []
+
+            candidates: list[dict] = []
+            candidate_keys: set[tuple[str, str]] = set()
+            for row in source_rows:
+                row_source_lang = _normalize_lang_code(row[5]) or pair_source
+                row_target_lang = _normalize_lang_code(row[6]) or pair_target
+                response_payload = _coerce_json_object(row[7])
+                source_text, target_text = _resolve_dictionary_source_target_texts(
+                    source_lang=row_source_lang,
+                    target_lang=row_target_lang,
+                    word_ru=row[1],
+                    translation_de=row[2],
+                    word_de=row[3],
+                    translation_ru=row[4],
+                    response_json=response_payload,
+                )
+                if not source_text or not target_text:
+                    continue
+                key = (
+                    _normalize_dictionary_text_key(source_text),
+                    _normalize_dictionary_text_key(target_text),
+                )
+                if key in candidate_keys:
+                    continue
+                candidate_keys.add(key)
+
+                resolved_word_ru = None
+                resolved_translation_de = None
+                resolved_word_de = None
+                resolved_translation_ru = None
+
+                if pair_source == "ru":
+                    resolved_word_ru = source_text
+                if pair_source == "de":
+                    resolved_word_de = source_text
+                if pair_target == "de":
+                    resolved_translation_de = target_text
+                    if not resolved_word_de:
+                        resolved_word_de = target_text
+                if pair_target == "ru":
+                    resolved_translation_ru = target_text
+                    if not resolved_word_ru:
+                        resolved_word_ru = target_text
+                if pair_source == "ru" and not resolved_translation_ru:
+                    resolved_translation_ru = source_text
+                if pair_source == "de" and not resolved_translation_de:
+                    resolved_translation_de = source_text
+
+                merged_response = dict(response_payload)
+                merged_response["source_text"] = source_text
+                merged_response["target_text"] = target_text
+                merged_response["source_lang"] = pair_source
+                merged_response["target_lang"] = pair_target
+                pair_payload = merged_response.get("language_pair")
+                if not isinstance(pair_payload, dict):
+                    pair_payload = {}
+                pair_payload["source_lang"] = pair_source
+                pair_payload["target_lang"] = pair_target
+                merged_response["language_pair"] = pair_payload
+
+                candidates.append(
+                    {
+                        "source_entry_id": int(row[0]),
+                        "key": key,
+                        "word_ru": resolved_word_ru,
+                        "translation_de": resolved_translation_de,
+                        "word_de": resolved_word_de,
+                        "translation_ru": resolved_translation_ru,
+                        "response_json": merged_response,
+                    }
+                )
+
+            target_where = "WHERE user_id = %s"
+            target_params: list = [target_user]
+            if language_filter_sql:
+                target_where += language_filter_sql
+                target_params.extend(language_params)
+            cursor.execute(
+                f"""
+                SELECT
+                    word_ru,
+                    translation_de,
+                    word_de,
+                    translation_ru,
+                    source_lang,
+                    target_lang,
+                    response_json
+                FROM bt_3_webapp_dictionary_queries
+                {target_where};
+                """,
+                target_params,
+            )
+            target_rows = cursor.fetchall() or []
+            existing_keys: set[tuple[str, str]] = set()
+            for row in target_rows:
+                existing_source, existing_target = _resolve_dictionary_source_target_texts(
+                    source_lang=_normalize_lang_code(row[4]) or pair_source,
+                    target_lang=_normalize_lang_code(row[5]) or pair_target,
+                    word_ru=row[0],
+                    translation_de=row[1],
+                    word_de=row[2],
+                    translation_ru=row[3],
+                    response_json=_coerce_json_object(row[6]),
+                )
+                if not existing_source or not existing_target:
+                    continue
+                existing_keys.add(
+                    (
+                        _normalize_dictionary_text_key(existing_source),
+                        _normalize_dictionary_text_key(existing_target),
+                    )
+                )
+
+            inserted_count = 0
+            skipped_existing_count = 0
+            import_started_at = datetime.now(timezone.utc)
+            for item in candidates:
+                if item["key"] in existing_keys:
+                    skipped_existing_count += 1
+                    continue
+                origin_meta = {
+                    "import_kind": "starter_dictionary_snapshot",
+                    "import_source_user_id": source_user,
+                    "source_entry_id": item["source_entry_id"],
+                    "template_version": resolved_template_version,
+                    "source_lang": pair_source,
+                    "target_lang": pair_target,
+                }
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_webapp_dictionary_queries (
+                        user_id,
+                        word_ru,
+                        folder_id,
+                        translation_de,
+                        word_de,
+                        translation_ru,
+                        source_lang,
+                        target_lang,
+                        origin_process,
+                        origin_meta,
+                        response_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    """,
+                    (
+                        target_user,
+                        item["word_ru"],
+                        folder_id,
+                        item["translation_de"],
+                        item["word_de"],
+                        item["translation_ru"],
+                        pair_source,
+                        pair_target,
+                        "import",
+                        Json(origin_meta),
+                        Json(item["response_json"]),
+                    ),
+                )
+                existing_keys.add(item["key"])
+                inserted_count += 1
+
+    return {
+        "source_user_id": source_user,
+        "target_user_id": target_user,
+        "source_lang": pair_source,
+        "target_lang": pair_target,
+        "import_limit": safe_limit,
+        "selected_count": len(source_rows),
+        "candidates_count": len(candidates),
+        "inserted_count": inserted_count,
+        "skipped_existing_count": skipped_existing_count,
+        "folder": folder_payload,
+        "template_version": resolved_template_version,
+        "imported_at": import_started_at.isoformat(),
+    }
 
 
 def get_dictionary_entries_for_tts_prewarm(
