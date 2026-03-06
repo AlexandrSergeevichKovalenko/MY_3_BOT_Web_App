@@ -17060,7 +17060,8 @@ def start_webapp_translation():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     topic = (payload.get("topic") or "Random sentences").strip()
-    level = (payload.get("level") or "c1").strip()
+    level = str(payload.get("level") or "c1").strip().lower() or "c1"
+    force_new_session = bool(payload.get("force_new_session"))
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -17087,6 +17088,7 @@ def start_webapp_translation():
                 level=level,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                force_new_session=force_new_session,
             )
         )
     except Exception as exc:

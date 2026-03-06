@@ -3525,7 +3525,7 @@ function AppInner() {
   const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
   const onboardingSlides = useMemo(() => ([
     {
-      eyebrow: tr('Шаг 1 из 5', 'Schritt 1 von 5'),
+      eyebrow: tr('Шаг 1 из 6', 'Schritt 1 von 6'),
       title: tr('Начните с переводов', 'Starte mit Uebersetzungen'),
       body: tr(
         'Выберите тему и уровень, переведите предложения и сразу читайте разбор ошибок. Это главный вход в грамматику и структуру языка.',
@@ -3538,7 +3538,7 @@ function AppInner() {
       ],
     },
     {
-      eyebrow: tr('Шаг 2 из 5', 'Schritt 2 von 5'),
+      eyebrow: tr('Шаг 2 из 6', 'Schritt 2 von 6'),
       title: tr('Сохраняйте слова и повторяйте их', 'Speichere Woerter und wiederhole sie'),
       body: tr(
         'Полезные слова и выражения отправляйте в словарь, а затем закрепляйте их через карточки и FSRS-повторение.',
@@ -3551,7 +3551,7 @@ function AppInner() {
       ],
     },
     {
-      eyebrow: tr('Шаг 3 из 5', 'Schritt 3 von 5'),
+      eyebrow: tr('Шаг 3 из 6', 'Schritt 3 von 6'),
       title: tr('Переходите к живому немецкому', 'Wechsle zu echtem Deutsch'),
       body: tr(
         'YouTube и Reader нужны, чтобы видеть язык в реальном контексте: видео, субтитры, тексты, аудио и чтение.',
@@ -3564,7 +3564,7 @@ function AppInner() {
       ],
     },
     {
-      eyebrow: tr('Шаг 4 из 5', 'Schritt 4 von 5'),
+      eyebrow: tr('Шаг 4 из 6', 'Schritt 4 von 6'),
       title: tr('Прокачивайте слабые места точечно', 'Trainiere gezielt deine Schwachstellen'),
       body: tr(
         'Голосовой ассистент, теория и тренировка навыка помогают закрепить именно те темы, где у вас больше всего ошибок.',
@@ -3577,7 +3577,7 @@ function AppInner() {
       ],
     },
     {
-      eyebrow: tr('Шаг 5 из 5', 'Schritt 5 von 5'),
+      eyebrow: tr('Шаг 5 из 6', 'Schritt 5 von 6'),
       title: tr('Подписка и управление тарифом', 'Abo und Tarifverwaltung'),
       body: tr(
         'В разделе «Подписка» видны текущий тариф, лимиты и все доступные планы. Там же открывается Stripe Portal для управления оплатой.',
@@ -3587,6 +3587,19 @@ function AppInner() {
         tr('Free — базовый бесплатный режим с лимитами, Pro — полный режим без дневного лимита; в Pro также можно отправить персональный запрос на доработку под себя.', 'Free ist der kostenlose Modus mit Limits, Pro ist der volle Modus ohne Tageslimit; in Pro kannst du zusaetzlich einen persoenlichen Anpassungswunsch einreichen.'),
         tr('«Кофе» и «Кофе + чизкейк» сейчас работают как альтернативные платные планы (не параллельные add-on).', '„Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Plaene (keine parallelen Add-ons).'),
         tr('Кнопка «Управлять подпиской» открывает Stripe Portal: там смена карты, отмена/возобновление и счета; затем возвращайтесь в Mini App.', '„Abo verwalten“ oeffnet das Stripe-Portal: Karte wechseln, kuendigen/reaktivieren und Rechnungen; danach zur Mini App zurueckkehren.'),
+      ],
+    },
+    {
+      eyebrow: tr('Шаг 6 из 6', 'Schritt 6 von 6'),
+      title: tr('Поддержка и связь с разработчиком', 'Support und direkter Kontakt'),
+      body: tr(
+        'Если что-то непонятно или возникают технические сложности, пишите в раздел «Поддержка» в меню. Разработчик отвечает максимально быстро.',
+        'Wenn etwas unklar ist oder technische Probleme auftreten, schreibe im Menue in den Bereich „Support“. Der Entwickler antwortet so schnell wie moeglich.'
+      ),
+      bullets: [
+        tr('В «Поддержке» можно описать баг, вопрос по функционалу или идею улучшения.', 'Im Bereich „Support“ kannst du Bugs, Funktionsfragen oder Verbesserungsideen schicken.'),
+        tr('Чем точнее описание (скриншот, шаги, где именно), тем быстрее решение.', 'Je genauer die Beschreibung (Screenshot, Schritte, konkreter Bereich), desto schneller die Loesung.'),
+        tr('Поддержка доступна прямо внутри Mini App, без перехода во внешние сервисы.', 'Support ist direkt in der Mini App verfuegbar, ohne externe Dienste.'),
       ],
     },
   ]), [tr]);
@@ -3971,6 +3984,31 @@ function AppInner() {
             },
           ],
         },
+        {
+          key: 'support_help',
+          number: '9',
+          title: 'Support und Hilfe vom Entwickler',
+          summary: 'Wenn etwas technisch unklar ist: nutze den Support-Bereich direkt im Menue.',
+          sections: [
+            {
+              title: 'Wann du Support nutzen solltest',
+              items: [
+                'Wenn ein Block unklar beschrieben ist oder sich anders verhaelt als erwartet.',
+                'Wenn bei dir ein technisches Problem auftritt (Button reagiert nicht, Anzeige ist falsch, Funktion startet nicht).',
+                'Wenn du zu einem konkreten Workflow eine zusaetzliche Erklaerung brauchst.',
+              ],
+            },
+            {
+              title: 'So bekommst du schneller eine praezise Antwort',
+              items: [
+                'Gehe im Menue in den Bereich „Support“ und sende dort deine Nachricht direkt an den Entwickler.',
+                'Beschreibe kurz: welches Geraet, welcher Bereich, was genau du geklickt hast und was stattdessen passiert ist.',
+                'Falls moeglich, haenge Screenshot/Video an: damit kann die Ursache deutlich schneller lokalisiert werden.',
+                'Der Entwickler antwortet so schnell wie moeglich und gibt dir entweder sofort eine Loesung oder den naechsten klaren Schritt.',
+              ],
+            },
+          ],
+        },
       ];
     }
 
@@ -4348,6 +4386,31 @@ function AppInner() {
               'Каждому участнику группы нужно хотя бы один раз открыть бота в личке, иначе часть функций у некоторых пользователей может работать неполно.',
               'После оплаты, возврата из Stripe Portal или смены тарифа дайте системе 1–3 секунды и обновите статус.',
               'Если функция визуально не срабатывает, сначала проверьте сеть, initData и контекст запуска (личка или группа).',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'support_help',
+        number: '9',
+        title: 'Поддержка и помощь разработчика',
+        summary: 'Если что-то непонятно технически, пишите в раздел «Поддержка» прямо в меню.',
+        sections: [
+          {
+            title: 'Когда стоит обращаться в поддержку',
+            items: [
+              'Если в описании блока или функции остались вопросы и нужна дополнительная расшифровка «как это работает».',
+              'Если заметили техническую проблему: кнопка не срабатывает, отображение ломается или процесс зависает.',
+              'Если хотите уточнить логику конкретного сценария под свой кейс обучения.',
+            ],
+          },
+          {
+            title: 'Как быстрее получить точный ответ',
+            items: [
+              'Откройте в меню раздел «Поддержка» и отправьте сообщение прямо разработчику.',
+              'Кратко укажите: устройство, раздел, что именно нажали и какой результат получили.',
+              'По возможности добавьте скриншот/видео: так причина находится и исправляется заметно быстрее.',
+              'Разработчик отвечает максимально быстро и даёт либо решение сразу, либо чёткий следующий шаг.',
             ],
           },
         ],
@@ -7117,6 +7180,7 @@ function AppInner() {
           initData,
           topic: selectedTopic,
           level: selectedLevel,
+          force_new_session: true,
         }),
       });
       if (!response.ok) {
@@ -13336,6 +13400,7 @@ function AppInner() {
                         onChange={(event) => setSelectedLevel(event.target.value)}
                         disabled={webappLoading}
                       >
+                        <option value="a1">A1</option>
                         <option value="a2">A2</option>
                         <option value="b1">B1</option>
                         <option value="b2">B2</option>
@@ -16451,7 +16516,7 @@ function AppInner() {
                             <h4>{tr('Варианты тарифов', 'Tarifvarianten')}</h4>
                             <ul>
                               <li>{tr('Free: базовый бесплатный режим с ограничениями.', 'Free: kostenloser Basis-Modus mit Limits.')}</li>
-                              <li>{tr('Pro: основной платный режим без дневного лимита; также можно отправить персональный запрос на доработку под себя (изменение поведения существующего блока или идея нового блока).', 'Pro: der Haupt-Premium-Modus ohne Tageslimit; zusaetzlich kannst du einen persoenlichen Anpassungswunsch einreichen (Verhalten eines bestehenden Blocks aendern oder Idee fuer einen neuen Block).')}</li>
+                              <li className="billing-info-accordion__item-highlight-pro">{tr('Pro: основной платный режим без дневного лимита. Плюс можно отправить персональный запрос на индивидуальную доработку: например новый вид Telegram-квизов, новый формат тренировки слов, персональные темы/направления для разговоров с учителем, дополнительную тему в переводах с отдельной логикой. Если это технически реализуемо и безопасно в текущей архитектуре — доработка делается индивидуально под пользователя.', 'Pro: der Haupt-Premium-Modus ohne Tageslimit. Zusaetzlich kannst du einen persoenlichen Entwicklungswunsch senden: z. B. neue Telegram-Quizformate, neue Worttraining-Formate, individuelle Themen/Richtungen fuer Gespraeche mit dem Lehrer oder ein zusaetzliches Uebersetzungsthema mit eigener Logik. Wenn es technisch sinnvoll und sicher in der aktuellen Architektur umsetzbar ist, wird die Funktion individuell fuer dich umgesetzt.')}</li>
                               <li>{tr('«Кофе» и «Кофе + чизкейк»: сейчас это альтернативные платные тарифы, а не add-on поверх Pro.', '„Kaffee“ und „Kaffee + Cheesecake“: aktuell sind das alternative bezahlte Tarife, keine Add-ons zusaetzlich zu Pro.')}</li>
                             </ul>
                           </div>

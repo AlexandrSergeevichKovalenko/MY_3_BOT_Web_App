@@ -106,6 +106,8 @@ def _normalize_level(level: str | None) -> str:
     normalized = (level or "c1").strip().lower().replace(" ", "")
     if normalized in {"c1-c2", "c1c2", "c1/c2"}:
         return "c2"
+    if normalized == "a1":
+        return "a1"
     allowed = {"a2", "b1", "b2", "c1", "c2"}
     return normalized if normalized in allowed else "c1"
 
@@ -146,12 +148,21 @@ def _sentence_fits_level(sentence: str, level: str | None) -> bool:
     has_medium = _sentence_has_any_marker(text, medium_markers)
     has_advanced = _sentence_has_any_marker(text, advanced_markers)
 
+    if level_key == "a1":
+        if word_count < 3 or word_count > 8:
+            return False
+        if comma_count > 0 or hard_punctuation > 0 or dash_count > 0:
+            return False
+        if has_medium or has_advanced:
+            return False
+        return True
+
     if level_key == "a2":
         if word_count < 4 or word_count > 12:
             return False
-        if comma_count > 1 or hard_punctuation > 0 or dash_count > 0:
+        if comma_count > 0 or hard_punctuation > 0 or dash_count > 0:
             return False
-        if has_advanced:
+        if has_medium or has_advanced:
             return False
         return True
 
@@ -877,11 +888,14 @@ async def generate_sentences_webapp(
     topic: str = "Random sentences",
     level: str | None = None,
 ) -> list[str]:
-    task_name = "generate_sentences"
     level_key = _normalize_level(level)
-    system_instruction_key = f"generate_sentences_{level_key}"
+    instruction_level_key = "a2" if level_key == "a1" else level_key
+    # Keep assistants separated per CEFR tier so cached instructions cannot bleed across levels.
+    task_name = f"generate_sentences_{instruction_level_key}"
+    system_instruction_key = f"generate_sentences_{instruction_level_key}"
     target_count = int(max(1, num_sentences))
     level_notes = {
+        "a1": "A1 only: very short, very concrete everyday sentences. No subordinate clauses. Prefer 3-8 words.",
         "a2": "A2 only: short, concrete, everyday sentences. No heavy subordinate clauses. Prefer 4-12 words.",
         "b1": "B1 only: moderately simple sentences with at most one light subordinate clause. Prefer 6-18 words.",
         "b2": "B2 only: clearly more developed sentences with some clause complexity. Prefer 9-24 words.",
@@ -1016,6 +1030,7 @@ async def start_translation_session_webapp(
     level: str | None = None,
     source_lang: str = "ru",
     target_lang: str = "de",
+    force_new_session: bool = False,
 ) -> dict[str, Any]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1058,18 +1073,28 @@ async def start_translation_session_webapp(
             row = cursor.fetchone()
             pending_count = int(row[0] or 0) if row else 0
             if pending_count > 0:
-                return {"session_id": active_session_id, "created": False, "blocked": True}
-
-            # Auto-close stale empty session and allow creating a fresh one.
-            cursor.execute(
-                """
-                UPDATE bt_3_user_progress
-                SET end_time = NOW(), completed = TRUE
-                WHERE user_id = %s AND session_id = %s;
-                """,
-                (user_id, active_session_id),
-            )
-            conn.commit()
+                if not force_new_session:
+                    return {"session_id": active_session_id, "created": False, "blocked": True}
+                cursor.execute(
+                    """
+                    UPDATE bt_3_user_progress
+                    SET end_time = NOW(), completed = TRUE
+                    WHERE user_id = %s AND session_id = %s;
+                    """,
+                    (user_id, active_session_id),
+                )
+                conn.commit()
+            else:
+                # Auto-close stale empty session and allow creating a fresh one.
+                cursor.execute(
+                    """
+                    UPDATE bt_3_user_progress
+                    SET end_time = NOW(), completed = TRUE
+                    WHERE user_id = %s AND session_id = %s;
+                    """,
+                    (user_id, active_session_id),
+                )
+                conn.commit()
 
         cursor.execute(
             """

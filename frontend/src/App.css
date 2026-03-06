@@ -2139,6 +2139,16 @@ body {
   line-height: 1.45;
 }
 
+.billing-info-accordion__item-highlight-pro {
+  list-style: none;
+  margin-left: -18px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  background: rgba(34, 197, 94, 0.14);
+  color: #d9ffe8;
+}
+
 .billing-support-card {
   border: 1px solid rgba(93, 220, 255, 0.22);
   border-radius: 18px;
@@ -15056,6 +15066,12 @@ body {
 
 .webapp-page.is-theme-light .economics-breakdown-row {
   color: #2f271f;
+}
+
+.webapp-page.is-theme-light .billing-info-accordion__item-highlight-pro {
+  border-color: rgba(34, 197, 94, 0.42);
+  background: rgba(187, 247, 208, 0.56);
+  color: #14532d;
 }
 
 @media (max-width: 900px) {

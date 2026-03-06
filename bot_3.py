@@ -2711,6 +2711,116 @@ def _is_sentence_like_lookup(text: str) -> bool:
     return False
 
 
+def _has_cyrillic_chars(text: str) -> bool:
+    return bool(re.search(r"[А-Яа-яЁё]", str(text or "")))
+
+
+def _has_latin_chars(text: str) -> bool:
+    return bool(re.search(r"[A-Za-zÄÖÜäöüßẞÀ-ÿ]", str(text or "")))
+
+
+def _looks_like_target_language(text: str, target_lang: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return False
+    lang = str(target_lang or "").strip().lower()
+    if lang == "ru":
+        return _has_cyrillic_chars(cleaned)
+    if lang in {"de", "en", "es", "it"}:
+        return _has_latin_chars(cleaned)
+    return True
+
+
+def _extract_translation_candidates_for_target(lookup: dict, target_lang: str) -> list[str]:
+    if not isinstance(lookup, dict):
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _push(value: str) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        key = text.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(text)
+
+    translations = lookup.get("translations")
+    if isinstance(translations, list):
+        ordered = sorted(
+            [item for item in translations if isinstance(item, dict)],
+            key=lambda item: (0 if bool(item.get("is_primary")) else 1),
+        )
+        for item in ordered:
+            _push(item.get("value") or "")
+
+    meanings = lookup.get("meanings")
+    if isinstance(meanings, dict):
+        primary = meanings.get("primary") if isinstance(meanings.get("primary"), dict) else None
+        if primary:
+            _push(primary.get("value") or "")
+        secondary = meanings.get("secondary")
+        if isinstance(secondary, list):
+            for item in secondary:
+                if isinstance(item, dict):
+                    _push(item.get("value") or "")
+
+    return [item for item in candidates if _looks_like_target_language(item, target_lang)]
+
+
+async def _ensure_lookup_target_language(
+    lookup: dict,
+    lookup_input: str,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    result = dict(lookup or {})
+    source_text = str(result.get("word_source") or lookup_input or "").strip()
+    current_target = str(result.get("word_target") or "").strip()
+    if _looks_like_target_language(current_target, target_lang):
+        return result
+
+    for candidate in _extract_translation_candidates_for_target(result, target_lang):
+        if source_text and candidate.casefold() == source_text.casefold():
+            continue
+        result["word_target"] = candidate
+        if target_lang == "ru":
+            result["translation_ru"] = candidate
+        elif target_lang == "de":
+            result["translation_de"] = candidate
+        return result
+
+    # Last-resort language correction: ask translation helper for one clean target variant.
+    try:
+        translated_lines = await run_translate_subtitles_multilang(
+            lines=[source_text or lookup_input or ""],
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        forced_target = str(translated_lines[0] or "").strip() if isinstance(translated_lines, list) and translated_lines else ""
+    except Exception:
+        forced_target = ""
+    if forced_target and _looks_like_target_language(forced_target, target_lang):
+        result["word_target"] = forced_target
+        if target_lang == "ru":
+            result["translation_ru"] = forced_target
+        elif target_lang == "de":
+            result["translation_de"] = forced_target
+        if not isinstance(result.get("translations"), list):
+            result["translations"] = []
+        existing = result.get("translations") if isinstance(result.get("translations"), list) else []
+        result["translations"] = [
+            {"value": forced_target, "context": "base_fallback", "is_primary": True},
+            *[
+                item for item in existing
+                if isinstance(item, dict) and str(item.get("value") or "").strip().casefold() != forced_target.casefold()
+            ],
+        ]
+    return result
+
+
 async def _coerce_sentence_lookup_payload(
     payload: dict,
     lookup_input: str,
@@ -3079,7 +3189,7 @@ def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text:
 
     if meanings:
         primary = meanings[0]
-        primary_value = _apply_article_for_display(str(primary.get("value") or translation or "—"), lookup, target_lang)
+        primary_value = _apply_article_for_display(str(translation or primary.get("value") or "—"), lookup, target_lang)
         lines.append("")
         lines.append("🎯 <b>Основной перевод</b>")
         lines.append(f"• <b>{_esc(primary_value)}</b>")
@@ -3358,7 +3468,7 @@ def _render_dictionary_card_png(
         stress = str(pronunciation.get("stress") or "").strip()
         forms = _format_forms_block(lookup.get("forms"))
         primary_value = _apply_article_for_display(
-            str(primary.get("value") or lookup.get("word_target") or "—").strip(),
+            str(lookup.get("word_target") or primary.get("value") or "—").strip(),
             lookup,
             target_lang,
         )
@@ -3704,6 +3814,7 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
             "source_lang": source_lang,
             "target_lang": target_lang,
         }
+        result = await _ensure_lookup_target_language(result, lookup_input, source_lang, target_lang)
         return await _coerce_sentence_lookup_payload(result, lookup_input, source_lang, target_lang)
     if direction == "de-ru":
         try:
@@ -3734,6 +3845,7 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
             "source_lang": source_lang,
             "target_lang": target_lang,
         }
+        result = await _ensure_lookup_target_language(result, lookup_input, source_lang, target_lang)
         return await _coerce_sentence_lookup_payload(result, lookup_input, source_lang, target_lang)
     raw = await run_dictionary_lookup_multilang(
         word=lookup_input,
@@ -3766,6 +3878,7 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
         "source_lang": source_lang,
         "target_lang": target_lang,
     }
+    result = await _ensure_lookup_target_language(result, lookup_input, source_lang, target_lang)
     return await _coerce_sentence_lookup_payload(result, lookup_input, source_lang, target_lang)
 
 

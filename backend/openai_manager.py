@@ -2789,6 +2789,7 @@ async def generate_sentences_multilang(
     system_instruction_key = "generate_sentences_multilang"
     normalized_level = (level or "b1").strip().lower()
     level_notes = {
+        "a1": "Return only very short beginner sentences with minimal grammar complexity.",
         "a2": "Return only very simple everyday sentences.",
         "b1": "Return only moderately simple sentences with limited complexity.",
         "b2": "Return only upper-intermediate sentences with visible clause structure.",
