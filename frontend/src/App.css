@@ -14588,6 +14588,204 @@ body {
   color: #ffffff;
 }
 
+.webapp-page.is-theme-light .theory-section {
+  border: 1px solid rgba(171, 139, 98, 0.3);
+  background: rgba(253, 247, 236, 0.95);
+}
+
+.webapp-page.is-theme-light .theory-card {
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .theory-card h3,
+.webapp-page.is-theme-light .theory-card h4 {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .theory-card p,
+.webapp-page.is-theme-light .theory-card li,
+.webapp-page.is-theme-light .theory-card div {
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .theory-focus-line {
+  color: #7a6854;
+}
+
+.webapp-page.is-theme-light .theory-key-rule,
+.webapp-page.is-theme-light .theory-memory-trick {
+  border-color: rgba(191, 137, 71, 0.45);
+  background: rgba(221, 180, 126, 0.18);
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .theory-example-item {
+  border-color: rgba(171, 139, 98, 0.32);
+  background: rgba(255, 248, 238, 0.88);
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .theory-resources {
+  border-color: rgba(171, 139, 98, 0.3);
+  background: rgba(255, 248, 238, 0.9);
+}
+
+.webapp-page.is-theme-light .theory-resource-item {
+  border-color: rgba(171, 139, 98, 0.38);
+  background: rgba(253, 246, 234, 0.95);
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .theory-resource-item:hover {
+  border-color: rgba(171, 126, 72, 0.52);
+  background: rgba(245, 235, 220, 0.92);
+}
+
+.webapp-page.is-theme-light .theory-resource-why {
+  color: #5a4a39;
+}
+
+.webapp-page.is-theme-light .theory-resource-url {
+  color: #7a6854;
+}
+
+.webapp-page.is-theme-light .theory-practice-block {
+  border-color: rgba(171, 139, 98, 0.3);
+  background: rgba(255, 248, 238, 0.9);
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .theory-feedback {
+  border-color: rgba(171, 139, 98, 0.3);
+  background: rgba(255, 248, 238, 0.9);
+}
+
+.webapp-page.is-theme-light .theory-feedback-item {
+  border-color: rgba(171, 139, 98, 0.32);
+  background: rgba(253, 246, 234, 0.95);
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .skill-training-section {
+  border: 1px solid #d2c2aa;
+  background: #f9f1e4;
+  box-shadow: 0 20px 36px rgba(105, 78, 47, 0.14);
+}
+
+.webapp-page.is-theme-light .skill-training-top-copy h2 {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .skill-training-status-block {
+  border-color: #d2c2aa;
+  background: #fff8ee;
+}
+
+.webapp-page.is-theme-light .skill-training-status-row {
+  color: #5a4a39;
+}
+
+.webapp-page.is-theme-light .skill-training-status-indicator {
+  background: #cf9d63;
+}
+
+.webapp-page.is-theme-light .skill-training-status-indicator.is-subtle {
+  background: #9b8061;
+}
+
+.webapp-page.is-theme-light .skill-training-section .theory-focus-line {
+  border-color: #d2c2aa;
+  background: #fff8ee;
+  color: #5a4a39;
+}
+
+.webapp-page.is-theme-light .skill-training-section .theory-focus-line strong {
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .skill-training-section .webapp-muted {
+  color: #7a6854;
+}
+
+.webapp-page.is-theme-light .skill-training-section .theory-resources,
+.webapp-page.is-theme-light .skill-training-section .theory-practice-block,
+.webapp-page.is-theme-light .skill-training-section .theory-feedback {
+  border-color: #d2c2aa;
+  background: #fff8ee;
+}
+
+.webapp-page.is-theme-light .skill-training-section .theory-resources h4,
+.webapp-page.is-theme-light .skill-training-section .theory-practice-block h4,
+.webapp-page.is-theme-light .skill-training-section .theory-feedback h4 {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .skill-training-section .theory-resource-item {
+  border-color: #d2c2aa;
+  background: #fdf6ea;
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .skill-training-section .theory-resource-item:hover {
+  border-color: #c3b093;
+  background: #f5ebdc;
+}
+
+.webapp-page.is-theme-light .skill-training-section .theory-resource-why {
+  color: #5a4a39;
+}
+
+.webapp-page.is-theme-light .skill-training-section .theory-resource-url {
+  color: #7a6854;
+}
+
+.webapp-page.is-theme-light .skill-training-section .theory-feedback-item {
+  border-color: #d2c2aa;
+  background: #fdf6ea;
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .skill-training-theory-title,
+.webapp-page.is-theme-light .skill-training-theory-section-title,
+.webapp-page.is-theme-light .skill-training-pair-sentence {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .skill-training-theory-lead,
+.webapp-page.is-theme-light .skill-training-theory-section p,
+.webapp-page.is-theme-light .skill-training-theory-list,
+.webapp-page.is-theme-light .skill-training-pair-explanation {
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .skill-training-pair-card {
+  border-color: #d2c2aa;
+  background: #fdf6ea;
+}
+
+.webapp-page.is-theme-light .skill-training-example-translation {
+  color: #7a6854;
+}
+
+.webapp-page.is-theme-light .skill-training-section textarea {
+  border-color: #d2c2aa;
+  background: #fff9f0;
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .skill-training-section textarea::placeholder {
+  color: rgba(88, 72, 54, 0.64);
+}
+
+.webapp-page.is-theme-light .skill-training-section .webapp-field {
+  border-color: #d2c2aa;
+  background: #fdf6ea;
+}
+
+.webapp-page.is-theme-light .skill-training-section .webapp-field > span {
+  color: #2f271f;
+}
+
 .webapp-page.is-theme-light .webapp-video.youtube-player-first .youtube-subtitles-block-de .webapp-subtitles-list p {
   color: #1f1a14;
 }
