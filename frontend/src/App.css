@@ -14512,6 +14512,16 @@ body {
   color: #1f1a14;
 }
 
+.webapp-page.is-theme-light .webapp-video.youtube-player-first .youtube-settings-row.is-active {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.webapp-page.is-theme-light .webapp-video.youtube-player-first .youtube-settings-row.is-active span:first-child,
+.webapp-page.is-theme-light .webapp-video.youtube-player-first .youtube-settings-row.is-active span:last-child {
+  color: #ffffff;
+}
+
 .webapp-page.is-theme-light .weekly-plan-progress-ring span {
   color: #ffffff;
 }
