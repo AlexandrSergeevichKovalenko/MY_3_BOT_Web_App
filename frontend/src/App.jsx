@@ -2765,15 +2765,16 @@ function AppInner() {
     );
   };
 
-  const renderTodaySectionTaskHud = (sectionKey) => {
+  const renderTodaySectionTaskHud = (sectionKey, options = {}) => {
     const item = getTodayTaskForSection(sectionKey);
     if (!item) return null;
+    const inline = Boolean(options?.inline);
     const elapsed = getTodayItemElapsedSeconds(item, todayTimerNowMs);
     const progress = getTodayItemProgressPercent(item, todayTimerNowMs);
     const done = String(item?.status || '').toLowerCase() === 'done' || progress >= 100;
     const running = isTodayItemTimerRunning(item);
     return (
-      <div className="today-section-task-hud">
+      <div className={`today-section-task-hud ${inline ? 'is-inline' : ''}`.trim()}>
         {done ? (
           <span className="today-section-task-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
         ) : (
@@ -11385,6 +11386,14 @@ function AppInner() {
       return;
     }
     const chart = echarts.init(analyticsTrendRef.current);
+    const isLightTheme = themeMode === 'light';
+    const chartTextColor = isLightTheme ? '#5a4a39' : '#c7d2f1';
+    const chartLegendColor = isLightTheme ? '#2f271f' : '#dbe7ff';
+    const chartAxisColor = isLightTheme ? 'rgba(130, 101, 67, 0.5)' : '#2f3f5f';
+    const chartSplitLineColor = isLightTheme ? 'rgba(130, 101, 67, 0.18)' : 'rgba(255,255,255,0.08)';
+    const tooltipBackground = isLightTheme ? 'rgba(255, 248, 238, 0.96)' : 'rgba(15, 23, 42, 0.92)';
+    const tooltipBorder = isLightTheme ? 'rgba(171, 126, 72, 0.5)' : 'rgba(148, 163, 184, 0.28)';
+    const tooltipTextColor = isLightTheme ? '#1f1a14' : '#e2e8f0';
     const labels = analyticsPoints.map((item) => item.period_start);
     const success = analyticsPoints.map((item) => item.successful_translations || 0);
     const fail = analyticsPoints.map((item) => item.unsuccessful_translations || 0);
@@ -11395,7 +11404,16 @@ function AppInner() {
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
-        axisPointer: { type: 'shadow' },
+        axisPointer: {
+          type: 'shadow',
+          shadowStyle: {
+            color: isLightTheme ? 'rgba(207, 157, 99, 0.16)' : 'rgba(148, 163, 184, 0.14)',
+          },
+        },
+        backgroundColor: tooltipBackground,
+        borderColor: tooltipBorder,
+        borderWidth: 1,
+        textStyle: { color: tooltipTextColor },
         formatter: (params) => {
           const map = {};
           params.forEach((entry) => {
@@ -11414,28 +11432,30 @@ function AppInner() {
       },
       legend: {
         data: [tr('Успешно', 'Erfolgreich'), tr('Нужно доработать', 'Verbessern'), tr('Средний балл', 'Durchschnitt')],
-        textStyle: { color: '#dbe7ff' },
+        textStyle: { color: chartLegendColor },
       },
       grid: { left: 32, right: 32, top: 40, bottom: 40 },
       xAxis: {
         type: 'category',
         data: labels,
-        axisLine: { lineStyle: { color: '#2f3f5f' } },
-        axisLabel: { color: '#c7d2f1' },
+        axisLine: { lineStyle: { color: chartAxisColor } },
+        axisLabel: { color: chartTextColor },
       },
       yAxis: [
         {
           type: 'value',
           name: tr('Переводы', 'Uebersetzungen'),
-          axisLabel: { color: '#c7d2f1' },
-          splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+          nameTextStyle: { color: chartTextColor },
+          axisLabel: { color: chartTextColor },
+          splitLine: { lineStyle: { color: chartSplitLineColor } },
         },
         {
           type: 'value',
           name: tr('Баллы', 'Punkte'),
           min: 0,
           max: 100,
-          axisLabel: { color: '#c7d2f1' },
+          nameTextStyle: { color: chartTextColor },
+          axisLabel: { color: chartTextColor },
           splitLine: { show: false },
         },
       ],
@@ -11473,13 +11493,19 @@ function AppInner() {
     return () => {
       chart.dispose();
     };
-  }, [analyticsPoints, analyticsPeriod]);
+  }, [analyticsPoints, analyticsPeriod, themeMode]);
 
   useEffect(() => {
     if (!analyticsCompareRef.current) {
       return;
     }
     const chart = echarts.init(analyticsCompareRef.current);
+    const isLightTheme = themeMode === 'light';
+    const chartTextColor = isLightTheme ? '#5a4a39' : '#c7d2f1';
+    const chartSplitLineColor = isLightTheme ? 'rgba(130, 101, 67, 0.18)' : 'rgba(255,255,255,0.08)';
+    const tooltipBackground = isLightTheme ? 'rgba(255, 248, 238, 0.96)' : 'rgba(15, 23, 42, 0.92)';
+    const tooltipBorder = isLightTheme ? 'rgba(171, 126, 72, 0.5)' : 'rgba(148, 163, 184, 0.28)';
+    const tooltipTextColor = isLightTheme ? '#1f1a14' : '#e2e8f0';
     const selfId = webappUser?.id;
     const names = analyticsCompare.map((item) => item.username);
     const data = analyticsCompare.map((item) => ({
@@ -11493,6 +11519,10 @@ function AppInner() {
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'item',
+        backgroundColor: tooltipBackground,
+        borderColor: tooltipBorder,
+        borderWidth: 1,
+        textStyle: { color: tooltipTextColor },
         formatter: (params) => {
           const item = analyticsCompare[params.dataIndex];
           if (!item) return '';
@@ -11510,13 +11540,13 @@ function AppInner() {
       grid: { left: 20, right: 20, top: 20, bottom: 20, containLabel: true },
       xAxis: {
         type: 'value',
-        axisLabel: { color: '#c7d2f1' },
-        splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+        axisLabel: { color: chartTextColor },
+        splitLine: { lineStyle: { color: chartSplitLineColor } },
       },
       yAxis: {
         type: 'category',
         data: names,
-        axisLabel: { color: '#c7d2f1' },
+        axisLabel: { color: chartTextColor },
         inverse: true,
       },
       series: [
@@ -11532,7 +11562,7 @@ function AppInner() {
     return () => {
       chart.dispose();
     };
-  }, [analyticsCompare, webappUser]);
+  }, [analyticsCompare, webappUser, themeMode]);
 
   if (isWebAppMode) {
     if (singleInstanceBlocked) {
@@ -13684,15 +13714,18 @@ function AppInner() {
                             <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
                           )}
                         </div>
-                        <button
-                          type="button"
-                          className="youtube-dock-icon-btn youtube-head-settings-btn"
-                          onClick={() => setYoutubeSettingsOpen(true)}
-                          aria-label={tr('Настройки', 'Settings')}
-                          title={tr('Настройки', 'Settings')}
-                        >
-                          <span aria-hidden="true">&#9881;</span>
-                        </button>
+                        <div className="youtube-player-first-title-actions">
+                          {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
+                          <button
+                            type="button"
+                            className="youtube-dock-icon-btn youtube-head-settings-btn"
+                            onClick={() => setYoutubeSettingsOpen(true)}
+                            aria-label={tr('Настройки', 'Settings')}
+                            title={tr('Настройки', 'Settings')}
+                          >
+                            <span aria-hidden="true">&#9881;</span>
+                          </button>
+                        </div>
                       </div>
                       {isFocusedSection('youtube') && (
                         <div className="section-head-nav">
@@ -13710,7 +13743,6 @@ function AppInner() {
                           </button>
                         </div>
                       )}
-                      {!youtubeTaskDone && renderTodaySectionTaskHud('youtube')}
                       <div className="youtube-player-first-head-controls">
                         <button
                           type="button"
@@ -13907,7 +13939,7 @@ function AppInner() {
                         )}
                       </div>
                     )}
-                    {!youtubeOverlayEnabled && (
+                    {!youtubeOverlayEnabled && youtubeSubtitlesReady && (
                       <div className="youtube-subtitles-card youtube-subtitles-panel">
                         <div className="youtube-subtitles-panel-head">
                           <div className="youtube-subtitles-panel-copy">
@@ -13915,59 +13947,53 @@ function AppInner() {
                             <span>{String(languageProfile?.learning_language || 'de').toUpperCase()} · {tr('всегда ON', 'always ON')}</span>
                           </div>
                         </div>
-                        {youtubeSubtitlesReady ? (
-                          <div className="youtube-subtitles-panel-content">
-                            <div className="youtube-subtitles-block youtube-subtitles-block-de">
-                              <div className="youtube-subtitles-card-head">
-                                <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
+                        <div className={`youtube-subtitles-panel-content ${youtubeTranslationEnabled ? 'is-dual' : 'is-single'}`}>
+                          <div className="youtube-subtitles-block youtube-subtitles-block-de">
+                            <div className="youtube-subtitles-card-head">
+                              <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
+                            </div>
+                            <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
+                              <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
+                                {(() => {
+                                  const activeIndex = getActiveSubtitleIndex();
+                                  return youtubeTranscript.map((item, index) => (
+                                    <p
+                                      key={`${item.start}-${index}`}
+                                      className={index === activeIndex ? 'is-active' : ''}
+                                    >
+                                      {renderSubtitleText(item.text)}
+                                    </p>
+                                  ));
+                                })()}
                               </div>
-                              <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
-                                <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
+                            </div>
+                          </div>
+                          {youtubeTranslationEnabled && (
+                            <div className="youtube-subtitles-block youtube-subtitles-block-ru">
+                              <div className="youtube-subtitles-card-head">
+                                <span>{getNativeSubtitleCode()}</span>
+                              </div>
+                              <div className="webapp-subtitles is-translation">
+                                <div className="webapp-subtitles-list">
                                   {(() => {
                                     const activeIndex = getActiveSubtitleIndex();
-                                    return youtubeTranscript.map((item, index) => (
-                                      <p
-                                        key={`${item.start}-${index}`}
-                                        className={index === activeIndex ? 'is-active' : ''}
-                                      >
-                                        {renderSubtitleText(item.text)}
-                                      </p>
-                                    ));
+                                    return youtubeTranscript.map((item, index) => {
+                                      const translation = youtubeTranslations[String(index)] || '…';
+                                      return (
+                                        <p
+                                          key={`translation-${item.start}-${index}`}
+                                          className={index === activeIndex ? 'is-active' : ''}
+                                        >
+                                          {translation}
+                                        </p>
+                                      );
+                                    });
                                   })()}
                                 </div>
                               </div>
                             </div>
-                            {youtubeTranslationEnabled && (
-                              <div className="youtube-subtitles-block youtube-subtitles-block-ru">
-                                <div className="youtube-subtitles-card-head">
-                                  <span>{getNativeSubtitleCode()}</span>
-                                </div>
-                                <div className="webapp-subtitles is-translation">
-                                  <div className="webapp-subtitles-list">
-                                    {(() => {
-                                      const activeIndex = getActiveSubtitleIndex();
-                                      return youtubeTranscript.map((item, index) => {
-                                        const translation = youtubeTranslations[String(index)] || '…';
-                                        return (
-                                          <p
-                                            key={`translation-${item.start}-${index}`}
-                                            className={index === activeIndex ? 'is-active' : ''}
-                                          >
-                                            {translation}
-                                          </p>
-                                        );
-                                      });
-                                    })()}
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="youtube-subtitles-empty">
-                            {tr('Сначала загрузите субтитры, чтобы видеть текст и перевод.', 'Lade zuerst Untertitel, um Text und Uebersetzung zu sehen.')}
-                          </div>
-                        )}
+                          )}
+                        </div>
                       </div>
                     )}
                     {youtubeSettingsOpen && (
