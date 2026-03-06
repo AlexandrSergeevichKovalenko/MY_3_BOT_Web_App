@@ -319,6 +319,25 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
+.webapp-page.is-android-client {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.webapp-page.is-android-client .webapp-shell,
+.webapp-page.is-android-client .webapp-main,
+.webapp-page.is-android-client .webapp-topbar,
+.webapp-page.is-android-client .topbar-row,
+.webapp-page.is-android-client .topbar-controls {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.webapp-page.is-android-client .webapp-shell,
+.webapp-page.is-android-client .webapp-topbar {
+  width: 100%;
+}
+
 .webapp-page.is-contained-scroll {
   height: 100vh;
   height: 100dvh;
@@ -4146,6 +4165,29 @@ body {
 
   .webapp-shell {
     grid-template-columns: 1fr;
+  }
+
+  .webapp-page.is-android-client .topbar-row-main {
+    grid-template-columns: 40px minmax(0, 1fr) 48px;
+    gap: 10px;
+  }
+
+  .webapp-page.is-android-client .topbar-avatar {
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+    min-height: 48px;
+    padding: 3px;
+  }
+
+  .webapp-page.is-android-client .topbar-avatar img,
+  .webapp-page.is-android-client .topbar-avatar .avatar-placeholder {
+    width: 42px;
+    height: 42px;
+  }
+
+  .webapp-page.is-android-client .topbar-controls {
+    width: 100%;
   }
 
   .webapp-sidebar {
@@ -14329,6 +14371,20 @@ body {
 .webapp-page.is-theme-light .guide-step-card.is-highlight {
   border-color: rgba(191, 137, 71, 0.62);
   background: rgba(217, 174, 116, 0.2);
+}
+
+.webapp-page.is-theme-light.is-android-client .hero-guide-card {
+  background: rgba(253, 247, 236, 0.95);
+  border: 1px solid rgba(171, 139, 98, 0.24);
+  box-shadow: 0 14px 32px rgba(105, 78, 47, 0.13);
+}
+
+.webapp-page.is-theme-light.is-android-client .hero-guide-card-title {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light.is-android-client .hero-guide-card p {
+  color: rgba(46, 37, 27, 0.78);
 }
 
 .webapp-page.is-theme-light .guide-step-card.is-highlight .guide-step-title,

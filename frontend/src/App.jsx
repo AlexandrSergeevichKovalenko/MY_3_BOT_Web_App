@@ -11602,7 +11602,7 @@ function AppInner() {
       );
     }
     return (
-      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''}`}>
+      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''}`}>
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
             <div className="webapp-brand">
