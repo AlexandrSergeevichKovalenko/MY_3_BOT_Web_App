@@ -8904,6 +8904,10 @@ def _fetch_youtube_transcript(
     """
 
     errors: list[str] = []
+    preferred_lang = _normalize_short_lang_code(lang, fallback="") if lang else ""
+    lang_order = list(DEFAULT_LANG_ORDER)
+    if preferred_lang:
+        lang_order = [preferred_lang] + [code for code in lang_order if code != preferred_lang]
 
     webshare_proxy = (
         (os.getenv("WEBSHARE_PROXY_URL") or "").strip()
@@ -8941,15 +8945,20 @@ def _fetch_youtube_transcript(
                     proxy_password=ws_pass,
                     filter_ip_locations=["de", "at"],
                 )
-                subs = _fetch_with_yta(video_id, lang, proxy_config=proxy_config)
-                return {
-                    "success": True,
-                    "source": "webshare",
-                    "ip_country": country,
-                    "language": lang,
-                    "is_generated": None,
-                    "items": subs,
-                }
+                for code in lang_order:
+                    try:
+                        subs = _fetch_with_yta(video_id, code, proxy_config=proxy_config)
+                        return {
+                            "success": True,
+                            "source": "webshare",
+                            "ip_country": country,
+                            "language": code,
+                            "is_generated": None,
+                            "items": subs,
+                        }
+                    except Exception:
+                        continue
+                raise RuntimeError(f"webshare: no transcripts for language order {tuple(lang_order)}")
             except Exception as e:
                 errors.append(f"webshare attempt {attempt}: {e}")
                 time.sleep(delay_seconds)
@@ -8962,15 +8971,20 @@ def _fetch_youtube_transcript(
         if country in ALLOWED_COUNTRIES:
             try:
                 proxy_config = GenericProxyConfig(http_url=generic_proxy, https_url=generic_proxy)
-                subs = _fetch_with_yta(video_id, lang, proxy_config=proxy_config)
-                return {
-                    "success": True,
-                    "source": "generic",
-                    "ip_country": country,
-                    "language": lang,
-                    "is_generated": None,
-                    "items": subs,
-                }
+                for code in lang_order:
+                    try:
+                        subs = _fetch_with_yta(video_id, code, proxy_config=proxy_config)
+                        return {
+                            "success": True,
+                            "source": "generic",
+                            "ip_country": country,
+                            "language": code,
+                            "is_generated": None,
+                            "items": subs,
+                        }
+                    except Exception:
+                        continue
+                raise RuntimeError(f"generic: no transcripts for language order {tuple(lang_order)}")
             except Exception as e:
                 errors.append(f"generic: {e}")
         else:
@@ -8980,17 +8994,7 @@ def _fetch_youtube_transcript(
     # 3) Direct
     # ----------------------------
     try:
-        if lang:
-            subs = _fetch_with_yta(video_id, lang, proxy_config=None)
-            return {
-                "success": True,
-                "source": "direct",
-                "ip_country": None,
-                "language": lang,
-                "is_generated": None,
-                "items": subs,
-            }
-        for code in DEFAULT_LANG_ORDER:
+        for code in lang_order:
             try:
                 subs = _fetch_with_yta(video_id, code, proxy_config=None)
                 return {
@@ -9003,7 +9007,7 @@ def _fetch_youtube_transcript(
                 }
             except Exception:
                 continue
-        raise RuntimeError("direct: no transcripts for default languages")
+        raise RuntimeError(f"direct: no transcripts for language order {tuple(lang_order)}")
     except Exception as e:
         errors.append(f"direct: {e}")
 
@@ -16029,7 +16033,8 @@ def get_youtube_transcript():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     video_id = (payload.get("videoId") or "").strip()
-    lang = (payload.get("lang") or "").strip() or None
+    request_lang = (payload.get("lang") or "").strip()
+    lang = _normalize_short_lang_code(request_lang, fallback="") if request_lang else None
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -16046,6 +16051,8 @@ def get_youtube_transcript():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    if not lang:
+        lang = _normalize_short_lang_code(target_lang, fallback="de")
     proxy_allowed = has_youtube_proxy_subtitles_access(int(user_id))
     subtitle_target_lang = _normalize_short_lang_code(source_lang, fallback="ru")
 

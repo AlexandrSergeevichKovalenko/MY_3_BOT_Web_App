@@ -10515,7 +10515,11 @@ function AppInner() {
       const response = await fetch('/api/webapp/youtube/transcript', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, videoId: youtubeId }),
+        body: JSON.stringify({
+          initData,
+          videoId: youtubeId,
+          lang: normalizeLangCode(languageProfile?.learning_language) || 'de',
+        }),
       });
       if (!response.ok) {
         let message = await response.text();

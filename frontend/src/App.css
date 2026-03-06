@@ -2463,6 +2463,12 @@ body {
   font-size: 14px;
 }
 
+.webapp-page.is-theme-light .webapp-error {
+  color: #7f1d1d;
+  background: rgba(239, 68, 68, 0.16);
+  border: 1px solid rgba(185, 28, 28, 0.24);
+}
+
 .webapp-error-stack {
   margin-top: 8px;
   white-space: pre-wrap;
