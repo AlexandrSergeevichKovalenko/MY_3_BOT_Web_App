@@ -10589,8 +10589,17 @@ body {
 
   .youtube-status-action-btn {
     min-height: 28px;
-    font-size: 10px;
-    padding: 4px 8px;
+    font-size: 9.5px;
+    padding: 4px 6px;
+  }
+
+  .youtube-player-first-head-controls {
+    gap: 4px;
+    padding-right: 0;
+  }
+
+  .youtube-status-load-btn {
+    min-width: 0;
   }
 
   .webapp-video.youtube-player-first .youtube-subtitles-overlay {
@@ -10661,6 +10670,17 @@ body {
   .youtube-settings-sheet {
     border-radius: 24px;
     padding: 16px;
+  }
+}
+
+@media (max-width: 390px) {
+  .youtube-player-first-head-controls {
+    gap: 3px;
+  }
+
+  .youtube-status-action-btn {
+    font-size: 9px;
+    padding: 3px 5px;
   }
 }
 
