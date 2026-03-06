@@ -297,6 +297,7 @@ from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
 from backend.translation_workflow import (
     build_user_daily_summary,
     check_user_translation_webapp,
+    finalize_open_translation_sessions,
     finish_translation_webapp,
     get_daily_translation_history,
     start_translation_session_webapp,
@@ -18742,6 +18743,18 @@ def _run_today_evening_reminders_scheduler_job() -> None:
         logging.exception("❌ Today evening reminders scheduler failed")
 
 
+def _run_translation_sessions_auto_close_job() -> None:
+    enabled = (os.getenv("TRANSLATION_SESSIONS_AUTO_CLOSE_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        logging.info("ℹ️ Translation sessions auto-close disabled by TRANSLATION_SESSIONS_AUTO_CLOSE_ENABLED")
+        return
+    try:
+        result = finalize_open_translation_sessions()
+        logging.info("✅ Translation sessions auto-close finished: %s", result)
+    except Exception:
+        logging.exception("❌ Translation sessions auto-close failed")
+
+
 def _run_system_message_cleanup_job() -> None:
     enabled = (os.getenv("SYSTEM_MESSAGE_CLEANUP_ENABLED") or "1").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
@@ -18959,6 +18972,26 @@ def _start_audio_scheduler() -> None:
             "cron",
             hour=today_evening_hour,
             minute=today_evening_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
+    translation_close_enabled = (os.getenv("TRANSLATION_SESSIONS_AUTO_CLOSE_ENABLED") or "1").strip().lower()
+    if translation_close_enabled in ("1", "true", "yes", "on"):
+        translation_close_hour = int((os.getenv("TRANSLATION_SESSIONS_AUTO_CLOSE_HOUR") or "23").strip())
+        translation_close_minute = int((os.getenv("TRANSLATION_SESSIONS_AUTO_CLOSE_MINUTE") or "59").strip())
+        translation_close_tz_name = (os.getenv("TODAY_PLAN_TZ") or TODAY_PLAN_DEFAULT_TZ or "UTC").strip() or "UTC"
+        try:
+            translation_close_tz = ZoneInfo(translation_close_tz_name)
+        except Exception:
+            logging.warning("⚠️ Invalid TODAY_PLAN_TZ for translation auto-close: %s. Falling back to UTC", translation_close_tz_name)
+            translation_close_tz = ZoneInfo("UTC")
+        _audio_scheduler.add_job(
+            _run_translation_sessions_auto_close_job,
+            "cron",
+            hour=translation_close_hour,
+            minute=translation_close_minute,
+            timezone=translation_close_tz,
             max_instances=1,
             coalesce=True,
             misfire_grace_time=300,

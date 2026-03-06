@@ -38,6 +38,27 @@ def get_db_connection():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
+def finalize_open_translation_sessions() -> dict[str, int]:
+    """Force-close unfinished translation sessions that already have issued sentences."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_user_progress up
+                SET end_time = NOW(), completed = TRUE
+                WHERE up.completed = FALSE
+                  AND EXISTS (
+                    SELECT 1
+                    FROM bt_3_daily_sentences ds
+                    WHERE ds.user_id = up.user_id
+                      AND ds.session_id = up.session_id
+                  );
+                """
+            )
+            closed_sessions = int(cursor.rowcount or 0)
+    return {"closed_sessions": closed_sessions}
+
+
 def _get_active_session_id(
     cursor,
     user_id: int,
