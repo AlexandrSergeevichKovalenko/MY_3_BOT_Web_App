@@ -2463,6 +2463,51 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_plan_limits_lookup
                 ON plan_limits (plan_code, is_active, period);
             """)
+            free_feel_word_daily = _env_decimal("FREE_FEEL_WORD_DAILY_LIMIT", "3")
+            free_skill_training_daily = _env_decimal("FREE_SKILL_TRAINING_DAILY_LIMIT", "1")
+            plan_limit_seed_rows: list[tuple] = []
+            if free_feel_word_daily is not None and free_feel_word_daily >= 0:
+                plan_limit_seed_rows.append(
+                    (
+                        "free",
+                        "feel_word_daily",
+                        free_feel_word_daily,
+                        "count",
+                        "day",
+                    )
+                )
+            if free_skill_training_daily is not None and free_skill_training_daily >= 0:
+                plan_limit_seed_rows.append(
+                    (
+                        "free",
+                        "skill_training_daily",
+                        free_skill_training_daily,
+                        "count",
+                        "day",
+                    )
+                )
+            if plan_limit_seed_rows:
+                cursor.executemany(
+                    """
+                    INSERT INTO plan_limits (
+                        plan_code,
+                        feature_code,
+                        limit_value,
+                        limit_unit,
+                        period,
+                        is_active,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, TRUE, NOW())
+                    ON CONFLICT (plan_code, feature_code, period) DO UPDATE
+                    SET
+                        limit_value = EXCLUDED.limit_value,
+                        limit_unit = EXCLUDED.limit_unit,
+                        is_active = TRUE,
+                        updated_at = NOW();
+                    """,
+                    plan_limit_seed_rows,
+                )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS daily_cost_rollup (
                     user_id BIGINT NOT NULL,
@@ -10665,6 +10710,39 @@ def _get_feature_usage_today(user_id: int, feature_code: str, tz: str = TRIAL_PO
                 )
                 row = cursor.fetchone()
         return float((row or [0])[0] or 0.0)
+
+    if feature == "feel_word_daily":
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bt_3_billing_events
+                    WHERE user_id = %s
+                      AND action_type = 'flashcards_feel_request'
+                      AND units_type = 'requests'
+                      AND (event_time AT TIME ZONE %s)::date = %s;
+                    """,
+                    (int(user_id), tz_name, day_local),
+                )
+                row = cursor.fetchone()
+        return float((row or [0])[0] or 0)
+
+    if feature == "skill_training_daily":
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bt_3_billing_events
+                    WHERE user_id = %s
+                      AND action_type = 'theory_package_prepare'
+                      AND (event_time AT TIME ZONE %s)::date = %s;
+                    """,
+                    (int(user_id), tz_name, day_local),
+                )
+                row = cursor.fetchone()
+        return float((row or [0])[0] or 0)
 
     return 0.0
 

@@ -452,6 +452,7 @@ try:
     STARTER_DICTIONARY_SOURCE_USER_ID = int((os.getenv("STARTER_DICTIONARY_SOURCE_USER_ID") or "117649764").strip() or "117649764")
 except Exception:
     STARTER_DICTIONARY_SOURCE_USER_ID = 117649764
+ECONOMICS_ADMIN_TELEGRAM_ID = 117649764
 try:
     STARTER_DICTIONARY_IMPORT_LIMIT = int((os.getenv("STARTER_DICTIONARY_IMPORT_LIMIT") or "1000").strip() or "1000")
 except Exception:
@@ -548,7 +549,7 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/token": {"cap": True},
     "/api/webapp/dictionary": {"cap": True},
     "/api/webapp/dictionary/collocations": {"cap": True},
-    "/api/webapp/flashcards/feel": {"cap": True},
+    "/api/webapp/flashcards/feel": {"cap": True, "feature_code": "feel_word_daily"},
     "/api/webapp/flashcards/feel/dispatch": {"cap": True},
     "/api/webapp/flashcards/enrich": {"cap": True},
     "/api/webapp/explain": {"cap": True},
@@ -558,7 +559,7 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/webapp/youtube/translate": {"cap": True},
     "/api/webapp/submit-group": {"cap": True},
     "/api/webapp/story/submit": {"cap": True},
-    "/api/today/theory/prepare": {"cap": True},
+    "/api/today/theory/prepare": {"cap": True, "feature_code": "skill_training_daily"},
     "/api/today/theory/check": {"cap": True},
 }
 _BILLING_GUARD_SKIP_PATHS = {
@@ -11221,6 +11222,8 @@ def get_economics_summary():
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
+    if int(user_id) != ECONOMICS_ADMIN_TELEGRAM_ID:
+        return jsonify({"error": "Доступ запрещен"}), 403
 
     period = str(request.args.get("period") or "month").strip().lower()
     if period == "half_year":
@@ -15468,6 +15471,21 @@ def get_flashcard_feel():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    def _log_feel_request(status: str) -> None:
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="flashcards_feel_request",
+            provider="app_internal",
+            units_type="requests",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            status=status,
+            metadata={
+                "entry_id": int(entry_id) if str(entry_id).strip().isdigit() else None,
+            },
+            idempotency_seed=f"feel:{user_id}:{entry_id}:{status}:{time.time_ns()}",
+        )
 
     response_json = None
     entry = None
@@ -15484,6 +15502,7 @@ def get_flashcard_feel():
         response_json = None
 
     if response_json and response_json.get("feel_explanation"):
+        _log_feel_request("estimated")
         return jsonify({"ok": True, "feel_explanation": response_json.get("feel_explanation")})
 
     if not word_ru:
@@ -15535,6 +15554,7 @@ def get_flashcard_feel():
         update_webapp_dictionary_entry(int(entry_id), response_json)
     except Exception:
         pass
+    _log_feel_request("estimated")
 
     return jsonify(
         {
@@ -17306,7 +17326,8 @@ def reader_audio_export():
     now_utc = datetime.now(timezone.utc)
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz="Europe/Vienna")
-    if str(entitlement.get("effective_mode") or "free").lower() != "pro":
+    effective_mode = str(entitlement.get("effective_mode") or "free").lower()
+    if effective_mode not in {"pro", "trial"}:
         return jsonify(
             {
                 "error": "Аудио-конвертация книг в Reader доступна только на премиум подписке. Перейдите на премиум подписку.",
@@ -17340,6 +17361,16 @@ def reader_audio_export():
             return jsonify({"error": "page_from/page_to должны быть числами"}), 400
         start_page = max(1, start_page)
         end_page = max(start_page, min(len(pages), end_page))
+        selected_page_count = max(0, end_page - start_page + 1)
+        if selected_page_count > 10:
+            return jsonify(
+                {
+                    "error": "Лимит Reader Audio: за один экспорт можно скачать не более 10 страниц.",
+                    "error_code": "reader_audio_page_limit_exceeded",
+                    "limit_pages": 10,
+                    "requested_pages": selected_page_count,
+                }
+            ), 403
         selected = []
         for page in pages:
             try:

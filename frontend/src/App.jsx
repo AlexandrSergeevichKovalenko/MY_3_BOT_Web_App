@@ -397,7 +397,7 @@ function AppInner() {
   const [billingPlansError, setBillingPlansError] = useState('');
   const [billingPlans, setBillingPlans] = useState([]);
   const [billingActionLoading, setBillingActionLoading] = useState(false);
-  const [billingInfoOpen, setBillingInfoOpen] = useState(false);
+  const [billingPlanDetailsOpenFor, setBillingPlanDetailsOpenFor] = useState('');
   const [languageProfile, setLanguageProfile] = useState(null);
   const [languageProfileDraft, setLanguageProfileDraft] = useState({ learning_language: 'de', native_language: 'ru' });
   const [languageProfileLoading, setLanguageProfileLoading] = useState(false);
@@ -863,6 +863,55 @@ function AppInner() {
         return String(a.planCode || '').localeCompare(String(b.planCode || ''));
       });
   }, [billingPlans, billingPlanMeta, uiLang, tr]);
+  const billingPlanLimitDetails = useMemo(() => {
+    const paidCommon = [
+      tr('Переводы: безлимитно.', 'Uebersetzungen: unbegrenzt.'),
+      tr('Читалка: безлимитно.', 'Reader: unbegrenzt.'),
+      tr('Скачивание аудио из читалки: до 10 страниц за один экспорт.', 'Audio-Export aus dem Reader: bis zu 10 Seiten pro Export.'),
+      tr('Карточки: безлимитно.', 'Karteikarten: unbegrenzt.'),
+      tr('«Почувствуй слово»: безлимитно.', '„Wort fuehlen“: unbegrenzt.'),
+      tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.'),
+      tr('Прокачка навыков: безлимитно.', 'Skill-Training: unbegrenzt.'),
+      tr(
+        'По запросу можно обсудить индивидуальную доработку/персональную тренировку для этого пользователя (по технической возможности).',
+        'Auf Wunsch kann eine individuelle technische Anpassung/persoenliches Training besprochen werden (sofern technisch machbar).'
+      ),
+    ];
+    return {
+      free: {
+        title: tr('Лимиты тарифа Free', 'Limits des Free-Tarifs'),
+        items: [
+          tr('Переводы: безлимитно.', 'Uebersetzungen: unbegrenzt.'),
+          tr('Читалка: 1 книга/документ в архиве (период хранения до 30 дней).', 'Reader: 1 Buch/Dokument im Archiv (Speicherzeit bis 30 Tage).'),
+          tr('Чтобы добавить новую книгу, нужно удалить предыдущую.', 'Um ein neues Buch hinzuzufuegen, muss das vorherige geloescht werden.'),
+          tr('Скачивание аудио из читалки: недоступно.', 'Audio-Export aus dem Reader: nicht verfuegbar.'),
+          tr('Карточки: в каждом виде тренировки по 5 слов в день.', 'Karteikarten: in jedem Trainingsmodus 5 Woerter pro Tag.'),
+          tr('«Почувствуй слово»: до 3 раз в день (общий лимит).', '„Wort fuehlen“: bis zu 3-mal pro Tag (globales Limit).'),
+          tr('Разговорная практика: 3 минуты в день.', 'Sprechpraxis: 3 Minuten pro Tag.'),
+          tr('Прокачка навыков: 1 навык.', 'Skill-Training: 1 Skill.'),
+        ],
+      },
+      pro: {
+        title: tr('Лимиты тарифа Pro', 'Limits des Pro-Tarifs'),
+        items: paidCommon,
+      },
+      support_coffee: {
+        title: tr('Лимиты тарифа Coffee', 'Limits des Coffee-Tarifs'),
+        items: paidCommon,
+      },
+      support_cheesecake: {
+        title: tr('Лимиты тарифа Cheesecake', 'Limits des Cheesecake-Tarifs'),
+        items: paidCommon,
+      },
+    };
+  }, [tr]);
+  const activeBillingPlanDetails = useMemo(() => {
+    if (!billingPlanDetailsOpenFor) return null;
+    return billingPlanLimitDetails[billingPlanDetailsOpenFor] || {
+      title: tr('Лимиты тарифа', 'Tariflimits'),
+      items: [tr('Лимиты для этого тарифа обновляются. Попробуйте позже.', 'Die Limits fuer diesen Tarif werden aktualisiert. Bitte spaeter erneut pruefen.')],
+    };
+  }, [billingPlanDetailsOpenFor, billingPlanLimitDetails, tr]);
   const readApiError = useCallback(async (response, fallbackRu, fallbackDe) => {
     const fallback = tr(fallbackRu, fallbackDe);
     const formatBillingLimitError = (payload) => {
@@ -1061,6 +1110,7 @@ function AppInner() {
     if (fromTelegramUnsafe) return fromTelegramUnsafe;
     return 'anon';
   }, [initData, telegramApp, webappUser?.id]);
+  const canViewEconomics = stableWebappUserId === '117649764';
   const skillTrainingStorageKey = useMemo(() => {
     return `skill_training_sessions_${stableWebappUserId}_${getLocalDateKey()}`;
   }, [stableWebappUserId]);
@@ -4859,6 +4909,7 @@ function AppInner() {
   }, [webappUser]);
 
   const toggleSection = (key) => {
+    if (key === 'economics' && !canViewEconomics) return;
     setSelectedSections((prev) => {
       if (!menuMultiSelect) {
         return new Set([key]);
@@ -5007,7 +5058,10 @@ function AppInner() {
   };
 
   const showAllSections = () => {
-    const next = ['guide', 'translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'support', 'analytics', 'economics', 'subscription', 'theory'];
+    const next = ['guide', 'translations', 'youtube', 'movies', 'dictionary', 'reader', 'flashcards', 'assistant', 'support', 'analytics', 'subscription', 'theory'];
+    if (canViewEconomics) {
+      next.push('economics');
+    }
     if (isSkillTrainingReady) {
       next.push('skill_training');
     }
@@ -5021,6 +5075,7 @@ function AppInner() {
   };
 
   const handleMenuSelection = (key, ref) => {
+    if (key === 'economics' && !canViewEconomics) return;
     if (key === 'youtube' && !menuMultiSelect) {
       const backCandidate = Array.from(selectedSections).find((item) => item && item !== 'youtube') || '';
       setYoutubeBackSection(backCandidate);
@@ -11576,10 +11631,10 @@ function AppInner() {
     if (!isWebAppMode || !initData) {
       return;
     }
-    if (!flashcardsOnly && isSectionVisible('economics')) {
+    if (canViewEconomics && !flashcardsOnly && isSectionVisible('economics')) {
       loadEconomics();
     }
-  }, [initData, isWebAppMode, economicsPeriod, economicsAllocation, selectedSections, flashcardsOnly]);
+  }, [initData, isWebAppMode, canViewEconomics, economicsPeriod, economicsAllocation, selectedSections, flashcardsOnly]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -11590,6 +11645,29 @@ function AppInner() {
       loadBillingPlans();
     }
   }, [initData, isWebAppMode, selectedSections, flashcardsOnly]);
+
+  useEffect(() => {
+    if (canViewEconomics) return;
+    setSelectedSections((prev) => {
+      if (!prev.has('economics')) return prev;
+      const next = new Set(prev);
+      next.delete('economics');
+      return next;
+    });
+  }, [canViewEconomics]);
+
+  useEffect(() => {
+    if (!billingPlanDetailsOpenFor) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setBillingPlanDetailsOpenFor('');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [billingPlanDetailsOpenFor]);
 
   useEffect(() => {
     if (!analyticsTrendRef.current) {
@@ -11949,15 +12027,17 @@ function AppInner() {
                 <span className="menu-icon menu-icon-analytics">{renderMenuIcon('analytics')}</span>
                 <span>{t('menu_analytics')}</span>
               </button>
-              <button
-                type="button"
-                className={`menu-item menu-item-economics ${selectedSections.has('economics') ? 'is-active' : ''}`}
-                onClick={() => toggleSection('economics')}
-                disabled={flashcardsOnly}
-              >
-                <span className="menu-icon menu-icon-economics">{renderMenuIcon('economics')}</span>
-                <span>{t('menu_economics')}</span>
-              </button>
+              {canViewEconomics && (
+                <button
+                  type="button"
+                  className={`menu-item menu-item-economics ${selectedSections.has('economics') ? 'is-active' : ''}`}
+                  onClick={() => toggleSection('economics')}
+                  disabled={flashcardsOnly}
+                >
+                  <span className="menu-icon menu-icon-economics">{renderMenuIcon('economics')}</span>
+                  <span>{t('menu_economics')}</span>
+                </button>
+              )}
               <button
                 type="button"
                 className={`menu-item menu-item-subscription ${selectedSections.has('subscription') ? 'is-active' : ''}`}
@@ -12201,15 +12281,17 @@ function AppInner() {
                       <span className="menu-icon menu-icon-analytics">{renderMenuIcon('analytics')}</span>
                       <span>{t('menu_analytics')}</span>
                     </button>
-                    <button
-                      type="button"
-                      className={`menu-item menu-item-economics ${selectedSections.has('economics') ? 'is-active' : ''}`}
-                      onClick={() => handleMenuSelection('economics', economicsRef)}
-                      disabled={flashcardsOnly}
-                    >
-                      <span className="menu-icon menu-icon-economics">{renderMenuIcon('economics')}</span>
-                      <span>{t('menu_economics')}</span>
-                    </button>
+                    {canViewEconomics && (
+                      <button
+                        type="button"
+                        className={`menu-item menu-item-economics ${selectedSections.has('economics') ? 'is-active' : ''}`}
+                        onClick={() => handleMenuSelection('economics', economicsRef)}
+                        disabled={flashcardsOnly}
+                      >
+                        <span className="menu-icon menu-icon-economics">{renderMenuIcon('economics')}</span>
+                        <span>{t('menu_economics')}</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       className={`menu-item menu-item-subscription ${selectedSections.has('subscription') ? 'is-active' : ''}`}
@@ -16503,7 +16585,7 @@ function AppInner() {
               </section>
             )}
 
-            {!flashcardsOnly && isSectionVisible('economics') && (
+            {canViewEconomics && !flashcardsOnly && isSectionVisible('economics') && (
               <section className="webapp-section webapp-economics" ref={economicsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Экономика', 'Kosten')}</h2>
@@ -16683,67 +16765,38 @@ function AppInner() {
                       {tr('Сброс лимитов', 'Limits-Reset')}: {billingStatus?.reset_at ? new Date(billingStatus.reset_at).toLocaleString() : '—'}
                     </div>
 
-                    <div className="webapp-muted">
-                      {tr(
-                        'Дополнительная поддержка проекта доступна отдельно от текущего тарифа.',
-                        'Zusaetzliche Projektunterstuetzung ist separat vom aktuellen Tarif verfuegbar.'
-                      )}
+                    <div className="billing-trial-banner">
+                      <strong>{tr('Первые 3 дня: Trial Pro для всех новых пользователей.', 'Die ersten 3 Tage: Trial Pro fuer alle neuen Nutzer.')}</strong>
+                      <p>
+                        {tr(
+                          'В этот период работает расширенный доступ, но действует внутренний технический cap расходов (он невидим пользователю).',
+                          'In diesem Zeitraum gilt erweiterter Zugriff, aber mit internem technischem Kosten-Cap (fuer Nutzer nicht sichtbar).'
+                        )}
+                      </p>
                     </div>
-                    <div className={`billing-info-accordion ${billingInfoOpen ? 'is-open' : ''}`}>
-                      <button
-                        type="button"
-                        className="billing-info-accordion__toggle"
-                        onClick={() => setBillingInfoOpen((prev) => !prev)}
-                        aria-expanded={billingInfoOpen}
-                      >
-                        <span className="billing-info-accordion__title">
-                          {tr('Как устроен блок подписки и что делать в Stripe', 'Wie der Abo-Bereich funktioniert und was du in Stripe tun solltest')}
-                        </span>
-                        <span className={`billing-info-accordion__chevron ${billingInfoOpen ? 'is-open' : ''}`} aria-hidden="true">⌄</span>
-                      </button>
-                      {billingInfoOpen && (
-                        <div className="billing-info-accordion__body">
-                          <div className="billing-info-accordion__section">
-                            <h4>{tr('Что означает блок «Подписка»', 'Was der Bereich „Abo“ bedeutet')}</h4>
-                            <ul>
-                              <li>{tr('Это центр управления тарифом: текущий план, статус, дневной cap, расход за сегодня.', 'Das ist die zentrale Tarifsteuerung: aktueller Plan, Status, Tageslimit und heutiger Verbrauch.')}</li>
-                              <li>{tr('Ниже всегда должен быть виден полный список доступных тарифов.', 'Darunter sollte immer die komplette Liste aller verfuegbaren Tarife sichtbar sein.')}</li>
-                              <li>{tr('Если карточка пишет «Тариф ещё не подключён в Stripe», этот тариф сейчас нельзя оплатить — на сервере не активирован Stripe Price ID.', 'Wenn die Karte „Tarif noch nicht in Stripe verbunden“ zeigt, kann dieser Tarif aktuell nicht bezahlt werden — die Stripe Price ID ist serverseitig nicht aktiv.')}</li>
-                            </ul>
-                          </div>
-                          <div className="billing-info-accordion__section">
-                            <h4>{tr('Варианты тарифов', 'Tarifvarianten')}</h4>
-                            <ul>
-                              <li>{tr('Free: базовый бесплатный режим с ограничениями.', 'Free: kostenloser Basis-Modus mit Limits.')}</li>
-                              <li className="billing-info-accordion__item-highlight-pro">{tr('Pro: основной платный режим без дневного лимита. Плюс можно отправить персональный запрос на индивидуальную доработку: например новый вид Telegram-квизов, новый формат тренировки слов, персональные темы/направления для разговоров с учителем, дополнительную тему в переводах с отдельной логикой. Если это технически реализуемо и безопасно в текущей архитектуре — доработка делается индивидуально под пользователя.', 'Pro: der Haupt-Premium-Modus ohne Tageslimit. Zusaetzlich kannst du einen persoenlichen Entwicklungswunsch senden: z. B. neue Telegram-Quizformate, neue Worttraining-Formate, individuelle Themen/Richtungen fuer Gespraeche mit dem Lehrer oder ein zusaetzliches Uebersetzungsthema mit eigener Logik. Wenn es technisch sinnvoll und sicher in der aktuellen Architektur umsetzbar ist, wird die Funktion individuell fuer dich umgesetzt.')}</li>
-                              <li>{tr('«Кофе» и «Кофе + чизкейк»: сейчас это альтернативные платные тарифы, а не add-on поверх Pro.', '„Kaffee“ und „Kaffee + Cheesecake“: aktuell sind das alternative bezahlte Tarife, keine Add-ons zusaetzlich zu Pro.')}</li>
-                            </ul>
-                          </div>
-                          <div className="billing-info-accordion__section">
-                            <h4>{tr('Что происходит при выборе нового тарифа', 'Was beim Tarifwechsel passiert')}</h4>
-                            <ul>
-                              <li>{tr('Если уже есть активные платные тарифы, все они переводятся в режим «до конца периода», а новый стартует со следующего биллингового периода.', 'Wenn bereits bezahlte Tarife aktiv sind, werden alle auf „bis Periodenende“ gestellt und der neue startet im naechsten Abrechnungszeitraum.')}</li>
-                              <li>{tr('Это предотвращает двойное списание в середине текущего месяца.', 'Das verhindert doppelte Abbuchungen mitten im laufenden Monat.')}</li>
-                              <li>{tr('Тот же тариф повторно не оформляется: используйте Stripe Portal для управления.', 'Derselbe Tarif wird nicht erneut abgeschlossen: nutze dafuer das Stripe-Portal.')}</li>
-                            </ul>
-                          </div>
-                          <div className="billing-info-accordion__section">
-                            <h4>{tr('Кнопка «Управлять подпиской в Stripe Portal»', 'Button „Abo im Stripe-Portal verwalten“')}</h4>
-                            <ul>
-                              <li>{tr('Открывает Stripe Billing Portal на домене `billing.stripe.com` для вашего аккаунта.', 'Oeffnet das Stripe Billing Portal auf `billing.stripe.com` fuer deinen Account.')}</li>
-                              <li>{tr('Там доступны: смена карты, отмена/возобновление подписки, просмотр счетов.', 'Dort verfuegbar: Kartenwechsel, Kuendigung/Reaktivierung des Abos, Rechnungen ansehen.')}</li>
-                              <li>{tr('Для возврата нажмите кнопку возврата в Stripe или закройте веб-окно и снова откройте Mini App.', 'Zum Zurueckkehren in Stripe auf die Rueckkehr-Schaltflaeche tippen oder das Webfenster schliessen und die Mini App erneut oeffnen.')}</li>
-                            </ul>
-                          </div>
-                          <div className="billing-info-accordion__section">
-                            <h4>{tr('Что ещё важно', 'Was sonst wichtig ist')}</h4>
-                            <ul>
-                              <li>{tr('После оплаты или возврата из портала подождите 1–3 секунды и обновите раздел подписки.', 'Nach Zahlung oder Portal-Rueckkehr 1 bis 3 Sekunden warten und den Abo-Bereich aktualisieren.')}</li>
-                              <li>{tr('Если кнопка выбора тарифа не срабатывает, проверьте интернет, initData и фактическую активность плана в `/api/billing/plans`.', 'Wenn der Tarif-Button nicht reagiert, Internet, initData und die reale Plan-Aktivitaet in `/api/billing/plans` pruefen.')}</li>
-                            </ul>
-                          </div>
-                        </div>
-                      )}
+                    <div className="billing-policy-grid">
+                      <article className="billing-policy-card">
+                        <h4>{tr('Free после trial', 'Free nach Trial')}</h4>
+                        <ul>
+                          <li>{tr('Переводы: безлимитно.', 'Uebersetzungen: unbegrenzt.')}</li>
+                          <li>{tr('Читалка: 1 книга (до 30 дней), новая только после удаления старой.', 'Reader: 1 Buch (bis 30 Tage), neues nur nach Loeschen des alten.')}</li>
+                          <li>{tr('Аудио из читалки: недоступно.', 'Audio aus Reader: nicht verfuegbar.')}</li>
+                          <li>{tr('Карточки: по 5 слов в день на каждый вид тренировки.', 'Karteikarten: 5 Woerter pro Tag je Trainingsmodus.')}</li>
+                          <li>{tr('«Почувствуй слово»: 3 раза в день.', '„Wort fuehlen“: 3-mal pro Tag.')}</li>
+                          <li>{tr('Разговорная практика: 3 минуты в день.', 'Sprechpraxis: 3 Minuten pro Tag.')}</li>
+                          <li>{tr('Прокачка навыков: 1 навык.', 'Skill-Training: 1 Skill.')}</li>
+                        </ul>
+                      </article>
+                      <article className="billing-policy-card">
+                        <h4>{tr('Pro / Coffee / Cheesecake', 'Pro / Coffee / Cheesecake')}</h4>
+                        <ul>
+                          <li>{tr('Переводы, читалка, карточки, «почувствуй слово»: безлимитно.', 'Uebersetzungen, Reader, Karteikarten, „Wort fuehlen“: unbegrenzt.')}</li>
+                          <li>{tr('Аудио из читалки: до 10 страниц за экспорт.', 'Audio aus Reader: bis zu 10 Seiten pro Export.')}</li>
+                          <li>{tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.')}</li>
+                          <li>{tr('Прокачка навыков: безлимитно.', 'Skill-Training: unbegrenzt.')}</li>
+                          <li>{tr('Можно обсудить индивидуальную доработку/тренировку (по технической возможности).', 'Individuelle Anpassung/Training kann besprochen werden (sofern technisch moeglich).')}</li>
+                        </ul>
+                      </article>
                     </div>
                     <div className="billing-support-grid">
                       {billingPlanCards.map((offer) => {
@@ -16772,7 +16825,18 @@ function AppInner() {
                         return (
                           <article className="billing-support-card" key={offer.planCode}>
                             <div className="billing-support-card__eyebrow">{offer.eyebrow}</div>
-                            <h3>{offer.title}</h3>
+                            <div className="billing-support-card__title-row">
+                              <h3>{offer.title}</h3>
+                              <button
+                                type="button"
+                                className="billing-plan-info-button"
+                                onClick={() => setBillingPlanDetailsOpenFor(offer.planCode)}
+                                aria-label={tr('Показать лимиты тарифа', 'Tariflimits anzeigen')}
+                                title={tr('Показать лимиты тарифа', 'Tariflimits anzeigen')}
+                              >
+                                i
+                              </button>
+                            </div>
                             {offer.blurb && <p className="billing-support-card__blurb">{offer.blurb}</p>}
                             {offer.priceLabel && <div className="billing-support-card__price">{offer.priceLabel}</div>}
                             <button
@@ -16792,6 +16856,37 @@ function AppInner() {
                         );
                       })}
                     </div>
+                    {activeBillingPlanDetails && (
+                      <div
+                        role="presentation"
+                        className="billing-plan-details-modal"
+                        onClick={() => setBillingPlanDetailsOpenFor('')}
+                      >
+                        <div
+                          className="billing-plan-details-modal__panel"
+                          role="dialog"
+                          aria-modal="true"
+                          aria-label={activeBillingPlanDetails.title}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <div className="billing-plan-details-modal__head">
+                            <h3>{activeBillingPlanDetails.title}</h3>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => setBillingPlanDetailsOpenFor('')}
+                            >
+                              {tr('Закрыть', 'Schliessen')}
+                            </button>
+                          </div>
+                          <ul>
+                            {activeBillingPlanDetails.items.map((item, index) => (
+                              <li key={`${billingPlanDetailsOpenFor}_limit_${index}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
 
                     {billingStatus?.manage?.available && (
                       <div className="webapp-section-actions">
