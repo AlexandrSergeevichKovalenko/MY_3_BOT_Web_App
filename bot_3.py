@@ -123,6 +123,7 @@ pending_quiz_feel_requests = {}
 pending_dictionary_cards = {}
 pending_dictionary_save_options = {}
 pending_dictionary_lookup_requests = {}
+pending_dictionary_lookup_inflight = set()
 pending_tts_budget_custom = {}
 TTS_BUDGET_CUSTOM_TTL_SECONDS = 60 * 5
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
@@ -2748,6 +2749,112 @@ def _build_dictionary_pair_selection_text(source_text: str) -> str:
     )
 
 
+def _extract_lookup_input_from_pair_message_text(message_text: str) -> str:
+    text = str(message_text or "").strip()
+    if not text:
+        return ""
+    first_line = text.splitlines()[0] if text.splitlines() else ""
+    match = re.match(r"^\s*Запрос:\s*(.+?)\s*$", first_line)
+    if match:
+        return str(match.group(1) or "").strip()
+    return ""
+
+
+def _extract_card_key_from_reply_markup(reply_markup) -> str:
+    if not reply_markup:
+        return ""
+    rows = getattr(reply_markup, "inline_keyboard", None) or []
+    for row in rows:
+        for button in row or []:
+            callback_data = str(getattr(button, "callback_data", "") or "").strip()
+            if callback_data.startswith("dictfeel:"):
+                return callback_data.split(":", 1)[1].strip()
+    return ""
+
+
+def _parse_dictionary_options_from_message_text(message_text: str) -> tuple[str, str, list[dict]]:
+    text = str(message_text or "")
+    lines = text.splitlines()
+    options_by_idx: dict[int, dict] = {}
+    source_lang = ""
+    target_lang = ""
+    i = 0
+    while i < len(lines):
+        line = str(lines[i] or "").strip()
+        first_match = re.match(r"^(\d+)\.\s*([A-Za-z]{2}):\s*(.+)$", line)
+        if not first_match:
+            i += 1
+            continue
+        idx = int(first_match.group(1))
+        src_lang = first_match.group(2).strip().lower()
+        source_value = first_match.group(3).strip()
+        tgt_lang = ""
+        target_value = ""
+        if i + 1 < len(lines):
+            second_line = str(lines[i + 1] or "").strip()
+            second_match = re.match(r"^([A-Za-z]{2}):\s*(.+)$", second_line)
+            if second_match:
+                tgt_lang = second_match.group(1).strip().lower()
+                target_value = second_match.group(2).strip()
+        if source_value and target_value:
+            options_by_idx[idx] = {"source": source_value, "target": target_value}
+            if not source_lang:
+                source_lang = src_lang
+            if not target_lang:
+                target_lang = tgt_lang
+            i += 2
+            continue
+        i += 1
+
+    ordered = [options_by_idx[key] for key in sorted(options_by_idx.keys())][:3]
+    return source_lang, target_lang, ordered
+
+
+def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str) -> dict | None:
+    message = getattr(query, "message", None)
+    if not message:
+        return None
+    text = str(getattr(message, "text", "") or getattr(message, "caption", "") or "")
+    source_lang, target_lang, options = _parse_dictionary_options_from_message_text(text)
+    if not options:
+        return None
+    if not source_lang or not target_lang:
+        return None
+    user_id = int(getattr(query.from_user, "id", 0) or 0)
+    if user_id <= 0:
+        return None
+    card_key = _extract_card_key_from_reply_markup(getattr(message, "reply_markup", None))
+    lookup = {
+        "word_source": str(options[0].get("source") or "").strip(),
+        "word_target": str(options[0].get("target") or "").strip(),
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+    }
+    payload = {
+        "user_id": user_id,
+        "card_key": card_key,
+        "direction": f"{source_lang}-{target_lang}",
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "lookup": lookup,
+        "options": options,
+        "selected": [],
+    }
+    pending_dictionary_save_options[option_key] = payload
+    if card_key and card_key not in pending_dictionary_cards:
+        pending_dictionary_cards[card_key] = {
+            "user_id": user_id,
+            "direction": f"{source_lang}-{target_lang}",
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "source_text": str(options[0].get("source") or "").strip(),
+            "lookup": lookup,
+            "saved": False,
+            "original_query": str(options[0].get("source") or "").strip(),
+        }
+    return payload
+
+
 def _detect_dictionary_direction(text: str) -> str | None:
     normalized = re.sub(r"[.,!?;:()\"]", " ", text)
     has_cyr = bool(re.search(r"[А-Яа-яЁё]", normalized))
@@ -4029,6 +4136,43 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
     add_service_msg_id(context, msg.message_id)
 
 
+async def _process_dictionary_pair_selection(
+    *,
+    context: CallbackContext,
+    message,
+    request_key: str,
+    user_id: int,
+    lookup_input: str,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    try:
+        await _send_dictionary_lookup_result(
+            message=message,
+            context=context,
+            user_id=user_id,
+            lookup_input=lookup_input,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        logging.exception(
+            "❌ Dictionary pair processing failed user_id=%s key=%s pair=%s-%s: %s",
+            user_id,
+            request_key,
+            source_lang,
+            target_lang,
+            exc,
+        )
+        try:
+            await message.reply_text("Не удалось выполнить перевод. Попробуйте снова.")
+        except Exception:
+            logging.debug("Failed to send dictionary pair error message", exc_info=True)
+    finally:
+        pending_dictionary_lookup_requests.pop(request_key, None)
+        pending_dictionary_lookup_inflight.discard(request_key)
+
+
 async def handle_dictionary_pair_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query:
@@ -4053,11 +4197,25 @@ async def handle_dictionary_pair_callback(update: Update, context: CallbackConte
         return
 
     payload = pending_dictionary_lookup_requests.get(request_key)
-    if not payload:
-        await query.answer("Запрос устарел. Отправьте слово ещё раз.", show_alert=True)
-        return
     user = query.from_user
-    if not user or int(payload.get("user_id", 0)) != int(user.id):
+    if not user:
+        await query.answer("Пользователь не найден. Повторите запрос.", show_alert=True)
+        return
+
+    if not payload:
+        reconstructed_lookup_input = _extract_lookup_input_from_pair_message_text(
+            str(getattr(query.message, "text", "") or getattr(query.message, "caption", "") or "")
+        )
+        if not reconstructed_lookup_input:
+            await query.answer("Запрос устарел. Отправьте слово ещё раз.", show_alert=True)
+            return
+        payload = {
+            "user_id": int(user.id),
+            "text": reconstructed_lookup_input,
+        }
+        pending_dictionary_lookup_requests[request_key] = payload
+
+    if int(payload.get("user_id", 0)) != int(user.id):
         await query.answer("Выбор доступен только автору запроса.", show_alert=True)
         return
 
@@ -4066,21 +4224,28 @@ async def handle_dictionary_pair_callback(update: Update, context: CallbackConte
         await query.answer("Запрос пустой. Отправьте слово снова.", show_alert=True)
         return
 
-    await query.answer(f"Перевожу ({source_lang.upper()} -> {target_lang.upper()})")
+    if request_key in pending_dictionary_lookup_inflight:
+        await query.answer("Этот запрос уже обрабатывается. Подождите немного.", show_alert=True)
+        return
+    pending_dictionary_lookup_inflight.add(request_key)
+
+    await query.answer(f"Запустил перевод ({source_lang.upper()} -> {target_lang.upper()})")
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
         pass
 
-    await _send_dictionary_lookup_result(
-        message=query.message,
-        context=context,
-        user_id=int(user.id),
-        lookup_input=lookup_input,
-        source_lang=source_lang,
-        target_lang=target_lang,
+    context.application.create_task(
+        _process_dictionary_pair_selection(
+            context=context,
+            message=query.message,
+            request_key=request_key,
+            user_id=int(user.id),
+            lookup_input=lookup_input,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
     )
-    pending_dictionary_lookup_requests.pop(request_key, None)
 
 
 async def handle_dictionary_feel_callback(update: Update, context: CallbackContext) -> None:
@@ -4365,6 +4530,27 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
     data = query.data or ""
     key = data.replace("dictsave:", "", 1).strip()
     payload = pending_dictionary_cards.get(key)
+    if not payload and query.message and query.from_user:
+        text = str(getattr(query.message, "text", "") or getattr(query.message, "caption", "") or "")
+        source_lang, target_lang, options = _parse_dictionary_options_from_message_text(text)
+        if source_lang and target_lang and options:
+            lookup = {
+                "word_source": str(options[0].get("source") or "").strip(),
+                "word_target": str(options[0].get("target") or "").strip(),
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+            }
+            payload = {
+                "user_id": int(query.from_user.id),
+                "direction": f"{source_lang}-{target_lang}",
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "source_text": str(options[0].get("source") or "").strip(),
+                "lookup": lookup,
+                "saved": False,
+                "original_query": str(options[0].get("source") or "").strip(),
+            }
+            pending_dictionary_cards[key] = payload
     if not payload:
         await query.answer("Эта карточка уже недоступна. Запросите перевод ещё раз.", show_alert=True)
         return
@@ -4433,6 +4619,8 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
         return
 
     payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
     if not payload:
         await query.answer("Варианты устарели. Нажмите сохранить ещё раз.", show_alert=True)
         return
@@ -4574,6 +4762,8 @@ async def handle_dictionary_select_toggle_callback(update: Update, context: Call
 
     payload = pending_dictionary_save_options.get(option_key)
     if not payload:
+        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    if not payload:
         await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
         return
     user = query.from_user
@@ -4619,6 +4809,8 @@ async def handle_dictionary_select_all_callback(update: Update, context: Callbac
     option_key = parts[1].strip()
     payload = pending_dictionary_save_options.get(option_key)
     if not payload:
+        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    if not payload:
         await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
         return
     user = query.from_user
@@ -4652,6 +4844,8 @@ async def handle_dictionary_save_confirm_callback(update: Update, context: Callb
         return
     option_key = parts[1].strip()
     payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
     if not payload:
         await query.answer("Варианты устарели. Запросите снова.", show_alert=True)
         return
