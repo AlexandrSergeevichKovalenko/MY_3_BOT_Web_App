@@ -356,6 +356,10 @@ _YT_REQUEST_JITTER_MAX = 1.9
 _YT_OEMBED_CACHE: dict[str, dict] = {}
 _TRANSLATION_CHECK_RUNNERS: set[int] = set()
 _TRANSLATION_CHECK_RUNNERS_LOCK = threading.Lock()
+_OBSERVABILITY_LOCK = threading.Lock()
+_TTS_URL_POLL_ATTEMPTS: dict[str, int] = {}
+_TRANSLATION_CHECK_STATUS_POLLS: dict[int, int] = {}
+_TRANSLATION_CHECK_ACCEPTED_AT_MS: dict[int, int] = {}
 
 _audio_scheduler = None
 _audio_scheduler_lock = None
@@ -1122,6 +1126,148 @@ def _extract_request_init_data(payload: dict | None = None) -> str:
         or request.args.get("initData")
         or ""
     ).strip()
+
+
+def _sanitize_observability_id(value: Any, *, max_len: int = 128) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    candidate = raw[:max_len]
+    cleaned = re.sub(r"[^a-zA-Z0-9._:-]+", "-", candidate).strip("-")
+    return cleaned or None
+
+
+def _extract_observability_request_id(payload: dict | None = None) -> str:
+    body = payload if isinstance(payload, dict) else {}
+    candidates = [
+        request.headers.get("X-Request-ID"),
+        request.headers.get("X-Correlation-ID"),
+        request.args.get("request_id"),
+        request.args.get("correlation_id"),
+        body.get("request_id"),
+        body.get("correlation_id"),
+        getattr(g, "request_id", None),
+    ]
+    for candidate in candidates:
+        safe = _sanitize_observability_id(candidate)
+        if safe:
+            return safe
+    return f"req_{uuid4().hex[:20]}"
+
+
+def _build_observability_correlation_id(
+    *,
+    payload: dict | None = None,
+    fallback_seed: Any = None,
+    prefix: str = "flow",
+) -> str:
+    body = payload if isinstance(payload, dict) else {}
+    candidates = [
+        request.headers.get("X-Correlation-ID"),
+        request.headers.get("X-Request-ID"),
+        request.args.get("correlation_id"),
+        request.args.get("request_id"),
+        body.get("correlation_id"),
+        body.get("request_id"),
+    ]
+    for candidate in candidates:
+        safe = _sanitize_observability_id(candidate)
+        if safe:
+            return safe
+    safe_prefix = _sanitize_observability_id(prefix, max_len=24) or "flow"
+    safe_seed = _sanitize_observability_id(fallback_seed, max_len=64)
+    if safe_seed:
+        return f"{safe_prefix}_{safe_seed}"
+    return f"{safe_prefix}_{uuid4().hex[:16]}"
+
+
+def _to_epoch_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _elapsed_ms_since(start_perf: float, end_perf: float | None = None) -> int:
+    end_value = end_perf if end_perf is not None else time.perf_counter()
+    return max(0, int((end_value - start_perf) * 1000))
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _duration_between_ms(start_dt: datetime | None, end_dt: datetime | None) -> int | None:
+    if not start_dt or not end_dt:
+        return None
+    start_value = start_dt if start_dt.tzinfo else start_dt.replace(tzinfo=timezone.utc)
+    end_value = end_dt if end_dt.tzinfo else end_dt.replace(tzinfo=timezone.utc)
+    return max(0, int((end_value - start_value).total_seconds() * 1000))
+
+
+def _log_flow_observation(flow: str, stage: str, **fields: Any) -> None:
+    event: dict[str, Any] = {
+        "flow": str(flow or "").strip() or "unknown",
+        "stage": str(stage or "").strip() or "unknown",
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        event[str(key)] = value
+    try:
+        logging.info("obs %s", json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str))
+    except Exception:
+        logging.info("obs flow=%s stage=%s fields=%s", event.get("flow"), event.get("stage"), fields)
+
+
+def _increment_tts_url_poll_attempt(cache_key: str) -> int:
+    safe_cache_key = str(cache_key or "").strip()
+    if not safe_cache_key:
+        return 0
+    with _OBSERVABILITY_LOCK:
+        next_value = int(_TTS_URL_POLL_ATTEMPTS.get(safe_cache_key) or 0) + 1
+        _TTS_URL_POLL_ATTEMPTS[safe_cache_key] = next_value
+        if len(_TTS_URL_POLL_ATTEMPTS) > 10000:
+            _TTS_URL_POLL_ATTEMPTS.clear()
+        return next_value
+
+
+def _clear_tts_url_poll_attempt(cache_key: str) -> None:
+    safe_cache_key = str(cache_key or "").strip()
+    if not safe_cache_key:
+        return
+    with _OBSERVABILITY_LOCK:
+        _TTS_URL_POLL_ATTEMPTS.pop(safe_cache_key, None)
+
+
+def _remember_translation_check_accepted_at(session_id: int, accepted_at_ms: int) -> None:
+    with _OBSERVABILITY_LOCK:
+        _TRANSLATION_CHECK_ACCEPTED_AT_MS[int(session_id)] = int(accepted_at_ms)
+        if len(_TRANSLATION_CHECK_ACCEPTED_AT_MS) > 10000:
+            _TRANSLATION_CHECK_ACCEPTED_AT_MS.clear()
+
+
+def _pop_translation_check_accepted_at(session_id: int) -> int | None:
+    with _OBSERVABILITY_LOCK:
+        return _TRANSLATION_CHECK_ACCEPTED_AT_MS.pop(int(session_id), None)
+
+
+def _increment_translation_check_status_poll(session_id: int) -> int:
+    with _OBSERVABILITY_LOCK:
+        next_value = int(_TRANSLATION_CHECK_STATUS_POLLS.get(int(session_id)) or 0) + 1
+        _TRANSLATION_CHECK_STATUS_POLLS[int(session_id)] = next_value
+        if len(_TRANSLATION_CHECK_STATUS_POLLS) > 10000:
+            _TRANSLATION_CHECK_STATUS_POLLS.clear()
+        return next_value
+
+
+def _clear_translation_check_status_poll(session_id: int) -> None:
+    with _OBSERVABILITY_LOCK:
+        _TRANSLATION_CHECK_STATUS_POLLS.pop(int(session_id), None)
 
 
 def _normalize_scope_kind_payload(value) -> str:
@@ -10419,13 +10565,70 @@ def _queue_private_grammar_explanation_for_result(
     return 1
 
 
-def _run_translation_check_session(session_id: int) -> None:
+def _run_translation_check_session(
+    session_id: int,
+    *,
+    correlation_id: str | None = None,
+    request_id: str | None = None,
+    accepted_at_ms: int | None = None,
+) -> None:
+    runner_started_perf = time.perf_counter()
+    resolved_request_id = _sanitize_observability_id(request_id) or f"req_{uuid4().hex[:20]}"
+    resolved_correlation_id = (
+        _sanitize_observability_id(correlation_id)
+        or _build_observability_correlation_id(fallback_seed=f"session-{int(session_id)}", prefix="translation_check")
+    )
+    remembered_accepted_at_ms = _pop_translation_check_accepted_at(int(session_id))
+    accepted_at_ms_value = accepted_at_ms if accepted_at_ms is not None else remembered_accepted_at_ms
+    session_user_id: int | None = None
+    runner_start_delay_ms: int | None = None
+    terminal_outcome = "error"
+    total_completion_duration_ms: int | None = None
     try:
+        session_lookup_started_perf = time.perf_counter()
         session = get_translation_check_session(session_id=int(session_id))
+        session_lookup_duration_ms = _elapsed_ms_since(session_lookup_started_perf)
         if not session:
+            _log_flow_observation(
+                "translation_check",
+                "runner_session_missing",
+                request_id=resolved_request_id,
+                correlation_id=resolved_correlation_id,
+                session_id=int(session_id),
+                check_id=int(session_id),
+                db_lookup_duration_ms=session_lookup_duration_ms,
+                terminal_outcome="error",
+                duration_ms=_elapsed_ms_since(runner_started_perf),
+            )
             return
+        session_user_id = int(session.get("user_id") or 0) or None
+        if accepted_at_ms_value is None:
+            created_dt = _parse_iso_datetime(session.get("created_at"))
+            if created_dt is not None:
+                accepted_at_ms_value = int(created_dt.timestamp() * 1000)
+        if accepted_at_ms_value is not None:
+            try:
+                runner_start_delay_ms = max(0, int(_to_epoch_ms() - int(accepted_at_ms_value)))
+            except Exception:
+                runner_start_delay_ms = None
+        _log_flow_observation(
+            "translation_check",
+            "runner_started",
+            request_id=resolved_request_id,
+            correlation_id=resolved_correlation_id,
+            user_id=session_user_id,
+            session_id=int(session_id),
+            check_id=int(session_id),
+            items_total=int(session.get("total_items") or 0),
+            runner_start_delay_ms=runner_start_delay_ms,
+            db_lookup_duration_ms=session_lookup_duration_ms,
+        )
+
+        items_lookup_started_perf = time.perf_counter()
         items = list_translation_check_items(session_id=int(session_id))
+        items_lookup_duration_ms = _elapsed_ms_since(items_lookup_started_perf)
         if not items:
+            session_status_update_started_perf = time.perf_counter()
             update_translation_check_session_status(
                 session_id=int(session_id),
                 status="failed",
@@ -10433,12 +10636,44 @@ def _run_translation_check_session(session_id: int) -> None:
                 started=True,
                 finished=True,
             )
+            session_status_update_duration_ms = _elapsed_ms_since(session_status_update_started_perf)
+            terminal_outcome = "error"
+            _log_flow_observation(
+                "translation_check",
+                "runner_finished",
+                request_id=resolved_request_id,
+                correlation_id=resolved_correlation_id,
+                user_id=session_user_id,
+                session_id=int(session_id),
+                check_id=int(session_id),
+                items_total=0,
+                runner_start_delay_ms=runner_start_delay_ms,
+                items_lookup_duration_ms=items_lookup_duration_ms,
+                db_update_duration_ms=session_status_update_duration_ms,
+                terminal_outcome=terminal_outcome,
+                duration_ms=_elapsed_ms_since(runner_started_perf),
+            )
             return
 
+        mark_running_started_perf = time.perf_counter()
         update_translation_check_session_status(
             session_id=int(session_id),
             status="running",
             started=True,
+        )
+        mark_running_duration_ms = _elapsed_ms_since(mark_running_started_perf)
+        _log_flow_observation(
+            "translation_check",
+            "runner_processing_started",
+            request_id=resolved_request_id,
+            correlation_id=resolved_correlation_id,
+            user_id=session_user_id,
+            session_id=int(session_id),
+            check_id=int(session_id),
+            items_total=len(items),
+            runner_start_delay_ms=runner_start_delay_ms,
+            items_lookup_duration_ms=items_lookup_duration_ms,
+            db_update_duration_ms=mark_running_duration_ms,
         )
 
         for item in items:
@@ -10446,12 +10681,19 @@ def _run_translation_check_session(session_id: int) -> None:
             item_status = str(item.get("status") or "").strip().lower()
             if item_status in {"done", "failed"}:
                 continue
+            item_started_perf = time.perf_counter()
+            mark_item_running_started_perf = time.perf_counter()
             update_translation_check_item_result(
                 item_id=item_id,
                 status="running",
                 started=True,
             )
+            mark_item_running_duration_ms = _elapsed_ms_since(mark_item_running_started_perf)
+            check_duration_ms = None
+            finalize_item_duration_ms = None
+            counters_refresh_duration_ms = None
             try:
+                check_started_perf = time.perf_counter()
                 results = asyncio.run(
                     check_user_translation_webapp(
                         int(session["user_id"]),
@@ -10467,11 +10709,13 @@ def _run_translation_check_session(session_id: int) -> None:
                         daily_session_id=session.get("source_session_id"),
                     )
                 )
+                check_duration_ms = _elapsed_ms_since(check_started_perf)
                 result_item = results[0] if results else {
                     "sentence_number": item.get("sentence_number"),
                     "error": "Пустой ответ проверки перевода.",
                 }
                 item_error = str(result_item.get("error") or "").strip()
+                finalize_item_started_perf = time.perf_counter()
                 update_translation_check_item_result(
                     item_id=item_id,
                     status="failed" if item_error else "done",
@@ -10481,6 +10725,7 @@ def _run_translation_check_session(session_id: int) -> None:
                     webapp_check_id=result_item.get("translation_id") if isinstance(result_item, dict) else None,
                     finished=True,
                 )
+                finalize_item_duration_ms = _elapsed_ms_since(finalize_item_started_perf)
                 if not item_error and bool(session.get("send_private_grammar_text")):
                     _queue_private_grammar_explanation_for_result(
                         user_id=int(session["user_id"]),
@@ -10488,41 +10733,145 @@ def _run_translation_check_session(session_id: int) -> None:
                         source_lang=str(session.get("source_lang") or "ru"),
                         target_lang=str(session.get("target_lang") or "de"),
                     )
+                refresh_counters_started_perf = time.perf_counter()
+                refresh_translation_check_session_counters(session_id=int(session_id))
+                counters_refresh_duration_ms = _elapsed_ms_since(refresh_counters_started_perf)
+                _log_flow_observation(
+                    "translation_check",
+                    "item_processed",
+                    request_id=resolved_request_id,
+                    correlation_id=resolved_correlation_id,
+                    user_id=session_user_id,
+                    session_id=int(session_id),
+                    check_id=int(session_id),
+                    item_id=item_id,
+                    item_order=int(item.get("item_order") or 0),
+                    per_item_duration_ms=_elapsed_ms_since(item_started_perf),
+                    item_processing_duration_ms=check_duration_ms,
+                    db_update_duration_ms=(
+                        mark_item_running_duration_ms
+                        + (finalize_item_duration_ms or 0)
+                        + (counters_refresh_duration_ms or 0)
+                    ),
+                    item_status="failed" if item_error else "done",
+                    item_outcome="error" if item_error else "success",
+                )
             except Exception as exc:
                 logging.error("Translation check session item failed: session=%s item=%s error=%s", session_id, item_id, exc, exc_info=True)
+                finalize_item_started_perf = time.perf_counter()
                 update_translation_check_item_result(
                     item_id=item_id,
                     status="failed",
                     error_text=f"Ошибка проверки: {exc}",
                     finished=True,
                 )
-            refresh_translation_check_session_counters(session_id=int(session_id))
+                finalize_item_duration_ms = _elapsed_ms_since(finalize_item_started_perf)
+                refresh_counters_started_perf = time.perf_counter()
+                refresh_translation_check_session_counters(session_id=int(session_id))
+                counters_refresh_duration_ms = _elapsed_ms_since(refresh_counters_started_perf)
+                _log_flow_observation(
+                    "translation_check",
+                    "item_processed",
+                    request_id=resolved_request_id,
+                    correlation_id=resolved_correlation_id,
+                    user_id=session_user_id,
+                    session_id=int(session_id),
+                    check_id=int(session_id),
+                    item_id=item_id,
+                    item_order=int(item.get("item_order") or 0),
+                    per_item_duration_ms=_elapsed_ms_since(item_started_perf),
+                    item_processing_duration_ms=check_duration_ms,
+                    db_update_duration_ms=(
+                        mark_item_running_duration_ms
+                        + (finalize_item_duration_ms or 0)
+                        + (counters_refresh_duration_ms or 0)
+                    ),
+                    item_status="failed",
+                    item_outcome="error",
+                )
 
+        final_counters_refresh_started_perf = time.perf_counter()
         session = refresh_translation_check_session_counters(session_id=int(session_id))
+        final_counters_refresh_duration_ms = _elapsed_ms_since(final_counters_refresh_started_perf)
         last_error = None
         if session and int(session.get("failed_items") or 0) >= int(session.get("total_items") or 0) and int(session.get("total_items") or 0) > 0:
             last_error = "Все элементы проверки завершились с ошибкой."
-        update_translation_check_session_status(
+        finalize_session_started_perf = time.perf_counter()
+        session = update_translation_check_session_status(
             session_id=int(session_id),
             status="done",
             last_error=last_error,
             finished=True,
         )
+        finalize_session_duration_ms = _elapsed_ms_since(finalize_session_started_perf)
+        total_items = int((session or {}).get("total_items") or 0)
+        completed_items = int((session or {}).get("completed_items") or 0)
+        failed_items = int((session or {}).get("failed_items") or 0)
+        if total_items > 0 and failed_items >= total_items:
+            terminal_outcome = "error"
+        elif failed_items > 0:
+            terminal_outcome = "partial"
+        else:
+            terminal_outcome = "success"
+        total_completion_duration_ms = _duration_between_ms(
+            _parse_iso_datetime((session or {}).get("created_at")),
+            _parse_iso_datetime((session or {}).get("finished_at")),
+        )
+        _log_flow_observation(
+            "translation_check",
+            "runner_finished",
+            request_id=resolved_request_id,
+            correlation_id=resolved_correlation_id,
+            user_id=session_user_id,
+            session_id=int(session_id),
+            check_id=int(session_id),
+            items_total=total_items,
+            items_completed=completed_items,
+            items_failed=failed_items,
+            runner_start_delay_ms=runner_start_delay_ms,
+            session_completion_duration_ms=total_completion_duration_ms,
+            db_update_duration_ms=final_counters_refresh_duration_ms + finalize_session_duration_ms,
+            terminal_outcome=terminal_outcome,
+            duration_ms=_elapsed_ms_since(runner_started_perf),
+        )
     except Exception as exc:
         logging.error("Translation check session failed: session=%s error=%s", session_id, exc, exc_info=True)
         try:
-            update_translation_check_session_status(
+            fail_update_started_perf = time.perf_counter()
+            failed_session = update_translation_check_session_status(
                 session_id=int(session_id),
                 status="failed",
                 last_error=f"Ошибка фоновой проверки: {exc}",
                 started=True,
                 finished=True,
             )
+            fail_update_duration_ms = _elapsed_ms_since(fail_update_started_perf)
+            total_completion_duration_ms = _duration_between_ms(
+                _parse_iso_datetime((failed_session or {}).get("created_at")),
+                _parse_iso_datetime((failed_session or {}).get("finished_at")),
+            )
+            _log_flow_observation(
+                "translation_check",
+                "runner_finished",
+                request_id=resolved_request_id,
+                correlation_id=resolved_correlation_id,
+                user_id=session_user_id,
+                session_id=int(session_id),
+                check_id=int(session_id),
+                runner_start_delay_ms=runner_start_delay_ms,
+                session_completion_duration_ms=total_completion_duration_ms,
+                db_update_duration_ms=fail_update_duration_ms,
+                terminal_outcome="error",
+                error_code="runner_exception",
+                duration_ms=_elapsed_ms_since(runner_started_perf),
+            )
         except Exception:
             logging.exception("Failed to mark translation check session as failed: %s", session_id)
     finally:
         with _TRANSLATION_CHECK_RUNNERS_LOCK:
             _TRANSLATION_CHECK_RUNNERS.discard(int(session_id))
+        if terminal_outcome in {"success", "partial", "error"}:
+            _clear_translation_check_status_poll(int(session_id))
 
 
 def _list_active_translation_check_session_ids(limit: int = 50) -> list[int]:
@@ -10548,14 +10897,25 @@ def _list_active_translation_check_session_ids(limit: int = 50) -> list[int]:
     return session_ids
 
 
-def _start_translation_check_runner(session_id: int) -> None:
+def _start_translation_check_runner(
+    session_id: int,
+    *,
+    correlation_id: str | None = None,
+    request_id: str | None = None,
+    accepted_at_ms: int | None = None,
+) -> None:
     with _TRANSLATION_CHECK_RUNNERS_LOCK:
         if int(session_id) in _TRANSLATION_CHECK_RUNNERS:
             return
         _TRANSLATION_CHECK_RUNNERS.add(int(session_id))
     threading.Thread(
         target=_run_translation_check_session,
-        args=(int(session_id),),
+        kwargs={
+            "session_id": int(session_id),
+            "correlation_id": correlation_id,
+            "request_id": request_id,
+            "accepted_at_ms": accepted_at_ms,
+        },
         daemon=True,
     ).start()
 
@@ -10567,13 +10927,25 @@ def _resume_translation_check_session_if_needed(session: dict[str, Any] | None) 
     session_id = session.get("id")
     if status not in {"queued", "running"} or not session_id:
         return
-    _start_translation_check_runner(int(session_id))
+    _start_translation_check_runner(
+        int(session_id),
+        correlation_id=_build_observability_correlation_id(
+            fallback_seed=f"session-{int(session_id)}",
+            prefix="translation_check",
+        ),
+    )
 
 
 def _resume_all_active_translation_check_sessions() -> None:
     try:
         for session_id in _list_active_translation_check_session_ids(limit=100):
-            _start_translation_check_runner(int(session_id))
+            _start_translation_check_runner(
+                int(session_id),
+                correlation_id=_build_observability_correlation_id(
+                    fallback_seed=f"session-{int(session_id)}",
+                    prefix="translation_check",
+                ),
+            )
     except Exception as exc:
         logging.warning("Translation check recovery scan failed: %s", exc)
 
@@ -10649,7 +11021,10 @@ def process_webapp_message():
 
 @app.route("/api/webapp/check/start", methods=["POST"])
 def start_webapp_translation_check():
+    started_perf = time.perf_counter()
     payload = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload)
+    correlation_id = _build_observability_correlation_id(payload=payload, prefix="translation_check")
     init_data = payload.get("initData")
     translations = payload.get("translations") or []
     send_private_grammar_text = bool(payload.get("send_private_grammar_text"))
@@ -10657,10 +11032,40 @@ def start_webapp_translation_check():
     user_translation = str(payload.get("user_translation") or "").strip() or None
 
     if not init_data:
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            items_requested=len(translations) if isinstance(translations, list) else 0,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "initData обязателен"}), 400
     if not isinstance(translations, list) or not translations:
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            items_requested=0,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "translations обязательны"}), 400
     if not _telegram_hash_is_valid(init_data):
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            items_requested=len(translations),
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=401,
+        )
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
     parsed = _parse_telegram_init_data(init_data)
@@ -10668,21 +11073,51 @@ def start_webapp_translation_check():
     user_id = user_data.get("id")
     username = _extract_display_name(user_data)
     if not user_id:
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            items_requested=len(translations),
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    map_load_started_perf = time.perf_counter()
     source_session_id, allowed_by_mistake_id = _load_user_translation_sentence_map(
         int(user_id),
         source_lang=source_lang,
         target_lang=target_lang,
     )
+    map_load_duration_ms = _elapsed_ms_since(map_load_started_perf)
+    normalize_started_perf = time.perf_counter()
     normalized_items = _normalize_translation_check_entries(
         translations,
         allowed_by_mistake_id=allowed_by_mistake_id,
     )
+    normalize_duration_ms = _elapsed_ms_since(normalize_started_perf)
     if not normalized_items:
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            items_requested=len(translations),
+            items_normalized=0,
+            source_session_id=source_session_id,
+            db_lookup_duration_ms=map_load_duration_ms,
+            normalize_duration_ms=normalize_duration_ms,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "Нет валидных предложений для проверки."}), 400
 
+    create_session_started_perf = time.perf_counter()
     session = create_translation_check_session(
         user_id=int(user_id),
         username=username,
@@ -10694,11 +11129,66 @@ def start_webapp_translation_check():
         original_text_bundle=original_text,
         user_translation_bundle=user_translation,
     )
+    create_session_duration_ms = _elapsed_ms_since(create_session_started_perf)
     if not session:
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            items_requested=len(translations),
+            items_normalized=len(normalized_items),
+            source_session_id=source_session_id,
+            db_lookup_duration_ms=map_load_duration_ms,
+            normalize_duration_ms=normalize_duration_ms,
+            db_update_duration_ms=create_session_duration_ms,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=500,
+        )
         return jsonify({"error": "Не удалось создать сессию проверки перевода."}), 500
 
-    _start_translation_check_runner(int(session["id"]))
+    session_id = int(session["id"])
+    correlation_id = _build_observability_correlation_id(
+        payload=payload,
+        fallback_seed=f"session-{session_id}",
+        prefix="translation_check",
+    )
+    accepted_at_ms = _to_epoch_ms()
+    _remember_translation_check_accepted_at(session_id, accepted_at_ms)
+    runner_dispatch_started_perf = time.perf_counter()
+    _start_translation_check_runner(
+        session_id,
+        correlation_id=correlation_id,
+        request_id=request_id,
+        accepted_at_ms=accepted_at_ms,
+    )
+    runner_dispatch_duration_ms = _elapsed_ms_since(runner_dispatch_started_perf)
+    list_items_started_perf = time.perf_counter()
     items = list_translation_check_items(session_id=int(session["id"]))
+    list_items_duration_ms = _elapsed_ms_since(list_items_started_perf)
+    _log_flow_observation(
+        "translation_check",
+        "check_start_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        session_id=session_id,
+        check_id=session_id,
+        source_session_id=source_session_id,
+        items_requested=len(translations),
+        items_normalized=len(normalized_items),
+        items_total=len(items),
+        start_accepted_ts_ms=accepted_at_ms,
+        db_lookup_duration_ms=map_load_duration_ms + list_items_duration_ms,
+        normalize_duration_ms=normalize_duration_ms,
+        db_update_duration_ms=create_session_duration_ms,
+        runner_dispatch_duration_ms=runner_dispatch_duration_ms,
+        final_status="accepted",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+    )
     return jsonify(
         _build_translation_check_payload(
             session=session,
@@ -10711,41 +11201,147 @@ def start_webapp_translation_check():
 
 @app.route("/api/webapp/check/status", methods=["POST"])
 def get_webapp_translation_check_status():
+    started_perf = time.perf_counter()
     payload = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload)
+    correlation_id = _build_observability_correlation_id(payload=payload, prefix="translation_check")
     init_data = payload.get("initData")
     requested_session_id = payload.get("check_session_id")
     active_only = bool(payload.get("active_only"))
+    requested_poll_count = payload.get("poll_count")
 
     if not init_data:
+        _log_flow_observation(
+            "translation_check",
+            "check_status_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "initData обязателен"}), 400
     if not _telegram_hash_is_valid(init_data):
+        _log_flow_observation(
+            "translation_check",
+            "check_status_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=401,
+        )
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
     if not user_id:
+        _log_flow_observation(
+            "translation_check",
+            "check_status_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     session = None
+    session_lookup_duration_ms = 0
     if requested_session_id is not None:
         try:
+            session_lookup_started_perf = time.perf_counter()
             session = get_translation_check_session(
                 session_id=int(requested_session_id),
                 user_id=int(user_id),
             )
+            session_lookup_duration_ms += _elapsed_ms_since(session_lookup_started_perf)
         except Exception:
             session = None
         if session is None:
+            _log_flow_observation(
+                "translation_check",
+                "check_status_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                session_id=int(requested_session_id),
+                check_id=int(requested_session_id),
+                db_lookup_duration_ms=session_lookup_duration_ms,
+                final_status="error",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=404,
+            )
             return jsonify({"error": "Сессия проверки не найдена."}), 404
     else:
+        active_lookup_started_perf = time.perf_counter()
         session = get_latest_translation_check_session(user_id=int(user_id), only_active=True)
+        session_lookup_duration_ms += _elapsed_ms_since(active_lookup_started_perf)
         if session is None and not active_only:
+            fallback_lookup_started_perf = time.perf_counter()
             session = get_latest_translation_check_session(user_id=int(user_id), only_active=False)
+            session_lookup_duration_ms += _elapsed_ms_since(fallback_lookup_started_perf)
+
+    session_id = int(session["id"]) if session else None
+    if session_id is not None:
+        correlation_id = _build_observability_correlation_id(
+            payload=payload,
+            fallback_seed=f"session-{session_id}",
+            prefix="translation_check",
+        )
 
     _resume_translation_check_session_if_needed(session)
-    items = list_translation_check_items(session_id=int(session["id"])) if session else []
+    list_items_duration_ms = 0
+    status_poll_count = 0
+    payload_poll_count = None
+    if requested_poll_count is not None:
+        try:
+            payload_poll_count = max(0, int(requested_poll_count))
+        except Exception:
+            payload_poll_count = None
+    items: list[dict[str, Any]] = []
+    if session:
+        list_items_started_perf = time.perf_counter()
+        items = list_translation_check_items(session_id=int(session["id"]))
+        list_items_duration_ms = _elapsed_ms_since(list_items_started_perf)
+        status_poll_count = _increment_translation_check_status_poll(int(session["id"]))
+    session_status = str((session or {}).get("status") or "").strip().lower()
+    session_completion_duration_ms = _duration_between_ms(
+        _parse_iso_datetime((session or {}).get("created_at")),
+        _parse_iso_datetime((session or {}).get("finished_at")),
+    )
+    terminal_status = session_status in {"done", "failed", "canceled"}
+    if terminal_status and session_id is not None:
+        _clear_translation_check_status_poll(session_id)
+    _log_flow_observation(
+        "translation_check",
+        "check_status_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        session_id=session_id,
+        check_id=session_id,
+        status=session_status or ("not_found" if session is None else None),
+        status_polling_count=status_poll_count or None,
+        status_polling_count_client=payload_poll_count,
+        items_total=len(items),
+        db_lookup_duration_ms=session_lookup_duration_ms + list_items_duration_ms,
+        session_completion_duration_ms=session_completion_duration_ms,
+        final_status=(
+            "success"
+            if session_status == "done" and int((session or {}).get("failed_items") or 0) == 0
+            else "partial"
+            if session_status == "done" and int((session or {}).get("failed_items") or 0) > 0
+            else "error"
+            if session_status == "failed"
+            else "pending"
+        ),
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+    )
     return jsonify(
         _build_translation_check_payload(
             session=session,
@@ -16164,11 +16760,47 @@ def _run_tts_generation_job(
     cache_key: str,
     object_key: str,
     had_existing_meta: bool,
-    ) -> None:
+    correlation_id: str | None = None,
+    request_id: str | None = None,
+    enqueue_ts_ms: int | None = None,
+) -> None:
+    job_started_perf = time.perf_counter()
+    generation_start_ts_ms = _to_epoch_ms()
+    resolved_request_id = _sanitize_observability_id(request_id) or f"req_{uuid4().hex[:20]}"
+    resolved_correlation_id = (
+        _sanitize_observability_id(correlation_id)
+        or _build_observability_correlation_id(fallback_seed=str(cache_key)[:24], prefix="tts")
+    )
+    runner_start_delay_ms = None
+    if enqueue_ts_ms is not None:
+        try:
+            runner_start_delay_ms = max(0, int(generation_start_ts_ms - int(enqueue_ts_ms)))
+        except Exception:
+            runner_start_delay_ms = None
+    provider_duration_ms = None
+    storage_upload_duration_ms = None
+    r2_head_duration_ms = None
+    final_status = "error"
+    cache_hit = False
+    error_code: str | None = None
+    _log_flow_observation(
+        "tts",
+        "generation_runner_started",
+        request_id=resolved_request_id,
+        correlation_id=resolved_correlation_id,
+        user_id=int(user_id),
+        cache_key=cache_key,
+        object_key=object_key,
+        generation_start_ts_ms=generation_start_ts_ms,
+        runner_start_delay_ms=runner_start_delay_ms,
+        cache_hit=bool(had_existing_meta),
+    )
     try:
         user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
         if had_existing_meta:
+            r2_head_started_perf = time.perf_counter()
             object_exists = bool(r2_exists(object_key))
+            r2_head_duration_ms = _elapsed_ms_since(r2_head_started_perf)
             _billing_log_event_safe(
                 user_id=int(user_id),
                 action_type="r2_head_object",
@@ -16193,20 +16825,27 @@ def _run_tts_generation_job(
                     speed=speaking_rate,
                     source_text=normalized_text,
                 )
+                final_status = "hit"
+                cache_hit = True
+                _clear_tts_url_poll_attempt(cache_key)
                 return
 
+        provider_started_perf = time.perf_counter()
         response_audio = _synthesize_mp3(
             normalized_text,
             language=language,
             voice=voice,
             speed=speaking_rate,
         )
+        provider_duration_ms = _elapsed_ms_since(provider_started_perf)
+        upload_started_perf = time.perf_counter()
         r2_put_bytes(
             object_key,
             response_audio,
             content_type="audio/mpeg",
             cache_control="public, max-age=31536000, immutable",
         )
+        storage_upload_duration_ms = _elapsed_ms_since(upload_started_perf)
         _billing_log_event_safe(
             user_id=int(user_id),
             action_type="r2_put_object",
@@ -16261,7 +16900,11 @@ def _run_tts_generation_job(
                 "storage": "r2",
             },
         )
+        final_status = "generated"
+        cache_hit = False
+        _clear_tts_url_poll_attempt(cache_key)
     except GoogleTTSBudgetBlockedError as exc:
+        error_code = "google_tts_budget_blocked"
         mark_tts_object_failed(
             cache_key=cache_key,
             error_code="google_tts_budget_blocked",
@@ -16272,7 +16915,9 @@ def _run_tts_generation_job(
             source_text=normalized_text,
             object_key=object_key,
         )
+        final_status = "error"
     except Exception as exc:
+        error_code = "tts_generation_failed"
         logging.exception("R2 TTS generation failed for cache_key=%s", cache_key)
         mark_tts_object_failed(
             cache_key=cache_key,
@@ -16284,9 +16929,28 @@ def _run_tts_generation_job(
             source_text=normalized_text,
             object_key=object_key,
         )
+        final_status = "error"
     finally:
         with _TTS_GENERATION_JOBS_LOCK:
             _TTS_GENERATION_JOBS.discard(str(cache_key))
+        _log_flow_observation(
+            "tts",
+            "generation_runner_finished",
+            request_id=resolved_request_id,
+            correlation_id=resolved_correlation_id,
+            user_id=int(user_id),
+            cache_key=cache_key,
+            object_key=object_key,
+            generation_start_ts_ms=generation_start_ts_ms,
+            runner_start_delay_ms=runner_start_delay_ms,
+            cache_hit=cache_hit,
+            final_status=final_status,
+            external_tts_provider_duration_ms=provider_duration_ms,
+            storage_upload_duration_ms=storage_upload_duration_ms,
+            r2_head_duration_ms=r2_head_duration_ms,
+            duration_ms=_elapsed_ms_since(job_started_perf),
+            error_code=error_code,
+        )
 
 
 def _enqueue_tts_generation_job(**kwargs) -> bool:
@@ -16338,30 +17002,86 @@ def _billing_log_r2_delivery_estimate(
 
 @app.route("/api/webapp/tts/url", methods=["GET"])
 def webapp_tts_url():
+    started_perf = time.perf_counter()
+    payload_for_obs = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload_for_obs)
     params, error = _read_webapp_tts_request_payload()
     if error:
         payload, status = error
+        _log_flow_observation(
+            "tts",
+            "tts_url_completed",
+            request_id=request_id,
+            correlation_id=_build_observability_correlation_id(payload=payload_for_obs, prefix="tts"),
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=int(status),
+        )
         return jsonify(payload), int(status)
 
     cache_key = str(params["cache_key"])
     object_key = str(params["object_key"])
     user_id = int(params["user_id"])
+    correlation_id = _build_observability_correlation_id(
+        payload=payload_for_obs,
+        fallback_seed=cache_key[:24],
+        prefix="tts",
+    )
+    poll_attempt = _increment_tts_url_poll_attempt(cache_key)
+    db_lookup_started_perf = time.perf_counter()
     meta = get_tts_object_meta(cache_key, touch_hit=True)
+    db_lookup_duration_ms = _elapsed_ms_since(db_lookup_started_perf)
     if meta:
         payload, status = _build_tts_url_response_from_meta(
             meta,
             fallback_object_key=object_key,
             retry_after_ms=TTS_URL_PENDING_RETRY_MS,
         )
-        if str(payload.get("status") or "").strip().lower() == "ready":
+        endpoint_status = str(payload.get("status") or "").strip().lower()
+        if endpoint_status == "ready":
             _billing_log_r2_delivery_estimate(
                 user_id=user_id,
                 cache_key=cache_key,
                 object_key=object_key,
                 reason="tts_url_ready",
             )
+            _clear_tts_url_poll_attempt(cache_key)
+        elif endpoint_status == "failed":
+            _clear_tts_url_poll_attempt(cache_key)
+        _log_flow_observation(
+            "tts",
+            "tts_url_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id,
+            cache_key=cache_key,
+            cache_hit=(endpoint_status == "ready"),
+            cache_miss=(endpoint_status != "ready"),
+            db_lookup_duration_ms=db_lookup_duration_ms,
+            polling_attempt_count=poll_attempt,
+            status=endpoint_status,
+            final_status=("hit" if endpoint_status == "ready" else "error" if endpoint_status == "failed" else "pending"),
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=int(status),
+        )
         return jsonify(payload), int(status)
 
+    _log_flow_observation(
+        "tts",
+        "tts_url_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=user_id,
+        cache_key=cache_key,
+        cache_hit=False,
+        cache_miss=True,
+        db_lookup_duration_ms=db_lookup_duration_ms,
+        polling_attempt_count=poll_attempt,
+        status="pending",
+        final_status="pending",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+    )
     return jsonify(
         {
             "ok": True,
@@ -16375,10 +17095,22 @@ def webapp_tts_url():
 
 @app.route("/api/webapp/tts/generate", methods=["POST"])
 def webapp_tts_generate():
-    params, error = _read_webapp_tts_request_payload(payload=request.get_json(silent=True) or {})
+    started_perf = time.perf_counter()
+    body = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(body)
+    params, error = _read_webapp_tts_request_payload(payload=body)
     if error:
-        payload, status = error
-        return jsonify(payload), int(status)
+        response_payload, status = error
+        _log_flow_observation(
+            "tts",
+            "tts_generate_completed",
+            request_id=request_id,
+            correlation_id=_build_observability_correlation_id(payload=body, prefix="tts"),
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=int(status),
+        )
+        return jsonify(response_payload), int(status)
 
     user_id = int(params["user_id"])
     language = str(params["language"])
@@ -16388,13 +17120,20 @@ def webapp_tts_generate():
     normalized_text = str(params["text"])
     cache_key = str(params["cache_key"])
     object_key = str(params["object_key"])
+    correlation_id = _build_observability_correlation_id(
+        payload=body,
+        fallback_seed=cache_key[:24],
+        prefix="tts",
+    )
 
+    db_lookup_started_perf = time.perf_counter()
     meta = get_tts_object_meta(cache_key, touch_hit=False)
+    db_lookup_duration_ms = _elapsed_ms_since(db_lookup_started_perf)
     had_existing_meta = bool(meta)
     if meta:
         status_value = str(meta.get("status") or "").strip().lower()
         if status_value == "ready":
-            payload, status_code = _build_tts_url_response_from_meta(
+            response_payload, status_code = _build_tts_url_response_from_meta(
                 meta,
                 fallback_object_key=object_key,
             )
@@ -16404,18 +17143,50 @@ def webapp_tts_generate():
                 object_key=object_key,
                 reason="tts_generate_already_ready",
             )
-            payload["state"] = "already_ready"
-            return jsonify(payload), int(status_code)
+            response_payload["state"] = "already_ready"
+            _clear_tts_url_poll_attempt(cache_key)
+            _log_flow_observation(
+                "tts",
+                "tts_generate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id,
+                cache_key=cache_key,
+                cache_hit=True,
+                cache_miss=False,
+                db_lookup_duration_ms=db_lookup_duration_ms,
+                final_status="hit",
+                status="ready",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=int(status_code),
+            )
+            return jsonify(response_payload), int(status_code)
         if status_value == "pending":
-            payload, status_code = _build_tts_url_response_from_meta(
+            response_payload, status_code = _build_tts_url_response_from_meta(
                 meta,
                 fallback_object_key=object_key,
                 retry_after_ms=TTS_URL_PENDING_RETRY_MS,
             )
-            payload["state"] = "already_pending"
-            return jsonify(payload), int(status_code)
+            response_payload["state"] = "already_pending"
+            _log_flow_observation(
+                "tts",
+                "tts_generate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id,
+                cache_key=cache_key,
+                cache_hit=False,
+                cache_miss=False,
+                db_lookup_duration_ms=db_lookup_duration_ms,
+                final_status="pending",
+                status="pending",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=int(status_code),
+            )
+            return jsonify(response_payload), int(status_code)
 
     claimed = False
+    claim_started_perf = time.perf_counter()
     if meta and str(meta.get("status") or "").strip().lower() == "failed":
         claimed = requeue_tts_object_pending(
             cache_key=cache_key,
@@ -16434,18 +17205,21 @@ def webapp_tts_generate():
             source_text=normalized_text,
             object_key=object_key,
         )
+    claim_duration_ms = _elapsed_ms_since(claim_started_perf)
 
     if not claimed:
+        latest_lookup_started_perf = time.perf_counter()
         latest = get_tts_object_meta(cache_key, touch_hit=False) or {}
+        latest_lookup_duration_ms = _elapsed_ms_since(latest_lookup_started_perf)
         if latest:
-            payload, status_code = _build_tts_url_response_from_meta(
+            response_payload, status_code = _build_tts_url_response_from_meta(
                 latest,
                 fallback_object_key=object_key,
                 retry_after_ms=TTS_URL_PENDING_RETRY_MS,
             )
-            latest_status = str(payload.get("status") or "").strip().lower()
+            latest_status = str(response_payload.get("status") or "").strip().lower()
             if latest_status == "pending":
-                payload["state"] = "already_pending"
+                response_payload["state"] = "already_pending"
             elif latest_status == "ready":
                 _billing_log_r2_delivery_estimate(
                     user_id=user_id,
@@ -16453,21 +17227,56 @@ def webapp_tts_generate():
                     object_key=object_key,
                     reason="tts_generate_claim_race_ready",
                 )
-                payload["state"] = "already_ready"
+                response_payload["state"] = "already_ready"
+                _clear_tts_url_poll_attempt(cache_key)
             else:
-                payload["state"] = "failed"
-            return jsonify(payload), int(status_code)
-        return jsonify(
-            {
-                "ok": True,
-                "status": "pending",
-                "state": "already_pending",
-                "cache_key": cache_key,
-                "object_key": object_key,
-                "retry_after_ms": int(TTS_URL_PENDING_RETRY_MS),
-            }
+                response_payload["state"] = "failed"
+                _clear_tts_url_poll_attempt(cache_key)
+            _log_flow_observation(
+                "tts",
+                "tts_generate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id,
+                cache_key=cache_key,
+                cache_hit=(latest_status == "ready"),
+                cache_miss=(latest_status != "ready"),
+                db_lookup_duration_ms=db_lookup_duration_ms,
+                claim_duration_ms=claim_duration_ms,
+                latest_db_lookup_duration_ms=latest_lookup_duration_ms,
+                final_status="hit" if latest_status == "ready" else "error" if latest_status == "failed" else "pending",
+                status=latest_status,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=int(status_code),
+            )
+            return jsonify(response_payload), int(status_code)
+        response_payload = {
+            "ok": True,
+            "status": "pending",
+            "state": "already_pending",
+            "cache_key": cache_key,
+            "object_key": object_key,
+            "retry_after_ms": int(TTS_URL_PENDING_RETRY_MS),
+        }
+        _log_flow_observation(
+            "tts",
+            "tts_generate_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id,
+            cache_key=cache_key,
+            cache_hit=False,
+            cache_miss=True,
+            db_lookup_duration_ms=db_lookup_duration_ms,
+            claim_duration_ms=claim_duration_ms,
+            final_status="pending",
+            status="pending",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
         )
+        return jsonify(response_payload)
 
+    enqueue_ts_ms = _to_epoch_ms()
     _enqueue_tts_generation_job(
         user_id=int(user_id),
         language=language,
@@ -16478,10 +17287,15 @@ def webapp_tts_generate():
         cache_key=cache_key,
         object_key=object_key,
         had_existing_meta=had_existing_meta,
+        request_id=request_id,
+        correlation_id=correlation_id,
+        enqueue_ts_ms=enqueue_ts_ms,
     )
 
+    latest_lookup_started_perf = time.perf_counter()
     latest = get_tts_object_meta(cache_key, touch_hit=False) or {}
-    payload, status_code = _build_tts_url_response_from_meta(
+    latest_lookup_duration_ms = _elapsed_ms_since(latest_lookup_started_perf)
+    response_payload, status_code = _build_tts_url_response_from_meta(
         latest or {
             "status": "pending",
             "cache_key": cache_key,
@@ -16490,8 +17304,27 @@ def webapp_tts_generate():
         fallback_object_key=object_key,
         retry_after_ms=TTS_URL_PENDING_RETRY_MS,
     )
-    payload["state"] = "queued"
-    return jsonify(payload), int(status_code)
+    response_payload["state"] = "queued"
+    response_status = str(response_payload.get("status") or "").strip().lower() or "pending"
+    _log_flow_observation(
+        "tts",
+        "tts_generate_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=user_id,
+        cache_key=cache_key,
+        cache_hit=False,
+        cache_miss=True,
+        db_lookup_duration_ms=db_lookup_duration_ms,
+        claim_duration_ms=claim_duration_ms,
+        latest_db_lookup_duration_ms=latest_lookup_duration_ms,
+        generation_enqueued_ts_ms=enqueue_ts_ms,
+        final_status="pending" if response_status == "pending" else "hit" if response_status == "ready" else "error",
+        status=response_status,
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=int(status_code),
+    )
+    return jsonify(response_payload), int(status_code)
 
 
 @app.route("/api/webapp/tts", methods=["POST"])
@@ -16500,6 +17333,15 @@ def webapp_tts():
     stage_marks: dict[str, float] = {"start": started_at}
     had_error = False
     is_cached_response = False
+    payload = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload)
+    correlation_id = _build_observability_correlation_id(payload=payload, prefix="tts")
+    user_id: int | None = None
+    cache_key: str | None = None
+    db_lookup_duration_ms: int | None = None
+    provider_duration_ms: int | None = None
+    cache_saved_duration_ms: int | None = None
+    generation_start_ts_ms: int | None = None
 
     def mark(stage_name: str) -> None:
         stage_marks[stage_name] = time.perf_counter()
@@ -16545,7 +17387,6 @@ def webapp_tts():
         except Exception:
             logging.debug("Failed to log TTS profile", exc_info=True)
 
-    payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     text = (payload.get("text") or "").strip()
     language = (payload.get("language") or "de-DE").strip()
@@ -16553,19 +17394,56 @@ def webapp_tts():
     mark("parse_body")
 
     if not init_data:
+        _log_flow_observation(
+            "tts",
+            "tts_legacy_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=400,
+        )
         return jsonify({"error": "initData обязателен"}), 400
     if not text:
+        _log_flow_observation(
+            "tts",
+            "tts_legacy_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=400,
+        )
         return jsonify({"error": "text обязателен"}), 400
 
     if not _telegram_hash_is_valid(init_data):
+        _log_flow_observation(
+            "tts",
+            "tts_legacy_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=401,
+        )
         return jsonify({"error": "initData не прошёл проверку"}), 401
     mark("hash_check")
     parsed = _parse_telegram_init_data(init_data)
     mark("parse_init_data")
     user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-    if not user_id:
+    user_id_raw = user_data.get("id")
+    if not user_id_raw:
+        _log_flow_observation(
+            "tts",
+            "tts_legacy_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=400,
+        )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    user_id = int(user_id_raw)
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     mark("lang_pair")
 
@@ -16573,9 +17451,16 @@ def webapp_tts():
     normalized = _normalize_utterance_text(text)
     chars_count = float(len(normalized))
     cache_key = _tts_cache_key(language, voice, speaking_rate, normalized)
+    correlation_id = _build_observability_correlation_id(
+        payload=payload,
+        fallback_seed=cache_key[:24],
+        prefix="tts",
+    )
 
     try:
+        db_lookup_started_perf = time.perf_counter()
         cached_audio = get_tts_audio_cache(cache_key)
+        db_lookup_duration_ms = _elapsed_ms_since(db_lookup_started_perf)
         mark("db_cache_read")
         if cached_audio:
             mark("db_cache_hit")
@@ -16587,16 +17472,36 @@ def webapp_tts():
             )
             is_cached_response = True
             mark("send_file")
+            _log_flow_observation(
+                "tts",
+                "tts_legacy_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id,
+                cache_key=cache_key,
+                cache_hit=True,
+                cache_miss=False,
+                db_lookup_duration_ms=db_lookup_duration_ms,
+                generation_start_ts_ms=None,
+                external_tts_provider_duration_ms=None,
+                final_status="hit",
+                duration_ms=_elapsed_ms_since(started_at),
+                http_status=200,
+            )
             return response
 
+        generation_start_ts_ms = _to_epoch_ms()
+        provider_started_perf = time.perf_counter()
         response_audio = _synthesize_mp3(
             normalized,
             language=language,
             voice=voice,
             speed=speaking_rate,
         )
+        provider_duration_ms = _elapsed_ms_since(provider_started_perf)
         mark("synth_done")
         try:
+            cache_save_started_perf = time.perf_counter()
             upsert_tts_audio_cache(
                 cache_key=cache_key,
                 language=language,
@@ -16605,6 +17510,7 @@ def webapp_tts():
                 source_text=normalized,
                 audio_mp3=response_audio,
             )
+            cache_saved_duration_ms = _elapsed_ms_since(cache_save_started_perf)
             mark("cache_saved")
         except Exception as exc:
             logging.warning("Failed to persist webapp TTS cache: %s", exc)
@@ -16627,32 +17533,83 @@ def webapp_tts():
             download_name="tts.mp3",
         )
         mark("send_file")
+        _log_flow_observation(
+            "tts",
+            "tts_legacy_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id,
+            cache_key=cache_key,
+            cache_hit=False,
+            cache_miss=True,
+            db_lookup_duration_ms=db_lookup_duration_ms,
+            generation_start_ts_ms=generation_start_ts_ms,
+            external_tts_provider_duration_ms=provider_duration_ms,
+            cache_write_duration_ms=cache_saved_duration_ms,
+            final_status="generated",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=200,
+        )
         return response
     except GoogleTTSBudgetBlockedError as exc:
         had_error = True
         _log_tts_profile(
-            user_id_value=int(user_id) if user_id else None,
+            user_id_value=user_id,
             normalized_text=_normalize_utterance_text(text),
             cached=False,
             error_text=str(exc),
         )
-        payload = {"error": "google_tts_budget_blocked", "message": str(exc)}
+        _log_flow_observation(
+            "tts",
+            "tts_legacy_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id,
+            cache_key=cache_key,
+            cache_hit=False,
+            cache_miss=True,
+            db_lookup_duration_ms=db_lookup_duration_ms,
+            generation_start_ts_ms=generation_start_ts_ms,
+            external_tts_provider_duration_ms=provider_duration_ms,
+            final_status="error",
+            error_code="google_tts_budget_blocked",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=429,
+        )
+        response_payload = {"error": "google_tts_budget_blocked", "message": str(exc)}
         if isinstance(getattr(exc, "payload", None), dict):
-            payload.update(exc.payload)
-        return jsonify(payload), 429
+            response_payload.update(exc.payload)
+        return jsonify(response_payload), 429
     except Exception as exc:
         had_error = True
         _log_tts_profile(
-            user_id_value=int(user_id) if user_id else None,
+            user_id_value=user_id,
             normalized_text=_normalize_utterance_text(text),
             cached=False,
             error_text=str(exc),
+        )
+        _log_flow_observation(
+            "tts",
+            "tts_legacy_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id,
+            cache_key=cache_key,
+            cache_hit=False,
+            cache_miss=True,
+            db_lookup_duration_ms=db_lookup_duration_ms,
+            generation_start_ts_ms=generation_start_ts_ms,
+            external_tts_provider_duration_ms=provider_duration_ms,
+            final_status="error",
+            error_code="tts_generation_failed",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=500,
         )
         return jsonify({"error": f"TTS error: {exc}"}), 500
     finally:
         if request.method == "POST" and not had_error:
             _log_tts_profile(
-                user_id_value=int(user_id) if user_id else None,
+                user_id_value=user_id,
                 normalized_text=normalized,
                 cached=is_cached_response,
                 error_text=None,
@@ -17607,12 +18564,17 @@ def _get_reader_audio_pages_usage_window(user_id: int, *, window_days: int = REA
 
 @app.route("/api/webapp/reader/audio", methods=["POST"])
 def reader_audio_export():
+    started_perf = time.perf_counter()
     payload = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload)
+    correlation_id = _build_observability_correlation_id(payload=payload, prefix="tts")
     init_data = payload.get("initData")
     document_id = payload.get("document_id")
     page_from = payload.get("page_from")
     page_to = payload.get("page_to")
     requested_language = str(payload.get("language") or "").strip()
+    user_id_int: int | None = None
+    db_lookup_duration_ms = 0
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -17625,9 +18587,15 @@ def reader_audio_export():
     user_id = user_data.get("id")
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    user_id_int = int(user_id)
+    correlation_id = _build_observability_correlation_id(
+        payload=payload,
+        fallback_seed=f"reader-{user_id_int}-{document_id}",
+        prefix="tts",
+    )
     now_utc = datetime.now(timezone.utc)
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz="Europe/Vienna")
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+    entitlement = resolve_entitlement(user_id=user_id_int, now_ts_utc=now_utc, tz="Europe/Vienna")
     effective_mode = str(entitlement.get("effective_mode") or "free").lower()
     if effective_mode not in {"pro", "trial"}:
         return jsonify(
@@ -17643,12 +18611,14 @@ def reader_audio_export():
             }
         ), 403
     try:
+        document_lookup_started_perf = time.perf_counter()
         document = get_reader_library_document(
-            user_id=int(user_id),
+            user_id=user_id_int,
             document_id=int(document_id),
             source_lang=source_lang,
             target_lang=target_lang,
         )
+        db_lookup_duration_ms += _elapsed_ms_since(document_lookup_started_perf)
     except Exception as exc:
         return jsonify({"error": f"Ошибка загрузки документа: {exc}"}), 500
     if not document:
@@ -17665,10 +18635,12 @@ def reader_audio_export():
         start_page = max(1, start_page)
         end_page = max(start_page, min(len(pages), end_page))
         selected_page_count = max(0, end_page - start_page + 1)
+        pages_usage_lookup_started_perf = time.perf_counter()
         used_pages_7d = _get_reader_audio_pages_usage_window(
-            int(user_id),
+            user_id_int,
             window_days=READER_AUDIO_PAGES_WINDOW_DAYS,
         )
+        db_lookup_duration_ms += _elapsed_ms_since(pages_usage_lookup_started_perf)
         limit_pages_7d = float(READER_AUDIO_PAGES_7D_LIMIT)
         if selected_page_count > 0 and (used_pages_7d + float(selected_page_count)) > limit_pages_7d:
             return jsonify(
@@ -17700,8 +18672,9 @@ def reader_audio_export():
 
     if not text_to_read:
         return jsonify({"error": "В выбранном диапазоне нет текста"}), 422
+    normalized_text_key = hashlib.sha256(_normalize_utterance_text(text_to_read).encode("utf-8")).hexdigest()[:16]
     reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
-        user_id=int(user_id),
+        user_id=user_id_int,
         requested_units=float(len(text_to_read)),
         now_ts_utc=now_utc,
         tz="Europe/Vienna",
@@ -17714,23 +18687,26 @@ def reader_audio_export():
     )
     safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", str(document.get("title") or "reader"))[:60]
     try:
+        generation_start_ts_ms = _to_epoch_ms()
         google_voice = _TTS_VOICES.get(language_for_tts, _TTS_VOICES["de"])
         google_lang_code = _TTS_LANG_CODES.get(language_for_tts, "de-DE")
+        provider_started_perf = time.perf_counter()
         mp3_bytes = _synthesize_mp3(
             text_to_read,
             language=google_lang_code,
             voice=google_voice,
             speed=_TTS_SPEED_DEFAULT,
         )
+        provider_duration_ms = _elapsed_ms_since(provider_started_perf)
         _billing_log_event_safe(
-            user_id=int(user_id),
+            user_id=user_id_int,
             action_type="reader_audio_tts",
             provider="google_tts",
             units_type="chars",
             units_value=float(len(text_to_read)),
             source_lang=source_lang,
             target_lang=target_lang,
-            idempotency_seed=f"reader_audio:{user_id}:{document_id}:{filename_suffix}:{len(text_to_read)}:{time.time_ns()}",
+            idempotency_seed=f"reader_audio:{user_id_int}:{document_id}:{filename_suffix}:{len(text_to_read)}:{time.time_ns()}",
             status="estimated",
             metadata={
                 "document_id": int(document_id),
@@ -17741,14 +18717,14 @@ def reader_audio_export():
         )
         if selected_page_count > 0:
             _billing_log_event_safe(
-                user_id=int(user_id),
+                user_id=user_id_int,
                 action_type="reader_audio_tts_pages",
                 provider="app_internal",
                 units_type="pages",
                 units_value=float(selected_page_count),
                 source_lang=source_lang,
                 target_lang=target_lang,
-                idempotency_seed=f"reader_audio_pages:{user_id}:{document_id}:{filename_suffix}:{selected_page_count}:mp3:{time.time_ns()}",
+                idempotency_seed=f"reader_audio_pages:{user_id_int}:{document_id}:{filename_suffix}:{selected_page_count}:mp3:{time.time_ns()}",
                 status="estimated",
                 metadata={
                     "document_id": int(document_id),
@@ -17756,6 +18732,26 @@ def reader_audio_export():
                     "page_count": int(selected_page_count),
                 },
             )
+        _log_flow_observation(
+            "tts",
+            "reader_audio_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id_int,
+            cache_key=normalized_text_key,
+            cache_hit=False,
+            cache_miss=True,
+            db_lookup_duration_ms=db_lookup_duration_ms,
+            generation_start_ts_ms=generation_start_ts_ms,
+            external_tts_provider_duration_ms=provider_duration_ms,
+            storage_upload_duration_ms=None,
+            final_status="generated",
+            provider="google_tts",
+            document_id=int(document_id),
+            selected_page_count=int(selected_page_count),
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+        )
         return send_file(
             BytesIO(mp3_bytes),
             mimetype="audio/mpeg",
@@ -17765,16 +18761,18 @@ def reader_audio_export():
     except Exception as google_exc:
         logging.warning("Reader audio Google TTS failed, fallback to offline: %s", google_exc)
         try:
+            fallback_started_perf = time.perf_counter()
             wav_bytes = _synthesize_offline_audio_wav(text_to_read, language=language_for_tts)
+            fallback_duration_ms = _elapsed_ms_since(fallback_started_perf)
             _billing_log_event_safe(
-                user_id=int(user_id),
+                user_id=user_id_int,
                 action_type="reader_audio_tts_fallback",
                 provider="offline_tts",
                 units_type="chars",
                 units_value=float(len(text_to_read)),
                 source_lang=source_lang,
                 target_lang=target_lang,
-                idempotency_seed=f"reader_audio_fallback:{user_id}:{document_id}:{filename_suffix}:{len(text_to_read)}:{time.time_ns()}",
+                idempotency_seed=f"reader_audio_fallback:{user_id_int}:{document_id}:{filename_suffix}:{len(text_to_read)}:{time.time_ns()}",
                 status="final",
                 metadata={
                     "document_id": int(document_id),
@@ -17784,14 +18782,14 @@ def reader_audio_export():
             )
             if selected_page_count > 0:
                 _billing_log_event_safe(
-                    user_id=int(user_id),
+                    user_id=user_id_int,
                     action_type="reader_audio_tts_pages",
                     provider="app_internal",
                     units_type="pages",
                     units_value=float(selected_page_count),
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    idempotency_seed=f"reader_audio_pages:{user_id}:{document_id}:{filename_suffix}:{selected_page_count}:wav:{time.time_ns()}",
+                    idempotency_seed=f"reader_audio_pages:{user_id_int}:{document_id}:{filename_suffix}:{selected_page_count}:wav:{time.time_ns()}",
                     status="estimated",
                     metadata={
                         "document_id": int(document_id),
@@ -17799,6 +18797,27 @@ def reader_audio_export():
                         "page_count": int(selected_page_count),
                     },
                 )
+            _log_flow_observation(
+                "tts",
+                "reader_audio_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id_int,
+                cache_key=normalized_text_key,
+                cache_hit=False,
+                cache_miss=True,
+                db_lookup_duration_ms=db_lookup_duration_ms,
+                generation_start_ts_ms=None,
+                external_tts_provider_duration_ms=None,
+                storage_upload_duration_ms=None,
+                final_status="generated",
+                provider="offline_tts",
+                fallback_duration_ms=fallback_duration_ms,
+                document_id=int(document_id),
+                selected_page_count=int(selected_page_count),
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=200,
+            )
             return send_file(
                 BytesIO(wav_bytes),
                 mimetype="audio/wav",
@@ -17806,6 +18825,23 @@ def reader_audio_export():
                 download_name=f"{safe_title}_{filename_suffix}.wav",
             )
         except Exception as offline_exc:
+            _log_flow_observation(
+                "tts",
+                "reader_audio_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id_int,
+                cache_key=normalized_text_key,
+                cache_hit=False,
+                cache_miss=True,
+                db_lookup_duration_ms=db_lookup_duration_ms,
+                final_status="error",
+                error_code="reader_audio_tts_unavailable",
+                document_id=int(document_id),
+                selected_page_count=int(selected_page_count),
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=500,
+            )
             return jsonify(
                 {
                     "error": (

@@ -338,6 +338,13 @@ body {
   width: 100%;
 }
 
+.webapp-page.is-android-client .today-plan-toolbar .today-plan-mail-check-btn {
+  font-size: 12px;
+  line-height: 1.2;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
 .webapp-page.is-contained-scroll {
   height: 100vh;
   height: 100dvh;

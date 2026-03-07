@@ -1451,6 +1451,25 @@ function AppInner() {
     return (await response.json()) || null;
   }, [initData, readApiError]);
 
+  const stopTtsPlayback = useCallback((options = {}) => {
+    const invalidatePending = options?.invalidatePending !== false;
+    if (invalidatePending) {
+      ttsPlaybackSeqRef.current += 1;
+    }
+    if (ttsCurrentAudioRef.current) {
+      ttsCurrentAudioRef.current.pause();
+      ttsCurrentAudioRef.current.currentTime = 0;
+      ttsCurrentAudioRef.current = null;
+    }
+    if ('speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch (_error) {
+        // no-op
+      }
+    }
+  }, []);
+
   const playTts = useCallback(async (text, language = 'de-DE', voice = '') => {
     if (!initData || !text) return Promise.resolve();
     const normalizedText = String(text || '').trim();
@@ -1465,18 +1484,7 @@ function AppInner() {
     const playbackSeq = ++ttsPlaybackSeqRef.current;
     const isStalePlayback = () => ttsPlaybackSeqRef.current !== playbackSeq;
     ttsLastRef.current = { key, ts: now };
-    if (ttsCurrentAudioRef.current) {
-      ttsCurrentAudioRef.current.pause();
-      ttsCurrentAudioRef.current.currentTime = 0;
-      ttsCurrentAudioRef.current = null;
-    }
-    if ('speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-      } catch (_error) {
-        // no-op
-      }
-    }
+    stopTtsPlayback({ invalidatePending: false });
     const playAudioUrl = (audioUrl) => new Promise((resolve) => {
       if (!audioUrl || isStalePlayback()) {
         resolve();
@@ -1636,7 +1644,7 @@ function AppInner() {
       console.warn('TTS error', error);
       return playWebSpeech();
     }
-  }, [initData, fetchTtsUrlStatus, requestTtsGenerate]);
+  }, [initData, fetchTtsUrlStatus, requestTtsGenerate, stopTtsPlayback]);
 
   const isTtsPending = useCallback((key) => Boolean(ttsPendingMap[String(key || '')]), [ttsPendingMap]);
 
@@ -2019,6 +2027,7 @@ function AppInner() {
   }, []);
 
   const applySrsPayload = useCallback((data) => {
+    stopTtsPlayback();
     const nextCard = data?.card || null;
     srsCardRef.current = nextCard;
     setSrsCard(nextCard);
@@ -2045,7 +2054,7 @@ function AppInner() {
     }
     setSrsRevealAnswer(false);
     srsShownAtRef.current = Date.now();
-  }, [getSrsCardId, updateSrsPrefetchQueue]);
+  }, [getSrsCardId, updateSrsPrefetchQueue, stopTtsPlayback]);
 
   const decrementSrsQueueInfoLocal = () => {
     setSrsQueueInfo((prev) => {
@@ -3320,6 +3329,7 @@ function AppInner() {
     if (ratingValue === 'EASY' && srsEasyLocked) return;
     if (ratingValue === 'GOOD' && srsGoodLocked) return;
     try {
+      stopTtsPlayback();
       setSrsError('');
       setSrsSubmitting(true);
       setSrsSubmittingRating(ratingValue);
@@ -5006,6 +5016,7 @@ function AppInner() {
   };
 
   const openFlashcardsSetup = (ref) => {
+    stopTtsPlayback();
     setFlashcardsVisible(true);
     setFlashcardsOnly(false);
     setFlashcardActiveMode(null);
@@ -5022,6 +5033,7 @@ function AppInner() {
   };
 
   const exitFlashcardsTraining = async () => {
+    stopTtsPlayback();
     void dispatchQueuedFlashcardFeel('exit_session');
     setFlashcardsOnly(false);
     setFlashcardActiveMode(null);
@@ -5035,6 +5047,7 @@ function AppInner() {
   const startFlashcardsMode = async (mode) => {
     const normalizedMode = String(mode || '').toLowerCase();
     if (!['fsrs', 'quiz', 'blocks', 'sentence'].includes(normalizedMode)) return;
+    stopTtsPlayback();
     setFlashcardsVisible(true);
     setFlashcardSettingsModalMode(null);
     setFlashcardActiveMode(normalizedMode);
@@ -6760,11 +6773,7 @@ function AppInner() {
 
   useEffect(() => {
     if (!flashcardPreviewActive || !flashcardsOnly) {
-      if (ttsCurrentAudioRef.current) {
-        ttsCurrentAudioRef.current.pause();
-        ttsCurrentAudioRef.current.currentTime = 0;
-        ttsCurrentAudioRef.current = null;
-      }
+      stopTtsPlayback();
       setPreviewAudioReady(false);
       setPreviewAudioPlaying(false);
       return;
@@ -6794,7 +6803,7 @@ function AppInner() {
     return () => {
       cancelled = true;
     };
-  }, [flashcardPreviewActive, flashcardsOnly, flashcards, flashcardPreviewIndex]);
+  }, [flashcardPreviewActive, flashcardsOnly, flashcards, flashcardPreviewIndex, stopTtsPlayback]);
 
   useEffect(() => {
     flashcardIndexRef.current = flashcardIndex;
@@ -9314,6 +9323,7 @@ function AppInner() {
         clearTimeout(revealTimeoutRef.current);
         revealTimeoutRef.current = null;
       }
+      stopTtsPlayback();
       setFlashcards(sessionItems);
       setFlashcardIndex(0);
       setFlashcardSelection(null);
@@ -9621,6 +9631,7 @@ function AppInner() {
   };
 
   const advanceFlashcard = () => {
+    stopTtsPlayback();
     if (autoAdvanceTimeoutRef.current) {
       clearTimeout(autoAdvanceTimeoutRef.current);
       autoAdvanceTimeoutRef.current = null;
@@ -12837,7 +12848,7 @@ function AppInner() {
                   </button>
                   <button
                     type="button"
-                    className="secondary-button"
+                    className="secondary-button today-plan-mail-check-btn"
                     onClick={sendTodayReminderTest}
                     disabled={todayTestSending}
                   >
@@ -15782,6 +15793,7 @@ function AppInner() {
                                       type="button"
                                       className="secondary-button flashcard-preview-footer-btn"
                                       onClick={() => {
+                                        stopTtsPlayback();
                                         setPreviewAudioReady(false);
                                         setPreviewAudioPlaying(true);
                                         const nextIndex = Math.max(flashcardPreviewIndex - 1, 0);
@@ -15796,6 +15808,7 @@ function AppInner() {
                                         type="button"
                                         className="primary-button flashcard-preview-footer-btn is-next"
                                         onClick={() => {
+                                          stopTtsPlayback();
                                           setPreviewAudioReady(false);
                                           setPreviewAudioPlaying(true);
                                           const nextIndex = Math.min(flashcardPreviewIndex + 1, flashcards.length - 1);
@@ -15810,6 +15823,7 @@ function AppInner() {
                                         type="button"
                                         className="primary-button flashcard-preview-footer-btn is-start"
                                         onClick={() => {
+                                          stopTtsPlayback();
                                           setFlashcardPreviewActive(false);
                                           setFlashcardSessionActive(true);
                                           setFlashcardIndex(0);

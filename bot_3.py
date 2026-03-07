@@ -7998,11 +7998,16 @@ def _shuffle_quiz_options(quiz: dict) -> dict | None:
     if not (0 <= correct_option_id < len(options)):
         return None
 
-    correct_text = options[correct_option_id]
-    indexed = list(enumerate(options))
-    random.shuffle(indexed)
-    shuffled_options = [item[1] for item in indexed]
-    new_correct_id = shuffled_options.index(correct_text)
+    flagged_options = [
+        {"text": option, "is_correct": idx == correct_option_id}
+        for idx, option in enumerate(options)
+    ]
+    rng = random.SystemRandom()
+    rng.shuffle(flagged_options)
+    shuffled_options = [item["text"] for item in flagged_options]
+    new_correct_id = next((idx for idx, item in enumerate(flagged_options) if item["is_correct"]), None)
+    if new_correct_id is None:
+        return None
 
     shuffled = dict(quiz)
     shuffled["options"] = shuffled_options
@@ -8088,7 +8093,39 @@ def _to_letters_only_word(word: str) -> str:
     return "".join(ch for ch in (word or "") if re.match(r"[A-Za-zÄÖÜäöüß]", ch))
 
 
-def _build_same_word_anagram_distractors(correct_word: str, count: int = 3) -> list[str]:
+_ANAGRAM_MUTATION_ALPHABET = list("abcdefghijklmnopqrstuvwxyzäöüß")
+_SEPARABLE_PREFIXES = (
+    "zurück", "zurueck", "weiter", "weg", "fest",
+    "ab", "an", "auf", "aus", "bei", "ein", "mit", "nach", "vor", "zu", "hin", "her", "los",
+)
+
+
+def _letters_signature(value: str) -> str:
+    return "".join(sorted(_to_letters_only_word(value).lower()))
+
+
+def _middle_signature(value: str) -> str:
+    normalized = _to_letters_only_word(value).lower()
+    if len(normalized) < 3:
+        return ""
+    return "".join(sorted(normalized[1:-1]))
+
+
+def _is_anagram_option_shape_valid(option: str, correct_word: str) -> bool:
+    option_clean = _to_letters_only_word(option)
+    correct_clean = _to_letters_only_word(correct_word)
+    if not option_clean or not correct_clean:
+        return False
+    if len(option_clean) != len(correct_clean):
+        return False
+    if option_clean[0].lower() != correct_clean[0].lower():
+        return False
+    if option_clean[-1].lower() != correct_clean[-1].lower():
+        return False
+    return True
+
+
+def _build_impossible_anagram_distractors(correct_word: str, count: int = 3) -> list[str]:
     base = _to_letters_only_word(correct_word)
     if len(base) < 4:
         return []
@@ -8096,24 +8133,61 @@ def _build_same_word_anagram_distractors(correct_word: str, count: int = 3) -> l
     first = base[0]
     last = base[-1]
     middle = list(base[1:-1])
-    original = base.lower()
+    target_middle_signature = "".join(sorted("".join(middle).lower()))
     variants: list[str] = []
     seen: set[str] = set()
 
-    # Repeated letters can drastically reduce unique permutations, so use bounded retries.
-    for _ in range(120):
-        shuffled = middle[:]
-        random.shuffle(shuffled)
-        candidate = f"{first}{''.join(shuffled)}{last}"
+    for _ in range(320):
+        if len(variants) >= count:
+            break
+        working = middle[:]
+        random.shuffle(working)
+        middle_len = len(working)
+        mutate_count = 1 if middle_len <= 3 else random.choice([1, 1, 2])
+        mutate_positions = random.sample(range(middle_len), k=min(mutate_count, middle_len))
+        for pos in mutate_positions:
+            current = working[pos].lower()
+            replacement_pool = [ch for ch in _ANAGRAM_MUTATION_ALPHABET if ch != current]
+            if replacement_pool:
+                working[pos] = random.choice(replacement_pool)
+        candidate = f"{first}{''.join(working)}{last}"
         lower_candidate = candidate.lower()
-        if lower_candidate == original or lower_candidate in seen:
+        if lower_candidate in seen:
+            continue
+        if _middle_signature(candidate) == target_middle_signature:
             continue
         seen.add(lower_candidate)
         variants.append(candidate)
-        if len(variants) >= count:
-            break
 
     return variants
+
+
+def _validate_anagram_pool(options_raw: list[str], correct_option_id: int, correct_word: str) -> bool:
+    if len(options_raw) != 4:
+        return False
+    if not (0 <= correct_option_id < len(options_raw)):
+        return False
+    normalized = [_to_letters_only_word(item) for item in options_raw]
+    if any(not item for item in normalized):
+        return False
+    lowered = [item.lower() for item in normalized]
+    if len(set(lowered)) != 4:
+        return False
+    if any(not _is_anagram_option_shape_valid(item, correct_word) for item in normalized):
+        return False
+
+    correct_option = normalized[correct_option_id]
+    if _letters_signature(correct_option) != _letters_signature(correct_word):
+        return False
+    if correct_option.lower() == _to_letters_only_word(correct_word).lower():
+        return False
+
+    for idx, option in enumerate(normalized):
+        if idx == correct_option_id:
+            continue
+        if _letters_signature(option) == _letters_signature(correct_word):
+            return False
+    return True
 
 
 def _format_anagram_option(word: str) -> str:
@@ -8203,35 +8277,29 @@ async def generate_anagram_quiz(entry: dict) -> dict | None:
     if len(correct_word) < 4:
         return None
 
-    distractors = _build_same_word_anagram_distractors(correct_word, count=3)
-    if len(distractors) < 3:
-        fallback_distractors = _pick_anagram_distractors(correct_word, count=3 - len(distractors))
-        for candidate in fallback_distractors:
-            cleaned = _to_letters_only_word(candidate)
-            if not cleaned:
-                continue
-            if cleaned.lower() == correct_word.lower():
-                continue
-            if cleaned in distractors:
-                continue
-            distractors.append(cleaned)
-            if len(distractors) >= 3:
-                break
-
-    if len(distractors) < 2:
+    correct_scrambled = _scramble_word_preserve_ends(correct_word)
+    if not correct_scrambled:
+        return None
+    if _letters_signature(correct_scrambled) != _letters_signature(correct_word):
         return None
 
-    options_raw = [correct_word] + distractors
+    distractors = _build_impossible_anagram_distractors(correct_word, count=3)
+    if len(distractors) < 3:
+        return None
+
+    options_raw = [correct_scrambled] + distractors
     options_raw = list(dict.fromkeys(options_raw))[:4]
-    if len(options_raw) < 2:
+    if len(options_raw) != 4:
         return None
     random.shuffle(options_raw)
-    correct_option_id = options_raw.index(correct_word)
+    correct_option_id = options_raw.index(correct_scrambled)
+    if not _validate_anagram_pool(options_raw, correct_option_id, correct_word):
+        return None
     options = [_format_anagram_option(item) for item in options_raw]
 
     question = (
         f"Выберите правильное немецкое слово для «{word_ru}».\n"
-        "Во всех вариантах первая и последняя буквы совпадают."
+        "Во всех вариантах первая и последняя буквы совпадают, а внутренние буквы перемешаны."
     )
     return {
         "question": question,
@@ -8377,63 +8445,141 @@ async def generate_word_order_quiz(entry: dict) -> dict | None:
     return None
 
 
+def _extract_prefix_candidates_from_text(raw_text: str) -> list[str]:
+    cleaned = str(raw_text or "").strip()
+    if not cleaned:
+        return []
+
+    tokens = re.findall(r"[A-Za-zÄÖÜäöüß]+", cleaned)
+    variants: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        normalized = token.lower()
+        if normalized not in seen:
+            seen.add(normalized)
+            variants.append(normalized)
+    for idx in range(len(tokens) - 1):
+        combined = f"{tokens[idx]}{tokens[idx + 1]}".lower()
+        if combined not in seen:
+            seen.add(combined)
+            variants.append(combined)
+    compact = "".join(tokens).lower()
+    if compact and compact not in seen:
+        seen.add(compact)
+        variants.append(compact)
+    return variants
+
+
+def _is_valid_prefix_quiz_verb(raw_word: str) -> bool:
+    word = _to_letters_only_word(raw_word).lower()
+    if not word:
+        return False
+    if len(word) < 5 or len(word) > 28:
+        return False
+    if not word.endswith("en"):
+        return False
+    if not re.fullmatch(r"[a-zäöüß]+", word):
+        return False
+    for prefix in _SEPARABLE_PREFIXES:
+        if word.startswith(prefix) and len(word) - len(prefix) >= 3:
+            return True
+    return False
+
+
 def _extract_prefix_variants(response_json: dict) -> list[str]:
     prefixes = response_json.get("prefixes") if response_json else []
-    variants = []
+    variants: list[str] = []
+    seen: set[str] = set()
     if isinstance(prefixes, list):
         for item in prefixes:
             if not isinstance(item, dict):
                 continue
-            variant = (item.get("variant") or "").strip()
-            if variant:
-                variants.append(variant)
+            raw_variant = str(item.get("variant") or "").strip()
+            if not raw_variant:
+                continue
+            for candidate in _extract_prefix_candidates_from_text(raw_variant):
+                if candidate in seen:
+                    continue
+                if not _is_valid_prefix_quiz_verb(candidate):
+                    continue
+                seen.add(candidate)
+                variants.append(candidate)
     return variants
+
+
+def _extract_prefix_correct_word(entry: dict, response_json: dict) -> str | None:
+    primary = _extract_german_word({
+        "translation_de": entry.get("translation_de"),
+        "word_de": entry.get("word_de"),
+        "response_json": response_json,
+    })
+    if primary:
+        normalized_primary = _to_letters_only_word(primary).lower()
+        if _is_valid_prefix_quiz_verb(normalized_primary):
+            return normalized_primary
+
+    fields = [
+        entry.get("translation_de"),
+        entry.get("word_de"),
+        response_json.get("word_de"),
+        response_json.get("translation_de"),
+        response_json.get("target_text"),
+    ]
+    for raw_field in fields:
+        for candidate in _extract_prefix_candidates_from_text(str(raw_field or "")):
+            if _is_valid_prefix_quiz_verb(candidate):
+                return candidate
+    return None
 
 
 def _build_prefix_distractors(correct_word: str, count: int = 3) -> list[str]:
-    prefixes = ["ab", "an", "auf", "aus", "bei", "ein", "mit", "nach", "vor", "zu", "um", "ver", "be", "ent"]
-    lower = (correct_word or "").lower()
-    if not lower:
+    correct = _to_letters_only_word(correct_word).lower()
+    if not correct:
         return []
 
-    base = lower
-    for pref in sorted(prefixes, key=len, reverse=True):
-        if lower.startswith(pref) and len(lower) > len(pref) + 2:
-            base = lower[len(pref):]
+    distractors: list[str] = []
+    seen: set[str] = {correct}
+    attempts = 0
+    while len(distractors) < count and attempts < 140:
+        attempts += 1
+        entry = get_random_dictionary_entry(cooldown_days=0, source_lang="ru", target_lang="de")
+        if not entry:
             break
-
-    variants: list[str] = []
-    for pref in prefixes:
-        candidate = f"{pref}{base}"
-        if candidate == lower:
-            continue
-        if candidate not in variants and len(candidate) >= 4:
-            variants.append(candidate)
-        if len(variants) >= count:
-            break
-    return variants
+        entry_response = _coerce_response_json(entry.get("response_json"))
+        raw_candidates = [
+            entry.get("translation_de"),
+            entry.get("word_de"),
+            entry_response.get("word_de"),
+            entry_response.get("translation_de"),
+            entry_response.get("target_text"),
+        ]
+        candidate_added = False
+        for raw in raw_candidates:
+            for candidate in _extract_prefix_candidates_from_text(str(raw or "")):
+                if not _is_valid_prefix_quiz_verb(candidate):
+                    continue
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                distractors.append(candidate)
+                candidate_added = True
+                break
+            if candidate_added:
+                break
+    return distractors
 
 
 async def generate_prefix_quiz(entry: dict) -> dict | None:
     word_ru = (entry.get("word_ru") or "").strip()
     response_json = _coerce_response_json(entry.get("response_json"))
-    if not word_ru or not response_json:
+    if not word_ru:
         return None
 
-    correct_word = _extract_german_word({
-        "translation_de": entry.get("translation_de"),
-        "word_de": entry.get("word_de"),
-        "response_json": response_json,
-    })
+    correct_word = _extract_prefix_correct_word(entry, response_json)
     if not correct_word:
         return None
 
     variants = _extract_prefix_variants(response_json)
-    if not variants:
-        variants = _build_prefix_distractors(correct_word)
-    if not variants:
-        return None
-
     options = [correct_word]
     for variant in variants:
         if variant.lower() == correct_word.lower():
@@ -8442,8 +8588,19 @@ async def generate_prefix_quiz(entry: dict) -> dict | None:
         if len(options) >= 4:
             break
 
+    if len(options) < 4:
+        fallback_distractors = _build_prefix_distractors(correct_word, count=4 - len(options))
+        for candidate in fallback_distractors:
+            if candidate.lower() == correct_word.lower():
+                continue
+            if candidate in options:
+                continue
+            options.append(candidate)
+            if len(options) >= 4:
+                break
+
     options = list(dict.fromkeys([opt for opt in options if opt]))
-    if len(options) < 2:
+    if len(options) < 4:
         return None
 
     random.shuffle(options)
