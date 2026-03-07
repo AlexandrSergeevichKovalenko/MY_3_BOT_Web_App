@@ -1,6 +1,7 @@
 import psycopg2
 from psycopg2 import Binary
 from psycopg2 import OperationalError
+from psycopg2 import sql
 from psycopg2.extras import Json
 import os
 import hashlib
@@ -659,6 +660,110 @@ ERROR_SKILL_MAP_SEED: list[tuple[str, str, str, str, float]] = (
     + [("es", cat, subcat, skill_id, weight) for cat, subcat, skill_id, weight in ERROR_SKILL_MAP_SEED_ES]
     + [("it", cat, subcat, skill_id, weight) for cat, subcat, skill_id, weight in ERROR_SKILL_MAP_SEED_IT]
 )
+
+
+def _as_sql_text_literals(values: set[str]) -> str:
+    normalized = sorted(
+        {
+            str(value or "").strip()
+            for value in values
+            if str(value or "").strip()
+        }
+    )
+    if not normalized:
+        return "''"
+    return ", ".join("'" + item.replace("'", "''") + "'" for item in normalized)
+
+
+def _build_bt3_detailed_mistakes_allowed_labels() -> tuple[set[str], set[str]]:
+    main_categories: set[str] = set()
+    sub_categories: set[str] = set()
+
+    for category in VALID_CATEGORIES_DE:
+        if str(category or "").strip():
+            main_categories.add(str(category).strip())
+    for category, values in (VALID_SUBCATEGORIES_DE or {}).items():
+        if str(category or "").strip():
+            main_categories.add(str(category).strip())
+        for sub in values or []:
+            if str(sub or "").strip():
+                sub_categories.add(str(sub).strip())
+
+    for category, sub_category, _skill_id, _weight in LEGACY_ERROR_SKILL_MAP_SEED_DE:
+        if str(category or "").strip():
+            main_categories.add(str(category).strip())
+        if str(sub_category or "").strip():
+            sub_categories.add(str(sub_category).strip())
+
+    for _lang, category, sub_category, _skill_id, _weight in ERROR_SKILL_MAP_SEED:
+        if str(category or "").strip():
+            main_categories.add(str(category).strip())
+        if str(sub_category or "").strip():
+            sub_categories.add(str(sub_category).strip())
+
+    main_categories.add("Other mistake")
+    sub_categories.add("Unclassified mistake")
+    return main_categories, sub_categories
+
+
+def _ensure_bt3_detailed_mistakes_constraints(cursor) -> None:
+    cursor.execute("SELECT to_regclass('public.bt_3_detailed_mistakes');")
+    exists_row = cursor.fetchone()
+    if not exists_row or exists_row[0] is None:
+        return
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'bt_3_detailed_mistakes'
+          AND column_name IN ('main_category', 'sub_category');
+        """
+    )
+    columns_count = int((cursor.fetchone() or [0])[0] or 0)
+    if columns_count < 2:
+        return
+
+    main_categories, sub_categories = _build_bt3_detailed_mistakes_allowed_labels()
+    main_literals = _as_sql_text_literals(main_categories)
+    sub_literals = _as_sql_text_literals(sub_categories)
+
+    cursor.execute(
+        """
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'public.bt_3_detailed_mistakes'::regclass
+          AND contype = 'c'
+          AND (
+              pg_get_constraintdef(oid) ILIKE '%main_category%'
+              OR pg_get_constraintdef(oid) ILIKE '%sub_category%'
+          );
+        """
+    )
+    for row in cursor.fetchall() or []:
+        conname = str(row[0] or "").strip()
+        if not conname:
+            continue
+        cursor.execute(
+            sql.SQL("ALTER TABLE public.bt_3_detailed_mistakes DROP CONSTRAINT IF EXISTS {};").format(
+                sql.Identifier(conname)
+            )
+        )
+
+    cursor.execute(
+        f"""
+        ALTER TABLE public.bt_3_detailed_mistakes
+        ADD CONSTRAINT bt_3_detailed_mistakes_main_category_check
+        CHECK (main_category IN ({main_literals})) NOT VALID;
+        """
+    )
+    cursor.execute(
+        f"""
+        ALTER TABLE public.bt_3_detailed_mistakes
+        ADD CONSTRAINT bt_3_detailed_mistakes_sub_category_check
+        CHECK (sub_category IN ({sub_literals})) NOT VALID;
+        """
+    )
 
 # Добавим проверку, чтобы сразу видеть ошибку в логах, если адреса нет
 if not DATABASE_URL:
@@ -2561,6 +2666,7 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_access_requests_status
                 ON bt_3_access_requests (status, created_at DESC);
             """)
+            _ensure_bt3_detailed_mistakes_constraints(cursor)
             cursor.close()
         _ENSURE_WEBAPP_TABLES_DONE = True
 

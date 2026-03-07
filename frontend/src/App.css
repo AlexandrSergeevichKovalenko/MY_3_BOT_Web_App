@@ -314,7 +314,7 @@ body {
   align-items: flex-start;
   overscroll-behavior-y: contain;
   overscroll-behavior-x: none;
-  overflow-x: clip;
+  overflow-x: hidden;
   max-width: 100%;
   -webkit-text-size-adjust: 100%;
 }
@@ -440,6 +440,32 @@ body {
 .webapp-sidebar-top-controls {
   display: grid;
   gap: 8px;
+}
+
+@media (min-width: 901px) {
+  .webapp-sidebar-top-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 10px;
+    row-gap: 10px;
+    align-items: start;
+  }
+
+  .webapp-sidebar-top-controls .language-toggle-wrap {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: start;
+    justify-content: stretch;
+    gap: 6px;
+  }
+
+  .webapp-sidebar-top-controls .language-toggle-wrap .language-toggle {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .webapp-sidebar-top-controls .menu-toggle-row {
+    grid-column: 1 / -1;
+  }
 }
 
 .brand-mark {
@@ -14344,6 +14370,11 @@ body {
   color: rgba(46, 37, 27, 0.74);
 }
 
+.webapp-page.is-theme-light .language-toggle-label,
+.webapp-page.is-theme-light .menu-toggle-row {
+  color: rgba(46, 37, 27, 0.82);
+}
+
 .webapp-page.is-theme-light .menu-item {
   border-color: rgba(130, 101, 67, 0.24);
   color: #1f1a14;
@@ -14633,6 +14664,10 @@ body {
   --tr-shadow-primary: 0 8px 16px rgba(166, 121, 67, 0.2);
 }
 
+.webapp-page.is-theme-light .webapp-section.webapp-section-translations .webapp-translation-item textarea {
+  caret-color: #000000;
+}
+
 .webapp-page.is-theme-light .webapp-dictionary {
   --dict-bg-card: #f9f1e4;
   --dict-bg-card-alt: #fff8ee;
@@ -14643,6 +14678,80 @@ body {
   --dict-text-secondary: #2f271f;
   --dict-primary: #cf9d63;
   box-shadow: 0 18px 35px rgba(105, 78, 47, 0.13);
+}
+
+@media (min-width: 481px) and (max-width: 1024px) {
+  .webapp-page.is-theme-light.is-dictionary-layout {
+    background: #efe4d1;
+  }
+}
+
+@media (min-width: 1025px) {
+  .webapp-page.is-theme-light.is-dictionary-layout {
+    background: #efe4d1;
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-shell {
+    border-color: rgba(171, 139, 98, 0.28);
+    background: #f9f1e4;
+    box-shadow: 0 18px 35px rgba(105, 78, 47, 0.13);
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-sidebar {
+    border-right-color: rgba(171, 139, 98, 0.3);
+    background: #f9f1e4;
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-main {
+    background: #f5ebdc;
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .menu-item.is-active {
+    background: rgba(226, 195, 151, 0.34);
+    border-color: rgba(171, 126, 72, 0.52);
+    box-shadow: inset 3px 0 0 #b9854b;
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .menu-item.is-active .menu-icon {
+    color: #6f4f2e;
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary {
+    border-color: #d2c2aa;
+    background: #f9f1e4;
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-fast-button,
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-save-button,
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-back-icon {
+    border-color: #d2c2aa;
+    background: transparent;
+    color: #2f271f;
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-button {
+    border-color: #cf9d63;
+    background: #cf9d63;
+    color: #1f1a14;
+    box-shadow: 0 8px 16px rgba(166, 121, 67, 0.2);
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .folder-panel {
+    border-color: #d2c2aa;
+    background: #fff8ee;
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .folder-row .webapp-field select {
+    border-color: #d2c2aa;
+    background: #fff9f0;
+    color: #1f1a14;
+  }
+
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .folder-row > .secondary-button {
+    border-color: #d2c2aa;
+    background: transparent;
+    color: #2f271f;
+  }
 }
 
 .webapp-page.is-theme-light .webapp-flashcards {
@@ -14891,6 +15000,7 @@ body {
   border-color: #d2c2aa;
   background: #fff9f0;
   color: #1f1a14;
+  caret-color: #000000;
 }
 
 .webapp-page.is-theme-light .skill-training-section textarea::placeholder {
@@ -15183,8 +15293,16 @@ body {
 }
 
 @media (max-width: 900px) {
+  .topbar-row-controls {
+    width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
   .topbar-controls {
-    flex-wrap: nowrap;
+    width: 100%;
+    min-width: 0;
+    flex-wrap: wrap;
     justify-content: center;
     gap: 8px;
   }

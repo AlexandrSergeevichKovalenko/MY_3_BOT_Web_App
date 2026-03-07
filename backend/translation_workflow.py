@@ -1618,9 +1618,11 @@ async def log_translation_mistake(
                 )
                 result = cursor.fetchone()
                 sentence_id = result[0] if result else None
+                safe_correct_translation = correct_translation if correct_translation is not None else ""
+                used_main_category = main_category
+                used_sub_category = sub_category
 
-                cursor.execute(
-                    """
+                insert_sql = """
                     INSERT INTO bt_3_detailed_mistakes (
                         user_id, sentence, added_data, main_category, sub_category, mistake_count, sentence_id,
                         correct_translation, score
@@ -1631,16 +1633,58 @@ async def log_translation_mistake(
                         attempt = bt_3_detailed_mistakes.attempt + 1,
                         last_seen = NOW(),
                         score = EXCLUDED.score;
-                    """,
-                    (user_id, original_text, main_category, sub_category, sentence_id, correct_translation, score),
-                )
+                """
+                try:
+                    cursor.execute(
+                        insert_sql,
+                        (
+                            user_id,
+                            original_text,
+                            used_main_category,
+                            used_sub_category,
+                            sentence_id,
+                            safe_correct_translation,
+                            score,
+                        ),
+                    )
+                except psycopg2.Error as exc:
+                    logging.warning(
+                        "Ошибка записи detailed_mistakes (%s / %s). "
+                        "Пробуем fallback Other mistake / Unclassified mistake. %s",
+                        used_main_category,
+                        used_sub_category,
+                        exc,
+                    )
+                    used_main_category = "Other mistake"
+                    used_sub_category = "Unclassified mistake"
+                    try:
+                        cursor.execute(
+                            insert_sql,
+                            (
+                                user_id,
+                                original_text,
+                                used_main_category,
+                                used_sub_category,
+                                sentence_id,
+                                safe_correct_translation,
+                                score,
+                            ),
+                        )
+                    except psycopg2.Error:
+                        logging.exception(
+                            "Не удалось записать ошибку даже в fallback-категорию "
+                            "for user_id=%s sentence_id=%s",
+                            user_id,
+                            sentence_id,
+                        )
+                        continue
                 try:
                     apply_skill_events_for_error(
                         user_id=int(user_id),
                         source_lang=source_lang or "ru",
                         target_lang=target_lang or "de",
-                        error_category=main_category,
-                        error_subcategory=sub_category,
+                        error_category=used_main_category,
+                        error_subcategory=used_sub_category,
                         event_type="fail",
                         fail_delta=-3.0,
                         success_delta=2.0,
@@ -1743,22 +1787,26 @@ async def check_user_translation_webapp(
 
             cursor.execute(
                 """
-                SELECT id FROM bt_3_translations
+                SELECT id, score
+                FROM bt_3_translations
                 WHERE user_id = %s
                   AND sentence_id = %s
                   AND COALESCE(source_lang, 'ru') = %s
                   AND COALESCE(target_lang, 'de') = %s
-                  AND timestamp::date = CURRENT_DATE;
+                  AND timestamp::date = CURRENT_DATE
+                ORDER BY timestamp DESC, id DESC
+                LIMIT 1;
                 """,
                 (user_id, sentence_pk_id, (source_lang or "ru"), (target_lang or "de")),
             )
 
             existing_translation = cursor.fetchone()
-            if existing_translation:
+            latest_score = int(existing_translation[1] or 0) if existing_translation else None
+            if existing_translation and latest_score >= 85:
                 results.append(
                     {
                         "sentence_number": sentence_number,
-                        "error": "Вы уже переводили это предложение.",
+                        "error": "Это предложение уже закрыто (балл 85+).",
                     }
                 )
                 continue
