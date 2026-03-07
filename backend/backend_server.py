@@ -371,6 +371,12 @@ SUPPORT_MESSAGE_MAX_LEN = int((os.getenv("SUPPORT_MESSAGE_MAX_LEN") or "2000").s
 THEORY_PACKAGE_TTL_MINUTES = max(1, int((os.getenv("THEORY_PACKAGE_TTL_MINUTES") or "720").strip()))
 BILLING_CURRENCY_DEFAULT = (os.getenv("BILLING_CURRENCY") or "USD").strip().upper() or "USD"
 BILLING_ALLOCATION_DEFAULT = (os.getenv("BILLING_ALLOCATION_METHOD_DEFAULT") or "weighted").strip().lower() or "weighted"
+READER_AUDIO_PAGES_7D_LIMIT = max(1, int((os.getenv("READER_AUDIO_PAGES_7D_LIMIT") or "10").strip() or "10"))
+READER_AUDIO_PAGES_WINDOW_DAYS = max(1, int((os.getenv("READER_AUDIO_PAGES_WINDOW_DAYS") or "7").strip() or "7"))
+FREE_FLASHCARDS_WORDS_DAILY_PER_MODE = max(1, int((os.getenv("FREE_FLASHCARDS_WORDS_DAILY_PER_MODE") or "5").strip() or "5"))
+FREE_VOICE_MINUTES_DAILY_LIMIT = max(1, int((os.getenv("FREE_VOICE_MINUTES_DAILY_LIMIT") or "3").strip() or "3"))
+PAID_VOICE_MINUTES_DAILY_LIMIT = max(1, int((os.getenv("PAID_VOICE_MINUTES_DAILY_LIMIT") or "15").strip() or "15"))
+FREE_READER_STORAGE_DAYS = max(1, int((os.getenv("FREE_READER_STORAGE_DAYS") or "30").strip() or "30"))
 STRIPE_SECRET_KEY = (os.getenv("STRIPE_SECRET_KEY") or "").strip()
 STRIPE_WEBHOOK_SECRET = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
 STRIPE_PRICE_ID_PRO = (os.getenv("STRIPE_PRICE_ID_PRO") or "").strip()
@@ -656,6 +662,14 @@ def get_token_api():
 
     if not username or not user_id:
         return jsonify({"error": "Нужны и user_id, и username"}), 400
+    try:
+        user_id_int = int(str(user_id).strip())
+    except Exception:
+        return jsonify({"error": "user_id должен быть числом"}), 400
+
+    voice_limit_state = _check_voice_minutes_daily_limit(user_id=user_id_int)
+    if voice_limit_state.get("error"):
+        return jsonify(voice_limit_state.get("error")), 429
 
     grant = VideoGrants(
         room_join=True,
@@ -664,7 +678,7 @@ def get_token_api():
 
     access_token = (
         AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        .with_identity(user_id)
+        .with_identity(str(user_id_int))
         .with_name(username)
         .with_grants(grant)
     )
@@ -1205,6 +1219,196 @@ def _apply_billing_guard(path: str) -> tuple[dict | None, int | None]:
         if feature_error:
             return feature_error, 429
     return None, None
+
+
+def _today_local_date(tz_name: str = "Europe/Vienna") -> date:
+    try:
+        tzinfo = ZoneInfo(str(tz_name or "Europe/Vienna"))
+    except Exception:
+        tzinfo = timezone.utc
+    return datetime.now(timezone.utc).astimezone(tzinfo).date()
+
+
+def _sum_billing_units_today(
+    *,
+    user_id: int,
+    action_type: str,
+    units_type: str,
+    tz_name: str = "Europe/Vienna",
+) -> float:
+    action_value = str(action_type or "").strip().lower()
+    units_value = str(units_type or "").strip().lower()
+    if not action_value or not units_value:
+        return 0.0
+    day_local = _today_local_date(tz_name=tz_name)
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(SUM(units_value), 0)
+                    FROM bt_3_billing_events
+                    WHERE user_id = %s
+                      AND action_type = %s
+                      AND units_type = %s
+                      AND (event_time AT TIME ZONE %s)::date = %s;
+                    """,
+                    (int(user_id), action_value, units_value, str(tz_name or "Europe/Vienna"), day_local),
+                )
+                row = cursor.fetchone()
+        return float((row or [0])[0] or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _normalize_flashcards_mode(mode: str | None) -> str:
+    value = str(mode or "").strip().lower()
+    if value in {"quiz", "blocks", "sentence", "fsrs"}:
+        return value
+    return "quiz"
+
+
+def _build_upgrade_payload(plan_code: str = "pro") -> dict:
+    return {
+        "available": True,
+        "plan_code": str(plan_code or "pro"),
+        "action": "checkout",
+        "endpoint": "/api/billing/create-checkout-session",
+    }
+
+
+def _check_flashcards_words_daily_limit(
+    *,
+    user_id: int,
+    mode: str,
+    requested_words: int,
+    tz_name: str = "Europe/Vienna",
+) -> dict:
+    normalized_mode = _normalize_flashcards_mode(mode)
+    safe_requested = max(1, int(requested_words or 1))
+    now_utc = datetime.now(timezone.utc)
+    entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz=tz_name)
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode != "free":
+        return {
+            "allowed_words": safe_requested,
+            "used_words": 0.0,
+            "limit_words": None,
+            "effective_mode": effective_mode,
+        }
+
+    used_words = _sum_billing_units_today(
+        user_id=int(user_id),
+        action_type=f"flashcards_words_served_{normalized_mode}",
+        units_type="words",
+        tz_name=tz_name,
+    )
+    limit_words = float(FREE_FLASHCARDS_WORDS_DAILY_PER_MODE)
+    remaining_words = max(0.0, limit_words - used_words)
+    allowed_words = min(safe_requested, max(0, int(remaining_words)))
+    if allowed_words <= 0:
+        return {
+            "error": {
+                "error": "feature_limit_exceeded",
+                "error_code": "flashcards_daily_words_limit_exceeded",
+                "feature": f"flashcards_{normalized_mode}_words_daily",
+                "mode": normalized_mode,
+                "limit": int(limit_words),
+                "used": int(used_words),
+                "unit": "words",
+                "reset_at": entitlement.get("reset_at"),
+                "upgrade": _build_upgrade_payload("pro"),
+            }
+        }
+    return {
+        "allowed_words": int(allowed_words),
+        "used_words": float(used_words),
+        "limit_words": int(limit_words),
+        "effective_mode": effective_mode,
+    }
+
+
+def _log_flashcards_words_served(
+    *,
+    user_id: int,
+    mode: str,
+    served_words: int,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    count = max(0, int(served_words or 0))
+    if count <= 0:
+        return
+    normalized_mode = _normalize_flashcards_mode(mode)
+    _billing_log_event_safe(
+        user_id=int(user_id),
+        action_type=f"flashcards_words_served_{normalized_mode}",
+        provider="app_internal",
+        units_type="words",
+        units_value=float(count),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        status="estimated",
+        metadata={"mode": normalized_mode, "served_words": count},
+        idempotency_seed=f"flashcards_words:{user_id}:{normalized_mode}:{count}:{time.time_ns()}",
+    )
+
+
+def _check_voice_minutes_daily_limit(
+    *,
+    user_id: int,
+    tz_name: str = "Europe/Vienna",
+) -> dict:
+    now_utc = datetime.now(timezone.utc)
+    entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz=tz_name)
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    daily_limit = float(FREE_VOICE_MINUTES_DAILY_LIMIT if effective_mode == "free" else PAID_VOICE_MINUTES_DAILY_LIMIT)
+    used_minutes = _sum_billing_units_today(
+        user_id=int(user_id),
+        action_type="livekit_room_minutes",
+        units_type="audio_minutes",
+        tz_name=tz_name,
+    )
+    if used_minutes >= daily_limit:
+        return {
+            "error": {
+                "error": "feature_limit_exceeded",
+                "error_code": "voice_minutes_daily_limit_exceeded",
+                "feature": "voice_minutes_daily",
+                "limit": int(daily_limit),
+                "used": round(float(used_minutes), 3),
+                "unit": "minutes",
+                "reset_at": entitlement.get("reset_at"),
+                "upgrade": _build_upgrade_payload("pro"),
+            }
+        }
+    return {
+        "effective_mode": effective_mode,
+        "limit_minutes": int(daily_limit),
+        "used_minutes": round(float(used_minutes), 3),
+    }
+
+
+def _parse_iso_datetime_utc(value: str | None) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _is_reader_doc_expired_for_free(doc: dict | None) -> tuple[bool, str | None]:
+    item = doc if isinstance(doc, dict) else {}
+    created_at_dt = _parse_iso_datetime_utc(item.get("created_at"))
+    if created_at_dt is None:
+        return False, None
+    expires_at_dt = created_at_dt + timedelta(days=FREE_READER_STORAGE_DAYS)
+    return datetime.now(timezone.utc) > expires_at_dt, expires_at_dt.isoformat()
 
 
 def _get_user_language_pair(user_id: int) -> tuple[str, str, dict]:
@@ -13860,6 +14064,9 @@ def start_assistant_session():
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
+    voice_limit_state = _check_voice_minutes_daily_limit(user_id=int(user_id))
+    if voice_limit_state.get("error"):
+        return jsonify(voice_limit_state.get("error")), 429
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
         session = start_agent_voice_session(
@@ -14934,7 +15141,7 @@ def get_webapp_flashcard_set():
     started_at = time.perf_counter()
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
-    training_mode = str(payload.get("training_mode") or "quiz").strip().lower()
+    training_mode = _normalize_flashcards_mode(payload.get("training_mode"))
     set_size = int(payload.get("set_size", 15))
     wrong_size = int(payload.get("wrong_size", 5))
     folder_mode = payload.get("folder_mode", "all")
@@ -14953,6 +15160,16 @@ def get_webapp_flashcard_set():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    requested_set_size = max(1, int(set_size))
+    flashcards_limit_state = _check_flashcards_words_daily_limit(
+        user_id=int(user_id),
+        mode=training_mode,
+        requested_words=requested_set_size,
+    )
+    if flashcards_limit_state.get("error"):
+        return jsonify(flashcards_limit_state.get("error")), 429
+    allowed_set_size = max(1, int(flashcards_limit_state.get("allowed_words") or requested_set_size))
+    set_size = min(requested_set_size, allowed_set_size)
 
     def _resolve_blocks_answer_for_profile(entry: dict) -> str:
         item = entry if isinstance(entry, dict) else {}
@@ -14987,7 +15204,10 @@ def get_webapp_flashcard_set():
 
     profile_payload: dict[str, object] = {
         "mode": training_mode,
-        "requested_set_size": max(1, int(set_size)),
+        "requested_set_size": requested_set_size,
+        "effective_set_size": set_size,
+        "daily_words_limit": flashcards_limit_state.get("limit_words"),
+        "daily_words_used": flashcards_limit_state.get("used_words"),
         "server_items": 0,
         "blocks_eligible_len10_server": None,
     }
@@ -15051,6 +15271,13 @@ def get_webapp_flashcard_set():
             profile_payload.get("blocks_eligible_len10_server"),
             total_ms,
         )
+    _log_flashcards_words_served(
+        user_id=int(user_id),
+        mode=training_mode,
+        served_words=len(decorated_items),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     return jsonify(
         {
             "ok": True,
@@ -15125,6 +15352,13 @@ def get_next_srs_card():
     try:
         source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
         mark("lang_pair")
+        fsrs_limit_state = _check_flashcards_words_daily_limit(
+            user_id=int(user_id),
+            mode="fsrs",
+            requested_words=1,
+        )
+        if fsrs_limit_state.get("error"):
+            return jsonify(fsrs_limit_state.get("error")), 429
         now_utc = datetime.now(timezone.utc)
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -15151,6 +15385,17 @@ def get_next_srs_card():
         raise
     finally:
         if not had_error:
+            try:
+                if isinstance(payload_next, dict) and payload_next.get("card"):
+                    _log_flashcards_words_served(
+                        user_id=int(user_id),
+                        mode="fsrs",
+                        served_words=1,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+            except Exception:
+                pass
             log_profile(int(user_id) if user_id else None, error_text=None)
 
 
@@ -15182,6 +15427,14 @@ def get_srs_prefetch_cards():
                 due_count = max(0, int(queue_info.get("due_count") or 0))
                 new_remaining_today = max(0, int(queue_info.get("new_remaining_today") or 0))
                 max_items = max(1, min(20, due_count + new_remaining_today))
+                fsrs_limit_state = _check_flashcards_words_daily_limit(
+                    user_id=int(user_id),
+                    mode="fsrs",
+                    requested_words=max_items,
+                )
+                if fsrs_limit_state.get("error"):
+                    return jsonify(fsrs_limit_state.get("error")), 429
+                max_items = max(1, min(max_items, int(fsrs_limit_state.get("allowed_words") or max_items)))
 
                 due_limit = min(due_count, max_items)
                 new_limit = min(new_remaining_today, max(0, max_items - due_limit))
@@ -17030,7 +17283,10 @@ def ingest_reader_content():
             if not has_same_document and len(existing_docs) >= 1:
                 return jsonify(
                     {
-                        "error": "Лимит бесплатного плана: можно хранить только 1 книгу/документ.",
+                        "error": (
+                            f"Лимит Free: можно хранить только 1 книгу/документ "
+                            f"до {FREE_READER_STORAGE_DAYS} дней. Чтобы добавить новую, удалите старую."
+                        ),
                         "error_code": "LIMIT_FREE_PLAN_1_BOOK",
                     }
                 ), 403
@@ -17100,6 +17356,13 @@ def reader_library_list():
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка загрузки библиотеки: {exc}"}), 500
+    entitlement = resolve_entitlement(user_id=int(user_id))
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode == "free":
+        for item in items:
+            expired, expires_at = _is_reader_doc_expired_for_free(item)
+            item["is_free_storage_expired"] = bool(expired)
+            item["free_storage_expires_at"] = expires_at
     return jsonify(
         {
             "ok": True,
@@ -17139,6 +17402,22 @@ def reader_library_open():
         return jsonify({"error": f"Ошибка открытия книги: {exc}"}), 500
     if not doc:
         return jsonify({"error": "Книга не найдена"}), 404
+    entitlement = resolve_entitlement(user_id=int(user_id))
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode == "free":
+        expired, expires_at = _is_reader_doc_expired_for_free(doc)
+        if expired:
+            return jsonify(
+                {
+                    "error": (
+                        f"Срок хранения книги на Free истек ({FREE_READER_STORAGE_DAYS} дней). "
+                        "Удалите книгу, чтобы добавить новую."
+                    ),
+                    "error_code": "reader_free_storage_expired",
+                    "expires_at": expires_at,
+                    "storage_days_limit": int(FREE_READER_STORAGE_DAYS),
+                }
+            ), 403
     detected_lang = _detect_reader_language(str(doc.get("content_text") or ""), fallback=target_lang)
     return jsonify(
         {
@@ -17303,6 +17582,29 @@ def reader_library_delete():
     return jsonify({"ok": True, "deleted": True})
 
 
+def _get_reader_audio_pages_usage_window(user_id: int, *, window_days: int = READER_AUDIO_PAGES_WINDOW_DAYS) -> float:
+    normalized_days = max(1, int(window_days or 1))
+    window_start = datetime.now(timezone.utc) - timedelta(days=normalized_days)
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(SUM(units_value), 0)
+                    FROM bt_3_billing_events
+                    WHERE user_id = %s
+                      AND action_type = 'reader_audio_tts_pages'
+                      AND units_type = 'pages'
+                      AND event_time >= %s;
+                    """,
+                    (int(user_id), window_start),
+                )
+                row = cursor.fetchone()
+        return float((row or [0])[0] or 0.0)
+    except Exception:
+        return 0.0
+
+
 @app.route("/api/webapp/reader/audio", methods=["POST"])
 def reader_audio_export():
     payload = request.get_json(silent=True) or {}
@@ -17353,6 +17655,7 @@ def reader_audio_export():
         return jsonify({"error": "Книга не найдена"}), 404
 
     pages = document.get("content_pages") if isinstance(document.get("content_pages"), list) else []
+    selected_page_count = 0
     if pages:
         try:
             start_page = int(page_from) if page_from is not None else 1
@@ -17362,12 +17665,22 @@ def reader_audio_export():
         start_page = max(1, start_page)
         end_page = max(start_page, min(len(pages), end_page))
         selected_page_count = max(0, end_page - start_page + 1)
-        if selected_page_count > 10:
+        used_pages_7d = _get_reader_audio_pages_usage_window(
+            int(user_id),
+            window_days=READER_AUDIO_PAGES_WINDOW_DAYS,
+        )
+        limit_pages_7d = float(READER_AUDIO_PAGES_7D_LIMIT)
+        if selected_page_count > 0 and (used_pages_7d + float(selected_page_count)) > limit_pages_7d:
             return jsonify(
                 {
-                    "error": "Лимит Reader Audio: за один экспорт можно скачать не более 10 страниц.",
+                    "error": (
+                        f"Лимит Reader Audio: не более {int(limit_pages_7d)} страниц "
+                        f"за последние {READER_AUDIO_PAGES_WINDOW_DAYS} дней."
+                    ),
                     "error_code": "reader_audio_page_limit_exceeded",
-                    "limit_pages": 10,
+                    "limit_pages_7d": int(limit_pages_7d),
+                    "window_days": int(READER_AUDIO_PAGES_WINDOW_DAYS),
+                    "used_pages_7d": round(float(used_pages_7d), 3),
                     "requested_pages": selected_page_count,
                 }
             ), 403
@@ -17426,6 +17739,23 @@ def reader_audio_export():
                 "format": "mp3",
             },
         )
+        if selected_page_count > 0:
+            _billing_log_event_safe(
+                user_id=int(user_id),
+                action_type="reader_audio_tts_pages",
+                provider="app_internal",
+                units_type="pages",
+                units_value=float(selected_page_count),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                idempotency_seed=f"reader_audio_pages:{user_id}:{document_id}:{filename_suffix}:{selected_page_count}:mp3:{time.time_ns()}",
+                status="estimated",
+                metadata={
+                    "document_id": int(document_id),
+                    "format": "mp3",
+                    "page_count": int(selected_page_count),
+                },
+            )
         return send_file(
             BytesIO(mp3_bytes),
             mimetype="audio/mpeg",
@@ -17452,6 +17782,23 @@ def reader_audio_export():
                     "format": "wav",
                 },
             )
+            if selected_page_count > 0:
+                _billing_log_event_safe(
+                    user_id=int(user_id),
+                    action_type="reader_audio_tts_pages",
+                    provider="app_internal",
+                    units_type="pages",
+                    units_value=float(selected_page_count),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    idempotency_seed=f"reader_audio_pages:{user_id}:{document_id}:{filename_suffix}:{selected_page_count}:wav:{time.time_ns()}",
+                    status="estimated",
+                    metadata={
+                        "document_id": int(document_id),
+                        "format": "wav",
+                        "page_count": int(selected_page_count),
+                    },
+                )
             return send_file(
                 BytesIO(wav_bytes),
                 mimetype="audio/wav",

@@ -867,7 +867,7 @@ function AppInner() {
     const paidCommon = [
       tr('Переводы: безлимитно.', 'Uebersetzungen: unbegrenzt.'),
       tr('Читалка: безлимитно.', 'Reader: unbegrenzt.'),
-      tr('Скачивание аудио из читалки: до 10 страниц за один экспорт.', 'Audio-Export aus dem Reader: bis zu 10 Seiten pro Export.'),
+      tr('Скачивание аудио из читалки: до 10 страниц за 7 дней.', 'Audio-Export aus dem Reader: bis zu 10 Seiten in 7 Tagen.'),
       tr('Карточки: безлимитно.', 'Karteikarten: unbegrenzt.'),
       tr('«Почувствуй слово»: безлимитно.', '„Wort fuehlen“: unbegrenzt.'),
       tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.'),
@@ -16791,7 +16791,7 @@ function AppInner() {
                         <h4>{tr('Pro / Coffee / Cheesecake', 'Pro / Coffee / Cheesecake')}</h4>
                         <ul>
                           <li>{tr('Переводы, читалка, карточки, «почувствуй слово»: безлимитно.', 'Uebersetzungen, Reader, Karteikarten, „Wort fuehlen“: unbegrenzt.')}</li>
-                          <li>{tr('Аудио из читалки: до 10 страниц за экспорт.', 'Audio aus Reader: bis zu 10 Seiten pro Export.')}</li>
+                          <li>{tr('Аудио из читалки: до 10 страниц за 7 дней.', 'Audio aus Reader: bis zu 10 Seiten in 7 Tagen.')}</li>
                           <li>{tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.')}</li>
                           <li>{tr('Прокачка навыков: безлимитно.', 'Skill-Training: unbegrenzt.')}</li>
                           <li>{tr('Можно обсудить индивидуальную доработку/тренировку (по технической возможности).', 'Individuelle Anpassung/Training kann besprochen werden (sofern technisch moeglich).')}</li>
