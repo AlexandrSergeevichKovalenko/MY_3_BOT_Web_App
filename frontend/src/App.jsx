@@ -513,6 +513,7 @@ function AppInner() {
   const readerPageNavLockRef = useRef(false);
   const todayTimerCompletionLockRef = useRef(new Set());
   const globalTimerAutoPauseInFlightRef = useRef(false);
+  const globalTimerAutoResumeInFlightRef = useRef(false);
   const sectionVisibilitySnapshotRef = useRef(null);
   const autoPausedTodayTimerIdsRef = useRef(new Set());
   const youtubeTodayTimerSyncInFlightRef = useRef(false);
@@ -5640,6 +5641,12 @@ function AppInner() {
         && isTodayItemTimerRunning(item)
       ));
       if (runningTodayTimers.length > 0) {
+        runningTodayTimers.forEach((item) => {
+          const taskType = String(item?.task_type || '').toLowerCase();
+          if (taskType !== 'video' && taskType !== 'youtube') {
+            autoPausedTodayTimerIdsRef.current.add(item.id);
+          }
+        });
         await Promise.all(runningTodayTimers.map((item) => (
           syncTodayItemTimer(item, 'pause', {
             elapsedSeconds: getTodayItemElapsedSeconds(item, nowMs),
@@ -5665,6 +5672,7 @@ function AppInner() {
             skipReaderStateSync: reason === 'pagehide' || reason === 'beforeunload',
           });
         }
+        readerAutoPausedByNavigationRef.current = true;
       }
 
       if (assistantSessionId) {
@@ -5690,6 +5698,97 @@ function AppInner() {
     isTodayItemTimerRunning,
     stopReaderSessionTracking,
     stopAssistantSessionTracking,
+  ]);
+
+  const resumeAutoPausedVisibleTimers = useCallback(async () => {
+    if (globalTimerAutoResumeInFlightRef.current) return;
+    globalTimerAutoResumeInFlightRef.current = true;
+    try {
+      const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
+      if (items.length === 0) return;
+
+      const sectionVisibility = {
+        flashcards: flashcardsOnly || selectedSections.has('flashcards'),
+        translations: !flashcardsOnly && selectedSections.has('translations'),
+        theory: !flashcardsOnly && selectedSections.has('theory'),
+        reader: !flashcardsOnly
+          && selectedSections.has('reader')
+          && readerImmersive
+          && !readerArchiveOpen
+          && !readerSettingsOpen,
+      };
+      const findTodayTaskByTypesLocal = (types = []) => {
+        const normalizedTypes = new Set(types.map((entry) => String(entry || '').toLowerCase()));
+        const active = items.find((entry) => normalizedTypes.has(String(entry?.task_type || '').toLowerCase()) && String(entry?.status || '').toLowerCase() !== 'done');
+        if (active) return active;
+        return items.find((entry) => normalizedTypes.has(String(entry?.task_type || '').toLowerCase())) || null;
+      };
+      const getSectionTask = (key) => {
+        if (key === 'flashcards') return findTodayTaskByTypesLocal(['cards']);
+        if (key === 'translations') return findTodayTaskByTypesLocal(['translation']);
+        if (key === 'theory') return findTodayTaskByTypesLocal(['theory']);
+        return null;
+      };
+
+      const nowMs = Date.now();
+      const timerSyncCalls = [];
+      ['flashcards', 'translations', 'theory'].forEach((sectionKey) => {
+        if (!sectionVisibility[sectionKey]) return;
+        const item = getSectionTask(sectionKey);
+        if (!item?.id) return;
+        const status = String(item?.status || '').toLowerCase();
+        if (status === 'done') {
+          autoPausedTodayTimerIdsRef.current.delete(item.id);
+          return;
+        }
+        if (!autoPausedTodayTimerIdsRef.current.has(item.id)) return;
+        if (isTodayItemTimerRunning(item)) {
+          autoPausedTodayTimerIdsRef.current.delete(item.id);
+          return;
+        }
+        const elapsedSeconds = getTodayItemElapsedSeconds(item, nowMs);
+        const hasStartedBefore = elapsedSeconds > 0 || status === 'doing';
+        timerSyncCalls.push(
+          syncTodayItemTimer(
+            item,
+            hasStartedBefore ? 'resume' : 'start',
+            { elapsedSeconds, running: true }
+          ).then(() => {
+            autoPausedTodayTimerIdsRef.current.delete(item.id);
+          })
+        );
+      });
+
+      let readerResumed = false;
+      if (sectionVisibility.reader && readerHasContent && readerTimerPaused && readerAutoPausedByNavigationRef.current) {
+        setReaderTimerPaused(false);
+        void startReaderSessionTracking();
+        readerAutoPausedByNavigationRef.current = false;
+        readerResumed = true;
+      }
+
+      if (timerSyncCalls.length > 0) {
+        await Promise.allSettled(timerSyncCalls);
+      }
+      if (timerSyncCalls.length > 0 || readerResumed) {
+        setGlobalPauseReason('');
+      }
+    } finally {
+      globalTimerAutoResumeInFlightRef.current = false;
+    }
+  }, [
+    todayPlan,
+    flashcardsOnly,
+    selectedSections,
+    readerHasContent,
+    readerImmersive,
+    readerArchiveOpen,
+    readerSettingsOpen,
+    readerTimerPaused,
+    getTodayItemElapsedSeconds,
+    isTodayItemTimerRunning,
+    syncTodayItemTimer,
+    startReaderSessionTracking,
   ]);
 
   const requestTelegramFullscreen = useCallback(() => {
@@ -5889,6 +5988,7 @@ function AppInner() {
       } else if (document.visibilityState === 'visible') {
         setGlobalTimerSuspended(false);
         setGlobalPauseReason('');
+        void resumeAutoPausedVisibleTimers();
       }
     };
     const onWindowBlur = () => {
@@ -5897,6 +5997,7 @@ function AppInner() {
     const onWindowFocus = () => {
       setGlobalTimerSuspended(false);
       setGlobalPauseReason('');
+      void resumeAutoPausedVisibleTimers();
     };
     const onPageHide = () => {
       void pauseAllActiveTimers('pagehide');
@@ -5918,7 +6019,7 @@ function AppInner() {
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
-  }, [pauseAllActiveTimers]);
+  }, [pauseAllActiveTimers, resumeAutoPausedVisibleTimers]);
 
   useEffect(() => {
     if (!flashcardSessionActive) return;

@@ -4231,11 +4231,18 @@ def import_starter_dictionary_snapshot(
     resolved_folder_color = str(folder_color or "#5ddcff").strip() or "#5ddcff"
     resolved_folder_icon = str(folder_icon or "book").strip() or "book"
     resolved_template_version = str(template_version or "v1").strip() or "v1"
-    advisory_ns = 94231
+    advisory_lock_key = int.from_bytes(
+        hashlib.blake2b(
+            f"starter_dictionary_import:{target_user}:{pair_source}:{pair_target}".encode("utf-8"),
+            digest_size=8,
+        ).digest(),
+        "big",
+        signed=True,
+    )
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_xact_lock(%s, %s);", (advisory_ns, target_user))
+            cursor.execute("SELECT pg_advisory_xact_lock(%s::bigint);", (advisory_lock_key,))
             cursor.execute(
                 """
                 SELECT id, name, color, icon, created_at

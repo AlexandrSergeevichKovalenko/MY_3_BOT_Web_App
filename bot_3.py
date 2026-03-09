@@ -124,6 +124,7 @@ pending_dictionary_cards = {}
 pending_dictionary_save_options = {}
 pending_dictionary_lookup_requests = {}
 pending_dictionary_lookup_inflight = set()
+pending_feel_requests_inflight = set()
 pending_tts_budget_custom = {}
 TTS_BUDGET_CUSTOM_TTL_SECONDS = 60 * 5
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
@@ -4269,40 +4270,49 @@ async def handle_dictionary_feel_callback(update: Update, context: CallbackConte
     if not user or int(payload.get("user_id", 0)) != int(user.id):
         await query.answer("Кнопка доступна только автору карточки.", show_alert=True)
         return
-
-    source_lang = str(payload.get("source_lang") or "").strip().lower()
-    target_lang = str(payload.get("target_lang") or "").strip().lower()
-    if (not source_lang or not target_lang) and "-" in str(payload.get("direction") or ""):
-        source_lang, target_lang = [x.strip().lower() for x in str(payload.get("direction")).split("-", 1)]
-
-    lookup = payload.get("lookup") if isinstance(payload.get("lookup"), dict) else {}
-    source_text = str(
-        lookup.get("word_source")
-        or payload.get("source_text")
-        or payload.get("original_query")
-        or ""
-    ).strip()
-    target_text = str(lookup.get("word_target") or "").strip()
-    if not target_text:
-        translations = lookup.get("translations") if isinstance(lookup.get("translations"), list) else []
-        for item in translations:
-            if not isinstance(item, dict):
-                continue
-            candidate = str(item.get("value") or "").strip()
-            if candidate:
-                target_text = candidate
-                break
-
-    if not source_text:
-        await query.answer("Не удалось определить исходное слово.", show_alert=True)
+    if payload.get("feel_used"):
+        await query.answer("Разбор уже отправлен для этой карточки.", show_alert=True)
         return
 
-    try:
-        await query.answer("Готовлю разбор…")
-    except Exception:
-        pass
+    inflight_key = f"dictfeel:{int(user.id)}:{card_key}"
+    if inflight_key in pending_feel_requests_inflight:
+        await query.answer("Разбор уже готовится, подождите.", show_alert=True)
+        return
+    pending_feel_requests_inflight.add(inflight_key)
 
     try:
+        source_lang = str(payload.get("source_lang") or "").strip().lower()
+        target_lang = str(payload.get("target_lang") or "").strip().lower()
+        if (not source_lang or not target_lang) and "-" in str(payload.get("direction") or ""):
+            source_lang, target_lang = [x.strip().lower() for x in str(payload.get("direction")).split("-", 1)]
+
+        lookup = payload.get("lookup") if isinstance(payload.get("lookup"), dict) else {}
+        source_text = str(
+            lookup.get("word_source")
+            or payload.get("source_text")
+            or payload.get("original_query")
+            or ""
+        ).strip()
+        target_text = str(lookup.get("word_target") or "").strip()
+        if not target_text:
+            translations = lookup.get("translations") if isinstance(lookup.get("translations"), list) else []
+            for item in translations:
+                if not isinstance(item, dict):
+                    continue
+                candidate = str(item.get("value") or "").strip()
+                if candidate:
+                    target_text = candidate
+                    break
+
+        if not source_text:
+            await query.answer("Не удалось определить исходное слово.", show_alert=True)
+            return
+
+        try:
+            await query.answer("Готовлю разбор…")
+        except Exception:
+            pass
+
         if source_lang == "ru" and target_lang == "de":
             feel_text = await run_feel_word(source_text, target_text)
         elif source_lang == "de" and target_lang == "ru":
@@ -4314,55 +4324,52 @@ async def handle_dictionary_feel_callback(update: Update, context: CallbackConte
                 source_lang=source_lang or "auto",
                 target_lang=target_lang or "auto",
             )
-    except Exception as exc:
-        logging.exception("❌ Ошибка dictfeel для user_id=%s card_key=%s: %s", int(user.id), card_key, exc)
-        await query.answer("Не удалось сделать разбор. Попробуйте чуть позже.", show_alert=True)
-        return
 
-    feel_text = str(feel_text or "").strip()
-    if not feel_text:
-        await query.answer("Разбор пустой. Попробуйте снова.", show_alert=True)
-        return
+        feel_text = str(feel_text or "").strip()
+        if not feel_text:
+            await query.answer("Разбор пустой. Попробуйте снова.", show_alert=True)
+            return
 
-    try:
         token = await asyncio.to_thread(
             create_flashcard_feel_feedback_token,
             user_id=int(user.id),
             entry_id=0,
             feel_explanation=feel_text,
         )
-    except Exception as exc:
-        logging.exception("❌ Ошибка создания feel feedback token для user_id=%s: %s", int(user.id), exc)
-        await query.answer("Не удалось подготовить feedback-кнопки.", show_alert=True)
-        return
-
-    reply_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{token}:like"),
-        InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{token}:dislike"),
-    ]])
-    text = _build_dictionary_feel_private_message(
-        source_text=source_text,
-        target_text=target_text or "—",
-        source_lang=source_lang,
-        target_lang=target_lang,
-        feel_text=feel_text,
-    )
-    msg = await query.message.reply_text(
-        text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-        reply_markup=reply_markup,
-    )
-    add_service_msg_id(context, msg.message_id)
-    try:
-        await asyncio.to_thread(
-            update_telegram_system_message_type,
-            chat_id=int(query.message.chat_id),
-            message_id=int(msg.message_id),
-            message_type="feel_word",
+        reply_markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{token}:like"),
+            InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{token}:dislike"),
+        ]])
+        text = _build_dictionary_feel_private_message(
+            source_text=source_text,
+            target_text=target_text or "—",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            feel_text=feel_text,
         )
-    except Exception:
-        logging.debug("Failed to mark dictfeel message as preserved", exc_info=True)
+        msg = await query.message.reply_text(
+            text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=reply_markup,
+        )
+        add_service_msg_id(context, msg.message_id)
+        payload["feel_used"] = True
+        pending_dictionary_cards[card_key] = payload
+        try:
+            await asyncio.to_thread(
+                update_telegram_system_message_type,
+                chat_id=int(query.message.chat_id),
+                message_id=int(msg.message_id),
+                message_type="feel_word",
+            )
+        except Exception:
+            logging.debug("Failed to mark dictfeel message as preserved", exc_info=True)
+    except Exception as exc:
+        logging.exception("❌ Ошибка dictfeel для user_id=%s card_key=%s: %s", int(user.id), card_key, exc)
+        await query.answer("Не удалось сделать разбор. Попробуйте чуть позже.", show_alert=True)
+    finally:
+        pending_feel_requests_inflight.discard(inflight_key)
 
 
 async def handle_quiz_feel_callback(update: Update, context: CallbackContext) -> None:
@@ -4386,21 +4393,30 @@ async def handle_quiz_feel_callback(update: Update, context: CallbackContext) ->
     if not user or int(payload.get("user_id", 0)) != int(user.id):
         await query.answer("Кнопка доступна только автору результата.", show_alert=True)
         return
-
-    source_text = str(payload.get("source_text") or "").strip()
-    target_text = str(payload.get("target_text") or "").strip()
-    source_lang = str(payload.get("source_lang") or "").strip().lower()
-    target_lang = str(payload.get("target_lang") or "").strip().lower()
-    if not source_text:
-        await query.answer("Не удалось определить фразу для разбора.", show_alert=True)
+    if payload.get("feel_used"):
+        await query.answer("Разбор уже отправлен для этого результата.", show_alert=True)
         return
 
-    try:
-        await query.answer("Готовлю разбор…")
-    except Exception:
-        pass
+    inflight_key = f"quizfeel:{int(user.id)}:{key}"
+    if inflight_key in pending_feel_requests_inflight:
+        await query.answer("Разбор уже готовится, подождите.", show_alert=True)
+        return
+    pending_feel_requests_inflight.add(inflight_key)
 
     try:
+        source_text = str(payload.get("source_text") or "").strip()
+        target_text = str(payload.get("target_text") or "").strip()
+        source_lang = str(payload.get("source_lang") or "").strip().lower()
+        target_lang = str(payload.get("target_lang") or "").strip().lower()
+        if not source_text:
+            await query.answer("Не удалось определить фразу для разбора.", show_alert=True)
+            return
+
+        try:
+            await query.answer("Готовлю разбор…")
+        except Exception:
+            pass
+
         if source_lang == "ru" and target_lang == "de":
             feel_text = await run_feel_word(source_text, target_text)
         elif source_lang == "de" and target_lang == "ru":
@@ -4412,55 +4428,52 @@ async def handle_quiz_feel_callback(update: Update, context: CallbackContext) ->
                 source_lang=source_lang or "auto",
                 target_lang=target_lang or "auto",
             )
-    except Exception as exc:
-        logging.exception("❌ Ошибка quizfeel для user_id=%s key=%s: %s", int(user.id), key, exc)
-        await query.answer("Не удалось сделать разбор. Попробуйте позже.", show_alert=True)
-        return
 
-    feel_text = str(feel_text or "").strip()
-    if not feel_text:
-        await query.answer("Разбор пустой. Попробуйте снова.", show_alert=True)
-        return
+        feel_text = str(feel_text or "").strip()
+        if not feel_text:
+            await query.answer("Разбор пустой. Попробуйте снова.", show_alert=True)
+            return
 
-    try:
         token = await asyncio.to_thread(
             create_flashcard_feel_feedback_token,
             user_id=int(user.id),
             entry_id=0,
             feel_explanation=feel_text,
         )
-    except Exception as exc:
-        logging.exception("❌ Ошибка создания feel feedback token для quiz user_id=%s: %s", int(user.id), exc)
-        await query.answer("Не удалось подготовить feedback-кнопки.", show_alert=True)
-        return
-
-    reply_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{token}:like"),
-        InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{token}:dislike"),
-    ]])
-    text = _build_dictionary_feel_private_message(
-        source_text=source_text,
-        target_text=target_text or "—",
-        source_lang=source_lang,
-        target_lang=target_lang,
-        feel_text=feel_text,
-    )
-    msg = await query.message.reply_text(
-        text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-        reply_markup=reply_markup,
-    )
-    add_service_msg_id(context, msg.message_id)
-    try:
-        await asyncio.to_thread(
-            update_telegram_system_message_type,
-            chat_id=int(query.message.chat_id),
-            message_id=int(msg.message_id),
-            message_type="feel_word",
+        reply_markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{token}:like"),
+            InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{token}:dislike"),
+        ]])
+        text = _build_dictionary_feel_private_message(
+            source_text=source_text,
+            target_text=target_text or "—",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            feel_text=feel_text,
         )
-    except Exception:
-        logging.debug("Failed to mark quizfeel message as preserved", exc_info=True)
+        msg = await query.message.reply_text(
+            text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=reply_markup,
+        )
+        add_service_msg_id(context, msg.message_id)
+        payload["feel_used"] = True
+        pending_quiz_feel_requests[key] = payload
+        try:
+            await asyncio.to_thread(
+                update_telegram_system_message_type,
+                chat_id=int(query.message.chat_id),
+                message_id=int(msg.message_id),
+                message_type="feel_word",
+            )
+        except Exception:
+            logging.debug("Failed to mark quizfeel message as preserved", exc_info=True)
+    except Exception as exc:
+        logging.exception("❌ Ошибка quizfeel для user_id=%s key=%s: %s", int(user.id), key, exc)
+        await query.answer("Не удалось сделать разбор. Попробуйте позже.", show_alert=True)
+    finally:
+        pending_feel_requests_inflight.discard(inflight_key)
 
 
 async def handle_flashcard_feel_feedback_callback(update: Update, context: CallbackContext) -> None:
