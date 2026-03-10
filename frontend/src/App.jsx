@@ -11363,6 +11363,9 @@ function AppInner() {
         playerVars: {
           rel: 0,
           modestbranding: 1,
+          fs: 0,
+          disablekb: 1,
+          playsinline: 1,
         },
         events: {
           onReady: () => {
@@ -14724,9 +14727,8 @@ function AppInner() {
                           {!youtubePlayerReady && youtubeId && (
                             <iframe
                               title="YouTube player"
-                              src={`https://www.youtube.com/embed/${youtubeId}`}
+                              src={`https://www.youtube.com/embed/${youtubeId}?rel=0&modestbranding=1&fs=0&disablekb=1&playsinline=1`}
                               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                              allowFullScreen
                             />
                           )}
                           {youtubeOverlayEnabled && youtubeTranscript.length > 0 && (() => {
