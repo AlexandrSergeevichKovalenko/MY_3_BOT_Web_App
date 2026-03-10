@@ -4064,7 +4064,14 @@ async def _send_dictionary_lookup_result(
     try:
         lookup = await _run_dictionary_lookup_for_pair(lookup_input, source_lang, target_lang)
     except Exception as exc:
-        logging.exception(f"❌ Ошибка словарного поиска для '{lookup_input}': {exc}")
+        logging.exception(
+            "❌ Ошибка словарного поиска для '%s' (%s->%s, %s): %r",
+            lookup_input,
+            source_lang,
+            target_lang,
+            type(exc).__name__,
+            exc,
+        )
         await message.reply_text("Не удалось получить перевод. Попробуйте снова через несколько секунд.")
         return
 

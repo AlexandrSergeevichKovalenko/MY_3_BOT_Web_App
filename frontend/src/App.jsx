@@ -520,6 +520,10 @@ function AppInner() {
   const readerAutoPausedByNavigationRef = useRef(false);
   const translationCheckPollTokenRef = useRef(0);
   const translationCheckUnmountedRef = useRef(false);
+  const translationSubmitInFlightRef = useRef(false);
+  const translationStartInFlightRef = useRef(false);
+  const translationFinishInFlightRef = useRef(false);
+  const explanationInFlightKeysRef = useRef(new Set());
   const supportBottomRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.webp`;
@@ -7363,6 +7367,9 @@ function AppInner() {
 
   const handleWebappSubmit = async (event) => {
     event.preventDefault();
+    if (translationSubmitInFlightRef.current) {
+      return;
+    }
     if (!initData) {
       setWebappError(initDataMissingMsg);
       return;
@@ -7377,6 +7384,7 @@ function AppInner() {
     }
 
     setWebappLoading(true);
+    translationSubmitInFlightRef.current = true;
     setWebappError('');
     setResults([]);
     setTranslationAudioGrammarOptIn({});
@@ -7446,6 +7454,7 @@ function AppInner() {
       );
       setWebappError(`${tr('Ошибка проверки', 'Pruefungsfehler')}: ${friendly}`);
     } finally {
+      translationSubmitInFlightRef.current = false;
       setWebappLoading(false);
     }
   };
@@ -7460,10 +7469,14 @@ function AppInner() {
   };
 
   const handleStartTranslation = async () => {
+    if (translationStartInFlightRef.current) {
+      return;
+    }
     if (!initData) {
       setWebappError(initDataMissingMsg);
       return;
     }
+    translationStartInFlightRef.current = true;
     setWebappLoading(true);
     setWebappError('');
     setFinishMessage('');
@@ -7492,6 +7505,7 @@ function AppInner() {
     } catch (error) {
       setWebappError(`${tr('Ошибка старта', 'Startfehler')}: ${error.message}`);
     } finally {
+      translationStartInFlightRef.current = false;
       setWebappLoading(false);
     }
   };
@@ -9004,7 +9018,6 @@ function AppInner() {
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
       setReaderAudioError('');
-      setReaderAccumulatedSeconds(0);
       setReaderLiveSeconds(0);
       setReaderTimerPaused(false);
       setReaderImmersive(true);
@@ -9276,7 +9289,6 @@ function AppInner() {
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
       setReaderAudioError('');
-      setReaderAccumulatedSeconds(0);
       setReaderLiveSeconds(0);
       setReaderTimerPaused(false);
       setReaderImmersive(true);
@@ -10021,10 +10033,14 @@ function AppInner() {
   };
 
   const handleFinishTranslation = async () => {
+    if (translationFinishInFlightRef.current) {
+      return;
+    }
     if (!initData) {
       setWebappError(initDataMissingMsg);
       return;
     }
+    translationFinishInFlightRef.current = true;
     setWebappLoading(true);
     setWebappError('');
     setFinishMessage('');
@@ -10055,13 +10071,17 @@ function AppInner() {
       setStoryGuess('');
       setStoryResult(null);
       setResults([]);
+      setSentences([]);
       setTranslationAudioGrammarOptIn({});
       setTranslationAudioGrammarSaving({});
+      translationCheckPollTokenRef.current += 1;
+      setTranslationCheckProgress({ active: false, done: 0, total: 0 });
       setSelectedTopic('💼 Business');
-      await loadSentences();
+      await loadSessionInfo();
     } catch (error) {
       setWebappError(`${tr('Ошибка завершения', 'Abschlussfehler')}: ${error.message}`);
     } finally {
+      translationFinishInFlightRef.current = false;
       setWebappLoading(false);
     }
   };
@@ -10072,6 +10092,10 @@ function AppInner() {
       return;
     }
     const key = String(item.sentence_number ?? item.original_text);
+    if (explanationInFlightKeysRef.current.has(key)) {
+      return;
+    }
+    explanationInFlightKeysRef.current.add(key);
     setExplanationLoading((prev) => ({ ...prev, [key]: true }));
     try {
       const response = await fetch('/api/webapp/explain', {
@@ -10098,6 +10122,7 @@ function AppInner() {
     } catch (error) {
       setWebappError(`${tr('Ошибка объяснения', 'Erklaerungsfehler')}: ${error.message}`);
     } finally {
+      explanationInFlightKeysRef.current.delete(key);
       setExplanationLoading((prev) => ({ ...prev, [key]: false }));
     }
   };
@@ -12035,6 +12060,15 @@ function AppInner() {
             <div className="webapp-menu">
               <button
                 type="button"
+                className={`menu-item menu-item-subscription ${selectedSections.has('subscription') ? 'is-active' : ''}`}
+                onClick={() => toggleSection('subscription')}
+                disabled={flashcardsOnly}
+              >
+                <span className="menu-icon menu-icon-subscription">{renderMenuIcon('subscription')}</span>
+                <span>{t('menu_billing')}</span>
+              </button>
+              <button
+                type="button"
                 className={`menu-item menu-item-today ${isHomeScreen ? 'is-active' : ''}`}
                 onClick={goHomeScreen}
               >
@@ -12150,15 +12184,6 @@ function AppInner() {
                   <span>{t('menu_economics')}</span>
                 </button>
               )}
-              <button
-                type="button"
-                className={`menu-item menu-item-subscription ${selectedSections.has('subscription') ? 'is-active' : ''}`}
-                onClick={() => toggleSection('subscription')}
-                disabled={flashcardsOnly}
-              >
-                <span className="menu-icon menu-icon-subscription">{renderMenuIcon('subscription')}</span>
-                <span>{t('menu_billing')}</span>
-              </button>
               <button
                 type="button"
                 className={`menu-item menu-item-skill-training ${selectedSections.has('skill_training') ? 'is-active' : ''}`}
@@ -12292,6 +12317,15 @@ function AppInner() {
                     </label>
                     <button
                       type="button"
+                      className={`menu-item menu-item-subscription ${selectedSections.has('subscription') ? 'is-active' : ''}`}
+                      onClick={() => handleMenuSelection('subscription', billingRef)}
+                      disabled={flashcardsOnly}
+                    >
+                      <span className="menu-icon menu-icon-subscription">{renderMenuIcon('subscription')}</span>
+                      <span>{t('menu_billing')}</span>
+                    </button>
+                    <button
+                      type="button"
                       className={`menu-item menu-item-today ${isHomeScreen ? 'is-active' : ''}`}
                       onClick={() => {
                         goHomeScreen();
@@ -12404,15 +12438,6 @@ function AppInner() {
                         <span>{t('menu_economics')}</span>
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className={`menu-item menu-item-subscription ${selectedSections.has('subscription') ? 'is-active' : ''}`}
-                      onClick={() => handleMenuSelection('subscription', billingRef)}
-                      disabled={flashcardsOnly}
-                    >
-                      <span className="menu-icon menu-icon-subscription">{renderMenuIcon('subscription')}</span>
-                      <span>{t('menu_billing')}</span>
-                    </button>
                     <button
                       type="button"
                       className={`menu-item menu-item-skill-training ${selectedSections.has('skill_training') ? 'is-active' : ''}`}

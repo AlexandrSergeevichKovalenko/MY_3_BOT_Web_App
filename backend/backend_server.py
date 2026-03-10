@@ -292,6 +292,7 @@ from backend.database import (
     get_latest_translation_check_session,
     update_translation_check_session_status,
     update_translation_check_item_result,
+    increment_translation_check_session_counters,
     refresh_translation_check_session_counters,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
@@ -303,6 +304,7 @@ from backend.translation_workflow import (
     check_user_translation_webapp,
     finalize_open_translation_sessions,
     finish_translation_webapp,
+    get_db_connection as get_translation_workflow_db_connection,
     get_daily_translation_history,
     start_translation_session_webapp,
     start_story_session_webapp,
@@ -1268,6 +1270,11 @@ def _increment_translation_check_status_poll(session_id: int) -> int:
 def _clear_translation_check_status_poll(session_id: int) -> None:
     with _OBSERVABILITY_LOCK:
         _TRANSLATION_CHECK_STATUS_POLLS.pop(int(session_id), None)
+
+
+def _translation_check_runner_lock_key(session_id: int) -> int:
+    # Namespace lock key to avoid collisions with other advisory lock users.
+    return (5401 << 32) + (int(session_id) & 0xFFFFFFFF)
 
 
 def _normalize_scope_kind_payload(value) -> str:
@@ -10413,8 +10420,36 @@ def _load_user_translation_sentence_map(
     source_lang: str,
     target_lang: str,
 ) -> tuple[str | None, dict[int, dict[str, Any]]]:
+    normalized_source_lang = source_lang or "ru"
+    normalized_target_lang = target_lang or "de"
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT up.session_id
+                FROM bt_3_user_progress up
+                WHERE up.user_id = %s
+                  AND up.completed = FALSE
+                  AND EXISTS (
+                    SELECT 1
+                    FROM bt_3_daily_sentences ds
+                    WHERE ds.user_id = up.user_id
+                      AND ds.session_id = up.session_id
+                      AND COALESCE(ds.source_lang, 'ru') = %s
+                      AND COALESCE(ds.target_lang, 'de') = %s
+                  )
+                ORDER BY up.start_time DESC
+                LIMIT 1;
+                """,
+                (int(user_id), normalized_source_lang, normalized_target_lang),
+            )
+            active_row = cursor.fetchone()
+            active_session_id = (
+                str(active_row[0] or "").strip()
+                if active_row and active_row[0] is not None
+                else None
+            )
+
             cursor.execute(
                 """
                 SELECT session_id
@@ -10425,25 +10460,47 @@ def _load_user_translation_sentence_map(
                 ORDER BY id DESC
                 LIMIT 1;
                 """,
-                (int(user_id), source_lang or "ru", target_lang or "de"),
+                (int(user_id), normalized_source_lang, normalized_target_lang),
             )
             latest_row = cursor.fetchone()
-            latest_session_id = str(latest_row[0] or "").strip() if latest_row and latest_row[0] is not None else None
-            if not latest_session_id:
+            latest_session_id = (
+                str(latest_row[0] or "").strip()
+                if latest_row and latest_row[0] is not None
+                else None
+            )
+
+            candidate_session_ids: list[str] = []
+            if active_session_id:
+                candidate_session_ids.append(active_session_id)
+            if latest_session_id and latest_session_id not in candidate_session_ids:
+                candidate_session_ids.append(latest_session_id)
+            if not candidate_session_ids:
                 return None, {}
 
-            cursor.execute(
-                """
-                SELECT unique_id, id_for_mistake_table, id, sentence, session_id
-                FROM bt_3_daily_sentences
-                WHERE session_id = %s
-                  AND user_id = %s
-                  AND COALESCE(source_lang, 'ru') = %s
-                  AND COALESCE(target_lang, 'de') = %s;
-                """,
-                (latest_session_id, int(user_id), source_lang or "ru", target_lang or "de"),
-            )
-            rows = cursor.fetchall() or []
+            selected_session_id: str | None = None
+            rows: list[Any] = []
+            for candidate_session_id in candidate_session_ids:
+                cursor.execute(
+                    """
+                    SELECT unique_id, id_for_mistake_table, id, sentence, session_id
+                    FROM bt_3_daily_sentences
+                    WHERE session_id = %s
+                      AND user_id = %s
+                      AND COALESCE(source_lang, 'ru') = %s
+                      AND COALESCE(target_lang, 'de') = %s;
+                    """,
+                    (
+                        candidate_session_id,
+                        int(user_id),
+                        normalized_source_lang,
+                        normalized_target_lang,
+                    ),
+                )
+                candidate_rows = cursor.fetchall() or []
+                if candidate_rows:
+                    selected_session_id = candidate_session_id
+                    rows = candidate_rows
+                    break
 
     allowed_by_mistake_id: dict[int, dict[str, Any]] = {}
     for row in rows:
@@ -10456,9 +10513,9 @@ def _load_user_translation_sentence_map(
             "id_for_mistake_table": mistake_id,
             "sentence_id": int(row[2]) if row[2] is not None else None,
             "original_text": str(row[3] or "").strip(),
-            "source_session_id": str(row[4] or "").strip() or latest_session_id,
+            "source_session_id": str(row[4] or "").strip() or selected_session_id,
         }
-    return latest_session_id, allowed_by_mistake_id
+    return selected_session_id, allowed_by_mistake_id
 
 
 def _normalize_translation_check_entries(
@@ -10584,7 +10641,28 @@ def _run_translation_check_session(
     runner_start_delay_ms: int | None = None
     terminal_outcome = "error"
     total_completion_duration_ms: int | None = None
+    runner_lock_conn = None
+    runner_lock_acquired = False
     try:
+        runner_lock_key = _translation_check_runner_lock_key(int(session_id))
+        runner_lock_conn = get_translation_workflow_db_connection()
+        with runner_lock_conn.cursor() as runner_lock_cursor:
+            runner_lock_cursor.execute("SELECT pg_try_advisory_lock(%s);", (int(runner_lock_key),))
+            lock_row = runner_lock_cursor.fetchone()
+            runner_lock_acquired = bool(lock_row and lock_row[0])
+        if not runner_lock_acquired:
+            terminal_outcome = "skipped_lock"
+            _log_flow_observation(
+                "translation_check",
+                "runner_lock_skipped",
+                request_id=resolved_request_id,
+                correlation_id=resolved_correlation_id,
+                session_id=int(session_id),
+                check_id=int(session_id),
+                terminal_outcome=terminal_outcome,
+                duration_ms=_elapsed_ms_since(runner_started_perf),
+            )
+            return
         session_lookup_started_perf = time.perf_counter()
         session = get_translation_check_session(session_id=int(session_id))
         session_lookup_duration_ms = _elapsed_ms_since(session_lookup_started_perf)
@@ -10734,7 +10812,10 @@ def _run_translation_check_session(
                         target_lang=str(session.get("target_lang") or "de"),
                     )
                 refresh_counters_started_perf = time.perf_counter()
-                refresh_translation_check_session_counters(session_id=int(session_id))
+                increment_translation_check_session_counters(
+                    session_id=int(session_id),
+                    item_status="failed" if item_error else "done",
+                )
                 counters_refresh_duration_ms = _elapsed_ms_since(refresh_counters_started_perf)
                 _log_flow_observation(
                     "translation_check",
@@ -10767,7 +10848,10 @@ def _run_translation_check_session(
                 )
                 finalize_item_duration_ms = _elapsed_ms_since(finalize_item_started_perf)
                 refresh_counters_started_perf = time.perf_counter()
-                refresh_translation_check_session_counters(session_id=int(session_id))
+                increment_translation_check_session_counters(
+                    session_id=int(session_id),
+                    item_status="failed",
+                )
                 counters_refresh_duration_ms = _elapsed_ms_since(refresh_counters_started_perf)
                 _log_flow_observation(
                     "translation_check",
@@ -10868,6 +10952,17 @@ def _run_translation_check_session(
         except Exception:
             logging.exception("Failed to mark translation check session as failed: %s", session_id)
     finally:
+        if runner_lock_conn is not None:
+            if runner_lock_acquired:
+                try:
+                    with runner_lock_conn.cursor() as runner_lock_cursor:
+                        runner_lock_cursor.execute("SELECT pg_advisory_unlock(%s);", (int(_translation_check_runner_lock_key(int(session_id))),))
+                except Exception:
+                    logging.debug("Failed to release translation check advisory lock for session=%s", session_id, exc_info=True)
+            try:
+                runner_lock_conn.close()
+            except Exception:
+                pass
         with _TRANSLATION_CHECK_RUNNERS_LOCK:
             _TRANSLATION_CHECK_RUNNERS.discard(int(session_id))
         if terminal_outcome in {"success", "partial", "error"}:
@@ -11293,7 +11388,6 @@ def get_webapp_translation_check_status():
             prefix="translation_check",
         )
 
-    _resume_translation_check_session_if_needed(session)
     list_items_duration_ms = 0
     status_poll_count = 0
     payload_poll_count = None

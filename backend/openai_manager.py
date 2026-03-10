@@ -5,6 +5,7 @@ import asyncio
 import re
 import json
 import hashlib
+import time
 import contextvars
 #from openai import OpenAI
 import openai
@@ -2696,6 +2697,7 @@ async def run_dictionary_lookup_multilang(
     content = ""
     last_error: Exception | None = None
     for attempt in range(1, DICTIONARY_RESPONSES_MAX_RETRIES + 1):
+        attempt_started_at = time.monotonic()
         try:
             content = await llm_execute(
                 task_name=task_name,
@@ -2710,10 +2712,14 @@ async def run_dictionary_lookup_multilang(
             break
         except Exception as exc:
             last_error = exc
+            elapsed_ms = int((time.monotonic() - attempt_started_at) * 1000)
             logging.warning(
-                "dictionary_assistant_multilang attempt %s/%s failed: %s",
+                "dictionary_assistant_multilang attempt %s/%s failed (%s) in %sms (responses_timeout=%ss): %r",
                 attempt,
                 DICTIONARY_RESPONSES_MAX_RETRIES,
+                type(exc).__name__,
+                elapsed_ms,
+                DICTIONARY_RESPONSES_TIMEOUT_SECONDS,
                 exc,
             )
             if attempt < DICTIONARY_RESPONSES_MAX_RETRIES:

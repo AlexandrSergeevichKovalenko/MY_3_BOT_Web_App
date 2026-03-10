@@ -23,19 +23,10 @@ from backend.openai_manager import (
     run_check_story_guess_semantic,
 )
 from backend.database import (
+    get_db_connection,
     get_db_connection_context,
     apply_skill_events_for_error,
 )
-
-
-DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY")
-
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL_RAILWAY не установлен для translation_workflow.")
-
-
-def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
 def finalize_open_translation_sessions() -> dict[str, int]:
@@ -1588,53 +1579,54 @@ async def log_translation_mistake(
         valid_combinations.append(("Other mistake", "Unclassified mistake"))
 
     valid_combinations = list(set(valid_combinations))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id_for_mistake_table
+                FROM bt_3_daily_sentences
+                WHERE sentence=%s
+                  AND COALESCE(source_lang, 'ru') = %s
+                  AND COALESCE(target_lang, 'de') = %s
+                LIMIT 1;
+                """,
+                (original_text, source_lang or "ru", target_lang or "de"),
+            )
+            result = cursor.fetchone()
+            sentence_id = result[0] if result else None
+            safe_correct_translation = correct_translation if correct_translation is not None else ""
 
-    for main_category, sub_category in valid_combinations:
-        main_category = next(
-            (cat for cat in language_categories if cat.lower() == main_category),
-            main_category,
-        )
-        sub_category = next(
-            (
-                subcat
-                for subcat in language_subcategories.get(main_category, [])
-                if subcat.lower() == sub_category
-            ),
-            sub_category,
-        )
+            insert_sql = """
+                INSERT INTO bt_3_detailed_mistakes (
+                    user_id, sentence, added_data, main_category, sub_category, mistake_count, sentence_id,
+                    correct_translation, score
+                ) VALUES (%s, %s, NOW(), %s, %s, 1, %s, %s, %s)
+                ON CONFLICT (user_id, sentence, main_category, sub_category)
+                DO UPDATE SET
+                    mistake_count = bt_3_detailed_mistakes.mistake_count + 1,
+                    attempt = bt_3_detailed_mistakes.attempt + 1,
+                    last_seen = NOW(),
+                    score = EXCLUDED.score;
+            """
 
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT id_for_mistake_table
-                    FROM bt_3_daily_sentences
-                    WHERE sentence=%s
-                      AND COALESCE(source_lang, 'ru') = %s
-                      AND COALESCE(target_lang, 'de') = %s
-                    LIMIT 1;
-                    """,
-                    (original_text, source_lang or "ru", target_lang or "de"),
+            for main_category, sub_category in valid_combinations:
+                main_category = next(
+                    (cat for cat in language_categories if cat.lower() == main_category),
+                    main_category,
                 )
-                result = cursor.fetchone()
-                sentence_id = result[0] if result else None
-                safe_correct_translation = correct_translation if correct_translation is not None else ""
+                sub_category = next(
+                    (
+                        subcat
+                        for subcat in language_subcategories.get(main_category, [])
+                        if subcat.lower() == sub_category
+                    ),
+                    sub_category,
+                )
                 used_main_category = main_category
                 used_sub_category = sub_category
 
-                insert_sql = """
-                    INSERT INTO bt_3_detailed_mistakes (
-                        user_id, sentence, added_data, main_category, sub_category, mistake_count, sentence_id,
-                        correct_translation, score
-                    ) VALUES (%s, %s, NOW(), %s, %s, 1, %s, %s, %s)
-                    ON CONFLICT (user_id, sentence, main_category, sub_category)
-                    DO UPDATE SET
-                        mistake_count = bt_3_detailed_mistakes.mistake_count + 1,
-                        attempt = bt_3_detailed_mistakes.attempt + 1,
-                        last_seen = NOW(),
-                        score = EXCLUDED.score;
-                """
                 try:
+                    cursor.execute("SAVEPOINT log_translation_mistake_sp;")
                     cursor.execute(
                         insert_sql,
                         (
@@ -1655,6 +1647,10 @@ async def log_translation_mistake(
                         used_sub_category,
                         exc,
                     )
+                    try:
+                        cursor.execute("ROLLBACK TO SAVEPOINT log_translation_mistake_sp;")
+                    except Exception:
+                        pass
                     used_main_category = "Other mistake"
                     used_sub_category = "Unclassified mistake"
                     try:
@@ -1677,7 +1673,18 @@ async def log_translation_mistake(
                             user_id,
                             sentence_id,
                         )
+                        try:
+                            cursor.execute("ROLLBACK TO SAVEPOINT log_translation_mistake_sp;")
+                            cursor.execute("RELEASE SAVEPOINT log_translation_mistake_sp;")
+                        except Exception:
+                            pass
                         continue
+                finally:
+                    try:
+                        cursor.execute("RELEASE SAVEPOINT log_translation_mistake_sp;")
+                    except Exception:
+                        pass
+
                 try:
                     apply_skill_events_for_error(
                         user_id=int(user_id),
@@ -1853,17 +1860,19 @@ async def check_user_translation_webapp(
             )
             created_translation = cursor.fetchone()
             translation_id = int(created_translation[0]) if created_translation and created_translation[0] else None
-            conn.commit()
 
             cursor.execute(
                 """
-                SELECT COUNT(*) FROM bt_3_detailed_mistakes
-                WHERE sentence_id = %s AND user_id = %s;
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM bt_3_detailed_mistakes
+                    WHERE sentence_id = %s AND user_id = %s
+                );
                 """,
                 (sentence_id_for_mistake, user_id),
             )
 
-            was_in_mistakes = cursor.fetchone()[0] > 0
+            was_in_mistakes = bool(cursor.fetchone()[0])
 
             if was_in_mistakes:
                 if score_value >= 85:
@@ -2054,12 +2063,11 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
             FROM bt_3_user_progress
             WHERE user_id = %s AND completed = FALSE
             ORDER BY start_time DESC
-            LIMIT 1;
             """,
             (user_id,),
         )
-        session = cursor.fetchone()
-        if not session:
+        session_rows = cursor.fetchall() or []
+        if not session_rows:
             return {
                 "message": (
                     "❌ У вас нет активных сессий! Используйте кнопки: "
@@ -2067,8 +2075,14 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
                 ),
                 "status": "no_session",
             }
-
-        session_id = session[0]
+        active_session_ids = [row[0] for row in session_rows if row and row[0] is not None]
+        session_id = active_session_ids[0]
+        if len(active_session_ids) > 1:
+            logging.warning(
+                "finish_translation_webapp: multiple active sessions detected for user_id=%s sessions=%s; closing all.",
+                user_id,
+                active_session_ids,
+            )
 
         cursor.execute(
             """
@@ -2094,9 +2108,9 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
             """
             UPDATE bt_3_user_progress
             SET end_time = NOW(), completed = TRUE
-            WHERE user_id = %s AND session_id = %s AND completed = FALSE;
+            WHERE user_id = %s AND completed = FALSE;
             """,
-            (user_id, session_id),
+            (user_id,),
         )
         conn.commit()
 

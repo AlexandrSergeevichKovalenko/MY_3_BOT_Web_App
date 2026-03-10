@@ -2,9 +2,11 @@ import psycopg2
 from psycopg2 import Binary
 from psycopg2 import OperationalError
 from psycopg2 import sql
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
+from psycopg2.pool import ThreadedConnectionPool, PoolError
 import os
 import hashlib
+import atexit
 from contextlib import contextmanager
 import json
 import random
@@ -36,9 +38,18 @@ DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY") #
 DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "12"))
 DB_CONNECT_RETRIES = max(1, int(os.getenv("DB_CONNECT_RETRIES", "3")))
 DB_CONNECT_RETRY_DELAY_SECONDS = float(os.getenv("DB_CONNECT_RETRY_DELAY_SECONDS", "0.6"))
+DB_POOL_ENABLED = str(os.getenv("DB_POOL_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
+DB_POOL_MINCONN = max(1, int(os.getenv("DB_POOL_MINCONN", "1")))
+DB_POOL_MAXCONN = max(DB_POOL_MINCONN, int(os.getenv("DB_POOL_MAXCONN", "20")))
+READER_SESSION_AUTOCLOSE_MAX_SECONDS = max(
+    300,
+    int(os.getenv("READER_SESSION_AUTOCLOSE_MAX_SECONDS", "10800")),
+)
 WEBAPP_SCHEMA_MIGRATION_LOCK_KEY = 830420260305001
 _ENSURE_WEBAPP_TABLES_MUTEX = threading.Lock()
 _ENSURE_WEBAPP_TABLES_DONE = False
+_DB_POOL_LOCK = threading.Lock()
+_DB_POOL: ThreadedConnectionPool | None = None
 SUPPORTED_LEARNING_LANGUAGES = {"de", "en", "es", "it"}
 SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
@@ -774,6 +785,25 @@ else:
 
 @contextmanager
 def get_db_connection_context(): #
+    conn = get_db_connection()
+    force_close = False
+    try:
+        yield conn #
+        conn.commit() #
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            force_close = True
+        raise
+    finally:
+        if isinstance(conn, _PooledConnectionProxy):
+            conn.close(force_close=force_close)
+        else:
+            conn.close()
+
+
+def _new_raw_db_connection():
     conn = None
     last_error = None
     for attempt in range(1, DB_CONNECT_RETRIES + 1):
@@ -795,11 +825,123 @@ def get_db_connection_context(): #
             time.sleep(DB_CONNECT_RETRY_DELAY_SECONDS * attempt)
     if conn is None and last_error is not None:
         raise last_error
+    return conn
+
+
+def _get_or_init_db_pool() -> ThreadedConnectionPool | None:
+    global _DB_POOL
+    if not DB_POOL_ENABLED or not DATABASE_URL:
+        return None
+    with _DB_POOL_LOCK:
+        if _DB_POOL is not None:
+            return _DB_POOL
+        last_error = None
+        for attempt in range(1, DB_CONNECT_RETRIES + 1):
+            try:
+                _DB_POOL = ThreadedConnectionPool(
+                    DB_POOL_MINCONN,
+                    DB_POOL_MAXCONN,
+                    DATABASE_URL,
+                    sslmode='require',
+                    connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=5,
+                )
+                break
+            except OperationalError as exc:
+                last_error = exc
+                if attempt >= DB_CONNECT_RETRIES:
+                    raise
+                time.sleep(DB_CONNECT_RETRY_DELAY_SECONDS * attempt)
+        if _DB_POOL is None and last_error is not None:
+            raise last_error
+        return _DB_POOL
+
+
+class _PooledConnectionProxy:
+    def __init__(self, conn, pool: ThreadedConnectionPool):
+        self._conn = conn
+        self._pool = pool
+        self._released = False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return self._conn.__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+    def close(self, force_close: bool = False):
+        if self._released:
+            return
+        self._released = True
+        try:
+            self._pool.putconn(self._conn, close=bool(force_close))
+        except Exception:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+
+class _DirectConnectionProxy:
+    def __init__(self, conn):
+        self._conn = conn
+        self._closed = False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return self._conn.__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self._conn.close()
+
+
+def get_db_connection():
+    pool = _get_or_init_db_pool()
+    if pool is None:
+        return _DirectConnectionProxy(_new_raw_db_connection())
     try:
-        yield conn #
-        conn.commit() #
-    finally:
-        conn.close() #
+        conn = pool.getconn()
+    except PoolError:
+        # Fallback keeps app working even if pool is temporarily exhausted.
+        return _DirectConnectionProxy(_new_raw_db_connection())
+    return _PooledConnectionProxy(conn, pool)
+
+
+def _close_db_pool():
+    global _DB_POOL
+    with _DB_POOL_LOCK:
+        if _DB_POOL is None:
+            return
+        try:
+            _DB_POOL.closeall()
+        except Exception:
+            pass
+        _DB_POOL = None
+
+
+atexit.register(_close_db_pool)
 
 
 def _build_language_pair_filter(
@@ -3607,8 +3749,21 @@ def create_translation_check_session(
                 return None
             session_id = int(session_row[0])
 
-            for index, item in enumerate(normalized_items):
-                cursor.execute(
+            if normalized_items:
+                item_rows: list[tuple[int, int, int | None, int | None, str, str]] = []
+                for index, item in enumerate(normalized_items):
+                    item_rows.append(
+                        (
+                            session_id,
+                            int(item.get("item_order", index)),
+                            int(item["sentence_number"]) if item.get("sentence_number") is not None else None,
+                            int(item["id_for_mistake_table"]) if item.get("id_for_mistake_table") is not None else None,
+                            str(item.get("original_text") or "").strip(),
+                            str(item.get("translation") or item.get("user_translation") or "").strip(),
+                        )
+                    )
+                execute_values(
+                    cursor,
                     """
                     INSERT INTO bt_3_translation_check_items (
                         check_session_id,
@@ -3621,16 +3776,11 @@ def create_translation_check_session(
                         created_at,
                         updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, 'pending', NOW(), NOW());
+                    VALUES %s
                     """,
-                    (
-                        session_id,
-                        int(item.get("item_order", index)),
-                        int(item["sentence_number"]) if item.get("sentence_number") is not None else None,
-                        int(item["id_for_mistake_table"]) if item.get("id_for_mistake_table") is not None else None,
-                        str(item.get("original_text") or "").strip(),
-                        str(item.get("translation") or item.get("user_translation") or "").strip(),
-                    ),
+                    item_rows,
+                    template="(%s, %s, %s, %s, %s, %s, 'pending', NOW(), NOW())",
+                    page_size=200,
                 )
 
     return get_translation_check_session(session_id=session_id, user_id=int(user_id))
@@ -3680,6 +3830,51 @@ def list_translation_check_items(*, session_id: int) -> list[dict]:
     return [_map_translation_check_item_row(row) for row in rows if row]
 
 
+def get_translation_check_session_with_items(
+    *,
+    session_id: int,
+    user_id: int | None = None,
+) -> tuple[dict | None, list[dict]]:
+    where_sql = "WHERE id = %s"
+    params: list = [int(session_id)]
+    if user_id is not None:
+        where_sql += " AND user_id = %s"
+        params.append(int(user_id))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at
+                FROM bt_3_translation_check_sessions
+                {where_sql}
+                LIMIT 1;
+                """,
+                params,
+            )
+            session_row = cursor.fetchone()
+            session = _map_translation_check_session_row(session_row)
+            if not session:
+                return None, []
+            cursor.execute(
+                """
+                SELECT
+                    id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
+                    original_text, user_translation, status, result_json, result_text, error_text,
+                    webapp_check_id, started_at, finished_at, created_at, updated_at
+                FROM bt_3_translation_check_items
+                WHERE check_session_id = %s
+                ORDER BY item_order ASC, id ASC;
+                """,
+                (int(session["id"]),),
+            )
+            rows = cursor.fetchall() or []
+    return session, [_map_translation_check_item_row(row) for row in rows if row]
+
+
 def get_latest_translation_check_session(
     *,
     user_id: int,
@@ -3705,6 +3900,49 @@ def get_latest_translation_check_session(
             )
             row = cursor.fetchone()
     return _map_translation_check_session_row(row)
+
+
+def get_latest_translation_check_session_with_items(
+    *,
+    user_id: int,
+    only_active: bool = False,
+) -> tuple[dict | None, list[dict]]:
+    status_sql = "AND status IN ('queued', 'running')" if only_active else ""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at
+                FROM bt_3_translation_check_sessions
+                WHERE user_id = %s
+                  {status_sql}
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            session_row = cursor.fetchone()
+            session = _map_translation_check_session_row(session_row)
+            if not session:
+                return None, []
+            cursor.execute(
+                """
+                SELECT
+                    id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
+                    original_text, user_translation, status, result_json, result_text, error_text,
+                    webapp_check_id, started_at, finished_at, created_at, updated_at
+                FROM bt_3_translation_check_items
+                WHERE check_session_id = %s
+                ORDER BY item_order ASC, id ASC;
+                """,
+                (int(session["id"]),),
+            )
+            rows = cursor.fetchall() or []
+    return session, [_map_translation_check_item_row(row) for row in rows if row]
 
 
 def update_translation_check_session_status(
@@ -3795,6 +4033,38 @@ def update_translation_check_item_result(
             )
             row = cursor.fetchone()
     return _map_translation_check_item_row(row)
+
+
+def increment_translation_check_session_counters(
+    *,
+    session_id: int,
+    item_status: str,
+) -> dict | None:
+    normalized_item_status = str(item_status or "").strip().lower()
+    if normalized_item_status not in {"done", "failed"}:
+        raise ValueError("Invalid translation check item terminal status")
+    completed_delta = 1 if normalized_item_status == "done" else 0
+    failed_delta = 1 if normalized_item_status == "failed" else 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions
+                SET
+                    completed_items = GREATEST(0, completed_items + %s),
+                    failed_items = GREATEST(0, failed_items + %s),
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at;
+                """,
+                (int(completed_delta), int(failed_delta), int(session_id)),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
 
 
 def refresh_translation_check_session_counters(*, session_id: int) -> dict | None:
@@ -7508,14 +7778,27 @@ def start_reader_session(
                 UPDATE bt_3_reader_sessions
                 SET
                     ended_at = %s,
-                    duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (%s - started_at))::INT),
+                    duration_seconds = GREATEST(
+                        0,
+                        LEAST(
+                            EXTRACT(EPOCH FROM (%s - started_at))::INT,
+                            %s
+                        )
+                    ),
                     updated_at = NOW()
                 WHERE user_id = %s
                   AND source_lang = %s
                   AND target_lang = %s
                   AND ended_at IS NULL;
                 """,
-                (started, started, int(user_id), normalized_source, normalized_target),
+                (
+                    started,
+                    started,
+                    int(READER_SESSION_AUTOCLOSE_MAX_SECONDS),
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                ),
             )
             cursor.execute(
                 """

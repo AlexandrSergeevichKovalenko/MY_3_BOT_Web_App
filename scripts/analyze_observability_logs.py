@@ -92,6 +92,20 @@ def _parse_event(line: str) -> dict[str, Any] | None:
         return None
     flow = str(parsed.get("flow") or "").strip()
     if flow not in TARGET_FLOWS:
+        # Support wrappers like `railway logs --json` where app log line is nested.
+        for key in ("message", "msg", "log"):
+            nested = parsed.get(key)
+            if not isinstance(nested, str):
+                continue
+            nested_payload = _extract_json_payload(nested)
+            if not nested_payload:
+                continue
+            try:
+                nested_parsed = json.loads(nested_payload)
+            except Exception:
+                continue
+            if isinstance(nested_parsed, dict) and str(nested_parsed.get("flow") or "").strip() in TARGET_FLOWS:
+                return nested_parsed
         return None
     return parsed
 
