@@ -13963,7 +13963,7 @@ def start_today_translation_item(item_id: int):
 
 @app.route("/api/today/items/<int:item_id>/timer", methods=["POST"])
 def update_today_item_timer(item_id: int):
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
@@ -13997,6 +13997,17 @@ def update_today_item_timer(item_id: int):
 
     if not item:
         return jsonify({"error": "Задача не найдена"}), 404
+
+    try:
+        _announce_today_task_completion_to_group(
+            user_id=int(user_id),
+            username=username,
+            item=item,
+            trigger=f"timer_{action}",
+        )
+    except Exception:
+        logging.warning("Today task completion group announcement failed (timer): user=%s item=%s", user_id, item_id, exc_info=True)
+
     return jsonify({"ok": True, "item": item})
 
 
@@ -14716,7 +14727,7 @@ def check_today_theory():
 
 @app.route("/api/today/items/<int:item_id>/complete", methods=["POST"])
 def complete_today_item(item_id: int):
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
@@ -14734,6 +14745,17 @@ def complete_today_item(item_id: int):
 
     if not item:
         return jsonify({"error": "Задача не найдена"}), 404
+
+    try:
+        _announce_today_task_completion_to_group(
+            user_id=int(user_id),
+            username=username,
+            item=item,
+            trigger="manual_complete",
+        )
+    except Exception:
+        logging.warning("Today task completion group announcement failed (manual): user=%s item=%s", user_id, item_id, exc_info=True)
+
     return jsonify({"ok": True, "item": item})
 
 
@@ -20619,6 +20641,160 @@ def _format_today_group_announcement(user_label: str, plan: dict) -> str:
             continue
         lines.append(f"{idx}. {str(item.get('title') or 'Задача')}")
     return "\n".join(lines)
+
+
+def _resolve_user_group_chat_id_for_today_motivation(user_id: int) -> int | None:
+    safe_user_id = int(user_id)
+    candidate_chat_ids: list[int] = []
+
+    for only_confirmed in (True, False):
+        try:
+            contexts = list_webapp_group_contexts(
+                user_id=safe_user_id,
+                limit=20,
+                only_confirmed=only_confirmed,
+            )
+        except Exception:
+            contexts = []
+        for item in contexts:
+            try:
+                chat_id = int(item.get("chat_id"))
+            except Exception:
+                continue
+            if chat_id not in candidate_chat_ids:
+                candidate_chat_ids.append(chat_id)
+
+    if TELEGRAM_GROUP_CHAT_ID:
+        try:
+            fallback_group_chat_id = int(TELEGRAM_GROUP_CHAT_ID)
+            if fallback_group_chat_id not in candidate_chat_ids:
+                candidate_chat_ids.append(fallback_group_chat_id)
+        except Exception:
+            pass
+
+    for chat_id in candidate_chat_ids:
+        if _is_user_member_of_chat(chat_id=chat_id, user_id=safe_user_id):
+            return int(chat_id)
+    return None
+
+
+def _is_today_task_done_for_group_announcement(item: dict | None) -> bool:
+    payload = item.get("payload") if isinstance(item, dict) and isinstance(item.get("payload"), dict) else {}
+    status = str((item or {}).get("status") or "").strip().lower()
+    if status == "done":
+        return True
+    try:
+        progress = float(payload.get("timer_progress_percent") or 0.0)
+    except Exception:
+        progress = 0.0
+    return progress >= 100.0
+
+
+def _format_today_task_completion_title(item: dict | None) -> str:
+    if not isinstance(item, dict):
+        return "Задача"
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    task_type = str(item.get("task_type") or "").strip().lower()
+    explicit_title = str(item.get("title") or "").strip()
+    if explicit_title and explicit_title != "Задача":
+        return explicit_title
+    if task_type == "cards":
+        limit = int(payload.get("limit") or 0)
+        return f"Карточки ({limit})" if limit > 0 else "Карточки"
+    if task_type == "translation":
+        sentences = int(payload.get("sentences") or 7)
+        sub = str(payload.get("sub_category") or "").strip()
+        return f"Перевод ({sentences} предложений, {sub})" if sub else f"Перевод ({sentences} предложений)"
+    if task_type == "theory":
+        label = str(payload.get("sub_category") or payload.get("skill_title") or "").strip()
+        return f"Теория ({label})" if label else "Теория"
+    if task_type in {"video", "youtube"}:
+        sec = int(payload.get("duration_sec") or 300)
+        minutes = max(1, round(sec / 60))
+        return f"YouTube ({minutes} минут)"
+    return explicit_title or "Задача"
+
+
+def _build_today_task_completion_group_message(user_label: str, task_title: str) -> str:
+    variants = [
+        (
+            "🏁 Прогресс дня\n"
+            f"👏 {user_label} выполнил(а) на 100% задачу:\n"
+            f"✅ {task_title}\n\n"
+            "Так держать! 🔥"
+        ),
+        (
+            "🎯 Дневная цель закрыта\n"
+            f"🙌 {user_label} закрыл(а) задачу на 100%:\n"
+            f"✅ {task_title}\n\n"
+            "Классный темп, продолжаем! ⚡"
+        ),
+        (
+            "🚀 Новый результат в плане дня\n"
+            f"⭐ {user_label} довёл(а) до 100%:\n"
+            f"✅ {task_title}\n\n"
+            "Отличный пример для команды!"
+        ),
+        (
+            "🔥 Мотивация дня\n"
+            f"💪 {user_label} полностью завершил(а):\n"
+            f"✅ {task_title}\n\n"
+            "Берём темп и двигаемся дальше!"
+        ),
+    ]
+    return random.choice(variants)
+
+
+def _announce_today_task_completion_to_group(
+    *,
+    user_id: int,
+    username: str | None,
+    item: dict | None,
+    trigger: str,
+) -> None:
+    if not _is_today_task_done_for_group_announcement(item):
+        return
+    if not isinstance(item, dict):
+        return
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    if str(payload.get("today_group_done_announcement_at") or "").strip():
+        return
+    item_id = int(item.get("id") or 0)
+    if item_id <= 0:
+        return
+
+    target_chat_id = _resolve_user_group_chat_id_for_today_motivation(int(user_id))
+    if target_chat_id is None or int(target_chat_id) >= 0:
+        return
+
+    user_label = _resolve_today_group_user_label(
+        int(user_id),
+        username,
+        cache=None,
+    )
+    task_title = _format_today_task_completion_title(item)
+    button_url = _build_webapp_deeplink("today")
+    reply_markup = {"inline_keyboard": [[{"text": "Открыть план на сегодня", "url": button_url}]]}
+    text = _build_today_task_completion_group_message(user_label=user_label, task_title=task_title)
+    _send_group_message(text=text, reply_markup=reply_markup, chat_id=int(target_chat_id))
+
+    try:
+        update_daily_plan_item_payload(
+            user_id=int(user_id),
+            item_id=item_id,
+            payload_updates={
+                "today_group_done_announcement_at": datetime.now(timezone.utc).isoformat(),
+                "today_group_done_announcement_chat_id": int(target_chat_id),
+                "today_group_done_announcement_trigger": str(trigger or "").strip() or "unknown",
+            },
+        )
+    except Exception:
+        logging.warning(
+            "Failed to persist today group completion announcement marker: user_id=%s item_id=%s",
+            user_id,
+            item_id,
+            exc_info=True,
+        )
 
 
 def _send_today_plan_private_message(user_id: int, plan: dict) -> None:
