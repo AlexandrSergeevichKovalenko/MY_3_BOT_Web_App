@@ -11261,7 +11261,34 @@ def list_today_reminder_users(limit: int = 1000, offset: int = 0) -> list[dict]:
                 """
                 SELECT
                     s.user_id,
-                    COALESCE(NULLIF(u.username, ''), '') AS username,
+                    COALESCE(
+                        NULLIF(BTRIM(u.username), ''),
+                        NULLIF((
+                            SELECT BTRIM(up.username)
+                            FROM bt_3_user_progress up
+                            WHERE up.user_id = s.user_id
+                              AND BTRIM(COALESCE(up.username, '')) <> ''
+                            ORDER BY up.start_time DESC NULLS LAST
+                            LIMIT 1
+                        ), ''),
+                        NULLIF((
+                            SELECT BTRIM(tr.username)
+                            FROM bt_3_translations tr
+                            WHERE tr.user_id = s.user_id
+                              AND BTRIM(COALESCE(tr.username, '')) <> ''
+                            ORDER BY tr.timestamp DESC NULLS LAST
+                            LIMIT 1
+                        ), ''),
+                        NULLIF((
+                            SELECT BTRIM(m.username)
+                            FROM bt_3_messages m
+                            WHERE m.user_id = s.user_id
+                              AND BTRIM(COALESCE(m.username, '')) <> ''
+                            ORDER BY m.timestamp DESC NULLS LAST
+                            LIMIT 1
+                        ), ''),
+                        ''
+                    ) AS username,
                     s.timezone,
                     s.reminder_hour,
                     s.reminder_minute

@@ -4225,6 +4225,51 @@ body {
   pointer-events: none;
 }
 
+.webapp-gpt-save-block {
+  display: grid;
+  gap: 8px;
+}
+
+.webapp-gpt-save-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 8px;
+  line-height: 1.35;
+}
+
+.webapp-gpt-save-option input[type="checkbox"] {
+  margin-top: 2px;
+  width: 14px;
+  height: 14px;
+  accent-color: #60a5fa;
+}
+
+.webapp-gpt-save-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.webapp-gpt-save-button {
+  min-height: 28px;
+  border-radius: 8px;
+  font-size: 11px;
+  padding: 5px 9px;
+}
+
+.webapp-gpt-save-status {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #86efac;
+  white-space: pre-line;
+}
+
+.webapp-gpt-save-status.is-error {
+  color: #fca5a5;
+}
+
 @keyframes webappInlineToastFade {
   0% {
     opacity: 0;
@@ -5906,6 +5951,7 @@ body {
   align-content: stretch;
   gap: 12px;
   width: 100%;
+  min-width: 0;
   max-width: 540px;
   margin: 0 auto;
   min-height: 100%;
@@ -5933,6 +5979,9 @@ body {
 
 .flashcard-preview-card {
   align-self: center;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border-radius: 24px;
   border: 1px solid rgba(112, 146, 216, 0.28);
   background:
@@ -5976,12 +6025,16 @@ body {
 
 .flashcard-preview-word {
   margin-top: 4px;
+  width: 100%;
+  max-width: 100%;
   text-align: center;
   font-size: clamp(46px, 9.4vw, 60px);
   line-height: 1.08;
   font-weight: 800;
   color: rgba(237, 242, 255, 0.98);
   text-wrap: balance;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .flashcard-preview-divider {
@@ -6006,16 +6059,21 @@ body {
   line-height: 1.14;
   font-weight: 500;
   color: rgba(232, 238, 251, 0.96);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .flashcard-preview-ru-hint {
   width: 100%;
+  max-width: 100%;
   margin-top: -4px;
   text-align: center;
   font-size: clamp(13px, 2.8vw, 16px);
   line-height: 1.3;
   color: rgba(186, 202, 238, 0.88);
   text-wrap: balance;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .flashcard-preview-listen {
@@ -6079,6 +6137,7 @@ body {
 
 .flashcard-preview-footer-row {
   width: 100%;
+  min-width: 0;
   justify-content: center;
   gap: 12px;
   margin-top: 8px;
@@ -6088,12 +6147,15 @@ body {
 
 .flashcard-preview-footer-btn {
   min-height: 60px;
+  min-width: 0;
   border-radius: 12px;
   padding: 12px 20px;
   font-size: 29px;
   font-weight: 600;
   flex: 1 1 0;
   max-width: 260px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .flashcard-preview-footer-btn.secondary-button,
@@ -14681,6 +14743,47 @@ body {
   background: linear-gradient(135deg, #e6be8b, #d8a76a);
   color: #1f1a14;
   box-shadow: 0 10px 20px rgba(166, 121, 67, 0.22);
+}
+
+.webapp-page.is-theme-light .webapp-selection-menu {
+  background: rgba(253, 247, 236, 0.97);
+  border-color: rgba(171, 139, 98, 0.34);
+  box-shadow: 0 14px 30px rgba(105, 78, 47, 0.24);
+}
+
+.webapp-page.is-theme-light .webapp-selection-text {
+  color: rgba(46, 37, 27, 0.78);
+}
+
+.webapp-page.is-theme-light .webapp-selection-translation {
+  color: #2f271f;
+  background: rgba(255, 248, 238, 0.95);
+  border-color: rgba(171, 139, 98, 0.32);
+}
+
+.webapp-page.is-theme-light .webapp-selection-provider {
+  color: #6f4f2e;
+  background: rgba(221, 180, 126, 0.25);
+  border-color: rgba(171, 126, 72, 0.45);
+}
+
+.webapp-page.is-theme-light .webapp-inline-toast {
+  background: rgba(253, 247, 236, 0.96);
+  color: #1f1a14;
+  border-color: rgba(171, 139, 98, 0.32);
+  box-shadow: 0 10px 24px rgba(105, 78, 47, 0.2);
+}
+
+.webapp-page.is-theme-light .webapp-gpt-save-option input[type="checkbox"] {
+  accent-color: #be8d55;
+}
+
+.webapp-page.is-theme-light .webapp-gpt-save-status {
+  color: #2f6f3e;
+}
+
+.webapp-page.is-theme-light .webapp-gpt-save-status.is-error {
+  color: #a23a2a;
 }
 
 .webapp-page.is-theme-light .support-section .support-chat-shell {

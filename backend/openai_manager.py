@@ -37,6 +37,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
     "dictionary_assistant_de",
     "dictionary_assistant_multilang",
+    "dictionary_assistant_multilang_reader",
     "dictionary_collocations",
     "dictionary_collocations_multilang",
     "feel_word",
@@ -1603,6 +1604,110 @@ Rules:
 - Etymology, usage_note and memory_tip must help learner FEEL structure and origin.
 - If information is unknown, use null.
 """,
+"dictionary_assistant_multilang_reader": """
+You are a multilingual dictionary assistant for reading popups.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "word": "<user input>"
+}
+
+Task:
+- Detect whether "word" belongs to source_language or target_language.
+- Translate to the opposite language.
+- Keep output optimized for a compact reading popup: concise, practical, easy to scan.
+- Prioritize reading comprehension and high-frequency real usage.
+- If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
+- Never collapse sentence input to a single word/lemma.
+
+Return STRICT JSON with keys:
+{
+  "detected_language": "source" | "target",
+  "word_source": "<normalized word/phrase in source_language>",
+  "word_target": "<normalized word/phrase in target_language>",
+  "translations": [
+    {"value": "...", "context": "...", "is_primary": true}
+  ],
+  "meanings": {
+    "primary": {
+      "value": "...",
+      "priority": 1,
+      "context": "...",
+      "example_source": "...",
+      "example_target": "..."
+    },
+    "secondary": [
+      {
+        "value": "...",
+        "priority": 2,
+        "context": "...",
+        "example_source": "...",
+        "example_target": "..."
+      }
+    ]
+  },
+  "etymology_note": "string|null",
+  "usage_note": "string|null",
+  "memory_tip": "string|null",
+  "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
+  "article": "<language-appropriate article or null>",
+  "pronunciation": {
+    "ipa": "string|null",
+    "stress": "string|null",
+    "audio_text": "string|null"
+  },
+  "forms": {
+    "plural": string|null,
+    "praeteritum": string|null,
+    "perfekt": string|null,
+    "konjunktiv1": string|null,
+    "konjunktiv2": string|null
+  },
+  "usage_examples": [
+    {"source": "...", "target": "..."},
+    {"source": "...", "target": "..."}
+  ],
+  "raw_text": "<optional short note>"
+}
+
+Reader-focused rules:
+- Output ONLY JSON.
+- Keep all text compact and learner-friendly; avoid encyclopedic wording.
+- The learner-facing explanation language must ALWAYS be source_language.
+- All explanatory fields must be written in source_language:
+  translations[].value, translations[].context, meanings.primary.value, meanings.primary.context,
+  meanings.secondary[].value, meanings.secondary[].context, etymology_note, usage_note, memory_tip, raw_text.
+- Meanings:
+  - primary meaning must be short, simple, practical.
+  - include no more than 2 secondary meanings.
+  - include secondary meanings only if they are frequent and genuinely useful for understanding real texts.
+- Translations:
+  - first variant must be the most practical/common one.
+  - keep variants relevant and concise; avoid bloated lists.
+- Usage note:
+  - short and concrete: where/how this is commonly used (tone/register/context).
+- Context fields:
+  - keep context short, concrete, and learner-friendly.
+  - avoid abstract lexicographic definitions and overly academic wording.
+- Examples must help the learner read target language:
+  meanings.primary.example_target and meanings.secondary[].example_target must be in target_language.
+  meanings.primary.example_source and meanings.secondary[].example_source must be in source_language.
+  usage_examples[].target must be in target_language and usage_examples[].source must be in source_language.
+- Usage examples:
+  - provide 2-3 examples maximum.
+  - examples must prefer the most typical real-life collocations of the word.
+  - avoid generic filler examples that do not teach how the word is commonly used.
+  - avoid artificial classroom-style sentences unless no better natural example exists.
+  - examples should be short enough for a popup and easy to scan quickly.
+- For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
+- Keep memory_tip and etymology_note only if genuinely helpful; keep them short.
+- raw_text:
+  - use only for one very short practical note if truly needed.
+  - otherwise return null.
+- If information is unknown, use null.
+""",
 "translate_subtitles_ru": """
 You translate short subtitle lines from German to Russian.
 Input JSON: { "lines": [ "...", "...", ... ] }
@@ -2684,10 +2789,10 @@ async def run_dictionary_lookup_multilang(
     word: str,
     source_lang: str,
     target_lang: str,
+    *,
+    task_name: str = "dictionary_assistant_multilang",
+    system_instruction_key: str = "dictionary_assistant_multilang",
 ) -> dict:
-    task_name = "dictionary_assistant_multilang"
-    system_instruction_key = "dictionary_assistant_multilang"
-
     payload = {
         "source_language": (source_lang or "").strip().lower(),
         "target_language": (target_lang or "").strip().lower(),
@@ -2714,7 +2819,8 @@ async def run_dictionary_lookup_multilang(
             last_error = exc
             elapsed_ms = int((time.monotonic() - attempt_started_at) * 1000)
             logging.warning(
-                "dictionary_assistant_multilang attempt %s/%s failed (%s) in %sms (responses_timeout=%ss): %r",
+                "%s attempt %s/%s failed (%s) in %sms (responses_timeout=%ss): %r",
+                task_name,
                 attempt,
                 DICTIONARY_RESPONSES_MAX_RETRIES,
                 type(exc).__name__,
@@ -2729,7 +2835,8 @@ async def run_dictionary_lookup_multilang(
         if not DICTIONARY_QUICK_TRANSLATE_FALLBACK_ENABLED:
             raise last_error
         logging.warning(
-            "dictionary_assistant_multilang failed after retries, fallback to quick subtitles translate: %s",
+            "%s failed after retries, fallback to quick subtitles translate: %s",
+            task_name,
             last_error,
         )
         try:
@@ -2782,6 +2889,20 @@ async def run_dictionary_lookup_multilang(
         "usage_examples": [],
         "raw_text": content,
     }
+
+
+async def run_dictionary_lookup_multilang_reader(
+    word: str,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    return await run_dictionary_lookup_multilang(
+        word=word,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        task_name="dictionary_assistant_multilang_reader",
+        system_instruction_key="dictionary_assistant_multilang_reader",
+    )
 
 
 async def generate_sentences_multilang(

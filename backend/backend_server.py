@@ -137,6 +137,7 @@ from backend.openai_manager import (
     run_dictionary_lookup,
     run_dictionary_lookup_de,
     run_dictionary_lookup_multilang,
+    run_dictionary_lookup_multilang_reader,
     run_dictionary_collocations,
     run_dictionary_collocations_multilang,
     run_translate_subtitles_ru,
@@ -410,7 +411,7 @@ SENTENCE_TRAINING_MIN_WORDS = max(3, int((os.getenv("SENTENCE_TRAINING_MIN_WORDS
 SENTENCE_TRAINING_GPT_SEED_TARGET = max(20, int((os.getenv("SENTENCE_TRAINING_GPT_SEED_TARGET") or "100").strip()))
 SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST = max(1, int((os.getenv("SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST") or "8").strip()))
 SENTENCE_TRAINING_LOOKUP_LIMIT = max(100, int((os.getenv("SENTENCE_TRAINING_LOOKUP_LIMIT") or "600").strip()))
-SENTENCE_TRAINING_LLM_MAX_PER_REQUEST = max(0, int((os.getenv("SENTENCE_TRAINING_LLM_MAX_PER_REQUEST") or "4").strip()))
+SENTENCE_TRAINING_LLM_MAX_PER_REQUEST = max(0, int((os.getenv("SENTENCE_TRAINING_LLM_MAX_PER_REQUEST") or "10").strip()))
 SENTENCE_GAP_CACHE_VERSION = 3
 SENTENCE_PREWARM_ENABLED = str(os.getenv("SENTENCE_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 SENTENCE_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("SENTENCE_PREWARM_INTERVAL_MINUTES") or "60").strip()))
@@ -6243,16 +6244,29 @@ Input:
 
 HARD RULES:
 1) correct_full_sentence MUST be exactly german_sentence (only whitespace normalization allowed).
-2) Pick ONE contiguous German element from correct_full_sentence: verb / noun / preposition.
-3) Build sentence_with_gap by replacing this exact contiguous element with exactly "___" (once).
-4) The removed element is correct_word.
-5) correct_word and all options MUST be German only (Latin letters incl. ÄÖÜäöüß, spaces, hyphen). No Cyrillic.
-6) Provide exactly 4 unique options, exactly one correct.
-7) correct_word MUST equal options[correct_index - 1].
-8) focus_type MUST be one of: "verb", "noun", "preposition" (do NOT use "separable_verb" in this mode).
-9) translation_ru MUST be Russian and correspond to correct_full_sentence.
-10) Keep grammar natural; no nonsense distractors.
-11) If focus_type is "verb", DO NOT choose "haben"/"sein" or their finite/participle forms as correct_word
+2) Pick ONE contiguous German element from correct_full_sentence as correct_word using this pedagogical priority:
+   Priority 1: idiomatic/fixed expression anchor (the core lexical word inside it).
+   Priority 2: main lexical verb that carries core meaning.
+   Priority 3: separable verb anchor.
+   Priority 4: core meaning noun.
+   Priority 5: object pronoun that trains case understanding (mich, dich, dir, ihm, ihn, etc.).
+3) Avoid trivial/weak targets unless no better candidate exists in the sentence.
+   Almost never remove: haben/sein and their forms, etwas, sehr, auch, schon, nur, doch, wirklich, leicht,
+   weak filler adverbs, and weak function words.
+4) Build sentence_with_gap by replacing this exact contiguous element with exactly "___" (once).
+5) The removed element is correct_word.
+6) correct_word and all options MUST be German only (Latin letters incl. ÄÖÜäöüß, spaces, hyphen). No Cyrillic.
+7) Provide exactly 4 unique options, exactly one correct.
+8) correct_word MUST equal options[correct_index - 1].
+9) focus_type MUST be one of: "verb", "noun", "preposition" (do NOT use "separable_verb" in this mode).
+10) translation_ru MUST be Russian and correspond to correct_full_sentence.
+11) The removed word should be the semantic anchor of the sentence and keep the sentence solvable from context.
+12) Distractors must be plausible and same grammatical class as correct_word:
+    - verb target -> verb distractors (plausible but wrong in this context)
+    - noun target -> noun distractors from similar semantic field
+    - pronoun target -> pronoun distractors that test case confusion
+    Never use nonsense distractors.
+13) If focus_type is "verb", DO NOT choose "haben"/"sein" or their finite/participle forms as correct_word
     (e.g. haben, habe, hast, hat, hatte, gehabt, sein, bin, bist, ist, war, gewesen, etc.).
 
 Return STRICT JSON with keys in this exact order:
@@ -6273,6 +6287,8 @@ SELF-CHECK BEFORE OUTPUT:
 - no Cyrillic in sentence_with_gap, correct_full_sentence, options, correct_word
 - Cyrillic is present in translation_ru
 - if focus_type == "verb", correct_word is NOT a form of haben/sein
+- correct_word is not a trivial filler/function word unless unavoidable
+- options are 4 unique plausible distractors of the same grammatical class
 """
 
 
@@ -7371,6 +7387,93 @@ def _extract_display_name(user_data: dict | None) -> str | None:
     last_name = (user_data.get("last_name") or "").strip()
     full_name = " ".join(part for part in (first_name, last_name) if part).strip()
     return full_name or None
+
+
+def _normalize_user_label(raw_value: str | None) -> str:
+    value = str(raw_value or "").strip().lstrip("@").strip()
+    if not value:
+        return ""
+    lowered = value.lower()
+    if lowered in {"unknown", "unknown user", "none", "null", "nan"}:
+        return ""
+    if re.fullmatch(r"user[_\-\s]*\d+", lowered):
+        return ""
+    return value
+
+
+def _format_today_user_label(raw_value: str | None, *, fallback: str = "друг") -> str:
+    return _normalize_user_label(raw_value) or str(fallback or "друг")
+
+
+def _format_today_group_user_label(raw_value: str | None) -> str:
+    label = _normalize_user_label(raw_value)
+    if not label:
+        return "участника"
+    if re.fullmatch(r"[A-Za-z0-9_]{5,32}", label):
+        return f"@{label}"
+    return label
+
+
+def _fetch_telegram_chat_display_name(user_id: int) -> str | None:
+    url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/getChat"
+    try:
+        response = requests.post(url, json={"chat_id": int(user_id)}, timeout=12)
+        if response.status_code >= 400:
+            return None
+        payload = response.json() if response.content else {}
+        chat = payload.get("result") or {}
+        username = str(chat.get("username") or "").strip()
+        if username:
+            return username
+        first_name = str(chat.get("first_name") or "").strip()
+        last_name = str(chat.get("last_name") or "").strip()
+        full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+        return full_name or None
+    except Exception:
+        return None
+
+
+def _resolve_today_user_label(
+    user_id: int,
+    raw_value: str | None,
+    *,
+    fallback: str = "друг",
+    cache: dict[int, str | None] | None = None,
+) -> str:
+    label = _normalize_user_label(raw_value)
+    if label:
+        return label
+    safe_user_id = int(user_id)
+    tg_label: str | None
+    if cache is not None and safe_user_id in cache:
+        tg_label = cache[safe_user_id]
+    else:
+        tg_label = _normalize_user_label(_fetch_telegram_chat_display_name(safe_user_id))
+        if cache is not None:
+            cache[safe_user_id] = tg_label
+    return tg_label or str(fallback or "друг")
+
+
+def _resolve_today_group_user_label(
+    user_id: int,
+    raw_value: str | None,
+    *,
+    cache: dict[int, str | None] | None = None,
+) -> str:
+    label = _normalize_user_label(raw_value)
+    if not label:
+        safe_user_id = int(user_id)
+        if cache is not None and safe_user_id in cache:
+            label = cache[safe_user_id] or ""
+        else:
+            label = _normalize_user_label(_fetch_telegram_chat_display_name(safe_user_id))
+            if cache is not None:
+                cache[safe_user_id] = label or None
+    if not label:
+        return "участника"
+    if re.fullmatch(r"[A-Za-z0-9_]{5,32}", label):
+        return f"@{label}"
+    return label
 
 
 def _build_webapp_deeplink(path: str = "review") -> str:
@@ -20334,6 +20437,7 @@ def _dispatch_today_evening_reminders(target_date: date, tz_name: str = TODAY_PL
     reminded = 0
     celebrated = 0
     errors: list[str] = []
+    name_cache: dict[int, str | None] = {}
     plan_url = _build_webapp_deeplink("today")
     plan_button = {"inline_keyboard": [[{"text": "Открыть план на сегодня", "url": plan_url}]]}
 
@@ -20341,7 +20445,12 @@ def _dispatch_today_evening_reminders(target_date: date, tz_name: str = TODAY_PL
         user_id = int(user.get("user_id") or 0)
         if not user_id or not is_telegram_user_allowed(user_id):
             continue
-        username = str(user.get("username") or "").strip() or f"user_{user_id}"
+        username = _resolve_today_user_label(
+            user_id,
+            user.get("username"),
+            fallback="друг",
+            cache=name_cache,
+        )
         try:
             snapshot = _daily_plan_completion_snapshot(user_id, target_date)
             if not snapshot.get("has_plan"):
@@ -20533,6 +20642,7 @@ def _dispatch_today_plans(target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_T
     sent_private = 0
     sent_group_fallback = 0
     errors: list[str] = []
+    name_cache: dict[int, str | None] = {}
     for row in users:
         user_id = int(row.get("user_id"))
         if not is_telegram_user_allowed(user_id):
@@ -20548,8 +20658,11 @@ def _dispatch_today_plans(target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_T
             try:
                 target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_today_plans")
                 if int(target_chat_id) < 0:
-                    username = str(row.get("username") or "").strip()
-                    user_label = f"@{username}" if username else f"user_{user_id}"
+                    user_label = _resolve_today_group_user_label(
+                        user_id,
+                        row.get("username"),
+                        cache=name_cache,
+                    )
                     text = _format_today_group_announcement(user_label, plan)
                     button_url = _build_webapp_deeplink("today")
                     reply_markup = {
@@ -21382,13 +21495,16 @@ def cleanup_flashcard_feel_now():
 
 def _format_selection_dictionary_explanation(result: dict, source_lang: str, target_lang: str) -> str:
     if not isinstance(result, dict):
-        return "Перевод не найден."
+        return "📘 **Перевод**\n—"
 
     def _clean(value: object) -> str:
         return str(value or "").strip()
 
+    def _normalize_space(value: object) -> str:
+        return re.sub(r"\s+", " ", _clean(value)).strip()
+
     def _has_expected_script(text: str, lang: str) -> bool:
-        cleaned = _clean(text)
+        cleaned = _normalize_space(text)
         if not cleaned:
             return False
         normalized_lang = _normalize_short_lang_code(lang, fallback="")
@@ -21401,252 +21517,282 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
         return True
 
     def _native_text(value: object, lang: str) -> str:
-        text = _clean(value)
+        text = _normalize_space(value)
         if not text:
             return ""
         return text if _has_expected_script(text, lang) else ""
 
-    def _lang_label(code: str) -> str:
-        mapping = {
-            "ru": "RU",
-            "de": "DE",
-            "en": "EN",
-            "es": "ES",
-            "it": "IT",
-        }
-        normalized = _normalize_short_lang_code(code, fallback="")
-        return mapping.get(normalized, (normalized or "??").upper())
+    def _shorten(text: str, limit: int = 220) -> str:
+        clean_text = _normalize_space(text)
+        if len(clean_text) <= limit:
+            return clean_text
+        return clean_text[: max(0, limit - 1)].rstrip() + "…"
 
     def _labels(lang: str) -> dict[str, str]:
         normalized = _normalize_short_lang_code(lang, fallback="ru")
         bundles = {
             "ru": {
-                "main_translation": "Основной перевод",
-                "input_text": "Исходный текст",
-                "direction": "Направление",
-                "translation_variants": "Варианты перевода",
-                "main_meaning": "Основное значение",
-                "secondary_meanings": "Дополнительные значения",
-                "example": "Пример",
-                "grammar": "Грамматика и форма",
-                "part_of_speech": "Часть речи",
-                "article": "Артикль",
-                "pronunciation": "Произношение",
-                "usage": "Употребление",
-                "origin": "Происхождение",
-                "memory": "Памятка",
+                "translation": "Перевод",
+                "variants": "Варианты",
+                "meaning": "Смысл",
+                "collocations": "Типичные сочетания",
                 "examples": "Примеры",
-                "comment": "Комментарий",
+                "grammar": "Грамматика",
+                "note": "Примечание",
+                "hint": "Подсказка",
+                "origin": "Происхождение",
+                "part_of_speech": "часть речи",
+                "article": "артикль",
+                "plural": "plural",
+                "praeteritum": "Prateritum",
+                "perfekt": "Perfekt",
             },
             "de": {
-                "main_translation": "Hauptuebersetzung",
-                "input_text": "Ausgangstext",
-                "direction": "Richtung",
-                "translation_variants": "Uebersetzungsvarianten",
-                "main_meaning": "Hauptbedeutung",
-                "secondary_meanings": "Weitere Bedeutungen",
-                "example": "Beispiel",
-                "grammar": "Grammatik und Form",
+                "translation": "Uebersetzung",
+                "variants": "Varianten",
+                "meaning": "Bedeutung",
+                "collocations": "Typische Verbindungen",
+                "examples": "Beispiele",
+                "grammar": "Grammatik",
+                "note": "Hinweis",
+                "hint": "Merkhilfe",
+                "origin": "Herkunft",
                 "part_of_speech": "Wortart",
                 "article": "Artikel",
-                "pronunciation": "Aussprache",
-                "usage": "Gebrauch",
-                "origin": "Herkunft",
-                "memory": "Merkhilfe",
-                "examples": "Beispiele",
-                "comment": "Kommentar",
+                "plural": "Plural",
+                "praeteritum": "Prateritum",
+                "perfekt": "Perfekt",
             },
             "en": {
-                "main_translation": "Main translation",
-                "input_text": "Source text",
-                "direction": "Direction",
-                "translation_variants": "Translation variants",
-                "main_meaning": "Main meaning",
-                "secondary_meanings": "Secondary meanings",
-                "example": "Example",
-                "grammar": "Grammar and form",
-                "part_of_speech": "Part of speech",
-                "article": "Article",
-                "pronunciation": "Pronunciation",
-                "usage": "Usage",
-                "origin": "Origin",
-                "memory": "Memory tip",
+                "translation": "Translation",
+                "variants": "Variants",
+                "meaning": "Meaning",
+                "collocations": "Typical Collocations",
                 "examples": "Examples",
-                "comment": "Comment",
+                "grammar": "Grammar",
+                "note": "Note",
+                "hint": "Hint",
+                "origin": "Origin",
+                "part_of_speech": "part of speech",
+                "article": "article",
+                "plural": "plural",
+                "praeteritum": "Prateritum",
+                "perfekt": "Perfekt",
             },
             "es": {
-                "main_translation": "Traduccion principal",
-                "input_text": "Texto original",
-                "direction": "Direccion",
-                "translation_variants": "Variantes de traduccion",
-                "main_meaning": "Significado principal",
-                "secondary_meanings": "Significados adicionales",
-                "example": "Ejemplo",
-                "grammar": "Gramatica y forma",
-                "part_of_speech": "Categoria gramatical",
-                "article": "Articulo",
-                "pronunciation": "Pronunciacion",
-                "usage": "Uso",
-                "origin": "Origen",
-                "memory": "Pista mental",
+                "translation": "Traduccion",
+                "variants": "Variantes",
+                "meaning": "Significado",
+                "collocations": "Combinaciones tipicas",
                 "examples": "Ejemplos",
-                "comment": "Comentario",
+                "grammar": "Gramatica",
+                "note": "Nota",
+                "hint": "Pista",
+                "origin": "Origen",
+                "part_of_speech": "categoria gramatical",
+                "article": "articulo",
+                "plural": "plural",
+                "praeteritum": "Prateritum",
+                "perfekt": "Perfekt",
             },
             "it": {
-                "main_translation": "Traduzione principale",
-                "input_text": "Testo di partenza",
-                "direction": "Direzione",
-                "translation_variants": "Varianti di traduzione",
-                "main_meaning": "Significato principale",
-                "secondary_meanings": "Significati aggiuntivi",
-                "example": "Esempio",
-                "grammar": "Grammatica e forma",
-                "part_of_speech": "Parte del discorso",
-                "article": "Articolo",
-                "pronunciation": "Pronuncia",
-                "usage": "Uso",
-                "origin": "Origine",
-                "memory": "Suggerimento mnemonico",
+                "translation": "Traduzione",
+                "variants": "Varianti",
+                "meaning": "Significato",
+                "collocations": "Combinazioni tipiche",
                 "examples": "Esempi",
-                "comment": "Commento",
+                "grammar": "Grammatica",
+                "note": "Nota",
+                "hint": "Suggerimento",
+                "origin": "Origine",
+                "part_of_speech": "parte del discorso",
+                "article": "articolo",
+                "plural": "plural",
+                "praeteritum": "Prateritum",
+                "perfekt": "Perfekt",
             },
         }
-        return bundles.get(normalized, bundles["en"])
+        return bundles.get(normalized, bundles["ru"])
 
-    def _orient_example_pair(native_value: str, target_value: str) -> str:
-        native_text = _clean(native_value)
-        target_text = _clean(target_value)
-        if target_text or native_text:
-            return f"{target_text or '—'} -> {native_text or '—'}"
-        return ""
+    def _extract_collocation(sentence: str, target_word: str) -> str:
+        sent = _normalize_space(sentence)
+        target = _normalize_space(target_word)
+        if not sent or not target:
+            return ""
+        token_pattern = r"[A-Za-zÀ-ÖØ-öø-ÿÄÖÜäöüßА-Яа-яЁё]+(?:'[A-Za-zÀ-ÖØ-öø-ÿÄÖÜäöüßА-Яа-яЁё]+)?"
+        sentence_tokens = re.findall(token_pattern, sent)
+        target_tokens = re.findall(token_pattern, target)
+        if not sentence_tokens or not target_tokens:
+            return ""
+        lower_sent = [item.casefold() for item in sentence_tokens]
+        lower_target = [item.casefold() for item in target_tokens]
+
+        match_index = -1
+        for idx in range(0, len(lower_sent) - len(lower_target) + 1):
+            if lower_sent[idx: idx + len(lower_target)] == lower_target:
+                match_index = idx
+                break
+
+        if match_index < 0:
+            anchor = lower_target[0]
+            min_prefix = max(3, min(5, len(anchor)))
+            for idx, token in enumerate(lower_sent):
+                if token.startswith(anchor[:min_prefix]) or anchor.startswith(token[:min_prefix]):
+                    match_index = idx
+                    lower_target = [token]
+                    break
+
+        if match_index < 0:
+            return ""
+
+        start = max(0, match_index - 1)
+        end = min(len(sentence_tokens), match_index + len(lower_target) + 1)
+        chunk = _normalize_space(" ".join(sentence_tokens[start:end]))
+        if len(re.findall(token_pattern, chunk)) < 2:
+            return ""
+        return chunk
 
     labels = _labels(source_lang)
-    source_text = _clean(result.get("word_source"))
-    target_text = _clean(result.get("word_target"))
-    detected = _clean(result.get("detected_language")).lower()
-    detected_side = "source" if detected == "source" else ("target" if detected == "target" else "unknown")
-    clicked_text = target_text if detected_side == "target" else source_text
+    source_text = _normalize_space(result.get("word_source"))
+    target_text = _normalize_space(result.get("word_target"))
+    detected = _normalize_space(result.get("detected_language")).lower()
+    detected_side = "source" if detected == "source" else ("target" if detected == "target" else "source")
     translated_text = source_text if detected_side == "target" else target_text
-    direction_from = target_lang if detected_side == "target" else source_lang
-    direction_to = source_lang if detected_side == "target" else target_lang
 
-    lines: list[str] = []
-    lines.append(f"{labels['main_translation']}: {translated_text or '—'}")
-    if clicked_text:
-        lines.append(f"{labels['input_text']}: {clicked_text}")
-    lines.append(f"{labels['direction']}: {_lang_label(direction_from)} -> {_lang_label(direction_to)}")
+    sections: list[str] = []
 
+    translation_lines = [f"📘 **{labels['translation']}**", translated_text or "—"]
     translations = result.get("translations")
-    translation_lines: list[str] = []
+    extra_variants: list[str] = []
     if isinstance(translations, list):
-        for item in translations[:3]:
+        seen_variants: set[str] = set()
+        main_lower = translated_text.casefold()
+        for item in translations:
             if not isinstance(item, dict):
                 continue
             value = _native_text(item.get("value"), source_lang)
-            context = _native_text(item.get("context"), source_lang)
             if not value:
                 continue
-            translation_lines.append(f"- {value}" + (f" ({context})" if context else ""))
-    if translation_lines:
-        lines.append("")
-        lines.append(f"{labels['translation_variants']}:")
-        lines.extend(translation_lines)
+            value_key = value.casefold()
+            if value_key in seen_variants or value_key == main_lower:
+                continue
+            seen_variants.add(value_key)
+            extra_variants.append(value)
+            if len(extra_variants) >= 2:
+                break
+    if extra_variants:
+        translation_lines.append(f"- {labels['variants']}:")
+        for value in extra_variants:
+            translation_lines.append(f"  - {value}")
+    sections.append("\n".join(translation_lines))
 
-    meanings = result.get("meanings") or {}
-    primary = meanings.get("primary") if isinstance(meanings, dict) else None
+    meanings = result.get("meanings") if isinstance(result.get("meanings"), dict) else {}
+    primary = meanings.get("primary") if isinstance(meanings, dict) and isinstance(meanings.get("primary"), dict) else {}
+    meaning_value = _native_text(primary.get("value"), source_lang)
+    meaning_context = _native_text(primary.get("context"), source_lang)
+    meaning_text = meaning_value or meaning_context
+    if meaning_text:
+        if meaning_context and meaning_context.casefold() != meaning_value.casefold() and meaning_value:
+            meaning_text = f"{meaning_value} ({meaning_context})"
+        sections.append(f"🧠 **{labels['meaning']}**\n{_shorten(meaning_text, 260)}")
+
+    collocation_candidates: list[str] = []
+    usage_examples = result.get("usage_examples") if isinstance(result.get("usage_examples"), list) else []
+    for item in usage_examples[:4]:
+        if not isinstance(item, dict):
+            continue
+        target_sentence = _normalize_space(item.get("target"))
+        collocation = _extract_collocation(target_sentence, target_text)
+        if collocation:
+            collocation_candidates.append(collocation)
+
     if isinstance(primary, dict):
-        val = _native_text(primary.get("value"), source_lang)
-        ctx = _native_text(primary.get("context"), source_lang)
-        if val:
-            lines.append("")
-            lines.append(f"{labels['main_meaning']}:")
-            lines.append(f"- {val}" + (f" ({ctx})" if ctx else ""))
-        example_line = _orient_example_pair(primary.get("example_source"), primary.get("example_target"))
-        if example_line:
-            lines.append(f"- {labels['example']}: {example_line}")
-
-    secondary = meanings.get("secondary") if isinstance(meanings, dict) else None
-    secondary_lines: list[str] = []
+        collocation = _extract_collocation(_normalize_space(primary.get("example_target")), target_text)
+        if collocation:
+            collocation_candidates.append(collocation)
+    secondary = meanings.get("secondary") if isinstance(meanings, dict) else []
     if isinstance(secondary, list):
         for item in secondary[:2]:
             if not isinstance(item, dict):
                 continue
-            val = _native_text(item.get("value"), source_lang)
-            ctx = _native_text(item.get("context"), source_lang)
-            if not val:
-                continue
-            chunk = f"- {val}" + (f" ({ctx})" if ctx else "")
-            example_line = _orient_example_pair(item.get("example_source"), item.get("example_target"))
-            if example_line:
-                chunk += f"; {labels['example'].lower()}: {example_line}"
-            secondary_lines.append(chunk)
-    if secondary_lines:
-        lines.append("")
-        lines.append(f"{labels['secondary_meanings']}:")
-        lines.extend(secondary_lines)
+            collocation = _extract_collocation(_normalize_space(item.get("example_target")), target_text)
+            if collocation:
+                collocation_candidates.append(collocation)
 
-    part_of_speech = _clean(result.get("part_of_speech"))
-    article = _clean(result.get("article"))
-    pronunciation = result.get("pronunciation") if isinstance(result.get("pronunciation"), dict) else {}
-    pronunciation_bits = []
-    for key in ("ipa", "stress"):
-        value = _clean(pronunciation.get(key))
-        if value:
-            pronunciation_bits.append(value)
+    collocations: list[str] = []
+    seen_collocations: set[str] = set()
+    for value in collocation_candidates:
+        key = value.casefold()
+        if key in seen_collocations:
+            continue
+        seen_collocations.add(key)
+        collocations.append(value)
+        if len(collocations) >= 3:
+            break
+    if collocations:
+        block = [f"🧩 **{labels['collocations']}**"]
+        block.extend([f"- {value}" for value in collocations])
+        sections.append("\n".join(block))
+
+    example_lines: list[str] = []
+    for item in usage_examples[:3]:
+        if not isinstance(item, dict):
+            continue
+        native_sentence = _native_text(item.get("source"), source_lang)
+        target_sentence = _normalize_space(item.get("target"))
+        if not target_sentence:
+            continue
+        if native_sentence:
+            example_lines.append(f"{len(example_lines) + 1}. {target_sentence} -> {native_sentence}")
+        else:
+            example_lines.append(f"{len(example_lines) + 1}. {target_sentence}")
+    if example_lines:
+        examples_block = [f"📝 **{labels['examples']}**", f"{labels['examples']}:"]
+        examples_block.extend(example_lines)
+        sections.append("\n".join(examples_block))
+
+    part_of_speech = _normalize_space(result.get("part_of_speech")).lower()
+    article = _normalize_space(result.get("article"))
     forms = result.get("forms") if isinstance(result.get("forms"), dict) else {}
-    form_lines = []
-    for label, key in (
-        ("Plural", "plural"),
-        ("Praeteritum", "praeteritum"),
-        ("Perfekt", "perfekt"),
-        ("Konjunktiv I", "konjunktiv1"),
-        ("Konjunktiv II", "konjunktiv2"),
-    ):
-        value = _clean(forms.get(key))
-        if value:
-            form_lines.append(f"- {label}: {value}")
-    if part_of_speech or article or pronunciation_bits or form_lines:
-        lines.append("")
-        lines.append(f"{labels['grammar']}:")
+    plural = _normalize_space(forms.get("plural"))
+    praeteritum = _normalize_space(forms.get("praeteritum"))
+    perfekt = _normalize_space(forms.get("perfekt"))
+
+    is_noun = bool(re.search(r"\b(noun|substantiv|nomen|sostantiv|sustantiv)\b", part_of_speech)) or bool(article)
+    is_verb = bool(re.search(r"\b(verb|verbo)\b", part_of_speech)) or bool(praeteritum or perfekt)
+    grammar_lines: list[str] = []
+    if is_noun or is_verb:
         if part_of_speech:
-            lines.append(f"- {labels['part_of_speech']}: {part_of_speech}")
-        if article:
-            lines.append(f"- {labels['article']}: {article}")
-        if pronunciation_bits:
-            lines.append(f"- {labels['pronunciation']}: {'; '.join(pronunciation_bits)}")
-        lines.extend(form_lines)
+            grammar_lines.append(f"- {labels['part_of_speech']}: {part_of_speech}")
+        if is_noun:
+            if article:
+                grammar_lines.append(f"- {labels['article']}: {article}")
+            if plural:
+                grammar_lines.append(f"- {labels['plural']}: {plural}")
+        if is_verb:
+            if praeteritum:
+                grammar_lines.append(f"- {labels['praeteritum']}: {praeteritum}")
+            if perfekt:
+                grammar_lines.append(f"- {labels['perfekt']}: {perfekt}")
+    if grammar_lines:
+        sections.append("\n".join([f"⚙ **{labels['grammar']}**", *grammar_lines]))
 
     usage_note = _native_text(result.get("usage_note"), source_lang)
     if usage_note:
-        lines.append("")
-        lines.append(f"{labels['usage']}: {usage_note}")
-    etymology_note = _native_text(result.get("etymology_note"), source_lang)
-    if etymology_note:
-        lines.append(f"{labels['origin']}: {etymology_note}")
+        sections.append(f"💡 **{labels['note']}**\n{_shorten(usage_note, 220)}")
+
     memory_tip = _native_text(result.get("memory_tip"), source_lang)
     if memory_tip:
-        lines.append(f"{labels['memory']}: {memory_tip}")
+        sections.append(f"🧠 **{labels['hint']}**\n{_shorten(memory_tip, 180)}")
 
-    examples = result.get("usage_examples") or []
-    example_lines: list[str] = []
-    if isinstance(examples, list):
-        for item in examples[:3]:
-            if not isinstance(item, dict):
-                continue
-            example_line = _orient_example_pair(item.get("source"), item.get("target"))
-            if example_line:
-                example_lines.append(f"- {example_line}")
-    if example_lines:
-        lines.append("")
-        lines.append(f"{labels['examples']}:")
-        lines.extend(example_lines)
+    etymology_note = _native_text(result.get("etymology_note"), source_lang)
+    if etymology_note:
+        sections.append(f"🌍 **{labels['origin']}**\n{_shorten(etymology_note, 180)}")
 
-    raw_text = _native_text(result.get("raw_text"), source_lang)
-    if raw_text:
-        lines.append("")
-        lines.append(f"{labels['comment']}: {raw_text}")
-
-    return "\n".join(line for line in lines if str(line).strip())
+    compact_sections = [section for section in sections if _normalize_space(section)]
+    if not compact_sections:
+        return "📘 **Перевод**\n—"
+    return "\n\n".join(compact_sections)
 
 
 @app.route("/api/webapp/explain", methods=["POST"])
@@ -21678,7 +21824,7 @@ def explain_webapp_translation():
     try:
         if mode == "selection_context":
             dictionary_result = asyncio.run(
-                run_dictionary_lookup_multilang(
+                run_dictionary_lookup_multilang_reader(
                     word=original_text,
                     source_lang=source_lang,
                     target_lang=target_lang,

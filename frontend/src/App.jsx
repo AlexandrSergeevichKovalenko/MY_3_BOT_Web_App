@@ -218,6 +218,11 @@ function AppInner() {
   const [selectionGptLoading, setSelectionGptLoading] = useState(false);
   const [selectionGptError, setSelectionGptError] = useState('');
   const [selectionGptData, setSelectionGptData] = useState({ translation: '', notes: '', examples: [] });
+  const [selectionGptSaveOriginalChecked, setSelectionGptSaveOriginalChecked] = useState(true);
+  const [selectionGptSaveExamplesChecked, setSelectionGptSaveExamplesChecked] = useState({});
+  const [selectionGptSaveLoading, setSelectionGptSaveLoading] = useState(false);
+  const [selectionGptSaveError, setSelectionGptSaveError] = useState('');
+  const [selectionGptSaveMessage, setSelectionGptSaveMessage] = useState('');
   const [ttsPendingMap, setTtsPendingMap] = useState({});
   const [inlineToast, setInlineToast] = useState('');
   const [inlineToastDurationMs, setInlineToastDurationMs] = useState(3000);
@@ -4587,6 +4592,7 @@ function AppInner() {
     ];
   }, [uiLang]);
   const isYoutubeSelectionMenu = String(selectionType || '').startsWith('youtube_');
+  const isLightTheme = themeMode === 'light';
   const readerHasContent = Boolean(String(readerContent || '').trim());
   const readerDisplayPages = useMemo(() => {
     if (Array.isArray(readerPages) && readerPages.length > 0) {
@@ -8519,16 +8525,293 @@ function AppInner() {
       .split(/\r?\n/)
       .map((line) => String(line || '').trim())
       .filter(Boolean);
-    const examples = lines
-      .filter((line) => /^[-•*]\s+/.test(line) || /^\d+\.\s+/.test(line) || /["“”„«»]/.test(line))
-      .map((line) => line.replace(/^[-•*]\s+/, '').replace(/^\d+\.\s+/, '').trim())
-      .filter(Boolean)
-      .slice(0, 4);
+    const explanationLinesRaw = explanation.split(/\r?\n/);
+    const exampleSectionTitles = new Set([
+      'примеры:',
+      'beispiele:',
+      'examples:',
+      'ejemplos:',
+      'esempi:',
+    ]);
+    const examples = [];
+    const exampleSectionStart = explanationLinesRaw.findIndex((line) => (
+      exampleSectionTitles.has(String(line || '').trim().toLowerCase())
+    ));
+    if (exampleSectionStart >= 0) {
+      for (let index = exampleSectionStart + 1; index < explanationLinesRaw.length; index += 1) {
+        const rawLine = String(explanationLinesRaw[index] || '');
+        const trimmed = rawLine.trim();
+        if (!trimmed) {
+          if (examples.length > 0) break;
+          continue;
+        }
+        const isExampleItem = /^[-•*]\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed);
+        if (!isExampleItem) {
+          if (examples.length > 0) break;
+          continue;
+        }
+        const normalized = trimmed
+          .replace(/^[-•*]\s+/, '')
+          .replace(/^\d+\.\s+/, '')
+          .trim();
+        if (!normalized) continue;
+        examples.push(normalized);
+        if (examples.length >= 4) break;
+      }
+    }
     return {
       translation: quickTranslation || lines[0] || '',
       notes: explanation,
       examples,
     };
+  };
+
+  const resetSelectionGptSaveState = () => {
+    setSelectionGptSaveOriginalChecked(true);
+    setSelectionGptSaveExamplesChecked({});
+    setSelectionGptSaveLoading(false);
+    setSelectionGptSaveError('');
+    setSelectionGptSaveMessage('');
+  };
+
+  const saveSelectionGptDictionaryEntry = async ({
+    sourceText,
+    targetText,
+    sourceLang,
+    targetLang,
+    direction,
+    responseJson,
+    originMeta,
+  }) => {
+    const source = String(sourceText || '').trim();
+    const target = String(targetText || '').trim();
+    if (!source || !target) {
+      throw new Error(tr('Пустые данные для сохранения', 'Leere Daten zum Speichern'));
+    }
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const resolvedSourceLang = normalizeLangCode(sourceLang || pair.source_lang) || pair.source_lang;
+    const resolvedTargetLang = normalizeLangCode(targetLang || pair.target_lang) || pair.target_lang;
+    const resolvedDirection = String(direction || `${resolvedSourceLang}-${resolvedTargetLang}`).trim().toLowerCase();
+    const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(resolvedDirection);
+    const response = await fetch('/api/webapp/dictionary/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        initData,
+        word_ru: isLegacyPair && resolvedDirection === 'ru-de' ? source : '',
+        word_de: isLegacyPair && resolvedDirection === 'de-ru' ? source : '',
+        translation_de: isLegacyPair && resolvedDirection === 'ru-de' ? target : '',
+        translation_ru: isLegacyPair && resolvedDirection === 'de-ru' ? target : '',
+        source_text: source,
+        target_text: target,
+        response_json: {
+          ...(responseJson && typeof responseJson === 'object' ? responseJson : {}),
+          source_text: source,
+          target_text: target,
+          source_lang: resolvedSourceLang,
+          target_lang: resolvedTargetLang,
+          direction: resolvedDirection,
+          language_pair: {
+            source_lang: resolvedSourceLang,
+            target_lang: resolvedTargetLang,
+          },
+        },
+        source_lang: resolvedSourceLang || undefined,
+        target_lang: resolvedTargetLang || undefined,
+        direction: resolvedDirection || undefined,
+        folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
+        origin_process: 'reader_selection_gpt_save',
+        origin_meta: {
+          endpoint: '/api/webapp/dictionary/save',
+          flow: 'reader_gpt_sheet',
+          from: 'reader_gpt_sheet',
+          ...(originMeta && typeof originMeta === 'object' ? originMeta : {}),
+        },
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await readApiError(response, 'Ошибка сохранения', 'Speicherfehler'));
+    }
+    const payload = await response.json();
+    setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
+  };
+
+  const saveSelectionGptOriginalWord = async (rawText) => {
+    const cleaned = normalizeSelectionText(rawText);
+    if (!cleaned) return false;
+    const normalized = await normalizeForLookup(cleaned);
+    const lookupParams = resolveQuickTranslateParams(normalized);
+    const lookupLangHint = normalizeLangCode(lookupParams.sourceLangHint || '');
+    const lookupResponse = await fetch('/api/webapp/dictionary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        initData,
+        word: normalized,
+        lookup_lang: lookupLangHint || undefined,
+      }),
+    });
+    if (!lookupResponse.ok) {
+      throw new Error(await readApiError(lookupResponse, 'Ошибка словаря', 'Woerterbuchfehler'));
+    }
+    const data = await lookupResponse.json();
+    const item = data?.item || {};
+    const fallbackPair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const direction = String(data?.direction || resolveDictionaryDirection(item) || `${fallbackPair.source_lang}-${fallbackPair.target_lang}`)
+      .trim()
+      .toLowerCase();
+    const [directionSourceLang = fallbackPair.source_lang, directionTargetLang = fallbackPair.target_lang] = direction.includes('-')
+      ? direction.split('-', 2)
+      : [fallbackPair.source_lang, fallbackPair.target_lang];
+    const sourceTarget = getDictionarySourceTarget(item, direction);
+    let sourceText = String(sourceTarget.sourceText || normalized).trim();
+    let targetText = String(sourceTarget.targetText || '').trim();
+    if (!targetText) {
+      const quick = await requestQuickTranslation(normalized);
+      targetText = String(quick.translation || '').trim();
+    }
+    if (!targetText) {
+      throw new Error(tr('Не удалось получить перевод для сохранения', 'Uebersetzung fuer das Speichern konnte nicht ermittelt werden'));
+    }
+    const normalizedPair = applyArticleForDirection(sourceText, targetText, direction, item);
+    sourceText = String(normalizedPair.sourceText || sourceText).trim();
+    targetText = String(normalizedPair.targetText || targetText).trim();
+    const article = String(item?.article || '').trim();
+    const partOfSpeech = String(item?.part_of_speech || '').trim();
+    const responseJson = {
+      ...(item && typeof item === 'object' ? item : {}),
+      source_text: sourceText,
+      target_text: targetText,
+      source_lang: directionSourceLang,
+      target_lang: directionTargetLang,
+      direction,
+      language_pair: {
+        source_lang: directionSourceLang,
+        target_lang: directionTargetLang,
+      },
+    };
+    if (article) {
+      const deFromSource = directionSourceLang === 'de' ? sourceText : '';
+      const deFromTarget = directionTargetLang === 'de' ? targetText : '';
+      const responseWordDe = String(responseJson.word_de || deFromSource || deFromTarget || '').trim();
+      const responseTranslationDe = String(responseJson.translation_de || deFromTarget || deFromSource || '').trim();
+      if (responseWordDe) {
+        responseJson.word_de = prependArticleIfNeeded(responseWordDe, article, partOfSpeech);
+      }
+      if (responseTranslationDe) {
+        responseJson.translation_de = prependArticleIfNeeded(responseTranslationDe, article, partOfSpeech);
+      }
+    }
+    await saveSelectionGptDictionaryEntry({
+      sourceText,
+      targetText,
+      sourceLang: directionSourceLang,
+      targetLang: directionTargetLang,
+      direction,
+      responseJson,
+      originMeta: {
+        source_kind: 'original_word',
+      },
+    });
+    return true;
+  };
+
+  const saveSelectionGptExample = async (exampleText, exampleIndex) => {
+    const cleaned = normalizeSelectionText(exampleText)
+      .replace(/^["“”„«»]+/, '')
+      .replace(/["“”„«»]+$/, '')
+      .trim();
+    if (!cleaned) return false;
+    const quick = await requestQuickTranslation(cleaned);
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const sourceLang = normalizeLangCode(
+      quick.detectedSource
+      || quick.sourceLangHint
+      || pair.source_lang
+    ) || pair.source_lang;
+    const targetLang = normalizeLangCode(
+      quick.targetLang
+      || (sourceLang === pair.source_lang ? pair.target_lang : pair.source_lang)
+    ) || pair.target_lang;
+    const sourceText = String(quick.cleaned || cleaned).trim();
+    const targetText = String(quick.translation || '').trim();
+    if (!targetText) {
+      throw new Error(tr('Перевод примера не получен', 'Beispieluebersetzung fehlt'));
+    }
+    await saveSelectionGptDictionaryEntry({
+      sourceText,
+      targetText,
+      sourceLang,
+      targetLang,
+      direction: `${sourceLang}-${targetLang}`,
+      responseJson: {
+        source_text: sourceText,
+        target_text: targetText,
+      },
+      originMeta: {
+        source_kind: 'gpt_example',
+        source_word: normalizeSelectionText(selectionText),
+        example_index: exampleIndex + 1,
+      },
+    });
+    return true;
+  };
+
+  const handleSelectionGptSaveToDictionary = async () => {
+    if (!initData) {
+      setSelectionGptSaveError(initDataMissingMsg);
+      return;
+    }
+    const selectedExamples = (Array.isArray(selectionGptData.examples) ? selectionGptData.examples : [])
+      .map((item, index) => ({ text: String(item || '').trim(), index }))
+      .filter((item) => Boolean(selectionGptSaveExamplesChecked[item.index]) && Boolean(item.text));
+    const shouldSaveOriginal = Boolean(selectionGptSaveOriginalChecked && normalizeSelectionText(selectionText));
+    if (!shouldSaveOriginal && selectedExamples.length === 0) {
+      setSelectionGptSaveError(tr('Выберите слово или минимум один пример.', 'Waehle ein Wort oder mindestens ein Beispiel.'));
+      setSelectionGptSaveMessage('');
+      return;
+    }
+    setSelectionGptSaveLoading(true);
+    setSelectionGptSaveError('');
+    setSelectionGptSaveMessage('');
+    let savedCount = 0;
+    const failedItems = [];
+    if (shouldSaveOriginal) {
+      try {
+        const saved = await saveSelectionGptOriginalWord(selectionText);
+        if (saved) savedCount += 1;
+      } catch (error) {
+        failedItems.push(tr(
+          `Оригинальное слово: ${String(error?.message || '').trim()}`,
+          `Originalwort: ${String(error?.message || '').trim()}`
+        ));
+      }
+    }
+    for (const item of selectedExamples) {
+      try {
+        const saved = await saveSelectionGptExample(item.text, item.index);
+        if (saved) savedCount += 1;
+      } catch (error) {
+        failedItems.push(tr(
+          `Пример ${item.index + 1}: ${String(error?.message || '').trim()}`,
+          `Beispiel ${item.index + 1}: ${String(error?.message || '').trim()}`
+        ));
+      }
+    }
+    if (savedCount > 0) {
+      const successMessage = tr(
+        `Добавлено в словарь: ${savedCount}`,
+        `Zum Woerterbuch hinzugefuegt: ${savedCount}`
+      );
+      setSelectionGptSaveMessage(successMessage);
+      showInlineToast(successMessage);
+    }
+    if (failedItems.length > 0) {
+      setSelectionGptSaveError(failedItems.join('\n'));
+    } else {
+      setSelectionGptSaveError('');
+    }
+    setSelectionGptSaveLoading(false);
   };
 
   const handleSelectionGptLookup = async () => {
@@ -8541,6 +8824,7 @@ function AppInner() {
     setSelectionGptOpen(true);
     setSelectionGptLoading(true);
     setSelectionGptError('');
+    resetSelectionGptSaveState();
     setSelectionGptData({ translation: '', notes: '', examples: [] });
     try {
       const quick = await requestQuickTranslation(cleaned);
@@ -8577,6 +8861,7 @@ function AppInner() {
     setSelectionGptOpen(false);
     setSelectionGptLoading(false);
     setSelectionGptError('');
+    resetSelectionGptSaveState();
   };
 
   function formatReaderTimer(seconds) {
@@ -17149,7 +17434,7 @@ function AppInner() {
                   position: 'fixed',
                   inset: 0,
                   zIndex: 180,
-                  background: 'rgba(2, 6, 23, 0.56)',
+                  background: isLightTheme ? 'rgba(96, 72, 44, 0.26)' : 'rgba(2, 6, 23, 0.56)',
                   display: 'flex',
                   alignItems: 'flex-end',
                   justifyContent: 'center',
@@ -17160,11 +17445,15 @@ function AppInner() {
                     width: 'min(100%, 760px)',
                     maxHeight: '82vh',
                     overflow: 'auto',
-                    background: 'rgba(10, 18, 36, 0.98)',
+                    background: isLightTheme ? 'rgba(253, 247, 236, 0.98)' : 'rgba(10, 18, 36, 0.98)',
                     borderTopLeftRadius: 16,
                     borderTopRightRadius: 16,
-                    border: '1px solid rgba(148, 163, 184, 0.35)',
-                    boxShadow: '0 -12px 34px rgba(2, 6, 23, 0.58)',
+                    border: isLightTheme
+                      ? '1px solid rgba(171, 139, 98, 0.34)'
+                      : '1px solid rgba(148, 163, 184, 0.35)',
+                    boxShadow: isLightTheme
+                      ? '0 -12px 34px rgba(105, 78, 47, 0.28)'
+                      : '0 -12px 34px rgba(2, 6, 23, 0.58)',
                     padding: '14px 14px 18px',
                     display: 'grid',
                     gap: 10,
@@ -17197,13 +17486,70 @@ function AppInner() {
                       <div className="webapp-selection-translation">
                         <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Примеры', 'Beispiele')}</div>
                         {Array.isArray(selectionGptData.examples) && selectionGptData.examples.length > 0 ? (
-                          <div style={{ display: 'grid', gap: 4 }}>
+                          <div style={{ display: 'grid', gap: 6 }}>
                             {selectionGptData.examples.map((item, index) => (
-                              <div key={`gpt-example-${index}`}>• {item}</div>
+                              <label key={`gpt-example-${index}`} className="webapp-gpt-save-option">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(selectionGptSaveExamplesChecked[index])}
+                                  onChange={(event) => {
+                                    const checked = event.target.checked;
+                                    setSelectionGptSaveExamplesChecked((prev) => ({
+                                      ...prev,
+                                      [index]: checked,
+                                    }));
+                                    setSelectionGptSaveError('');
+                                    setSelectionGptSaveMessage('');
+                                  }}
+                                />
+                                <span>{item}</span>
+                              </label>
                             ))}
                           </div>
                         ) : (
                           <div>—</div>
+                        )}
+                      </div>
+                      <div className="webapp-selection-translation webapp-gpt-save-block">
+                        <div style={{ fontWeight: 700, marginBottom: 6 }}>{tr('Сохранить в словарь', 'Im Woerterbuch speichern')}</div>
+                        <label className="webapp-gpt-save-option">
+                          <input
+                            type="checkbox"
+                            checked={selectionGptSaveOriginalChecked}
+                            onChange={(event) => {
+                              setSelectionGptSaveOriginalChecked(event.target.checked);
+                              setSelectionGptSaveError('');
+                              setSelectionGptSaveMessage('');
+                            }}
+                          />
+                          <span>
+                            {tr('Оригинальное слово (с артиклем, если это существительное)', 'Originalwort (mit Artikel, falls es ein Nomen ist)')}
+                          </span>
+                        </label>
+                        <div className="webapp-gpt-save-actions">
+                          <button
+                            type="button"
+                            className="secondary-button webapp-gpt-save-button"
+                            onClick={handleSelectionGptSaveToDictionary}
+                            disabled={selectionGptSaveLoading}
+                          >
+                            {selectionGptSaveLoading
+                              ? tr('Сохраняем...', 'Speichern...')
+                              : tr('Сохранить в словарь', 'Ins Woerterbuch speichern')}
+                          </button>
+                          <span className="webapp-muted" style={{ fontSize: 11 }}>
+                            {tr('Можно выбрать одно или несколько значений', 'Du kannst einen oder mehrere Eintraege waehlen')}
+                          </span>
+                        </div>
+                        {selectionGptSaveMessage && (
+                          <div className="webapp-gpt-save-status">
+                            {selectionGptSaveMessage}
+                          </div>
+                        )}
+                        {selectionGptSaveError && (
+                          <div className="webapp-gpt-save-status is-error">
+                            {selectionGptSaveError}
+                          </div>
                         )}
                       </div>
                     </>

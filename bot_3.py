@@ -28,7 +28,7 @@ import textwrap
 from googleapiclient.discovery import build
 from telegram.error import TelegramError
 from telegram.helpers import escape_markdown
-from telegram.error import TimedOut, BadRequest, RetryAfter
+from telegram.error import TimedOut, BadRequest, RetryAfter, Forbidden
 import tempfile
 import sys
 import livekit.api # Нужен для LiveKit комнат
@@ -1015,6 +1015,42 @@ def _request_access_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+_ACCESS_DENIED_TEXT = (
+    "⛔️ Доступ к боту закрыт.\n"
+    "Нажмите кнопку ниже для отправки запроса администратору."
+)
+
+
+def _is_group_chat_type(chat_type: str | None) -> bool:
+    normalized = str(chat_type or "").strip().lower()
+    return normalized in {"group", "supergroup"}
+
+
+def _open_private_chat_keyboard(bot_username: str | None) -> InlineKeyboardMarkup | None:
+    username = str(bot_username or "").strip().lstrip("@")
+    if not username:
+        return None
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("💬 Открыть личный чат", url=f"https://t.me/{username}?start=access")]]
+    )
+
+
+async def _send_access_denied_private(context: CallbackContext, user_id: int) -> bool:
+    try:
+        await context.bot.send_message(
+            chat_id=int(user_id),
+            text=_ACCESS_DENIED_TEXT,
+            reply_markup=_request_access_keyboard(),
+        )
+        return True
+    except (Forbidden, BadRequest) as exc:
+        logging.info("Не удалось отправить access-denied в личку user_id=%s: %s", user_id, exc)
+        return False
+    except TelegramError as exc:
+        logging.warning("Ошибка Telegram при отправке access-denied user_id=%s: %s", user_id, exc)
+        return False
+
+
 async def _send_pending_requests_to_admin(context: CallbackContext, chat_id: int, limit: int = 20) -> None:
     items = list_pending_access_requests(limit=limit)
     if not items:
@@ -1411,15 +1447,39 @@ async def enforce_user_access(update: Update, context: CallbackContext):
     if update.callback_query and (update.callback_query.data or "") == "access:request":
         return
 
-    if update.callback_query:
+    chat = update.effective_chat
+    is_group_chat = _is_group_chat_type(getattr(chat, "type", None))
+
+    if is_group_chat:
+        delivered_private = await _send_access_denied_private(context, int(user.id))
+        if update.callback_query:
+            try:
+                if delivered_private:
+                    await update.callback_query.answer(
+                        "Я отправил инструкцию в личные сообщения.",
+                        show_alert=True,
+                    )
+                else:
+                    await update.callback_query.answer(
+                        "Не могу написать в личку. Откройте бота в личке и нажмите /start.",
+                        show_alert=True,
+                    )
+            except Exception:
+                pass
+        elif message and not delivered_private:
+            await message.reply_text(
+                "ℹ️ Не могу написать вам в личные сообщения.\n"
+                "Откройте чат с ботом и нажмите /start, затем «📨 Запросить доступ».",
+                reply_markup=_open_private_chat_keyboard(getattr(context.bot, "username", None)),
+            )
+    elif update.callback_query:
         try:
             await update.callback_query.answer("Доступ закрыт. Ожидайте одобрения администратора.", show_alert=True)
         except Exception:
             pass
     elif message:
         await message.reply_text(
-            "⛔️ Доступ к боту закрыт.\n"
-            "Нажмите кнопку ниже для отправки запроса администратору.",
+            _ACCESS_DENIED_TEXT,
             reply_markup=_request_access_keyboard(),
         )
 
@@ -1443,9 +1503,27 @@ async def request_access(update: Update, context: CallbackContext):
 
     context.user_data["last_access_request_at"] = now_ts
     await _notify_admins_access_request(context, user)
-    await update.effective_message.reply_text(
-        f"📨 Запрос отправлен администратору.\nВаш ID: {user.id}\nОжидайте подтверждения."
-    )
+
+    chat = update.effective_chat
+    is_group_chat = _is_group_chat_type(getattr(chat, "type", None))
+    confirmation_text = f"📨 Запрос отправлен администратору.\nВаш ID: {user.id}\nОжидайте подтверждения."
+
+    if is_group_chat:
+        try:
+            await context.bot.send_message(chat_id=int(user.id), text=confirmation_text)
+        except (Forbidden, BadRequest):
+            await update.effective_message.reply_text(
+                "ℹ️ Я не могу написать вам в личку.\n"
+                "Откройте чат с ботом, нажмите /start и повторите запрос доступа.",
+                reply_markup=_open_private_chat_keyboard(getattr(context.bot, "username", None)),
+            )
+        except TelegramError as exc:
+            logging.warning("Ошибка Telegram при отправке подтверждения запроса user_id=%s: %s", user.id, exc)
+            await update.effective_message.reply_text(
+                "⚠️ Запрос отправлен администратору, но не удалось отправить подтверждение в личку."
+            )
+    else:
+        await update.effective_message.reply_text(confirmation_text)
 
 
 async def request_access_from_button(update: Update, context: CallbackContext):
@@ -1467,10 +1545,25 @@ async def request_access_from_button(update: Update, context: CallbackContext):
     context.user_data["last_access_request_at"] = now_ts
     await _notify_admins_access_request(context, user)
     await query.answer("Запрос отправлен администратору.", show_alert=True)
-    if query.message:
-        await query.message.reply_text(
-            "📨 Запрос отправлен администратору. Ожидайте подтверждения."
-        )
+
+    chat = query.message.chat if query.message else None
+    is_group_chat = _is_group_chat_type(getattr(chat, "type", None))
+    confirmation_text = "📨 Запрос отправлен администратору. Ожидайте подтверждения."
+
+    if is_group_chat:
+        try:
+            await context.bot.send_message(chat_id=int(user.id), text=confirmation_text)
+        except (Forbidden, BadRequest):
+            if query.message:
+                await query.message.reply_text(
+                    "ℹ️ Я не могу написать вам в личку.\n"
+                    "Откройте чат с ботом, нажмите /start и повторите запрос доступа.",
+                    reply_markup=_open_private_chat_keyboard(getattr(context.bot, "username", None)),
+                )
+        except TelegramError as exc:
+            logging.warning("Ошибка Telegram при отправке подтверждения из кнопки user_id=%s: %s", user.id, exc)
+    elif query.message:
+        await query.message.reply_text(confirmation_text)
 
 
 async def allow_user_command(update: Update, context: CallbackContext):
@@ -2223,8 +2316,19 @@ async def start(update: Update, context: CallbackContext):
     user = update.effective_user
     if user and not is_telegram_user_allowed(int(user.id)):
         await _notify_admins_access_request(context, user)
-        if update.effective_message:
-            await update.effective_message.reply_text(
+        message = update.effective_message
+        chat = update.effective_chat
+        is_group_chat = _is_group_chat_type(getattr(chat, "type", None))
+        if is_group_chat:
+            delivered_private = await _send_access_denied_private(context, int(user.id))
+            if message and not delivered_private:
+                await message.reply_text(
+                    "ℹ️ Не могу написать вам в личные сообщения.\n"
+                    "Откройте чат с ботом и нажмите /start, затем «📨 Запросить доступ».",
+                    reply_markup=_open_private_chat_keyboard(getattr(context.bot, "username", None)),
+                )
+        elif message:
+            await message.reply_text(
                 "⛔️ Доступ к боту пока не выдан.\n"
                 "Нажмите кнопку ниже или дождитесь подтверждения администратора.",
                 reply_markup=_request_access_keyboard(),
@@ -8250,10 +8354,11 @@ def _is_ru_de_quiz_entry(entry: dict | None) -> bool:
     return source_lang == "ru" and target_lang == "de"
 
 
-def _extract_german_word(entry: dict) -> str | None:
+def _extract_german_word(entry: dict, *, require_single_token: bool = False) -> str | None:
     response_json = _coerce_response_json(entry.get("response_json"))
     candidate = (
         (entry.get("translation_de") or "").strip()
+        or (entry.get("word_de") or "").strip()
         or (response_json.get("word_de") or "").strip()
         or (response_json.get("translation_de") or "").strip()
     )
@@ -8267,6 +8372,10 @@ def _extract_german_word(entry: dict) -> str | None:
     articles = {"der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer"}
     tokens = [t for t in tokens if t.lower() not in articles]
     if not tokens:
+        return None
+    if require_single_token and len(tokens) != 1:
+        return None
+    if require_single_token and tokens[0].lower() == "sich":
         return None
     if tokens[0].lower() == "sich" and len(tokens) > 1:
         return tokens[1]
@@ -8312,6 +8421,50 @@ _SEPARABLE_PREFIXES = (
     "zurück", "zurueck", "weiter", "weg", "fest",
     "ab", "an", "auf", "aus", "bei", "ein", "mit", "nach", "vor", "zu", "hin", "her", "los",
 )
+_ANAGRAM_EXCLUDED_WORDS = {
+    # explicit user-requested exclusions
+    "um", "mit", "für", "fuer", "der", "die", "das", "ein", "eine", "sich", "nicht", "auch", "schon",
+    # common function words/articles/prepositions/pronouns
+    "den", "dem", "des", "einen", "einem", "einer", "und", "oder", "aber", "doch", "nur", "sehr",
+    "etwas", "haben", "sein", "bin", "bist", "ist", "sind", "seid", "war", "waren", "gewesen",
+    "ich", "du", "er", "sie", "es", "wir", "ihr", "mich", "dich", "ihn", "ihm", "uns", "euch", "ihnen",
+    "zu", "in", "an", "auf", "bei", "für", "von", "nach", "aus", "über", "unter", "ohne", "durch",
+    "gegen", "bis", "ab", "seit", "vor", "hinter", "zwischen", "am", "im", "vom", "zum", "zur",
+}
+
+
+def _is_valid_anagram_target(raw_word: str) -> bool:
+    word = str(raw_word or "").strip()
+    if not word:
+        return False
+    if " " in word:
+        return False
+    if not re.fullmatch(r"[A-Za-zÄÖÜäöüß]+", word):
+        return False
+    normalized = word.lower()
+    if len(normalized) < 4:
+        return False
+    if normalized in _ANAGRAM_EXCLUDED_WORDS:
+        return False
+    return True
+
+
+def _is_valid_anagram_ru_hint(raw_hint: str) -> bool:
+    hint = str(raw_hint or "").strip()
+    if not hint:
+        return False
+    if len(hint) > 48:
+        return False
+    if "\n" in hint:
+        return False
+    if any(ch in hint for ch in [",", ";", "/", "(", ")", ":", ".", "!", "?", "\"", "«", "»"]):
+        return False
+    tokens = [token for token in hint.split() if token]
+    if len(tokens) != 1:
+        return False
+    if not re.fullmatch(r"[A-Za-zА-Яа-яЁё-]+", tokens[0]):
+        return False
+    return True
 
 
 def _letters_signature(value: str) -> str:
@@ -8480,15 +8633,18 @@ def _pick_anagram_distractors(correct_word: str, count: int = 3) -> list[str]:
 
 async def generate_anagram_quiz(entry: dict) -> dict | None:
     word_ru = (entry.get("word_ru") or "").strip()
-    if not word_ru:
+    if not _is_valid_anagram_ru_hint(word_ru):
+        # Keep prompt/answer aligned to one lexical unit only.
         return None
 
-    correct_word = _extract_german_word(entry)
+    correct_word = _extract_german_word(entry, require_single_token=True)
     if not correct_word:
+        return None
+    if not _is_valid_anagram_target(correct_word):
         return None
 
     correct_word = _to_letters_only_word(correct_word)
-    if len(correct_word) < 4:
+    if not _is_valid_anagram_target(correct_word):
         return None
 
     correct_scrambled = _scramble_word_preserve_ends(correct_word)
@@ -8512,8 +8668,8 @@ async def generate_anagram_quiz(entry: dict) -> dict | None:
     options = [_format_anagram_option(item) for item in options_raw]
 
     question = (
-        f"Выберите правильное немецкое слово для «{word_ru}».\n"
-        "Во всех вариантах первая и последняя буквы совпадают, а внутренние буквы перемешаны."
+        f"Какое немецкое слово соответствует подсказке «{word_ru}»?\n"
+        "Выберите правильный вариант: первая и последняя буквы сохранены, внутренние буквы перемешаны."
     )
     return {
         "question": question,
@@ -8565,14 +8721,12 @@ def _contains_latin_text(value: str) -> bool:
 def _normalize_word_order_example(
     sentence_raw: str,
     hint_raw: str,
-    fallback_hint_ru: str,
-) -> tuple[str | None, str]:
+) -> tuple[str | None, str | None]:
     sentence_text = str(sentence_raw or "").strip()
     hint_text = str(hint_raw or "").strip()
-    fallback_hint = str(fallback_hint_ru or "").strip()
 
     if not sentence_text:
-        return None, fallback_hint
+        return None, None
 
     sentence_has_cyr = _contains_cyrillic_text(sentence_text)
     hint_has_cyr = _contains_cyrillic_text(hint_text)
@@ -8587,10 +8741,11 @@ def _normalize_word_order_example(
         ru_hint = sentence_text
 
     if _contains_cyrillic_text(de_sentence) or not _contains_latin_text(de_sentence):
-        return None, (ru_hint or fallback_hint)
+        return None, None
 
+    # Keep only example-local RU hint; do not fallback to entry-level fields.
     if not ru_hint or not _contains_cyrillic_text(ru_hint):
-        ru_hint = fallback_hint
+        return None, None
 
     return de_sentence, ru_hint
 
@@ -8624,21 +8779,13 @@ async def generate_word_order_quiz(entry: dict) -> dict | None:
     if not usage_examples:
         return None
 
-    fallback_hint = str(
-        response_json.get("translation_ru")
-        or entry.get("translation_ru")
-        or entry.get("word_ru")
-        or response_json.get("word_ru")
-        or ""
-    ).strip()
-
     candidates = usage_examples[:]
     random.shuffle(candidates)
     for selected_example in candidates:
         sentence_raw = str(selected_example.get("sentence") or "").strip()
         hint_raw = str(selected_example.get("hint") or "").strip()
-        sentence, hint_text = _normalize_word_order_example(sentence_raw, hint_raw, fallback_hint)
-        if not sentence:
+        sentence, hint_text = _normalize_word_order_example(sentence_raw, hint_raw)
+        if not sentence or not hint_text:
             continue
 
         options = _build_word_order_options(sentence)
