@@ -1,0 +1,602 @@
+{
+  "summary": {
+    "model": "gpt-4.1-2025-04-14",
+    "item_count": 7,
+    "text_mode_avg_latency_ms": 2517.152166714368,
+    "structured_mode_avg_latency_ms": 3848.2683985712356,
+    "text_mode_total_latency_ms": 17620.065167000575,
+    "structured_mode_total_latency_ms": 26937.87878999865,
+    "avg_score_delta_structured_minus_text": 0.8571428571428571,
+    "avg_abs_score_delta": 3.7142857142857144,
+    "avg_category_jaccard": 0.48971861471861466,
+    "avg_subcategory_jaccard": 0.2227716727716728,
+    "exact_correct_translation_match_count": 2,
+    "text_missing_score_count": 0,
+    "text_non_numeric_score_count": 0,
+    "text_missing_correct_translation_count": 0,
+    "structured_missing_score_count": 0,
+    "structured_non_numeric_score_count": 0,
+    "structured_missing_correct_translation_count": 0,
+    "structured_validation_error_count": 0,
+    "text_avg_feedback_chars": 531.8571428571429,
+    "structured_avg_feedback_chars": 436.42857142857144
+  },
+  "cases": [
+    {
+      "case_id": "case-1",
+      "original_text": "Несмотря на то что комитет уже несколько месяцев обсуждает реформу системы образования, окончательное решение до сих пор откладывается из-за политических разногласий.",
+      "user_translation": "Obwohl das Komitee diskutiert schon mehrere Monate die Reform des Bildungssystems, die endgültige Entscheidung wird noch verschoben wegen politische Meinungsverschiedenheiten.",
+      "text_mode": {
+        "case_id": "case-1",
+        "feedback": "Score: 62/100\nMistake Categories: Word Order, Verbs, Cases, Adjectives, Prepositions, Clauses & Sentence Types, Punctuation\nSubcategories: Standard, Verb-Second Rule (V2), Verb Placement in Subordinate Clause, Conjugation, Incorrect Adjective Case Agreement, Case after Preposition, Incorrect Preposition Usage, Concessive Clauses (obwohl), Comma in Subordinate Clause\nCorrect Translation: Obwohl der Ausschuss die Reform des Bildungssystems bereits seit mehreren Monaten diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten weiterhin verschoben.",
+        "feedback_chars": 585,
+        "score": 62,
+        "score_str": "62",
+        "correct_translation": "Obwohl der Ausschuss die Reform des Bildungssystems bereits seit mehreren Monaten diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten weiterhin verschoben.",
+        "categories": [
+          "Cases",
+          "Clauses & Sentence Types",
+          "Prepositions",
+          "Punctuation",
+          "Adjectives",
+          "Word Order",
+          "Verbs"
+        ],
+        "subcategories": [
+          "Comma in Subordinate Clause",
+          "Incorrect Preposition Usage",
+          "Conjugation",
+          "Verb Placement in Subordinate Clause",
+          "Case after Preposition",
+          "Verb-Second Rule (V2)",
+          "Concessive Clauses (obwohl)",
+          "Standard",
+          "Incorrect Adjective Case Agreement"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 2658.2824159995653,
+        "validation_error": null
+      },
+      "structured_mode": {
+        "case_id": "case-1",
+        "feedback": "Die Subjunktion 'obwohl' verlangt die Endstellung des Verbs im Nebensatz. Die Reihenfolge 'diskutiert schon mehrere Monate' ist falsch, korrekt wäre 'schon seit mehreren Monaten diskutiert'. Im Passivsatz würde 'wird weiterhin verschoben' besser passen. Der Ausdruck 'wegen politische Meinungsverschiedenheiten' ist inkorrekt, da der Genitiv verlangt wird: 'wegen politischer Meinungsverschiedenheiten'. Auch 'das Komitee' ist möglich, stilistisch aber in amtlichem Kontext ist 'der Ausschuss' üblicher. Einige Adjektivendungen waren fehlerhaft.",
+        "feedback_chars": 545,
+        "score": 65,
+        "score_str": "65",
+        "correct_translation": "Trotz der Tatsache, dass der Ausschuss seit mehreren Monaten die Bildungsreform diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten weiterhin verschoben.",
+        "categories": [
+          "Conjunctions",
+          "Cases",
+          "Prepositions",
+          "Adjectives",
+          "Word Order",
+          "Nouns"
+        ],
+        "subcategories": [
+          "Declension Errors",
+          "Incorrect Preposition Usage",
+          "Endings",
+          "Case after Preposition",
+          "Verb-Second Rule (V2)",
+          "Concessive Clauses (obwohl)",
+          "Incorrect Order in Subordinate Clause"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 4011.071124998125,
+        "validation_error": null,
+        "usage": {
+          "task_name": "check_translation_structured_experiment",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 2417,
+          "completion_tokens": 246,
+          "total_tokens": 2663
+        },
+        "raw_text": "{\"score\":65,\"correct_translation\":\"Trotz der Tatsache, dass der Ausschuss seit mehreren Monaten die Bildungsreform diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten weiterhin verschoben.\",\"categories\":[\"Conjunctions\",\"Word Order\",\"Adjectives\",\"Prepositions\",\"Nouns\",\"Cases\"],\"subcategories\":[\"Concessive Clauses (obwohl)\",\"Verb-Second Rule (V2)\",\"Incorrect Order in Subordinate Clause\",\"Endings\",\"Incorrect Preposition Usage\",\"Declension Errors\",\"Case after Preposition\"],\"feedback\":\"Die Subjunktion 'obwohl' verlangt die Endstellung des Verbs im Nebensatz. Die Reihenfolge 'diskutiert schon mehrere Monate' ist falsch, korrekt wäre 'schon seit mehreren Monaten diskutiert'. Im Passivsatz würde 'wird weiterhin verschoben' besser passen. Der Ausdruck 'wegen politische Meinungsverschiedenheiten' ist inkorrekt, da der Genitiv verlangt wird: 'wegen politischer Meinungsverschiedenheiten'. Auch 'das Komitee' ist möglich, stilistisch aber in amtlichem Kontext ist 'der Ausschuss' üblicher. Einige Adjektivendungen waren fehlerhaft.\"}"
+      },
+      "diff": {
+        "score_delta": 3,
+        "abs_score_delta": 3,
+        "category_jaccard": 0.4444444444444444,
+        "subcategory_jaccard": 0.3333333333333333,
+        "correct_translation_equal": false,
+        "feedback_char_delta": -40
+      }
+    },
+    {
+      "case_id": "case-2",
+      "original_text": "Если бы руководство компании своевременно отреагировало на предупреждения аналитиков, финансовых потерь можно было бы избежать.",
+      "user_translation": "Wenn die Leitung der Firma hätte rechtzeitig reagiert auf die Warnungen der Analysten, man konnte vermeiden die finanziellen Verluste.",
+      "text_mode": {
+        "case_id": "case-2",
+        "feedback": "Score: 55/100\nMistake Categories: Word Order, Moods, Articles & Determiners, Cases, Prepositions, Clauses & Sentence Types, Infinitive & Participles\nSubcategories: Verb Placement in Subordinate Clause, Konjunktiv II, Definite Articles (der/die/das), Dative (Warnungen der Analysten), Incorrect Preposition Usage, Conditionals (wenn/falls), zu + Infinitive\nCorrect Translation: Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+        "feedback_chars": 518,
+        "score": 55,
+        "score_str": "55",
+        "correct_translation": "Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+        "categories": [
+          "Cases",
+          "Clauses & Sentence Types",
+          "Articles & Determiners",
+          "Prepositions",
+          "Infinitive & Participles",
+          "Word Order",
+          "Moods"
+        ],
+        "subcategories": [
+          "Incorrect Preposition Usage",
+          "zu + Infinitive",
+          "Verb Placement in Subordinate Clause",
+          "Conditionals (wenn/falls)",
+          "Definite Articles (der/die/das)"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 2629.087792000064,
+        "validation_error": null
+      },
+      "structured_mode": {
+        "case_id": "case-2",
+        "feedback": "Hauptfehler sind falsche Stellung der Hilfsverben, unidiomatische Verwendung von Modalverben mit Passiv, Fehler in Wortstellung und Konjunktiv II, fehlende Subjekt-Passiv-Struktur und falsche Artikel- sowie Nomenwahl ('Leitung der Firma', 'man konnte vermeiden die finanziellen Verluste').",
+        "feedback_chars": 289,
+        "score": 55,
+        "score_str": "55",
+        "correct_translation": "Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+        "categories": [
+          "Clauses & Sentence Types",
+          "Articles & Determiners",
+          "Voice (Active/Passive)",
+          "Word Order",
+          "Tenses",
+          "Nouns",
+          "Moods",
+          "Verbs"
+        ],
+        "subcategories": [
+          "Auxiliary Verbs (sein/haben/werden)",
+          "Verb Placement in Subordinate Clause",
+          "Incorrect Order with Modal Verb",
+          "Conditionals (wenn/falls)",
+          "Tense Choice (context mismatch)",
+          "Passive with Modal Verbs",
+          "Definite Articles (der/die/das)",
+          "Compound Nouns"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 4514.995000001363,
+        "validation_error": null,
+        "usage": {
+          "task_name": "check_translation_structured_experiment",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 2403,
+          "completion_tokens": 223,
+          "total_tokens": 2626
+        },
+        "raw_text": "{\"score\":55,\"correct_translation\":\"Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.\",\"categories\":[\"Verbs\",\"Voice (Active/Passive)\",\"Tenses\",\"Moods\",\"Word Order\",\"Nouns\",\"Articles & Determiners\",\"Clauses & Sentence Types\"],\"subcategories\":[\"Verb Placement in Subordinate Clause\",\"Auxiliary Verbs (sein/haben/werden)\",\"Passive with Modal Verbs\",\"Tense Choice (context mismatch)\",\"Konjunktiv II: würde-Form\",\"Conditionals (wenn/falls)\",\"Incorrect Order with Modal Verb\",\"Compound Nouns\",\"Definite Articles (der/die/das)\"],\"feedback\":\"Hauptfehler sind falsche Stellung der Hilfsverben, unidiomatische Verwendung von Modalverben mit Passiv, Fehler in Wortstellung und Konjunktiv II, fehlende Subjekt-Passiv-Struktur und falsche Artikel- sowie Nomenwahl ('Leitung der Firma', 'man konnte vermeiden die finanziellen Verluste').\"}"
+      },
+      "diff": {
+        "score_delta": 0,
+        "abs_score_delta": 0,
+        "category_jaccard": 0.36363636363636365,
+        "subcategory_jaccard": 0.3,
+        "correct_translation_equal": true,
+        "feedback_char_delta": -229
+      }
+    },
+    {
+      "case_id": "case-3",
+      "original_text": "Многие эксперты считают, что стремительное развитие искусственного интеллекта может радикально изменить структуру рынка труда в ближайшие десятилетия.",
+      "user_translation": "Viele Experten denken, dass die schnelle Entwicklung von künstliche Intelligenz kann radikal ändern die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten.",
+      "text_mode": {
+        "case_id": "case-3",
+        "feedback": "Score: 73/100\nMistake Categories: Articles & Determiners, Cases, Verbs, Word Order\nSubcategories: Definite Articles (der/die/das), Case Agreement in Noun Phrase, Verb Placement in Main Clause, Verb Placement in Subordinate Clause, Infinitive Form Errors\nCorrect Translation: Viele Experten sind der Meinung, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten radikal verändern könnte.",
+        "feedback_chars": 450,
+        "score": 73,
+        "score_str": "73",
+        "correct_translation": "Viele Experten sind der Meinung, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten radikal verändern könnte.",
+        "categories": [
+          "Cases",
+          "Verbs",
+          "Word Order",
+          "Articles & Determiners"
+        ],
+        "subcategories": [
+          "Infinitive Form Errors",
+          "Verb Placement in Subordinate Clause",
+          "Case Agreement in Noun Phrase",
+          "Verb Placement in Main Clause",
+          "Definite Articles (der/die/das)"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 2624.7285419995023,
+        "validation_error": null
+      },
+      "structured_mode": {
+        "case_id": "case-3",
+        "feedback": "Mehrfaches Fehler: 'von künstliche Intelligenz' sollte im Genitiv stehen: 'der künstlichen Intelligenz'. Die Wortstellung im Nebensatz ist falsch; das Modalverb 'kann' steht nicht am Ende. 'schnelle' sollte 'rasante' sein und korrekt dekliniert werden. Es fehlt die Konjunktivform 'könnte', was dem hypothetischen Charakter im Russischen entspricht. Das Subjekt 'Entwicklung der künstlichen Intelligenz' erfordert Genitiv. 'in den nächsten Jahrzehnten' ist korrekt, die Adjektivendungen müssen aber übereinstimmen.",
+        "feedback_chars": 514,
+        "score": 65,
+        "score_str": "65",
+        "correct_translation": "Viele Experten sind der Meinung, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den kommenden Jahrzehnten radikal verändern könnte.",
+        "categories": [
+          "Cases",
+          "Adjectives",
+          "Word Order",
+          "Nouns",
+          "Verbs"
+        ],
+        "subcategories": [
+          "Conjugation",
+          "Noun Capitalization",
+          "Verb Placement in Subordinate Clause",
+          "Case Agreement in Noun Phrase",
+          "Incorrect Adjective Case Agreement",
+          "Compound Nouns"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 3643.164582997997,
+        "validation_error": null,
+        "usage": {
+          "task_name": "check_translation_structured_experiment",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 2411,
+          "completion_tokens": 231,
+          "total_tokens": 2642,
+          "cached_prompt_tokens": 1024
+        },
+        "raw_text": "{\"score\":65,\"correct_translation\":\"Viele Experten sind der Meinung, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den kommenden Jahrzehnten radikal verändern könnte.\",\"categories\":[\"Nouns\",\"Adjectives\",\"Verbs\",\"Cases\",\"Word Order\"],\"subcategories\":[\"Noun Capitalization\",\"Compound Nouns\",\"Incorrect Adjective Case Agreement\",\"Conjugation\",\"Verb Placement in Subordinate Clause\",\"Case Agreement in Noun Phrase\"],\"feedback\":\"Mehrfaches Fehler: 'von künstliche Intelligenz' sollte im Genitiv stehen: 'der künstlichen Intelligenz'. Die Wortstellung im Nebensatz ist falsch; das Modalverb 'kann' steht nicht am Ende. 'schnelle' sollte 'rasante' sein und korrekt dekliniert werden. Es fehlt die Konjunktivform 'könnte', was dem hypothetischen Charakter im Russischen entspricht. Das Subjekt 'Entwicklung der künstlichen Intelligenz' erfordert Genitiv. 'in den nächsten Jahrzehnten' ist korrekt, die Adjektivendungen müssen aber übereinstimmen.\"}"
+      },
+      "diff": {
+        "score_delta": -8,
+        "abs_score_delta": 8,
+        "category_jaccard": 0.5,
+        "subcategory_jaccard": 0.2222222222222222,
+        "correct_translation_equal": false,
+        "feedback_char_delta": 64
+      }
+    },
+    {
+      "case_id": "case-4",
+      "original_text": "Хотя исследование ещё не завершено, предварительные результаты уже вызывают серьёзные дискуссии в научном сообществе.",
+      "user_translation": "Obwohl die Forschung ist noch nicht beendet, die vorläufige Ergebnisse verursachen schon ernsthafte Diskussionen im wissenschaftlichen Gemeinschaft.",
+      "text_mode": {
+        "case_id": "case-4",
+        "feedback": "Score: 54/100\nMistake Categories: Word Order, Articles & Determiners, Cases, Nouns, Verbs, Prepositions, Orthography & Spelling\nSubcategories: Verb-Second Rule (V2), Article Omission/Redundancy, Case after Preposition, Noun Capitalization, Conjugation, Incorrect Preposition Usage, Capitalization\nCorrect Translation: Obwohl die Untersuchung noch nicht abgeschlossen ist, rufen die vorläufigen Ergebnisse bereits ernste Diskussionen in der wissenschaftlichen Gemeinschaft hervor.",
+        "feedback_chars": 479,
+        "score": 54,
+        "score_str": "54",
+        "correct_translation": "Obwohl die Untersuchung noch nicht abgeschlossen ist, rufen die vorläufigen Ergebnisse bereits ernste Diskussionen in der wissenschaftlichen Gemeinschaft hervor.",
+        "categories": [
+          "Cases",
+          "Articles & Determiners",
+          "Prepositions",
+          "Word Order",
+          "Nouns",
+          "Orthography & Spelling",
+          "Verbs"
+        ],
+        "subcategories": [
+          "Article Omission/Redundancy",
+          "Incorrect Preposition Usage",
+          "Conjugation",
+          "Noun Capitalization",
+          "Capitalization",
+          "Case after Preposition",
+          "Verb-Second Rule (V2)"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 1829.923625002266,
+        "validation_error": null
+      },
+      "structured_mode": {
+        "case_id": "case-4",
+        "feedback": "Fehler bei der Wortstellung im Nebensatz ('Obwohl die Forschung ist noch nicht beendet' statt korrekt 'Obwohl die Forschung noch nicht beendet ist'), Artikel und Kasus-Fehler bei 'die vorläufige Ergebnisse' (richtig: 'die vorläufigen Ergebnisse'), fehlende Endung bei 'wissenschaftlichen Gemeinschaft', außerdem sollte 'beendet' besser 'abgeschlossen' heißen. Im Deutschen beginnt 'Gemeinschaft' mit Großbuchstaben. Zudem sollte das Verb 'auslösen' bzw. 'lösen ... aus' verwendet werden.",
+        "feedback_chars": 487,
+        "score": 55,
+        "score_str": "55",
+        "correct_translation": "Obwohl die Forschung noch nicht abgeschlossen ist, lösen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft aus.",
+        "categories": [
+          "Articles & Determiners",
+          "Adjectives",
+          "Word Order",
+          "Nouns",
+          "Orthography & Spelling",
+          "Verbs"
+        ],
+        "subcategories": [
+          "Declension Errors",
+          "Incorrect Adjective Case Agreement",
+          "Conjugation",
+          "Noun Capitalization",
+          "Capitalization",
+          "Verb Placement in Main Clause",
+          "Definite Articles (der/die/das)",
+          "Incorrect Order in Subordinate Clause"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 3432.7495409997937,
+        "validation_error": null,
+        "usage": {
+          "task_name": "check_translation_structured_experiment",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 2405,
+          "completion_tokens": 226,
+          "total_tokens": 2631,
+          "cached_prompt_tokens": 1024
+        },
+        "raw_text": "{\"score\":55,\"correct_translation\":\"Obwohl die Forschung noch nicht abgeschlossen ist, lösen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft aus.\",\"categories\":[\"Word Order\",\"Verbs\",\"Nouns\",\"Articles & Determiners\",\"Adjectives\",\"Orthography & Spelling\"],\"subcategories\":[\"Incorrect Order in Subordinate Clause\",\"Verb Placement in Main Clause\",\"Conjugation\",\"Declension Errors\",\"Noun Capitalization\",\"Definite Articles (der/die/das)\",\"Incorrect Adjective Case Agreement\",\"Capitalization\"],\"feedback\":\"Fehler bei der Wortstellung im Nebensatz ('Obwohl die Forschung ist noch nicht beendet' statt korrekt 'Obwohl die Forschung noch nicht beendet ist'), Artikel und Kasus-Fehler bei 'die vorläufige Ergebnisse' (richtig: 'die vorläufigen Ergebnisse'), fehlende Endung bei 'wissenschaftlichen Gemeinschaft', außerdem sollte 'beendet' besser 'abgeschlossen' heißen. Im Deutschen beginnt 'Gemeinschaft' mit Großbuchstaben. Zudem sollte das Verb 'auslösen' bzw. 'lösen ... aus' verwendet werden.\"}"
+      },
+      "diff": {
+        "score_delta": 1,
+        "abs_score_delta": 1,
+        "category_jaccard": 0.625,
+        "subcategory_jaccard": 0.25,
+        "correct_translation_equal": false,
+        "feedback_char_delta": 8
+      }
+    },
+    {
+      "case_id": "case-5",
+      "original_text": "Он утверждает, что принял это решение исключительно из профессиональных соображений, хотя многие подозревают наличие скрытых мотивов.",
+      "user_translation": "Er behauptet, dass er hat diese Entscheidung nur aus professionelle Gründe genommen, obwohl viele vermuten dass es gibt versteckte Motive.",
+      "text_mode": {
+        "case_id": "case-5",
+        "feedback": "Score: 52/100\nMistake Categories: Verbs, Adjectives, Word Order, Conjunctions, Pronouns, Articles & Determiners, Cases, Punctuation\nSubcategories: Verb Placement in Main Clause, Verb Placement in Subordinate Clause, Conjugation, Incorrect Adjective Case Agreement, Adjective Placement, Standard Word Order, Verb-Second Rule (V2), Subordinating (dass/obwohl), Personal Pronouns, Definite Articles, Indefinite Articles, Nominative, Accusative, Comma in Subordinate Clause\nCorrect Translation: Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen habe, obwohl viele den Verdacht haben, dass es versteckte Motive gibt.",
+        "feedback_chars": 651,
+        "score": 52,
+        "score_str": "52",
+        "correct_translation": "Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen habe, obwohl viele den Verdacht haben, dass es versteckte Motive gibt.",
+        "categories": [
+          "Conjunctions",
+          "Cases",
+          "Pronouns",
+          "Articles & Determiners",
+          "Punctuation",
+          "Adjectives",
+          "Word Order",
+          "Verbs"
+        ],
+        "subcategories": [
+          "Adjective Placement",
+          "Comma in Subordinate Clause",
+          "Accusative",
+          "Nominative",
+          "Conjugation",
+          "Verb Placement in Subordinate Clause",
+          "Verb Placement in Main Clause",
+          "Verb-Second Rule (V2)",
+          "Personal Pronouns",
+          "Incorrect Adjective Case Agreement"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 2945.464542000991,
+        "validation_error": null
+      },
+      "structured_mode": {
+        "case_id": "case-5",
+        "feedback": "Fehler bei der Verbstellung im Nebensatz (\"dass er hat diese Entscheidung genommen\" statt \"dass er diese Entscheidung ... getroffen habe\"), falscher Adjektivendung (\"aus professionelle Gründe\" statt \"aus beruflichen Gründen\"), Partizip II von \"nehmen\" für Entscheidung ist \"getroffen\", nicht \"genommen\". Präposition \"aus professionelle Gründe\" ist grammatikalisch falsch und muss Dativ sein. Umlaut bei \"Gründe\" und \"Motive\" fehlt. \"nur\" ist nicht gleichbedeutend wie \"ausschließlich\". Das zweite \"dass es gibt\" ist unnötig umständlich – besser: \"obwohl viele ein verstecktes Motiv vermuten\".",
+        "feedback_chars": 592,
+        "score": 55,
+        "score_str": "55",
+        "correct_translation": "Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen habe, obwohl viele ein verstecktes Motiv vermuten.",
+        "categories": [
+          "Clauses & Sentence Types",
+          "Prepositions",
+          "Adjectives",
+          "Word Order",
+          "Orthography & Spelling",
+          "Verbs"
+        ],
+        "subcategories": [
+          "Comma in Subordinate Clause",
+          "Umlauts (ä/ö/ü)",
+          "Incorrect Preposition Usage",
+          "Partizip II",
+          "Verb Placement in Subordinate Clause",
+          "Endings",
+          "Standard",
+          "Incorrect Adjective Case Agreement"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 5317.854666001949,
+        "validation_error": null,
+        "usage": {
+          "task_name": "check_translation_structured_experiment",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 2405,
+          "completion_tokens": 266,
+          "total_tokens": 2671,
+          "cached_prompt_tokens": 1024
+        },
+        "raw_text": "{\"score\":55,\"correct_translation\":\"Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen habe, obwohl viele ein verstecktes Motiv vermuten.\",\"categories\":[\"Verbs\",\"Adjectives\",\"Word Order\",\"Prepositions\",\"Clauses & Sentence Types\",\"Orthography & Spelling\"],\"subcategories\":[\"Verb Placement in Subordinate Clause\",\"Partizip II\",\"Incorrect Adjective Case Agreement\",\"Endings\",\"Incorrect Preposition Usage\",\"Standard\",\"Comma in Subordinate Clause\",\"Umlauts (ä/ö/ü)\"],\"feedback\":\"Fehler bei der Verbstellung im Nebensatz (\\\"dass er hat diese Entscheidung genommen\\\" statt \\\"dass er diese Entscheidung ... getroffen habe\\\"), falscher Adjektivendung (\\\"aus professionelle Gründe\\\" statt \\\"aus beruflichen Gründen\\\"), Partizip II von \\\"nehmen\\\" für Entscheidung ist \\\"getroffen\\\", nicht \\\"genommen\\\". Präposition \\\"aus professionelle Gründe\\\" ist grammatikalisch falsch und muss Dativ sein. Umlaut bei \\\"Gründe\\\" und \\\"Motive\\\" fehlt. \\\"nur\\\" ist nicht gleichbedeutend wie \\\"ausschließlich\\\". Das zweite \\\"dass es gibt\\\" ist unnötig umständlich – besser: \\\"obwohl viele ein verstecktes Motiv vermuten\\\".\"}"
+      },
+      "diff": {
+        "score_delta": 3,
+        "abs_score_delta": 3,
+        "category_jaccard": 0.2727272727272727,
+        "subcategory_jaccard": 0.2,
+        "correct_translation_equal": false,
+        "feedback_char_delta": -59
+      }
+    },
+    {
+      "case_id": "case-6",
+      "original_text": "Даже если предложенная стратегия кажется на первый взгляд убедительной, её долгосрочные последствия могут оказаться гораздо более сложными.",
+      "user_translation": "Auch wenn die vorgeschlagene Strategie scheint auf den ersten Blick überzeugend, ihre langfristige Folgen können viel komplizierter sein.",
+      "text_mode": {
+        "case_id": "case-6",
+        "feedback": "Score: 67/100\nMistake Categories: Word Order, Articles & Determiners, Nouns, Cases, Verbs, Adjectives\nSubcategories: Verb-Second Rule (V2), Definite Articles (der/die/das), Pluralization, Nominative, Conjugation, Incorrect Adjective Case Agreement\nCorrect Translation: Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen weitaus komplexer sein.",
+        "feedback_chars": 409,
+        "score": 67,
+        "score_str": "67",
+        "correct_translation": "Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen weitaus komplexer sein.",
+        "categories": [
+          "Cases",
+          "Articles & Determiners",
+          "Adjectives",
+          "Word Order",
+          "Nouns",
+          "Verbs"
+        ],
+        "subcategories": [
+          "Nominative",
+          "Incorrect Adjective Case Agreement",
+          "Conjugation",
+          "Verb-Second Rule (V2)",
+          "Pluralization",
+          "Definite Articles (der/die/das)"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 2423.438374997204,
+        "validation_error": null
+      },
+      "structured_mode": {
+        "case_id": "case-6",
+        "feedback": "Das finite Verb muss am Ende des Nebensatzes stehen (erscheint). 'Langfristige Folgen' benötigt den Plural. Das Adjektiv 'langfristige' erfordert Deklinationsendung. Auch 'können ... sein' muss im Deutschen als 'könnten ... sein' (Konjunktiv, Möglichkeit) verwendet werden. 'Viel' sollte als 'wesentlich' oder 'deutlich' übersetzt werden, um den Sinn besser zu treffen.",
+        "feedback_chars": 369,
+        "score": 65,
+        "score_str": "65",
+        "correct_translation": "Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen wesentlich komplexer sein.",
+        "categories": [
+          "Word Order",
+          "Verbs",
+          "Nouns",
+          "Adjectives"
+        ],
+        "subcategories": [
+          "Verb Placement in Subordinate Clause",
+          "Endings",
+          "Verb Placement in Main Clause",
+          "Pluralization",
+          "Incorrect Order in Subordinate Clause"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 2696.077125001466,
+        "validation_error": null,
+        "usage": {
+          "task_name": "check_translation_structured_experiment",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 2402,
+          "completion_tokens": 182,
+          "total_tokens": 2584,
+          "cached_prompt_tokens": 1024
+        },
+        "raw_text": "{\"score\":65,\"correct_translation\":\"Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen wesentlich komplexer sein.\",\"categories\":[\"Verbs\",\"Word Order\",\"Nouns\",\"Adjectives\"],\"subcategories\":[\"Verb Placement in Subordinate Clause\",\"Verb Placement in Main Clause\",\"Pluralization\",\"Endings\",\"Incorrect Order in Subordinate Clause\"],\"feedback\":\"Das finite Verb muss am Ende des Nebensatzes stehen (erscheint). 'Langfristige Folgen' benötigt den Plural. Das Adjektiv 'langfristige' erfordert Deklinationsendung. Auch 'können ... sein' muss im Deutschen als 'könnten ... sein' (Konjunktiv, Möglichkeit) verwendet werden. 'Viel' sollte als 'wesentlich' oder 'deutlich' übersetzt werden, um den Sinn besser zu treffen.\"}"
+      },
+      "diff": {
+        "score_delta": -2,
+        "abs_score_delta": 2,
+        "category_jaccard": 0.6666666666666666,
+        "subcategory_jaccard": 0.1,
+        "correct_translation_equal": false,
+        "feedback_char_delta": -40
+      }
+    },
+    {
+      "case_id": "case-7",
+      "original_text": "Трудно отрицать, что глобализация принесла значительные экономические преимущества, однако она также усилила социальное неравенство во многих странах.",
+      "user_translation": "Es ist schwer zu leugnen, dass Globalisierung hat gebracht bedeutende wirtschaftliche Vorteile, aber sie hat auch stärker gemacht die soziale Ungleichheit in viele Länder.",
+      "text_mode": {
+        "case_id": "case-7",
+        "feedback": "Score: 51/100\nMistake Categories: Word Order, Cases, Prepositions, Adjectives, Nouns, Clauses & Sentence Types, Articles & Determiners, Orthography & Spelling\nSubcategories: Verb-Second Rule (V2), Accusative Prepositions, Incorrect Order in Subordinate Clause, Article Omission/Redundancy, Case Agreement in Noun Phrase, Noun Capitalization, Declension Errors, Main vs Subordinate Clause, Punctuation, Incorrect Adjective Case Agreement\nCorrect Translation: Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+        "feedback_chars": 631,
+        "score": 51,
+        "score_str": "51",
+        "correct_translation": "Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+        "categories": [
+          "Cases",
+          "Clauses & Sentence Types",
+          "Articles & Determiners",
+          "Prepositions",
+          "Adjectives",
+          "Word Order",
+          "Nouns",
+          "Orthography & Spelling"
+        ],
+        "subcategories": [
+          "Accusative Prepositions",
+          "Article Omission/Redundancy",
+          "Declension Errors",
+          "Main vs Subordinate Clause",
+          "Noun Capitalization",
+          "Case Agreement in Noun Phrase",
+          "Verb-Second Rule (V2)",
+          "Incorrect Adjective Case Agreement",
+          "Incorrect Order in Subordinate Clause"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 2509.139875000983,
+        "validation_error": null
+      },
+      "structured_mode": {
+        "case_id": "case-7",
+        "feedback": "Article ‘die’ for ‘Globalisierung’ is missing, word order errors with ‘hat gebracht’, ‘verstärkt’ not ‘stärker gemacht’, ‘in viele Länder’ requires Dativ Plural ‘in vielen Ländern’, participle placement incorrect, and 'jedoch' is more formal here than 'aber'.",
+        "feedback_chars": 259,
+        "score": 60,
+        "score_str": "60",
+        "correct_translation": "Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+        "categories": [
+          "Cases",
+          "Articles & Determiners",
+          "Prepositions",
+          "Adjectives",
+          "Word Order",
+          "Verbs"
+        ],
+        "subcategories": [
+          "Incorrect Preposition Usage",
+          "Incorrect Adjective Case Agreement",
+          "Placement of Participle (Perfekt/Passive)",
+          "Case after Preposition",
+          "Verb-Second Rule (V2)",
+          "Definite Articles (der/die/das)"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 3321.966749997955,
+        "validation_error": null,
+        "usage": {
+          "task_name": "check_translation_structured_experiment",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 2417,
+          "completion_tokens": 225,
+          "total_tokens": 2642
+        },
+        "raw_text": "{\n  \"score\": 60,\n  \"correct_translation\": \"Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.\",\n  \"categories\": [\n    \"Articles & Determiners\",\n    \"Cases\",\n    \"Word Order\",\n    \"Verbs\",\n    \"Adjectives\",\n    \"Prepositions\"\n  ],\n  \"subcategories\": [\n    \"Definite Articles (der/die/das)\",\n    \"Case after Preposition\",\n    \"Verb-Second Rule (V2)\",\n    \"Placement of Participle (Perfekt/Passive)\",\n    \"Incorrect Adjective Case Agreement\",\n    \"Incorrect Preposition Usage\"\n  ],\n  \"feedback\": \"Article ‘die’ for ‘Globalisierung’ is missing, word order errors with ‘hat gebracht’, ‘verstärkt’ not ‘stärker gemacht’, ‘in viele Länder’ requires Dativ Plural ‘in vielen Ländern’, participle placement incorrect, and 'jedoch' is more formal here than 'aber'.\"\n}"
+      },
+      "diff": {
+        "score_delta": 9,
+        "abs_score_delta": 9,
+        "category_jaccard": 0.5555555555555556,
+        "subcategory_jaccard": 0.15384615384615385,
+        "correct_translation_equal": true,
+        "feedback_char_delta": -372
+      }
+    }
+  ]
+}

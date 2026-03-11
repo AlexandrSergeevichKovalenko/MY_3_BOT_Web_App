@@ -1,0 +1,966 @@
+{
+  "summary": {
+    "model": "gpt-4.1-2025-04-14",
+    "item_count": 7,
+    "batch_size": 2,
+    "batch_call_count": 4,
+    "single_item_avg_latency_ms": 4037.5960178571404,
+    "single_item_total_latency_ms": 28263.172124999983,
+    "batch_call_avg_latency_ms": 7856.463020750198,
+    "batch_total_latency_ms": 31425.85208300079,
+    "batch_item_equivalent_avg_latency_ms": 4489.407440428685,
+    "avg_score_delta_batch_minus_single": -10.857142857142858,
+    "avg_abs_score_delta": 13.142857142857142,
+    "avg_category_jaccard": 0.5238095238095238,
+    "avg_subcategory_jaccard": 0.14143990929705216,
+    "exact_correct_translation_match_count": 2,
+    "single_missing_score_count": 0,
+    "single_non_numeric_score_count": 0,
+    "single_missing_correct_translation_count": 0,
+    "batch_missing_score_count": 0,
+    "batch_non_numeric_score_count": 0,
+    "batch_missing_correct_translation_count": 0,
+    "batch_malformed_count": 0,
+    "per_item_validation_failure_count": 0,
+    "items_requiring_fallback_count": 0
+  },
+  "batch_runs": [
+    {
+      "items": [
+        {
+          "case_id": "case-1",
+          "source_lang": "ru",
+          "target_lang": "de",
+          "feedback": "Falsche Wortstellung/Verbzweitregel bei Hauptsatz, 'wegen' verlangt Genitiv 'politischer Meinungsverschiedenheiten', fehlende 'des' bei 'Reform des Bildungssystems', 'entscheidende Entscheidung' statt 'die endgültige Entscheidung', Satzstruktur entspricht nicht deutschem Standard.",
+          "feedback_chars": 281,
+          "score": 60,
+          "score_str": "60",
+          "correct_translation": "Obwohl der Ausschuss die Reform des Bildungssystems bereits seit mehreren Monaten diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten immer noch aufgeschoben.",
+          "categories": [
+            "Word Order",
+            "Cases",
+            "Adjectives",
+            "Clauses & Sentence Types",
+            "Prepositions"
+          ],
+          "subcategories": [
+            "Standard",
+            "Genitive",
+            "Incorrect Adjective Case Agreement",
+            "Subordinating (weil/dass/ob/wenn...)",
+            "Incorrect Preposition Usage"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": null,
+          "usage": {},
+          "gateway": "responses",
+          "usage_model": null,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "total_tokens": null,
+          "validation_error": null
+        },
+        {
+          "case_id": "case-2",
+          "source_lang": "ru",
+          "target_lang": "de",
+          "feedback": "'Hätte reagiert' Konstruktion falsch platziert, Satzstellung fehlerhaft für Konditional, 'man konnte vermeiden' ist kein korrektes Passiv, 'finanzielle Verluste' muss Objekt im Akkusativ, Satz klingt unidiomatisch.",
+          "feedback_chars": 214,
+          "score": 50,
+          "score_str": "50",
+          "correct_translation": "Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+          "categories": [
+            "Verbs",
+            "Word Order",
+            "Cases",
+            "Nouns",
+            "Clauses & Sentence Types"
+          ],
+          "subcategories": [
+            "Verb Placement in Subordinate Clause",
+            "Standard",
+            "Accusative",
+            "Declension Errors",
+            "Conditionals (wenn/falls)"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": null,
+          "usage": {},
+          "gateway": "responses",
+          "usage_model": null,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "total_tokens": null,
+          "validation_error": null
+        }
+      ],
+      "batch_duration_ms": 7152.798125000118,
+      "usage": {
+        "task_name": "translation_check_batch_experiment",
+        "model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1455,
+        "completion_tokens": 405,
+        "total_tokens": 1860,
+        "gateway": "responses"
+      },
+      "malformed": false,
+      "malformed_reason": null,
+      "validation_failures": [],
+      "raw_text": "{\n  \"items\": [\n    {\n      \"batch_item_id\": \"batch-0-case-1\",\n      \"item_order\": 0,\n      \"score\": 60,\n      \"correct_translation\": \"Obwohl der Ausschuss die Reform des Bildungssystems bereits seit mehreren Monaten diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten immer noch aufgeschoben.\",\n      \"categories\": [\"Word Order\", \"Cases\", \"Adjectives\", \"Clauses & Sentence Types\", \"Prepositions\"],\n      \"subcategories\": [\"Standard\", \"Genitive\", \"Incorrect Adjective Case Agreement\", \"Subordinating (weil/dass/ob/wenn...)\", \"Incorrect Preposition Usage\"],\n      \"feedback\": \"Falsche Wortstellung/Verbzweitregel bei Hauptsatz, 'wegen' verlangt Genitiv 'politischer Meinungsverschiedenheiten', fehlende 'des' bei 'Reform des Bildungssystems', 'entscheidende Entscheidung' statt 'die endgültige Entscheidung', Satzstruktur entspricht nicht deutschem Standard.\"\n    },\n    {\n      \"batch_item_id\": \"batch-1-case-2\",\n      \"item_order\": 1,\n      \"score\": 50,\n      \"correct_translation\": \"Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.\",\n      \"categories\": [\"Verbs\", \"Word Order\", \"Cases\", \"Nouns\", \"Clauses & Sentence Types\"],\n      \"subcategories\": [\"Verb Placement in Subordinate Clause\", \"Standard\", \"Accusative\", \"Declension Errors\", \"Conditionals (wenn/falls)\"],\n      \"feedback\": \"'Hätte reagiert' Konstruktion falsch platziert, Satzstellung fehlerhaft für Konditional, 'man konnte vermeiden' ist kein korrektes Passiv, 'finanzielle Verluste' muss Objekt im Akkusativ, Satz klingt unidiomatisch.\"\n    }\n  ]\n}"
+    },
+    {
+      "items": [
+        {
+          "case_id": "case-3",
+          "source_lang": "ru",
+          "target_lang": "de",
+          "feedback": "Fehler: 'künstliche Intelligenz' muss im Dativ/Genitiv stehen (Entwicklung der künstlichen Intelligenz), falsche Verbstellung in der Nebensatz ('kann radikal ändern' statt 'radikal verändern kann'), fehlender Konjunktiv (könnte), Nomen müssen großgeschrieben werden. Artikel fehlen/falsch ('die Struktur des Arbeitsmarktes').",
+          "feedback_chars": 325,
+          "score": 45,
+          "score_str": "45",
+          "correct_translation": "Viele Experten sind der Meinung, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten radikal verändern könnte.",
+          "categories": [
+            "Nouns",
+            "Articles & Determiners",
+            "Cases",
+            "Word Order",
+            "Verbs",
+            "Tenses"
+          ],
+          "subcategories": [],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": null,
+          "usage": {},
+          "gateway": "responses",
+          "usage_model": null,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "total_tokens": null,
+          "validation_error": null
+        },
+        {
+          "case_id": "case-4",
+          "source_lang": "ru",
+          "target_lang": "de",
+          "feedback": "'Vorläufige Ergebnisse' benötigt richtigen Artikel und Pluralendung, falsche Wortstellung im Nebensatz, 'Gemeinschaft' falsch dekliniert (in der wissenschaftlichen Gemeinschaft), Verben am Satzende im Nebensatz, Formulierung unidiomatisch, Nomen großschreiben.",
+          "feedback_chars": 260,
+          "score": 40,
+          "score_str": "40",
+          "correct_translation": "Obwohl die Forschung noch nicht abgeschlossen ist, lösen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft aus.",
+          "categories": [
+            "Word Order",
+            "Nouns",
+            "Articles & Determiners",
+            "Verbs",
+            "Cases",
+            "Tenses"
+          ],
+          "subcategories": [],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": null,
+          "usage": {},
+          "gateway": "responses",
+          "usage_model": null,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "total_tokens": null,
+          "validation_error": null
+        }
+      ],
+      "batch_duration_ms": 8644.087374999799,
+      "usage": {
+        "task_name": "translation_check_batch_experiment",
+        "model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1451,
+        "completion_tokens": 498,
+        "total_tokens": 1949,
+        "gateway": "responses"
+      },
+      "malformed": false,
+      "malformed_reason": null,
+      "validation_failures": [],
+      "raw_text": "{\n  \"items\": [\n    {\n      \"batch_item_id\": \"batch-0-case-3\",\n      \"item_order\": 0,\n      \"score\": 45,\n      \"correct_translation\": \"Viele Experten sind der Meinung, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten radikal verändern könnte.\",\n      \"categories\": [\"Nouns\", \"Articles & Determiners\", \"Cases\", \"Word Order\", \"Verbs\", \"Tenses\"],\n      \"subcategories\": [\"Nouns: Noun Capitalization\", \"Articles & Determiners: Definite Articles (der/die/das)\", \"Cases: Genitive\", \"Word Order: Verb-Second Rule (V2)\", \"Verbs: Infinitive Form Errors\", \"Tenses: Tense Choice (context mismatch)\"],\n      \"feedback\": \"Fehler: 'künstliche Intelligenz' muss im Dativ/Genitiv stehen (Entwicklung der künstlichen Intelligenz), falsche Verbstellung in der Nebensatz ('kann radikal ändern' statt 'radikal verändern kann'), fehlender Konjunktiv (könnte), Nomen müssen großgeschrieben werden. Artikel fehlen/falsch ('die Struktur des Arbeitsmarktes').\"\n    },\n    {\n      \"batch_item_id\": \"batch-1-case-4\",\n      \"item_order\": 1,\n      \"score\": 40,\n      \"correct_translation\": \"Obwohl die Forschung noch nicht abgeschlossen ist, lösen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft aus.\",\n      \"categories\": [\"Word Order\", \"Nouns\", \"Articles & Determiners\", \"Verbs\", \"Cases\", \"Tenses\"],\n      \"subcategories\": [\"Word Order: Verb-Second Rule (V2)\", \"Nouns: Noun Capitalization\", \"Articles & Determiners: Definite Articles (der/die/das)\", \"Verbs: Verb Placement in Main Clause\", \"Cases: Dative\", \"Tenses: Tense Choice (context mismatch)\"],\n      \"feedback\": \"'Vorläufige Ergebnisse' benötigt richtigen Artikel und Pluralendung, falsche Wortstellung im Nebensatz, 'Gemeinschaft' falsch dekliniert (in der wissenschaftlichen Gemeinschaft), Verben am Satzende im Nebensatz, Formulierung unidiomatisch, Nomen großschreiben.\"\n    }\n  ]\n}"
+    },
+    {
+      "items": [
+        {
+          "case_id": "case-5",
+          "source_lang": "ru",
+          "target_lang": "de",
+          "feedback": "Fehler bei der Verbstellung in Nebensätzen ('dass er hat...genommen' statt 'dass er ... genommen hat'), fehlender Artikel und Deklination bei 'professionelle Gründe' (richtig: 'aus beruflichen Gründen'), unnatürliche Reihenfolge in 'es gibt versteckte Motive', insgesamt mehrere strukturelle Verstöße gegen deutsches Satzgefüge.",
+          "feedback_chars": 328,
+          "score": 40,
+          "score_str": "40",
+          "correct_translation": "Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen hat, obwohl viele das Vorhandensein versteckter Motive vermuten.",
+          "categories": [
+            "Verbs",
+            "Word Order",
+            "Articles & Determiners",
+            "Nouns",
+            "Cases"
+          ],
+          "subcategories": [
+            "Verb Placement in Subordinate Clause",
+            "Verb Placement in Main Clause",
+            "Article Omission/Redundancy",
+            "Noun Capitalization",
+            "Case Agreement in Noun Phrase"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": null,
+          "usage": {},
+          "gateway": "responses",
+          "usage_model": null,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "total_tokens": null,
+          "validation_error": null
+        },
+        {
+          "case_id": "case-6",
+          "source_lang": "ru",
+          "target_lang": "de",
+          "feedback": "'scheint' am Satzende fehlt; falscher Gebrauch von 'langfristige Folgen' (richtig: 'ihre langfristigen Folgen'), Deklination fehlerhaft, Wortreihenfolge und verbale Konstruktion teils ungrammatisch.",
+          "feedback_chars": 198,
+          "score": 45,
+          "score_str": "45",
+          "correct_translation": "Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen wesentlich komplexer sein.",
+          "categories": [
+            "Word Order",
+            "Verbs",
+            "Nouns",
+            "Adjectives",
+            "Articles & Determiners"
+          ],
+          "subcategories": [
+            "Verb Placement in Subordinate Clause",
+            "Conjugation",
+            "Pluralization",
+            "Incorrect Adjective Case Agreement",
+            "Article Omission/Redundancy"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": null,
+          "usage": {},
+          "gateway": "responses",
+          "usage_model": null,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "total_tokens": null,
+          "validation_error": null
+        }
+      ],
+      "batch_duration_ms": 7295.615957998962,
+      "usage": {
+        "task_name": "translation_check_batch_experiment",
+        "model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1442,
+        "completion_tokens": 450,
+        "total_tokens": 1892,
+        "cached_prompt_tokens": 1024,
+        "gateway": "responses"
+      },
+      "malformed": false,
+      "malformed_reason": null,
+      "validation_failures": [],
+      "raw_text": "{\n  \"items\": [\n    {\n      \"batch_item_id\": \"batch-0-case-5\",\n      \"item_order\": 0,\n      \"score\": 40,\n      \"correct_translation\": \"Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen hat, obwohl viele das Vorhandensein versteckter Motive vermuten.\",\n      \"categories\": [\n        \"Verbs\",\n        \"Word Order\",\n        \"Articles & Determiners\",\n        \"Nouns\",\n        \"Cases\"\n      ],\n      \"subcategories\": [\n        \"Verb Placement in Subordinate Clause\",\n        \"Verb Placement in Main Clause\",\n        \"Article Omission/Redundancy\",\n        \"Noun Capitalization\",\n        \"Case Agreement in Noun Phrase\"\n      ],\n      \"feedback\": \"Fehler bei der Verbstellung in Nebensätzen ('dass er hat...genommen' statt 'dass er ... genommen hat'), fehlender Artikel und Deklination bei 'professionelle Gründe' (richtig: 'aus beruflichen Gründen'), unnatürliche Reihenfolge in 'es gibt versteckte Motive', insgesamt mehrere strukturelle Verstöße gegen deutsches Satzgefüge.\"\n    },\n    {\n      \"batch_item_id\": \"batch-1-case-6\",\n      \"item_order\": 1,\n      \"score\": 45,\n      \"correct_translation\": \"Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen wesentlich komplexer sein.\",\n      \"categories\": [\n        \"Word Order\",\n        \"Verbs\",\n        \"Nouns\",\n        \"Adjectives\",\n        \"Articles & Determiners\"\n      ],\n      \"subcategories\": [\n        \"Verb Placement in Subordinate Clause\",\n        \"Conjugation\",\n        \"Pluralization\",\n        \"Incorrect Adjective Case Agreement\",\n        \"Article Omission/Redundancy\"\n      ],\n      \"feedback\": \"'scheint' am Satzende fehlt; falscher Gebrauch von 'langfristige Folgen' (richtig: 'ihre langfristigen Folgen'), Deklination fehlerhaft, Wortreihenfolge und verbale Konstruktion teils ungrammatisch.\"\n    }\n  ]\n}"
+    },
+    {
+      "items": [
+        {
+          "case_id": "case-7",
+          "source_lang": "ru",
+          "target_lang": "de",
+          "feedback": "Falsche Wortstellung in Nebensatz, fehlende Artikel bei ‚Globalisierung‘, Fehler bei Präpositionen mit Ländern (‚in vielen Ländern‘), unsaubere Verbplacement, falsch verwendeter Konnektor (‚aber‘ statt ‚jedoch‘ möglich aber stilistisch schwach), Vereinfachungsfehler bei Adjektiven (‚stärker gemacht‘ statt ‚verstärkt‘).",
+          "feedback_chars": 320,
+          "score": 45,
+          "score_str": "45",
+          "correct_translation": "Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+          "categories": [
+            "Word Order",
+            "Articles & Determiners",
+            "Cases",
+            "Verbs",
+            "Conjunctions"
+          ],
+          "subcategories": [
+            "Standard",
+            "Definite Articles (der/die/das)",
+            "Dative",
+            "Verb Placement in Subordinate Clause"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": null,
+          "usage": {},
+          "gateway": "responses",
+          "usage_model": null,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "total_tokens": null,
+          "validation_error": null
+        }
+      ],
+      "batch_duration_ms": 8333.350625001913,
+      "usage": {
+        "task_name": "translation_check_batch_experiment",
+        "model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1365,
+        "completion_tokens": 249,
+        "total_tokens": 1614,
+        "cached_prompt_tokens": 1024,
+        "gateway": "responses"
+      },
+      "malformed": false,
+      "malformed_reason": null,
+      "validation_failures": [],
+      "raw_text": "{\n  \"items\": [\n    {\n      \"batch_item_id\": \"batch-0-case-7\",\n      \"item_order\": 0,\n      \"score\": 45,\n      \"correct_translation\": \"Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.\",\n      \"categories\": [\"Word Order\", \"Articles & Determiners\", \"Cases\", \"Verbs\", \"Conjunctions\"],\n      \"subcategories\": [\"Standard\", \"Definite Articles (der/die/das)\", \"Dative\", \"Verb Placement in Subordinate Clause\", \"Coordinating (aber/denn/und)\", \"Accusative + Preposition\"],\n      \"feedback\": \"Falsche Wortstellung in Nebensatz, fehlende Artikel bei ‚Globalisierung‘, Fehler bei Präpositionen mit Ländern (‚in vielen Ländern‘), unsaubere Verbplacement, falsch verwendeter Konnektor (‚aber‘ statt ‚jedoch‘ möglich aber stilistisch schwach), Vereinfachungsfehler bei Adjektiven (‚stärker gemacht‘ statt ‚verstärkt‘).\"\n    }\n  ]\n}"
+    }
+  ],
+  "per_item_validation_failures": [],
+  "cases": [
+    {
+      "case_id": "case-1",
+      "original_text": "Несмотря на то что комитет уже несколько месяцев обсуждает реформу системы образования, окончательное решение до сих пор откладывается из-за политических разногласий.",
+      "user_translation": "Obwohl das Komitee diskutiert schon mehrere Monate die Reform des Bildungssystems, die endgültige Entscheidung wird noch verschoben wegen politische Meinungsverschiedenheiten.",
+      "single": {
+        "case_id": "case-1",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Score: 61/100\nMistake Categories: Word Order, Cases, Articles & Determiners, Adjectives, Prepositions, Conjunctions, Punctuation\nSubcategories: Verb-Second Rule (V2), Incorrect Order in Subordinate Clause, Case after Preposition, Definite Articles, Adjective Case Agreement, Incorrect Preposition Usage, Subordinating Conjunction, Comma in Subordinate Clause\nCorrect Translation: Obwohl der Ausschuss seit mehreren Monaten die Reform des Bildungssystems diskutiert, wird die endgültige Entscheidung wegen politischer Meinungsverschiedenheiten weiterhin verschoben.",
+        "feedback_chars": 564,
+        "score": 61,
+        "score_str": "61",
+        "correct_translation": "Obwohl der Ausschuss seit mehreren Monaten die Reform des Bildungssystems diskutiert, wird die endgültige Entscheidung wegen politischer Meinungsverschiedenheiten weiterhin verschoben.",
+        "categories": [
+          "Conjunctions",
+          "Prepositions",
+          "Adjectives",
+          "Cases",
+          "Punctuation",
+          "Articles & Determiners",
+          "Word Order"
+        ],
+        "subcategories": [
+          "Incorrect Order in Subordinate Clause",
+          "Verb-Second Rule (V2)",
+          "Case after Preposition",
+          "Incorrect Preposition Usage",
+          "Comma in Subordinate Clause"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 4742.71299999964,
+        "usage": {
+          "task_name": "check_translation_multilang",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1289,
+          "completion_tokens": 122,
+          "total_tokens": 1411,
+          "gateway": "responses"
+        },
+        "gateway": "responses",
+        "usage_model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1289,
+        "completion_tokens": 122,
+        "total_tokens": 1411,
+        "validation_error": null
+      },
+      "batch": {
+        "case_id": "case-1",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Falsche Wortstellung/Verbzweitregel bei Hauptsatz, 'wegen' verlangt Genitiv 'politischer Meinungsverschiedenheiten', fehlende 'des' bei 'Reform des Bildungssystems', 'entscheidende Entscheidung' statt 'die endgültige Entscheidung', Satzstruktur entspricht nicht deutschem Standard.",
+        "feedback_chars": 281,
+        "score": 60,
+        "score_str": "60",
+        "correct_translation": "Obwohl der Ausschuss die Reform des Bildungssystems bereits seit mehreren Monaten diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten immer noch aufgeschoben.",
+        "categories": [
+          "Word Order",
+          "Cases",
+          "Adjectives",
+          "Clauses & Sentence Types",
+          "Prepositions"
+        ],
+        "subcategories": [
+          "Standard",
+          "Genitive",
+          "Incorrect Adjective Case Agreement",
+          "Subordinating (weil/dass/ob/wenn...)",
+          "Incorrect Preposition Usage"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": null,
+        "usage": {},
+        "gateway": "responses",
+        "usage_model": null,
+        "prompt_tokens": null,
+        "completion_tokens": null,
+        "total_tokens": null,
+        "validation_error": null
+      },
+      "diff": {
+        "score_delta": -1,
+        "abs_score_delta": 1,
+        "category_jaccard": 0.5,
+        "subcategory_jaccard": 0.1111111111111111,
+        "correct_translation_equal": false,
+        "batch_missing": false
+      }
+    },
+    {
+      "case_id": "case-2",
+      "original_text": "Если бы руководство компании своевременно отреагировало на предупреждения аналитиков, финансовых потерь можно было бы избежать.",
+      "user_translation": "Wenn die Leitung der Firma hätte rechtzeitig reagiert auf die Warnungen der Analysten, man konnte vermeiden die finanziellen Verluste.",
+      "single": {
+        "case_id": "case-2",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Score: 42/100\nMistake Categories: Word Order, Verbs, Cases, Prepositions, Moods, Clauses & Sentence Types, Articles & Determiners\nSubcategories: Verb Placement in Subordinate Clause, Auxiliary Verbs (hätte...reagiert), Accusative + Preposition, Konjunktiv II: Irrealis/Hypothetical, Conditionals (wenn/falls), Article Omission/Redundancy, Case Agreement in Noun Phrase, Incorrect Order with Modal Verb\nCorrect Translation: Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+        "feedback_chars": 564,
+        "score": 42,
+        "score_str": "42",
+        "correct_translation": "Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+        "categories": [
+          "Verbs",
+          "Moods",
+          "Prepositions",
+          "Cases",
+          "Articles & Determiners",
+          "Clauses & Sentence Types",
+          "Word Order"
+        ],
+        "subcategories": [
+          "Conditionals (wenn/falls)",
+          "Verb Placement in Subordinate Clause",
+          "Article Omission/Redundancy",
+          "Incorrect Order with Modal Verb",
+          "Case Agreement in Noun Phrase"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 3755.7259579989477,
+        "usage": {
+          "task_name": "check_translation_multilang",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1275,
+          "completion_tokens": 137,
+          "total_tokens": 1412,
+          "gateway": "responses"
+        },
+        "gateway": "responses",
+        "usage_model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1275,
+        "completion_tokens": 137,
+        "total_tokens": 1412,
+        "validation_error": null
+      },
+      "batch": {
+        "case_id": "case-2",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "'Hätte reagiert' Konstruktion falsch platziert, Satzstellung fehlerhaft für Konditional, 'man konnte vermeiden' ist kein korrektes Passiv, 'finanzielle Verluste' muss Objekt im Akkusativ, Satz klingt unidiomatisch.",
+        "feedback_chars": 214,
+        "score": 50,
+        "score_str": "50",
+        "correct_translation": "Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+        "categories": [
+          "Verbs",
+          "Word Order",
+          "Cases",
+          "Nouns",
+          "Clauses & Sentence Types"
+        ],
+        "subcategories": [
+          "Verb Placement in Subordinate Clause",
+          "Standard",
+          "Accusative",
+          "Declension Errors",
+          "Conditionals (wenn/falls)"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": null,
+        "usage": {},
+        "gateway": "responses",
+        "usage_model": null,
+        "prompt_tokens": null,
+        "completion_tokens": null,
+        "total_tokens": null,
+        "validation_error": null
+      },
+      "diff": {
+        "score_delta": 8,
+        "abs_score_delta": 8,
+        "category_jaccard": 0.5,
+        "subcategory_jaccard": 0.25,
+        "correct_translation_equal": true,
+        "batch_missing": false
+      }
+    },
+    {
+      "case_id": "case-3",
+      "original_text": "Многие эксперты считают, что стремительное развитие искусственного интеллекта может радикально изменить структуру рынка труда в ближайшие десятилетия.",
+      "user_translation": "Viele Experten denken, dass die schnelle Entwicklung von künstliche Intelligenz kann radikal ändern die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten.",
+      "single": {
+        "case_id": "case-3",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Score: 65/100\nMistake Categories: Nouns, Articles & Determiners, Cases, Verbs, Word Order\nSubcategories: Declension Errors, Noun Capitalization, Definite Articles (der/die/das), Case Agreement in Noun Phrase, Conjugation, Verb Placement in Subordinate Clause, Word Order (Subordinate Clause)\nCorrect Translation: Viele Experten sind der Ansicht, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den kommenden Jahrzehnten radikal verändern könnte.",
+        "feedback_chars": 489,
+        "score": 65,
+        "score_str": "65",
+        "correct_translation": "Viele Experten sind der Ansicht, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den kommenden Jahrzehnten radikal verändern könnte.",
+        "categories": [
+          "Verbs",
+          "Cases",
+          "Nouns",
+          "Articles & Determiners",
+          "Word Order"
+        ],
+        "subcategories": [
+          "Verb Placement in Subordinate Clause",
+          "Conjugation",
+          "Definite Articles (der/die/das)",
+          "Noun Capitalization",
+          "Declension Errors",
+          "Case Agreement in Noun Phrase"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 3321.6285000016796,
+        "usage": {
+          "task_name": "check_translation_multilang",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1283,
+          "completion_tokens": 111,
+          "total_tokens": 1394,
+          "gateway": "responses"
+        },
+        "gateway": "responses",
+        "usage_model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1283,
+        "completion_tokens": 111,
+        "total_tokens": 1394,
+        "validation_error": null
+      },
+      "batch": {
+        "case_id": "case-3",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Fehler: 'künstliche Intelligenz' muss im Dativ/Genitiv stehen (Entwicklung der künstlichen Intelligenz), falsche Verbstellung in der Nebensatz ('kann radikal ändern' statt 'radikal verändern kann'), fehlender Konjunktiv (könnte), Nomen müssen großgeschrieben werden. Artikel fehlen/falsch ('die Struktur des Arbeitsmarktes').",
+        "feedback_chars": 325,
+        "score": 45,
+        "score_str": "45",
+        "correct_translation": "Viele Experten sind der Meinung, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten radikal verändern könnte.",
+        "categories": [
+          "Nouns",
+          "Articles & Determiners",
+          "Cases",
+          "Word Order",
+          "Verbs",
+          "Tenses"
+        ],
+        "subcategories": [],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": null,
+        "usage": {},
+        "gateway": "responses",
+        "usage_model": null,
+        "prompt_tokens": null,
+        "completion_tokens": null,
+        "total_tokens": null,
+        "validation_error": null
+      },
+      "diff": {
+        "score_delta": -20,
+        "abs_score_delta": 20,
+        "category_jaccard": 0.8333333333333334,
+        "subcategory_jaccard": 0.0,
+        "correct_translation_equal": false,
+        "batch_missing": false
+      }
+    },
+    {
+      "case_id": "case-4",
+      "original_text": "Хотя исследование ещё не завершено, предварительные результаты уже вызывают серьёзные дискуссии в научном сообществе.",
+      "user_translation": "Obwohl die Forschung ist noch nicht beendet, die vorläufige Ergebnisse verursachen schon ernsthafte Diskussionen im wissenschaftlichen Gemeinschaft.",
+      "single": {
+        "case_id": "case-4",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Score: 56/100\nMistake Categories: Verbs, Word Order, Nouns, Articles & Determiners, Cases, Clauses & Sentence Types, Orthography & Spelling\nSubcategories: Verb Placement in Subordinate Clause, Verb Placement in Main Clause, Standard Word Order, Pluralization, Article Omission/Redundancy, Definite Articles, Case Agreement in Noun Phrase, Main vs Subordinate Clause, Capitalization\nCorrect Translation: Obwohl die Untersuchung noch nicht abgeschlossen ist, rufen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft hervor.",
+        "feedback_chars": 568,
+        "score": 56,
+        "score_str": "56",
+        "correct_translation": "Obwohl die Untersuchung noch nicht abgeschlossen ist, rufen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft hervor.",
+        "categories": [
+          "Verbs",
+          "Orthography & Spelling",
+          "Cases",
+          "Nouns",
+          "Articles & Determiners",
+          "Clauses & Sentence Types",
+          "Word Order"
+        ],
+        "subcategories": [
+          "Verb Placement in Main Clause",
+          "Verb Placement in Subordinate Clause",
+          "Article Omission/Redundancy",
+          "Capitalization",
+          "Main vs Subordinate Clause",
+          "Pluralization",
+          "Case Agreement in Noun Phrase"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 2828.917957998783,
+        "usage": {
+          "task_name": "check_translation_multilang",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1277,
+          "completion_tokens": 122,
+          "total_tokens": 1399,
+          "gateway": "responses"
+        },
+        "gateway": "responses",
+        "usage_model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1277,
+        "completion_tokens": 122,
+        "total_tokens": 1399,
+        "validation_error": null
+      },
+      "batch": {
+        "case_id": "case-4",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "'Vorläufige Ergebnisse' benötigt richtigen Artikel und Pluralendung, falsche Wortstellung im Nebensatz, 'Gemeinschaft' falsch dekliniert (in der wissenschaftlichen Gemeinschaft), Verben am Satzende im Nebensatz, Formulierung unidiomatisch, Nomen großschreiben.",
+        "feedback_chars": 260,
+        "score": 40,
+        "score_str": "40",
+        "correct_translation": "Obwohl die Forschung noch nicht abgeschlossen ist, lösen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft aus.",
+        "categories": [
+          "Word Order",
+          "Nouns",
+          "Articles & Determiners",
+          "Verbs",
+          "Cases",
+          "Tenses"
+        ],
+        "subcategories": [],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": null,
+        "usage": {},
+        "gateway": "responses",
+        "usage_model": null,
+        "prompt_tokens": null,
+        "completion_tokens": null,
+        "total_tokens": null,
+        "validation_error": null
+      },
+      "diff": {
+        "score_delta": -16,
+        "abs_score_delta": 16,
+        "category_jaccard": 0.625,
+        "subcategory_jaccard": 0.0,
+        "correct_translation_equal": false,
+        "batch_missing": false
+      }
+    },
+    {
+      "case_id": "case-5",
+      "original_text": "Он утверждает, что принял это решение исключительно из профессиональных соображений, хотя многие подозревают наличие скрытых мотивов.",
+      "user_translation": "Er behauptet, dass er hat diese Entscheidung nur aus professionelle Gründe genommen, obwohl viele vermuten dass es gibt versteckte Motive.",
+      "single": {
+        "case_id": "case-5",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Score: 52/100\nMistake Categories: Verbs, Word Order, Adjectives, Punctuation, Clauses & Sentence Types, Articles & Determiners\nSubcategories: Verb Placement in Main Clause, Verb Placement in Subordinate Clause, Incorrect Adjective Case Agreement, Adjective Endings, Article Omission/Redundancy, Main vs Subordinate Clause, Comma in Subordinate Clause\nCorrect Translation: Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen habe, obwohl viele den Verdacht hegen, dass es versteckte Motive gibt.",
+        "feedback_chars": 532,
+        "score": 52,
+        "score_str": "52",
+        "correct_translation": "Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen habe, obwohl viele den Verdacht hegen, dass es versteckte Motive gibt.",
+        "categories": [
+          "Verbs",
+          "Adjectives",
+          "Punctuation",
+          "Articles & Determiners",
+          "Clauses & Sentence Types",
+          "Word Order"
+        ],
+        "subcategories": [
+          "Verb Placement in Main Clause",
+          "Incorrect Adjective Case Agreement",
+          "Verb Placement in Subordinate Clause",
+          "Article Omission/Redundancy",
+          "Main vs Subordinate Clause",
+          "Comma in Subordinate Clause"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 3284.6766670008947,
+        "usage": {
+          "task_name": "check_translation_multilang",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1277,
+          "completion_tokens": 119,
+          "total_tokens": 1396,
+          "gateway": "responses"
+        },
+        "gateway": "responses",
+        "usage_model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1277,
+        "completion_tokens": 119,
+        "total_tokens": 1396,
+        "validation_error": null
+      },
+      "batch": {
+        "case_id": "case-5",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Fehler bei der Verbstellung in Nebensätzen ('dass er hat...genommen' statt 'dass er ... genommen hat'), fehlender Artikel und Deklination bei 'professionelle Gründe' (richtig: 'aus beruflichen Gründen'), unnatürliche Reihenfolge in 'es gibt versteckte Motive', insgesamt mehrere strukturelle Verstöße gegen deutsches Satzgefüge.",
+        "feedback_chars": 328,
+        "score": 40,
+        "score_str": "40",
+        "correct_translation": "Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen hat, obwohl viele das Vorhandensein versteckter Motive vermuten.",
+        "categories": [
+          "Verbs",
+          "Word Order",
+          "Articles & Determiners",
+          "Nouns",
+          "Cases"
+        ],
+        "subcategories": [
+          "Verb Placement in Subordinate Clause",
+          "Verb Placement in Main Clause",
+          "Article Omission/Redundancy",
+          "Noun Capitalization",
+          "Case Agreement in Noun Phrase"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": null,
+        "usage": {},
+        "gateway": "responses",
+        "usage_model": null,
+        "prompt_tokens": null,
+        "completion_tokens": null,
+        "total_tokens": null,
+        "validation_error": null
+      },
+      "diff": {
+        "score_delta": -12,
+        "abs_score_delta": 12,
+        "category_jaccard": 0.375,
+        "subcategory_jaccard": 0.375,
+        "correct_translation_equal": false,
+        "batch_missing": false
+      }
+    },
+    {
+      "case_id": "case-6",
+      "original_text": "Даже если предложенная стратегия кажется на первый взгляд убедительной, её долгосрочные последствия могут оказаться гораздо более сложными.",
+      "user_translation": "Auch wenn die vorgeschlagene Strategie scheint auf den ersten Blick überzeugend, ihre langfristige Folgen können viel komplizierter sein.",
+      "single": {
+        "case_id": "case-6",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Score: 65/100\nMistake Categories: Word Order, Cases, Nouns, Articles & Determiners\nSubcategories: Verb-Second Rule (V2), Genitive, Pluralization, Definite Articles, Article Omission, Correct Order in Subordinate Clause\nCorrect Translation: Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen sich als weitaus komplexer erweisen.",
+        "feedback_chars": 393,
+        "score": 65,
+        "score_str": "65",
+        "correct_translation": "Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen sich als weitaus komplexer erweisen.",
+        "categories": [
+          "Cases",
+          "Nouns",
+          "Word Order",
+          "Articles & Determiners"
+        ],
+        "subcategories": [
+          "Pluralization",
+          "Genitive",
+          "Verb-Second Rule (V2)"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 5312.27541699991,
+        "usage": {
+          "task_name": "check_translation_multilang",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1274,
+          "completion_tokens": 91,
+          "total_tokens": 1365,
+          "gateway": "responses"
+        },
+        "gateway": "responses",
+        "usage_model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1274,
+        "completion_tokens": 91,
+        "total_tokens": 1365,
+        "validation_error": null
+      },
+      "batch": {
+        "case_id": "case-6",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "'scheint' am Satzende fehlt; falscher Gebrauch von 'langfristige Folgen' (richtig: 'ihre langfristigen Folgen'), Deklination fehlerhaft, Wortreihenfolge und verbale Konstruktion teils ungrammatisch.",
+        "feedback_chars": 198,
+        "score": 45,
+        "score_str": "45",
+        "correct_translation": "Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen wesentlich komplexer sein.",
+        "categories": [
+          "Word Order",
+          "Verbs",
+          "Nouns",
+          "Adjectives",
+          "Articles & Determiners"
+        ],
+        "subcategories": [
+          "Verb Placement in Subordinate Clause",
+          "Conjugation",
+          "Pluralization",
+          "Incorrect Adjective Case Agreement",
+          "Article Omission/Redundancy"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": null,
+        "usage": {},
+        "gateway": "responses",
+        "usage_model": null,
+        "prompt_tokens": null,
+        "completion_tokens": null,
+        "total_tokens": null,
+        "validation_error": null
+      },
+      "diff": {
+        "score_delta": -20,
+        "abs_score_delta": 20,
+        "category_jaccard": 0.5,
+        "subcategory_jaccard": 0.14285714285714285,
+        "correct_translation_equal": false,
+        "batch_missing": false
+      }
+    },
+    {
+      "case_id": "case-7",
+      "original_text": "Трудно отрицать, что глобализация принесла значительные экономические преимущества, однако она также усилила социальное неравенство во многих странах.",
+      "user_translation": "Es ist schwer zu leugnen, dass Globalisierung hat gebracht bedeutende wirtschaftliche Vorteile, aber sie hat auch stärker gemacht die soziale Ungleichheit in viele Länder.",
+      "single": {
+        "case_id": "case-7",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Score: 60/100\nMistake Categories: Word Order, Cases, Articles & Determiners, Prepositions, Adjectives, Nouns, Punctuation\nSubcategories: Standard, Dative + Preposition, Article Omission, Incorrect Preposition Usage, Incorrect Adjective Case Agreement, Noun Capitalization, Comma in Subordinate Clause\nCorrect Translation: Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+        "feedback_chars": 495,
+        "score": 60,
+        "score_str": "60",
+        "correct_translation": "Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+        "categories": [
+          "Prepositions",
+          "Adjectives",
+          "Cases",
+          "Punctuation",
+          "Nouns",
+          "Articles & Determiners",
+          "Word Order"
+        ],
+        "subcategories": [
+          "Incorrect Adjective Case Agreement",
+          "Standard",
+          "Noun Capitalization",
+          "Dative + Preposition",
+          "Incorrect Preposition Usage",
+          "Comma in Subordinate Clause"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": 5017.234625000128,
+        "usage": {
+          "task_name": "check_translation_multilang",
+          "model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1289,
+          "completion_tokens": 111,
+          "total_tokens": 1400,
+          "gateway": "responses"
+        },
+        "gateway": "responses",
+        "usage_model": "gpt-4.1-2025-04-14",
+        "prompt_tokens": 1289,
+        "completion_tokens": 111,
+        "total_tokens": 1400,
+        "validation_error": null
+      },
+      "batch": {
+        "case_id": "case-7",
+        "source_lang": "ru",
+        "target_lang": "de",
+        "feedback": "Falsche Wortstellung in Nebensatz, fehlende Artikel bei ‚Globalisierung‘, Fehler bei Präpositionen mit Ländern (‚in vielen Ländern‘), unsaubere Verbplacement, falsch verwendeter Konnektor (‚aber‘ statt ‚jedoch‘ möglich aber stilistisch schwach), Vereinfachungsfehler bei Adjektiven (‚stärker gemacht‘ statt ‚verstärkt‘).",
+        "feedback_chars": 320,
+        "score": 45,
+        "score_str": "45",
+        "correct_translation": "Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+        "categories": [
+          "Word Order",
+          "Articles & Determiners",
+          "Cases",
+          "Verbs",
+          "Conjunctions"
+        ],
+        "subcategories": [
+          "Standard",
+          "Definite Articles (der/die/das)",
+          "Dative",
+          "Verb Placement in Subordinate Clause"
+        ],
+        "missing_score": false,
+        "non_numeric_score": false,
+        "missing_correct_translation": false,
+        "elapsed_ms": null,
+        "usage": {},
+        "gateway": "responses",
+        "usage_model": null,
+        "prompt_tokens": null,
+        "completion_tokens": null,
+        "total_tokens": null,
+        "validation_error": null
+      },
+      "diff": {
+        "score_delta": -15,
+        "abs_score_delta": 15,
+        "category_jaccard": 0.3333333333333333,
+        "subcategory_jaccard": 0.1111111111111111,
+        "correct_translation_equal": true,
+        "batch_missing": false
+      }
+    }
+  ]
+}
