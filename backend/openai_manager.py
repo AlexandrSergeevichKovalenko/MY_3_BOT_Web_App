@@ -33,6 +33,9 @@ FEEL_POLL_INTERVAL_SECONDS = 1.0
 FEEL_THREAD_DELETE_TIMEOUT_SECONDS = 0.75
 _DEFAULT_GATEWAY_MODE = "assistants"
 _DEFAULT_GATEWAY_MODEL = "gpt-4.1-2025-04-14"
+_DEFAULT_TASK_MODELS = {
+    "check_translation_multilang": "gpt-4.1-mini",
+}
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
     "dictionary_assistant_de",
@@ -71,6 +74,21 @@ def _get_gateway_model() -> str:
         str(os.getenv("LLM_GATEWAY_MODEL") or os.getenv("OPENAI_MODEL") or _DEFAULT_GATEWAY_MODEL).strip()
         or _DEFAULT_GATEWAY_MODEL
     )
+
+
+def _get_task_gateway_model(task_name: str | None = None) -> str:
+    normalized_task = str(task_name or "").strip().lower()
+    if normalized_task:
+        env_suffix = re.sub(r"[^a-z0-9]+", "_", normalized_task).strip("_").upper()
+        if env_suffix:
+            task_override = str(
+                os.getenv(f"LLM_TASK_MODEL_{env_suffix}")
+                or os.getenv(f"OPENAI_TASK_MODEL_{env_suffix}")
+                or _DEFAULT_TASK_MODELS.get(normalized_task, "")
+            ).strip()
+            if task_override:
+                return task_override
+    return _get_gateway_model()
 
 
 def _get_responses_tasks() -> set[str]:
@@ -2171,7 +2189,7 @@ async def get_or_create_openai_resources(system_instruction: str, task_name: str
             return
         await client.beta.assistants.update(
             assistant_id=current_assistant_id,
-            model=_get_gateway_model(),
+            model=_get_task_gateway_model(task_name),
             instructions=system_instruction_content,
         )
         assistant_instruction_hash_cache[cache_key] = instruction_hash
@@ -2210,7 +2228,7 @@ async def get_or_create_openai_resources(system_instruction: str, task_name: str
         # Используем глобальный клиент 'client'
         assistant = await client.beta.assistants.create(
             name="MyAssistant for " + task_name,
-            model="gpt-4.1-2025-04-14", # ИСПОЛЬЗУЕМ МОДЕЛЬ!
+            model=_get_task_gateway_model(task_name),
             instructions=system_instruction_content
         )
         global_assistants_cache[task_name] = assistant.id
@@ -2294,7 +2312,7 @@ async def _run_task_text_via_responses(
     if responses_api is None or not hasattr(responses_api, "create"):
         raise RuntimeError("OpenAI SDK does not expose AsyncOpenAI.responses API (upgrade openai package).")
     response = await responses_api.create(
-        model=_get_gateway_model(),
+        model=_get_task_gateway_model(task_name),
         instructions=system_instruction_content,
         input=user_message,
     )
