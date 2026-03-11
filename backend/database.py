@@ -1921,6 +1921,26 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_transcripts_updated
                 ON bt_3_youtube_transcripts (updated_at);
             """)
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_youtube_watch_state (
+                    user_id BIGINT NOT NULL,
+                    video_id TEXT NOT NULL,
+                    input_text TEXT,
+                    current_time_seconds INTEGER NOT NULL DEFAULT 0,
+                    last_opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, video_id)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_watch_state_updated
+                ON bt_3_youtube_watch_state (user_id, updated_at DESC);
+                """
+            )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_flashcard_stats (
                     user_id BIGINT NOT NULL,
@@ -5542,6 +5562,102 @@ def upsert_youtube_translations(video_id: str, translations: dict) -> None:
                 SET translations = COALESCE(bt_3_youtube_transcripts.translations, '{}'::jsonb) || EXCLUDED.translations,
                     updated_at = NOW();
             """, (video_id, json.dumps(translations, ensure_ascii=False)))
+
+
+def _youtube_watch_state_row_to_dict(row) -> dict | None:
+    if not row:
+        return None
+    return {
+        "user_id": int(row[0]),
+        "video_id": str(row[1] or "").strip(),
+        "input_text": str(row[2] or "").strip(),
+        "current_time_seconds": max(0, int(row[3] or 0)),
+        "last_opened_at": row[4].isoformat() if row[4] else None,
+        "created_at": row[5].isoformat() if row[5] else None,
+        "updated_at": row[6].isoformat() if row[6] else None,
+    }
+
+
+def get_youtube_watch_state(user_id: int, video_id: str) -> dict | None:
+    normalized_video_id = str(video_id or "").strip()
+    if not normalized_video_id:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, video_id, input_text, current_time_seconds, last_opened_at, created_at, updated_at
+                FROM bt_3_youtube_watch_state
+                WHERE user_id = %s
+                  AND video_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id), normalized_video_id),
+            )
+            row = cursor.fetchone()
+    return _youtube_watch_state_row_to_dict(row)
+
+
+def get_latest_youtube_watch_state(user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, video_id, input_text, current_time_seconds, last_opened_at, created_at, updated_at
+                FROM bt_3_youtube_watch_state
+                WHERE user_id = %s
+                ORDER BY updated_at DESC
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return _youtube_watch_state_row_to_dict(row)
+
+
+def upsert_youtube_watch_state(
+    *,
+    user_id: int,
+    video_id: str,
+    current_time_seconds: int | float,
+    input_text: str | None = None,
+) -> dict | None:
+    normalized_video_id = str(video_id or "").strip()
+    if not normalized_video_id:
+        return None
+    resolved_input = str(input_text or "").strip()
+    safe_seconds = max(0, int(float(current_time_seconds or 0)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_youtube_watch_state (
+                    user_id,
+                    video_id,
+                    input_text,
+                    current_time_seconds,
+                    last_opened_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, NULLIF(%s, ''), %s, NOW(), NOW(), NOW())
+                ON CONFLICT (user_id, video_id) DO UPDATE
+                SET
+                    input_text = COALESCE(NULLIF(EXCLUDED.input_text, ''), bt_3_youtube_watch_state.input_text),
+                    current_time_seconds = GREATEST(EXCLUDED.current_time_seconds, 0),
+                    last_opened_at = NOW(),
+                    updated_at = NOW()
+                RETURNING user_id, video_id, input_text, current_time_seconds, last_opened_at, created_at, updated_at;
+                """,
+                (
+                    int(user_id),
+                    normalized_video_id,
+                    resolved_input,
+                    safe_seconds,
+                ),
+            )
+            row = cursor.fetchone()
+    return _youtube_watch_state_row_to_dict(row)
 
 
 def get_tts_chunk_cache(cache_key: str) -> list[str] | None:

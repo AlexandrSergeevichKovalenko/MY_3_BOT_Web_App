@@ -5441,7 +5441,8 @@ body {
 }
 
 .flashcard-mode-screen {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   min-height: calc(100dvh - 96px);
 }
@@ -5662,9 +5663,11 @@ body {
 }
 
 .flashcard-stage.is-session {
-  min-height: 100vh;
+  min-height: 0;
+  flex: 1 1 auto;
+  width: 100%;
   border-radius: 0;
-  padding: clamp(24px, 6vw, 56px);
+  padding: clamp(12px, 3vw, 24px) clamp(12px, 4vw, 24px) clamp(18px, 4vw, 28px);
 }
 
 .flashcard-stage.is-session.is-quiz-layout {
@@ -5696,13 +5699,13 @@ body {
 }
 
 .flashcard-stage.is-session .flashcard {
-  min-height: 100vh;
+  min-height: 0;
+  max-height: 100%;
   border-radius: 0;
   background: transparent;
   border: none;
   box-shadow: none;
-  padding: clamp(20px, 6vw, 40px);
-  padding-bottom: clamp(80px, 14vh, 140px);
+  padding: 0;
 }
 
 .flashcard-stage.is-preview::before,
@@ -6749,7 +6752,7 @@ body {
 }
 
 .flashcard-quiz-layout {
-  min-height: calc(100dvh - 22px);
+  min-height: 0;
   width: min(100%, 470px);
   margin: 0 auto;
   align-content: start;
@@ -7008,7 +7011,7 @@ body {
 @media (max-width: 480px) {
   .flashcard-quiz-layout {
     width: 100%;
-    min-height: calc(100dvh - 14px);
+    min-height: 0;
   }
 
   .quiz-layout-head {
@@ -7444,18 +7447,22 @@ body {
 }
 
 .translation-dict-jump {
-  border: none;
+  border: 1px solid rgba(148, 163, 184, 0.3);
   background: rgba(255, 255, 255, 0.16);
   color: #f8fafc;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  font-size: 12px;
-  font-weight: 600;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-  display: grid;
-  place-items: center;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .translation-dict-jump:hover {
@@ -10555,6 +10562,73 @@ body {
   margin: 0;
 }
 
+.youtube-sentence-jump-bar {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: -4px;
+}
+
+.youtube-sentence-jump-btn {
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0) 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(15, 23, 42, 0.14)),
+    var(--yt-bg-card-alt);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+    0 10px 18px rgba(15, 23, 42, 0.12),
+    0 2px 5px rgba(15, 23, 42, 0.08);
+  color: var(--yt-text-title);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
+}
+
+.youtube-sentence-jump-btn.is-prev {
+  color: #0f766e;
+}
+
+.youtube-sentence-jump-btn.is-next {
+  color: #9a3412;
+}
+
+.youtube-sentence-jump-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(148, 163, 184, 0.44);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 13px 22px rgba(15, 23, 42, 0.16),
+    0 3px 6px rgba(15, 23, 42, 0.12);
+}
+
+.youtube-sentence-jump-btn:active:not(:disabled) {
+  transform: translateY(1px) scale(0.98);
+  box-shadow:
+    inset 0 2px 4px rgba(15, 23, 42, 0.14),
+    0 6px 12px rgba(15, 23, 42, 0.12);
+}
+
+.youtube-sentence-jump-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 4px 10px rgba(15, 23, 42, 0.06);
+}
+
+.youtube-sentence-jump-icon {
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 700;
+  transform: translateY(-1px);
+}
+
 .webapp-video.youtube-player-first .webapp-video-frame.youtube-player-frame {
   border-radius: 20px;
   border: 1px solid var(--yt-border-default);
@@ -11012,6 +11086,22 @@ body {
 
   .youtube-subtitles-panel-head {
     display: none;
+  }
+
+  .youtube-sentence-jump-bar {
+    margin-top: -2px;
+    gap: 10px;
+    padding: 0;
+  }
+
+  .youtube-sentence-jump-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+  }
+
+  .youtube-sentence-jump-icon {
+    font-size: 18px;
   }
 
   .youtube-subtitles-card.youtube-subtitles-panel {
@@ -11540,6 +11630,23 @@ body {
   margin-left: auto;
 }
 
+.reader-topbar-toggle-chip {
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.reader-immersive-dock .reader-topbar-toggle-chip {
+  margin-left: auto;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(15, 23, 42, 0.08)), var(--yt-bg-card-alt, rgba(255, 255, 255, 0.72));
+}
+
 .reader-topbar-peek {
   position: sticky;
   top: calc(env(safe-area-inset-top, 0px) + 8px);
@@ -11550,7 +11657,7 @@ body {
 }
 
 .reader-topbar-peek-btn {
-  min-width: 36px;
+  min-width: 0;
 }
 
 .reader-bookmark-btn {
@@ -11809,6 +11916,11 @@ body {
     min-height: 38px;
     border-radius: 14px;
   }
+
+  .webapp-reader.is-immersive .reader-immersive-dock .reader-topbar-toggle-chip {
+    min-height: 34px;
+    padding: 0 12px;
+  }
 }
 
 @media (max-width: 900px) {
@@ -11891,6 +12003,11 @@ body {
   .reader-bookmark-btn,
   .reader-timer-pill {
     min-height: 32px;
+  }
+
+  .reader-topbar-toggle-chip {
+    padding: 0 9px;
+    font-size: 10px;
   }
 
   .reader-page-sheet,
@@ -13103,13 +13220,14 @@ body {
 }
 
 .webapp-section.webapp-section-translations .translation-dict-jump {
-  width: 32px;
-  height: 32px;
+  min-height: 30px;
+  padding: 0 11px;
   border-radius: 999px;
   border: 1px solid var(--tr-border);
   background: transparent;
   color: var(--tr-text-secondary);
   box-shadow: none;
+  font-size: 10px;
 }
 
 .webapp-section.webapp-section-translations .translation-dict-jump:hover {

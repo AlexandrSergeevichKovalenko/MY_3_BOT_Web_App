@@ -452,6 +452,7 @@ function AppInner() {
   const youtubeCurrentTimeRef = useRef(0);
   const youtubeResumeAppliedForVideoRef = useRef('');
   const youtubeResumeLastSavedSecondRef = useRef(-1);
+  const youtubeResumeLastSyncedSecondRef = useRef(-1);
   const youtubeTranslateInFlightRef = useRef(false);
   const youtubeTranslateIndexRef = useRef(-1);
   const autoAdvanceTimeoutRef = useRef(null);
@@ -593,21 +594,48 @@ function AppInner() {
     const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
     return `webapp_youtube_resume_${stableId}`;
   }, [webappUser?.id, initData]);
+  const writeYoutubeResumeToLocalCache = useCallback((payload) => {
+    if (!payload || typeof payload !== 'object') return;
+    const serialized = JSON.stringify(payload);
+    safeStorageSet(youtubeResumeStorageKey, serialized);
+    safeStorageSet('webapp_youtube', serialized);
+  }, [youtubeResumeStorageKey]);
   const persistYoutubeResumeState = useCallback((timeValue) => {
     const trimmed = String(youtubeInput || '').trim();
     const resolvedId = String(youtubeId || extractYoutubeId(trimmed) || '').trim();
     if (!trimmed || !resolvedId) return;
     const sourceTime = timeValue ?? youtubeCurrentTimeRef.current;
     const safeTime = Math.max(0, Math.floor(Number(sourceTime || 0)));
-    const payload = JSON.stringify({
+    writeYoutubeResumeToLocalCache({
       input: trimmed,
       id: resolvedId,
       currentTime: safeTime,
       updatedAt: Date.now(),
     });
-    safeStorageSet(youtubeResumeStorageKey, payload);
-    safeStorageSet('webapp_youtube', payload);
-  }, [youtubeId, youtubeInput, youtubeResumeStorageKey]);
+  }, [writeYoutubeResumeToLocalCache, youtubeId, youtubeInput]);
+  const syncYoutubeResumeState = useCallback(async (timeValue, options = {}) => {
+    const trimmed = String(youtubeInput || '').trim();
+    const resolvedId = String(youtubeId || extractYoutubeId(trimmed) || '').trim();
+    if (!trimmed || !resolvedId || !initData) return;
+    const sourceTime = timeValue ?? youtubeCurrentTimeRef.current;
+    const safeTime = Math.max(0, Math.floor(Number(sourceTime || 0)));
+    persistYoutubeResumeState(safeTime);
+    try {
+      await fetch('/api/webapp/youtube/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          videoId: resolvedId,
+          input: trimmed,
+          current_time_seconds: safeTime,
+        }),
+        keepalive: Boolean(options?.keepalive),
+      });
+    } catch (_error) {
+      // ignore sync errors; local cache already has the latest position
+    }
+  }, [initData, persistYoutubeResumeState, youtubeId, youtubeInput]);
   const normalizeSkillTrainingSnapshot = (value) => {
     if (!value || typeof value !== 'object') return null;
     const pack = value?.package && typeof value.package === 'object' ? value.package : null;
@@ -4592,6 +4620,8 @@ function AppInner() {
     ];
   }, [uiLang]);
   const isYoutubeSelectionMenu = String(selectionType || '').startsWith('youtube_');
+  const isTranslationResultSelectionMenu = String(selectionType || '').startsWith('translation_result_');
+  const isInlineSelectionMenu = isYoutubeSelectionMenu || isTranslationResultSelectionMenu;
   const isLightTheme = themeMode === 'light';
   const readerHasContent = Boolean(String(readerContent || '').trim());
   const readerDisplayPages = useMemo(() => {
@@ -7180,19 +7210,54 @@ function AppInner() {
 
   useEffect(() => {
     const stored = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
-    if (!stored) return;
-    try {
-      const parsed = JSON.parse(stored);
-      if (parsed?.input) {
-        setYoutubeInput(parsed.input);
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (parsed?.input) {
+          setYoutubeInput(parsed.input);
+        }
+        if (parsed?.id) {
+          setYoutubeId(parsed.id);
+        }
+        return;
+      } catch (_error) {
+        // ignore and continue with server fallback
       }
-      if (parsed?.id) {
-        setYoutubeId(parsed.id);
-      }
-    } catch (error) {
-      // ignore
     }
-  }, [youtubeResumeStorageKey]);
+    if (!initData) return;
+    let cancelled = false;
+    fetch('/api/webapp/youtube/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData }),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const state = data?.state;
+        const savedId = String(state?.video_id || '').trim();
+        const savedInput = String(state?.input_text || '').trim();
+        const savedTime = Math.max(0, Number(state?.current_time_seconds || 0));
+        if (!savedId) return;
+        writeYoutubeResumeToLocalCache({
+          input: savedInput || `https://youtu.be/${savedId}`,
+          id: savedId,
+          currentTime: savedTime,
+          updatedAt: Date.now(),
+        });
+        setYoutubeInput(savedInput || `https://youtu.be/${savedId}`);
+        setYoutubeId(savedId);
+      })
+      .catch(() => {
+        // ignore server resume bootstrap errors
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initData, writeYoutubeResumeToLocalCache, youtubeResumeStorageKey]);
 
   const buildTranslationResultFromCheckItem = (item) => {
     if (!item || typeof item !== 'object') return null;
@@ -8132,7 +8197,7 @@ function AppInner() {
       return;
     }
     const nextSelectionType = String(options?.selectionType || '');
-    const isYoutubeSelection = nextSelectionType === 'youtube_word' || nextSelectionType === 'youtube_overlay_word';
+    const isYoutubeSelection = nextSelectionType.startsWith('youtube_');
     if (isYoutubeSelection) {
       try {
         const playerState = youtubePlayerRef.current?.getPlayerState?.();
@@ -8171,7 +8236,7 @@ function AppInner() {
 
   const clearSelection = () => {
     const shouldResumeYoutube = youtubePausedBySelectionRef.current
-      && (selectionType === 'youtube_word' || selectionType === 'youtube_overlay_word');
+      && String(selectionType || '').startsWith('youtube_');
     youtubePausedBySelectionRef.current = false;
     if (shouldResumeYoutube) {
       try {
@@ -8300,6 +8365,7 @@ function AppInner() {
       inlineOrigin === 'youtube'
       || youtubeAppFullscreen
     );
+    const isTranslationsInline = inlineMode && inlineOrigin === 'translations';
     const cleaned = normalizeSelectionText(text);
     if (!cleaned) return;
     if (!initData) {
@@ -8360,13 +8426,17 @@ function AppInner() {
         scrollToDictionary();
       }
       const saveOriginProcess = inlineMode
-        ? (isYoutubeInline ? 'youtube' : 'reader')
+        ? (isYoutubeInline ? 'youtube' : (isTranslationsInline ? 'translations' : 'reader'))
         : 'webapp_dictionary_save';
       const saveOriginMeta = {
         endpoint: '/api/webapp/dictionary/save',
         flow: inlineMode ? 'quick_add_inline' : 'quick_add',
         from: inlineMode
-          ? (isYoutubeInline ? 'youtube_selection' : 'reader_selection')
+          ? (
+            isYoutubeInline
+              ? 'youtube_selection'
+              : (isTranslationsInline ? 'translations_result_selection' : 'reader_selection')
+          )
           : 'dictionary_lookup',
       };
 
@@ -8505,13 +8575,16 @@ function AppInner() {
         || selectionInlineMode
       )
     );
-    if (inReaderSection || inYoutubeSelectionSection) {
+    const inTranslationResultSelection = String(selectionType || '').startsWith('translation_result_');
+    if (inReaderSection || inYoutubeSelectionSection || inTranslationResultSelection) {
       const snapshot = normalizeSelectionText(text);
       clearSelection();
       if (!snapshot) return;
       void handleQuickAddToDictionary(snapshot, {
         inlineMode: true,
-        inlineOrigin: inYoutubeSelectionSection ? 'youtube' : 'reader',
+        inlineOrigin: inYoutubeSelectionSection
+          ? 'youtube'
+          : (inTranslationResultSelection ? 'translations' : 'reader'),
       });
       return;
     }
@@ -10110,6 +10183,7 @@ function AppInner() {
     const inlineLookup = Boolean(options.inlineLookup);
     const lookupLang = options.lookupLang || '';
     const selectionTypeOption = String(options.selectionType || '').trim();
+    const stopPropagation = Boolean(options.stopPropagation);
     if (!text) return null;
     return text.split(/\s+/).map((word, index) => {
       const cleaned = word.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё'’-]/g, '');
@@ -10120,12 +10194,17 @@ function AppInner() {
         <span
           key={`w-${index}`}
           className={className}
-          onClick={(event) => handleSelection(event, cleaned, {
-            compact,
-            inlineLookup,
-            lookupLang,
-            selectionType: selectionTypeOption,
-          })}
+          onClick={(event) => {
+            if (stopPropagation) {
+              event.stopPropagation();
+            }
+            handleSelection(event, cleaned, {
+              compact,
+              inlineLookup,
+              lookupLang,
+              selectionType: selectionTypeOption,
+            });
+          }}
         >
           {word}{' '}
         </span>
@@ -10133,13 +10212,25 @@ function AppInner() {
     });
   };
 
-  const renderSubtitleText = (text) => renderClickableText(
+  const openYoutubeSentenceSelection = (event, text, selectionType = 'youtube_sentence') => {
+    const normalized = normalizeSubtitleText(text);
+    if (!normalized) return;
+    handleSelection(event, normalized, {
+      compact: true,
+      inlineLookup: true,
+      lookupLang: getNormalizeLookupLang(),
+      selectionType,
+    });
+  };
+
+  const renderSubtitleText = (text, selectionType = (youtubeOverlayEnabled ? 'youtube_overlay_word' : 'youtube_word')) => renderClickableText(
     normalizeSubtitleText(text),
     {
       lookupLang: getNormalizeLookupLang(),
       compact: true,
       inlineLookup: true,
-      selectionType: youtubeOverlayEnabled ? 'youtube_overlay_word' : 'youtube_word',
+      selectionType,
+      stopPropagation: true,
     }
   );
 
@@ -10158,6 +10249,26 @@ function AppInner() {
       }
     }
     return activeIndex;
+  };
+
+  const jumpYoutubeBySubtitle = (direction) => {
+    const step = Number(direction);
+    if (!step || !youtubeTranscript.length || !youtubePlayerRef.current?.seekTo) return;
+    const activeIndex = getActiveSubtitleIndex();
+    const fallbackIndex = step > 0 ? -1 : 0;
+    const baseIndex = activeIndex >= 0 ? activeIndex : fallbackIndex;
+    const nextIndex = Math.min(
+      youtubeTranscript.length - 1,
+      Math.max(0, baseIndex + step)
+    );
+    const nextStart = Math.max(0, Number(youtubeTranscript[nextIndex]?.start ?? 0));
+    try {
+      youtubePlayerRef.current.seekTo(nextStart, true);
+      setYoutubeCurrentTime(nextStart);
+      persistYoutubeResumeState(nextStart);
+    } catch (_seekError) {
+      // ignore seek errors
+    }
   };
 
   const parseTranscriptInput = (value) => {
@@ -10720,7 +10831,12 @@ function AppInner() {
             onMouseUp={handleSelection}
           >
             <span className="webapp-feedback-label">🟣 Correct Translation:</span>
-            <span className="webapp-feedback-value">{renderClickableText(match[1])}</span>
+            <span className="webapp-feedback-value">{renderClickableText(match[1], {
+              compact: true,
+              inlineLookup: true,
+              lookupLang: getNormalizeLookupLang(),
+              selectionType: 'translation_result_word',
+            })}</span>
           </div>
         );
       }
@@ -11095,6 +11211,7 @@ function AppInner() {
       safeStorageRemove('webapp_youtube');
       youtubeResumeAppliedForVideoRef.current = '';
       youtubeResumeLastSavedSecondRef.current = -1;
+      youtubeResumeLastSyncedSecondRef.current = -1;
       return;
     }
     const id = extractYoutubeId(trimmed);
@@ -11111,14 +11228,12 @@ function AppInner() {
       } catch (_error) {
         existingTime = 0;
       }
-      const nextPayload = JSON.stringify({
+      writeYoutubeResumeToLocalCache({
         input: trimmed,
         id,
         currentTime: existingTime,
         updatedAt: Date.now(),
       });
-      safeStorageSet(youtubeResumeStorageKey, nextPayload);
-      safeStorageSet('webapp_youtube', nextPayload);
     } else if (/(youtube\.com|youtu\.be|^https?:\/\/)/i.test(trimmed)) {
       setYoutubeError(tr('Не удалось распознать ссылку или ID видео.', 'Video-Link oder ID konnte nicht erkannt werden.'));
       setYoutubeId('');
@@ -11126,7 +11241,7 @@ function AppInner() {
       setYoutubeError('');
       setYoutubeId('');
     }
-  }, [youtubeInput, youtubeResumeStorageKey]);
+  }, [tr, writeYoutubeResumeToLocalCache, youtubeInput, youtubeResumeStorageKey]);
 
   const searchYoutubeVideos = async () => {
     const query = youtubeInput.trim();
@@ -11284,26 +11399,36 @@ function AppInner() {
   }, [youtubeCurrentTime]);
 
   useEffect(() => {
+    youtubeResumeLastSavedSecondRef.current = -1;
+    youtubeResumeLastSyncedSecondRef.current = -1;
+    youtubeResumeAppliedForVideoRef.current = '';
+  }, [youtubeId]);
+
+  useEffect(() => {
     const currentSecond = Math.max(0, Math.floor(Number(youtubeCurrentTime || 0)));
     if (youtubeId && currentSecond >= 0 && currentSecond % 3 === 0 && youtubeResumeLastSavedSecondRef.current !== currentSecond) {
       youtubeResumeLastSavedSecondRef.current = currentSecond;
       persistYoutubeResumeState(currentSecond);
     }
+    if (youtubeId && currentSecond >= 0 && currentSecond % 9 === 0 && youtubeResumeLastSyncedSecondRef.current !== currentSecond) {
+      youtubeResumeLastSyncedSecondRef.current = currentSecond;
+      void syncYoutubeResumeState(currentSecond);
+    }
 
     if (!youtubeSectionVisible && youtubeId) {
-      persistYoutubeResumeState();
+      void syncYoutubeResumeState();
     }
-  }, [persistYoutubeResumeState, youtubeCurrentTime, youtubeId, youtubeSectionVisible]);
+  }, [persistYoutubeResumeState, syncYoutubeResumeState, youtubeCurrentTime, youtubeId, youtubeSectionVisible]);
 
   useEffect(() => {
     const onPageHide = () => {
-      persistYoutubeResumeState();
+      void syncYoutubeResumeState(undefined, { keepalive: true });
     };
     window.addEventListener('pagehide', onPageHide);
     return () => {
       window.removeEventListener('pagehide', onPageHide);
     };
-  }, [persistYoutubeResumeState]);
+  }, [syncYoutubeResumeState]);
 
   useEffect(() => {
     if (!youtubeId) {
@@ -11414,7 +11539,7 @@ function AppInner() {
                 const time = youtubePlayerRef.current?.getCurrentTime?.();
                 if (typeof time === 'number' && !Number.isNaN(time)) {
                   setYoutubeCurrentTime(time);
-                  persistYoutubeResumeState(time);
+                  void syncYoutubeResumeState(time);
                 }
               } catch (error) {
                 // ignore
@@ -11440,7 +11565,55 @@ function AppInner() {
         youtubeTimeIntervalRef.current = null;
       }
     };
-  }, [persistYoutubeResumeState, youtubeId, youtubeResumeStorageKey, youtubeSectionVisible]);
+  }, [persistYoutubeResumeState, syncYoutubeResumeState, youtubeId, youtubeResumeStorageKey, youtubeSectionVisible]);
+
+  useEffect(() => {
+    if (!youtubePlayerReady || !youtubeId || !initData || !youtubePlayerRef.current?.seekTo) return;
+    let cancelled = false;
+    fetch('/api/webapp/youtube/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData, videoId: youtubeId }),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const state = data?.state;
+        const savedId = String(state?.video_id || '').trim();
+        const savedTime = Math.max(0, Number(state?.current_time_seconds || 0));
+        if (savedId !== youtubeId || savedTime < 2) return;
+        const localRaw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
+        let localTime = 0;
+        try {
+          const parsed = localRaw ? JSON.parse(localRaw) : null;
+          if (String(parsed?.id || '').trim() === youtubeId) {
+            localTime = Math.max(0, Number(parsed?.currentTime || 0));
+          }
+        } catch (_error) {
+          localTime = 0;
+        }
+        writeYoutubeResumeToLocalCache({
+          input: String(state?.input_text || '').trim() || `https://youtu.be/${youtubeId}`,
+          id: youtubeId,
+          currentTime: Math.max(localTime, savedTime),
+          updatedAt: Date.now(),
+        });
+        if (savedTime > (youtubeCurrentTimeRef.current + 1)) {
+          youtubePlayerRef.current?.seekTo?.(savedTime, true);
+          setYoutubeCurrentTime(savedTime);
+          youtubeResumeAppliedForVideoRef.current = youtubeId;
+        }
+      })
+      .catch(() => {
+        // ignore server resume lookup errors
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initData, writeYoutubeResumeToLocalCache, youtubeId, youtubePlayerReady, youtubeResumeStorageKey]);
 
   useEffect(() => {
     if (youtubeTranscript.length > 0 && youtubeSubtitlesRef.current) {
@@ -14216,7 +14389,7 @@ function AppInner() {
                                 onClick={jumpToDictionaryFromSentence}
                                 aria-label={tr('Перейти в словарь', 'Zum Woerterbuch')}
                               >
-                                ↗
+                                {tr('Открыть словарь', 'Woerterbuch')}
                               </button>
                             </div>
                           </label>
@@ -14751,13 +14924,17 @@ function AppInner() {
                                   return (
                                     <div key={`overlay-line-${idx}`} className={`youtube-subtitles-overlay-row ${isCurrent ? 'is-current' : 'is-history'}`}>
                                       {overlayDeText && (
-                                        <p className="youtube-subtitles-overlay-line is-target-language">
+                                        <p
+                                          className="youtube-subtitles-overlay-line is-target-language"
+                                          onClick={(event) => openYoutubeSentenceSelection(event, overlayDeText, 'youtube_overlay_sentence')}
+                                        >
                                           {renderClickableText(overlayDeText, {
                                             className: 'overlay-clickable-word',
                                             compact: true,
                                             inlineLookup: true,
                                             lookupLang: getNormalizeLookupLang(),
                                             selectionType: 'youtube_overlay_word',
+                                            stopPropagation: true,
                                           })}
                                         </p>
                                       )}
@@ -14773,6 +14950,34 @@ function AppInner() {
                         </div>
                       </div>
                     </div>
+                    {(() => {
+                      const activeSubtitleIndex = getActiveSubtitleIndex();
+                      const canJump = Boolean(youtubeTranscript.length && youtubePlayerRef.current?.seekTo);
+                      const canJumpPrev = canJump && activeSubtitleIndex > 0;
+                      const canJumpNext = canJump && activeSubtitleIndex < youtubeTranscript.length - 1;
+                      return (
+                        <div className="youtube-sentence-jump-bar" aria-label={tr('Навигация по предложениям', 'Navigation zwischen Saetzen')}>
+                          <button
+                            type="button"
+                            className="youtube-sentence-jump-btn is-prev"
+                            onClick={() => jumpYoutubeBySubtitle(-1)}
+                            disabled={!canJumpPrev}
+                            aria-label={tr('Предыдущее предложение', 'Vorheriger Satz')}
+                          >
+                            <span className="youtube-sentence-jump-icon" aria-hidden="true">←</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="youtube-sentence-jump-btn is-next"
+                            onClick={() => jumpYoutubeBySubtitle(1)}
+                            disabled={!canJumpNext}
+                            aria-label={tr('Следующее предложение', 'Naechster Satz')}
+                          >
+                            <span className="youtube-sentence-jump-icon" aria-hidden="true">→</span>
+                          </button>
+                        </div>
+                      );
+                    })()}
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
                     {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
                     {youtubeSearchExpanded && (
@@ -14872,6 +15077,7 @@ function AppInner() {
                                     <p
                                       key={`${item.start}-${index}`}
                                       className={index === activeIndex ? 'is-active' : ''}
+                                      onClick={(event) => openYoutubeSentenceSelection(event, item.text, 'youtube_sentence')}
                                     >
                                       {renderSubtitleText(item.text)}
                                     </p>
@@ -15694,7 +15900,7 @@ function AppInner() {
                           </button>
                           <button
                             type="button"
-                            className="secondary-button reader-topbar-collapse-btn"
+                            className="secondary-button reader-topbar-collapse-btn reader-topbar-toggle-chip"
                             onClick={() => {
                               const next = !readerTopbarCollapsed;
                               setReaderTopbarCollapsed(next);
@@ -15706,7 +15912,7 @@ function AppInner() {
                               ? tr('Развернуть панель', 'Leiste aufklappen')
                               : tr('Свернуть панель', 'Leiste einklappen')}
                           >
-                            {readerTopbarCollapsed ? '▾' : '▴'}
+                            {tr('Свернуть', 'Einklappen')}
                           </button>
                         </div>
                       </div>
@@ -15716,11 +15922,11 @@ function AppInner() {
                         <div className="reader-topbar-peek">
                           <button
                             type="button"
-                            className="secondary-button reader-topbar-peek-btn"
+                            className="secondary-button reader-topbar-peek-btn reader-topbar-toggle-chip"
                             onClick={() => setReaderTopbarCollapsed(false)}
                             title={tr('Показать панель чтения', 'Leseleiste anzeigen')}
                           >
-                            ▾
+                            {tr('Развернуть', 'Aufklappen')}
                           </button>
                         </div>
                       )}
@@ -16394,7 +16600,7 @@ function AppInner() {
                                     return Math.max(maxLen, normalized.length);
                                   }, 0)
                                   : 0;
-                                const quizNeedsCompact = normalizedQuestionWord.length > 90 || longestOptionLen > 90;
+                                const quizNeedsCompact = isAnswered || normalizedQuestionWord.length > 90 || longestOptionLen > 90;
                                 const quizNeedsUltraCompact = normalizedQuestionWord.length > 150 || longestOptionLen > 130;
                                 const quizLayoutClassName = [
                                   'flashcard flashcard-quiz-layout',
@@ -17377,8 +17583,8 @@ function AppInner() {
                 >
                   {selectionText}
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: isYoutubeSelectionMenu ? '1fr' : '1fr 1fr', gap: 6 }}>
-                  {!isYoutubeSelectionMenu && (
+                <div style={{ display: 'grid', gridTemplateColumns: isInlineSelectionMenu ? '1fr' : '1fr 1fr', gap: 6 }}>
+                  {!isInlineSelectionMenu && (
                   <button
                     type="button"
                     className="secondary-button"

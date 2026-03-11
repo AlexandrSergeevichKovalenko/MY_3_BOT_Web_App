@@ -176,6 +176,9 @@ from backend.database import (
     get_youtube_transcript_cache,
     upsert_youtube_transcript_cache,
     upsert_youtube_translations,
+    get_youtube_watch_state,
+    get_latest_youtube_watch_state,
+    upsert_youtube_watch_state,
     get_flashcard_set,
     create_dictionary_folder,
     get_dictionary_folders,
@@ -15472,113 +15475,184 @@ def export_webapp_dictionary_pdf():
     except Exception as exc:
         return jsonify({"error": f"Ошибка получения словаря: {exc}"}), 500
 
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.lib import colors
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.lib import colors
 
-    buffer = BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=A4)
-    # Use Unicode-capable font for Cyrillic/Umlauts
-    font_name = "DejaVuSans"
-    font_bold = "DejaVuSans-Bold"
-    font_paths = [
-        os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans.ttf"),
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    font_bold_paths = [
-        os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans-Bold.ttf"),
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    ]
-    for fp in font_paths:
-        if os.path.exists(fp):
-            try:
-                pdfmetrics.registerFont(TTFont(font_name, fp))
-            except Exception:
-                font_name = "Helvetica"
-            break
-    else:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=A4)
+        # Keep Unicode-safe fallback for both regular and emphasized text.
         font_name = "Helvetica"
-    for fp in font_bold_paths:
-        if os.path.exists(fp):
-            try:
-                pdfmetrics.registerFont(TTFont(font_bold, fp))
-            except Exception:
-                font_bold = "Helvetica-Bold"
-            break
-    else:
         font_bold = "Helvetica-Bold"
-    width, height = A4
-    x = 40
-    y = height - 40
-    line_height = 14
-    title_size = 16
-    word_size = 16
-    normal_size = 11
-
-    pdf.setFont(font_name, title_size)
-    title = "Словарь"
-    pdf.drawString(x, y, title)
-    y -= 2 * line_height
-
-    pdf.setFont(font_name, normal_size)
-    for item in items:
-        response_json = item.get("response_json") or {}
-        word = item.get("word_ru") or response_json.get("word_ru") or item.get("word_de") or response_json.get("word_de") or "—"
-        translation = (
-            item.get("translation_de")
-            or response_json.get("translation_de")
-            or item.get("translation_ru")
-            or response_json.get("translation_ru")
-            or "—"
-        )
-        created_at = item.get("created_at") or ""
-        examples = response_json.get("usage_examples") or []
-        if isinstance(examples, str):
-            examples = [examples]
-
-        lines = [
-            f"Перевод: {translation}",
-            f"Дата: {created_at}",
+        font_paths = [
+            os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans.ttf"),
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         ]
-        if examples:
-            lines.append("Примеры:")
-            for example in examples[:3]:
-                lines.extend([f"- {line}" for line in _wrap_text(example, 90)])
+        font_bold_paths = [
+            os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans-Bold.ttf"),
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ]
+        for fp in font_paths:
+            if not os.path.exists(fp):
+                continue
+            try:
+                pdfmetrics.registerFont(TTFont("DejaVuSans", fp))
+                font_name = "DejaVuSans"
+                break
+            except Exception:
+                continue
+        for fp in font_bold_paths:
+            if not os.path.exists(fp):
+                continue
+            try:
+                pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", fp))
+                font_bold = "DejaVuSans-Bold"
+                break
+            except Exception:
+                continue
+        if font_bold == "Helvetica-Bold" and font_name != "Helvetica":
+            font_bold = font_name
 
-        # Word line: larger, bold, colored
-        if y < 80:
-            pdf.showPage()
-            pdf.setFont(font_name, normal_size)
+        width, height = A4
+        x = 40
+        card_width = width - (2 * x)
+        y = height - 40
+        line_height = 14
+        title_size = 16
+        target_word_size = 18
+        source_word_size = 11
+        normal_size = 10.5
+        meta_size = 9.5
+        card_padding_x = 14
+        card_padding_y = 12
+
+        def _lang_label(code: str) -> str:
+            normalized = _normalize_short_lang_code(code, fallback="")
+            return normalized.upper() or "?"
+
+        pdf.setFont(font_name, title_size)
+        title = "Словарь"
+        pdf.drawString(x, y, title)
+        y -= 2 * line_height
+
+        pdf.setFont(font_name, normal_size)
+        if not items:
+            pdf.setFillColorRGB(0.38, 0.41, 0.47)
+            pdf.drawString(x, y, "Словарь пуст.")
             pdf.setFillColor(colors.black)
-            y = height - 40
-        pdf.setFont(font_bold, word_size)
-        pdf.setFillColorRGB(0.12, 0.25, 0.65)
-        pdf.drawString(x, y, word)
-        pdf.setFillColor(colors.black)
-        y -= line_height * 1.4
+        for item in items:
+            response_json = item.get("response_json")
+            if isinstance(response_json, str):
+                try:
+                    response_json = json.loads(response_json)
+                except Exception:
+                    response_json = {}
+            if not isinstance(response_json, dict):
+                response_json = {}
+            item_source_lang = _normalize_short_lang_code(
+                item.get("source_lang") or response_json.get("source_lang"),
+                fallback=source_lang,
+            )
+            item_target_lang = _normalize_short_lang_code(
+                item.get("target_lang") or response_json.get("target_lang"),
+                fallback=target_lang,
+            )
+            source_text, target_text, word_ru, word_de, translation_de, translation_ru = _align_dictionary_legacy_ru_de_columns(
+                source_lang=item_source_lang,
+                target_lang=item_target_lang,
+                source_text=str(response_json.get("source_text") or ""),
+                target_text=str(response_json.get("target_text") or ""),
+                word_ru=str(item.get("word_ru") or response_json.get("word_ru") or ""),
+                word_de=str(item.get("word_de") or response_json.get("word_de") or ""),
+                translation_de=str(item.get("translation_de") or response_json.get("translation_de") or ""),
+                translation_ru=str(item.get("translation_ru") or response_json.get("translation_ru") or ""),
+            )
+            headline_word = target_text or word_de or translation_de or word_ru or translation_ru or "—"
+            source_word = source_text or word_ru or translation_ru or word_de or translation_de or "—"
+            created_at = str(item.get("created_at") or "").replace("T", " ").replace("+00:00", " UTC")
+            examples = response_json.get("usage_examples") or []
+            if isinstance(examples, str):
+                examples = [examples]
+            headline_lines = _wrap_text(str(headline_word), 38) or ["—"]
+            source_lines = _wrap_text(f"{_lang_label(item_source_lang)}: {source_word}", 62) or ["—"]
+            example_lines = []
+            for example in examples[:3]:
+                wrapped_example = _wrap_text(str(example), 78)
+                if not wrapped_example:
+                    continue
+                example_lines.append(f"- {wrapped_example[0]}")
+                example_lines.extend([f"  {line}" for line in wrapped_example[1:]])
+            body_lines = [f"Дата: {created_at}"] if created_at else []
+            if example_lines:
+                body_lines.append("Примеры:")
+                body_lines.extend(example_lines)
 
-        for line in lines:
-            if y < 60:
+            estimated_height = (
+                (card_padding_y * 2)
+                + 16
+                + (len(headline_lines) * 21)
+                + 8
+                + (len(source_lines) * 12)
+                + 8
+                + (len(body_lines) * 12)
+            )
+
+            if y - estimated_height < 45:
                 pdf.showPage()
                 pdf.setFont(font_name, normal_size)
                 pdf.setFillColor(colors.black)
                 y = height - 40
+
+            card_top = y
+            card_bottom = y - estimated_height
+            pdf.setFillColorRGB(0.985, 0.979, 0.955)
+            pdf.setStrokeColorRGB(0.84, 0.81, 0.74)
+            pdf.roundRect(x, card_bottom, card_width, estimated_height, 12, stroke=1, fill=1)
+
+            text_x = x + card_padding_x
+            text_y = card_top - card_padding_y
+
+            pdf.setFillColorRGB(0.42, 0.35, 0.21)
+            pdf.setFont(font_bold, meta_size)
+            pdf.drawString(text_x, text_y, _lang_label(item_target_lang))
+            text_y -= 16
+
+            pdf.setFillColorRGB(0.12, 0.25, 0.65)
+            pdf.setFont(font_bold, target_word_size)
+            for line in headline_lines:
+                pdf.drawString(text_x, text_y, str(line))
+                text_y -= 21
+
+            text_y -= 2
+            pdf.setFillColorRGB(0.30, 0.32, 0.37)
+            pdf.setFont(font_name, source_word_size)
+            for line in source_lines:
+                pdf.drawString(text_x, text_y, str(line))
+                text_y -= 12
+
+            text_y -= 4
+            pdf.setFillColor(colors.black)
             pdf.setFont(font_name, normal_size)
-            pdf.drawString(x, y, line)
-            y -= line_height
+            for line in body_lines:
+                pdf.drawString(text_x, text_y, str(line))
+                text_y -= 12
 
-        y -= line_height
+            y = card_bottom - 12
 
-    pdf.save()
-    buffer.seek(0)
-    return send_file(
-        buffer,
-        as_attachment=True,
-        download_name="dictionary.pdf",
-        mimetype="application/pdf",
-    )
+        pdf.save()
+        buffer.seek(0)
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name="dictionary.pdf",
+            mimetype="application/pdf",
+        )
+    except Exception as exc:
+        logging.exception("Dictionary PDF export failed: user_id=%s folder_mode=%s folder_id=%s", user_id, folder_mode, folder_id)
+        return jsonify({"error": f"Ошибка генерации PDF: {exc}"}), 500
 
 
 @app.route("/api/webapp/dictionary/save", methods=["POST"])
@@ -18094,6 +18168,52 @@ def get_youtube_transcript():
             "proxy_allowed": bool(proxy_allowed),
         }
     )
+
+
+@app.route("/api/webapp/youtube/state", methods=["POST"])
+def youtube_watch_state():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    video_id = str(payload.get("videoId") or "").strip()
+    input_text = str(payload.get("input") or "").strip()
+    current_time_seconds = payload.get("current_time_seconds")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    user_id_int = int(user_id)
+
+    if current_time_seconds is None:
+        try:
+            state = get_youtube_watch_state(user_id_int, video_id) if video_id else get_latest_youtube_watch_state(user_id_int)
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка загрузки прогресса YouTube: {exc}"}), 500
+        return jsonify({"ok": True, "state": state})
+
+    if not video_id:
+        return jsonify({"error": "videoId обязателен"}), 400
+    try:
+        safe_seconds = max(0, int(float(current_time_seconds or 0)))
+    except Exception:
+        return jsonify({"error": "current_time_seconds должен быть числом"}), 400
+
+    try:
+        state = upsert_youtube_watch_state(
+            user_id=user_id_int,
+            video_id=video_id,
+            current_time_seconds=safe_seconds,
+            input_text=input_text or None,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения прогресса YouTube: {exc}"}), 500
+    return jsonify({"ok": True, "state": state})
 
 
 @app.route("/api/webapp/youtube/catalog", methods=["POST"])

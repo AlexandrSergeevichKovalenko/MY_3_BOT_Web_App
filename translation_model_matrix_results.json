@@ -1,0 +1,753 @@
+{
+  "summary": {
+    "input_file": "/Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/scripts/compare_translation_models.input_template.json",
+    "baseline_model": "gpt-4.1-2025-04-14",
+    "models": [
+      "gpt-4.1-2025-04-14",
+      "gpt-5.1",
+      "gpt-5.2"
+    ],
+    "item_count": 7
+  },
+  "model_summaries": {
+    "gpt-4.1-2025-04-14": {
+      "avg_latency_ms": 2408.178726143108,
+      "total_latency_ms": 16857.251083001756,
+      "avg_feedback_chars": 511.42857142857144,
+      "avg_total_tokens": 1396.7142857142858,
+      "missing_score_count": 0,
+      "non_numeric_score_count": 0,
+      "missing_correct_translation_count": 0
+    },
+    "gpt-5.1": {
+      "avg_latency_ms": 2836.3391430003894,
+      "total_latency_ms": 19854.374001002725,
+      "avg_feedback_chars": 554.8571428571429,
+      "avg_total_tokens": 1419.5714285714287,
+      "missing_score_count": 0,
+      "non_numeric_score_count": 0,
+      "missing_correct_translation_count": 0,
+      "vs_baseline": {
+        "baseline_model": "gpt-4.1-2025-04-14",
+        "avg_score_delta": 5.571428571428571,
+        "avg_abs_score_delta": 8.142857142857142,
+        "avg_category_jaccard": 0.5417233560090703,
+        "avg_subcategory_jaccard": 0.1326530612244898,
+        "exact_correct_translation_match_count": 2
+      }
+    },
+    "gpt-5.2": {
+      "avg_latency_ms": 2535.490934571239,
+      "total_latency_ms": 17748.43654199867,
+      "avg_feedback_chars": 516.8571428571429,
+      "avg_total_tokens": 1401.2857142857142,
+      "missing_score_count": 0,
+      "non_numeric_score_count": 0,
+      "missing_correct_translation_count": 0,
+      "vs_baseline": {
+        "baseline_model": "gpt-4.1-2025-04-14",
+        "avg_score_delta": 11.857142857142858,
+        "avg_abs_score_delta": 11.857142857142858,
+        "avg_category_jaccard": 0.5045351473922903,
+        "avg_subcategory_jaccard": 0.19773242630385487,
+        "exact_correct_translation_match_count": 1
+      }
+    }
+  },
+  "cases": [
+    {
+      "case_id": "case-1",
+      "original_text": "Несмотря на то что комитет уже несколько месяцев обсуждает реформу системы образования, окончательное решение до сих пор откладывается из-за политических разногласий.",
+      "user_translation": "Obwohl das Komitee diskutiert schon mehrere Monate die Reform des Bildungssystems, die endgültige Entscheidung wird noch verschoben wegen politische Meinungsverschiedenheiten.",
+      "by_model": {
+        "gpt-4.1-2025-04-14": {
+          "model": "gpt-4.1-2025-04-14",
+          "feedback": "Score: 71/100\nMistake Categories: Conjunctions, Word Order, Adjectives, Cases, Punctuation\nSubcategories: Subordinating (obwohl/dass...), Incorrect Order in Subordinate Clause, Incorrect Adjective Case Agreement, Case after Preposition, Comma in Subordinate Clause\nCorrect Translation: Obwohl der Ausschuss die Reform des Bildungssystems bereits seit mehreren Monaten diskutiert, wird die endgültige Entscheidung wegen politischer Meinungsverschiedenheiten immer noch verschoben.",
+          "feedback_chars": 479,
+          "score": 71,
+          "score_str": "71",
+          "correct_translation": "Obwohl der Ausschuss die Reform des Bildungssystems bereits seit mehreren Monaten diskutiert, wird die endgültige Entscheidung wegen politischer Meinungsverschiedenheiten immer noch verschoben.",
+          "categories": [
+            "Conjunctions",
+            "Punctuation",
+            "Word Order",
+            "Cases",
+            "Adjectives"
+          ],
+          "subcategories": [
+            "Incorrect Order in Subordinate Clause",
+            "Comma in Subordinate Clause",
+            "Incorrect Adjective Case Agreement",
+            "Case after Preposition"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2566.416958998161,
+          "gateway": "responses",
+          "usage_model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1289,
+          "completion_tokens": 103,
+          "total_tokens": 1392
+        },
+        "gpt-5.1": {
+          "model": "gpt-5.1",
+          "feedback": "Score: 70/100\nMistake Categories: Verbs, Word Order, Cases, Adjectives, Conjunctions, Clauses & Sentence Types, Punctuation\nSubcategories: Verb Placement in Main Clause, Standard, Case after Preposition, Incorrect Adjective Case Agreement, Subordinating (weil/dass/ob/wenn...), Concessive Clauses (obwohl), Comma in Subordinate Clause\nCorrect Translation: Obwohl der Ausschuss seit mehreren Monaten die Reform des Bildungssystems diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten noch immer hinausgezögert.",
+          "feedback_chars": 548,
+          "score": 70,
+          "score_str": "70",
+          "correct_translation": "Obwohl der Ausschuss seit mehreren Monaten die Reform des Bildungssystems diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten noch immer hinausgezögert.",
+          "categories": [
+            "Conjunctions",
+            "Verbs",
+            "Punctuation",
+            "Word Order",
+            "Clauses & Sentence Types",
+            "Cases",
+            "Adjectives"
+          ],
+          "subcategories": [
+            "Case after Preposition",
+            "Verb Placement in Main Clause",
+            "Comma in Subordinate Clause",
+            "Concessive Clauses (obwohl)",
+            "Incorrect Adjective Case Agreement",
+            "Standard"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 3694.3096249997325,
+          "gateway": "responses",
+          "usage_model": "gpt-5.1-2025-11-13",
+          "prompt_tokens": 1288,
+          "completion_tokens": 135,
+          "total_tokens": 1423
+        },
+        "gpt-5.2": {
+          "model": "gpt-5.2",
+          "feedback": "Score: 78/100\nMistake Categories: Word Order, Cases, Articles & Determiners, Adjectives, Clauses & Sentence Types, Punctuation\nSubcategories: Verb-Second Rule (V2), Case after Preposition, Definite Articles (der/die/das), Incorrect Adjective Case Agreement, Concessive Clauses (obwohl), Comma in Subordinate Clause\nCorrect Translation: \"Obwohl der Ausschuss bereits seit mehreren Monaten die Reform des Bildungssystems diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten immer noch verschoben.\"",
+          "feedback_chars": 534,
+          "score": 78,
+          "score_str": "78",
+          "correct_translation": "\"Obwohl der Ausschuss bereits seit mehreren Monaten die Reform des Bildungssystems diskutiert, wird die endgültige Entscheidung aufgrund politischer Meinungsverschiedenheiten immer noch verschoben.\"",
+          "categories": [
+            "Articles & Determiners",
+            "Punctuation",
+            "Word Order",
+            "Clauses & Sentence Types",
+            "Cases",
+            "Adjectives"
+          ],
+          "subcategories": [
+            "Case after Preposition",
+            "Definite Articles (der/die/das)",
+            "Comma in Subordinate Clause",
+            "Concessive Clauses (obwohl)",
+            "Verb-Second Rule (V2)",
+            "Incorrect Adjective Case Agreement"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2659.488583998609,
+          "gateway": "responses",
+          "usage_model": "gpt-5.2-2025-12-11",
+          "prompt_tokens": 1288,
+          "completion_tokens": 126,
+          "total_tokens": 1414
+        }
+      }
+    },
+    {
+      "case_id": "case-2",
+      "original_text": "Если бы руководство компании своевременно отреагировало на предупреждения аналитиков, финансовых потерь можно было бы избежать.",
+      "user_translation": "Wenn die Leitung der Firma hätte rechtzeitig reagiert auf die Warnungen der Analysten, man konnte vermeiden die finanziellen Verluste.",
+      "by_model": {
+        "gpt-4.1-2025-04-14": {
+          "model": "gpt-4.1-2025-04-14",
+          "feedback": "Score: 53/100\nMistake Categories: Word Order, Verbs, Moods, Cases, Articles & Determiners, Conjunctions, Nouns\nSubcategories: Verb Placement in Subordinate Clause, Konjunktiv II, Accusative, Definite Articles, Conditionals (wenn...), Noun Capitalization\nCorrect Translation: Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+          "feedback_chars": 416,
+          "score": 53,
+          "score_str": "53",
+          "correct_translation": "Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+          "categories": [
+            "Conjunctions",
+            "Verbs",
+            "Moods",
+            "Word Order",
+            "Cases",
+            "Articles & Determiners",
+            "Nouns"
+          ],
+          "subcategories": [
+            "Verb Placement in Subordinate Clause",
+            "Accusative",
+            "Noun Capitalization"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 1738.8412910004263,
+          "gateway": "responses",
+          "usage_model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1275,
+          "completion_tokens": 99,
+          "total_tokens": 1374
+        },
+        "gpt-5.1": {
+          "model": "gpt-5.1",
+          "feedback": "Score: 45/100\nMistake Categories: Verbs, Tenses, Moods, Word Order, Clauses & Sentence Types, Articles & Determiners, Other mistake\nSubcategories: Verbs: Auxiliary Verbs (sein/haben/werden), Tenses: Tense Choice (context mismatch), Moods: Irrealis / Hypothetical, Moods: Konjunktiv II, Word Order: Standard, Word Order: Verb-Second Rule (V2), Word Order: Incorrect Order in Subordinate Clause, Clauses & Sentence Types: Conditionals (wenn/falls), Articles & Determiners: Article Omission/Redundancy, Other mistake\nCorrect Translation: Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+          "feedback_chars": 676,
+          "score": 45,
+          "score_str": "45",
+          "correct_translation": "Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+          "categories": [
+            "Other mistake",
+            "Verbs",
+            "Moods",
+            "Clauses & Sentence Types",
+            "Word Order",
+            "Tenses",
+            "Articles & Determiners"
+          ],
+          "subcategories": [],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2566.7167920000793,
+          "gateway": "responses",
+          "usage_model": "gpt-5.1-2025-11-13",
+          "prompt_tokens": 1274,
+          "completion_tokens": 178,
+          "total_tokens": 1452
+        },
+        "gpt-5.2": {
+          "model": "gpt-5.2",
+          "feedback": "Score: 55/100\nMistake Categories: Moods, Word Order, Clauses & Sentence Types, Verbs, Pronouns, Punctuation\nSubcategories: Konjunktiv II: würde-Form, Standard, Conditionals (wenn/falls), Auxiliary Verbs (sein/haben/werden), Indefinite Pronouns (man/jemand/etwas), Comma in Subordinate Clause\nCorrect Translation: Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+          "feedback_chars": 454,
+          "score": 55,
+          "score_str": "55",
+          "correct_translation": "Wenn die Unternehmensleitung rechtzeitig auf die Warnungen der Analysten reagiert hätte, hätten finanzielle Verluste vermieden werden können.",
+          "categories": [
+            "Verbs",
+            "Punctuation",
+            "Moods",
+            "Clauses & Sentence Types",
+            "Pronouns",
+            "Word Order"
+          ],
+          "subcategories": [
+            "Auxiliary Verbs (sein/haben/werden)",
+            "Comma in Subordinate Clause",
+            "Indefinite Pronouns (man/jemand/etwas)",
+            "Conditionals (wenn/falls)",
+            "Standard"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2349.9469999987923,
+          "gateway": "responses",
+          "usage_model": "gpt-5.2-2025-12-11",
+          "prompt_tokens": 1274,
+          "completion_tokens": 118,
+          "total_tokens": 1392
+        }
+      }
+    },
+    {
+      "case_id": "case-3",
+      "original_text": "Многие эксперты считают, что стремительное развитие искусственного интеллекта может радикально изменить структуру рынка труда в ближайшие десятилетия.",
+      "user_translation": "Viele Experten denken, dass die schnelle Entwicklung von künstliche Intelligenz kann radikal ändern die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten.",
+      "by_model": {
+        "gpt-4.1-2025-04-14": {
+          "model": "gpt-4.1-2025-04-14",
+          "feedback": "Score: 60/100\nMistake Categories: Nouns, Articles & Determiners, Cases, Verbs, Word Order\nSubcategories: Noun Capitalization, Case Agreement in Noun Phrase, Definite Articles, Verb Placement in Subordinate Clause, Adjective Case Agreement, Incorrect Order with Modal Verb\nCorrect Translation: Viele Experten sind der Meinung, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten radikal verändern könnte.",
+          "feedback_chars": 468,
+          "score": 60,
+          "score_str": "60",
+          "correct_translation": "Viele Experten sind der Meinung, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten radikal verändern könnte.",
+          "categories": [
+            "Verbs",
+            "Word Order",
+            "Cases",
+            "Articles & Determiners",
+            "Nouns"
+          ],
+          "subcategories": [
+            "Incorrect Order with Modal Verb",
+            "Verb Placement in Subordinate Clause",
+            "Noun Capitalization",
+            "Case Agreement in Noun Phrase"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2047.2806249999849,
+          "gateway": "responses",
+          "usage_model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1283,
+          "completion_tokens": 101,
+          "total_tokens": 1384
+        },
+        "gpt-5.1": {
+          "model": "gpt-5.1",
+          "feedback": "Score: 80/100\nMistake Categories: Articles & Determiners, Cases, Verbs, Word Order, Orthography & Spelling\nSubcategories: Article Omission/Redundancy, Case Agreement in Noun Phrase, Verb Placement in Main Clause, Conjugation, Capitalization\nCorrect Translation: Viele Experten sind der Ansicht, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den kommenden Jahrzehnten radikal verändern könnte.",
+          "feedback_chars": 438,
+          "score": 80,
+          "score_str": "80",
+          "correct_translation": "Viele Experten sind der Ansicht, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den kommenden Jahrzehnten radikal verändern könnte.",
+          "categories": [
+            "Orthography & Spelling",
+            "Verbs",
+            "Word Order",
+            "Cases",
+            "Articles & Determiners"
+          ],
+          "subcategories": [
+            "Verb Placement in Main Clause",
+            "Capitalization",
+            "Case Agreement in Noun Phrase",
+            "Article Omission/Redundancy",
+            "Conjugation"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2882.279875000677,
+          "gateway": "responses",
+          "usage_model": "gpt-5.1-2025-11-13",
+          "prompt_tokens": 1282,
+          "completion_tokens": 107,
+          "total_tokens": 1389
+        },
+        "gpt-5.2": {
+          "model": "gpt-5.2",
+          "feedback": "Score: 72/100\nMistake Categories: Articles & Determiners, Verbs, Word Order, Cases\nSubcategories: Article Omission/Redundancy, Verb Placement in Subordinate Clause, Incorrect Order in Subordinate Clause, Case Agreement in Noun Phrase\nCorrect Translation: Viele Experten sind der Ansicht, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten radikal verändern könnte.",
+          "feedback_chars": 430,
+          "score": 72,
+          "score_str": "72",
+          "correct_translation": "Viele Experten sind der Ansicht, dass die rasante Entwicklung der künstlichen Intelligenz die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten radikal verändern könnte.",
+          "categories": [
+            "Verbs",
+            "Cases",
+            "Articles & Determiners",
+            "Word Order"
+          ],
+          "subcategories": [
+            "Verb Placement in Subordinate Clause",
+            "Incorrect Order in Subordinate Clause",
+            "Case Agreement in Noun Phrase",
+            "Article Omission/Redundancy"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2237.151500001346,
+          "gateway": "responses",
+          "usage_model": "gpt-5.2-2025-12-11",
+          "prompt_tokens": 1282,
+          "completion_tokens": 96,
+          "total_tokens": 1378
+        }
+      }
+    },
+    {
+      "case_id": "case-4",
+      "original_text": "Хотя исследование ещё не завершено, предварительные результаты уже вызывают серьёзные дискуссии в научном сообществе.",
+      "user_translation": "Obwohl die Forschung ist noch nicht beendet, die vorläufige Ergebnisse verursachen schon ernsthafte Diskussionen im wissenschaftlichen Gemeinschaft.",
+      "by_model": {
+        "gpt-4.1-2025-04-14": {
+          "model": "gpt-4.1-2025-04-14",
+          "feedback": "Score: 60/100\nMistake Categories: Word Order, Articles & Determiners, Nouns, Cases, Adjectives, Prepositions, Orthography & Spelling, Clauses & Sentence Types\nSubcategories: Verb-Second Rule (V2), Definite Articles (der/die/das), Article Omission/Redundancy, Noun Capitalization, Case Agreement in Noun Phrase, Incorrect Adjective Case Agreement, Incorrect Preposition Usage, Capitalization, Subordinate Clause\nCorrect Translation: Obwohl die Forschung noch nicht abgeschlossen ist, rufen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft hervor.",
+          "feedback_chars": 594,
+          "score": 60,
+          "score_str": "60",
+          "correct_translation": "Obwohl die Forschung noch nicht abgeschlossen ist, rufen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft hervor.",
+          "categories": [
+            "Articles & Determiners",
+            "Orthography & Spelling",
+            "Prepositions",
+            "Word Order",
+            "Clauses & Sentence Types",
+            "Cases",
+            "Adjectives",
+            "Nouns"
+          ],
+          "subcategories": [
+            "Incorrect Preposition Usage",
+            "Definite Articles (der/die/das)",
+            "Capitalization",
+            "Case Agreement in Noun Phrase",
+            "Verb-Second Rule (V2)",
+            "Article Omission/Redundancy",
+            "Noun Capitalization",
+            "Incorrect Adjective Case Agreement"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2562.792458000331,
+          "gateway": "responses",
+          "usage_model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1277,
+          "completion_tokens": 133,
+          "total_tokens": 1410
+        },
+        "gpt-5.1": {
+          "model": "gpt-5.1",
+          "feedback": "Score: 60/100\nMistake Categories: Verbs, Word Order, Articles & Determiners, Cases, Nouns, Clauses & Sentence Types, Orthography & Spelling\nSubcategories: Verbs: Conjugation, Word Order: Verb-Second Rule (V2), Articles & Determiners: Definite Articles (der/die/das), Articles & Determiners: Article Omission/Redundancy, Cases: Case Agreement in Noun Phrase, Nouns: Noun Capitalization, Clauses & Sentence Types: Subordinate Clauses, Orthography & Spelling: Common Spelling Errors\nCorrect Translation: Obwohl die Forschung noch nicht abgeschlossen ist, rufen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft hervor.",
+          "feedback_chars": 663,
+          "score": 60,
+          "score_str": "60",
+          "correct_translation": "Obwohl die Forschung noch nicht abgeschlossen ist, rufen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft hervor.",
+          "categories": [
+            "Orthography & Spelling",
+            "Verbs",
+            "Word Order",
+            "Clauses & Sentence Types",
+            "Cases",
+            "Articles & Determiners",
+            "Nouns"
+          ],
+          "subcategories": [],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2426.5404170000693,
+          "gateway": "responses",
+          "usage_model": "gpt-5.1-2025-11-13",
+          "prompt_tokens": 1276,
+          "completion_tokens": 167,
+          "total_tokens": 1443
+        },
+        "gpt-5.2": {
+          "model": "gpt-5.2",
+          "feedback": "Score: 72/100\nMistake Categories: Word Order, Verbs, Articles & Determiners, Cases, Orthography & Spelling, Clauses & Sentence Types\nSubcategories: Verb Placement in Subordinate Clause, Verb-Second Rule (V2), Definite Articles (der/die/das), Case Agreement in Noun Phrase, Capitalization, Comma in Subordinate Clause\nCorrect Translation: \"Obwohl die Forschung noch nicht abgeschlossen ist, lösen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft aus.\"",
+          "feedback_chars": 499,
+          "score": 72,
+          "score_str": "72",
+          "correct_translation": "\"Obwohl die Forschung noch nicht abgeschlossen ist, lösen die vorläufigen Ergebnisse bereits ernsthafte Diskussionen in der wissenschaftlichen Gemeinschaft aus.\"",
+          "categories": [
+            "Orthography & Spelling",
+            "Verbs",
+            "Word Order",
+            "Clauses & Sentence Types",
+            "Cases",
+            "Articles & Determiners"
+          ],
+          "subcategories": [
+            "Capitalization",
+            "Definite Articles (der/die/das)",
+            "Case Agreement in Noun Phrase",
+            "Comma in Subordinate Clause",
+            "Verb-Second Rule (V2)",
+            "Verb Placement in Subordinate Clause"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2314.4121670011373,
+          "gateway": "responses",
+          "usage_model": "gpt-5.2-2025-12-11",
+          "prompt_tokens": 1276,
+          "completion_tokens": 116,
+          "total_tokens": 1392
+        }
+      }
+    },
+    {
+      "case_id": "case-5",
+      "original_text": "Он утверждает, что принял это решение исключительно из профессиональных соображений, хотя многие подозревают наличие скрытых мотивов.",
+      "user_translation": "Er behauptet, dass er hat diese Entscheidung nur aus professionelle Gründe genommen, obwohl viele vermuten dass es gibt versteckte Motive.",
+      "by_model": {
+        "gpt-4.1-2025-04-14": {
+          "model": "gpt-4.1-2025-04-14",
+          "feedback": "Score: 54/100\nMistake Categories: Verbs, Adjectives, Word Order, Cases, Punctuation, Conjunctions, Infinitive & Participles, Articles & Determiners\nSubcategories: Verb Placement in Subordinate Clause, Conjugation, Incorrect Adjective Case Agreement, Adjective Endings, Standard Word Order, Case after Preposition, Comma in Subordinate Clause, Subordinating Conjunctions, Infinitive Form Errors, Definite Articles, Article Omission, Noun Capitalization\nCorrect Translation: Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen habe, obwohl viele einen versteckten Hintergedanken vermuten.",
+          "feedback_chars": 624,
+          "score": 54,
+          "score_str": "54",
+          "correct_translation": "Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen habe, obwohl viele einen versteckten Hintergedanken vermuten.",
+          "categories": [
+            "Articles & Determiners",
+            "Conjunctions",
+            "Infinitive & Participles",
+            "Verbs",
+            "Punctuation",
+            "Word Order",
+            "Cases",
+            "Adjectives"
+          ],
+          "subcategories": [
+            "Case after Preposition",
+            "Comma in Subordinate Clause",
+            "Conjugation",
+            "Verb Placement in Subordinate Clause",
+            "Infinitive Form Errors",
+            "Noun Capitalization",
+            "Incorrect Adjective Case Agreement"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2540.138249998563,
+          "gateway": "responses",
+          "usage_model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1277,
+          "completion_tokens": 141,
+          "total_tokens": 1418
+        },
+        "gpt-5.1": {
+          "model": "gpt-5.1",
+          "feedback": "Score: 55/100\nMistake Categories: Verbs, Adjectives, Word Order, Clauses & Sentence Types, Punctuation, Other mistake\nSubcategories: Verbs: Conjugation, Verbs: Verb Placement in Main Clause, Adjectives: Endings, Word Order: Standard, Clauses & Sentence Types: Subordinating (weil/dass/ob/wenn...), Punctuation: Comma in Subordinate Clause, Other mistake\nCorrect Translation: Er behauptet, dass er diese Entscheidung ausschließlich aus professionellen Gründen getroffen habe, obwohl viele einen versteckten Beweggrund vermuten.",
+          "feedback_chars": 526,
+          "score": 55,
+          "score_str": "55",
+          "correct_translation": "Er behauptet, dass er diese Entscheidung ausschließlich aus professionellen Gründen getroffen habe, obwohl viele einen versteckten Beweggrund vermuten.",
+          "categories": [
+            "Other mistake",
+            "Verbs",
+            "Punctuation",
+            "Clauses & Sentence Types",
+            "Word Order",
+            "Adjectives"
+          ],
+          "subcategories": [],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 3078.9445000009437,
+          "gateway": "responses",
+          "usage_model": "gpt-5.1-2025-11-13",
+          "prompt_tokens": 1276,
+          "completion_tokens": 135,
+          "total_tokens": 1411
+        },
+        "gpt-5.2": {
+          "model": "gpt-5.2",
+          "feedback": "Score: 68/100\nMistake Categories: Verbs, Word Order, Adjectives, Prepositions, Punctuation, Orthography & Spelling\nSubcategories: Verbs: Verb Placement in Subordinate Clause, Auxiliary Verbs (sein/haben/werden); Word Order: Incorrect Order in Subordinate Clause; Adjectives: Incorrect Adjective Case Agreement; Prepositions: Fixed Prepositional Phrases (idiomatic); Punctuation: Comma in Subordinate Clause; Orthography & Spelling: Capitalization\nCorrect Translation: \"Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen habe, obwohl viele das Vorhandensein versteckter Motive vermuten.\"",
+          "feedback_chars": 625,
+          "score": 68,
+          "score_str": "68",
+          "correct_translation": "\"Er behauptet, dass er diese Entscheidung ausschließlich aus beruflichen Gründen getroffen habe, obwohl viele das Vorhandensein versteckter Motive vermuten.\"",
+          "categories": [
+            "Orthography & Spelling",
+            "Verbs",
+            "Punctuation",
+            "Prepositions",
+            "Word Order",
+            "Adjectives"
+          ],
+          "subcategories": [],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2742.6184579999244,
+          "gateway": "responses",
+          "usage_model": "gpt-5.2-2025-12-11",
+          "prompt_tokens": 1276,
+          "completion_tokens": 147,
+          "total_tokens": 1423
+        }
+      }
+    },
+    {
+      "case_id": "case-6",
+      "original_text": "Даже если предложенная стратегия кажется на первый взгляд убедительной, её долгосрочные последствия могут оказаться гораздо более сложными.",
+      "user_translation": "Auch wenn die vorgeschlagene Strategie scheint auf den ersten Blick überzeugend, ihre langfristige Folgen können viel komplizierter sein.",
+      "by_model": {
+        "gpt-4.1-2025-04-14": {
+          "model": "gpt-4.1-2025-04-14",
+          "feedback": "Score: 60/100\nMistake Categories: Word Order, Nouns, Articles & Determiners, Cases, Verbs, Conjunctions, Punctuation\nSubcategories: Verb-Second Rule (V2), Noun Capitalization, Pluralization, Definite Articles (der/die/das), Genitive, Infinitive Form Errors, Subordinating Conjunctions, Comma in Subordinate Clause\nCorrect Translation: Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen wesentlich komplizierter sein.",
+          "feedback_chars": 482,
+          "score": 60,
+          "score_str": "60",
+          "correct_translation": "Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, könnten ihre langfristigen Folgen wesentlich komplizierter sein.",
+          "categories": [
+            "Conjunctions",
+            "Verbs",
+            "Punctuation",
+            "Word Order",
+            "Cases",
+            "Articles & Determiners",
+            "Nouns"
+          ],
+          "subcategories": [
+            "Definite Articles (der/die/das)",
+            "Genitive",
+            "Comma in Subordinate Clause",
+            "Verb-Second Rule (V2)",
+            "Pluralization",
+            "Infinitive Form Errors",
+            "Noun Capitalization"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 3378.4593750024214,
+          "gateway": "responses",
+          "usage_model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1274,
+          "completion_tokens": 117,
+          "total_tokens": 1391
+        },
+        "gpt-5.1": {
+          "model": "gpt-5.1",
+          "feedback": "Score: 70/100\nMistake Categories: Word Order, Articles & Determiners, Nouns, Punctuation, Other mistake\nSubcategories: Verb-Second Rule (V2), Article Omission/Redundancy, Pluralization, Comma in Subordinate Clause, Other mistake\nCorrect Translation: Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, können ihre langfristigen Folgen sich als wesentlich komplizierter erweisen.",
+          "feedback_chars": 409,
+          "score": 70,
+          "score_str": "70",
+          "correct_translation": "Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, können ihre langfristigen Folgen sich als wesentlich komplizierter erweisen.",
+          "categories": [
+            "Other mistake",
+            "Punctuation",
+            "Word Order",
+            "Articles & Determiners",
+            "Nouns"
+          ],
+          "subcategories": [
+            "Pluralization",
+            "Comma in Subordinate Clause",
+            "Article Omission/Redundancy",
+            "Verb-Second Rule (V2)"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2414.167875002022,
+          "gateway": "responses",
+          "usage_model": "gpt-5.1-2025-11-13",
+          "prompt_tokens": 1273,
+          "completion_tokens": 103,
+          "total_tokens": 1376
+        },
+        "gpt-5.2": {
+          "model": "gpt-5.2",
+          "feedback": "Score: 82/100\nMistake Categories: Word Order, Cases, Verbs, Punctuation\nSubcategories: Verb-Second Rule (V2), Case Agreement in Noun Phrase, Verb Placement in Subordinate Clause, Comma in Subordinate Clause\nCorrect Translation: \"Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, können ihre langfristigen Folgen wesentlich komplexer sein.\"",
+          "feedback_chars": 372,
+          "score": 82,
+          "score_str": "82",
+          "correct_translation": "\"Auch wenn die vorgeschlagene Strategie auf den ersten Blick überzeugend erscheint, können ihre langfristigen Folgen wesentlich komplexer sein.\"",
+          "categories": [
+            "Verbs",
+            "Cases",
+            "Punctuation",
+            "Word Order"
+          ],
+          "subcategories": [
+            "Verb Placement in Subordinate Clause",
+            "Comma in Subordinate Clause",
+            "Case Agreement in Noun Phrase",
+            "Verb-Second Rule (V2)"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 1886.6888749980717,
+          "gateway": "responses",
+          "usage_model": "gpt-5.2-2025-12-11",
+          "prompt_tokens": 1273,
+          "completion_tokens": 87,
+          "total_tokens": 1360
+        }
+      }
+    },
+    {
+      "case_id": "case-7",
+      "original_text": "Трудно отрицать, что глобализация принесла значительные экономические преимущества, однако она также усилила социальное неравенство во многих странах.",
+      "user_translation": "Es ist schwer zu leugnen, dass Globalisierung hat gebracht bedeutende wirtschaftliche Vorteile, aber sie hat auch stärker gemacht die soziale Ungleichheit in viele Länder.",
+      "by_model": {
+        "gpt-4.1-2025-04-14": {
+          "model": "gpt-4.1-2025-04-14",
+          "feedback": "Score: 48/100\nMistake Categories: Word Order, Articles & Determiners, Prepositions, Cases, Adjectives, Plurals, Punctuation\nSubcategories: Verb-Second Rule (V2), Article Omission/Redundancy, Incorrect Preposition Usage, Case after Preposition, Incorrect Adjective Case Agreement, Pluralization, Comma in Subordinate Clause\nCorrect Translation: Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+          "feedback_chars": 517,
+          "score": 48,
+          "score_str": "48",
+          "correct_translation": "Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+          "categories": [
+            "Articles & Determiners",
+            "Punctuation",
+            "Prepositions",
+            "Word Order",
+            "Cases",
+            "Adjectives"
+          ],
+          "subcategories": [
+            "Incorrect Preposition Usage",
+            "Case after Preposition",
+            "Comma in Subordinate Clause",
+            "Verb-Second Rule (V2)",
+            "Article Omission/Redundancy",
+            "Pluralization",
+            "Incorrect Adjective Case Agreement"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2023.3221250018687,
+          "gateway": "responses",
+          "usage_model": "gpt-4.1-2025-04-14",
+          "prompt_tokens": 1289,
+          "completion_tokens": 119,
+          "total_tokens": 1408
+        },
+        "gpt-5.1": {
+          "model": "gpt-5.1",
+          "feedback": "Score: 65/100\nMistake Categories: Verbs, Word Order, Cases, Prepositions, Articles & Determiners, Clauses & Sentence Types, Other mistake\nSubcategories: Verbs: Conjugation, Word Order: Verb-Second Rule (V2), Word Order: Standard, Cases: Case after Preposition, Prepositions: Incorrect Preposition Usage, Articles & Determiners: Article Omission/Redundancy, Clauses & Sentence Types: Main vs Subordinate Clause, Other mistake\nCorrect Translation: Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch/aber hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+          "feedback_chars": 624,
+          "score": 65,
+          "score_str": "65",
+          "correct_translation": "Es ist schwer zu leugnen, dass die Globalisierung bedeutende wirtschaftliche Vorteile gebracht hat, jedoch/aber hat sie auch die soziale Ungleichheit in vielen Ländern verstärkt.",
+          "categories": [
+            "Other mistake",
+            "Verbs",
+            "Prepositions",
+            "Word Order",
+            "Clauses & Sentence Types",
+            "Cases",
+            "Articles & Determiners"
+          ],
+          "subcategories": [],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 2791.4149169992015,
+          "gateway": "responses",
+          "usage_model": "gpt-5.1-2025-11-13",
+          "prompt_tokens": 1288,
+          "completion_tokens": 155,
+          "total_tokens": 1443
+        },
+        "gpt-5.2": {
+          "model": "gpt-5.2",
+          "feedback": "Score: 62/100\nMistake Categories: Articles & Determiners, Verbs, Word Order, Prepositions, Clauses & Sentence Types, Other mistake\nSubcategories: Articles & Determiners: Article Omission/Redundancy; Verbs: Verb Placement in Subordinate Clause, Verb Placement in Main Clause; Word Order: Verb-Second Rule (V2), Standard, Position of Time/Manner/Place; Prepositions: Case after Preposition, Incorrect Preposition Usage; Clauses & Sentence Types: Main vs Subordinate Clause; Other mistake: Unclassified mistake\nCorrect Translation: \"Es ist schwer zu leugnen, dass die Globalisierung erhebliche wirtschaftliche Vorteile gebracht hat, sie jedoch auch die soziale Ungleichheit in vielen Ländern verstärkt hat.\"",
+          "feedback_chars": 704,
+          "score": 62,
+          "score_str": "62",
+          "correct_translation": "\"Es ist schwer zu leugnen, dass die Globalisierung erhebliche wirtschaftliche Vorteile gebracht hat, sie jedoch auch die soziale Ungleichheit in vielen Ländern verstärkt hat.\"",
+          "categories": [
+            "Other mistake",
+            "Verbs",
+            "Prepositions",
+            "Clauses & Sentence Types",
+            "Word Order",
+            "Articles & Determiners"
+          ],
+          "subcategories": [
+            "Standard"
+          ],
+          "missing_score": false,
+          "non_numeric_score": false,
+          "missing_correct_translation": false,
+          "elapsed_ms": 3558.129958000791,
+          "gateway": "responses",
+          "usage_model": "gpt-5.2-2025-12-11",
+          "prompt_tokens": 1288,
+          "completion_tokens": 162,
+          "total_tokens": 1450
+        }
+      }
+    }
+  ]
+}
