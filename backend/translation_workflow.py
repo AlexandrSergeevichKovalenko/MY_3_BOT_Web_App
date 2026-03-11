@@ -26,6 +26,7 @@ from backend.database import (
     get_db_connection,
     get_db_connection_context,
     apply_skill_events_for_error,
+    update_translation_check_item_result,
 )
 
 
@@ -1550,6 +1551,209 @@ def get_daily_translation_history(
     return items
 
 
+def _normalize_translation_session_id(session_id: str | int | None) -> str | int | None:
+    normalized = session_id
+    if isinstance(normalized, str):
+        stripped_session_id = normalized.strip()
+        if not stripped_session_id:
+            return None
+        if stripped_session_id.isdigit():
+            return int(stripped_session_id)
+        return stripped_session_id
+    return normalized
+
+
+def _resolve_latest_translation_session_id(
+    cursor,
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> str | int | None:
+    cursor.execute(
+        """
+        SELECT session_id
+        FROM bt_3_daily_sentences
+        WHERE user_id = %s
+          AND COALESCE(source_lang, 'ru') = %s
+          AND COALESCE(target_lang, 'de') = %s
+        ORDER BY id DESC
+        LIMIT 1;
+        """,
+        (user_id, source_lang, target_lang),
+    )
+    latest_session = cursor.fetchone()
+    return latest_session[0] if latest_session else None
+
+
+def _normalize_category_pairs(
+    categories: list[str],
+    subcategories: list[str],
+    *,
+    target_lang: str,
+    fallback_to_other: bool = False,
+) -> list[tuple[str, str]]:
+    language_categories, language_subcategories, language_subcategories_lower = _get_language_taxonomy(target_lang)
+    normalized_pairs: list[tuple[str, str]] = []
+    for cat in categories:
+        cat_lower = str(cat or "").strip().lower()
+        if not cat_lower or cat_lower not in language_subcategories_lower:
+            continue
+        for subcat in subcategories:
+            subcat_lower = str(subcat or "").strip().lower()
+            if not subcat_lower or subcat_lower not in language_subcategories_lower[cat_lower]:
+                continue
+            canonical_cat = next(
+                (value for value in language_categories if value.lower() == cat_lower),
+                str(cat or "").strip() or "Other mistake",
+            )
+            canonical_sub = next(
+                (
+                    value
+                    for value in language_subcategories.get(canonical_cat, [])
+                    if value.lower() == subcat_lower
+                ),
+                str(subcat or "").strip() or "Unclassified mistake",
+            )
+            normalized_pairs.append((canonical_cat, canonical_sub))
+
+    if not normalized_pairs and fallback_to_other:
+        normalized_pairs.append(("Other mistake", "Unclassified mistake"))
+    return list(dict.fromkeys(normalized_pairs))
+
+
+def _log_translation_mistake_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    original_text: str,
+    categories: list[str],
+    subcategories: list[str],
+    score: int,
+    correct_translation: str | None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> list[tuple[str, str]]:
+    language_categories, language_subcategories, _ = _get_language_taxonomy(target_lang)
+    if categories:
+        logging.info("Categories from log_translation_mistake: %s", ", ".join(categories))
+    if subcategories:
+        logging.info("Subcategories from log_translation_mistake: %s", ", ".join(subcategories))
+
+    valid_combinations = _normalize_category_pairs(
+        categories,
+        subcategories,
+        target_lang=target_lang,
+        fallback_to_other=True,
+    )
+    cursor.execute(
+        """
+        SELECT id_for_mistake_table
+        FROM bt_3_daily_sentences
+        WHERE sentence=%s
+          AND COALESCE(source_lang, 'ru') = %s
+          AND COALESCE(target_lang, 'de') = %s
+        LIMIT 1;
+        """,
+        (original_text, source_lang or "ru", target_lang or "de"),
+    )
+    result = cursor.fetchone()
+    sentence_id = result[0] if result else None
+    safe_correct_translation = correct_translation if correct_translation is not None else ""
+    applied_pairs: list[tuple[str, str]] = []
+
+    insert_sql = """
+        INSERT INTO bt_3_detailed_mistakes (
+            user_id, sentence, added_data, main_category, sub_category, mistake_count, sentence_id,
+            correct_translation, score
+        ) VALUES (%s, %s, NOW(), %s, %s, 1, %s, %s, %s)
+        ON CONFLICT (user_id, sentence, main_category, sub_category)
+        DO UPDATE SET
+            mistake_count = bt_3_detailed_mistakes.mistake_count + 1,
+            attempt = bt_3_detailed_mistakes.attempt + 1,
+            last_seen = NOW(),
+            score = EXCLUDED.score;
+    """
+
+    for main_category, sub_category in valid_combinations:
+        used_main_category = next(
+            (cat for cat in language_categories if cat.lower() == main_category.lower()),
+            main_category,
+        )
+        used_sub_category = next(
+            (
+                subcat
+                for subcat in language_subcategories.get(used_main_category, [])
+                if subcat.lower() == sub_category.lower()
+            ),
+            sub_category,
+        )
+
+        try:
+            cursor.execute("SAVEPOINT log_translation_mistake_sp;")
+            cursor.execute(
+                insert_sql,
+                (
+                    user_id,
+                    original_text,
+                    used_main_category,
+                    used_sub_category,
+                    sentence_id,
+                    safe_correct_translation,
+                    score,
+                ),
+            )
+        except psycopg2.Error as exc:
+            logging.warning(
+                "Ошибка записи detailed_mistakes (%s / %s). "
+                "Пробуем fallback Other mistake / Unclassified mistake. %s",
+                used_main_category,
+                used_sub_category,
+                exc,
+            )
+            try:
+                cursor.execute("ROLLBACK TO SAVEPOINT log_translation_mistake_sp;")
+            except Exception:
+                pass
+            used_main_category = "Other mistake"
+            used_sub_category = "Unclassified mistake"
+            try:
+                cursor.execute(
+                    insert_sql,
+                    (
+                        user_id,
+                        original_text,
+                        used_main_category,
+                        used_sub_category,
+                        sentence_id,
+                        safe_correct_translation,
+                        score,
+                    ),
+                )
+            except psycopg2.Error:
+                logging.exception(
+                    "Не удалось записать ошибку даже в fallback-категорию "
+                    "for user_id=%s sentence_id=%s",
+                    user_id,
+                    sentence_id,
+                )
+                try:
+                    cursor.execute("ROLLBACK TO SAVEPOINT log_translation_mistake_sp;")
+                    cursor.execute("RELEASE SAVEPOINT log_translation_mistake_sp;")
+                except Exception:
+                    pass
+                continue
+        finally:
+            try:
+                cursor.execute("RELEASE SAVEPOINT log_translation_mistake_sp;")
+            except Exception:
+                pass
+
+        applied_pairs.append((used_main_category, used_sub_category))
+
+    return list(dict.fromkeys(applied_pairs))
+
+
 async def log_translation_mistake(
     user_id: int,
     original_text: str,
@@ -1561,306 +1765,54 @@ async def log_translation_mistake(
     source_lang: str = "ru",
     target_lang: str = "de",
 ) -> None:
-    language_categories, language_subcategories, language_subcategories_lower = _get_language_taxonomy(target_lang)
-    if categories:
-        logging.info("Categories from log_translation_mistake: %s", ", ".join(categories))
-    if subcategories:
-        logging.info("Subcategories from log_translation_mistake: %s", ", ".join(subcategories))
-
-    valid_combinations = []
-    for cat in categories:
-        cat_lower = cat.lower()
-        for subcat in subcategories:
-            subcat_lower = subcat.lower()
-            if cat_lower in language_subcategories_lower and subcat_lower in language_subcategories_lower[cat_lower]:
-                valid_combinations.append((cat_lower, subcat_lower))
-
-    if not valid_combinations:
-        valid_combinations.append(("Other mistake", "Unclassified mistake"))
-
-    valid_combinations = list(set(valid_combinations))
+    applied_pairs: list[tuple[str, str]] = []
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id_for_mistake_table
-                FROM bt_3_daily_sentences
-                WHERE sentence=%s
-                  AND COALESCE(source_lang, 'ru') = %s
-                  AND COALESCE(target_lang, 'de') = %s
-                LIMIT 1;
-                """,
-                (original_text, source_lang or "ru", target_lang or "de"),
+            applied_pairs = _log_translation_mistake_with_cursor(
+                cursor,
+                user_id=user_id,
+                original_text=original_text,
+                categories=categories,
+                subcategories=subcategories,
+                score=score,
+                correct_translation=correct_translation,
+                source_lang=source_lang,
+                target_lang=target_lang,
             )
-            result = cursor.fetchone()
-            sentence_id = result[0] if result else None
-            safe_correct_translation = correct_translation if correct_translation is not None else ""
 
-            insert_sql = """
-                INSERT INTO bt_3_detailed_mistakes (
-                    user_id, sentence, added_data, main_category, sub_category, mistake_count, sentence_id,
-                    correct_translation, score
-                ) VALUES (%s, %s, NOW(), %s, %s, 1, %s, %s, %s)
-                ON CONFLICT (user_id, sentence, main_category, sub_category)
-                DO UPDATE SET
-                    mistake_count = bt_3_detailed_mistakes.mistake_count + 1,
-                    attempt = bt_3_detailed_mistakes.attempt + 1,
-                    last_seen = NOW(),
-                    score = EXCLUDED.score;
-            """
-
-            for main_category, sub_category in valid_combinations:
-                main_category = next(
-                    (cat for cat in language_categories if cat.lower() == main_category),
-                    main_category,
-                )
-                sub_category = next(
-                    (
-                        subcat
-                        for subcat in language_subcategories.get(main_category, [])
-                        if subcat.lower() == sub_category
-                    ),
-                    sub_category,
-                )
-                used_main_category = main_category
-                used_sub_category = sub_category
-
-                try:
-                    cursor.execute("SAVEPOINT log_translation_mistake_sp;")
-                    cursor.execute(
-                        insert_sql,
-                        (
-                            user_id,
-                            original_text,
-                            used_main_category,
-                            used_sub_category,
-                            sentence_id,
-                            safe_correct_translation,
-                            score,
-                        ),
-                    )
-                except psycopg2.Error as exc:
-                    logging.warning(
-                        "Ошибка записи detailed_mistakes (%s / %s). "
-                        "Пробуем fallback Other mistake / Unclassified mistake. %s",
-                        used_main_category,
-                        used_sub_category,
-                        exc,
-                    )
-                    try:
-                        cursor.execute("ROLLBACK TO SAVEPOINT log_translation_mistake_sp;")
-                    except Exception:
-                        pass
-                    used_main_category = "Other mistake"
-                    used_sub_category = "Unclassified mistake"
-                    try:
-                        cursor.execute(
-                            insert_sql,
-                            (
-                                user_id,
-                                original_text,
-                                used_main_category,
-                                used_sub_category,
-                                sentence_id,
-                                safe_correct_translation,
-                                score,
-                            ),
-                        )
-                    except psycopg2.Error:
-                        logging.exception(
-                            "Не удалось записать ошибку даже в fallback-категорию "
-                            "for user_id=%s sentence_id=%s",
-                            user_id,
-                            sentence_id,
-                        )
-                        try:
-                            cursor.execute("ROLLBACK TO SAVEPOINT log_translation_mistake_sp;")
-                            cursor.execute("RELEASE SAVEPOINT log_translation_mistake_sp;")
-                        except Exception:
-                            pass
-                        continue
-                finally:
-                    try:
-                        cursor.execute("RELEASE SAVEPOINT log_translation_mistake_sp;")
-                    except Exception:
-                        pass
-
-                try:
-                    apply_skill_events_for_error(
-                        user_id=int(user_id),
-                        source_lang=source_lang or "ru",
-                        target_lang=target_lang or "de",
-                        error_category=used_main_category,
-                        error_subcategory=used_sub_category,
-                        event_type="fail",
-                        fail_delta=-3.0,
-                        success_delta=2.0,
-                    )
-                except Exception as exc:
-                    logging.warning("Skill fail update skipped: %s", exc)
+    for main_category, sub_category in applied_pairs:
+        try:
+            apply_skill_events_for_error(
+                user_id=int(user_id),
+                source_lang=source_lang or "ru",
+                target_lang=target_lang or "de",
+                error_category=main_category,
+                error_subcategory=sub_category,
+                event_type="fail",
+                fail_delta=-3.0,
+                success_delta=2.0,
+            )
+        except Exception as exc:
+            logging.warning("Skill fail update skipped: %s", exc)
 
 
-async def check_user_translation_webapp(
+async def apply_translation_result_side_effects(
+    *,
     user_id: int,
-    username: str | None,
-    translations: list[dict[str, Any]],
+    original_text: str,
+    user_translation: str,
+    sentence_id_for_mistake: int,
+    score_value: int,
+    correct_translation: str | None,
+    categories: list[str],
+    subcategories: list[str],
     source_lang: str = "ru",
     target_lang: str = "de",
-    daily_session_id: str | int | None = None,
-) -> list[dict[str, Any]]:
-    if not translations:
-        return []
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    language_categories, language_subcategories, language_subcategories_lower = _get_language_taxonomy(target_lang)
-
-    try:
-        latest_session_id = daily_session_id
-        if isinstance(latest_session_id, str):
-            stripped_session_id = latest_session_id.strip()
-            if not stripped_session_id:
-                latest_session_id = None
-            elif stripped_session_id.isdigit():
-                latest_session_id = int(stripped_session_id)
-            else:
-                latest_session_id = stripped_session_id
-        if latest_session_id is None:
-            cursor.execute(
-                """
-                SELECT session_id
-                FROM bt_3_daily_sentences
-                WHERE user_id = %s
-                  AND COALESCE(source_lang, 'ru') = %s
-                  AND COALESCE(target_lang, 'de') = %s
-                ORDER BY id DESC
-                LIMIT 1;
-                """,
-                (user_id, (source_lang or "ru"), (target_lang or "de")),
-            )
-            latest_session = cursor.fetchone()
-            if not latest_session:
-                return []
-            latest_session_id = latest_session[0]
-        if latest_session_id is None:
-            return []
-
-        cursor.execute(
-            """
-            SELECT unique_id, id_for_mistake_table, id, sentence, session_id
-            FROM bt_3_daily_sentences
-            WHERE session_id = %s
-              AND user_id = %s
-              AND COALESCE(source_lang, 'ru') = %s
-              AND COALESCE(target_lang, 'de') = %s;
-            """,
-            (latest_session_id, user_id, (source_lang or "ru"), (target_lang or "de")),
-        )
-        allowed_rows = cursor.fetchall()
-        allowed_by_mistake_id = {
-            row[1]: {
-                "unique_id": row[0],
-                "sentence_id": row[2],
-                "sentence": row[3],
-                "session_id": row[4],
-            }
-            for row in allowed_rows
-        }
-
-        results: list[dict[str, Any]] = []
-
-        for entry in translations:
-            sentence_id_for_mistake = entry.get("id_for_mistake_table")
-            if isinstance(sentence_id_for_mistake, str) and sentence_id_for_mistake.isdigit():
-                sentence_id_for_mistake = int(sentence_id_for_mistake)
-            user_translation = (entry.get("translation") or "").strip()
-            if not sentence_id_for_mistake or not user_translation:
-                continue
-
-            if sentence_id_for_mistake not in allowed_by_mistake_id:
-                results.append(
-                    {
-                        "sentence_number": None,
-                        "error": "Предложение не принадлежит пользователю или не найдено.",
-                    }
-                )
-                continue
-
-            sentence_info = allowed_by_mistake_id[sentence_id_for_mistake]
-            sentence_number = sentence_info["unique_id"]
-            original_text = sentence_info["sentence"]
-            session_id = sentence_info["session_id"]
-            sentence_pk_id = sentence_info["sentence_id"]
-
-            cursor.execute(
-                """
-                SELECT id, score
-                FROM bt_3_translations
-                WHERE user_id = %s
-                  AND sentence_id = %s
-                  AND COALESCE(source_lang, 'ru') = %s
-                  AND COALESCE(target_lang, 'de') = %s
-                  AND timestamp::date = CURRENT_DATE
-                ORDER BY timestamp DESC, id DESC
-                LIMIT 1;
-                """,
-                (user_id, sentence_pk_id, (source_lang or "ru"), (target_lang or "de")),
-            )
-
-            existing_translation = cursor.fetchone()
-            latest_score = int(existing_translation[1] or 0) if existing_translation else None
-            if existing_translation and latest_score >= 85:
-                results.append(
-                    {
-                        "sentence_number": sentence_number,
-                        "error": "Это предложение уже закрыто (балл 85+).",
-                    }
-                )
-                continue
-
-            try:
-                feedback, categories, subcategories, score, correct_translation = await check_translation(
-                    original_text,
-                    user_translation,
-                    sentence_number,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
-            except Exception as exc:
-                logging.error("Ошибка при проверке перевода №%s: %s", sentence_number, exc, exc_info=True)
-                results.append(
-                    {
-                        "sentence_number": sentence_number,
-                        "error": "Ошибка: не удалось проверить перевод.",
-                    }
-                )
-                continue
-
-            score_value = int(score) if score and str(score).isdigit() else 0
-
-            cursor.execute(
-                """
-                INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
-                user_translation, score, feedback, source_lang, target_lang)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id;
-                """,
-                (
-                    user_id,
-                    sentence_id_for_mistake,
-                    session_id,
-                    username,
-                    sentence_pk_id,
-                    user_translation,
-                    score_value,
-                    feedback,
-                    (source_lang or "ru"),
-                    (target_lang or "de"),
-                ),
-            )
-            created_translation = cursor.fetchone()
-            translation_id = int(created_translation[0]) if created_translation and created_translation[0] else None
-
+) -> None:
+    success_pairs: list[tuple[str, str]] = []
+    fail_pairs: list[tuple[str, str]] = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT EXISTS(
@@ -1871,7 +1823,6 @@ async def check_user_translation_webapp(
                 """,
                 (sentence_id_for_mistake, user_id),
             )
-
             was_in_mistakes = bool(cursor.fetchone()[0])
 
             if was_in_mistakes:
@@ -1886,7 +1837,13 @@ async def check_user_translation_webapp(
                         """,
                         (sentence_id_for_mistake, user_id),
                     )
-                    resolved_skill_targets = cursor.fetchall()
+                    success_pairs.extend(
+                        (
+                            str(main_category or "Other mistake"),
+                            str(sub_category or "Unclassified mistake"),
+                        )
+                        for main_category, sub_category in (cursor.fetchall() or [])
+                    )
 
                     cursor.execute(
                         """
@@ -1896,7 +1853,6 @@ async def check_user_translation_webapp(
                         """,
                         (sentence_id_for_mistake, user_id),
                     )
-
                     result = cursor.fetchone()
                     total_attempts = ((result[0] or 0) if result else 0) + 1
 
@@ -1923,22 +1879,6 @@ async def check_user_translation_webapp(
                         """,
                         (sentence_id_for_mistake, user_id),
                     )
-
-                    conn.commit()
-                    for main_category, sub_category in resolved_skill_targets:
-                        try:
-                            apply_skill_events_for_error(
-                                user_id=int(user_id),
-                                source_lang=source_lang or "ru",
-                                target_lang=target_lang or "de",
-                                error_category=str(main_category or "Other mistake"),
-                                error_subcategory=str(sub_category or "Unclassified mistake"),
-                                event_type="success",
-                                success_delta=2.0,
-                                fail_delta=-3.0,
-                            )
-                        except Exception as exc:
-                            logging.warning("Skill success update skipped: %s", exc)
                 else:
                     cursor.execute(
                         """
@@ -1951,17 +1891,18 @@ async def check_user_translation_webapp(
                         """,
                         (user_id, sentence_id_for_mistake),
                     )
-                    conn.commit()
-                    await log_translation_mistake(
-                        user_id,
-                        original_text,
-                        user_translation,
-                        categories,
-                        subcategories,
-                        score_value,
-                        correct_translation,
-                        source_lang=source_lang or "ru",
-                        target_lang=target_lang or "de",
+                    fail_pairs.extend(
+                        _log_translation_mistake_with_cursor(
+                            cursor,
+                            user_id=user_id,
+                            original_text=original_text,
+                            categories=categories,
+                            subcategories=subcategories,
+                            score=score_value,
+                            correct_translation=correct_translation,
+                            source_lang=source_lang or "ru",
+                            target_lang=target_lang or "de",
+                        )
                     )
             else:
                 if score_value >= 80:
@@ -1972,41 +1913,14 @@ async def check_user_translation_webapp(
                         """,
                         (user_id, sentence_id_for_mistake, score_value, 1),
                     )
-                    conn.commit()
-                    if categories and subcategories:
-                        valid_success_combinations: list[tuple[str, str]] = []
-                        for cat in categories:
-                            cat_lower = str(cat or "").lower()
-                            for subcat in subcategories:
-                                subcat_lower = str(subcat or "").lower()
-                                if cat_lower in language_subcategories_lower and subcat_lower in language_subcategories_lower[cat_lower]:
-                                    canonical_cat = next(
-                                        (x for x in language_categories if x.lower() == cat_lower),
-                                        str(cat or ""),
-                                    )
-                                    canonical_sub = next(
-                                        (
-                                            x
-                                            for x in language_subcategories.get(canonical_cat, [])
-                                            if x.lower() == subcat_lower
-                                        ),
-                                        str(subcat or ""),
-                                    )
-                                    valid_success_combinations.append((canonical_cat, canonical_sub))
-                        for main_category, sub_category in set(valid_success_combinations):
-                            try:
-                                apply_skill_events_for_error(
-                                    user_id=int(user_id),
-                                    source_lang=source_lang or "ru",
-                                    target_lang=target_lang or "de",
-                                    error_category=main_category,
-                                    error_subcategory=sub_category,
-                                    event_type="success",
-                                    success_delta=2.0,
-                                    fail_delta=-3.0,
-                                )
-                            except Exception as exc:
-                                logging.warning("Skill success update skipped: %s", exc)
+                    success_pairs.extend(
+                        _normalize_category_pairs(
+                            categories,
+                            subcategories,
+                            target_lang=target_lang or "de",
+                            fallback_to_other=False,
+                        )
+                    )
                 else:
                     cursor.execute(
                         """
@@ -2017,39 +1931,258 @@ async def check_user_translation_webapp(
                         """,
                         (user_id, sentence_id_for_mistake),
                     )
-                    conn.commit()
-
-                    await log_translation_mistake(
-                        user_id,
-                        original_text,
-                        user_translation,
-                        categories,
-                        subcategories,
-                        score_value,
-                        correct_translation,
-                        source_lang=source_lang or "ru",
-                        target_lang=target_lang or "de",
+                    fail_pairs.extend(
+                        _log_translation_mistake_with_cursor(
+                            cursor,
+                            user_id=user_id,
+                            original_text=original_text,
+                            categories=categories,
+                            subcategories=subcategories,
+                            score=score_value,
+                            correct_translation=correct_translation,
+                            source_lang=source_lang or "ru",
+                            target_lang=target_lang or "de",
+                        )
                     )
 
-            results.append(
-                {
-                    "translation_id": translation_id,
-                    "audio_grammar_opt_in": False,
-                    "sentence_number": sentence_number,
-                    "score": score_value,
-                    "original_text": original_text,
-                    "user_translation": user_translation,
-                    "correct_translation": correct_translation,
-                    "feedback": feedback,
-                }
+    for main_category, sub_category in list(dict.fromkeys(success_pairs)):
+        try:
+            apply_skill_events_for_error(
+                user_id=int(user_id),
+                source_lang=source_lang or "ru",
+                target_lang=target_lang or "de",
+                error_category=main_category,
+                error_subcategory=sub_category,
+                event_type="success",
+                success_delta=2.0,
+                fail_delta=-3.0,
             )
+        except Exception as exc:
+            logging.warning("Skill success update skipped: %s", exc)
 
-        results.sort(key=lambda item: item.get("sentence_number") or 0)
-        return results
+    for main_category, sub_category in list(dict.fromkeys(fail_pairs)):
+        try:
+            apply_skill_events_for_error(
+                user_id=int(user_id),
+                source_lang=source_lang or "ru",
+                target_lang=target_lang or "de",
+                error_category=main_category,
+                error_subcategory=sub_category,
+                event_type="fail",
+                fail_delta=-3.0,
+                success_delta=2.0,
+            )
+        except Exception as exc:
+            logging.warning("Skill fail update skipped: %s", exc)
 
-    finally:
-        cursor.close()
-        conn.close()
+
+async def check_user_translation_webapp_item(
+    user_id: int,
+    username: str | None,
+    translation: dict[str, Any],
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    daily_session_id: str | int | None = None,
+    *,
+    checkpoint_item_id: int | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    sentence_id_for_mistake = translation.get("id_for_mistake_table")
+    if isinstance(sentence_id_for_mistake, str) and sentence_id_for_mistake.isdigit():
+        sentence_id_for_mistake = int(sentence_id_for_mistake)
+    user_translation = (translation.get("translation") or "").strip()
+    if not sentence_id_for_mistake or not user_translation:
+        return None, None
+
+    normalized_source_lang = source_lang or "ru"
+    normalized_target_lang = target_lang or "de"
+    latest_session_id = _normalize_translation_session_id(daily_session_id)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if latest_session_id is None:
+                latest_session_id = _resolve_latest_translation_session_id(
+                    cursor,
+                    user_id=int(user_id),
+                    source_lang=normalized_source_lang,
+                    target_lang=normalized_target_lang,
+                )
+            if latest_session_id is None:
+                return None, None
+
+            cursor.execute(
+                """
+                SELECT unique_id, id_for_mistake_table, id, sentence, session_id
+                FROM bt_3_daily_sentences
+                WHERE session_id = %s
+                  AND user_id = %s
+                  AND COALESCE(source_lang, 'ru') = %s
+                  AND COALESCE(target_lang, 'de') = %s
+                  AND id_for_mistake_table = %s
+                LIMIT 1;
+                """,
+                (
+                    latest_session_id,
+                    user_id,
+                    normalized_source_lang,
+                    normalized_target_lang,
+                    int(sentence_id_for_mistake),
+                ),
+            )
+            sentence_row = cursor.fetchone()
+            if not sentence_row:
+                return {
+                    "sentence_number": None,
+                    "error": "Предложение не принадлежит пользователю или не найдено.",
+                }, None
+
+            sentence_number = sentence_row[0]
+            sentence_pk_id = sentence_row[2]
+            original_text = sentence_row[3]
+            source_session_id = sentence_row[4]
+
+            cursor.execute(
+                """
+                SELECT id, score
+                FROM bt_3_translations
+                WHERE user_id = %s
+                  AND sentence_id = %s
+                  AND COALESCE(source_lang, 'ru') = %s
+                  AND COALESCE(target_lang, 'de') = %s
+                  AND timestamp::date = CURRENT_DATE
+                ORDER BY timestamp DESC, id DESC
+                LIMIT 1;
+                """,
+                (user_id, sentence_pk_id, normalized_source_lang, normalized_target_lang),
+            )
+            existing_translation = cursor.fetchone()
+
+    latest_score = int(existing_translation[1] or 0) if existing_translation else None
+    if existing_translation and latest_score >= 85:
+        return {
+            "sentence_number": sentence_number,
+            "error": "Это предложение уже закрыто (балл 85+).",
+        }, None
+
+    try:
+        feedback, categories, subcategories, score, correct_translation = await check_translation(
+            original_text,
+            user_translation,
+            sentence_number,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        logging.error("Ошибка при проверке перевода №%s: %s", sentence_number, exc, exc_info=True)
+        return {
+            "sentence_number": sentence_number,
+            "error": "Ошибка: не удалось проверить перевод.",
+        }, None
+
+    score_value = int(score) if score and str(score).isdigit() else 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
+                user_translation, score, feedback, source_lang, target_lang)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    user_id,
+                    sentence_id_for_mistake,
+                    source_session_id,
+                    username,
+                    sentence_pk_id,
+                    user_translation,
+                    score_value,
+                    feedback,
+                    normalized_source_lang,
+                    normalized_target_lang,
+                ),
+            )
+            created_translation = cursor.fetchone()
+            translation_id = int(created_translation[0]) if created_translation and created_translation[0] else None
+
+    result_item = {
+        "translation_id": translation_id,
+        "audio_grammar_opt_in": False,
+        "sentence_number": sentence_number,
+        "score": score_value,
+        "original_text": original_text,
+        "user_translation": user_translation,
+        "correct_translation": correct_translation,
+        "feedback": feedback,
+    }
+    deferred_payload = {
+        "user_id": int(user_id),
+        "original_text": original_text,
+        "user_translation": user_translation,
+        "sentence_id_for_mistake": int(sentence_id_for_mistake),
+        "score_value": score_value,
+        "correct_translation": correct_translation,
+        "categories": list(categories or []),
+        "subcategories": list(subcategories or []),
+        "source_lang": normalized_source_lang,
+        "target_lang": normalized_target_lang,
+    }
+    await apply_translation_result_side_effects(**deferred_payload)
+    if checkpoint_item_id is not None:
+        update_translation_check_item_result(
+            item_id=int(checkpoint_item_id),
+            status="running",
+            result_json=result_item,
+            result_text=str(result_item.get("feedback") or "").strip() or None,
+            error_text=str(result_item.get("error") or "").strip() or None,
+            webapp_check_id=result_item.get("translation_id"),
+            started=True,
+            finished=False,
+        )
+    return result_item, None
+
+
+async def check_user_translation_webapp(
+    user_id: int,
+    username: str | None,
+    translations: list[dict[str, Any]],
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    daily_session_id: str | int | None = None,
+) -> list[dict[str, Any]]:
+    if not translations:
+        return []
+
+    normalized_source_lang = source_lang or "ru"
+    normalized_target_lang = target_lang or "de"
+    latest_session_id = _normalize_translation_session_id(daily_session_id)
+    if latest_session_id is None:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                latest_session_id = _resolve_latest_translation_session_id(
+                    cursor,
+                    user_id=int(user_id),
+                    source_lang=normalized_source_lang,
+                    target_lang=normalized_target_lang,
+                )
+    if latest_session_id is None:
+        return []
+
+    results: list[dict[str, Any]] = []
+    for entry in translations:
+        result_item, _ = await check_user_translation_webapp_item(
+            user_id,
+            username,
+            entry,
+            source_lang=normalized_source_lang,
+            target_lang=normalized_target_lang,
+            daily_session_id=latest_session_id,
+            checkpoint_item_id=None,
+        )
+        if result_item:
+            results.append(result_item)
+
+    results.sort(key=lambda item: item.get("sentence_number") or 0)
+    return results
 
 
 def finish_translation_webapp(user_id: int) -> dict[str, Any]:

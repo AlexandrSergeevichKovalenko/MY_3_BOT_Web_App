@@ -4035,6 +4035,93 @@ def update_translation_check_item_result(
     return _map_translation_check_item_row(row)
 
 
+def finalize_translation_check_item(
+    *,
+    item_id: int,
+    status: str,
+    result_json: dict | None = None,
+    result_text: str | None = None,
+    error_text: str | None = None,
+    webapp_check_id: int | None = None,
+) -> dict[str, object]:
+    normalized = str(status or "").strip().lower()
+    if normalized not in {"done", "failed"}:
+        raise ValueError("Invalid translation check item terminal status")
+    completed_delta = 1 if normalized == "done" else 0
+    failed_delta = 1 if normalized == "failed" else 0
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_items
+                SET
+                    status = %s,
+                    result_json = %s,
+                    result_text = %s,
+                    error_text = %s,
+                    webapp_check_id = %s,
+                    started_at = COALESCE(started_at, NOW()),
+                    finished_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status NOT IN ('done', 'failed')
+                RETURNING
+                    id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
+                    original_text, user_translation, status, result_json, result_text, error_text,
+                    webapp_check_id, started_at, finished_at, created_at, updated_at;
+                """,
+                (
+                    normalized,
+                    Json(result_json) if isinstance(result_json, dict) else None,
+                    str(result_text or "").strip() or None,
+                    str(error_text or "").strip() or None,
+                    int(webapp_check_id) if webapp_check_id is not None else None,
+                    int(item_id),
+                ),
+            )
+            item_row = cursor.fetchone()
+            session_row = None
+            finalized = bool(item_row)
+            if item_row:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_translation_check_sessions
+                    SET
+                        completed_items = GREATEST(0, completed_items + %s),
+                        failed_items = GREATEST(0, failed_items + %s),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING
+                        id, user_id, username, source_session_id, source_lang, target_lang,
+                        status, total_items, completed_items, failed_items, send_private_grammar_text,
+                        original_text_bundle, user_translation_bundle, last_error, started_at,
+                        finished_at, created_at, updated_at;
+                    """,
+                    (int(completed_delta), int(failed_delta), int(item_row[1])),
+                )
+                session_row = cursor.fetchone()
+            else:
+                cursor.execute(
+                    """
+                    SELECT
+                        id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
+                        original_text, user_translation, status, result_json, result_text, error_text,
+                        webapp_check_id, started_at, finished_at, created_at, updated_at
+                    FROM bt_3_translation_check_items
+                    WHERE id = %s;
+                    """,
+                    (int(item_id),),
+                )
+                item_row = cursor.fetchone()
+
+    return {
+        "item": _map_translation_check_item_row(item_row),
+        "session": _map_translation_check_session_row(session_row),
+        "finalized": finalized,
+    }
+
+
 def increment_translation_check_session_counters(
     *,
     session_id: int,

@@ -78,6 +78,7 @@ import http.cookiejar
 import re
 import html
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from zoneinfo import ZoneInfo
 from datetime import timedelta, date
 from calendar import monthrange
@@ -293,7 +294,7 @@ from backend.database import (
     get_latest_translation_check_session,
     update_translation_check_session_status,
     update_translation_check_item_result,
-    increment_translation_check_session_counters,
+    finalize_translation_check_item,
     refresh_translation_check_session_counters,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
@@ -302,7 +303,7 @@ from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
 from backend.translation_workflow import (
     build_user_daily_summary,
-    check_user_translation_webapp,
+    check_user_translation_webapp_item,
     finalize_open_translation_sessions,
     finish_translation_webapp,
     get_db_connection as get_translation_workflow_db_connection,
@@ -359,6 +360,7 @@ _YT_REQUEST_JITTER_MAX = 1.9
 _YT_OEMBED_CACHE: dict[str, dict] = {}
 _TRANSLATION_CHECK_RUNNERS: set[int] = set()
 _TRANSLATION_CHECK_RUNNERS_LOCK = threading.Lock()
+_TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY = 3
 _OBSERVABILITY_LOCK = threading.Lock()
 _TTS_URL_POLL_ATTEMPTS: dict[str, int] = {}
 _TRANSLATION_CHECK_STATUS_POLLS: dict[int, int] = {}
@@ -10725,6 +10727,119 @@ def _queue_private_grammar_explanation_for_result(
     return 1
 
 
+def _process_translation_check_session_item(
+    *,
+    session_id: int,
+    session: dict[str, Any],
+    item: dict[str, Any],
+) -> dict[str, Any]:
+    item_id = int(item["id"])
+    item_order = int(item.get("item_order") or 0)
+    item_started_perf = time.perf_counter()
+    mark_item_running_duration_ms = 0
+    check_duration_ms = None
+    finalize_item_duration_ms = 0
+    result_item: dict[str, Any] | None = item.get("result_json") if isinstance(item.get("result_json"), dict) else None
+
+    try:
+        checkpoint_present = bool(
+            result_item
+            or item.get("webapp_check_id") is not None
+            or item.get("result_text")
+            or item.get("error_text")
+        )
+        if not checkpoint_present:
+            mark_item_running_started_perf = time.perf_counter()
+            update_translation_check_item_result(
+                item_id=item_id,
+                status="running",
+                started=True,
+            )
+            mark_item_running_duration_ms = _elapsed_ms_since(mark_item_running_started_perf)
+
+            check_started_perf = time.perf_counter()
+            result_item, _ = asyncio.run(
+                check_user_translation_webapp_item(
+                    int(session["user_id"]),
+                    session.get("username"),
+                    {
+                        "id_for_mistake_table": item.get("sentence_id_for_mistake_table"),
+                        "translation": item.get("user_translation"),
+                    },
+                    source_lang=str(session.get("source_lang") or "ru"),
+                    target_lang=str(session.get("target_lang") or "de"),
+                    daily_session_id=session.get("source_session_id"),
+                    checkpoint_item_id=item_id,
+                )
+            )
+            check_duration_ms = _elapsed_ms_since(check_started_perf)
+
+        result_item = result_item or {
+            "sentence_number": item.get("sentence_number"),
+            "error": str(item.get("error_text") or "Пустой ответ проверки перевода."),
+        }
+        item_error = str(result_item.get("error") or "").strip()
+
+        finalize_item_started_perf = time.perf_counter()
+        finalize_result = finalize_translation_check_item(
+            item_id=item_id,
+            status="failed" if item_error else "done",
+            result_json=result_item if isinstance(result_item, dict) else None,
+            result_text=str(result_item.get("feedback") or item_error or "").strip() or None,
+            error_text=item_error or None,
+            webapp_check_id=result_item.get("translation_id") if isinstance(result_item, dict) else None,
+        )
+        finalize_item_duration_ms = _elapsed_ms_since(finalize_item_started_perf)
+
+        if finalize_result.get("finalized") and not item_error and bool(session.get("send_private_grammar_text")):
+            _queue_private_grammar_explanation_for_result(
+                user_id=int(session["user_id"]),
+                result_item=result_item,
+                source_lang=str(session.get("source_lang") or "ru"),
+                target_lang=str(session.get("target_lang") or "de"),
+            )
+
+        return {
+            "item_id": item_id,
+            "item_order": item_order,
+            "per_item_duration_ms": _elapsed_ms_since(item_started_perf),
+            "item_processing_duration_ms": check_duration_ms,
+            "db_update_duration_ms": mark_item_running_duration_ms + finalize_item_duration_ms,
+            "item_status": "failed" if item_error else "done",
+            "item_outcome": "error" if item_error else "success",
+        }
+    except Exception as exc:
+        logging.error(
+            "Translation check session item failed: session=%s item=%s error=%s",
+            session_id,
+            item_id,
+            exc,
+            exc_info=True,
+        )
+        try:
+            finalize_item_started_perf = time.perf_counter()
+            finalize_translation_check_item(
+                item_id=item_id,
+                status="failed",
+                result_json=result_item if isinstance(result_item, dict) else None,
+                result_text=str((result_item or {}).get("feedback") or "").strip() or None,
+                error_text=f"Ошибка проверки: {exc}",
+            )
+            finalize_item_duration_ms = _elapsed_ms_since(finalize_item_started_perf)
+        except Exception:
+            logging.exception("Failed to finalize translation check item failure: session=%s item=%s", session_id, item_id)
+
+        return {
+            "item_id": item_id,
+            "item_order": item_order,
+            "per_item_duration_ms": _elapsed_ms_since(item_started_perf),
+            "item_processing_duration_ms": check_duration_ms,
+            "db_update_duration_ms": mark_item_running_duration_ms + finalize_item_duration_ms,
+            "item_status": "failed",
+            "item_outcome": "error",
+        }
+
+
 def _run_translation_check_session(
     session_id: int,
     *,
@@ -10857,69 +10972,25 @@ def _run_translation_check_session(
             db_update_duration_ms=mark_running_duration_ms,
         )
 
-        for item in items:
-            item_id = int(item["id"])
-            item_status = str(item.get("status") or "").strip().lower()
-            if item_status in {"done", "failed"}:
-                continue
-            item_started_perf = time.perf_counter()
-            mark_item_running_started_perf = time.perf_counter()
-            update_translation_check_item_result(
-                item_id=item_id,
-                status="running",
-                started=True,
-            )
-            mark_item_running_duration_ms = _elapsed_ms_since(mark_item_running_started_perf)
-            check_duration_ms = None
-            finalize_item_duration_ms = None
-            counters_refresh_duration_ms = None
-            try:
-                check_started_perf = time.perf_counter()
-                results = asyncio.run(
-                    check_user_translation_webapp(
-                        int(session["user_id"]),
-                        session.get("username"),
-                        [
-                            {
-                                "id_for_mistake_table": item.get("sentence_id_for_mistake_table"),
-                                "translation": item.get("user_translation"),
-                            }
-                        ],
-                        source_lang=str(session.get("source_lang") or "ru"),
-                        target_lang=str(session.get("target_lang") or "de"),
-                        daily_session_id=session.get("source_session_id"),
-                    )
-                )
-                check_duration_ms = _elapsed_ms_since(check_started_perf)
-                result_item = results[0] if results else {
-                    "sentence_number": item.get("sentence_number"),
-                    "error": "Пустой ответ проверки перевода.",
-                }
-                item_error = str(result_item.get("error") or "").strip()
-                finalize_item_started_perf = time.perf_counter()
-                update_translation_check_item_result(
-                    item_id=item_id,
-                    status="failed" if item_error else "done",
-                    result_json=result_item if isinstance(result_item, dict) else None,
-                    result_text=str(result_item.get("feedback") or item_error or "").strip() or None,
-                    error_text=item_error or None,
-                    webapp_check_id=result_item.get("translation_id") if isinstance(result_item, dict) else None,
-                    finished=True,
-                )
-                finalize_item_duration_ms = _elapsed_ms_since(finalize_item_started_perf)
-                if not item_error and bool(session.get("send_private_grammar_text")):
-                    _queue_private_grammar_explanation_for_result(
-                        user_id=int(session["user_id"]),
-                        result_item=result_item,
-                        source_lang=str(session.get("source_lang") or "ru"),
-                        target_lang=str(session.get("target_lang") or "de"),
-                    )
-                refresh_counters_started_perf = time.perf_counter()
-                increment_translation_check_session_counters(
+        pending_items = [
+            item
+            for item in items
+            if str(item.get("status") or "").strip().lower() not in {"done", "failed"}
+        ]
+        item_max_workers = max(1, min(_TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY, len(pending_items) or 1))
+        with ThreadPoolExecutor(max_workers=item_max_workers) as item_executor:
+            item_futures = {
+                item_executor.submit(
+                    _process_translation_check_session_item,
                     session_id=int(session_id),
-                    item_status="failed" if item_error else "done",
-                )
-                counters_refresh_duration_ms = _elapsed_ms_since(refresh_counters_started_perf)
+                    session=session,
+                    item=item,
+                ): item
+                for item in pending_items
+            }
+
+            for future in as_completed(item_futures):
+                item_metrics = future.result()
                 _log_flow_observation(
                     "translation_check",
                     "item_processed",
@@ -10928,53 +10999,7 @@ def _run_translation_check_session(
                     user_id=session_user_id,
                     session_id=int(session_id),
                     check_id=int(session_id),
-                    item_id=item_id,
-                    item_order=int(item.get("item_order") or 0),
-                    per_item_duration_ms=_elapsed_ms_since(item_started_perf),
-                    item_processing_duration_ms=check_duration_ms,
-                    db_update_duration_ms=(
-                        mark_item_running_duration_ms
-                        + (finalize_item_duration_ms or 0)
-                        + (counters_refresh_duration_ms or 0)
-                    ),
-                    item_status="failed" if item_error else "done",
-                    item_outcome="error" if item_error else "success",
-                )
-            except Exception as exc:
-                logging.error("Translation check session item failed: session=%s item=%s error=%s", session_id, item_id, exc, exc_info=True)
-                finalize_item_started_perf = time.perf_counter()
-                update_translation_check_item_result(
-                    item_id=item_id,
-                    status="failed",
-                    error_text=f"Ошибка проверки: {exc}",
-                    finished=True,
-                )
-                finalize_item_duration_ms = _elapsed_ms_since(finalize_item_started_perf)
-                refresh_counters_started_perf = time.perf_counter()
-                increment_translation_check_session_counters(
-                    session_id=int(session_id),
-                    item_status="failed",
-                )
-                counters_refresh_duration_ms = _elapsed_ms_since(refresh_counters_started_perf)
-                _log_flow_observation(
-                    "translation_check",
-                    "item_processed",
-                    request_id=resolved_request_id,
-                    correlation_id=resolved_correlation_id,
-                    user_id=session_user_id,
-                    session_id=int(session_id),
-                    check_id=int(session_id),
-                    item_id=item_id,
-                    item_order=int(item.get("item_order") or 0),
-                    per_item_duration_ms=_elapsed_ms_since(item_started_perf),
-                    item_processing_duration_ms=check_duration_ms,
-                    db_update_duration_ms=(
-                        mark_item_running_duration_ms
-                        + (finalize_item_duration_ms or 0)
-                        + (counters_refresh_duration_ms or 0)
-                    ),
-                    item_status="failed",
-                    item_outcome="error",
+                    **item_metrics,
                 )
 
         final_counters_refresh_started_perf = time.perf_counter()
