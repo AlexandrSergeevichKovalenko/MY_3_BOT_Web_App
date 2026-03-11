@@ -33,9 +33,7 @@ FEEL_POLL_INTERVAL_SECONDS = 1.0
 FEEL_THREAD_DELETE_TIMEOUT_SECONDS = 0.75
 _DEFAULT_GATEWAY_MODE = "assistants"
 _DEFAULT_GATEWAY_MODEL = "gpt-4.1-2025-04-14"
-_DEFAULT_TASK_MODELS = {
-    "check_translation_multilang": "gpt-4.1-mini",
-}
+_DEFAULT_TASK_MODELS = {}
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
     "dictionary_assistant_de",

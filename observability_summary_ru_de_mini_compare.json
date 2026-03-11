@@ -1,0 +1,230 @@
+{
+  "baseline": {
+    "meta": {
+      "file": "railway_logs_ru_de_multilang_primary_20m.jsonl",
+      "file_size_bytes": 55475,
+      "parsed_lines": 153,
+      "matched_events": 65
+    },
+    "tts": {
+      "present": true,
+      "total_sample_count": 20,
+      "count_by_stage": {
+        "tts_url_completed": 11,
+        "generation_runner_started": 3,
+        "tts_generate_completed": 3,
+        "generation_runner_finished": 3
+      },
+      "endpoint_duration_ms": {
+        "count": 14,
+        "avg": 1887.142857142857,
+        "median": 1663.5,
+        "p95": 4232.849999999999,
+        "p99": 4488.17
+      },
+      "db_lookup_duration_ms": {
+        "count": 11,
+        "avg": 1549.2727272727273,
+        "median": 1224,
+        "p95": 4083.5,
+        "p99": 4101.5
+      },
+      "provider_duration_ms": {
+        "count": 3,
+        "avg": 2820.0,
+        "median": 2786,
+        "p95": 3659.0,
+        "p99": 3736.6
+      },
+      "avg_polling_attempt_count": 1.4545454545454546,
+      "cache_hit_count": 6,
+      "cache_miss_count": 5
+    },
+    "translation_check": {
+      "total_sessions_observed": 1,
+      "session_ids_observed": [
+        18
+      ],
+      "item_count": 7,
+      "count_by_stage": {
+        "check_status_completed": 34,
+        "check_start_completed": 1,
+        "runner_started": 1,
+        "runner_processing_started": 1,
+        "item_processed": 7,
+        "runner_finished": 1
+      },
+      "per_item_duration_ms": {
+        "count": 7,
+        "avg": 33118.142857142855,
+        "median": 26920,
+        "p95": 47328.1,
+        "p99": 47580.82
+      },
+      "item_processing_duration_ms": {
+        "count": 7,
+        "avg": 28616.14285714286,
+        "median": 22825,
+        "p95": 42820.9,
+        "p99": 43324.18
+      },
+      "db_update_duration_ms": {
+        "count": 10,
+        "avg": 3735.1,
+        "median": 4206.5,
+        "p95": 6407.849999999998,
+        "p99": 7173.570000000001
+      },
+      "item_only_db_update_duration_ms": {
+        "count": 7,
+        "avg": 4501.0,
+        "median": 4220,
+        "p95": 6726.899999999999,
+        "p99": 7237.379999999999
+      },
+      "session_completion_duration_ms": {
+        "count": 2,
+        "avg": 91549.0,
+        "median": 91549.0,
+        "p95": 91549.0,
+        "p99": 91549.0
+      },
+      "check_start_completed_duration_ms": {
+        "count": 1,
+        "avg": 3888.0,
+        "median": 3888,
+        "p95": 3888.0,
+        "p99": 3888.0
+      },
+      "runner_start_delay_ms": {
+        "count": 3,
+        "avg": 2541.0,
+        "median": 2541,
+        "p95": 2541.0,
+        "p99": 2541.0
+      },
+      "avg_polling_count": 9.0,
+      "status_polling_events_count": 34,
+      "runner_started_count": 1,
+      "runner_finished_count": 1,
+      "fallback_warning_count": 0,
+      "fallback_trigger_reasons": {},
+      "legacy_signature_count": 0,
+      "legacy_signatures": {}
+    }
+  },
+  "mini": {
+    "meta": {
+      "file": "railway_logs_ru_de_mini_compare_20m.jsonl",
+      "file_size_bytes": 63024,
+      "parsed_lines": 178,
+      "matched_events": 69
+    },
+    "tts": {
+      "present": true,
+      "total_sample_count": 37,
+      "count_by_stage": {
+        "tts_url_completed": 19,
+        "generation_runner_started": 6,
+        "tts_generate_completed": 6,
+        "generation_runner_finished": 6
+      },
+      "endpoint_duration_ms": {
+        "count": 25,
+        "avg": 1801.52,
+        "median": 1065,
+        "p95": 5769.799999999991,
+        "p99": 7236.679999999998
+      },
+      "db_lookup_duration_ms": {
+        "count": 19,
+        "avg": 1082.157894736842,
+        "median": 610,
+        "p95": 3218.7,
+        "p99": 3223.74
+      },
+      "provider_duration_ms": {
+        "count": 6,
+        "avg": 3663.3333333333335,
+        "median": 2280.0,
+        "p95": 8377.0,
+        "p99": 9648.2
+      },
+      "avg_polling_attempt_count": 1.6842105263157894,
+      "cache_hit_count": 6,
+      "cache_miss_count": 13
+    },
+    "translation_check": {
+      "total_sessions_observed": 1,
+      "session_ids_observed": [
+        19
+      ],
+      "item_count": 7,
+      "count_by_stage": {
+        "check_status_completed": 21,
+        "runner_processing_started": 1,
+        "check_start_completed": 1,
+        "runner_started": 1,
+        "item_processed": 7,
+        "runner_finished": 1
+      },
+      "per_item_duration_ms": {
+        "count": 7,
+        "avg": 25400.285714285714,
+        "median": 26748,
+        "p95": 33358.49999999999,
+        "p99": 34970.1
+      },
+      "item_processing_duration_ms": {
+        "count": 7,
+        "avg": 20251.571428571428,
+        "median": 21088,
+        "p95": 27003.499999999996,
+        "p99": 28531.1
+      },
+      "db_update_duration_ms": {
+        "count": 10,
+        "avg": 4026.8,
+        "median": 4275.0,
+        "p95": 7069.049999999999,
+        "p99": 7469.01
+      },
+      "item_only_db_update_duration_ms": {
+        "count": 7,
+        "avg": 5148.0,
+        "median": 4321,
+        "p95": 7235.699999999999,
+        "p99": 7502.339999999999
+      },
+      "session_completion_duration_ms": {
+        "count": 2,
+        "avg": 70963.0,
+        "median": 70963.0,
+        "p95": 70963.0,
+        "p99": 70963.0
+      },
+      "check_start_completed_duration_ms": {
+        "count": 1,
+        "avg": 3995.0,
+        "median": 3995,
+        "p95": 3995.0,
+        "p99": 3995.0
+      },
+      "runner_start_delay_ms": {
+        "count": 3,
+        "avg": 2594.0,
+        "median": 2594,
+        "p95": 2594.0,
+        "p99": 2594.0
+      },
+      "avg_polling_count": 7.85,
+      "status_polling_events_count": 21,
+      "runner_started_count": 1,
+      "runner_finished_count": 1,
+      "fallback_warning_count": 0,
+      "fallback_trigger_reasons": {},
+      "legacy_signature_count": 0,
+      "legacy_signatures": {}
+    }
+  }
+}

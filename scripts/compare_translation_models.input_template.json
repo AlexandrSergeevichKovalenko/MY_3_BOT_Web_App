@@ -1,0 +1,51 @@
+[
+  {
+    "id": "case-1",
+    "source_lang": "ru",
+    "target_lang": "de",
+    "original_text": "Несмотря на то что комитет уже несколько месяцев обсуждает реформу системы образования, окончательное решение до сих пор откладывается из-за политических разногласий.",
+    "user_translation": "Obwohl das Komitee diskutiert schon mehrere Monate die Reform des Bildungssystems, die endgültige Entscheidung wird noch verschoben wegen politische Meinungsverschiedenheiten."
+  },
+  {
+    "id": "case-2",
+    "source_lang": "ru",
+    "target_lang": "de",
+    "original_text": "Если бы руководство компании своевременно отреагировало на предупреждения аналитиков, финансовых потерь можно было бы избежать.",
+    "user_translation": "Wenn die Leitung der Firma hätte rechtzeitig reagiert auf die Warnungen der Analysten, man konnte vermeiden die finanziellen Verluste."
+  },
+  {
+    "id": "case-3",
+    "source_lang": "ru",
+    "target_lang": "de",
+    "original_text": "Многие эксперты считают, что стремительное развитие искусственного интеллекта может радикально изменить структуру рынка труда в ближайшие десятилетия.",
+    "user_translation": "Viele Experten denken, dass die schnelle Entwicklung von künstliche Intelligenz kann radikal ändern die Struktur des Arbeitsmarktes in den nächsten Jahrzehnten."
+  },
+  {
+    "id": "case-4",
+    "source_lang": "ru",
+    "target_lang": "de",
+    "original_text": "Хотя исследование ещё не завершено, предварительные результаты уже вызывают серьёзные дискуссии в научном сообществе.",
+    "user_translation": "Obwohl die Forschung ist noch nicht beendet, die vorläufige Ergebnisse verursachen schon ernsthafte Diskussionen im wissenschaftlichen Gemeinschaft."
+  },
+  {
+    "id": "case-5",
+    "source_lang": "ru",
+    "target_lang": "de",
+    "original_text": "Он утверждает, что принял это решение исключительно из профессиональных соображений, хотя многие подозревают наличие скрытых мотивов.",
+    "user_translation": "Er behauptet, dass er hat diese Entscheidung nur aus professionelle Gründe genommen, obwohl viele vermuten dass es gibt versteckte Motive."
+  },
+  {
+    "id": "case-6",
+    "source_lang": "ru",
+    "target_lang": "de",
+    "original_text": "Даже если предложенная стратегия кажется на первый взгляд убедительной, её долгосрочные последствия могут оказаться гораздо более сложными.",
+    "user_translation": "Auch wenn die vorgeschlagene Strategie scheint auf den ersten Blick überzeugend, ihre langfristige Folgen können viel komplizierter sein."
+  },
+  {
+    "id": "case-7",
+    "source_lang": "ru",
+    "target_lang": "de",
+    "original_text": "Трудно отрицать, что глобализация принесла значительные экономические преимущества, однако она также усилила социальное неравенство во многих странах.",
+    "user_translation": "Es ist schwer zu leugnen, dass Globalisierung hat gebracht bedeutende wirtschaftliche Vorteile, aber sie hat auch stärker gemacht die soziale Ungleichheit in viele Länder."
+  }
+]

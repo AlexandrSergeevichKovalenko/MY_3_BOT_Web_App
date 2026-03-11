@@ -1,0 +1,16 @@
+[
+  {
+    "id": "case-1",
+    "source_lang": "ru",
+    "target_lang": "de",
+    "original_text": "Я купил хлеб по дороге домой.",
+    "user_translation": "Ich habe Brot auf dem Weg nach Hause gekauft."
+  },
+  {
+    "id": "case-2",
+    "source_lang": "ru",
+    "target_lang": "de",
+    "original_text": "Если бы у меня было больше времени, я бы чаще читал по-немецки.",
+    "user_translation": "Wenn ich mehr Zeit hätte, würde ich öfter auf Deutsch lesen."
+  }
+]
