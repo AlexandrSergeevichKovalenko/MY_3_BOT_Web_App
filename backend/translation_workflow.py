@@ -1247,59 +1247,80 @@ async def start_translation_session_webapp(
         conn.close()
 
 
-async def check_translation(
+def _parse_translation_feedback_payload(
+    feedback: str,
+    *,
+    language_categories: list[str],
+    language_subcategories: dict[str, list[str]],
+) -> dict[str, Any]:
+    score_str = (
+        feedback.split("Score:")[-1].split("/")[0].strip()
+        if "Score:" in feedback
+        else None
+    )
+    score = int(score_str) if score_str and score_str.isdigit() else None
+    correct_translation = None
+    categories, subcategories = _extract_categories_from_feedback(feedback)
+    valid_categories: list[str] = []
+    valid_subcategories: list[str] = []
+
+    translation_match = re.search(r"Correct Translation:\s*(.+?)(?:\n|\Z)", feedback, flags=re.IGNORECASE)
+    if translation_match:
+        correct_translation = translation_match.group(1).strip()
+
+    for cat in categories:
+        cat_lower = str(cat or "").lower().strip()
+        canonical_cat = next((x for x in language_categories if x.lower() == cat_lower), None)
+        if canonical_cat:
+            valid_categories.append(canonical_cat)
+    for sub in subcategories:
+        sub_lower = str(sub or "").lower().strip()
+        for cat, values in language_subcategories.items():
+            if sub_lower in [value.lower() for value in values]:
+                canonical_sub = next((value for value in values if value.lower() == sub_lower), None)
+                if canonical_sub:
+                    valid_subcategories.append(canonical_sub)
+                    break
+
+    return {
+        "score_str": score_str,
+        "score": score,
+        "correct_translation": correct_translation,
+        "categories": list(set(valid_categories)),
+        "subcategories": list(set(valid_subcategories)),
+    }
+
+
+def _build_translation_feedback_with_sentence_prefix(
+    *,
     original_text: str,
     user_translation: str,
-    sentence_number: int | None = None,
-    source_lang: str = "ru",
-    target_lang: str = "de",
-) -> tuple[str, list[str], list[str], int | None, str | None]:
-    language_categories, language_subcategories, language_subcategories_lower = _get_language_taxonomy(target_lang)
-    if not _is_legacy_ru_de_pair(source_lang, target_lang):
-        feedback = await run_check_translation_multilang(
-            original_text=original_text,
-            user_translation=user_translation,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            allowed_categories=language_categories,
-            allowed_subcategories=language_subcategories,
+    sentence_number: int | None,
+    score: int | None,
+    correct_translation: str | None,
+    feedback: str,
+) -> str:
+    sentence_label = sentence_number if sentence_number is not None else "—"
+    if score is not None and "Sentence number" not in feedback and "Mistake Categories" not in feedback:
+        return (
+            f"🟢 *Sentence number:* {sentence_label}\n"
+            f"✅ *Score:* {score}/100\n"
+            f"🔵 *Original Sentence:* {original_text}\n"
+            f"🟡 *User Translation:* {user_translation}\n"
+            f"🟣 *Correct Translation:* {correct_translation or '—'}\n"
+            f"{feedback}"
         )
-        score = None
-        correct_translation = None
-        categories, subcategories = _extract_categories_from_feedback(feedback)
-        valid_categories: list[str] = []
-        valid_subcategories: list[str] = []
-        score_match = re.search(r"Score:\s*(\d+)", feedback, flags=re.IGNORECASE)
-        if score_match:
-            score = int(score_match.group(1))
-        translation_match = re.search(r"Correct Translation:\s*(.+?)(?:\n|\Z)", feedback, flags=re.IGNORECASE)
-        if translation_match:
-            correct_translation = translation_match.group(1).strip()
-        for cat in categories:
-            cat_lower = str(cat or "").lower().strip()
-            canonical_cat = next((x for x in language_categories if x.lower() == cat_lower), None)
-            if canonical_cat:
-                valid_categories.append(canonical_cat)
-        for sub in subcategories:
-            sub_lower = str(sub or "").lower().strip()
-            for cat, values in language_subcategories.items():
-                if sub_lower in [v.lower() for v in values]:
-                    canonical_sub = next((x for x in values if x.lower() == sub_lower), None)
-                    if canonical_sub:
-                        valid_subcategories.append(canonical_sub)
-                        break
-        sentence_label = sentence_number if sentence_number is not None else "—"
-        if score is not None and "Sentence number" not in feedback and "Mistake Categories" not in feedback:
-            feedback = (
-                f"🟢 *Sentence number:* {sentence_label}\n"
-                f"✅ *Score:* {score}/100\n"
-                f"🔵 *Original Sentence:* {original_text}\n"
-                f"🟡 *User Translation:* {user_translation}\n"
-                f"🟣 *Correct Translation:* {correct_translation or '—'}\n"
-                f"{feedback}"
-            )
-        return feedback, list(set(valid_categories)), list(set(valid_subcategories)), score, correct_translation
+    return feedback
 
+
+async def _run_legacy_ru_de_check_translation(
+    *,
+    original_text: str,
+    user_translation: str,
+    sentence_number: int | None,
+    language_categories: list[str],
+    language_subcategories: dict[str, list[str]],
+) -> tuple[str, list[str], list[str], int | None, str | None]:
     task_name = "check_translation"
     system_instruction_key = "check_translation"
 
@@ -1412,6 +1433,117 @@ async def check_translation(
     )
 
     return result_text, categories, subcategories, score, correct_translation
+
+
+async def check_translation(
+    original_text: str,
+    user_translation: str,
+    sentence_number: int | None = None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> tuple[str, list[str], list[str], int | None, str | None]:
+    language_categories, language_subcategories, _ = _get_language_taxonomy(target_lang)
+    is_legacy_ru_de = _is_legacy_ru_de_pair(source_lang, target_lang)
+
+    if is_legacy_ru_de:
+        try:
+            feedback = await run_check_translation_multilang(
+                original_text=original_text,
+                user_translation=user_translation,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                allowed_categories=language_categories,
+                allowed_subcategories=language_subcategories,
+            )
+            parsed = _parse_translation_feedback_payload(
+                feedback,
+                language_categories=language_categories,
+                language_subcategories=language_subcategories,
+            )
+            if not parsed["score_str"]:
+                logging.warning("Primary multilang ru->de translation check missing score; falling back to legacy path")
+                return await _run_legacy_ru_de_check_translation(
+                    original_text=original_text,
+                    user_translation=user_translation,
+                    sentence_number=sentence_number,
+                    language_categories=language_categories,
+                    language_subcategories=language_subcategories,
+                )
+            if not str(parsed["score_str"]).isdigit():
+                logging.warning("Primary multilang ru->de translation check returned non-numeric score; falling back to legacy path")
+                return await _run_legacy_ru_de_check_translation(
+                    original_text=original_text,
+                    user_translation=user_translation,
+                    sentence_number=sentence_number,
+                    language_categories=language_categories,
+                    language_subcategories=language_subcategories,
+                )
+            if not parsed["correct_translation"]:
+                logging.warning("Primary multilang ru->de translation check missing correct translation; falling back to legacy path")
+                return await _run_legacy_ru_de_check_translation(
+                    original_text=original_text,
+                    user_translation=user_translation,
+                    sentence_number=sentence_number,
+                    language_categories=language_categories,
+                    language_subcategories=language_subcategories,
+                )
+
+            score = int(parsed["score"])
+            if score == 0:
+                score = await recheck_score_only(original_text, user_translation)
+            sentence_label = sentence_number if sentence_number is not None else "—"
+            result_text = (
+                f"🟢 *Sentence number:* {sentence_label}\n"
+                f"✅ *Score:* {score}/100\n"
+                f"🔵 *Original Sentence:* {original_text}\n"
+                f"🟡 *User Translation:* {user_translation}\n"
+                f"🟣 *Correct Translation:* {parsed['correct_translation']}\n"
+            )
+            return (
+                result_text,
+                list(parsed["categories"]),
+                list(parsed["subcategories"]),
+                score,
+                parsed["correct_translation"],
+            )
+        except Exception as exc:
+            logging.warning("Primary multilang ru->de translation check failed; falling back to legacy path: %s", exc)
+            return await _run_legacy_ru_de_check_translation(
+                original_text=original_text,
+                user_translation=user_translation,
+                sentence_number=sentence_number,
+                language_categories=language_categories,
+                language_subcategories=language_subcategories,
+            )
+
+    feedback = await run_check_translation_multilang(
+        original_text=original_text,
+        user_translation=user_translation,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        allowed_categories=language_categories,
+        allowed_subcategories=language_subcategories,
+    )
+    parsed = _parse_translation_feedback_payload(
+        feedback,
+        language_categories=language_categories,
+        language_subcategories=language_subcategories,
+    )
+    feedback = _build_translation_feedback_with_sentence_prefix(
+        original_text=original_text,
+        user_translation=user_translation,
+        sentence_number=sentence_number,
+        score=parsed["score"],
+        correct_translation=parsed["correct_translation"],
+        feedback=feedback,
+    )
+    return (
+        feedback,
+        list(parsed["categories"]),
+        list(parsed["subcategories"]),
+        parsed["score"],
+        parsed["correct_translation"],
+    )
 
 
 async def recheck_score_only(original_text: str, user_translation: str) -> int:
