@@ -162,6 +162,13 @@ from backend.openai_manager import (
 from backend.database import (
     is_telegram_user_allowed,
     ensure_webapp_tables,
+    get_missing_phase1_shadow_schema_objects,
+    claim_skill_state_v2_dirty_keys,
+    process_skill_state_v2_dirty_key,
+    get_skill_state_v2_dirty_summary,
+    get_skill_state_v2_worker_summary,
+    record_skill_state_v2_worker_run,
+    get_skill_state_v2_comparison,
     get_pending_daily_sentences,
     get_webapp_dictionary_entries,
     get_dictionary_entries_for_tts_prewarm,
@@ -380,6 +387,19 @@ _TTS_ADMIN_ALERT_LAST_SENT: dict[str, float] = {}
 _TTS_GENERATION_QUEUE_LOCK = threading.RLock()
 _TTS_GENERATION_QUEUE = None
 _TTS_GENERATION_WORKER_THREADS: list[threading.Thread] = []
+_SKILL_STATE_V2_METRICS_LOCK = threading.Lock()
+_SKILL_STATE_V2_METRICS = {
+    "runs_total": 0,
+    "keys_processed_total": 0,
+    "events_processed_total": 0,
+    "errors_total": 0,
+    "last_run_at": None,
+    "last_duration_ms": 0,
+    "last_keys_processed": 0,
+    "last_events_processed": 0,
+    "last_error": None,
+}
+_SKILL_STATE_V2_WORKER_NAME = f"skill-state-v2:{os.uname().nodename}:{os.getpid()}"
 TELEGRAM_Deutsch_BOT_TOKEN = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
 MOBILE_AUTH_SECRET = (os.getenv("MOBILE_AUTH_SECRET") or TELEGRAM_Deutsch_BOT_TOKEN or "").strip()
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
@@ -507,6 +527,23 @@ TTS_ADMIN_ALERT_PENDING_THRESHOLD = max(1, min(5000, int((os.getenv("TTS_ADMIN_A
 TTS_ADMIN_ALERT_PENDING_AGE_MINUTES = max(1, min(240, int((os.getenv("TTS_ADMIN_ALERT_PENDING_AGE_MINUTES") or "10").strip() or "10")))
 TTS_ADMIN_ALERT_CHECK_INTERVAL_MINUTES = max(2, min(120, int((os.getenv("TTS_ADMIN_ALERT_CHECK_INTERVAL_MINUTES") or "10").strip() or "10")))
 TTS_ADMIN_ALERT_COOLDOWN_MINUTES = max(5, min(240, int((os.getenv("TTS_ADMIN_ALERT_COOLDOWN_MINUTES") or "30").strip() or "30")))
+SKILL_STATE_V2_AGGREGATION_ENABLED = str(os.getenv("SKILL_STATE_V2_AGGREGATION_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS = max(
+    10,
+    min(3600, int((os.getenv("SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS") or "30").strip() or "30")),
+)
+SKILL_STATE_V2_AGGREGATION_BATCH_SIZE = max(
+    1,
+    min(500, int((os.getenv("SKILL_STATE_V2_AGGREGATION_BATCH_SIZE") or "50").strip() or "50")),
+)
+SKILL_STATE_V2_AGGREGATION_MAX_BATCHES_PER_RUN = max(
+    1,
+    min(50, int((os.getenv("SKILL_STATE_V2_AGGREGATION_MAX_BATCHES_PER_RUN") or "4").strip() or "4")),
+)
+SKILL_STATE_V2_AGGREGATION_LEASE_SECONDS = max(
+    10,
+    min(600, int((os.getenv("SKILL_STATE_V2_AGGREGATION_LEASE_SECONDS") or "45").strip() or "45")),
+)
 STARTER_DICTIONARY_ENABLED = str(os.getenv("STARTER_DICTIONARY_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 try:
     STARTER_DICTIONARY_SOURCE_USER_ID = int((os.getenv("STARTER_DICTIONARY_SOURCE_USER_ID") or "117649764").strip() or "117649764")
@@ -587,8 +624,37 @@ _imported_by_bot_process = "bot_3.py" in _argv_joined
 _force_backend_schema_bootstrap = str(
     os.getenv("FORCE_BACKEND_SCHEMA_BOOTSTRAP_ON_IMPORT", "0")
 ).strip().lower() in {"1", "true", "yes", "on"}
+_BACKEND_SCHEMA_BOOTSTRAP_LOCK = threading.Lock()
+_BACKEND_SCHEMA_READY = False
+
+
+def _bootstrap_backend_schema_or_raise() -> None:
+    global _BACKEND_SCHEMA_READY
+    if _BACKEND_SCHEMA_READY:
+        return
+    with _BACKEND_SCHEMA_BOOTSTRAP_LOCK:
+        if _BACKEND_SCHEMA_READY:
+            return
+        ensure_webapp_tables()
+        missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
+        if missing_phase1_objects:
+            raise RuntimeError(
+                "Missing required skill shadow schema objects after bootstrap: "
+                + ", ".join(missing_phase1_objects)
+            )
+        _BACKEND_SCHEMA_READY = True
+
+
 if _force_backend_schema_bootstrap or not _imported_by_bot_process:
-    ensure_webapp_tables()
+    _bootstrap_backend_schema_or_raise()
+
+
+@app.before_request
+def _ensure_backend_schema_before_request():
+    if _BACKEND_SCHEMA_READY:
+        return None
+    _bootstrap_backend_schema_or_raise()
+    return None
 
 # === Путь к собранному фронту (frontend/dist) ===
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
@@ -14466,6 +14532,7 @@ def start_today_translation_item(item_id: int):
 
     task_payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
     level = requested_level or str(task_payload.get("level") or "c1").strip().lower() or "c1"
+    skill_id = str(task_payload.get("skill_id") or "").strip()
     skill_title = str(task_payload.get("skill_title") or "").strip()
     sub_category = str(task_payload.get("sub_category") or "").strip()
     main_category = str(task_payload.get("main_category") or "").strip()
@@ -14484,6 +14551,17 @@ def start_today_translation_item(item_id: int):
                 level=level,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                tested_skill_profile_seed=(
+                    {
+                        "primary_skill_id": skill_id,
+                        "main_category": main_category or None,
+                        "sub_category": sub_category or None,
+                        "profile_source": "today_weakest_skill",
+                        "profile_confidence": 0.9,
+                    }
+                    if skill_id
+                    else None
+                ),
             )
         )
     except Exception as exc:
@@ -15849,6 +15927,13 @@ def start_skill_practice(skill_id: str):
                 level=level,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                tested_skill_profile_seed={
+                    "primary_skill_id": str(skill.get("skill_id") or skill_id),
+                    "main_category": str(main_category or "").strip() or None,
+                    "sub_category": str(sub_category or "").strip() or None,
+                    "profile_source": "skill_practice_explicit",
+                    "profile_confidence": 1.0,
+                },
             )
         )
     except Exception as exc:
@@ -21961,9 +22046,129 @@ def _run_transcript_storage_report_job() -> None:
     except Exception:
         logging.exception("❌ Transcript storage report failed")
 
+def _record_skill_state_v2_worker_metrics(
+    *,
+    keys_processed: int,
+    events_processed: int,
+    duration_ms: int,
+    error: str | None = None,
+) -> None:
+    with _SKILL_STATE_V2_METRICS_LOCK:
+        _SKILL_STATE_V2_METRICS["runs_total"] = int(_SKILL_STATE_V2_METRICS.get("runs_total") or 0) + 1
+        _SKILL_STATE_V2_METRICS["keys_processed_total"] = int(_SKILL_STATE_V2_METRICS.get("keys_processed_total") or 0) + int(keys_processed or 0)
+        _SKILL_STATE_V2_METRICS["events_processed_total"] = int(_SKILL_STATE_V2_METRICS.get("events_processed_total") or 0) + int(events_processed or 0)
+        _SKILL_STATE_V2_METRICS["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        _SKILL_STATE_V2_METRICS["last_duration_ms"] = int(duration_ms or 0)
+        _SKILL_STATE_V2_METRICS["last_keys_processed"] = int(keys_processed or 0)
+        _SKILL_STATE_V2_METRICS["last_events_processed"] = int(events_processed or 0)
+        _SKILL_STATE_V2_METRICS["last_error"] = str(error or "").strip() or None
+        if error:
+            _SKILL_STATE_V2_METRICS["errors_total"] = int(_SKILL_STATE_V2_METRICS.get("errors_total") or 0) + 1
+    try:
+        record_skill_state_v2_worker_run(
+            worker_name=_SKILL_STATE_V2_WORKER_NAME,
+            keys_processed=int(keys_processed or 0),
+            events_processed=int(events_processed or 0),
+            duration_ms=int(duration_ms or 0),
+            error=error,
+        )
+    except Exception:
+        logging.exception("❌ Failed to persist Skill State V2 worker metrics")
+
+
+def _get_skill_state_v2_worker_metrics_snapshot() -> dict[str, Any]:
+    with _SKILL_STATE_V2_METRICS_LOCK:
+        return dict(_SKILL_STATE_V2_METRICS)
+
+
+def _process_skill_state_v2_dirty_batch(*, batch_size: int, max_batches: int, lease_seconds: int) -> dict[str, Any]:
+    if not SKILL_STATE_V2_AGGREGATION_ENABLED:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+    safe_batch_size = max(1, int(batch_size or SKILL_STATE_V2_AGGREGATION_BATCH_SIZE))
+    safe_max_batches = max(1, int(max_batches or SKILL_STATE_V2_AGGREGATION_MAX_BATCHES_PER_RUN))
+    safe_lease_seconds = max(10, int(lease_seconds or SKILL_STATE_V2_AGGREGATION_LEASE_SECONDS))
+    started_perf = time.perf_counter()
+    keys_processed = 0
+    events_processed = 0
+    errors: list[dict[str, Any]] = []
+    claimed_total = 0
+    lease_owner = f"skill-v2-{os.getpid()}-{uuid4().hex[:10]}"
+
+    for _batch_index in range(safe_max_batches):
+        claimed = claim_skill_state_v2_dirty_keys(
+            limit=safe_batch_size,
+            lease_owner=lease_owner,
+            lease_seconds=safe_lease_seconds,
+        )
+        if not claimed:
+            break
+        claimed_total += len(claimed)
+        for item in claimed:
+            result = process_skill_state_v2_dirty_key(
+                user_id=int(item.get("user_id") or 0),
+                skill_id=str(item.get("skill_id") or ""),
+                source_lang=str(item.get("source_lang") or "ru"),
+                target_lang=str(item.get("target_lang") or "de"),
+                claimed_max_event_id=int(item.get("max_event_id") or 0),
+                lease_owner=lease_owner,
+            )
+            if bool(result.get("ok")):
+                keys_processed += 1
+                events_processed += int(result.get("processed_events") or 0)
+            else:
+                errors.append(
+                    {
+                        "user_id": int(item.get("user_id") or 0),
+                        "skill_id": str(item.get("skill_id") or ""),
+                        "error": str(result.get("error") or "unknown"),
+                    }
+                )
+        if len(claimed) < safe_batch_size:
+            break
+
+    duration_ms = _elapsed_ms_since(started_perf)
+    last_error = errors[0]["error"] if errors else None
+    _record_skill_state_v2_worker_metrics(
+        keys_processed=keys_processed,
+        events_processed=events_processed,
+        duration_ms=duration_ms,
+        error=last_error,
+    )
+    result = {
+        "ok": not errors,
+        "claimed_keys": claimed_total,
+        "keys_processed": keys_processed,
+        "events_processed": events_processed,
+        "errors": errors[:10],
+        "duration_ms": duration_ms,
+        "batch_size": safe_batch_size,
+        "max_batches": safe_max_batches,
+    }
+    if claimed_total or errors:
+        logging.info("✅ Skill State V2 aggregation batch finished: %s", result)
+    return result
+
+
+def _run_skill_state_v2_aggregation_scheduler_job() -> None:
+    try:
+        _process_skill_state_v2_dirty_batch(
+            batch_size=SKILL_STATE_V2_AGGREGATION_BATCH_SIZE,
+            max_batches=SKILL_STATE_V2_AGGREGATION_MAX_BATCHES_PER_RUN,
+            lease_seconds=SKILL_STATE_V2_AGGREGATION_LEASE_SECONDS,
+        )
+    except Exception:
+        _record_skill_state_v2_worker_metrics(
+            keys_processed=0,
+            events_processed=0,
+            duration_ms=0,
+            error="scheduler_failure",
+        )
+        logging.exception("❌ Skill State V2 aggregation scheduler failed")
+
 
 def _start_audio_scheduler() -> None:
     global _audio_scheduler
+    _bootstrap_backend_schema_or_raise()
     if BackgroundScheduler is None:
         logging.warning("⚠️ APScheduler not installed; audio scheduler disabled")
         return
@@ -22145,8 +22350,91 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=180,
         )
+    if SKILL_STATE_V2_AGGREGATION_ENABLED:
+        _audio_scheduler.add_job(
+            _run_skill_state_v2_aggregation_scheduler_job,
+            "interval",
+            seconds=SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=max(10, int(SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS)),
+        )
     _audio_scheduler.start()
     logging.info("✅ Audio scheduler started: %02d:%02d %s", hour, minute, tz_name)
+
+
+@app.route("/api/admin/skill-state-v2/status", methods=["GET"])
+def admin_skill_state_v2_status():
+    token = request.args.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or os.getenv("ADMIN_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "ADMIN_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+    dirty_summary = get_skill_state_v2_dirty_summary()
+    worker_db = get_skill_state_v2_worker_summary()
+    metrics = _get_skill_state_v2_worker_metrics_snapshot()
+    last_duration_ms = max(1, int(worker_db.get("last_duration_ms") or 0))
+    throughput = {
+        "keys_per_second_last_run": round(float(worker_db.get("last_keys_processed") or 0) / (last_duration_ms / 1000.0), 3)
+        if last_duration_ms > 0
+        else 0.0,
+        "events_per_second_last_run": round(float(worker_db.get("last_events_processed") or 0) / (last_duration_ms / 1000.0), 3)
+        if last_duration_ms > 0
+        else 0.0,
+    }
+    return jsonify(
+        {
+            "ok": True,
+            "enabled": bool(SKILL_STATE_V2_AGGREGATION_ENABLED),
+            "dirty": dirty_summary,
+            "worker": worker_db,
+            "worker_process_local": metrics,
+            "throughput": throughput,
+            "config": {
+                "interval_seconds": int(SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS),
+                "batch_size": int(SKILL_STATE_V2_AGGREGATION_BATCH_SIZE),
+                "max_batches_per_run": int(SKILL_STATE_V2_AGGREGATION_MAX_BATCHES_PER_RUN),
+                "lease_seconds": int(SKILL_STATE_V2_AGGREGATION_LEASE_SECONDS),
+            },
+        }
+    )
+
+
+@app.route("/api/admin/skill-state-v2/compare", methods=["GET"])
+def admin_skill_state_v2_compare():
+    token = request.args.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or os.getenv("ADMIN_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "ADMIN_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+    try:
+        user_id = int(str(request.args.get("user_id") or "").strip())
+    except Exception:
+        return jsonify({"error": "user_id обязателен"}), 400
+    source_lang = str(request.args.get("source_lang") or "ru").strip() or "ru"
+    target_lang = str(request.args.get("target_lang") or "de").strip() or "de"
+    try:
+        limit = int(str(request.args.get("limit") or "20").strip() or "20")
+    except Exception:
+        limit = 20
+    items = get_skill_state_v2_comparison(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        limit=limit,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "user_id": int(user_id),
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "count": len(items),
+            "items": items,
+        }
+    )
 
 
 @app.route("/api/admin/skill-resource-domains", methods=["GET"])
@@ -23025,6 +23313,7 @@ try:
 except Exception as exc:
     logging.warning("Translation check recovery startup failed: %s", exc)
 
+_bootstrap_backend_schema_or_raise()
 _start_audio_scheduler()
 _start_skill_resource_domain_autoseed()
 

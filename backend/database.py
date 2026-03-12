@@ -7,6 +7,7 @@ from psycopg2.pool import ThreadedConnectionPool, PoolError
 import os
 import hashlib
 import atexit
+import math
 from contextlib import contextmanager
 import json
 import random
@@ -19,6 +20,7 @@ import time
 from uuid import uuid4
 from calendar import monthrange
 from zoneinfo import ZoneInfo
+from typing import Any
 from dotenv import load_dotenv
 try:
     from backend.config_mistakes_data import (
@@ -50,10 +52,18 @@ _ENSURE_WEBAPP_TABLES_MUTEX = threading.Lock()
 _ENSURE_WEBAPP_TABLES_DONE = False
 _DB_POOL_LOCK = threading.Lock()
 _DB_POOL: ThreadedConnectionPool | None = None
+PHASE1_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase1_schema"
+PHASE2_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase2_schema"
 SUPPORTED_LEARNING_LANGUAGES = {"de", "en", "es", "it"}
 SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
 DEFAULT_NATIVE_LANGUAGE = "ru"
+SKILL_STATE_V2_RECENT_TAU_DAYS = 10.0
+SKILL_STATE_V2_CONFIDENCE_SPREAD = 12.0
+SKILL_STATE_V2_MASTERY_RECENT_WEIGHT = 28.0
+SKILL_STATE_V2_MASTERY_LIFETIME_WEIGHT = 14.0
+SKILL_STATE_V2_MASTERY_RECENT_SPREAD = 4.5
+SKILL_STATE_V2_MASTERY_LIFETIME_SPREAD = 12.0
 DICTIONARY_ORIGIN_ALLOWED = {
     "unknown",
     "unknown_legacy",
@@ -1541,6 +1551,187 @@ def ensure_webapp_tables() -> None:
                 END $$;
                 """
             )
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_sentence_skill_targets (
+                    id BIGSERIAL PRIMARY KEY,
+                    sentence_id BIGINT NOT NULL REFERENCES bt_3_daily_sentences(id) ON DELETE CASCADE,
+                    skill_id TEXT NOT NULL REFERENCES bt_3_skills(skill_id) ON DELETE CASCADE,
+                    role VARCHAR(16) NOT NULL,
+                    role_rank SMALLINT NOT NULL,
+                    role_weight DOUBLE PRECISION NOT NULL,
+                    profile_source VARCHAR(32) NOT NULL,
+                    profile_confidence DOUBLE PRECISION NOT NULL,
+                    profile_version SMALLINT NOT NULL DEFAULT 1,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (role IN ('primary', 'secondary', 'supporting')),
+                    UNIQUE (sentence_id, skill_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_sentence_skill_targets_sentence_role
+                ON bt_3_sentence_skill_targets (sentence_id, role_rank, skill_id);
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_sentence_skill_targets_primary
+                ON bt_3_sentence_skill_targets (sentence_id)
+                WHERE role = 'primary';
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_sentence_skill_shadow_state_v2 (
+                    sentence_id BIGINT PRIMARY KEY REFERENCES bt_3_daily_sentences(id) ON DELETE CASCADE,
+                    user_id BIGINT NOT NULL,
+                    source_lang VARCHAR(8) NOT NULL,
+                    target_lang VARCHAR(8) NOT NULL,
+                    last_attempt_no INT NOT NULL,
+                    last_score SMALLINT NOT NULL,
+                    last_score_band VARCHAR(16) NOT NULL,
+                    last_retention_state VARCHAR(24) NOT NULL,
+                    last_tested_skill_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    last_errored_skill_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    last_profile_source VARCHAR(32) NOT NULL,
+                    last_profile_confidence DOUBLE PRECISION NOT NULL,
+                    last_checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_sentence_skill_shadow_state_v2_user
+                ON bt_3_sentence_skill_shadow_state_v2 (user_id, last_checked_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_skill_events_v2 (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    user_id BIGINT NOT NULL,
+                    sentence_id BIGINT NOT NULL REFERENCES bt_3_daily_sentences(id) ON DELETE CASCADE,
+                    session_id BIGINT,
+                    source_lang VARCHAR(8) NOT NULL,
+                    target_lang VARCHAR(8) NOT NULL,
+                    attempt_no INT NOT NULL,
+                    overall_score SMALLINT NOT NULL,
+                    score_band VARCHAR(16) NOT NULL,
+                    retention_state VARCHAR(24) NOT NULL,
+                    was_in_error_bank BOOLEAN NOT NULL,
+                    tested_profile_available BOOLEAN NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    skill_role VARCHAR(24) NOT NULL,
+                    role_weight DOUBLE PRECISION NOT NULL,
+                    is_tested BOOLEAN NOT NULL,
+                    is_errored_now BOOLEAN NOT NULL,
+                    was_errored_prev BOOLEAN NOT NULL,
+                    per_skill_outcome VARCHAR(32) NOT NULL,
+                    sentence_progress_kind VARCHAR(32) NOT NULL,
+                    recovery_kind VARCHAR(16) NOT NULL,
+                    profile_source VARCHAR(32) NOT NULL,
+                    profile_confidence DOUBLE PRECISION NOT NULL,
+                    profile_version SMALLINT NOT NULL DEFAULT 1,
+                    map_weight DOUBLE PRECISION,
+                    error_pairs_json JSONB,
+                    shadow_delta_signal DOUBLE PRECISION NOT NULL,
+                    metadata_json JSONB
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_skill_events_v2_user_created
+                ON bt_3_skill_events_v2 (user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_skill_events_v2_user_skill_created
+                ON bt_3_skill_events_v2 (user_id, skill_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_skill_events_v2_sentence_attempt
+                ON bt_3_skill_events_v2 (sentence_id, attempt_no, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_skill_events_v2_skill_incremental
+                ON bt_3_skill_events_v2 (user_id, skill_id, source_lang, target_lang, id ASC);
+            """)
+            cursor.execute(
+                """
+                INSERT INTO bt_3_schema_migrations (migration_key)
+                VALUES (%s)
+                ON CONFLICT (migration_key) DO NOTHING;
+                """,
+                (PHASE1_SHADOW_SCHEMA_MIGRATION_KEY,),
+            )
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_user_skill_state_v2 (
+                    user_id BIGINT NOT NULL,
+                    skill_id TEXT NOT NULL REFERENCES bt_3_skills(skill_id) ON DELETE CASCADE,
+                    source_lang VARCHAR(8) NOT NULL,
+                    target_lang VARCHAR(8) NOT NULL,
+                    mastery DOUBLE PRECISION NOT NULL DEFAULT 50.0,
+                    confidence DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                    net_evidence_recent DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                    net_evidence_lifetime DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                    tested_events INT NOT NULL DEFAULT 0,
+                    fail_events INT NOT NULL DEFAULT 0,
+                    success_events INT NOT NULL DEFAULT 0,
+                    recovery_events INT NOT NULL DEFAULT 0,
+                    last_event_id BIGINT,
+                    last_event_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, skill_id, source_lang, target_lang)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_user_skill_state_v2_user_mastery
+                ON bt_3_user_skill_state_v2 (user_id, source_lang, target_lang, mastery ASC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_skill_state_v2_dirty (
+                    user_id BIGINT NOT NULL,
+                    skill_id TEXT NOT NULL REFERENCES bt_3_skills(skill_id) ON DELETE CASCADE,
+                    source_lang VARCHAR(8) NOT NULL,
+                    target_lang VARCHAR(8) NOT NULL,
+                    max_event_id BIGINT NOT NULL,
+                    lease_owner VARCHAR(64),
+                    lease_expires_at TIMESTAMPTZ,
+                    retry_count INT NOT NULL DEFAULT 0,
+                    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_error TEXT,
+                    enqueue_count INT NOT NULL DEFAULT 1,
+                    first_enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, skill_id, source_lang, target_lang)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_skill_state_v2_dirty_schedule
+                ON bt_3_skill_state_v2_dirty (next_attempt_at, lease_expires_at, updated_at);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_skill_state_v2_dirty_lease
+                ON bt_3_skill_state_v2_dirty (lease_expires_at);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_skill_state_v2_worker_stats (
+                    worker_name VARCHAR(128) PRIMARY KEY,
+                    runs_total BIGINT NOT NULL DEFAULT 0,
+                    keys_processed_total BIGINT NOT NULL DEFAULT 0,
+                    events_processed_total BIGINT NOT NULL DEFAULT 0,
+                    last_run_at TIMESTAMPTZ,
+                    last_success_at TIMESTAMPTZ,
+                    last_duration_ms INT NOT NULL DEFAULT 0,
+                    last_keys_processed INT NOT NULL DEFAULT 0,
+                    last_events_processed INT NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    errors_total BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_skill_state_v2_worker_stats_updated
+                ON bt_3_skill_state_v2_worker_stats (updated_at DESC);
+            """)
+            cursor.execute(
+                """
+                INSERT INTO bt_3_schema_migrations (migration_key)
+                VALUES (%s)
+                ON CONFLICT (migration_key) DO NOTHING;
+                """,
+                (PHASE2_SHADOW_SCHEMA_MIGRATION_KEY,),
+            )
             # Repair incomplete language metadata for dictionary rows inserted by legacy flows.
             cursor.execute(
                 """
@@ -2875,7 +3066,747 @@ def ensure_webapp_tables() -> None:
             """)
             _ensure_bt3_detailed_mistakes_constraints(cursor)
             cursor.close()
+        missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
+        if missing_phase1_objects:
+            raise RuntimeError(
+                "Skill shadow schema bootstrap incomplete: "
+                + ", ".join(missing_phase1_objects)
+            )
         _ENSURE_WEBAPP_TABLES_DONE = True
+
+
+def get_missing_phase1_shadow_schema_objects() -> list[str]:
+    missing: list[str] = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    to_regclass('public.bt_3_sentence_skill_targets'),
+                    to_regclass('public.bt_3_sentence_skill_shadow_state_v2'),
+                    to_regclass('public.bt_3_skill_events_v2'),
+                    to_regclass('public.idx_bt_3_sentence_skill_targets_sentence_role'),
+                    to_regclass('public.uq_bt_3_sentence_skill_targets_primary'),
+                    to_regclass('public.idx_bt_3_sentence_skill_shadow_state_v2_user'),
+                    to_regclass('public.idx_bt_3_skill_events_v2_user_created'),
+                    to_regclass('public.idx_bt_3_skill_events_v2_user_skill_created'),
+                    to_regclass('public.idx_bt_3_skill_events_v2_sentence_attempt'),
+                    to_regclass('public.idx_bt_3_skill_events_v2_skill_incremental'),
+                    to_regclass('public.bt_3_user_skill_state_v2'),
+                    to_regclass('public.idx_bt_3_user_skill_state_v2_user_mastery'),
+                    to_regclass('public.bt_3_skill_state_v2_dirty'),
+                    to_regclass('public.idx_bt_3_skill_state_v2_dirty_schedule'),
+                    to_regclass('public.idx_bt_3_skill_state_v2_dirty_lease'),
+                    to_regclass('public.bt_3_skill_state_v2_worker_stats'),
+                    to_regclass('public.idx_bt_3_skill_state_v2_worker_stats_updated');
+                """
+            )
+            row = cursor.fetchone() or (None,) * 17
+            object_names = [
+                "bt_3_sentence_skill_targets",
+                "bt_3_sentence_skill_shadow_state_v2",
+                "bt_3_skill_events_v2",
+                "idx_bt_3_sentence_skill_targets_sentence_role",
+                "uq_bt_3_sentence_skill_targets_primary",
+                "idx_bt_3_sentence_skill_shadow_state_v2_user",
+                "idx_bt_3_skill_events_v2_user_created",
+                "idx_bt_3_skill_events_v2_user_skill_created",
+                "idx_bt_3_skill_events_v2_sentence_attempt",
+                "idx_bt_3_skill_events_v2_skill_incremental",
+                "bt_3_user_skill_state_v2",
+                "idx_bt_3_user_skill_state_v2_user_mastery",
+                "bt_3_skill_state_v2_dirty",
+                "idx_bt_3_skill_state_v2_dirty_schedule",
+                "idx_bt_3_skill_state_v2_dirty_lease",
+                "bt_3_skill_state_v2_worker_stats",
+                "idx_bt_3_skill_state_v2_worker_stats_updated",
+            ]
+            for name, regclass_value in zip(object_names, row):
+                if regclass_value is None:
+                    missing.append(name)
+
+            if row[0] is not None:
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conrelid = 'public.bt_3_sentence_skill_targets'::regclass
+                          AND contype = 'u'
+                          AND pg_get_constraintdef(oid) ILIKE 'UNIQUE (sentence_id, skill_id)%'
+                    );
+                    """
+                )
+                unique_targets = bool((cursor.fetchone() or [False])[0])
+                if not unique_targets:
+                    missing.append("bt_3_sentence_skill_targets_unique_sentence_skill")
+
+            if row[1] is not None:
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conrelid = 'public.bt_3_sentence_skill_shadow_state_v2'::regclass
+                          AND contype = 'p'
+                    );
+                    """
+                )
+                shadow_state_pk = bool((cursor.fetchone() or [False])[0])
+                if not shadow_state_pk:
+                    missing.append("bt_3_sentence_skill_shadow_state_v2_pkey")
+
+            if row[2] is not None:
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conrelid = 'public.bt_3_skill_events_v2'::regclass
+                          AND contype = 'p'
+                    );
+                    """
+                )
+                skill_events_pk = bool((cursor.fetchone() or [False])[0])
+                if not skill_events_pk:
+                    missing.append("bt_3_skill_events_v2_pkey")
+            if row[10] is not None:
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conrelid = 'public.bt_3_user_skill_state_v2'::regclass
+                          AND contype = 'p'
+                    );
+                    """
+                )
+                user_skill_state_v2_pk = bool((cursor.fetchone() or [False])[0])
+                if not user_skill_state_v2_pk:
+                    missing.append("bt_3_user_skill_state_v2_pkey")
+
+            if row[12] is not None:
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conrelid = 'public.bt_3_skill_state_v2_dirty'::regclass
+                          AND contype = 'p'
+                    );
+                    """
+                )
+                dirty_pk = bool((cursor.fetchone() or [False])[0])
+                if not dirty_pk:
+                    missing.append("bt_3_skill_state_v2_dirty_pkey")
+            if row[15] is not None:
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conrelid = 'public.bt_3_skill_state_v2_worker_stats'::regclass
+                          AND contype = 'p'
+                    );
+                    """
+                )
+                worker_stats_pk = bool((cursor.fetchone() or [False])[0])
+                if not worker_stats_pk:
+                    missing.append("bt_3_skill_state_v2_worker_stats_pkey")
+    return missing
+
+
+def _skill_state_v2_classify_outcome(per_skill_outcome: str | None) -> str:
+    normalized = str(per_skill_outcome or "").strip().lower()
+    if normalized in {"fail_new", "fail_repeat_no_progress", "fail_repeat_progress", "untargeted_error_fail", "catastrophic_fail_fallback"}:
+        return "fail"
+    if normalized in {"recovered_partial", "recovered_final"}:
+        return "recovery"
+    if normalized in {"clean_success", "clean_progress_credit"}:
+        return "success"
+    return "neutral"
+
+
+def _compute_skill_state_v2_confidence(tested_events: int) -> float:
+    safe_tested_events = max(0, int(tested_events or 0))
+    return max(0.0, min(1.0, 1.0 - math.exp(-float(safe_tested_events) / SKILL_STATE_V2_CONFIDENCE_SPREAD)))
+
+
+def _compute_skill_state_v2_mastery(net_evidence_recent: float, net_evidence_lifetime: float) -> float:
+    mastery = (
+        50.0
+        + SKILL_STATE_V2_MASTERY_RECENT_WEIGHT
+        * math.tanh(float(net_evidence_recent or 0.0) / SKILL_STATE_V2_MASTERY_RECENT_SPREAD)
+        + SKILL_STATE_V2_MASTERY_LIFETIME_WEIGHT
+        * math.tanh(float(net_evidence_lifetime or 0.0) / SKILL_STATE_V2_MASTERY_LIFETIME_SPREAD)
+    )
+    return max(5.0, min(99.0, float(mastery)))
+
+
+def claim_skill_state_v2_dirty_keys(*, limit: int, lease_owner: str, lease_seconds: int) -> list[dict]:
+    safe_limit = max(1, min(int(limit or 1), 500))
+    safe_lease_owner = str(lease_owner or "").strip()[:64] or f"skill-v2-{uuid4().hex[:12]}"
+    safe_lease_seconds = max(5, int(lease_seconds or 30))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH candidates AS (
+                    SELECT user_id, skill_id, source_lang, target_lang
+                    FROM bt_3_skill_state_v2_dirty
+                    WHERE next_attempt_at <= NOW()
+                      AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+                    ORDER BY updated_at ASC
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE bt_3_skill_state_v2_dirty AS dirty
+                SET
+                    lease_owner = %s,
+                    lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                    updated_at = NOW()
+                FROM candidates
+                WHERE dirty.user_id = candidates.user_id
+                  AND dirty.skill_id = candidates.skill_id
+                  AND dirty.source_lang = candidates.source_lang
+                  AND dirty.target_lang = candidates.target_lang
+                RETURNING
+                    dirty.user_id,
+                    dirty.skill_id,
+                    dirty.source_lang,
+                    dirty.target_lang,
+                    dirty.max_event_id,
+                    dirty.retry_count,
+                    dirty.enqueue_count,
+                    dirty.first_enqueued_at,
+                    dirty.updated_at;
+                """,
+                (safe_limit, safe_lease_owner, safe_lease_seconds),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "user_id": int(row[0]),
+            "skill_id": str(row[1]),
+            "source_lang": str(row[2] or "ru"),
+            "target_lang": str(row[3] or "de"),
+            "max_event_id": int(row[4] or 0),
+            "retry_count": int(row[5] or 0),
+            "enqueue_count": int(row[6] or 0),
+            "first_enqueued_at": row[7].isoformat() if row[7] else None,
+            "updated_at": row[8].isoformat() if row[8] else None,
+        }
+        for row in rows
+    ]
+
+
+def process_skill_state_v2_dirty_key(
+    *,
+    user_id: int,
+    skill_id: str,
+    source_lang: str,
+    target_lang: str,
+    claimed_max_event_id: int,
+    lease_owner: str,
+) -> dict:
+    safe_user_id = int(user_id)
+    safe_skill_id = str(skill_id or "").strip()
+    safe_source_lang = str(source_lang or "ru")
+    safe_target_lang = str(target_lang or "de")
+    safe_claimed_max_event_id = max(0, int(claimed_max_event_id or 0))
+    safe_lease_owner = str(lease_owner or "").strip()[:64]
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        mastery,
+                        confidence,
+                        net_evidence_recent,
+                        net_evidence_lifetime,
+                        tested_events,
+                        fail_events,
+                        success_events,
+                        recovery_events,
+                        last_event_id,
+                        last_event_at
+                    FROM bt_3_user_skill_state_v2
+                    WHERE user_id = %s
+                      AND skill_id = %s
+                      AND source_lang = %s
+                      AND target_lang = %s
+                    FOR UPDATE;
+                    """,
+                    (safe_user_id, safe_skill_id, safe_source_lang, safe_target_lang),
+                )
+                state_row = cursor.fetchone()
+                mastery = float(state_row[0]) if state_row else 50.0
+                confidence = float(state_row[1]) if state_row else 0.0
+                net_recent = float(state_row[2]) if state_row else 0.0
+                net_lifetime = float(state_row[3]) if state_row else 0.0
+                tested_events = int(state_row[4]) if state_row else 0
+                fail_events = int(state_row[5]) if state_row else 0
+                success_events = int(state_row[6]) if state_row else 0
+                recovery_events = int(state_row[7]) if state_row else 0
+                last_event_id = int(state_row[8]) if state_row and state_row[8] is not None else 0
+                last_event_at = state_row[9] if state_row else None
+
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        created_at,
+                        is_tested,
+                        per_skill_outcome,
+                        shadow_delta_signal
+                    FROM bt_3_skill_events_v2
+                    WHERE user_id = %s
+                      AND skill_id = %s
+                      AND source_lang = %s
+                      AND target_lang = %s
+                      AND id > %s
+                      AND id <= %s
+                    ORDER BY id ASC;
+                    """,
+                    (
+                        safe_user_id,
+                        safe_skill_id,
+                        safe_source_lang,
+                        safe_target_lang,
+                        last_event_id,
+                        safe_claimed_max_event_id,
+                    ),
+                )
+                event_rows = cursor.fetchall() or []
+                if event_rows:
+                    for event_id, created_at, is_tested, per_skill_outcome, shadow_delta_signal in event_rows:
+                        event_created_at = created_at or datetime.now(timezone.utc)
+                        if last_event_at is not None:
+                            delta_seconds = max(
+                                0.0,
+                                float((event_created_at - last_event_at).total_seconds()),
+                            )
+                            tau_seconds = SKILL_STATE_V2_RECENT_TAU_DAYS * 24.0 * 60.0 * 60.0
+                            if tau_seconds > 0:
+                                net_recent *= math.exp(-delta_seconds / tau_seconds)
+                        delta_value = float(shadow_delta_signal or 0.0)
+                        net_recent += delta_value
+                        net_lifetime += delta_value
+                        if bool(is_tested):
+                            tested_events += 1
+                        outcome_bucket = _skill_state_v2_classify_outcome(per_skill_outcome)
+                        if outcome_bucket == "fail":
+                            fail_events += 1
+                        elif outcome_bucket == "success":
+                            success_events += 1
+                        elif outcome_bucket == "recovery":
+                            recovery_events += 1
+                        last_event_id = int(event_id or last_event_id)
+                        last_event_at = event_created_at
+
+                    confidence = _compute_skill_state_v2_confidence(tested_events)
+                    mastery = _compute_skill_state_v2_mastery(net_recent, net_lifetime)
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_user_skill_state_v2 (
+                            user_id,
+                            skill_id,
+                            source_lang,
+                            target_lang,
+                            mastery,
+                            confidence,
+                            net_evidence_recent,
+                            net_evidence_lifetime,
+                            tested_events,
+                            fail_events,
+                            success_events,
+                            recovery_events,
+                            last_event_id,
+                            last_event_at,
+                            updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (user_id, skill_id, source_lang, target_lang) DO UPDATE
+                        SET
+                            mastery = EXCLUDED.mastery,
+                            confidence = EXCLUDED.confidence,
+                            net_evidence_recent = EXCLUDED.net_evidence_recent,
+                            net_evidence_lifetime = EXCLUDED.net_evidence_lifetime,
+                            tested_events = EXCLUDED.tested_events,
+                            fail_events = EXCLUDED.fail_events,
+                            success_events = EXCLUDED.success_events,
+                            recovery_events = EXCLUDED.recovery_events,
+                            last_event_id = EXCLUDED.last_event_id,
+                            last_event_at = EXCLUDED.last_event_at,
+                            updated_at = NOW();
+                        """,
+                        (
+                            safe_user_id,
+                            safe_skill_id,
+                            safe_source_lang,
+                            safe_target_lang,
+                            mastery,
+                            confidence,
+                            net_recent,
+                            net_lifetime,
+                            tested_events,
+                            fail_events,
+                            success_events,
+                            recovery_events,
+                            last_event_id if last_event_id > 0 else None,
+                            last_event_at,
+                        ),
+                    )
+
+                cursor.execute(
+                    """
+                    DELETE FROM bt_3_skill_state_v2_dirty
+                    WHERE user_id = %s
+                      AND skill_id = %s
+                      AND source_lang = %s
+                      AND target_lang = %s
+                      AND lease_owner = %s
+                      AND max_event_id <= %s;
+                    """,
+                    (
+                        safe_user_id,
+                        safe_skill_id,
+                        safe_source_lang,
+                        safe_target_lang,
+                        safe_lease_owner,
+                        last_event_id,
+                    ),
+                )
+                deleted_dirty_row = int(cursor.rowcount or 0) > 0
+                if not deleted_dirty_row:
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_skill_state_v2_dirty
+                        SET
+                            lease_owner = NULL,
+                            lease_expires_at = NULL,
+                            retry_count = 0,
+                            next_attempt_at = NOW(),
+                            last_error = NULL,
+                            updated_at = NOW()
+                        WHERE user_id = %s
+                          AND skill_id = %s
+                          AND source_lang = %s
+                          AND target_lang = %s
+                          AND lease_owner = %s;
+                        """,
+                        (safe_user_id, safe_skill_id, safe_source_lang, safe_target_lang, safe_lease_owner),
+                    )
+
+        return {
+            "ok": True,
+            "user_id": safe_user_id,
+            "skill_id": safe_skill_id,
+            "source_lang": safe_source_lang,
+            "target_lang": safe_target_lang,
+            "processed_events": len(event_rows),
+            "last_event_id": int(last_event_id or 0),
+            "dirty_row_deleted": bool(deleted_dirty_row),
+            "mastery": float(mastery),
+            "confidence": float(confidence),
+        }
+    except Exception as exc:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_skill_state_v2_dirty
+                    SET
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        retry_count = retry_count + 1,
+                        next_attempt_at = NOW() + (LEAST(300, 5 * CAST(POWER(2, LEAST(retry_count + 1, 5)) AS INT)) * INTERVAL '1 second'),
+                        last_error = %s,
+                        updated_at = NOW()
+                    WHERE user_id = %s
+                      AND skill_id = %s
+                      AND source_lang = %s
+                      AND target_lang = %s
+                      AND lease_owner = %s;
+                    """,
+                    (
+                        str(exc)[:500],
+                        safe_user_id,
+                        safe_skill_id,
+                        safe_source_lang,
+                        safe_target_lang,
+                        safe_lease_owner,
+                    ),
+                )
+        return {
+            "ok": False,
+            "user_id": safe_user_id,
+            "skill_id": safe_skill_id,
+            "source_lang": safe_source_lang,
+            "target_lang": safe_target_lang,
+            "processed_events": 0,
+            "error": str(exc),
+        }
+
+
+def get_skill_state_v2_dirty_summary() -> dict[str, Any]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) AS dirty_count,
+                    COUNT(*) FILTER (
+                        WHERE lease_expires_at IS NOT NULL
+                          AND lease_expires_at > NOW()
+                    ) AS leased_count,
+                    COALESCE(SUM(retry_count), 0) AS retry_count_total,
+                    COALESCE(MAX(retry_count), 0) AS retry_count_max,
+                    MIN(first_enqueued_at) AS oldest_dirty_at
+                FROM bt_3_skill_state_v2_dirty;
+                """
+            )
+            row = cursor.fetchone() or (0, 0, 0, 0, None)
+    oldest_dirty_at = row[4]
+    oldest_dirty_age_seconds = None
+    if oldest_dirty_at:
+        oldest_dirty_age_seconds = max(
+            0,
+            int((datetime.now(timezone.utc) - oldest_dirty_at).total_seconds()),
+        )
+    return {
+        "dirty_count": int(row[0] or 0),
+        "leased_count": int(row[1] or 0),
+        "retry_count_total": int(row[2] or 0),
+        "retry_count_max": int(row[3] or 0),
+        "oldest_dirty_at": oldest_dirty_at.isoformat() if oldest_dirty_at else None,
+        "oldest_dirty_age_seconds": oldest_dirty_age_seconds,
+    }
+
+
+def record_skill_state_v2_worker_run(
+    *,
+    worker_name: str,
+    keys_processed: int,
+    events_processed: int,
+    duration_ms: int,
+    error: str | None = None,
+) -> None:
+    safe_worker_name = str(worker_name or "").strip()[:128] or "skill-state-v2-aggregator"
+    safe_keys_processed = max(0, int(keys_processed or 0))
+    safe_events_processed = max(0, int(events_processed or 0))
+    safe_duration_ms = max(0, int(duration_ms or 0))
+    safe_error = str(error or "").strip()[:2000] or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_skill_state_v2_worker_stats (
+                    worker_name,
+                    runs_total,
+                    keys_processed_total,
+                    events_processed_total,
+                    last_run_at,
+                    last_success_at,
+                    last_duration_ms,
+                    last_keys_processed,
+                    last_events_processed,
+                    last_error,
+                    errors_total,
+                    updated_at
+                )
+                VALUES (
+                    %s,
+                    1,
+                    %s,
+                    %s,
+                    NOW(),
+                    CASE WHEN %s IS NULL AND %s > 0 THEN NOW() ELSE NULL END,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    CASE WHEN %s IS NULL THEN 0 ELSE 1 END,
+                    NOW()
+                )
+                ON CONFLICT (worker_name) DO UPDATE
+                SET
+                    runs_total = bt_3_skill_state_v2_worker_stats.runs_total + 1,
+                    keys_processed_total = bt_3_skill_state_v2_worker_stats.keys_processed_total + EXCLUDED.keys_processed_total,
+                    events_processed_total = bt_3_skill_state_v2_worker_stats.events_processed_total + EXCLUDED.events_processed_total,
+                    last_run_at = NOW(),
+                    last_success_at = CASE
+                        WHEN EXCLUDED.last_success_at IS NOT NULL THEN EXCLUDED.last_success_at
+                        ELSE bt_3_skill_state_v2_worker_stats.last_success_at
+                    END,
+                    last_duration_ms = EXCLUDED.last_duration_ms,
+                    last_keys_processed = EXCLUDED.last_keys_processed,
+                    last_events_processed = EXCLUDED.last_events_processed,
+                    last_error = EXCLUDED.last_error,
+                    errors_total = bt_3_skill_state_v2_worker_stats.errors_total + CASE WHEN EXCLUDED.last_error IS NULL THEN 0 ELSE 1 END,
+                    updated_at = NOW();
+                """,
+                (
+                    safe_worker_name,
+                    safe_keys_processed,
+                    safe_events_processed,
+                    safe_error,
+                    safe_keys_processed,
+                    safe_duration_ms,
+                    safe_keys_processed,
+                    safe_events_processed,
+                    safe_error,
+                    safe_error,
+                ),
+            )
+
+
+def get_skill_state_v2_worker_summary() -> dict[str, Any]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH aggregated AS (
+                    SELECT
+                        COUNT(*) AS worker_rows,
+                        COALESCE(SUM(runs_total), 0) AS runs_total,
+                        COALESCE(SUM(keys_processed_total), 0) AS keys_processed_total,
+                        COALESCE(SUM(events_processed_total), 0) AS events_processed_total,
+                        MAX(last_run_at) AS last_run_at,
+                        MAX(last_success_at) AS last_success_at,
+                        COALESCE(SUM(errors_total), 0) AS errors_total,
+                        MAX(updated_at) AS updated_at
+                    FROM bt_3_skill_state_v2_worker_stats
+                ),
+                latest AS (
+                    SELECT
+                        last_duration_ms,
+                        last_keys_processed,
+                        last_events_processed,
+                        last_error
+                    FROM bt_3_skill_state_v2_worker_stats
+                    ORDER BY updated_at DESC, worker_name ASC
+                    LIMIT 1
+                )
+                SELECT
+                    aggregated.worker_rows,
+                    aggregated.runs_total,
+                    aggregated.keys_processed_total,
+                    aggregated.events_processed_total,
+                    aggregated.last_run_at,
+                    aggregated.last_success_at,
+                    aggregated.errors_total,
+                    aggregated.updated_at,
+                    COALESCE(latest.last_duration_ms, 0) AS last_duration_ms,
+                    COALESCE(latest.last_keys_processed, 0) AS last_keys_processed,
+                    COALESCE(latest.last_events_processed, 0) AS last_events_processed,
+                    latest.last_error
+                FROM aggregated
+                LEFT JOIN latest ON TRUE;
+                """
+            )
+            row = cursor.fetchone() or (0, 0, 0, 0, None, None, 0, None, 0, 0, 0, None)
+    return {
+        "worker_rows": int(row[0] or 0),
+        "runs_total": int(row[1] or 0),
+        "keys_processed_total": int(row[2] or 0),
+        "events_processed_total": int(row[3] or 0),
+        "last_run_at": row[4].isoformat() if row[4] else None,
+        "last_success_at": row[5].isoformat() if row[5] else None,
+        "errors_total": int(row[6] or 0),
+        "updated_at": row[7].isoformat() if row[7] else None,
+        "last_duration_ms": int(row[8] or 0),
+        "last_keys_processed": int(row[9] or 0),
+        "last_events_processed": int(row[10] or 0),
+        "last_error": str(row[11]).strip() if row[11] is not None and str(row[11]).strip() else None,
+    }
+
+
+def get_skill_state_v2_comparison(
+    *,
+    user_id: int,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit or 20), 200))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH compared AS (
+                    SELECT
+                        COALESCE(v2.skill_id, v1.skill_id) AS skill_id,
+                        v1.mastery AS v1_mastery,
+                        v2.mastery AS v2_mastery,
+                        v2.confidence,
+                        v2.net_evidence_recent,
+                        v2.net_evidence_lifetime,
+                        v2.tested_events,
+                        v2.fail_events,
+                        v2.success_events,
+                        v2.recovery_events,
+                        v2.last_event_id,
+                        v2.last_event_at,
+                        v2.updated_at
+                    FROM bt_3_user_skill_state_v2 v2
+                    FULL OUTER JOIN bt_3_user_skill_state v1
+                      ON v1.user_id = v2.user_id
+                     AND v1.skill_id = v2.skill_id
+                     AND v1.source_lang = v2.source_lang
+                     AND v1.target_lang = v2.target_lang
+                    WHERE COALESCE(v2.user_id, v1.user_id) = %s
+                      AND COALESCE(v2.source_lang, v1.source_lang) = %s
+                      AND COALESCE(v2.target_lang, v1.target_lang) = %s
+                )
+                SELECT
+                    compared.skill_id,
+                    COALESCE(sk.title, compared.skill_id) AS skill_title,
+                    compared.v1_mastery,
+                    compared.v2_mastery,
+                    compared.confidence,
+                    compared.net_evidence_recent,
+                    compared.net_evidence_lifetime,
+                    compared.tested_events,
+                    compared.fail_events,
+                    compared.success_events,
+                    compared.recovery_events,
+                    compared.last_event_id,
+                    compared.last_event_at,
+                    compared.updated_at
+                FROM compared
+                LEFT JOIN bt_3_skills sk
+                  ON sk.skill_id = compared.skill_id
+                ORDER BY
+                    COALESCE(compared.v2_mastery, compared.v1_mastery, 999.0) ASC,
+                    compared.skill_id ASC
+                LIMIT %s;
+                """,
+                (int(user_id), source_lang or "ru", target_lang or "de", safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        results.append(
+            {
+                "skill_id": str(row[0]),
+                "skill_title": str(row[1] or row[0]),
+                "v1_mastery": float(row[2]) if row[2] is not None else None,
+                "v2_mastery": float(row[3]) if row[3] is not None else None,
+                "confidence": float(row[4]) if row[4] is not None else None,
+                "net_evidence_recent": float(row[5]) if row[5] is not None else None,
+                "net_evidence_lifetime": float(row[6]) if row[6] is not None else None,
+                "tested_events": int(row[7] or 0),
+                "fail_events": int(row[8] or 0),
+                "success_events": int(row[9] or 0),
+                "recovery_events": int(row[10] or 0),
+                "last_event_id": int(row[11]) if row[11] is not None else None,
+                "last_event_at": row[12].isoformat() if row[12] else None,
+                "updated_at": row[13].isoformat() if row[13] else None,
+            }
+        )
+    return results
 
 
 def get_admin_telegram_ids() -> set[int]:

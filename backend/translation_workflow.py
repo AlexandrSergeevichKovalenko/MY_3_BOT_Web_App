@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import openai
 import psycopg2
+from psycopg2.extras import Json, execute_values
 
 from backend.config_mistakes_data import (
     VALID_CATEGORIES,
@@ -26,8 +27,20 @@ from backend.database import (
     get_db_connection,
     get_db_connection_context,
     apply_skill_events_for_error,
+    get_skill_mapping_for_error,
     update_translation_check_item_result,
 )
+
+PHASE1_SKILL_ROLE_WEIGHTS = {
+    "primary": 1.0,
+    "secondary": 0.65,
+    "supporting": 0.35,
+}
+PHASE1_MAX_UNTARGETED_ERROR_SKILLS = 4
+PHASE1_MISSING_PROFILE_SOURCE = "missing"
+PHASE1_MISSING_PROFILE_CONFIDENCE = 0.25
+PHASE1_CATASTROPHIC_FAIL_SCORE_THRESHOLD = 20
+PHASE1_CATASTROPHIC_FAIL_MAP_WEIGHT = 0.6
 
 
 def finalize_open_translation_sessions() -> dict[str, int]:
@@ -1077,6 +1090,7 @@ async def start_translation_session_webapp(
     source_lang: str = "ru",
     target_lang: str = "de",
     force_new_session: bool = False,
+    tested_skill_profile_seed: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1187,6 +1201,12 @@ async def start_translation_session_webapp(
         if not sentences:
             return {"session_id": session_id, "created": True, "count": 0}
 
+        tested_skill_profile = _build_phase1_tested_skill_profile_with_cursor(
+            cursor,
+            target_lang=target_lang,
+            profile_seed=tested_skill_profile_seed,
+        )
+
         cursor.execute(
             """
             SELECT COALESCE(MAX(unique_id), 0)
@@ -1200,6 +1220,7 @@ async def start_translation_session_webapp(
         )
         row = cursor.fetchone()
         start_index = (row[0] or 0) + 1
+        created_sentence_ids: list[int] = []
 
         for i, sentence in enumerate(sentences, start=start_index):
             cursor.execute(
@@ -1235,10 +1256,20 @@ async def start_translation_session_webapp(
                     source_lang,
                     target_lang
                 )
-                VALUES (CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s);
+                VALUES (CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
                 """,
                 (sentence, i, user_id, session_id, id_for_mistake_table, source_lang, target_lang),
             )
+            inserted_row = cursor.fetchone()
+            if inserted_row and inserted_row[0]:
+                created_sentence_ids.append(int(inserted_row[0]))
+
+        _insert_sentence_skill_targets_with_cursor(
+            cursor,
+            sentence_ids=created_sentence_ids,
+            tested_skill_profile=tested_skill_profile,
+        )
 
         conn.commit()
         return {"session_id": session_id, "created": True, "count": len(sentences)}
@@ -1718,6 +1749,249 @@ def _resolve_latest_translation_session_id(
     return latest_session[0] if latest_session else None
 
 
+def _score_band_label(score_value: int) -> str:
+    score = max(0, min(100, int(score_value or 0)))
+    if score >= 95:
+        return "95_100"
+    if score >= 85:
+        return "85_94"
+    if score >= 70:
+        return "70_84"
+    if score >= 50:
+        return "50_69"
+    return "lt50"
+
+
+def _retention_state_label(*, was_in_mistakes: bool, score_value: int) -> str:
+    score = int(score_value or 0)
+    if was_in_mistakes:
+        return "repeat_success_remove" if score >= 85 else "repeat_fail_keep"
+    return "new_pass" if score >= 80 else "new_fail_store"
+
+
+def _load_skill_seed_with_cursor(cursor, *, skill_id: str, target_lang: str) -> dict[str, str] | None:
+    normalized_skill_id = str(skill_id or "").strip()
+    normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+    if not normalized_skill_id:
+        return None
+    cursor.execute(
+        """
+        SELECT skill_id, title, category
+        FROM bt_3_skills
+        WHERE skill_id = %s
+          AND language_code = %s
+          AND COALESCE(is_active, TRUE) = TRUE
+        LIMIT 1;
+        """,
+        (normalized_skill_id, normalized_target_lang),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "skill_id": str(row[0] or ""),
+        "title": str(row[1] or ""),
+        "category": str(row[2] or ""),
+    }
+
+
+def _list_related_skill_ids_with_cursor(
+    cursor,
+    *,
+    target_lang: str,
+    category: str,
+    exclude_skill_ids: set[str],
+    limit: int,
+) -> list[str]:
+    if not category or limit <= 0:
+        return []
+    cursor.execute(
+        """
+        SELECT skill_id
+        FROM bt_3_skills
+        WHERE category = %s
+          AND language_code = %s
+          AND COALESCE(is_active, TRUE) = TRUE
+        ORDER BY skill_id ASC
+        LIMIT %s;
+        """,
+        (category, str(target_lang or "de").strip().lower() or "de", max(limit + len(exclude_skill_ids), limit)),
+    )
+    rows = cursor.fetchall() or []
+    result: list[str] = []
+    for row in rows:
+        skill_id = str((row or [None])[0] or "").strip()
+        if not skill_id or skill_id in exclude_skill_ids:
+            continue
+        result.append(skill_id)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _list_focus_mapped_skill_ids(
+    *,
+    main_category: str | None,
+    sub_category: str | None,
+    target_lang: str,
+    exclude_skill_ids: set[str],
+    limit: int,
+) -> list[str]:
+    if not main_category or not sub_category or limit <= 0:
+        return []
+    mapped = get_skill_mapping_for_error(
+        str(main_category or "").strip(),
+        str(sub_category or "").strip(),
+        language_code=target_lang or "de",
+    )
+    result: list[str] = []
+    for item in mapped:
+        skill_id = str(item.get("skill_id") or "").strip()
+        if not skill_id or skill_id in exclude_skill_ids:
+            continue
+        result.append(skill_id)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _build_phase1_tested_skill_profile_with_cursor(
+    cursor,
+    *,
+    target_lang: str,
+    profile_seed: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(profile_seed, dict):
+        return []
+    primary_skill_id = str(profile_seed.get("primary_skill_id") or profile_seed.get("skill_id") or "").strip()
+    if not primary_skill_id:
+        return []
+    primary_skill = _load_skill_seed_with_cursor(
+        cursor,
+        skill_id=primary_skill_id,
+        target_lang=target_lang,
+    )
+    if not primary_skill:
+        return []
+
+    profile_source = str(profile_seed.get("profile_source") or "seeded").strip() or "seeded"
+    try:
+        profile_confidence = max(0.0, min(1.0, float(profile_seed.get("profile_confidence") or 0.0)))
+    except Exception:
+        profile_confidence = 0.0
+    if profile_confidence <= 0.0:
+        return []
+
+    selected_skill_ids = {primary_skill["skill_id"]}
+    secondaries = _list_focus_mapped_skill_ids(
+        main_category=profile_seed.get("main_category"),
+        sub_category=profile_seed.get("sub_category"),
+        target_lang=target_lang,
+        exclude_skill_ids=selected_skill_ids,
+        limit=2,
+    )
+    selected_skill_ids.update(secondaries)
+    if len(secondaries) < 1:
+        filler = _list_related_skill_ids_with_cursor(
+            cursor,
+            target_lang=target_lang,
+            category=primary_skill.get("category") or "",
+            exclude_skill_ids=selected_skill_ids,
+            limit=2 - len(secondaries),
+        )
+        secondaries.extend(filler)
+        selected_skill_ids.update(filler)
+
+    supporting = _list_related_skill_ids_with_cursor(
+        cursor,
+        target_lang=target_lang,
+        category=primary_skill.get("category") or "",
+        exclude_skill_ids=selected_skill_ids,
+        limit=1,
+    )
+
+    profile: list[dict[str, Any]] = [
+        {
+            "skill_id": primary_skill["skill_id"],
+            "role": "primary",
+            "role_rank": 1,
+            "role_weight": PHASE1_SKILL_ROLE_WEIGHTS["primary"],
+            "profile_source": profile_source,
+            "profile_confidence": profile_confidence,
+            "profile_version": 1,
+        }
+    ]
+    for index, skill_id in enumerate(secondaries[:2], start=2):
+        profile.append(
+            {
+                "skill_id": skill_id,
+                "role": "secondary",
+                "role_rank": index,
+                "role_weight": PHASE1_SKILL_ROLE_WEIGHTS["secondary"],
+                "profile_source": profile_source,
+                "profile_confidence": profile_confidence,
+                "profile_version": 1,
+            }
+        )
+    if supporting:
+        profile.append(
+            {
+                "skill_id": supporting[0],
+                "role": "supporting",
+                "role_rank": 4,
+                "role_weight": PHASE1_SKILL_ROLE_WEIGHTS["supporting"],
+                "profile_source": profile_source,
+                "profile_confidence": profile_confidence,
+                "profile_version": 1,
+            }
+        )
+    return profile
+
+
+def _insert_sentence_skill_targets_with_cursor(
+    cursor,
+    *,
+    sentence_ids: list[int],
+    tested_skill_profile: list[dict[str, Any]],
+) -> None:
+    if not sentence_ids or not tested_skill_profile:
+        return
+    values: list[tuple[Any, ...]] = []
+    for sentence_id in sentence_ids:
+        for item in tested_skill_profile:
+            values.append(
+                (
+                    int(sentence_id),
+                    str(item.get("skill_id") or ""),
+                    str(item.get("role") or "supporting"),
+                    int(item.get("role_rank") or 99),
+                    float(item.get("role_weight") or 0.0),
+                    str(item.get("profile_source") or "seeded"),
+                    float(item.get("profile_confidence") or 0.0),
+                    int(item.get("profile_version") or 1),
+                )
+            )
+    if not values:
+        return
+    execute_values(
+        cursor,
+        """
+        INSERT INTO bt_3_sentence_skill_targets (
+            sentence_id,
+            skill_id,
+            role,
+            role_rank,
+            role_weight,
+            profile_source,
+            profile_confidence,
+            profile_version
+        ) VALUES %s
+        ON CONFLICT (sentence_id, skill_id) DO NOTHING;
+        """,
+        values,
+    )
+
+
 def _normalize_category_pairs(
     categories: list[str],
     subcategories: list[str],
@@ -1752,6 +2026,524 @@ def _normalize_category_pairs(
     if not normalized_pairs and fallback_to_other:
         normalized_pairs.append(("Other mistake", "Unclassified mistake"))
     return list(dict.fromkeys(normalized_pairs))
+
+
+def _load_sentence_skill_targets_with_cursor(cursor, *, sentence_id: int) -> list[dict[str, Any]]:
+    cursor.execute(
+        """
+        SELECT skill_id, role, role_rank, role_weight, profile_source, profile_confidence, profile_version
+        FROM bt_3_sentence_skill_targets
+        WHERE sentence_id = %s
+        ORDER BY role_rank ASC, skill_id ASC
+        LIMIT 4;
+        """,
+        (int(sentence_id),),
+    )
+    rows = cursor.fetchall() or []
+    return [
+        {
+            "skill_id": str(row[0] or ""),
+            "role": str(row[1] or "supporting"),
+            "role_rank": int(row[2] or 99),
+            "role_weight": float(row[3] or 0.0),
+            "profile_source": str(row[4] or PHASE1_MISSING_PROFILE_SOURCE),
+            "profile_confidence": float(row[5] or 0.0),
+            "profile_version": int(row[6] or 1),
+        }
+        for row in rows
+        if str(row[0] or "").strip()
+    ]
+
+
+def _load_sentence_skill_shadow_state_with_cursor(cursor, *, sentence_id: int) -> dict[str, Any] | None:
+    cursor.execute(
+        """
+        SELECT
+            user_id,
+            source_lang,
+            target_lang,
+            last_attempt_no,
+            last_score,
+            last_score_band,
+            last_retention_state,
+            last_tested_skill_ids,
+            last_errored_skill_ids,
+            last_profile_source,
+            last_profile_confidence,
+            last_checked_at
+        FROM bt_3_sentence_skill_shadow_state_v2
+        WHERE sentence_id = %s
+        LIMIT 1;
+        """,
+        (int(sentence_id),),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    tested_ids = row[7] if isinstance(row[7], list) else []
+    errored_ids = row[8] if isinstance(row[8], list) else []
+    return {
+        "user_id": int(row[0]),
+        "source_lang": str(row[1] or "ru"),
+        "target_lang": str(row[2] or "de"),
+        "last_attempt_no": int(row[3] or 0),
+        "last_score": int(row[4] or 0),
+        "last_score_band": str(row[5] or "lt50"),
+        "last_retention_state": str(row[6] or "new_fail_store"),
+        "last_tested_skill_ids": [str(item) for item in tested_ids if str(item).strip()],
+        "last_errored_skill_ids": [str(item) for item in errored_ids if str(item).strip()],
+        "last_profile_source": str(row[9] or PHASE1_MISSING_PROFILE_SOURCE),
+        "last_profile_confidence": float(row[10] or 0.0),
+        "last_checked_at": row[11].isoformat() if row[11] else None,
+    }
+
+
+def _build_errored_skill_details(
+    *,
+    error_pairs: list[tuple[str, str]],
+    target_lang: str,
+) -> dict[str, dict[str, Any]]:
+    details: dict[str, dict[str, Any]] = {}
+    for main_category, sub_category in list(dict.fromkeys(error_pairs))[:8]:
+        mapping = get_skill_mapping_for_error(
+            str(main_category or "").strip(),
+            str(sub_category or "").strip(),
+            language_code=target_lang or "de",
+        )
+        for item in mapping:
+            skill_id = str(item.get("skill_id") or "").strip()
+            if not skill_id:
+                continue
+            map_weight = float(item.get("weight") or 1.0)
+            bucket = details.setdefault(
+                skill_id,
+                {
+                    "map_weight": map_weight,
+                    "error_pairs": [],
+                },
+            )
+            bucket["map_weight"] = max(float(bucket.get("map_weight") or 0.0), map_weight)
+            pair_payload = [str(main_category or ""), str(sub_category or "")]
+            if pair_payload not in bucket["error_pairs"]:
+                bucket["error_pairs"].append(pair_payload)
+    return details
+
+
+def _classify_sentence_progress(
+    *,
+    previous_errored_skill_ids: set[str],
+    current_errored_skill_ids: set[str],
+    primary_skill_ids: set[str],
+    previous_score: int | None,
+    current_score: int,
+    was_in_mistakes: bool,
+) -> str:
+    if previous_score is None and not previous_errored_skill_ids:
+        return "first_attempt"
+    if was_in_mistakes and current_score >= 85:
+        return "final_recovery"
+    recovered_skill_ids = previous_errored_skill_ids - current_errored_skill_ids
+    new_skill_ids = current_errored_skill_ids - previous_errored_skill_ids
+    score_improved = previous_score is not None and int(current_score or 0) > int(previous_score or 0)
+    material_score_improved = previous_score is not None and int(current_score or 0) >= int(previous_score or 0) + 5
+    primary_skill_recovered = bool(recovered_skill_ids & set(primary_skill_ids or set()))
+    if recovered_skill_ids and new_skill_ids:
+        if primary_skill_recovered or material_score_improved:
+            return "mixed_progress"
+        return "no_progress"
+    if primary_skill_recovered or (recovered_skill_ids and not new_skill_ids):
+        return "partial_progress"
+    if len(current_errored_skill_ids) < len(previous_errored_skill_ids) and not new_skill_ids:
+        return "partial_progress"
+    if score_improved and not new_skill_ids:
+        return "partial_progress"
+    return "no_progress"
+
+
+def _shadow_delta_signal(
+    *,
+    outcome: str,
+    role_weight: float,
+    profile_confidence: float,
+    map_weight: float,
+) -> float:
+    confidence_factor = max(0.0, min(1.0, float(profile_confidence or 0.0)))
+    role = max(0.0, float(role_weight or 0.0))
+    mapping = max(0.1, float(map_weight or 1.0))
+    multipliers = {
+        "fail_new": -1.0 * role * mapping * confidence_factor,
+        "fail_repeat_no_progress": -1.2 * role * mapping * confidence_factor,
+        "fail_repeat_progress": -0.7 * role * mapping * confidence_factor,
+        "catastrophic_fail_fallback": -0.45 * role * max(0.6, confidence_factor),
+        "clean_neutral": 0.0,
+        "clean_progress_credit": 0.2 * role * confidence_factor,
+        "clean_success": 0.6 * role * confidence_factor,
+        "recovered_partial": 0.35 * role * confidence_factor,
+        "recovered_final": 1.25 * role * confidence_factor,
+        "untargeted_error_fail": -0.75 * mapping * max(0.5, confidence_factor),
+    }
+    return round(float(multipliers.get(outcome, 0.0)), 3)
+
+
+def _build_phase1_shadow_payload(
+    *,
+    user_id: int,
+    sentence_pk_id: int,
+    session_id: int | None,
+    source_lang: str,
+    target_lang: str,
+    score_value: int,
+    was_in_mistakes: bool,
+    tested_targets: list[dict[str, Any]],
+    previous_shadow_state: dict[str, Any] | None,
+    current_errored_details: dict[str, dict[str, Any]],
+    fallback_previous_errored_details: dict[str, dict[str, Any]] | None = None,
+) -> tuple[list[tuple[Any, ...]], dict[str, Any]]:
+    tested_ids = [str(item.get("skill_id") or "").strip() for item in tested_targets if str(item.get("skill_id") or "").strip()]
+    tested_ids = list(dict.fromkeys(tested_ids))
+    primary_skill_ids = {
+        str(item.get("skill_id") or "").strip()
+        for item in tested_targets
+        if str(item.get("role") or "").strip() == "primary" and str(item.get("skill_id") or "").strip()
+    }
+    current_errored_skill_ids = set(current_errored_details.keys())
+    previous_errored_skill_ids = set(previous_shadow_state.get("last_errored_skill_ids") or []) if previous_shadow_state else set()
+    previous_score = int(previous_shadow_state.get("last_score") or 0) if previous_shadow_state else None
+    previous_attempt_no = int(previous_shadow_state.get("last_attempt_no") or 0) if previous_shadow_state else 0
+
+    if not previous_errored_skill_ids and fallback_previous_errored_details:
+        previous_errored_skill_ids = set(fallback_previous_errored_details.keys())
+        previous_score = previous_score if previous_score is not None else max(0, int(score_value or 0) - 1)
+
+    attempt_no = previous_attempt_no + 1 if previous_attempt_no > 0 else 1
+    score_band = _score_band_label(score_value)
+    retention_state = _retention_state_label(
+        was_in_mistakes=was_in_mistakes,
+        score_value=score_value,
+    )
+    catastrophic_fail_skill_ids: set[str] = set()
+    if tested_ids and not current_errored_skill_ids and int(score_value or 0) <= PHASE1_CATASTROPHIC_FAIL_SCORE_THRESHOLD:
+        catastrophic_fail_skill_ids = set(tested_ids[:PHASE1_MAX_UNTARGETED_ERROR_SKILLS])
+    effective_current_errored_skill_ids = set(current_errored_skill_ids) | catastrophic_fail_skill_ids
+    progress_kind = _classify_sentence_progress(
+        previous_errored_skill_ids=previous_errored_skill_ids,
+        current_errored_skill_ids=effective_current_errored_skill_ids,
+        primary_skill_ids=primary_skill_ids,
+        previous_score=previous_score,
+        current_score=score_value,
+        was_in_mistakes=was_in_mistakes,
+    )
+
+    tested_profile_available = bool(tested_targets)
+    default_profile_source = (
+        str(tested_targets[0].get("profile_source") or PHASE1_MISSING_PROFILE_SOURCE)
+        if tested_targets else PHASE1_MISSING_PROFILE_SOURCE
+    )
+    default_profile_confidence = (
+        float(tested_targets[0].get("profile_confidence") or 0.0)
+        if tested_targets else PHASE1_MISSING_PROFILE_CONFIDENCE
+    )
+
+    event_rows: list[tuple[Any, ...]] = []
+    tested_skill_id_set = set(tested_ids)
+    for target in tested_targets:
+        skill_id = str(target.get("skill_id") or "").strip()
+        if not skill_id:
+            continue
+        role = str(target.get("role") or "supporting")
+        role_weight = float(target.get("role_weight") or 0.0)
+        profile_source = str(target.get("profile_source") or default_profile_source)
+        profile_confidence = float(target.get("profile_confidence") or default_profile_confidence)
+        is_errored_now = skill_id in effective_current_errored_skill_ids
+        was_errored_prev = skill_id in previous_errored_skill_ids
+        is_catastrophic_fallback = skill_id in catastrophic_fail_skill_ids and skill_id not in current_errored_skill_ids
+        if is_catastrophic_fallback:
+            map_weight = float(PHASE1_CATASTROPHIC_FAIL_MAP_WEIGHT)
+        else:
+            map_weight = float((current_errored_details.get(skill_id) or {}).get("map_weight") or 1.0)
+        error_pairs_json = (current_errored_details.get(skill_id) or {}).get("error_pairs")
+
+        if is_errored_now:
+            if is_catastrophic_fallback:
+                outcome = "catastrophic_fail_fallback"
+            elif was_errored_prev:
+                outcome = "fail_repeat_progress" if progress_kind in {"partial_progress", "mixed_progress"} else "fail_repeat_no_progress"
+            else:
+                outcome = "fail_new"
+            recovery_kind = "none"
+        else:
+            if was_errored_prev:
+                outcome = "recovered_final" if progress_kind == "final_recovery" else "recovered_partial"
+                recovery_kind = "final" if progress_kind == "final_recovery" else "partial"
+            else:
+                if was_in_mistakes and score_value < 85:
+                    outcome = "clean_progress_credit" if attempt_no > 1 and progress_kind in {"partial_progress", "mixed_progress"} else "clean_neutral"
+                elif score_value >= 80:
+                    outcome = "clean_success"
+                else:
+                    outcome = "clean_neutral"
+                recovery_kind = "none"
+
+        event_rows.append(
+            (
+                int(user_id),
+                int(sentence_pk_id),
+                int(session_id) if session_id is not None else None,
+                source_lang or "ru",
+                target_lang or "de",
+                attempt_no,
+                int(score_value),
+                score_band,
+                retention_state,
+                bool(was_in_mistakes),
+                tested_profile_available,
+                skill_id,
+                role,
+                role_weight,
+                True,
+                is_errored_now,
+                was_errored_prev,
+                outcome,
+                progress_kind,
+                recovery_kind,
+                profile_source,
+                profile_confidence,
+                int(target.get("profile_version") or 1),
+                map_weight,
+                Json(error_pairs_json) if error_pairs_json else None,
+                _shadow_delta_signal(
+                    outcome=outcome,
+                    role_weight=role_weight,
+                    profile_confidence=profile_confidence,
+                    map_weight=map_weight,
+                ),
+                Json(
+                    {
+                        "current_error_count": len(effective_current_errored_skill_ids),
+                        "previous_error_count": len(previous_errored_skill_ids),
+                        "previous_score": previous_score,
+                        "catastrophic_fail_fallback": bool(is_catastrophic_fallback),
+                    }
+                ),
+            )
+        )
+
+    extra_error_skill_ids = [
+        skill_id
+        for skill_id in sorted(current_errored_skill_ids)
+        if skill_id not in tested_skill_id_set
+    ][:PHASE1_MAX_UNTARGETED_ERROR_SKILLS]
+    for skill_id in extra_error_skill_ids:
+        details = current_errored_details.get(skill_id) or {}
+        event_rows.append(
+            (
+                int(user_id),
+                int(sentence_pk_id),
+                int(session_id) if session_id is not None else None,
+                source_lang or "ru",
+                target_lang or "de",
+                attempt_no,
+                int(score_value),
+                score_band,
+                retention_state,
+                bool(was_in_mistakes),
+                tested_profile_available,
+                skill_id,
+                "untargeted_error",
+                0.0,
+                False,
+                True,
+                skill_id in previous_errored_skill_ids,
+                "untargeted_error_fail",
+                progress_kind,
+                "none",
+                default_profile_source,
+                default_profile_confidence,
+                1,
+                float(details.get("map_weight") or 1.0),
+                Json(details.get("error_pairs")) if details.get("error_pairs") else None,
+                _shadow_delta_signal(
+                    outcome="untargeted_error_fail",
+                    role_weight=0.0,
+                    profile_confidence=default_profile_confidence,
+                    map_weight=float(details.get("map_weight") or 1.0),
+                ),
+                Json(
+                    {
+                        "current_error_count": len(effective_current_errored_skill_ids),
+                        "previous_error_count": len(previous_errored_skill_ids),
+                        "previous_score": previous_score,
+                    }
+                ),
+            )
+        )
+
+    shadow_state = {
+        "sentence_id": int(sentence_pk_id),
+        "user_id": int(user_id),
+        "source_lang": source_lang or "ru",
+        "target_lang": target_lang or "de",
+        "last_attempt_no": attempt_no,
+        "last_score": int(score_value),
+        "last_score_band": score_band,
+        "last_retention_state": retention_state,
+        "last_tested_skill_ids": tested_ids,
+        "last_errored_skill_ids": sorted(effective_current_errored_skill_ids),
+        "last_profile_source": default_profile_source,
+        "last_profile_confidence": default_profile_confidence,
+    }
+    return event_rows, shadow_state
+
+
+def _write_phase1_shadow_payload_with_cursor(
+    cursor,
+    *,
+    event_rows: list[tuple[Any, ...]],
+    shadow_state: dict[str, Any],
+) -> list[tuple[int, int, str, str, str]]:
+    inserted_event_refs: list[tuple[int, int, str, str, str]] = []
+    if event_rows:
+        execute_values(
+            cursor,
+            """
+            INSERT INTO bt_3_skill_events_v2 (
+                user_id,
+                sentence_id,
+                session_id,
+                source_lang,
+                target_lang,
+                attempt_no,
+                overall_score,
+                score_band,
+                retention_state,
+                was_in_error_bank,
+                tested_profile_available,
+                skill_id,
+                skill_role,
+                role_weight,
+                is_tested,
+                is_errored_now,
+                was_errored_prev,
+                per_skill_outcome,
+                sentence_progress_kind,
+                recovery_kind,
+                profile_source,
+                profile_confidence,
+                profile_version,
+                map_weight,
+                error_pairs_json,
+                shadow_delta_signal,
+                metadata_json
+            ) VALUES %s
+            RETURNING id, user_id, skill_id, source_lang, target_lang;
+            """,
+            event_rows,
+            page_size=max(1, len(event_rows)),
+        )
+        inserted_event_refs = [
+            (
+                int(row[0]),
+                int(row[1]),
+                str(row[2]),
+                str(row[3] or "ru"),
+                str(row[4] or "de"),
+            )
+            for row in (cursor.fetchall() or [])
+        ]
+
+        dirty_rows_by_key: dict[tuple[int, str, str, str], int] = {}
+        for event_id, event_user_id, event_skill_id, event_source_lang, event_target_lang in inserted_event_refs:
+            key = (
+                int(event_user_id),
+                str(event_skill_id),
+                str(event_source_lang or "ru"),
+                str(event_target_lang or "de"),
+            )
+            previous_max_event_id = dirty_rows_by_key.get(key)
+            if previous_max_event_id is None or int(event_id) > previous_max_event_id:
+                dirty_rows_by_key[key] = int(event_id)
+        if dirty_rows_by_key:
+            execute_values(
+                cursor,
+                """
+                INSERT INTO bt_3_skill_state_v2_dirty (
+                    user_id,
+                    skill_id,
+                    source_lang,
+                    target_lang,
+                    max_event_id,
+                    enqueue_count
+                ) VALUES %s
+                ON CONFLICT (user_id, skill_id, source_lang, target_lang) DO UPDATE
+                SET
+                    max_event_id = GREATEST(bt_3_skill_state_v2_dirty.max_event_id, EXCLUDED.max_event_id),
+                    enqueue_count = bt_3_skill_state_v2_dirty.enqueue_count + EXCLUDED.enqueue_count,
+                    next_attempt_at = LEAST(bt_3_skill_state_v2_dirty.next_attempt_at, NOW()),
+                    updated_at = NOW(),
+                    last_error = NULL;
+                """,
+                [
+                    (
+                        int(event_user_id),
+                        str(event_skill_id),
+                        str(event_source_lang or "ru"),
+                        str(event_target_lang or "de"),
+                        int(max_event_id),
+                        1,
+                    )
+                    for (event_user_id, event_skill_id, event_source_lang, event_target_lang), max_event_id in dirty_rows_by_key.items()
+                ],
+                page_size=max(1, len(dirty_rows_by_key)),
+            )
+
+    cursor.execute(
+        """
+        INSERT INTO bt_3_sentence_skill_shadow_state_v2 (
+            sentence_id,
+            user_id,
+            source_lang,
+            target_lang,
+            last_attempt_no,
+            last_score,
+            last_score_band,
+            last_retention_state,
+            last_tested_skill_ids,
+            last_errored_skill_ids,
+            last_profile_source,
+            last_profile_confidence,
+            last_checked_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (sentence_id) DO UPDATE
+        SET
+            user_id = EXCLUDED.user_id,
+            source_lang = EXCLUDED.source_lang,
+            target_lang = EXCLUDED.target_lang,
+            last_attempt_no = EXCLUDED.last_attempt_no,
+            last_score = EXCLUDED.last_score,
+            last_score_band = EXCLUDED.last_score_band,
+            last_retention_state = EXCLUDED.last_retention_state,
+            last_tested_skill_ids = EXCLUDED.last_tested_skill_ids,
+            last_errored_skill_ids = EXCLUDED.last_errored_skill_ids,
+            last_profile_source = EXCLUDED.last_profile_source,
+            last_profile_confidence = EXCLUDED.last_profile_confidence,
+            last_checked_at = NOW();
+        """,
+        (
+            int(shadow_state.get("sentence_id") or 0),
+            int(shadow_state.get("user_id") or 0),
+            str(shadow_state.get("source_lang") or "ru"),
+            str(shadow_state.get("target_lang") or "de"),
+            int(shadow_state.get("last_attempt_no") or 0),
+            int(shadow_state.get("last_score") or 0),
+            str(shadow_state.get("last_score_band") or "lt50"),
+            str(shadow_state.get("last_retention_state") or "new_fail_store"),
+            Json(list(shadow_state.get("last_tested_skill_ids") or [])),
+            Json(list(shadow_state.get("last_errored_skill_ids") or [])),
+            str(shadow_state.get("last_profile_source") or PHASE1_MISSING_PROFILE_SOURCE),
+            float(shadow_state.get("last_profile_confidence") or PHASE1_MISSING_PROFILE_CONFIDENCE),
+        ),
+    )
+    return inserted_event_refs
 
 
 def _log_translation_mistake_with_cursor(
@@ -1933,6 +2725,8 @@ async def apply_translation_result_side_effects(
     user_id: int,
     original_text: str,
     user_translation: str,
+    sentence_pk_id: int | None,
+    session_id: int | None,
     sentence_id_for_mistake: int,
     score_value: int,
     correct_translation: str | None,
@@ -2076,6 +2870,50 @@ async def apply_translation_result_side_effects(
                             target_lang=target_lang or "de",
                         )
                     )
+
+            if sentence_pk_id:
+                tested_targets = _load_sentence_skill_targets_with_cursor(
+                    cursor,
+                    sentence_id=int(sentence_pk_id),
+                )
+                previous_shadow_state = _load_sentence_skill_shadow_state_with_cursor(
+                    cursor,
+                    sentence_id=int(sentence_pk_id),
+                )
+                current_error_pairs = _normalize_category_pairs(
+                    categories,
+                    subcategories,
+                    target_lang=target_lang or "de",
+                    fallback_to_other=False,
+                )
+                current_errored_details = _build_errored_skill_details(
+                    error_pairs=current_error_pairs,
+                    target_lang=target_lang or "de",
+                )
+                fallback_previous_errored_details = None
+                if not previous_shadow_state and success_pairs and was_in_mistakes:
+                    fallback_previous_errored_details = _build_errored_skill_details(
+                        error_pairs=success_pairs,
+                        target_lang=target_lang or "de",
+                    )
+                event_rows, shadow_state = _build_phase1_shadow_payload(
+                    user_id=int(user_id),
+                    sentence_pk_id=int(sentence_pk_id),
+                    session_id=int(session_id) if session_id is not None else None,
+                    source_lang=source_lang or "ru",
+                    target_lang=target_lang or "de",
+                    score_value=int(score_value),
+                    was_in_mistakes=was_in_mistakes,
+                    tested_targets=tested_targets,
+                    previous_shadow_state=previous_shadow_state,
+                    current_errored_details=current_errored_details,
+                    fallback_previous_errored_details=fallback_previous_errored_details,
+                )
+                _write_phase1_shadow_payload_with_cursor(
+                    cursor,
+                    event_rows=event_rows,
+                    shadow_state=shadow_state,
+                )
 
     for main_category, sub_category in list(dict.fromkeys(success_pairs)):
         try:
@@ -2250,6 +3088,8 @@ async def check_user_translation_webapp_item(
         "user_id": int(user_id),
         "original_text": original_text,
         "user_translation": user_translation,
+        "sentence_pk_id": int(sentence_pk_id),
+        "session_id": int(source_session_id) if source_session_id is not None else None,
         "sentence_id_for_mistake": int(sentence_id_for_mistake),
         "score_value": score_value,
         "correct_translation": correct_translation,
