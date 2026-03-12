@@ -1081,6 +1081,84 @@ def _load_skill_catalog_with_cursor(
     ]
 
 
+def _load_skill_mastery_memberships_with_cursor(
+    cursor,
+    *,
+    target_lang: str,
+    skill_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    normalized_skill_ids = [
+        str(skill_id or "").strip()
+        for skill_id in list(skill_ids or [])
+        if str(skill_id or "").strip()
+    ]
+    if not normalized_skill_ids:
+        return {}
+    cursor.execute(
+        """
+        SELECT
+            diagnostic_skill_id,
+            mastery_group_id,
+            is_mastery_leaf,
+            is_diagnostic_only,
+            rollup_weight,
+            sort_order
+        FROM bt_3_skill_mastery_group_members
+        WHERE language_code = %s
+          AND diagnostic_skill_id = ANY(%s);
+        """,
+        (str(target_lang or "de").strip().lower() or "de", normalized_skill_ids),
+    )
+    rows = cursor.fetchall() or []
+    return {
+        str(row[0] or "").strip(): {
+            "mastery_group_id": str(row[1] or "").strip(),
+            "is_mastery_leaf": bool(row[2]),
+            "is_diagnostic_only": bool(row[3]),
+            "rollup_weight": float(row[4] or 0.0),
+            "sort_order": int(row[5] or 100),
+        }
+        for row in rows
+        if str(row[0] or "").strip()
+    }
+
+
+def _list_mastery_leaf_skill_ids_for_groups_with_cursor(
+    cursor,
+    *,
+    target_lang: str,
+    mastery_group_ids: list[str],
+) -> dict[str, list[str]]:
+    normalized_group_ids = [
+        str(group_id or "").strip()
+        for group_id in list(mastery_group_ids or [])
+        if str(group_id or "").strip()
+    ]
+    if not normalized_group_ids:
+        return {}
+    cursor.execute(
+        """
+        SELECT mastery_group_id, diagnostic_skill_id
+        FROM bt_3_skill_mastery_group_members
+        WHERE language_code = %s
+          AND mastery_group_id = ANY(%s)
+          AND COALESCE(is_mastery_leaf, FALSE) = TRUE
+          AND COALESCE(is_diagnostic_only, FALSE) = FALSE
+        ORDER BY mastery_group_id ASC, sort_order ASC, diagnostic_skill_id ASC;
+        """,
+        (str(target_lang or "de").strip().lower() or "de", normalized_group_ids),
+    )
+    rows = cursor.fetchall() or []
+    grouped: dict[str, list[str]] = {}
+    for mastery_group_id, diagnostic_skill_id in rows:
+        group_id = str(mastery_group_id or "").strip()
+        skill_id = str(diagnostic_skill_id or "").strip()
+        if not group_id or not skill_id:
+            continue
+        grouped.setdefault(group_id, []).append(skill_id)
+    return grouped
+
+
 def _build_skill_profile_from_skill_ids(
     *,
     primary_skill_id: str,
@@ -1149,6 +1227,32 @@ def _normalize_sentence_entries(entries: list[dict[str, Any]]) -> list[dict[str,
     return list(normalized.values())
 
 
+_AUTHORED_PRIMARY_SKILL_SENTENCE_HINTS: dict[str, tuple[str, ...]] = {
+    "de_moods_reported_speech_indirekte_rede": ("сказ", "заяв", "сообщ", "упомян", "отмет", "спрос", "объясн", "по словам"),
+    "de_clauses_sentence_types_relative_clauses": ("котор", "чей", "где", "куда", "откуда"),
+    "de_clauses_sentence_types_conditionals_wenn_falls": ("если", "в случае"),
+    "moods_subjunctive2": ("если бы", "мог бы", "могла бы", "могли бы", "хотел бы", "хотела бы", "хотели бы", "следовало бы", "стоило бы"),
+    "de_moods_konjunktiv_ii_wuerde_form": ("если бы", "мог бы", "могла бы", "могли бы", "хотел бы", "хотела бы", "хотели бы", "следовало бы", "стоило бы"),
+    "de_voice_active_passive_vorgangspassiv_werden_partizip_ii": ("был", "была", "было", "были", "проводил", "проводилась", "проводилось", "проводились", "отлож", "получен", "сделан", "интерпретир"),
+    "de_voice_active_passive_zustandspassiv_sein_partizip_ii": ("был", "была", "было", "были", "остаётся", "находится"),
+}
+
+
+def _authored_sentence_matches_primary_skill(
+    *,
+    sentence: str,
+    primary_skill_id: str,
+) -> bool:
+    normalized_sentence = str(sentence or "").strip().lower()
+    normalized_primary_skill_id = str(primary_skill_id or "").strip()
+    if not normalized_sentence or not normalized_primary_skill_id:
+        return False
+    required_markers = _AUTHORED_PRIMARY_SKILL_SENTENCE_HINTS.get(normalized_primary_skill_id)
+    if not required_markers:
+        return True
+    return any(marker in normalized_sentence for marker in required_markers)
+
+
 def _parse_generated_sentence_entries_payload(
     content: str,
     *,
@@ -1195,6 +1299,11 @@ def _parse_generated_sentence_entries_payload(
             raise ValueError("invalid_profile_skill_id")
         if len(set(ordered_ids)) != len(ordered_ids):
             raise ValueError("duplicate_profile_skill_id")
+        if not _authored_sentence_matches_primary_skill(
+            sentence=sentence,
+            primary_skill_id=primary_skill_id,
+        ):
+            raise ValueError(f"primary_skill_sentence_mismatch:{primary_skill_id}")
         entries.append(
             {
                 "sentence": sentence,
@@ -2318,13 +2427,53 @@ def _build_remediation_profile_with_cursor(
     if not aggregated_skill_weights:
         return []
 
-    ranked_skill_ids = [
+    memberships = _load_skill_mastery_memberships_with_cursor(
+        cursor,
+        target_lang=target_lang,
+        skill_ids=list(aggregated_skill_weights.keys()),
+    )
+    leaf_candidates_by_group = _list_mastery_leaf_skill_ids_for_groups_with_cursor(
+        cursor,
+        target_lang=target_lang,
+        mastery_group_ids=[
+            membership.get("mastery_group_id")
+            for membership in memberships.values()
+            if str(membership.get("mastery_group_id") or "").strip()
+        ],
+    )
+
+    promoted_leaf_scores: dict[str, float] = {}
+    for skill_id, raw_score in aggregated_skill_weights.items():
+        membership = memberships.get(skill_id) or {}
+        mastery_group_id = str(membership.get("mastery_group_id") or "").strip()
+        is_mastery_leaf = bool(membership.get("is_mastery_leaf"))
+        is_diagnostic_only = bool(membership.get("is_diagnostic_only"))
+        score_value = float(raw_score or 0.0)
+        if is_mastery_leaf and not is_diagnostic_only:
+            promoted_leaf_scores[skill_id] = promoted_leaf_scores.get(skill_id, 0.0) + score_value
+            continue
+        if mastery_group_id:
+            representative_leaf_ids = leaf_candidates_by_group.get(mastery_group_id) or []
+            if representative_leaf_ids:
+                representative_leaf_id = representative_leaf_ids[0]
+                promoted_leaf_scores[representative_leaf_id] = promoted_leaf_scores.get(representative_leaf_id, 0.0) + (score_value * 0.9)
+
+    ranked_leaf_skill_ids = [
+        skill_id
+        for skill_id, _score in sorted(
+            promoted_leaf_scores.items(),
+            key=lambda item: (-float(item[1] or 0.0), item[0]),
+        )
+    ]
+    ranked_diagnostic_fallback_ids = [
         skill_id
         for skill_id, _score in sorted(
             aggregated_skill_weights.items(),
             key=lambda item: (-float(item[1] or 0.0), item[0]),
         )
+        if skill_id not in ranked_leaf_skill_ids
     ]
+    ranked_skill_ids = ranked_leaf_skill_ids + ranked_diagnostic_fallback_ids
     primary_skill_id = ranked_skill_ids[0]
     secondary_skill_ids = ranked_skill_ids[1:3]
     supporting_skill_ids = ranked_skill_ids[3:4]
@@ -2642,6 +2791,13 @@ def _build_phase1_shadow_payload(
     previous_errored_skill_ids = set(previous_shadow_state.get("last_errored_skill_ids") or []) if previous_shadow_state else set()
     previous_score = int(previous_shadow_state.get("last_score") or 0) if previous_shadow_state else None
     previous_attempt_no = int(previous_shadow_state.get("last_attempt_no") or 0) if previous_shadow_state else 0
+    historical_recovery_candidate_skill_ids = {
+        str(item.get("skill_id") or "").strip()
+        for item in tested_targets
+        if str(item.get("profile_source") or "").strip() == REMEDIATION_PROFILE_SOURCE
+        and str(item.get("role") or "").strip() in {"primary", "secondary"}
+        and str(item.get("skill_id") or "").strip()
+    }
 
     if not previous_errored_skill_ids and fallback_previous_errored_details:
         previous_errored_skill_ids = set(fallback_previous_errored_details.keys())
@@ -2704,7 +2860,10 @@ def _build_phase1_shadow_payload(
                 outcome = "fail_new"
             recovery_kind = "none"
         else:
-            if was_errored_prev:
+            if was_errored_prev or (
+                progress_kind == "final_recovery"
+                and skill_id in historical_recovery_candidate_skill_ids
+            ):
                 outcome = "recovered_final" if progress_kind == "final_recovery" else "recovered_partial"
                 recovery_kind = "final" if progress_kind == "final_recovery" else "partial"
             else:

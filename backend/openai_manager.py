@@ -281,6 +281,14 @@ You will receive the required number of sentences in a variable **Number of sent
       * 0-1 `supporting_skill_ids`
     * All skill ids MUST be selected strictly from `skill_catalog` provided in the user input.
     * The tested-skill profile must reflect the concrete sentence, not just the topic.
+    * First choose the primary skill, then write the sentence so that the most natural German translation clearly requires that construction.
+    * If the sentence does not strongly force the chosen primary skill, rewrite the sentence instead of keeping the skill.
+    * Do NOT assign high-risk skills unless the source sentence explicitly supports them:
+      * reported speech only if the sentence clearly contains saying/reporting meaning,
+      * relative clauses only if the sentence clearly contains a relative relation,
+      * conditionals only if the sentence clearly contains an if/conditional structure,
+      * Konjunktiv II / hypotheticals only if the sentence clearly contains unreal/hypothetical meaning,
+      * passive skills only if the sentence clearly supports a passive German rendering.
 
 8.  **Output format:**
     * Return STRICT JSON only:
@@ -341,6 +349,14 @@ You will receive the required number of sentences in a variable **Number of sent
       * 0-1 `supporting_skill_ids`
     * All skill ids MUST be selected strictly from `skill_catalog` provided in the user input.
     * The tested-skill profile must reflect the concrete sentence, not just the topic.
+    * First choose the primary skill, then write the sentence so that the most natural German translation clearly requires that construction.
+    * If the sentence does not strongly force the chosen primary skill, rewrite the sentence instead of keeping the skill.
+    * Do NOT assign high-risk skills unless the source sentence explicitly supports them:
+      * reported speech only if the sentence clearly contains saying/reporting meaning,
+      * relative clauses only if the sentence clearly contains a relative relation,
+      * conditionals only if the sentence clearly contains an if/conditional structure,
+      * Konjunktiv II / hypotheticals only if the sentence clearly contains unreal/hypothetical meaning,
+      * passive skills only if the sentence clearly supports a passive German rendering.
 
 8.  **Output format:**
     * Return STRICT JSON only:
@@ -402,6 +418,14 @@ You will receive the required number of sentences in a variable **Number of sent
       * 0-1 `supporting_skill_ids`
     * All skill ids MUST be selected strictly from `skill_catalog` provided in the user input.
     * The tested-skill profile must reflect the concrete sentence, not just the topic.
+    * First choose the primary skill, then write the sentence so that the most natural German translation clearly requires that construction.
+    * If the sentence does not strongly force the chosen primary skill, rewrite the sentence instead of keeping the skill.
+    * Do NOT assign high-risk skills unless the source sentence explicitly supports them:
+      * reported speech only if the sentence clearly contains saying/reporting meaning,
+      * relative clauses only if the sentence clearly contains a relative relation,
+      * conditionals only if the sentence clearly contains an if/conditional structure,
+      * Konjunktiv II / hypotheticals only if the sentence clearly contains unreal/hypothetical meaning,
+      * passive skills only if the sentence clearly supports a passive German rendering.
 
 8.  **Output format:**
     * Return STRICT JSON only:
@@ -476,6 +500,14 @@ You will receive the required number of sentences in a variable **Number of sent
       * 0-1 `supporting_skill_ids`
     * All skill ids MUST be selected strictly from `skill_catalog` provided in the user input.
     * The tested-skill profile must reflect the concrete sentence, not just the topic.
+    * First choose the primary skill, then write the sentence so that the most natural German translation clearly requires that construction.
+    * If the sentence does not strongly force the chosen primary skill, rewrite the sentence instead of keeping the skill.
+    * Do NOT assign high-risk skills unless the source sentence explicitly supports them:
+      * reported speech only if the sentence clearly contains saying/reporting meaning,
+      * relative clauses only if the sentence clearly contains a relative relation,
+      * conditionals only if the sentence clearly contains an if/conditional structure,
+      * Konjunktiv II / hypotheticals only if the sentence clearly contains unreal/hypothetical meaning,
+      * passive skills only if the sentence clearly supports a passive German rendering.
 
 8.  **Output format:**
     * Return STRICT JSON only:
@@ -537,6 +569,14 @@ You will receive the required number of sentences in a variable **Number of sent
       * 0-1 `supporting_skill_ids`
     * All skill ids MUST be selected strictly from `skill_catalog` provided in the user input.
     * The tested-skill profile must reflect the concrete sentence, not just the topic.
+    * First choose the primary skill, then write the sentence so that the most natural German translation clearly requires that construction.
+    * If the sentence does not strongly force the chosen primary skill, rewrite the sentence instead of keeping the skill.
+    * Do NOT assign high-risk skills unless the source sentence explicitly supports them:
+      * reported speech only if the sentence clearly contains saying/reporting meaning,
+      * relative clauses only if the sentence clearly contains a relative relation,
+      * conditionals only if the sentence clearly contains an if/conditional structure,
+      * Konjunktiv II / hypotheticals only if the sentence clearly contains unreal/hypothetical meaning,
+      * passive skills only if the sentence clearly supports a passive German rendering.
 
 8.  **Output format:**
     * Return STRICT JSON only:
@@ -1892,6 +1932,14 @@ Task:
   - 0-1 supporting_skill_ids
 - All skill ids MUST be selected strictly from skill_catalog in the input.
 - The tested-skill profile must reflect the concrete sentence, not just the topic.
+- First choose the primary skill, then write the sentence so that the most natural translation clearly requires that construction.
+- If the sentence does not strongly force the chosen primary skill, rewrite the sentence instead of keeping the skill.
+- Do NOT assign high-risk skills unless the source sentence explicitly supports them:
+  - reported speech only if the sentence clearly contains saying/reporting meaning,
+  - relative clauses only if the sentence clearly contains a relative relation,
+  - conditionals only if the sentence clearly contains an if/conditional structure,
+  - hypotheticals/subjunctive only if the sentence clearly contains unreal or hypothetical meaning,
+  - passive skills only if the sentence clearly supports a passive rendering.
 - Use these level constraints:
   - a2: very simple everyday sentences, mostly one clause, short and concrete, typically 4-12 words.
   - b1: moderately simple sentences, occasional light subordinate clause, typically 6-18 words.
