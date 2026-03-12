@@ -10271,6 +10271,38 @@ function AppInner() {
     }
   };
 
+  const renderYoutubeSentenceJumpBar = ({ inline = false } = {}) => {
+    const activeSubtitleIndex = getActiveSubtitleIndex();
+    const canJump = Boolean(youtubeTranscript.length && youtubePlayerRef.current?.seekTo);
+    const canJumpPrev = canJump && activeSubtitleIndex > 0;
+    const canJumpNext = canJump && activeSubtitleIndex < youtubeTranscript.length - 1;
+    return (
+      <div
+        className={`youtube-sentence-jump-bar ${inline ? 'is-inline' : 'is-floating'}`}
+        aria-label={tr('Навигация по предложениям', 'Navigation zwischen Saetzen')}
+      >
+        <button
+          type="button"
+          className="youtube-sentence-jump-btn is-prev"
+          onClick={() => jumpYoutubeBySubtitle(-1)}
+          disabled={!canJumpPrev}
+          aria-label={tr('Предыдущее предложение', 'Vorheriger Satz')}
+        >
+          <span className="youtube-sentence-jump-icon" aria-hidden="true">←</span>
+        </button>
+        <button
+          type="button"
+          className="youtube-sentence-jump-btn is-next"
+          onClick={() => jumpYoutubeBySubtitle(1)}
+          disabled={!canJumpNext}
+          aria-label={tr('Следующее предложение', 'Naechster Satz')}
+        >
+          <span className="youtube-sentence-jump-icon" aria-hidden="true">→</span>
+        </button>
+      </div>
+    );
+  };
+
   const parseTranscriptInput = (value) => {
     const lines = value
       .split(/\r?\n/)
@@ -14950,34 +14982,7 @@ function AppInner() {
                         </div>
                       </div>
                     </div>
-                    {(() => {
-                      const activeSubtitleIndex = getActiveSubtitleIndex();
-                      const canJump = Boolean(youtubeTranscript.length && youtubePlayerRef.current?.seekTo);
-                      const canJumpPrev = canJump && activeSubtitleIndex > 0;
-                      const canJumpNext = canJump && activeSubtitleIndex < youtubeTranscript.length - 1;
-                      return (
-                        <div className="youtube-sentence-jump-bar" aria-label={tr('Навигация по предложениям', 'Navigation zwischen Saetzen')}>
-                          <button
-                            type="button"
-                            className="youtube-sentence-jump-btn is-prev"
-                            onClick={() => jumpYoutubeBySubtitle(-1)}
-                            disabled={!canJumpPrev}
-                            aria-label={tr('Предыдущее предложение', 'Vorheriger Satz')}
-                          >
-                            <span className="youtube-sentence-jump-icon" aria-hidden="true">←</span>
-                          </button>
-                          <button
-                            type="button"
-                            className="youtube-sentence-jump-btn is-next"
-                            onClick={() => jumpYoutubeBySubtitle(1)}
-                            disabled={!canJumpNext}
-                            aria-label={tr('Следующее предложение', 'Naechster Satz')}
-                          >
-                            <span className="youtube-sentence-jump-icon" aria-hidden="true">→</span>
-                          </button>
-                        </div>
-                      );
-                    })()}
+                    {(youtubeOverlayEnabled || !youtubeSubtitlesReady) && renderYoutubeSentenceJumpBar()}
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
                     {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
                     {youtubeSearchExpanded && (
@@ -15068,6 +15073,7 @@ function AppInner() {
                           <div className="youtube-subtitles-block youtube-subtitles-block-de">
                             <div className="youtube-subtitles-card-head">
                               <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
+                              {renderYoutubeSentenceJumpBar({ inline: true })}
                             </div>
                             <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
                               <div className="webapp-subtitles-list" onMouseUp={handleSelection}>

@@ -59,6 +59,7 @@ import subprocess
 import copy
 import hashlib
 import io
+from collections import deque
 from urllib.parse import urlparse
 from youtube_transcript_api import YouTubeTranscriptApi
 import os
@@ -371,6 +372,9 @@ _TRANSLATION_CHECK_ACCEPTED_AT_MS: dict[int, int] = {}
 
 _audio_scheduler = None
 _audio_scheduler_lock = None
+_TTS_ADMIN_MONITOR_LOCK = threading.Lock()
+_TTS_ADMIN_MONITOR_EVENTS = deque()
+_TTS_ADMIN_ALERT_LAST_SENT: dict[str, float] = {}
 TELEGRAM_Deutsch_BOT_TOKEN = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
 MOBILE_AUTH_SECRET = (os.getenv("MOBILE_AUTH_SECRET") or TELEGRAM_Deutsch_BOT_TOKEN or "").strip()
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
@@ -429,6 +433,7 @@ SENTENCE_PREWARM_ALLOW_DAYTIME = str(os.getenv("SENTENCE_PREWARM_ALLOW_DAYTIME")
 _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_URL_PENDING_RETRY_MS = max(150, int((os.getenv("TTS_URL_PENDING_RETRY_MS") or "350").strip() or "350"))
+TTS_WEBAPP_DEFAULT_SPEED = 0.95
 TTS_OBJECT_PREFIX = str(os.getenv("TTS_OBJECT_PREFIX") or "tts").strip().strip("/") or "tts"
 KEY_SALT = (os.getenv("KEY_SALT") or "").strip()
 _TTS_CACHE_HMAC_SECRET = KEY_SALT or TELEGRAM_Deutsch_BOT_TOKEN or "dev-unsafe-key-salt"
@@ -465,6 +470,16 @@ TTS_PREWARM_LOOKBACK_HOURS = max(1, min(24 * 90, int((os.getenv("TTS_PREWARM_LOO
 TTS_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_START_HOUR") or "1").strip())))
 TTS_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
 TTS_PREWARM_ALLOW_DAYTIME = str(os.getenv("TTS_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
+TTS_ADMIN_DIGEST_ENABLED = str(os.getenv("TTS_ADMIN_DIGEST_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TTS_ADMIN_DIGEST_INTERVAL_MINUTES = max(15, min(720, int((os.getenv("TTS_ADMIN_DIGEST_INTERVAL_MINUTES") or "60").strip() or "60")))
+TTS_ADMIN_ALERT_BURST_THRESHOLD = max(10, min(5000, int((os.getenv("TTS_ADMIN_ALERT_BURST_THRESHOLD") or "50").strip() or "50")))
+TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES = max(1, min(120, int((os.getenv("TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES") or "5").strip() or "5")))
+TTS_ADMIN_ALERT_FAILURE_THRESHOLD = max(1, min(500, int((os.getenv("TTS_ADMIN_ALERT_FAILURE_THRESHOLD") or "5").strip() or "5")))
+TTS_ADMIN_ALERT_FAILURE_WINDOW_MINUTES = max(1, min(120, int((os.getenv("TTS_ADMIN_ALERT_FAILURE_WINDOW_MINUTES") or "10").strip() or "10")))
+TTS_ADMIN_ALERT_PENDING_THRESHOLD = max(1, min(5000, int((os.getenv("TTS_ADMIN_ALERT_PENDING_THRESHOLD") or "20").strip() or "20")))
+TTS_ADMIN_ALERT_PENDING_AGE_MINUTES = max(1, min(240, int((os.getenv("TTS_ADMIN_ALERT_PENDING_AGE_MINUTES") or "10").strip() or "10")))
+TTS_ADMIN_ALERT_CHECK_INTERVAL_MINUTES = max(2, min(120, int((os.getenv("TTS_ADMIN_ALERT_CHECK_INTERVAL_MINUTES") or "10").strip() or "10")))
+TTS_ADMIN_ALERT_COOLDOWN_MINUTES = max(5, min(240, int((os.getenv("TTS_ADMIN_ALERT_COOLDOWN_MINUTES") or "30").strip() or "30")))
 STARTER_DICTIONARY_ENABLED = str(os.getenv("STARTER_DICTIONARY_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 try:
     STARTER_DICTIONARY_SOURCE_USER_ID = int((os.getenv("STARTER_DICTIONARY_SOURCE_USER_ID") or "117649764").strip() or "117649764")
@@ -7762,6 +7777,280 @@ def _send_private_message_chunks(user_id: int, text: str, limit: int = 3800) -> 
         _send_private_message(user_id, part)
 
 
+def _send_tts_admin_message(text: str) -> bool:
+    admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+    if not admin_ids:
+        return False
+    sent = False
+    for admin_id in admin_ids:
+        try:
+            _send_private_message(int(admin_id), text, disable_web_page_preview=True)
+            sent = True
+        except Exception:
+            logging.warning("Failed to send TTS admin message to admin_id=%s", admin_id, exc_info=True)
+    return sent
+
+
+def _tts_admin_monitor_retention_seconds() -> int:
+    return max(
+        4 * 3600,
+        int(TTS_ADMIN_DIGEST_INTERVAL_MINUTES) * 120,
+        int(TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES) * 120,
+        int(TTS_ADMIN_ALERT_FAILURE_WINDOW_MINUTES) * 120,
+        int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES) * 120,
+    )
+
+
+def _prune_tts_admin_monitor_events_locked(now_ts: float) -> None:
+    cutoff = float(now_ts) - float(_tts_admin_monitor_retention_seconds())
+    while _TTS_ADMIN_MONITOR_EVENTS and float(_TTS_ADMIN_MONITOR_EVENTS[0].get("ts") or 0.0) < cutoff:
+        _TTS_ADMIN_MONITOR_EVENTS.popleft()
+
+
+def _record_tts_admin_monitor_event(
+    kind: str,
+    status: str,
+    *,
+    source: str = "",
+    count: int = 1,
+    chars: int = 0,
+    duration_ms: int | None = None,
+    meta: dict | None = None,
+) -> None:
+    now_ts = time.time()
+    payload = {
+        "ts": now_ts,
+        "kind": str(kind or "").strip().lower() or "unknown",
+        "status": str(status or "").strip().lower() or "unknown",
+        "source": str(source or "").strip().lower() or "unknown",
+        "count": max(0, int(count or 0)),
+        "chars": max(0, int(chars or 0)),
+        "duration_ms": int(duration_ms) if duration_ms is not None else None,
+        "meta": meta if isinstance(meta, dict) else {},
+    }
+    with _TTS_ADMIN_MONITOR_LOCK:
+        _TTS_ADMIN_MONITOR_EVENTS.append(payload)
+        _prune_tts_admin_monitor_events_locked(now_ts)
+
+
+def _get_tts_admin_monitor_window(seconds: int) -> list[dict]:
+    window_seconds = max(1, int(seconds or 1))
+    now_ts = time.time()
+    cutoff = now_ts - window_seconds
+    with _TTS_ADMIN_MONITOR_LOCK:
+        _prune_tts_admin_monitor_events_locked(now_ts)
+        return [item for item in _TTS_ADMIN_MONITOR_EVENTS if float(item.get("ts") or 0.0) >= cutoff]
+
+
+def _should_send_tts_admin_alert(alert_key: str) -> bool:
+    now_ts = time.time()
+    cooldown_seconds = int(TTS_ADMIN_ALERT_COOLDOWN_MINUTES) * 60
+    with _TTS_ADMIN_MONITOR_LOCK:
+        last_sent_ts = float(_TTS_ADMIN_ALERT_LAST_SENT.get(str(alert_key), 0.0) or 0.0)
+        if last_sent_ts and now_ts - last_sent_ts < cooldown_seconds:
+            return False
+        _TTS_ADMIN_ALERT_LAST_SENT[str(alert_key)] = now_ts
+    return True
+
+
+def _get_tts_object_cache_snapshot(*, stale_minutes: int | None = None) -> dict:
+    pending_stale_count = 0
+    oldest_pending_minutes = 0
+    ready_count = 0
+    pending_count = 0
+    failed_count = 0
+    stale_clause = ""
+    params: list[Any] = []
+    if stale_minutes is not None:
+        safe_stale = max(1, int(stale_minutes))
+        stale_clause = " AND updated_at <= NOW() - (%s || ' minutes')::interval"
+        params.append(safe_stale)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, COUNT(*)
+                FROM bt_3_tts_object_cache
+                GROUP BY status;
+                """
+            )
+            for status_value, count_value in cursor.fetchall() or []:
+                normalized = str(status_value or "").strip().lower()
+                if normalized == "ready":
+                    ready_count = int(count_value or 0)
+                elif normalized == "pending":
+                    pending_count = int(count_value or 0)
+                elif normalized == "failed":
+                    failed_count = int(count_value or 0)
+            cursor.execute(
+                f"""
+                SELECT
+                    COUNT(*),
+                    COALESCE(MAX(EXTRACT(EPOCH FROM (NOW() - updated_at)) / 60.0), 0)
+                FROM bt_3_tts_object_cache
+                WHERE status = 'pending'
+                {stale_clause};
+                """,
+                tuple(params),
+            )
+            row = cursor.fetchone() or (0, 0)
+            pending_stale_count = int(row[0] or 0)
+            oldest_pending_minutes = int(float(row[1] or 0))
+    return {
+        "ready": ready_count,
+        "pending": pending_count,
+        "failed": failed_count,
+        "pending_stale": pending_stale_count,
+        "oldest_pending_minutes": oldest_pending_minutes,
+    }
+
+
+def _maybe_send_tts_admin_burst_alert() -> None:
+    if TTS_ADMIN_ALERT_BURST_THRESHOLD <= 0:
+        return
+    events = _get_tts_admin_monitor_window(int(TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES) * 60)
+    queued_count = sum(
+        int(item.get("count") or 0)
+        for item in events
+        if item.get("kind") == "enqueue" and item.get("status") == "queued"
+    )
+    if queued_count < int(TTS_ADMIN_ALERT_BURST_THRESHOLD):
+        return
+    if not _should_send_tts_admin_alert("tts_enqueue_burst"):
+        return
+    message_text = (
+        "⚠️ TTS prewarm burst alert\n\n"
+        f"Queued words in the last {int(TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES)} min: {queued_count}\n"
+        f"Threshold: {int(TTS_ADMIN_ALERT_BURST_THRESHOLD)}\n\n"
+        "A large amount of saved vocabulary is being prewarmed right now."
+    )
+    _send_tts_admin_message(message_text)
+
+
+def _maybe_send_tts_admin_failure_alert() -> None:
+    if TTS_ADMIN_ALERT_FAILURE_THRESHOLD <= 0:
+        return
+    events = _get_tts_admin_monitor_window(int(TTS_ADMIN_ALERT_FAILURE_WINDOW_MINUTES) * 60)
+    failure_count = sum(
+        int(item.get("count") or 0)
+        for item in events
+        if item.get("status") == "error"
+    )
+    if failure_count < int(TTS_ADMIN_ALERT_FAILURE_THRESHOLD):
+        return
+    if not _should_send_tts_admin_alert("tts_failure_burst"):
+        return
+    message_text = (
+        "🚨 TTS failure alert\n\n"
+        f"Errors in the last {int(TTS_ADMIN_ALERT_FAILURE_WINDOW_MINUTES)} min: {failure_count}\n"
+        f"Threshold: {int(TTS_ADMIN_ALERT_FAILURE_THRESHOLD)}\n\n"
+        "Check Google TTS, R2 and recent deploy/logs."
+    )
+    _send_tts_admin_message(message_text)
+
+
+def _maybe_send_tts_admin_pending_alert() -> None:
+    if TTS_ADMIN_ALERT_PENDING_THRESHOLD <= 0:
+        return
+    snapshot = _get_tts_object_cache_snapshot(stale_minutes=TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)
+    pending_stale_count = int(snapshot.get("pending_stale") or 0)
+    if pending_stale_count < int(TTS_ADMIN_ALERT_PENDING_THRESHOLD):
+        return
+    if not _should_send_tts_admin_alert("tts_pending_backlog"):
+        return
+    message_text = (
+        "🚨 TTS pending backlog alert\n\n"
+        f"Pending older than {int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)} min: {pending_stale_count}\n"
+        f"Threshold: {int(TTS_ADMIN_ALERT_PENDING_THRESHOLD)}\n"
+        f"Total pending now: {int(snapshot.get('pending') or 0)}\n"
+        f"Oldest pending age: {int(snapshot.get('oldest_pending_minutes') or 0)} min\n\n"
+        "Generation looks stuck or delayed."
+    )
+    _send_tts_admin_message(message_text)
+
+
+def _build_tts_admin_digest() -> str:
+    events = _get_tts_admin_monitor_window(int(TTS_ADMIN_DIGEST_INTERVAL_MINUTES) * 60)
+    enqueue_queued = sum(
+        int(item.get("count") or 0)
+        for item in events
+        if item.get("kind") == "enqueue" and item.get("status") == "queued"
+    )
+    enqueue_ready = sum(
+        int(item.get("count") or 0)
+        for item in events
+        if item.get("kind") == "enqueue" and item.get("status") == "ready"
+    )
+    enqueue_pending = sum(
+        int(item.get("count") or 0)
+        for item in events
+        if item.get("kind") == "enqueue" and item.get("status") == "pending"
+    )
+    generation_generated = sum(
+        int(item.get("count") or 0)
+        for item in events
+        if item.get("kind") == "generation" and item.get("status") == "generated"
+    )
+    generation_errors = sum(
+        int(item.get("count") or 0)
+        for item in events
+        if item.get("kind") == "generation" and item.get("status") == "error"
+    )
+    generation_durations = [
+        int(item.get("duration_ms") or 0)
+        for item in events
+        if item.get("kind") == "generation" and item.get("status") == "generated" and item.get("duration_ms") is not None
+    ]
+    prewarm_runs = [item for item in events if item.get("kind") == "prewarm_run"]
+    prewarm_generated = sum(int((item.get("meta") or {}).get("generated") or 0) for item in prewarm_runs)
+    prewarm_cached_hits = sum(int((item.get("meta") or {}).get("cached_hits") or 0) for item in prewarm_runs)
+    prewarm_requeued = sum(int((item.get("meta") or {}).get("requeued") or 0) for item in prewarm_runs)
+    prewarm_errors = sum(int((item.get("meta") or {}).get("errors") or 0) for item in prewarm_runs)
+    snapshot = _get_tts_object_cache_snapshot(stale_minutes=TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)
+    avg_generation_ms = int(sum(generation_durations) / len(generation_durations)) if generation_durations else 0
+    max_generation_ms = max(generation_durations) if generation_durations else 0
+    return (
+        "📊 TTS hourly digest\n\n"
+        f"Window: last {int(TTS_ADMIN_DIGEST_INTERVAL_MINUTES)} min\n\n"
+        f"Queued after dictionary save: {enqueue_queued}\n"
+        f"Already ready at enqueue: {enqueue_ready}\n"
+        f"Already pending at enqueue: {enqueue_pending}\n\n"
+        f"Generated by runners: {generation_generated}\n"
+        f"Generation errors: {generation_errors}\n"
+        f"Avg generation time: {avg_generation_ms} ms\n"
+        f"Max generation time: {max_generation_ms} ms\n\n"
+        f"Prewarm runs: {len(prewarm_runs)}\n"
+        f"Prewarm generated: {prewarm_generated}\n"
+        f"Prewarm cache hits: {prewarm_cached_hits}\n"
+        f"Prewarm requeued failed: {prewarm_requeued}\n"
+        f"Prewarm errors: {prewarm_errors}\n\n"
+        f"Current ready: {int(snapshot.get('ready') or 0)}\n"
+        f"Current pending: {int(snapshot.get('pending') or 0)}\n"
+        f"Current failed: {int(snapshot.get('failed') or 0)}\n"
+        f"Pending older than {int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)} min: {int(snapshot.get('pending_stale') or 0)}\n"
+        f"Oldest pending age: {int(snapshot.get('oldest_pending_minutes') or 0)} min"
+    )
+
+
+def _run_tts_admin_digest_scheduler_job() -> None:
+    if not TTS_ADMIN_DIGEST_ENABLED:
+        return
+    try:
+        _send_tts_admin_message(_build_tts_admin_digest())
+    except Exception:
+        logging.exception("❌ TTS admin digest scheduler failed")
+
+
+def _run_tts_admin_alerts_scheduler_job() -> None:
+    if not TTS_ADMIN_DIGEST_ENABLED:
+        return
+    try:
+        _maybe_send_tts_admin_failure_alert()
+        _maybe_send_tts_admin_pending_alert()
+    except Exception:
+        logging.exception("❌ TTS admin alerts scheduler failed")
+
+
 def _notify_admins_about_support_message(
     *,
     user_id: int,
@@ -8224,9 +8513,9 @@ def _read_webapp_tts_request_payload(*, payload: dict | None = None) -> tuple[di
     if speed_raw is None:
         speed_raw = request.args.get("speed")
     try:
-        speaking_rate = float(speed_raw) if speed_raw is not None else 0.95
+        speaking_rate = float(speed_raw) if speed_raw is not None else TTS_WEBAPP_DEFAULT_SPEED
     except Exception:
-        speaking_rate = 0.95
+        speaking_rate = TTS_WEBAPP_DEFAULT_SPEED
     speaking_rate = max(0.25, min(2.0, speaking_rate))
 
     cache_key = _tts_object_cache_key(short_lang, voice_name, speaking_rate, normalized_text)
@@ -8386,8 +8675,10 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
         processed = 0
         generated = 0
         cached_hits = 0
+        pending_hits = 0
         skipped_empty = 0
         skipped_budget = 0
+        requeued = 0
         errors = 0
         total_chars = 0
         seen_keys: set[str] = set()
@@ -8413,13 +8704,13 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
                 item.get("target_lang") or response_json.get("target_lang"),
                 fallback="de",
             )
-            source_text, target_text = _resolve_entry_texts_for_pair(
+            _source_text, target_text = _resolve_entry_texts_for_pair(
                 item,
                 response_json,
                 source_lang,
                 target_lang,
             )
-            text = _normalize_utterance_text(target_text or source_text)
+            text = _normalize_utterance_text(target_text)
             if not text:
                 skipped_empty += 1
                 continue
@@ -8428,35 +8719,104 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
                 skipped_budget += 1
                 break
 
-            voice = _TTS_VOICES.get(target_lang, _TTS_VOICES["de"])
-            cache_key = _tts_cache_key(target_lang, voice, _TTS_SPEED_DEFAULT, text)
+            owner_user_id = int(item.get("user_id") or 0)
+            if owner_user_id <= 0:
+                errors += 1
+                logging.warning("TTS prewarm skipped: invalid user_id for dictionary_entry_id=%s", item.get("id"))
+                continue
+
+            voice = _normalize_tts_voice_name(None, target_lang)
+            language_code = _TTS_LANG_CODES.get(target_lang, _TTS_LANG_CODES["de"])
+            speaking_rate = TTS_WEBAPP_DEFAULT_SPEED
+            cache_key = _tts_object_cache_key(target_lang, voice, speaking_rate, text)
+            object_key = _tts_object_key(target_lang, voice, cache_key)
             if cache_key in seen_keys:
                 continue
             seen_keys.add(cache_key)
 
             processed += 1
             total_chars += len(text)
-            if get_tts_audio_cache(cache_key):
-                cached_hits += 1
-                continue
+            had_existing_meta = False
+            meta = get_tts_object_meta(cache_key, touch_hit=False)
+            if meta:
+                meta_status = str(meta.get("status") or "").strip().lower()
+                if meta_status == "ready":
+                    cached_hits += 1
+                    continue
+                if meta_status == "pending":
+                    pending_hits += 1
+                    continue
+                had_existing_meta = True
 
             try:
-                language_code = _TTS_LANG_CODES.get(target_lang, _TTS_LANG_CODES["de"])
-                audio_mp3 = _synthesize_mp3(
-                    text,
+                if meta and str(meta.get("status") or "").strip().lower() == "failed":
+                    claimed = requeue_tts_object_pending(
+                        cache_key=cache_key,
+                        language=language_code,
+                        voice=voice,
+                        speed=speaking_rate,
+                        source_text=text,
+                        object_key=object_key,
+                    )
+                    if claimed:
+                        requeued += 1
+                else:
+                    claimed = create_tts_object_pending(
+                        cache_key=cache_key,
+                        language=language_code,
+                        voice=voice,
+                        speed=speaking_rate,
+                        source_text=text,
+                        object_key=object_key,
+                    )
+                if not claimed:
+                    latest = get_tts_object_meta(cache_key, touch_hit=False) or {}
+                    latest_status = str(latest.get("status") or "").strip().lower()
+                    if latest_status == "ready":
+                        cached_hits += 1
+                    elif latest_status == "pending":
+                        pending_hits += 1
+                    else:
+                        errors += 1
+                        logging.warning(
+                            "TTS prewarm claim conflict unresolved for dictionary_entry_id=%s cache_key=%s status=%s",
+                            item.get("id"),
+                            cache_key,
+                            latest_status or "unknown",
+                        )
+                    continue
+
+                _run_tts_generation_job(
+                    user_id=owner_user_id,
                     language=language_code,
+                    tts_lang_short=target_lang,
                     voice=voice,
-                    speed=_TTS_SPEED_DEFAULT,
-                )
-                upsert_tts_audio_cache(
+                    speaking_rate=speaking_rate,
+                    normalized_text=text,
                     cache_key=cache_key,
-                    language=target_lang,
-                    voice=voice,
-                    speed=_TTS_SPEED_DEFAULT,
-                    source_text=text,
-                    audio_mp3=audio_mp3,
+                    object_key=object_key,
+                    had_existing_meta=had_existing_meta,
+                    request_id=f"req_prewarm_{uuid4().hex[:20]}",
+                    correlation_id=_build_observability_correlation_id(
+                        fallback_seed=f"prewarm:{owner_user_id}:{cache_key[:16]}",
+                        prefix="tts",
+                    ),
+                    enqueue_ts_ms=_to_epoch_ms(),
                 )
-                generated += 1
+                latest = get_tts_object_meta(cache_key, touch_hit=False) or {}
+                latest_status = str(latest.get("status") or "").strip().lower()
+                if latest_status == "ready":
+                    generated += 1
+                elif latest_status == "pending":
+                    pending_hits += 1
+                else:
+                    errors += 1
+                    logging.warning(
+                        "TTS prewarm did not reach ready status for dictionary_entry_id=%s cache_key=%s status=%s",
+                        item.get("id"),
+                        cache_key,
+                        latest_status or "unknown",
+                    )
             except Exception:
                 errors += 1
                 logging.exception("TTS prewarm failed for dictionary_entry_id=%s", item.get("id"))
@@ -8467,6 +8827,8 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
             "processed": processed,
             "generated": generated,
             "cached_hits": cached_hits,
+            "pending_hits": pending_hits,
+            "requeued": requeued,
             "skipped_empty": skipped_empty,
             "skipped_budget": skipped_budget,
             "errors": errors,
@@ -8475,10 +8837,144 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
             "force": bool(force),
             "tz": tz_name,
         }
+        _record_tts_admin_monitor_event(
+            "prewarm_run",
+            "ok" if errors == 0 else "error",
+            source="scheduler",
+            count=max(1, int(errors or 0)),
+            duration_ms=elapsed_ms,
+            meta=result,
+        )
+        if errors > 0:
+            _maybe_send_tts_admin_failure_alert()
         logging.info("✅ TTS prewarm finished: %s", result)
         return result
     finally:
         _TTS_PREWARM_LOCK.release()
+
+
+def _enqueue_dictionary_entry_tts_prewarm(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    entry: dict | None = None,
+    response_json: dict | None = None,
+    source_text_hint: str | None = None,
+    target_text_hint: str | None = None,
+    origin_process: str | None = None,
+) -> dict:
+    normalized_source_lang = _normalize_short_lang_code(source_lang, fallback="ru")
+    normalized_target_lang = _normalize_short_lang_code(target_lang, fallback="de")
+    source_text, target_text = _resolve_entry_texts_for_pair(
+        entry,
+        response_json,
+        normalized_source_lang,
+        normalized_target_lang,
+        source_text_hint=source_text_hint,
+        target_text_hint=target_text_hint,
+    )
+    normalized_text = _normalize_utterance_text(target_text)
+    if not normalized_text:
+        _record_tts_admin_monitor_event("enqueue", "skipped", source=str(origin_process or "dictionary_save"), count=1)
+        return {"ok": True, "queued": False, "reason": "empty_target_text"}
+
+    voice = _normalize_tts_voice_name(None, normalized_target_lang)
+    language_code = _TTS_LANG_CODES.get(normalized_target_lang, _TTS_LANG_CODES["de"])
+    speaking_rate = TTS_WEBAPP_DEFAULT_SPEED
+    cache_key = _tts_object_cache_key(normalized_target_lang, voice, speaking_rate, normalized_text)
+    object_key = _tts_object_key(normalized_target_lang, voice, cache_key)
+
+    meta = get_tts_object_meta(cache_key, touch_hit=False)
+    if meta:
+        status = str(meta.get("status") or "").strip().lower()
+        if status in {"ready", "pending"}:
+            _record_tts_admin_monitor_event(
+                "enqueue",
+                status,
+                source=str(origin_process or "dictionary_save"),
+                count=1,
+                chars=len(normalized_text),
+            )
+            return {
+                "ok": True,
+                "queued": False,
+                "reason": status,
+                "cache_key": cache_key,
+                "object_key": object_key,
+            }
+
+    if meta and str(meta.get("status") or "").strip().lower() == "failed":
+        claimed = requeue_tts_object_pending(
+            cache_key=cache_key,
+            language=language_code,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+    else:
+        claimed = create_tts_object_pending(
+            cache_key=cache_key,
+            language=language_code,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+
+    if not claimed:
+        latest = get_tts_object_meta(cache_key, touch_hit=False) or {}
+        latest_status = str(latest.get("status") or "").strip().lower() or "claim_conflict"
+        _record_tts_admin_monitor_event(
+            "enqueue",
+            "error" if latest_status == "claim_conflict" else latest_status,
+            source=str(origin_process or "dictionary_save"),
+            count=1,
+            chars=len(normalized_text),
+        )
+        return {
+            "ok": True,
+            "queued": False,
+            "reason": latest_status,
+            "cache_key": cache_key,
+            "object_key": object_key,
+        }
+
+    queued = _enqueue_tts_generation_job(
+        user_id=int(user_id),
+        language=language_code,
+        tts_lang_short=normalized_target_lang,
+        voice=voice,
+        speaking_rate=speaking_rate,
+        normalized_text=normalized_text,
+        cache_key=cache_key,
+        object_key=object_key,
+        had_existing_meta=bool(meta),
+        correlation_id=_build_observability_correlation_id(
+            fallback_seed=f"{user_id}:{cache_key[:16]}",
+            prefix="dict_tts",
+        ),
+        enqueue_ts_ms=_to_epoch_ms(),
+    )
+    _record_tts_admin_monitor_event(
+        "enqueue",
+        "queued" if queued else "pending",
+        source=str(origin_process or "dictionary_save"),
+        count=1,
+        chars=len(normalized_text),
+    )
+    if queued:
+        _maybe_send_tts_admin_burst_alert()
+    return {
+        "ok": True,
+        "queued": bool(queued),
+        "reason": "queued" if queued else "already_running",
+        "cache_key": cache_key,
+        "object_key": object_key,
+        "text": normalized_text,
+        "origin_process": str(origin_process or "").strip() or None,
+    }
 
 
 def _run_tts_prewarm_scheduler_job() -> None:
@@ -15792,6 +16288,24 @@ def save_webapp_dictionary_entry():
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
 
+    try:
+        _enqueue_dictionary_entry_tts_prewarm(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            response_json=response_json if isinstance(response_json, dict) else {},
+            source_text_hint=source_text,
+            target_text_hint=target_text,
+            origin_process=origin_process,
+        )
+    except Exception:
+        logging.exception(
+            "Dictionary save TTS prewarm enqueue failed: user_id=%s endpoint=%s",
+            user_id,
+            "/api/webapp/dictionary/save",
+        )
+        _record_tts_admin_monitor_event("enqueue", "error", source="/api/webapp/dictionary/save", count=1)
+
     return jsonify(
         {
             "ok": True,
@@ -15926,6 +16440,24 @@ def save_mobile_dictionary_entry():
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
+
+    try:
+        _enqueue_dictionary_entry_tts_prewarm(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            response_json=response_json if isinstance(response_json, dict) else {},
+            source_text_hint=source_text,
+            target_text_hint=target_text,
+            origin_process=origin_process,
+        )
+    except Exception:
+        logging.exception(
+            "Dictionary save TTS prewarm enqueue failed: user_id=%s endpoint=%s",
+            user_id,
+            "/api/mobile/dictionary/save",
+        )
+        _record_tts_admin_monitor_event("enqueue", "error", source="/api/mobile/dictionary/save", count=1)
 
     return jsonify(
         {
@@ -17251,6 +17783,24 @@ def _run_tts_generation_job(
     finally:
         with _TTS_GENERATION_JOBS_LOCK:
             _TTS_GENERATION_JOBS.discard(str(cache_key))
+        runner_duration_ms = _elapsed_ms_since(job_started_perf)
+        _record_tts_admin_monitor_event(
+            "generation",
+            "error" if final_status == "error" else str(final_status or "unknown"),
+            source="runner",
+            count=1,
+            chars=len(str(normalized_text or "")),
+            duration_ms=runner_duration_ms,
+            meta={
+                "cache_key": str(cache_key),
+                "object_key": str(object_key),
+                "user_id": int(user_id),
+                "tts_lang_short": str(tts_lang_short or ""),
+                "error_code": error_code,
+            },
+        )
+        if final_status == "error":
+            _maybe_send_tts_admin_failure_alert()
         _log_flow_observation(
             "tts",
             "generation_runner_finished",
@@ -17266,7 +17816,7 @@ def _run_tts_generation_job(
             external_tts_provider_duration_ms=provider_duration_ms,
             storage_upload_duration_ms=storage_upload_duration_ms,
             r2_head_duration_ms=r2_head_duration_ms,
-            duration_ms=_elapsed_ms_since(job_started_perf),
+            duration_ms=runner_duration_ms,
             error_code=error_code,
         )
 
@@ -21346,6 +21896,23 @@ def _start_audio_scheduler() -> None:
             _run_tts_prewarm_scheduler_job,
             "interval",
             minutes=TTS_PREWARM_INTERVAL_MINUTES,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=120,
+        )
+    if TTS_ADMIN_DIGEST_ENABLED:
+        _audio_scheduler.add_job(
+            _run_tts_admin_digest_scheduler_job,
+            "interval",
+            minutes=TTS_ADMIN_DIGEST_INTERVAL_MINUTES,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=180,
+        )
+        _audio_scheduler.add_job(
+            _run_tts_admin_alerts_scheduler_job,
+            "interval",
+            minutes=TTS_ADMIN_ALERT_CHECK_INTERVAL_MINUTES,
             max_instances=1,
             coalesce=True,
             misfire_grace_time=120,
