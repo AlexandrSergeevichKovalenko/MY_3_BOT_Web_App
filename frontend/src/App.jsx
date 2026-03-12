@@ -17,6 +17,7 @@ const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
 const SINGLE_INSTANCE_LOCK_KEY = 'dds_single_instance_lock_v1';
 const SINGLE_INSTANCE_HEARTBEAT_MS = 2000;
 const SINGLE_INSTANCE_STALE_MS = 12000;
+const TTS_CACHE_MAX_ENTRIES = 60;
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -1508,6 +1509,33 @@ function AppInner() {
     }
   }, []);
 
+  const getTtsCacheValue = useCallback((key) => {
+    const normalizedKey = String(key || '').trim();
+    if (!normalizedKey) return null;
+    const cache = ttsCacheRef.current;
+    if (!cache.has(normalizedKey)) return null;
+    const cachedValue = cache.get(normalizedKey);
+    cache.delete(normalizedKey);
+    cache.set(normalizedKey, cachedValue);
+    return cachedValue || null;
+  }, []);
+
+  const setTtsCacheValue = useCallback((key, audioUrl) => {
+    const normalizedKey = String(key || '').trim();
+    const normalizedUrl = String(audioUrl || '').trim();
+    if (!normalizedKey || !normalizedUrl) return;
+    const cache = ttsCacheRef.current;
+    if (cache.has(normalizedKey)) {
+      cache.delete(normalizedKey);
+    }
+    cache.set(normalizedKey, normalizedUrl);
+    while (cache.size > TTS_CACHE_MAX_ENTRIES) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey === undefined) break;
+      cache.delete(oldestKey);
+    }
+  }, []);
+
   const playTts = useCallback(async (text, language = 'de-DE', voice = '') => {
     if (!initData || !text) return Promise.resolve();
     const normalizedText = String(text || '').trim();
@@ -1587,14 +1615,16 @@ function AppInner() {
       }
     });
 
-    if (ttsCacheRef.current.has(key)) {
-      const audioUrl = ttsCacheRef.current.get(key);
+    const cachedAudioUrl = getTtsCacheValue(key);
+    if (cachedAudioUrl) {
+      const audioUrl = cachedAudioUrl;
       return playAudioUrl(audioUrl);
     }
 
     const ensureTtsReadyUrl = async () => {
-      if (ttsCacheRef.current.has(key)) {
-        return ttsCacheRef.current.get(key);
+      const readyCachedAudioUrl = getTtsCacheValue(key);
+      if (readyCachedAudioUrl) {
+        return readyCachedAudioUrl;
       }
       if (ttsInFlightRef.current.has(key)) {
         return ttsInFlightRef.current.get(key);
@@ -1603,7 +1633,7 @@ function AppInner() {
         try {
           const prefetched = await ttsPrefetchInFlightRef.current.get(key);
           if (prefetched) {
-            ttsCacheRef.current.set(key, prefetched);
+            setTtsCacheValue(key, prefetched);
             return prefetched;
           }
         } catch (error) {
@@ -1625,7 +1655,7 @@ function AppInner() {
           const audioUrl = String(statusPayload?.audio_url || '').trim();
           if (status === 'ready' && audioUrl) {
             ttsPendingCacheRef.current.delete(key);
-            ttsCacheRef.current.set(key, audioUrl);
+            setTtsCacheValue(key, audioUrl);
             return audioUrl;
           }
           if (status === 'failed') {
@@ -1642,7 +1672,7 @@ function AppInner() {
               const generatedAudioUrl = String(generatePayload?.audio_url || '').trim();
               if (generateStatus === 'ready' && generatedAudioUrl) {
                 ttsPendingCacheRef.current.delete(key);
-                ttsCacheRef.current.set(key, generatedAudioUrl);
+                setTtsCacheValue(key, generatedAudioUrl);
                 return generatedAudioUrl;
               }
               if (generateStatus === 'failed') {
@@ -1682,7 +1712,7 @@ function AppInner() {
       console.warn('TTS error', error);
       return playWebSpeech();
     }
-  }, [initData, fetchTtsUrlStatus, requestTtsGenerate, stopTtsPlayback]);
+  }, [initData, fetchTtsUrlStatus, getTtsCacheValue, requestTtsGenerate, setTtsCacheValue, stopTtsPlayback]);
 
   const isTtsPending = useCallback((key) => Boolean(ttsPendingMap[String(key || '')]), [ttsPendingMap]);
 
@@ -1941,7 +1971,7 @@ function AppInner() {
     const normalizedVoice = String(voice || '').trim();
     const key = `${normalizedLang}:${normalizedVoice}:${normalizedText}`;
     if (
-      ttsCacheRef.current.has(key)
+      Boolean(getTtsCacheValue(key))
       || ttsInFlightRef.current.has(key)
       || ttsPrefetchInFlightRef.current.has(key)
     ) return;
@@ -1952,7 +1982,7 @@ function AppInner() {
         const audioUrl = String(statusPayload?.audio_url || '').trim();
         if (status === 'ready' && audioUrl) {
           ttsPendingCacheRef.current.delete(key);
-          ttsCacheRef.current.set(key, audioUrl);
+          setTtsCacheValue(key, audioUrl);
           return audioUrl;
         }
         if (status === 'failed') {
@@ -1966,7 +1996,7 @@ function AppInner() {
           const generatedUrl = String(generated?.audio_url || '').trim();
           if (generatedStatus === 'ready' && generatedUrl) {
             ttsPendingCacheRef.current.delete(key);
-            ttsCacheRef.current.set(key, generatedUrl);
+            setTtsCacheValue(key, generatedUrl);
             return generatedUrl;
           }
           if (generatedStatus === 'failed') {
@@ -1983,7 +2013,7 @@ function AppInner() {
         ttsPrefetchInFlightRef.current.delete(key);
       });
     ttsPrefetchInFlightRef.current.set(key, requestPromise);
-  }, [initData, fetchTtsUrlStatus, requestTtsGenerate]);
+  }, [initData, fetchTtsUrlStatus, getTtsCacheValue, requestTtsGenerate, setTtsCacheValue]);
 
   useEffect(() => {
     const locale = getLearningTtsLocale();
