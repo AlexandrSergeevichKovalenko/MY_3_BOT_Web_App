@@ -15071,9 +15071,14 @@ function AppInner() {
                         </div>
                         <div className={`youtube-subtitles-panel-content ${youtubeTranslationEnabled ? 'is-dual' : 'is-single'}`}>
                           <div className="youtube-subtitles-block youtube-subtitles-block-de">
-                            <div className="youtube-subtitles-card-head">
-                              <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
-                              {renderYoutubeSentenceJumpBar({ inline: true })}
+                            <div className="youtube-subtitles-card-head youtube-subtitles-card-head-with-nav">
+                              <div className="youtube-subtitles-card-badge">
+                                <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
+                              </div>
+                              <div className="youtube-subtitles-card-nav">
+                                {renderYoutubeSentenceJumpBar({ inline: true })}
+                              </div>
+                              <div className="youtube-subtitles-card-head-spacer" aria-hidden="true" />
                             </div>
                             <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
                               <div className="webapp-subtitles-list" onMouseUp={handleSelection}>

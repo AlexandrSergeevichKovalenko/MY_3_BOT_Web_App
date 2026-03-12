@@ -6137,6 +6137,44 @@ def requeue_tts_object_pending(
     return bool(claimed)
 
 
+def list_stale_pending_tts_objects(
+    *,
+    limit: int = 100,
+    older_than_minutes: int = 2,
+) -> list[dict]:
+    safe_limit = max(1, min(1000, int(limit or 100)))
+    safe_age_minutes = max(1, min(24 * 60, int(older_than_minutes or 2)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    cache_key,
+                    status,
+                    language,
+                    voice,
+                    speed,
+                    source_text,
+                    object_key,
+                    url,
+                    size_bytes,
+                    error_code,
+                    error_msg,
+                    created_at,
+                    updated_at,
+                    last_hit_at
+                FROM bt_3_tts_object_cache
+                WHERE status = 'pending'
+                  AND updated_at <= NOW() - (%s || ' minutes')::interval
+                ORDER BY updated_at ASC
+                LIMIT %s;
+                """,
+                (safe_age_minutes, safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [_map_tts_object_cache_row(row) for row in rows]
+
+
 def mark_tts_object_ready(
     *,
     cache_key: str,

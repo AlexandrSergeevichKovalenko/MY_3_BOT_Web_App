@@ -59,6 +59,7 @@ import subprocess
 import copy
 import hashlib
 import io
+import queue
 from collections import deque
 from urllib.parse import urlparse
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -194,6 +195,7 @@ from backend.database import (
     get_tts_object_meta,
     create_tts_object_pending,
     requeue_tts_object_pending,
+    list_stale_pending_tts_objects,
     mark_tts_object_ready,
     mark_tts_object_failed,
     get_next_due_srs_card,
@@ -375,6 +377,9 @@ _audio_scheduler_lock = None
 _TTS_ADMIN_MONITOR_LOCK = threading.Lock()
 _TTS_ADMIN_MONITOR_EVENTS = deque()
 _TTS_ADMIN_ALERT_LAST_SENT: dict[str, float] = {}
+_TTS_GENERATION_QUEUE_LOCK = threading.RLock()
+_TTS_GENERATION_QUEUE = None
+_TTS_GENERATION_WORKER_THREADS: list[threading.Thread] = []
 TELEGRAM_Deutsch_BOT_TOKEN = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
 MOBILE_AUTH_SECRET = (os.getenv("MOBILE_AUTH_SECRET") or TELEGRAM_Deutsch_BOT_TOKEN or "").strip()
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
@@ -434,6 +439,28 @@ _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_URL_PENDING_RETRY_MS = max(150, int((os.getenv("TTS_URL_PENDING_RETRY_MS") or "350").strip() or "350"))
 TTS_WEBAPP_DEFAULT_SPEED = 0.95
+TTS_GENERATION_WORKERS = max(1, min(32, int((os.getenv("TTS_GENERATION_WORKERS") or "4").strip() or "4")))
+TTS_GENERATION_QUEUE_MAXSIZE = max(
+    int(TTS_GENERATION_WORKERS) * 4,
+    min(20000, int((os.getenv("TTS_GENERATION_QUEUE_MAXSIZE") or "2000").strip() or "2000")),
+)
+TTS_GENERATION_ENQUEUE_TIMEOUT_MS = max(
+    50,
+    min(10000, int((os.getenv("TTS_GENERATION_ENQUEUE_TIMEOUT_MS") or "250").strip() or "250")),
+)
+TTS_GENERATION_RECOVERY_ENABLED = str(os.getenv("TTS_GENERATION_RECOVERY_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TTS_GENERATION_RECOVERY_INTERVAL_MINUTES = max(
+    1,
+    min(120, int((os.getenv("TTS_GENERATION_RECOVERY_INTERVAL_MINUTES") or "2").strip() or "2")),
+)
+TTS_GENERATION_RECOVERY_BATCH_SIZE = max(
+    1,
+    min(1000, int((os.getenv("TTS_GENERATION_RECOVERY_BATCH_SIZE") or "100").strip() or "100")),
+)
+TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES = max(
+    1,
+    min(240, int((os.getenv("TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES") or "2").strip() or "2")),
+)
 TTS_OBJECT_PREFIX = str(os.getenv("TTS_OBJECT_PREFIX") or "tts").strip().strip("/") or "tts"
 KEY_SALT = (os.getenv("KEY_SALT") or "").strip()
 _TTS_CACHE_HMAC_SECRET = KEY_SALT or TELEGRAM_Deutsch_BOT_TOKEN or "dev-unsafe-key-salt"
@@ -8941,7 +8968,7 @@ def _enqueue_dictionary_entry_tts_prewarm(
             "object_key": object_key,
         }
 
-    queued = _enqueue_tts_generation_job(
+    enqueue_result = _enqueue_tts_generation_job_result(
         user_id=int(user_id),
         language=language_code,
         tts_lang_short=normalized_target_lang,
@@ -8957,6 +8984,8 @@ def _enqueue_dictionary_entry_tts_prewarm(
         ),
         enqueue_ts_ms=_to_epoch_ms(),
     )
+    queued = bool(enqueue_result.get("queued"))
+    enqueue_reason = str(enqueue_result.get("reason") or "").strip().lower() or "already_running"
     _record_tts_admin_monitor_event(
         "enqueue",
         "queued" if queued else "pending",
@@ -8969,7 +8998,7 @@ def _enqueue_dictionary_entry_tts_prewarm(
     return {
         "ok": True,
         "queued": bool(queued),
-        "reason": "queued" if queued else "already_running",
+        "reason": "queued" if queued else enqueue_reason,
         "cache_key": cache_key,
         "object_key": object_key,
         "text": normalized_text,
@@ -17614,6 +17643,8 @@ def _run_tts_generation_job(
     request_id: str | None = None,
     enqueue_ts_ms: int | None = None,
 ) -> None:
+    user_id_int = int(user_id or 0)
+    observability_user_id = user_id_int if user_id_int > 0 else None
     job_started_perf = time.perf_counter()
     generation_start_ts_ms = _to_epoch_ms()
     resolved_request_id = _sanitize_observability_id(request_id) or f"req_{uuid4().hex[:20]}"
@@ -17638,7 +17669,7 @@ def _run_tts_generation_job(
         "generation_runner_started",
         request_id=resolved_request_id,
         correlation_id=resolved_correlation_id,
-        user_id=int(user_id),
+        user_id=observability_user_id,
         cache_key=cache_key,
         object_key=object_key,
         generation_start_ts_ms=generation_start_ts_ms,
@@ -17646,23 +17677,27 @@ def _run_tts_generation_job(
         cache_hit=bool(had_existing_meta),
     )
     try:
-        user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
+        user_source_lang = None
+        user_target_lang = None
+        if user_id_int > 0:
+            user_source_lang, user_target_lang, _profile = _get_user_language_pair(user_id_int)
         if had_existing_meta:
             r2_head_started_perf = time.perf_counter()
             object_exists = bool(r2_exists(object_key))
             r2_head_duration_ms = _elapsed_ms_since(r2_head_started_perf)
-            _billing_log_event_safe(
-                user_id=int(user_id),
-                action_type="r2_head_object",
-                provider="cloudflare_r2_class_b",
-                units_type="operations",
-                units_value=1.0,
-                source_lang=user_source_lang,
-                target_lang=user_target_lang,
-                idempotency_seed=f"r2-head:{user_id}:{object_key}:{time.time_ns()}",
-                status="estimated",
-                metadata={"storage": "r2", "operation": "head_object", "cached": object_exists},
-            )
+            if user_id_int > 0:
+                _billing_log_event_safe(
+                    user_id=user_id_int,
+                    action_type="r2_head_object",
+                    provider="cloudflare_r2_class_b",
+                    units_type="operations",
+                    units_value=1.0,
+                    source_lang=user_source_lang,
+                    target_lang=user_target_lang,
+                    idempotency_seed=f"r2-head:{user_id_int}:{object_key}:{time.time_ns()}",
+                    status="estimated",
+                    metadata={"storage": "r2", "operation": "head_object", "cached": object_exists},
+                )
             if object_exists:
                 url = r2_public_url(object_key)
                 mark_tts_object_ready(
@@ -17696,30 +17731,31 @@ def _run_tts_generation_job(
             cache_control="public, max-age=31536000, immutable",
         )
         storage_upload_duration_ms = _elapsed_ms_since(upload_started_perf)
-        _billing_log_event_safe(
-            user_id=int(user_id),
-            action_type="r2_put_object",
-            provider="cloudflare_r2_class_a",
-            units_type="operations",
-            units_value=1.0,
-            source_lang=user_source_lang,
-            target_lang=user_target_lang,
-            idempotency_seed=f"r2-put:{user_id}:{object_key}:{time.time_ns()}",
-            status="estimated",
-            metadata={"storage": "r2", "operation": "put_object", "bytes": len(response_audio)},
-        )
-        _billing_log_event_safe(
-            user_id=int(user_id),
-            action_type="r2_storage_allocation",
-            provider="cloudflare_r2_storage",
-            units_type="mb_month",
-            units_value=float(len(response_audio)) / (1024.0 * 1024.0),
-            source_lang=user_source_lang,
-            target_lang=user_target_lang,
-            idempotency_seed=f"r2-storage:{user_id}:{object_key}:{len(response_audio)}:{time.time_ns()}",
-            status="estimated",
-            metadata={"storage": "r2", "bytes": len(response_audio)},
-        )
+        if user_id_int > 0:
+            _billing_log_event_safe(
+                user_id=user_id_int,
+                action_type="r2_put_object",
+                provider="cloudflare_r2_class_a",
+                units_type="operations",
+                units_value=1.0,
+                source_lang=user_source_lang,
+                target_lang=user_target_lang,
+                idempotency_seed=f"r2-put:{user_id_int}:{object_key}:{time.time_ns()}",
+                status="estimated",
+                metadata={"storage": "r2", "operation": "put_object", "bytes": len(response_audio)},
+            )
+            _billing_log_event_safe(
+                user_id=user_id_int,
+                action_type="r2_storage_allocation",
+                provider="cloudflare_r2_storage",
+                units_type="mb_month",
+                units_value=float(len(response_audio)) / (1024.0 * 1024.0),
+                source_lang=user_source_lang,
+                target_lang=user_target_lang,
+                idempotency_seed=f"r2-storage:{user_id_int}:{object_key}:{len(response_audio)}:{time.time_ns()}",
+                status="estimated",
+                metadata={"storage": "r2", "bytes": len(response_audio)},
+            )
         public_url = r2_public_url(object_key)
         mark_tts_object_ready(
             cache_key=cache_key,
@@ -17732,24 +17768,25 @@ def _run_tts_generation_job(
             source_text=normalized_text,
         )
 
-        _billing_log_event_safe(
-            user_id=int(user_id),
-            action_type="webapp_tts_chars",
-            provider="google_tts",
-            units_type="chars",
-            units_value=float(len(normalized_text)),
-            source_lang=user_source_lang,
-            target_lang=user_target_lang,
-            idempotency_seed=f"webapp-tts-generate:{user_id}:{cache_key}:{int(time.time())}",
-            status="estimated",
-            metadata={
-                "cached": False,
-                "language": language,
-                "tts_lang": tts_lang_short,
-                "voice": voice,
-                "storage": "r2",
-            },
-        )
+        if user_id_int > 0:
+            _billing_log_event_safe(
+                user_id=user_id_int,
+                action_type="webapp_tts_chars",
+                provider="google_tts",
+                units_type="chars",
+                units_value=float(len(normalized_text)),
+                source_lang=user_source_lang,
+                target_lang=user_target_lang,
+                idempotency_seed=f"webapp-tts-generate:{user_id_int}:{cache_key}:{int(time.time())}",
+                status="estimated",
+                metadata={
+                    "cached": False,
+                    "language": language,
+                    "tts_lang": tts_lang_short,
+                    "voice": voice,
+                    "storage": "r2",
+                },
+            )
         final_status = "generated"
         cache_hit = False
         _clear_tts_url_poll_attempt(cache_key)
@@ -17794,7 +17831,7 @@ def _run_tts_generation_job(
             meta={
                 "cache_key": str(cache_key),
                 "object_key": str(object_key),
-                "user_id": int(user_id),
+                "user_id": user_id_int if user_id_int > 0 else None,
                 "tts_lang_short": str(tts_lang_short or ""),
                 "error_code": error_code,
             },
@@ -17806,7 +17843,7 @@ def _run_tts_generation_job(
             "generation_runner_finished",
             request_id=resolved_request_id,
             correlation_id=resolved_correlation_id,
-            user_id=int(user_id),
+            user_id=observability_user_id,
             cache_key=cache_key,
             object_key=object_key,
             generation_start_ts_ms=generation_start_ts_ms,
@@ -17821,21 +17858,185 @@ def _run_tts_generation_job(
         )
 
 
-def _enqueue_tts_generation_job(**kwargs) -> bool:
+def _get_tts_generation_queue():
+    global _TTS_GENERATION_QUEUE
+    with _TTS_GENERATION_QUEUE_LOCK:
+        if _TTS_GENERATION_QUEUE is None:
+            _TTS_GENERATION_QUEUE = queue.Queue(maxsize=int(TTS_GENERATION_QUEUE_MAXSIZE))
+        return _TTS_GENERATION_QUEUE
+
+
+def _tts_generation_queue_size() -> int:
+    generation_queue = _get_tts_generation_queue()
+    try:
+        return int(generation_queue.qsize())
+    except Exception:
+        return 0
+
+
+def _tts_generation_worker_loop(worker_index: int) -> None:
+    generation_queue = _get_tts_generation_queue()
+    while True:
+        job_kwargs = generation_queue.get()
+        try:
+            if not isinstance(job_kwargs, dict):
+                continue
+            _run_tts_generation_job(**job_kwargs)
+        except Exception:
+            logging.exception("Unhandled TTS generation worker failure: worker=%s", worker_index)
+        finally:
+            generation_queue.task_done()
+
+
+def _ensure_tts_generation_workers_started() -> None:
+    with _TTS_GENERATION_QUEUE_LOCK:
+        active_threads = [thread for thread in _TTS_GENERATION_WORKER_THREADS if thread.is_alive()]
+        _TTS_GENERATION_WORKER_THREADS[:] = active_threads
+        missing_workers = int(TTS_GENERATION_WORKERS) - len(_TTS_GENERATION_WORKER_THREADS)
+        if missing_workers <= 0:
+            return
+        _get_tts_generation_queue()
+        start_index = len(_TTS_GENERATION_WORKER_THREADS)
+        for offset in range(missing_workers):
+            worker_index = start_index + offset + 1
+            thread = threading.Thread(
+                target=_tts_generation_worker_loop,
+                args=(worker_index,),
+                name=f"tts-worker-{worker_index}",
+                daemon=True,
+            )
+            thread.start()
+            _TTS_GENERATION_WORKER_THREADS.append(thread)
+        logging.info(
+            "✅ TTS generation worker pool ready: workers=%s queue_maxsize=%s",
+            len(_TTS_GENERATION_WORKER_THREADS),
+            int(TTS_GENERATION_QUEUE_MAXSIZE),
+        )
+
+
+def _build_tts_generation_job_kwargs_from_meta(meta: dict, *, user_id: int | None = None) -> dict | None:
+    if not isinstance(meta, dict):
+        return None
+    cache_key = str(meta.get("cache_key") or "").strip()
+    normalized_text = _normalize_utterance_text(meta.get("source_text") or "")
+    if not cache_key or not normalized_text:
+        return None
+    short_lang, language_code = _normalize_tts_language_code(meta.get("language"))
+    voice = _normalize_tts_voice_name(meta.get("voice"), short_lang)
+    speaking_rate = float(meta.get("speed")) if meta.get("speed") is not None else TTS_WEBAPP_DEFAULT_SPEED
+    object_key = str(meta.get("object_key") or "").strip() or _tts_object_key(short_lang, voice, cache_key)
+    safe_user_id = max(0, int(user_id or 0))
+    return {
+        "user_id": safe_user_id,
+        "language": language_code,
+        "tts_lang_short": short_lang,
+        "voice": voice,
+        "speaking_rate": speaking_rate,
+        "normalized_text": normalized_text,
+        "cache_key": cache_key,
+        "object_key": object_key,
+        "had_existing_meta": True,
+        "request_id": f"req_tts_recover_{uuid4().hex[:16]}",
+        "correlation_id": _build_observability_correlation_id(
+            fallback_seed=f"recover:{cache_key[:16]}",
+            prefix="tts",
+        ),
+        "enqueue_ts_ms": _to_epoch_ms(),
+    }
+
+
+def _enqueue_tts_generation_job_result(**kwargs) -> dict:
     cache_key = str(kwargs.get("cache_key") or "").strip()
     if not cache_key:
-        return False
+        return {"queued": False, "reason": "missing_cache_key"}
+    _ensure_tts_generation_workers_started()
     with _TTS_GENERATION_JOBS_LOCK:
         if cache_key in _TTS_GENERATION_JOBS:
-            return False
+            return {"queued": False, "reason": "duplicate_in_process"}
         _TTS_GENERATION_JOBS.add(cache_key)
-    threading.Thread(
-        target=_run_tts_generation_job,
-        kwargs=kwargs,
-        name=f"tts-generate-{cache_key[:10]}",
-        daemon=True,
-    ).start()
-    return True
+    generation_queue = _get_tts_generation_queue()
+    try:
+        generation_queue.put(kwargs, timeout=float(TTS_GENERATION_ENQUEUE_TIMEOUT_MS) / 1000.0)
+    except queue.Full:
+        with _TTS_GENERATION_JOBS_LOCK:
+            _TTS_GENERATION_JOBS.discard(cache_key)
+        queue_size = _tts_generation_queue_size()
+        logging.warning(
+            "TTS generation queue full: cache_key=%s queue_size=%s queue_maxsize=%s",
+            cache_key,
+            queue_size,
+            int(TTS_GENERATION_QUEUE_MAXSIZE),
+        )
+        _record_tts_admin_monitor_event(
+            "generation_enqueue",
+            "error",
+            source="queue_full",
+            count=1,
+            chars=len(str(kwargs.get("normalized_text") or "")),
+            meta={
+                "cache_key": cache_key,
+                "queue_size": queue_size,
+                "queue_maxsize": int(TTS_GENERATION_QUEUE_MAXSIZE),
+            },
+        )
+        _maybe_send_tts_admin_failure_alert()
+        return {"queued": False, "reason": "queue_full"}
+    return {"queued": True, "reason": "queued", "queue_size": _tts_generation_queue_size()}
+
+
+def _enqueue_tts_generation_job(**kwargs) -> bool:
+    return bool(_enqueue_tts_generation_job_result(**kwargs).get("queued"))
+
+
+def _recover_stale_tts_generation_jobs() -> dict:
+    if not TTS_GENERATION_RECOVERY_ENABLED:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+    _ensure_tts_generation_workers_started()
+    attempted = 0
+    queued = 0
+    duplicates = 0
+    queue_full = 0
+    skipped_invalid = 0
+    candidates = list_stale_pending_tts_objects(
+        limit=TTS_GENERATION_RECOVERY_BATCH_SIZE,
+        older_than_minutes=TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES,
+    )
+    for meta in candidates:
+        job_kwargs = _build_tts_generation_job_kwargs_from_meta(meta, user_id=0)
+        if not job_kwargs:
+            skipped_invalid += 1
+            continue
+        attempted += 1
+        enqueue_result = _enqueue_tts_generation_job_result(**job_kwargs)
+        if bool(enqueue_result.get("queued")):
+            queued += 1
+            continue
+        reason = str(enqueue_result.get("reason") or "").strip().lower()
+        if reason == "queue_full":
+            queue_full += 1
+            break
+        duplicates += 1
+    result = {
+        "ok": True,
+        "attempted": attempted,
+        "queued": queued,
+        "duplicates": duplicates,
+        "queue_full": queue_full,
+        "skipped_invalid": skipped_invalid,
+        "candidate_count": len(candidates),
+        "pending_age_minutes": int(TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES),
+        "queue_size": _tts_generation_queue_size(),
+    }
+    if attempted or skipped_invalid or queue_full:
+        logging.info("✅ TTS recovery finished: %s", result)
+    return result
+
+
+def _run_tts_generation_recovery_scheduler_job() -> None:
+    try:
+        _recover_stale_tts_generation_jobs()
+    except Exception:
+        logging.exception("❌ TTS generation recovery scheduler failed")
 
 
 def _billing_log_r2_delivery_estimate(
@@ -17845,6 +18046,8 @@ def _billing_log_r2_delivery_estimate(
     object_key: str,
     reason: str,
 ) -> None:
+    if int(user_id or 0) <= 0:
+        return
     try:
         source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
         _billing_log_event_safe(
@@ -18145,7 +18348,7 @@ def webapp_tts_generate():
         return jsonify(response_payload)
 
     enqueue_ts_ms = _to_epoch_ms()
-    _enqueue_tts_generation_job(
+    enqueue_result = _enqueue_tts_generation_job_result(
         user_id=int(user_id),
         language=language,
         tts_lang_short=tts_lang_short,
@@ -18172,7 +18375,13 @@ def webapp_tts_generate():
         fallback_object_key=object_key,
         retry_after_ms=TTS_URL_PENDING_RETRY_MS,
     )
-    response_payload["state"] = "queued"
+    enqueue_reason = str(enqueue_result.get("reason") or "").strip().lower()
+    if bool(enqueue_result.get("queued")):
+        response_payload["state"] = "queued"
+    elif enqueue_reason == "queue_full":
+        response_payload["state"] = "pending_recovery"
+    else:
+        response_payload["state"] = "already_pending"
     response_status = str(response_payload.get("status") or "").strip().lower() or "pending"
     _log_flow_observation(
         "tts",
@@ -21768,6 +21977,7 @@ def _start_audio_scheduler() -> None:
     tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
     hour = int((os.getenv("AUDIO_SCHEDULER_HOUR") or "13").strip())
     minute = int((os.getenv("AUDIO_SCHEDULER_MINUTE") or "0").strip())
+    _ensure_tts_generation_workers_started()
     _audio_scheduler = BackgroundScheduler(timezone=tz_name)
     _audio_scheduler.add_job(
         _run_audio_scheduler_job,
@@ -21896,6 +22106,15 @@ def _start_audio_scheduler() -> None:
             _run_tts_prewarm_scheduler_job,
             "interval",
             minutes=TTS_PREWARM_INTERVAL_MINUTES,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=120,
+        )
+    if TTS_GENERATION_RECOVERY_ENABLED:
+        _audio_scheduler.add_job(
+            _run_tts_generation_recovery_scheduler_job,
+            "interval",
+            minutes=TTS_GENERATION_RECOVERY_INTERVAL_MINUTES,
             max_instances=1,
             coalesce=True,
             misfire_grace_time=120,
