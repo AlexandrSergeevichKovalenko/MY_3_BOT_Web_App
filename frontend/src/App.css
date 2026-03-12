@@ -10624,9 +10624,32 @@ body {
   color: #15803d;
 }
 
+.youtube-sentence-jump-btn.is-toggle {
+  min-width: 42px;
+  padding: 0 10px;
+  border-color: rgba(15, 23, 42, 0.16);
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--yt-text-primary);
+}
+
+.youtube-sentence-jump-btn.is-toggle.is-paused {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.2);
+  color: #1d4ed8;
+}
+
+.youtube-sentence-jump-btn.is-toggle.is-playing {
+  background: rgba(15, 23, 42, 0.12);
+}
+
 .youtube-sentence-jump-btn.is-prev:hover:not(:disabled) {
   border-color: rgba(220, 38, 38, 0.34);
   background: rgba(220, 38, 38, 0.18);
+}
+
+.youtube-sentence-jump-btn.is-toggle:hover:not(:disabled) {
+  border-color: rgba(15, 23, 42, 0.28);
+  background: rgba(15, 23, 42, 0.16);
 }
 
 .youtube-sentence-jump-btn.is-next:hover:not(:disabled) {
@@ -10634,8 +10657,21 @@ body {
   background: rgba(22, 163, 74, 0.18);
 }
 
+.youtube-sentence-jump-btn.is-toggle.is-paused:hover:not(:disabled) {
+  border-color: rgba(37, 99, 235, 0.3);
+  background: rgba(37, 99, 235, 0.18);
+}
+
 .youtube-sentence-jump-btn.is-prev:active:not(:disabled) {
   background: rgba(220, 38, 38, 0.24);
+}
+
+.youtube-sentence-jump-btn.is-toggle:active:not(:disabled) {
+  background: rgba(15, 23, 42, 0.22);
+}
+
+.youtube-sentence-jump-btn.is-toggle.is-paused:active:not(:disabled) {
+  background: rgba(37, 99, 235, 0.22);
 }
 
 .youtube-sentence-jump-btn.is-next:active:not(:disabled) {

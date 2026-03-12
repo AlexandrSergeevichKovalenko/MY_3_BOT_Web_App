@@ -10271,8 +10271,26 @@ function AppInner() {
     }
   };
 
+  const toggleYoutubePlayback = () => {
+    if (!youtubeId || !youtubePlayerRef.current) return;
+    youtubePausedBySelectionRef.current = false;
+    try {
+      const state = youtubePlayerRef.current?.getPlayerState?.();
+      if (state === 1 || state === 3) {
+        youtubePlayerRef.current.pauseVideo?.();
+        return;
+      }
+      youtubePlayerRef.current.playVideo?.();
+      setYoutubePlaybackStarted(true);
+      setYoutubeForceShowPanel(false);
+    } catch (_toggleError) {
+      // ignore player toggle errors
+    }
+  };
+
   const renderYoutubeSentenceJumpBar = ({ inline = false } = {}) => {
     const activeSubtitleIndex = getActiveSubtitleIndex();
+    const canControlPlayback = Boolean(youtubeId && youtubePlayerRef.current);
     const canJump = Boolean(youtubeTranscript.length && youtubePlayerRef.current?.seekTo);
     const canJumpPrev = canJump && activeSubtitleIndex > 0;
     const canJumpNext = canJump && activeSubtitleIndex < youtubeTranscript.length - 1;
@@ -10289,6 +10307,19 @@ function AppInner() {
           aria-label={tr('Предыдущее предложение', 'Vorheriger Satz')}
         >
           <span className="youtube-sentence-jump-icon" aria-hidden="true">←</span>
+        </button>
+        <button
+          type="button"
+          className={`youtube-sentence-jump-btn is-toggle ${youtubeIsPaused ? 'is-paused' : 'is-playing'}`}
+          onClick={toggleYoutubePlayback}
+          disabled={!canControlPlayback}
+          aria-label={youtubeIsPaused
+            ? tr('Продолжить видео и субтитры', 'Video und Untertitel fortsetzen')
+            : tr('Поставить видео и субтитры на паузу', 'Video und Untertitel pausieren')}
+        >
+          <span className="youtube-sentence-jump-icon" aria-hidden="true">
+            {youtubeIsPaused ? '▶' : '❚❚'}
+          </span>
         </button>
         <button
           type="button"
