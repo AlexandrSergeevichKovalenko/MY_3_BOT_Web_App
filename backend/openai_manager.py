@@ -274,10 +274,28 @@ You will receive the required number of sentences in a variable **Number of sent
     * **Time and place expressions**
     * **Comparatives** (*größer, besser*)
 
-7.  **Formatting:**
-    * Each sentence must be on a new line.
-    * The total number of lines must exactly match **Number of sentences**.
-    * Do NOT include any translations or explanations in the output.
+7.  **Tested-skill profile (mandatory):**
+    * For every sentence, assign:
+      * exactly 1 `primary_skill_id`
+      * 1-2 `secondary_skill_ids`
+      * 0-1 `supporting_skill_ids`
+    * All skill ids MUST be selected strictly from `skill_catalog` provided in the user input.
+    * The tested-skill profile must reflect the concrete sentence, not just the topic.
+
+8.  **Output format:**
+    * Return STRICT JSON only:
+      {
+        "items": [
+          {
+            "sentence": "string",
+            "primary_skill_id": "string",
+            "secondary_skill_ids": ["string"],
+            "supporting_skill_ids": ["string"]
+          }
+        ]
+      }
+    * The number of items must exactly match **Number of sentences**.
+    * No markdown, no prose, no translations, no explanations outside JSON.
 
 ---
 
@@ -316,10 +334,28 @@ You will receive the required number of sentences in a variable **Number of sent
     * **Infinitive with "zu"**
     * **Two-way prepositions** (*in, an, auf*)
 
-7.  **Formatting:**
-    * Each sentence must be on a new line.
-    * The total number of lines must exactly match **Number of sentences**.
-    * Do NOT include any translations or explanations in the output.
+7.  **Tested-skill profile (mandatory):**
+    * For every sentence, assign:
+      * exactly 1 `primary_skill_id`
+      * 1-2 `secondary_skill_ids`
+      * 0-1 `supporting_skill_ids`
+    * All skill ids MUST be selected strictly from `skill_catalog` provided in the user input.
+    * The tested-skill profile must reflect the concrete sentence, not just the topic.
+
+8.  **Output format:**
+    * Return STRICT JSON only:
+      {
+        "items": [
+          {
+            "sentence": "string",
+            "primary_skill_id": "string",
+            "secondary_skill_ids": ["string"],
+            "supporting_skill_ids": ["string"]
+          }
+        ]
+      }
+    * The number of items must exactly match **Number of sentences**.
+    * No markdown, no prose, no translations, no explanations outside JSON.
 
 ---
 
@@ -359,10 +395,28 @@ You will receive the required number of sentences in a variable **Number of sent
     * **Subordinate clauses** (*obwohl, damit, sodass*)
     * **Genitive prepositions** (*trotz, wegen, während*)
 
-7.  **Formatting:**
-    * Each sentence must be on a new line.
-    * The total number of lines must exactly match **Number of sentences**.
-    * Do NOT include any translations or explanations in the output.
+7.  **Tested-skill profile (mandatory):**
+    * For every sentence, assign:
+      * exactly 1 `primary_skill_id`
+      * 1-2 `secondary_skill_ids`
+      * 0-1 `supporting_skill_ids`
+    * All skill ids MUST be selected strictly from `skill_catalog` provided in the user input.
+    * The tested-skill profile must reflect the concrete sentence, not just the topic.
+
+8.  **Output format:**
+    * Return STRICT JSON only:
+      {
+        "items": [
+          {
+            "sentence": "string",
+            "primary_skill_id": "string",
+            "secondary_skill_ids": ["string"],
+            "supporting_skill_ids": ["string"]
+          }
+        ]
+      }
+    * The number of items must exactly match **Number of sentences**.
+    * No markdown, no prose, no translations, no explanations outside JSON.
 
 ---
 
@@ -415,10 +469,28 @@ You will receive the required number of sentences in a variable **Number of sent
     * **Participial constructions** (*Partizip I und II als Adjektiv*).
     * **Infinitive clauses with "zu"**.
 
-7.  **Formatting:**
-    * Each sentence must be on a new line.
-    * The total number of lines must exactly match **Number of sentences**.
-    * Do NOT include any translations or explanations in the output.
+7.  **Tested-skill profile (mandatory):**
+    * For every sentence, assign:
+      * exactly 1 `primary_skill_id`
+      * 1-2 `secondary_skill_ids`
+      * 0-1 `supporting_skill_ids`
+    * All skill ids MUST be selected strictly from `skill_catalog` provided in the user input.
+    * The tested-skill profile must reflect the concrete sentence, not just the topic.
+
+8.  **Output format:**
+    * Return STRICT JSON only:
+      {
+        "items": [
+          {
+            "sentence": "string",
+            "primary_skill_id": "string",
+            "secondary_skill_ids": ["string"],
+            "supporting_skill_ids": ["string"]
+          }
+        ]
+      }
+    * The number of items must exactly match **Number of sentences**.
+    * No markdown, no prose, no translations, no explanations outside JSON.
 
 ---
 
@@ -458,10 +530,28 @@ You will receive the required number of sentences in a variable **Number of sent
     * **Genitive constructions** and prepositions
     * **Futur II** and modal nuance
 
-7.  **Formatting:**
-    * Each sentence must be on a new line.
-    * The total number of lines must exactly match **Number of sentences**.
-    * Do NOT include any translations or explanations in the output.
+7.  **Tested-skill profile (mandatory):**
+    * For every sentence, assign:
+      * exactly 1 `primary_skill_id`
+      * 1-2 `secondary_skill_ids`
+      * 0-1 `supporting_skill_ids`
+    * All skill ids MUST be selected strictly from `skill_catalog` provided in the user input.
+    * The tested-skill profile must reflect the concrete sentence, not just the topic.
+
+8.  **Output format:**
+    * Return STRICT JSON only:
+      {
+        "items": [
+          {
+            "sentence": "string",
+            "primary_skill_id": "string",
+            "secondary_skill_ids": ["string"],
+            "supporting_skill_ids": ["string"]
+          }
+        ]
+      }
+    * The number of items must exactly match **Number of sentences**.
+    * No markdown, no prose, no translations, no explanations outside JSON.
 
 ---
 
@@ -1796,6 +1886,12 @@ Task:
 - Sentences should be suitable for translation into target_language.
 - The requested level is mandatory and must strongly affect difficulty.
 - Keep all sentences on the requested topic.
+- For every sentence, also assign a tested-skill profile:
+  - exactly 1 primary_skill_id
+  - 1-2 secondary_skill_ids
+  - 0-1 supporting_skill_ids
+- All skill ids MUST be selected strictly from skill_catalog in the input.
+- The tested-skill profile must reflect the concrete sentence, not just the topic.
 - Use these level constraints:
   - a2: very simple everyday sentences, mostly one clause, short and concrete, typically 4-12 words.
   - b1: moderately simple sentences, occasional light subordinate clause, typically 6-18 words.
@@ -1806,7 +1902,19 @@ Task:
   - for a2/b1, avoid sentences that feel advanced, literary, overloaded, or syntactically dense;
   - for c1/c2, avoid childish or overly trivial textbook lines.
 - Prefer natural, real-life utterances, not grammar labels or isolated phrasebook fragments.
-- Output one sentence per line, no numbering, no markdown, no extra commentary.
+- Return STRICT JSON only:
+  {
+    "items": [
+      {
+        "sentence": "string",
+        "primary_skill_id": "string",
+        "secondary_skill_ids": ["string"],
+        "supporting_skill_ids": ["string"]
+      }
+    ]
+  }
+- The number of items must exactly match count.
+- No markdown, no prose outside JSON.
 """,
 }
 
@@ -2960,8 +3068,24 @@ async def generate_sentences_multilang(
                 user_message=user_message,
                 poll_interval_seconds=1.0,
             )
-            lines = [re.sub(r"^\s*\d+\.\s*", "", line).strip() for line in content.splitlines()]
-            filtered = [line for line in lines if line]
+            cleaned = str(content or "").strip()
+            filtered: list[str] = []
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+            try:
+                payload = json.loads(cleaned)
+                items = payload.get("items") if isinstance(payload, dict) else None
+                if isinstance(items, list):
+                    filtered = [
+                        str(item.get("sentence") or "").strip()
+                        for item in items
+                        if isinstance(item, dict) and str(item.get("sentence") or "").strip()
+                    ]
+            except Exception:
+                filtered = []
+            if not filtered:
+                lines = [re.sub(r"^\s*\d+\.\s*", "", line).strip() for line in cleaned.splitlines()]
+                filtered = [line for line in lines if line]
             if filtered:
                 return filtered[: int(max(1, num_sentences))]
         except openai.RateLimitError:

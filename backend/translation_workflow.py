@@ -41,6 +41,10 @@ PHASE1_MISSING_PROFILE_SOURCE = "missing"
 PHASE1_MISSING_PROFILE_CONFIDENCE = 0.25
 PHASE1_CATASTROPHIC_FAIL_SCORE_THRESHOLD = 20
 PHASE1_CATASTROPHIC_FAIL_MAP_WEIGHT = 0.6
+AUTHORED_PROFILE_SOURCE = "authored_generation"
+AUTHORED_PROFILE_CONFIDENCE = 1.0
+REMEDIATION_PROFILE_SOURCE = "remediation_history"
+REMEDIATION_PROFILE_CONFIDENCE = 0.85
 
 
 def finalize_open_translation_sessions() -> dict[str, int]:
@@ -1009,77 +1013,319 @@ async def generate_sentences_webapp(
     return []
 
 
+def _load_skill_catalog_with_cursor(
+    cursor,
+    *,
+    target_lang: str,
+    limit: int = 300,
+) -> list[dict[str, str]]:
+    cursor.execute(
+        """
+        SELECT skill_id, title, category
+        FROM bt_3_skills
+        WHERE language_code = %s
+          AND COALESCE(is_active, TRUE) = TRUE
+        ORDER BY category ASC, title ASC, skill_id ASC
+        LIMIT %s;
+        """,
+        (str(target_lang or "de").strip().lower() or "de", max(1, min(int(limit or 300), 500))),
+    )
+    rows = cursor.fetchall() or []
+    return [
+        {
+            "skill_id": str(row[0] or "").strip(),
+            "title": str(row[1] or "").strip(),
+            "category": str(row[2] or "").strip(),
+        }
+        for row in rows
+        if str(row[0] or "").strip()
+    ]
+
+
+def _build_skill_profile_from_skill_ids(
+    *,
+    primary_skill_id: str,
+    secondary_skill_ids: list[str],
+    supporting_skill_ids: list[str],
+    profile_source: str,
+    profile_confidence: float,
+) -> list[dict[str, Any]]:
+    profile: list[dict[str, Any]] = [
+        {
+            "skill_id": str(primary_skill_id),
+            "role": "primary",
+            "role_rank": 1,
+            "role_weight": PHASE1_SKILL_ROLE_WEIGHTS["primary"],
+            "profile_source": profile_source,
+            "profile_confidence": profile_confidence,
+            "profile_version": 1,
+        }
+    ]
+    for index, skill_id in enumerate(list(secondary_skill_ids or [])[:2], start=2):
+        profile.append(
+            {
+                "skill_id": str(skill_id),
+                "role": "secondary",
+                "role_rank": index,
+                "role_weight": PHASE1_SKILL_ROLE_WEIGHTS["secondary"],
+                "profile_source": profile_source,
+                "profile_confidence": profile_confidence,
+                "profile_version": 1,
+            }
+        )
+    if supporting_skill_ids:
+        profile.append(
+            {
+                "skill_id": str(supporting_skill_ids[0]),
+                "role": "supporting",
+                "role_rank": 4,
+                "role_weight": PHASE1_SKILL_ROLE_WEIGHTS["supporting"],
+                "profile_source": profile_source,
+                "profile_confidence": profile_confidence,
+                "profile_version": 1,
+            }
+        )
+    return profile
+
+
+def _normalize_sentence_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: dict[str, dict[str, Any]] = {}
+    for item in entries:
+        sentence = str(item.get("sentence") or "").strip()
+        if not sentence:
+            continue
+        sentence = re.sub(r"^\s*\d+\.\s*", "", sentence).strip()
+        if not sentence:
+            continue
+        payload = {
+            "sentence": sentence,
+            "tested_skill_profile": list(item.get("tested_skill_profile") or []),
+        }
+        existing = normalized.get(sentence)
+        if existing is None:
+            normalized[sentence] = payload
+            continue
+        if not existing.get("tested_skill_profile") and payload.get("tested_skill_profile"):
+            normalized[sentence] = payload
+    return list(normalized.values())
+
+
+def _parse_generated_sentence_entries_payload(
+    content: str,
+    *,
+    valid_skill_ids: set[str],
+    profile_source: str = AUTHORED_PROFILE_SOURCE,
+    profile_confidence: float = AUTHORED_PROFILE_CONFIDENCE,
+) -> list[dict[str, Any]]:
+    cleaned = str(content or "").strip()
+    if not cleaned:
+        raise ValueError("empty_generation_payload")
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+    payload = json.loads(cleaned)
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not items:
+        raise ValueError("missing_generation_items")
+
+    entries: list[dict[str, Any]] = []
+    for raw_item in items:
+        if not isinstance(raw_item, dict):
+            raise ValueError("generation_item_not_object")
+        sentence = str(raw_item.get("sentence") or "").strip()
+        primary_skill_id = str(raw_item.get("primary_skill_id") or "").strip()
+        secondary_skill_ids = [
+            str(skill_id).strip()
+            for skill_id in (raw_item.get("secondary_skill_ids") or [])
+            if str(skill_id).strip()
+        ] if isinstance(raw_item.get("secondary_skill_ids"), list) else []
+        supporting_skill_ids = [
+            str(skill_id).strip()
+            for skill_id in (raw_item.get("supporting_skill_ids") or [])
+            if str(skill_id).strip()
+        ] if isinstance(raw_item.get("supporting_skill_ids"), list) else []
+        if not sentence or not primary_skill_id:
+            raise ValueError("generation_item_missing_fields")
+        if primary_skill_id not in valid_skill_ids:
+            raise ValueError(f"invalid_primary_skill:{primary_skill_id}")
+        if len(secondary_skill_ids) < 1 or len(secondary_skill_ids) > 2:
+            raise ValueError("invalid_secondary_count")
+        if len(supporting_skill_ids) > 1:
+            raise ValueError("invalid_supporting_count")
+        ordered_ids = [primary_skill_id] + secondary_skill_ids + supporting_skill_ids
+        if any(skill_id not in valid_skill_ids for skill_id in ordered_ids):
+            raise ValueError("invalid_profile_skill_id")
+        if len(set(ordered_ids)) != len(ordered_ids):
+            raise ValueError("duplicate_profile_skill_id")
+        entries.append(
+            {
+                "sentence": sentence,
+                "tested_skill_profile": _build_skill_profile_from_skill_ids(
+                    primary_skill_id=primary_skill_id,
+                    secondary_skill_ids=secondary_skill_ids,
+                    supporting_skill_ids=supporting_skill_ids,
+                    profile_source=profile_source,
+                    profile_confidence=profile_confidence,
+                ),
+            }
+        )
+    return entries
+
+
+async def _generate_sentence_entries_with_profiles(
+    *,
+    task_name: str,
+    system_instruction_key: str,
+    user_message: str,
+    target_count: int,
+    level: str | None,
+    valid_skill_ids: set[str],
+) -> list[dict[str, Any]]:
+    level_key = _normalize_level(level)
+    for attempt in range(5):
+        try:
+            content = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
+            )
+            parsed_entries = _parse_generated_sentence_entries_payload(
+                content,
+                valid_skill_ids=valid_skill_ids,
+            )
+            normalized_entries = _normalize_sentence_entries(parsed_entries)
+            filtered_entries = [
+                item
+                for item in normalized_entries
+                if item.get("sentence")
+                and _filter_sentences_for_level([str(item.get("sentence") or "")], level_key)
+            ]
+            if len(filtered_entries) >= target_count and all(item.get("tested_skill_profile") for item in filtered_entries[:target_count]):
+                return filtered_entries[:target_count]
+        except openai.RateLimitError:
+            wait_time = (attempt + 1) * 2
+            await asyncio.sleep(wait_time)
+        except Exception:
+            logging.exception("Structured sentence generation attempt failed")
+    return []
+
+
+async def _generate_legacy_sentence_entries_with_profiles(
+    *,
+    topic: str,
+    level: str | None,
+    target_count: int,
+    skill_catalog: list[dict[str, str]],
+    focus_hint: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    level_key = _normalize_level(level)
+    instruction_level_key = "a2" if level_key == "a1" else level_key
+    task_name = f"generate_sentences_{instruction_level_key}"
+    system_instruction_key = f"generate_sentences_{instruction_level_key}"
+    level_notes = {
+        "a1": "A1 only: very short, very concrete everyday sentences. No subordinate clauses. Prefer 3-8 words.",
+        "a2": "A2 only: short, concrete, everyday sentences. No heavy subordinate clauses. Prefer 4-12 words.",
+        "b1": "B1 only: moderately simple sentences with at most one light subordinate clause. Prefer 6-18 words.",
+        "b2": "B2 only: clearly more developed sentences with some clause complexity. Prefer 9-24 words.",
+        "c1": "C1 only: advanced sentences with visible syntactic complexity. Prefer 12-30 words.",
+        "c2": "C2 only: very advanced, nuanced, syntactically dense sentences. Prefer 15-36 words.",
+    }
+    user_message = json.dumps(
+        {
+            "count": int(max(1, target_count)),
+            "topic": str(topic or "General").strip(),
+            "level": level_key,
+            "level_note": level_notes.get(level_key, ""),
+            "source_language": "ru",
+            "target_language": "de",
+            "skill_catalog": skill_catalog,
+            "focus_hint": focus_hint if isinstance(focus_hint, dict) else None,
+        },
+        ensure_ascii=False,
+    )
+    return await _generate_sentence_entries_with_profiles(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=user_message,
+        target_count=target_count,
+        level=level,
+        valid_skill_ids={str(item.get("skill_id") or "").strip() for item in skill_catalog if str(item.get("skill_id") or "").strip()},
+    )
+
+
 async def get_original_sentences_webapp(
+    cursor,
+    *,
     user_id: int,
     topic: str = "Random sentences",
     level: str | None = None,
-) -> list[str]:
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    generation_profile_seed: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     level_key = _normalize_level(level)
+    skill_catalog = _load_skill_catalog_with_cursor(cursor, target_lang=target_lang)
 
-    try:
-        cursor.execute("SELECT sentence FROM bt_3_sentences ORDER BY RANDOM() LIMIT 20;")
-        rows = _filter_sentences_for_level([row[0] for row in cursor.fetchall()], level_key)[:1]
+    cursor.execute("SELECT sentence FROM bt_3_sentences ORDER BY RANDOM() LIMIT 20;")
+    rows = _filter_sentences_for_level([row[0] for row in cursor.fetchall()], level_key)[:1]
+    sentence_entries: list[dict[str, Any]] = [{"sentence": str(sentence or "").strip(), "tested_skill_profile": []} for sentence in rows if str(sentence or "").strip()]
 
-        cursor.execute(
-            """
-            SELECT sentence, sentence_id
-            FROM bt_3_detailed_mistakes
-            WHERE user_id = %s
-            ORDER BY mistake_count DESC, last_seen ASC;
-            """,
-            (user_id,),
+    cursor.execute(
+        """
+        SELECT sentence, sentence_id
+        FROM bt_3_detailed_mistakes
+        WHERE user_id = %s
+        ORDER BY mistake_count DESC, last_seen ASC;
+        """,
+        (user_id,),
+    )
+    already_given_sentence_ids = set()
+    unique_sentences = set()
+    for sentence, sentence_id in cursor.fetchall() or []:
+        if not sentence_id or sentence_id in already_given_sentence_ids or sentence_id in unique_sentences:
+            continue
+        unique_sentences.add(sentence_id)
+        already_given_sentence_ids.add(sentence_id)
+        sentence_entries.append(
+            {
+                "sentence": str(sentence or "").strip(),
+                "tested_skill_profile": _build_remediation_profile_with_cursor(
+                    cursor,
+                    user_id=int(user_id),
+                    sentence_id_for_mistake=int(sentence_id),
+                    target_lang=target_lang,
+                ),
+            }
         )
+        if len([item for item in sentence_entries if item.get("tested_skill_profile")]) >= 5:
+            break
 
-        already_given_sentence_ids = set()
-        unique_sentences = set()
-        mistake_sentences = []
-
-        # Keep personal mistake recap stable across level switches.
-        for sentence, sentence_id in cursor.fetchall():
-            if sentence_id and sentence_id not in already_given_sentence_ids:
-                if sentence_id not in unique_sentences:
-                    unique_sentences.add(sentence_id)
-                    mistake_sentences.append(sentence)
-                    already_given_sentence_ids.add(sentence_id)
-                    if len(mistake_sentences) == 5:
-                        break
-
-        num_sentences = 7 - len(rows) - len(mistake_sentences)
-        gpt_sentences = []
-        if num_sentences > 0:
-            gpt_sentences = await generate_sentences_webapp(user_id, num_sentences, topic, level)
-
-        def normalize_sentences(items: list[str]) -> list[str]:
-            normalized: list[str] = []
-            seen: set[str] = set()
-            for item in items:
-                if not item:
-                    continue
-                text = str(item).strip()
-                if not text:
-                    continue
-                for line in text.split("\n"):
-                    candidate = re.sub(r"^\s*\d+\.\s*", "", line).strip()
-                    if not candidate or candidate in seen:
-                        continue
-                    seen.add(candidate)
-                    normalized.append(candidate)
-            return normalized
-
-        final_sentences = normalize_sentences(rows + mistake_sentences + gpt_sentences)
-        attempts = 0
-        while len(final_sentences) < 7 and attempts < 3:
-            needed = 7 - len(final_sentences)
-            extra_sentences = await generate_sentences_webapp(user_id, needed, topic, level)
-            final_sentences = normalize_sentences(final_sentences + extra_sentences)
-            attempts += 1
-
-        return final_sentences
-    finally:
-        cursor.close()
-        conn.close()
+    num_sentences = 7 - len(sentence_entries)
+    generated_entries: list[dict[str, Any]] = []
+    if num_sentences > 0:
+        generated_entries = await _generate_legacy_sentence_entries_with_profiles(
+            topic=topic,
+            level=level,
+            target_count=num_sentences,
+            skill_catalog=skill_catalog,
+            focus_hint=generation_profile_seed,
+        )
+    final_entries = _normalize_sentence_entries(sentence_entries + generated_entries)
+    attempts = 0
+    while len(final_entries) < 7 and attempts < 3:
+        needed = 7 - len(final_entries)
+        extra_entries = await _generate_legacy_sentence_entries_with_profiles(
+            topic=topic,
+            level=level,
+            target_count=needed,
+            skill_catalog=skill_catalog,
+            focus_hint=generation_profile_seed,
+        )
+        if not extra_entries:
+            break
+        final_entries = _normalize_sentence_entries(final_entries + extra_entries)
+        attempts += 1
+    return final_entries[:7]
 
 
 async def start_translation_session_webapp(
@@ -1185,27 +1431,49 @@ async def start_translation_session_webapp(
         )
         conn.commit()
 
+        skill_catalog = _load_skill_catalog_with_cursor(cursor, target_lang=target_lang)
+        sentence_entries: list[dict[str, Any]] = []
         if _is_legacy_ru_de_pair(source_lang, target_lang):
-            sentences = [s.strip() for s in await get_original_sentences_webapp(user_id, topic, level) if s.strip()]
-        else:
-            generated = await generate_sentences_multilang(
-                num_sentences=7,
+            sentence_entries = await get_original_sentences_webapp(
+                cursor,
+                user_id=user_id,
                 topic=topic,
                 level=level,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                generation_profile_seed=tested_skill_profile_seed,
             )
-            sentences = _filter_sentences_for_level([s.strip() for s in generated if s.strip()], level)
-        sentences = _dedupe_sentence_texts(correct_numbering(sentences))
+        else:
+            generated_entries = await _generate_sentence_entries_with_profiles(
+                task_name="generate_sentences_multilang",
+                system_instruction_key="generate_sentences_multilang",
+                user_message=json.dumps(
+                    {
+                        "source_language": (source_lang or "").strip().lower(),
+                        "target_language": (target_lang or "").strip().lower(),
+                        "level": (level or "b1").strip().lower(),
+                        "topic": (topic or "General").strip(),
+                        "count": 7,
+                        "skill_catalog": skill_catalog,
+                        "focus_hint": tested_skill_profile_seed if isinstance(tested_skill_profile_seed, dict) else None,
+                    },
+                    ensure_ascii=False,
+                ),
+                target_count=7,
+                level=level,
+                valid_skill_ids={str(item.get("skill_id") or "").strip() for item in skill_catalog if str(item.get("skill_id") or "").strip()},
+            )
+            sentence_entries = _normalize_sentence_entries(generated_entries)
 
-        if not sentences:
+        sentence_entries = _normalize_sentence_entries(sentence_entries)
+        sentences = _dedupe_sentence_texts(correct_numbering([str(item.get("sentence") or "").strip() for item in sentence_entries if str(item.get("sentence") or "").strip()]))
+        if not sentences or not sentence_entries:
             return {"session_id": session_id, "created": True, "count": 0}
-
-        tested_skill_profile = _build_phase1_tested_skill_profile_with_cursor(
-            cursor,
-            target_lang=target_lang,
-            profile_seed=tested_skill_profile_seed,
-        )
+        sentence_entry_by_text = {
+            " ".join(str(item.get("sentence") or "").strip().split()).lower(): item
+            for item in sentence_entries
+            if str(item.get("sentence") or "").strip()
+        }
 
         cursor.execute(
             """
@@ -1220,7 +1488,7 @@ async def start_translation_session_webapp(
         )
         row = cursor.fetchone()
         start_index = (row[0] or 0) + 1
-        created_sentence_ids: list[int] = []
+        created_sentence_profiles: list[tuple[int, list[dict[str, Any]]]] = []
 
         for i, sentence in enumerate(sentences, start=start_index):
             cursor.execute(
@@ -1263,12 +1531,16 @@ async def start_translation_session_webapp(
             )
             inserted_row = cursor.fetchone()
             if inserted_row and inserted_row[0]:
-                created_sentence_ids.append(int(inserted_row[0]))
+                created_sentence_profiles.append(
+                    (
+                        int(inserted_row[0]),
+                        list((sentence_entry_by_text.get(" ".join(str(sentence).strip().split()).lower()) or {}).get("tested_skill_profile") or []),
+                    )
+                )
 
-        _insert_sentence_skill_targets_with_cursor(
+        _insert_sentence_skill_targets_for_entries_with_cursor(
             cursor,
-            sentence_ids=created_sentence_ids,
-            tested_skill_profile=tested_skill_profile,
+            sentence_profiles=created_sentence_profiles,
         )
 
         conn.commit()
@@ -1948,6 +2220,76 @@ def _build_phase1_tested_skill_profile_with_cursor(
     return profile
 
 
+def _build_remediation_profile_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    sentence_id_for_mistake: int,
+    target_lang: str,
+) -> list[dict[str, Any]]:
+    if not user_id or not sentence_id_for_mistake:
+        return []
+    cursor.execute(
+        """
+        SELECT
+            COALESCE(NULLIF(main_category, ''), 'Other mistake') AS main_category,
+            COALESCE(NULLIF(sub_category, ''), 'Unclassified mistake') AS sub_category,
+            SUM(COALESCE(mistake_count, 1))::BIGINT AS total_mistakes
+        FROM bt_3_detailed_mistakes
+        WHERE user_id = %s
+          AND sentence_id = %s
+        GROUP BY 1, 2
+        ORDER BY total_mistakes DESC, main_category ASC, sub_category ASC
+        LIMIT 12;
+        """,
+        (int(user_id), int(sentence_id_for_mistake)),
+    )
+    rows = cursor.fetchall() or []
+    if not rows:
+        return []
+
+    aggregated_skill_weights: dict[str, float] = {}
+    for main_category, sub_category, total_mistakes in rows:
+        mapped = get_skill_mapping_for_error(
+            str(main_category or "").strip(),
+            str(sub_category or "").strip(),
+            language_code=target_lang or "de",
+        )
+        pair_weight = max(1.0, float(total_mistakes or 1))
+        for item in mapped:
+            skill_id = str(item.get("skill_id") or "").strip()
+            if not skill_id:
+                continue
+            skill_seed = _load_skill_seed_with_cursor(
+                cursor,
+                skill_id=skill_id,
+                target_lang=target_lang,
+            )
+            if not skill_seed:
+                continue
+            aggregated_skill_weights[skill_id] = aggregated_skill_weights.get(skill_id, 0.0) + pair_weight * max(float(item.get("weight") or 1.0), 0.1)
+    if not aggregated_skill_weights:
+        return []
+
+    ranked_skill_ids = [
+        skill_id
+        for skill_id, _score in sorted(
+            aggregated_skill_weights.items(),
+            key=lambda item: (-float(item[1] or 0.0), item[0]),
+        )
+    ]
+    primary_skill_id = ranked_skill_ids[0]
+    secondary_skill_ids = ranked_skill_ids[1:3]
+    supporting_skill_ids = ranked_skill_ids[3:4]
+    return _build_skill_profile_from_skill_ids(
+        primary_skill_id=primary_skill_id,
+        secondary_skill_ids=secondary_skill_ids,
+        supporting_skill_ids=supporting_skill_ids,
+        profile_source=REMEDIATION_PROFILE_SOURCE,
+        profile_confidence=REMEDIATION_PROFILE_CONFIDENCE,
+    )
+
+
 def _insert_sentence_skill_targets_with_cursor(
     cursor,
     *,
@@ -1959,6 +2301,49 @@ def _insert_sentence_skill_targets_with_cursor(
     values: list[tuple[Any, ...]] = []
     for sentence_id in sentence_ids:
         for item in tested_skill_profile:
+            values.append(
+                (
+                    int(sentence_id),
+                    str(item.get("skill_id") or ""),
+                    str(item.get("role") or "supporting"),
+                    int(item.get("role_rank") or 99),
+                    float(item.get("role_weight") or 0.0),
+                    str(item.get("profile_source") or "seeded"),
+                    float(item.get("profile_confidence") or 0.0),
+                    int(item.get("profile_version") or 1),
+                )
+            )
+    if not values:
+        return
+    execute_values(
+        cursor,
+        """
+        INSERT INTO bt_3_sentence_skill_targets (
+            sentence_id,
+            skill_id,
+            role,
+            role_rank,
+            role_weight,
+            profile_source,
+            profile_confidence,
+            profile_version
+        ) VALUES %s
+        ON CONFLICT (sentence_id, skill_id) DO NOTHING;
+        """,
+        values,
+    )
+
+
+def _insert_sentence_skill_targets_for_entries_with_cursor(
+    cursor,
+    *,
+    sentence_profiles: list[tuple[int, list[dict[str, Any]]]],
+) -> None:
+    if not sentence_profiles:
+        return
+    values: list[tuple[Any, ...]] = []
+    for sentence_id, tested_skill_profile in sentence_profiles:
+        for item in list(tested_skill_profile or []):
             values.append(
                 (
                     int(sentence_id),
@@ -2876,6 +3261,18 @@ async def apply_translation_result_side_effects(
                     cursor,
                     sentence_id=int(sentence_pk_id),
                 )
+                if not tested_targets and sentence_id_for_mistake:
+                    tested_targets = _build_remediation_profile_with_cursor(
+                        cursor,
+                        user_id=int(user_id),
+                        sentence_id_for_mistake=int(sentence_id_for_mistake),
+                        target_lang=target_lang or "de",
+                    )
+                    if tested_targets:
+                        _insert_sentence_skill_targets_for_entries_with_cursor(
+                            cursor,
+                            sentence_profiles=[(int(sentence_pk_id), tested_targets)],
+                        )
                 previous_shadow_state = _load_sentence_skill_shadow_state_with_cursor(
                     cursor,
                     sentence_id=int(sentence_pk_id),

@@ -1,0 +1,114 @@
+[
+  {
+    "id": "set1-1",
+    "set_name": "set1",
+    "original_text": "Я вчера купил новую книгу.",
+    "user_translation": "Ich habe gestern ein neues Buch gekauft.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set1-2",
+    "set_name": "set1",
+    "original_text": "Я вчера купил новую книгу.",
+    "user_translation": "Ich habe gestern eine neue Buch gekauft.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set1-3",
+    "set_name": "set1",
+    "original_text": "Я вчера купил новую книгу.",
+    "user_translation": "Ich gestern kaufen neue Buch.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set1-4",
+    "set_name": "set1",
+    "original_text": "На прошлой неделе мой начальник дал мне интересную задачу.",
+    "user_translation": "Letzte Woche hat mein Chef mir eine interessante Aufgabe gegeben.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set1-5",
+    "set_name": "set1",
+    "original_text": "На прошлой неделе мой начальник дал мне интересную задачу.",
+    "user_translation": "Letzte Woche mein Chef hat mir eine interessante Aufgabe gegeben.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set1-6",
+    "set_name": "set1",
+    "original_text": "Если мы сегодня закончим проект, мы сможем завтра уйти раньше.",
+    "user_translation": "Wenn wir heute das Projekt beenden, können wir morgen früher gehen.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set1-7",
+    "set_name": "set1",
+    "original_text": "Если мы сегодня закончим проект, мы сможем завтра уйти раньше.",
+    "user_translation": "Wenn wir heute das Projekt beenden, wir können morgen früher gehen.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set2-1",
+    "set_name": "set2",
+    "original_text": "Я не понимаю, почему он так говорит.",
+    "user_translation": "Ich verstehe nicht, warum er so spricht.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set2-2",
+    "set_name": "set2",
+    "original_text": "Я не понимаю, почему он так говорит.",
+    "user_translation": "Ich verstehe nicht, warum spricht er so.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set2-3",
+    "set_name": "set2",
+    "original_text": "Мы хотим поехать в Германию в следующем году.",
+    "user_translation": "Wir wollen nächstes Jahr nach Deutschland fahren.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set2-4",
+    "set_name": "set2",
+    "original_text": "Мы хотим поехать в Германию в следующем году.",
+    "user_translation": "Wir wollen nach Deutschland nächstes Jahr fahren.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set2-5",
+    "set_name": "set2",
+    "original_text": "Она сказала, что придёт позже.",
+    "user_translation": "Sie sagte, dass sie später kommt.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set2-6",
+    "set_name": "set2",
+    "original_text": "Она сказала, что придёт позже.",
+    "user_translation": "Sie sagte, dass sie kommt später.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  {
+    "id": "set2-7",
+    "set_name": "set2",
+    "original_text": "Я работаю в этой компании уже пять лет.",
+    "user_translation": "Ich arbeite seit fünf Jahren in dieser Firma.",
+    "source_lang": "ru",
+    "target_lang": "de"
+  }
+]

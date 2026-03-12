@@ -3065,6 +3065,10 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_access_requests (status, created_at DESC);
             """)
             _ensure_bt3_detailed_mistakes_constraints(cursor)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_detailed_mistakes_user_sentence
+                ON bt_3_detailed_mistakes (user_id, sentence_id);
+            """)
             cursor.close()
         missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
         if missing_phase1_objects:

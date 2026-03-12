@@ -10203,7 +10203,8 @@ body {
   min-width: 0;
 }
 
-.youtube-subtitles-card-head span {
+.youtube-subtitles-card-badge > span,
+.youtube-subtitles-card-head > span {
   display: inline-flex;
   align-items: center;
   min-height: 32px;
@@ -10610,6 +10611,7 @@ body {
   justify-content: center;
   box-shadow: none;
   transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, opacity 0.16s ease;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
 }
 
 .youtube-sentence-jump-btn.is-prev {
@@ -10688,6 +10690,11 @@ body {
   line-height: 1;
   font-weight: 700;
   transform: translateY(-0.5px);
+  background: transparent;
+  border: 0;
+  min-height: 0;
+  padding: 0;
+  color: inherit;
 }
 
 .webapp-video.youtube-player-first .webapp-video-frame.youtube-player-frame {
