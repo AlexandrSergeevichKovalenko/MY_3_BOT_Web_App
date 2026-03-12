@@ -2110,8 +2110,15 @@ def ensure_webapp_tables() -> None:
                 """,
                 GERMAN_MASTERY_GROUP_MEMBER_SEED,
             )
-            german_mastery_group_ids = tuple(group_id for group_id, _title, _description, _sort_order in GERMAN_MASTERY_GROUP_SEED)
-            german_mastery_skill_ids = tuple(skill_id for _group_id, skill_id, _lang, _is_leaf, _is_diag_only, _weight, _override, _sort in GERMAN_MASTERY_GROUP_MEMBER_SEED)
+            german_mastery_group_ids = [
+                group_id
+                for group_id, _title, _description, _sort_order in GERMAN_MASTERY_GROUP_SEED
+            ]
+            german_mastery_skill_ids = [
+                skill_id
+                for _group_id, skill_id, _lang, _is_leaf, _is_diag_only, _weight, _override, _sort
+                in GERMAN_MASTERY_GROUP_MEMBER_SEED
+            ]
             cursor.execute(
                 """
                 DELETE FROM bt_3_skill_mastery_group_members
@@ -2121,14 +2128,14 @@ def ensure_webapp_tables() -> None:
                       FROM bt_3_skills
                       WHERE language_code = 'de'
                   )
-                  AND diagnostic_skill_id <> ALL(%s);
+                  AND NOT (diagnostic_skill_id = ANY(%s::text[]));
                 """,
                 (german_mastery_skill_ids,),
             )
             cursor.execute(
                 """
                 UPDATE bt_3_skill_mastery_groups
-                SET is_active = (mastery_group_id = ANY(%s)), updated_at = NOW()
+                SET is_active = (mastery_group_id = ANY(%s::text[])), updated_at = NOW()
                 WHERE language_code = 'de';
                 """,
                 (german_mastery_group_ids,),
