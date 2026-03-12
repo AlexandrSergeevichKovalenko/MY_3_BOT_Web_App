@@ -1018,7 +1018,46 @@ def _load_skill_catalog_with_cursor(
     *,
     target_lang: str,
     limit: int = 300,
+    authored_mastery_leaves_only: bool = False,
 ) -> list[dict[str, str]]:
+    normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+    if authored_mastery_leaves_only and normalized_target_lang == "de":
+        cursor.execute(
+            """
+            SELECT
+                s.skill_id,
+                COALESCE(NULLIF(m.display_title_override, ''), s.title) AS title,
+                g.display_title AS category,
+                m.mastery_group_id
+            FROM bt_3_skills s
+            JOIN bt_3_skill_mastery_group_members m
+              ON m.diagnostic_skill_id = s.skill_id
+             AND m.language_code = s.language_code
+            JOIN bt_3_skill_mastery_groups g
+              ON g.mastery_group_id = m.mastery_group_id
+             AND g.language_code = m.language_code
+            WHERE s.language_code = %s
+              AND COALESCE(s.is_active, TRUE) = TRUE
+              AND COALESCE(g.is_active, TRUE) = TRUE
+              AND COALESCE(m.is_mastery_leaf, FALSE) = TRUE
+              AND COALESCE(m.is_diagnostic_only, FALSE) = FALSE
+            ORDER BY g.sort_order ASC, m.sort_order ASC, title ASC, s.skill_id ASC
+            LIMIT %s;
+            """,
+            (normalized_target_lang, max(1, min(int(limit or 300), 500))),
+        )
+        rows = cursor.fetchall() or []
+        return [
+            {
+                "skill_id": str(row[0] or "").strip(),
+                "title": str(row[1] or "").strip(),
+                "category": str(row[2] or "").strip(),
+                "mastery_group_id": str(row[3] or "").strip(),
+            }
+            for row in rows
+            if str(row[0] or "").strip()
+        ]
+
     cursor.execute(
         """
         SELECT skill_id, title, category
@@ -1028,7 +1067,7 @@ def _load_skill_catalog_with_cursor(
         ORDER BY category ASC, title ASC, skill_id ASC
         LIMIT %s;
         """,
-        (str(target_lang or "de").strip().lower() or "de", max(1, min(int(limit or 300), 500))),
+        (normalized_target_lang, max(1, min(int(limit or 300), 500))),
     )
     rows = cursor.fetchall() or []
     return [
@@ -1264,7 +1303,11 @@ async def get_original_sentences_webapp(
     generation_profile_seed: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     level_key = _normalize_level(level)
-    skill_catalog = _load_skill_catalog_with_cursor(cursor, target_lang=target_lang)
+    skill_catalog = _load_skill_catalog_with_cursor(
+        cursor,
+        target_lang=target_lang,
+        authored_mastery_leaves_only=(str(target_lang or "").strip().lower() == "de"),
+    )
 
     cursor.execute("SELECT sentence FROM bt_3_sentences ORDER BY RANDOM() LIMIT 20;")
     rows = _filter_sentences_for_level([row[0] for row in cursor.fetchall()], level_key)[:1]
@@ -1431,7 +1474,11 @@ async def start_translation_session_webapp(
         )
         conn.commit()
 
-        skill_catalog = _load_skill_catalog_with_cursor(cursor, target_lang=target_lang)
+        skill_catalog = _load_skill_catalog_with_cursor(
+            cursor,
+            target_lang=target_lang,
+            authored_mastery_leaves_only=(str(target_lang or "").strip().lower() == "de"),
+        )
         sentence_entries: list[dict[str, Any]] = []
         if _is_legacy_ru_de_pair(source_lang, target_lang):
             sentence_entries = await get_original_sentences_webapp(

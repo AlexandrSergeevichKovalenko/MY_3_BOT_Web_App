@@ -54,6 +54,7 @@ _DB_POOL_LOCK = threading.Lock()
 _DB_POOL: ThreadedConnectionPool | None = None
 PHASE1_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase1_schema"
 PHASE2_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase2_schema"
+SKILL_MASTERY_GROUPS_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_mastery_groups_schema"
 SUPPORTED_LEARNING_LANGUAGES = {"de", "en", "es", "it"}
 SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
@@ -681,6 +682,204 @@ ERROR_SKILL_MAP_SEED: list[tuple[str, str, str, str, float]] = (
     + [("es", cat, subcat, skill_id, weight) for cat, subcat, skill_id, weight in ERROR_SKILL_MAP_SEED_ES]
     + [("it", cat, subcat, skill_id, weight) for cat, subcat, skill_id, weight in ERROR_SKILL_MAP_SEED_IT]
 )
+
+GERMAN_MASTERY_GROUP_SEED: list[tuple[str, str, str, int]] = [
+    ("de_nouns_nominals", "Nouns & Nominal Forms", "Noun number, declension, compounds, and nominal formation.", 10),
+    ("de_articles_determiners", "Articles & Determiners", "Article choice and the German determiner system.", 20),
+    ("de_cases", "Cases & Case Government", "Case selection, case after prepositions, and noun phrase agreement.", 30),
+    ("de_pronouns", "Pronouns & Reference", "Pronoun forms, functions, and referential clarity.", 40),
+    ("de_verbs_inflection", "Verb Forms & Conjugation", "Verb inflection, auxiliaries, modals, and prefix verbs.", 50),
+    ("de_verbs_patterns", "Verb Patterns & Infinitives", "Verb valency, infinitive structures, and participial verb patterns.", 60),
+    ("de_tense_aspect", "Tenses & Aspect", "Tense formation, tense choice, and sequence of tenses.", 70),
+    ("de_mood_modality", "Mood & Modality", "Imperative, Konjunktiv, hypotheticals, politeness, and reported speech.", 80),
+    ("de_passive_voice", "Passive & Voice", "Active/passive contrast and passive constructions.", 90),
+    ("de_word_order_main", "Word Order: Main Clause", "V2, inversion, negation, and constituent order in main clauses.", 100),
+    ("de_word_order_subordinate", "Word Order: Subordinate Clause", "Subordinate clause order and verbal cluster placement.", 110),
+    ("de_clauses_connectors", "Clauses & Connectors", "Clause linking, conjunction choice, and clause types.", 120),
+    ("de_prepositions", "Prepositions", "Preposition choice, government, and fixed prepositional phrases.", 130),
+    ("de_adjectives", "Adjectives & Agreement", "Adjective endings, agreement, comparison, and adjective use.", 140),
+    ("de_adverbs_particles", "Adverbs & Particles", "Adverb order, sentence adverbs, and German particles.", 150),
+    ("de_negation", "Negation", "Negation forms, placement, and scope.", 160),
+    ("de_writing_mechanics", "Writing Mechanics", "Capitalization, spelling, punctuation, and other writing conventions.", 170),
+]
+
+GERMAN_MASTERY_GROUP_DEFAULTS_BY_CATEGORY: dict[str, str] = {
+    "Nouns": "de_nouns_nominals",
+    "Articles & Determiners": "de_articles_determiners",
+    "Cases": "de_cases",
+    "Pronouns": "de_pronouns",
+    "Verbs": "de_verbs_inflection",
+    "Voice (Active/Passive)": "de_passive_voice",
+    "Tenses": "de_tense_aspect",
+    "Moods": "de_mood_modality",
+    "Adjectives": "de_adjectives",
+    "Adverbs": "de_adverbs_particles",
+    "Prepositions": "de_prepositions",
+    "Conjunctions": "de_clauses_connectors",
+    "Word Order": "de_word_order_main",
+    "Negation": "de_negation",
+    "Particles": "de_adverbs_particles",
+    "Clauses & Sentence Types": "de_clauses_connectors",
+    "Infinitive & Participles": "de_verbs_patterns",
+    "Punctuation": "de_writing_mechanics",
+    "Orthography & Spelling": "de_writing_mechanics",
+}
+
+GERMAN_MASTERY_GROUP_OVERRIDES_BY_SKILL_ID: dict[str, str] = {
+    "de_nouns_noun_capitalization": "de_writing_mechanics",
+    "verbs_placement_subordinate": "de_word_order_subordinate",
+    "word_order_subordinate_clause": "de_word_order_subordinate",
+    "word_order_modal_structure": "de_word_order_subordinate",
+    "de_word_order_placement_of_participle_perfekt_passive": "de_word_order_subordinate",
+    "de_word_order_placement_of_separable_prefix": "de_word_order_subordinate",
+    "de_clauses_sentence_types_infinitive_clauses_vs_dass_clause": "de_verbs_patterns",
+}
+
+GERMAN_MASTERY_LEAF_SKILL_IDS: set[str] = {
+    "nouns_plural",
+    "nouns_declension",
+    "de_articles_determiners_definite_articles_der_die_das",
+    "de_articles_determiners_indefinite_articles_ein_eine",
+    "de_articles_determiners_possessive_determiners_mein_dein",
+    "de_articles_determiners_negation_article_kein",
+    "cases_accusative",
+    "cases_dative",
+    "cases_genitive",
+    "de_cases_case_after_preposition",
+    "de_cases_two_way_prepositions_wechselpraepositionen",
+    "de_pronouns_personal_pronouns",
+    "de_pronouns_reflexive_pronouns",
+    "de_pronouns_relative_pronouns",
+    "verbs_auxiliaries",
+    "verbs_conjugation",
+    "verbs_modals",
+    "verbs_separable",
+    "de_verbs_inseparable_prefix_verbs",
+    "de_verbs_verb_valency_missing_object_complement",
+    "tenses_present",
+    "tenses_perfekt",
+    "tenses_prateritum",
+    "tenses_plusquamperfekt",
+    "tenses_futur1",
+    "moods_imperative",
+    "moods_subjunctive1",
+    "moods_subjunctive2",
+    "de_moods_reported_speech_indirekte_rede",
+    "de_moods_konjunktiv_ii_wuerde_form",
+    "de_voice_active_passive_vorgangspassiv_werden_partizip_ii",
+    "de_voice_active_passive_zustandspassiv_sein_partizip_ii",
+    "word_order_v2_rule",
+    "word_order_subordinate_clause",
+    "word_order_modal_structure",
+    "de_word_order_position_of_time_manner_place",
+    "de_clauses_sentence_types_relative_clauses",
+    "de_clauses_sentence_types_conditionals_wenn_falls",
+    "de_clauses_sentence_types_purpose_clauses_damit_um_zu",
+    "prepositions_two_way",
+    "prepositions_usage",
+    "adjectives_endings_general",
+    "adjectives_case_agreement",
+    "adjectives_comparative",
+    "adjectives_superlative",
+    "de_negation_nicht_vs_kein",
+    "de_negation_negation_placement",
+    "de_orthography_spelling_common_spelling_errors",
+    "de_punctuation_comma_in_subordinate_clause",
+}
+
+GERMAN_MASTERY_ROLLUP_ZERO_WEIGHT_SKILL_IDS: set[str] = {
+    "moods_indicative",
+    "word_order_standard",
+    "word_order_inverted",
+    "verbs_placement_general",
+    "verbs_placement_subordinate",
+    "conj_coordinating",
+    "conj_subordinating",
+    "adverbs_placement",
+    "adverbs_usage",
+    "de_particles_antwortpartikeln_ja_nein_doch",
+    "de_particles_focus_particles_nur_auch_sogar",
+    "de_particles_particle_misuse_omission",
+    "de_orthography_spelling_hyphenation",
+    "de_orthography_spelling_ss_ss",
+    "de_punctuation_question_mark_exclamation",
+    "de_punctuation_quotation_marks",
+    "de_clauses_sentence_types_question_formation",
+    "de_word_order_verb_first_questions_imperative",
+    "de_adjectives_adjective_placement",
+    "adjectives_placement",
+}
+
+GERMAN_MASTERY_DISPLAY_TITLE_OVERRIDES: dict[str, str] = {
+    "verbs_conjugation": "Verb Conjugation & Agreement",
+    "verbs_modals": "Modal Verbs",
+    "verbs_auxiliaries": "Auxiliary Verbs",
+    "verbs_separable": "Separable Verbs",
+    "de_verbs_inseparable_prefix_verbs": "Inseparable Prefix Verbs",
+    "de_verbs_verb_valency_missing_object_complement": "Verb Valency & Complements",
+    "prepositions_usage": "Preposition Choice",
+    "conj_usage": "Conjunction Choice",
+    "word_order_v2_rule": "Verb-Second Rule (V2)",
+    "word_order_subordinate_clause": "Subordinate Clause Order",
+    "word_order_modal_structure": "Word Order with Modal Verb",
+    "de_word_order_position_of_time_manner_place": "Time, Manner, Place Order",
+    "de_negation_nicht_vs_kein": "nicht vs kein",
+    "de_negation_negation_placement": "Negation Placement",
+}
+
+
+def _assign_german_mastery_group_id(skill_id: str, category: str) -> str:
+    explicit_group = GERMAN_MASTERY_GROUP_OVERRIDES_BY_SKILL_ID.get(str(skill_id or "").strip())
+    if explicit_group:
+        return explicit_group
+    default_group = GERMAN_MASTERY_GROUP_DEFAULTS_BY_CATEGORY.get(str(category or "").strip())
+    if not default_group:
+        raise ValueError(f"No German mastery group mapping for skill_id={skill_id!r}, category={category!r}")
+    return default_group
+
+
+def _build_german_mastery_group_membership_seed() -> list[tuple[str, str, str, bool, bool, float, str | None, int]]:
+    skill_rows = sorted(SKILL_SEED_DE, key=lambda item: (str(item[2]), str(item[1]), str(item[0])))
+    seeded_pairs: list[tuple[str, str, str, bool, bool, float, str | None, int]] = []
+    group_sort_order_counters: dict[str, int] = {}
+    known_group_ids = {group_id for group_id, _title, _description, _sort_order in GERMAN_MASTERY_GROUP_SEED}
+
+    for skill_id, _title, category in skill_rows:
+        mastery_group_id = _assign_german_mastery_group_id(skill_id, category)
+        if mastery_group_id not in known_group_ids:
+            raise ValueError(f"Unknown German mastery group {mastery_group_id!r} for skill_id={skill_id!r}")
+        is_mastery_leaf = skill_id in GERMAN_MASTERY_LEAF_SKILL_IDS
+        is_diagnostic_only = not is_mastery_leaf
+        rollup_weight = 1.0 if is_mastery_leaf else 0.5
+        if skill_id in GERMAN_MASTERY_ROLLUP_ZERO_WEIGHT_SKILL_IDS:
+            rollup_weight = 0.0
+        title_override = GERMAN_MASTERY_DISPLAY_TITLE_OVERRIDES.get(skill_id)
+        group_sort_order_counters[mastery_group_id] = group_sort_order_counters.get(mastery_group_id, 0) + 10
+        seeded_pairs.append(
+            (
+                mastery_group_id,
+                skill_id,
+                "de",
+                bool(is_mastery_leaf),
+                bool(is_diagnostic_only),
+                float(rollup_weight),
+                title_override,
+                int(group_sort_order_counters[mastery_group_id]),
+            )
+        )
+
+    seeded_skill_ids = {row[1] for row in seeded_pairs}
+    expected_skill_ids = {skill_id for skill_id, _title, _category in SKILL_SEED_DE}
+    if seeded_skill_ids != expected_skill_ids:
+        missing = sorted(expected_skill_ids - seeded_skill_ids)
+        extra = sorted(seeded_skill_ids - expected_skill_ids)
+        raise ValueError(
+            f"German mastery membership seed mismatch; missing={missing!r}, extra={extra!r}"
+        )
+    return seeded_pairs
+
+
+GERMAN_MASTERY_GROUP_MEMBER_SEED = _build_german_mastery_group_membership_seed()
 
 
 def _as_sql_text_literals(values: set[str]) -> str:
@@ -1442,6 +1641,47 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_skills (language_code, category, skill_id);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_skill_mastery_groups (
+                    mastery_group_id TEXT PRIMARY KEY,
+                    language_code TEXT NOT NULL,
+                    display_title TEXT NOT NULL,
+                    short_description TEXT NOT NULL,
+                    sort_order SMALLINT NOT NULL DEFAULT 100,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_skill_mastery_groups_lang_active
+                ON bt_3_skill_mastery_groups (language_code, is_active, sort_order, mastery_group_id);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_skill_mastery_group_members (
+                    mastery_group_id TEXT NOT NULL REFERENCES bt_3_skill_mastery_groups(mastery_group_id) ON DELETE CASCADE,
+                    diagnostic_skill_id TEXT NOT NULL REFERENCES bt_3_skills(skill_id) ON DELETE CASCADE,
+                    language_code TEXT NOT NULL,
+                    is_mastery_leaf BOOLEAN NOT NULL DEFAULT FALSE,
+                    is_diagnostic_only BOOLEAN NOT NULL DEFAULT FALSE,
+                    rollup_weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+                    display_title_override TEXT,
+                    sort_order SMALLINT NOT NULL DEFAULT 100,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (mastery_group_id, diagnostic_skill_id),
+                    CHECK (rollup_weight >= 0.0 AND rollup_weight <= 1.0),
+                    CHECK (NOT (is_mastery_leaf AND is_diagnostic_only))
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_skill_mastery_group_members_skill
+                ON bt_3_skill_mastery_group_members (language_code, diagnostic_skill_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_skill_mastery_group_members_group
+                ON bt_3_skill_mastery_group_members (language_code, mastery_group_id, is_mastery_leaf, sort_order);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_error_skill_map (
                     id BIGSERIAL PRIMARY KEY,
                     language_code TEXT NOT NULL DEFAULT 'de',
@@ -1820,6 +2060,86 @@ def ensure_webapp_tables() -> None:
                     updated_at = NOW();
                 """,
                 SKILL_SEED,
+            )
+            cursor.executemany(
+                """
+                INSERT INTO bt_3_skill_mastery_groups (
+                    mastery_group_id,
+                    language_code,
+                    display_title,
+                    short_description,
+                    sort_order,
+                    is_active,
+                    updated_at
+                )
+                VALUES (%s, 'de', %s, %s, %s, TRUE, NOW())
+                ON CONFLICT (mastery_group_id) DO UPDATE
+                SET
+                    language_code = EXCLUDED.language_code,
+                    display_title = EXCLUDED.display_title,
+                    short_description = EXCLUDED.short_description,
+                    sort_order = EXCLUDED.sort_order,
+                    is_active = TRUE,
+                    updated_at = NOW();
+                """,
+                GERMAN_MASTERY_GROUP_SEED,
+            )
+            cursor.executemany(
+                """
+                INSERT INTO bt_3_skill_mastery_group_members (
+                    mastery_group_id,
+                    diagnostic_skill_id,
+                    language_code,
+                    is_mastery_leaf,
+                    is_diagnostic_only,
+                    rollup_weight,
+                    display_title_override,
+                    sort_order,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (mastery_group_id, diagnostic_skill_id) DO UPDATE
+                SET
+                    language_code = EXCLUDED.language_code,
+                    is_mastery_leaf = EXCLUDED.is_mastery_leaf,
+                    is_diagnostic_only = EXCLUDED.is_diagnostic_only,
+                    rollup_weight = EXCLUDED.rollup_weight,
+                    display_title_override = EXCLUDED.display_title_override,
+                    sort_order = EXCLUDED.sort_order,
+                    updated_at = NOW();
+                """,
+                GERMAN_MASTERY_GROUP_MEMBER_SEED,
+            )
+            german_mastery_group_ids = tuple(group_id for group_id, _title, _description, _sort_order in GERMAN_MASTERY_GROUP_SEED)
+            german_mastery_skill_ids = tuple(skill_id for _group_id, skill_id, _lang, _is_leaf, _is_diag_only, _weight, _override, _sort in GERMAN_MASTERY_GROUP_MEMBER_SEED)
+            cursor.execute(
+                """
+                DELETE FROM bt_3_skill_mastery_group_members
+                WHERE language_code = 'de'
+                  AND diagnostic_skill_id IN (
+                      SELECT skill_id
+                      FROM bt_3_skills
+                      WHERE language_code = 'de'
+                  )
+                  AND diagnostic_skill_id <> ALL(%s);
+                """,
+                (german_mastery_skill_ids,),
+            )
+            cursor.execute(
+                """
+                UPDATE bt_3_skill_mastery_groups
+                SET is_active = (mastery_group_id = ANY(%s)), updated_at = NOW()
+                WHERE language_code = 'de';
+                """,
+                (german_mastery_group_ids,),
+            )
+            cursor.execute(
+                """
+                INSERT INTO bt_3_schema_migrations (migration_key)
+                VALUES (%s)
+                ON CONFLICT (migration_key) DO NOTHING;
+                """,
+                (SKILL_MASTERY_GROUPS_SCHEMA_MIGRATION_KEY,),
             )
             cursor.executemany(
                 """
@@ -3086,6 +3406,11 @@ def get_missing_phase1_shadow_schema_objects() -> list[str]:
             cursor.execute(
                 """
                 SELECT
+                    to_regclass('public.bt_3_skill_mastery_groups'),
+                    to_regclass('public.idx_bt_3_skill_mastery_groups_lang_active'),
+                    to_regclass('public.bt_3_skill_mastery_group_members'),
+                    to_regclass('public.uq_bt_3_skill_mastery_group_members_skill'),
+                    to_regclass('public.idx_bt_3_skill_mastery_group_members_group'),
                     to_regclass('public.bt_3_sentence_skill_targets'),
                     to_regclass('public.bt_3_sentence_skill_shadow_state_v2'),
                     to_regclass('public.bt_3_skill_events_v2'),
@@ -3105,8 +3430,13 @@ def get_missing_phase1_shadow_schema_objects() -> list[str]:
                     to_regclass('public.idx_bt_3_skill_state_v2_worker_stats_updated');
                 """
             )
-            row = cursor.fetchone() or (None,) * 17
+            row = cursor.fetchone() or (None,) * 22
             object_names = [
+                "bt_3_skill_mastery_groups",
+                "idx_bt_3_skill_mastery_groups_lang_active",
+                "bt_3_skill_mastery_group_members",
+                "uq_bt_3_skill_mastery_group_members_skill",
+                "idx_bt_3_skill_mastery_group_members_group",
                 "bt_3_sentence_skill_targets",
                 "bt_3_sentence_skill_shadow_state_v2",
                 "bt_3_skill_events_v2",
@@ -3135,6 +3465,36 @@ def get_missing_phase1_shadow_schema_objects() -> list[str]:
                     SELECT EXISTS (
                         SELECT 1
                         FROM pg_constraint
+                        WHERE conrelid = 'public.bt_3_skill_mastery_groups'::regclass
+                          AND contype = 'p'
+                    );
+                    """
+                )
+                mastery_groups_pk = bool((cursor.fetchone() or [False])[0])
+                if not mastery_groups_pk:
+                    missing.append("bt_3_skill_mastery_groups_pkey")
+
+            if row[2] is not None:
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conrelid = 'public.bt_3_skill_mastery_group_members'::regclass
+                          AND contype = 'p'
+                    );
+                    """
+                )
+                mastery_members_pk = bool((cursor.fetchone() or [False])[0])
+                if not mastery_members_pk:
+                    missing.append("bt_3_skill_mastery_group_members_pkey")
+
+            if row[5] is not None:
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
                         WHERE conrelid = 'public.bt_3_sentence_skill_targets'::regclass
                           AND contype = 'u'
                           AND pg_get_constraintdef(oid) ILIKE 'UNIQUE (sentence_id, skill_id)%'
@@ -3145,7 +3505,7 @@ def get_missing_phase1_shadow_schema_objects() -> list[str]:
                 if not unique_targets:
                     missing.append("bt_3_sentence_skill_targets_unique_sentence_skill")
 
-            if row[1] is not None:
+            if row[6] is not None:
                 cursor.execute(
                     """
                     SELECT EXISTS (
@@ -3160,7 +3520,7 @@ def get_missing_phase1_shadow_schema_objects() -> list[str]:
                 if not shadow_state_pk:
                     missing.append("bt_3_sentence_skill_shadow_state_v2_pkey")
 
-            if row[2] is not None:
+            if row[7] is not None:
                 cursor.execute(
                     """
                     SELECT EXISTS (
@@ -3174,7 +3534,7 @@ def get_missing_phase1_shadow_schema_objects() -> list[str]:
                 skill_events_pk = bool((cursor.fetchone() or [False])[0])
                 if not skill_events_pk:
                     missing.append("bt_3_skill_events_v2_pkey")
-            if row[10] is not None:
+            if row[15] is not None:
                 cursor.execute(
                     """
                     SELECT EXISTS (
@@ -3189,7 +3549,7 @@ def get_missing_phase1_shadow_schema_objects() -> list[str]:
                 if not user_skill_state_v2_pk:
                     missing.append("bt_3_user_skill_state_v2_pkey")
 
-            if row[12] is not None:
+            if row[17] is not None:
                 cursor.execute(
                     """
                     SELECT EXISTS (
@@ -3203,7 +3563,7 @@ def get_missing_phase1_shadow_schema_objects() -> list[str]:
                 dirty_pk = bool((cursor.fetchone() or [False])[0])
                 if not dirty_pk:
                     missing.append("bt_3_skill_state_v2_dirty_pkey")
-            if row[15] is not None:
+            if row[20] is not None:
                 cursor.execute(
                     """
                     SELECT EXISTS (
