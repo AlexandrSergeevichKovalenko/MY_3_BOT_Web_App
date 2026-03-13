@@ -205,6 +205,9 @@ from backend.database import (
     list_stale_pending_tts_objects,
     mark_tts_object_ready,
     mark_tts_object_failed,
+    record_tts_admin_monitor_event as persist_tts_admin_monitor_event,
+    list_tts_admin_monitor_events_since,
+    delete_old_tts_admin_monitor_events,
     get_next_due_srs_card,
     get_next_new_srs_candidate,
     count_due_srs_cards,
@@ -7894,6 +7897,14 @@ def _tts_admin_monitor_retention_seconds() -> int:
     )
 
 
+def _prune_tts_admin_monitor_events_persistent() -> None:
+    retention_seconds = _tts_admin_monitor_retention_seconds()
+    try:
+        delete_old_tts_admin_monitor_events(older_than_seconds=retention_seconds)
+    except Exception:
+        logging.debug("Failed to prune persistent TTS admin monitor events", exc_info=True)
+
+
 def _prune_tts_admin_monitor_events_locked(now_ts: float) -> None:
     cutoff = float(now_ts) - float(_tts_admin_monitor_retention_seconds())
     while _TTS_ADMIN_MONITOR_EVENTS and float(_TTS_ADMIN_MONITOR_EVENTS[0].get("ts") or 0.0) < cutoff:
@@ -7924,15 +7935,36 @@ def _record_tts_admin_monitor_event(
     with _TTS_ADMIN_MONITOR_LOCK:
         _TTS_ADMIN_MONITOR_EVENTS.append(payload)
         _prune_tts_admin_monitor_events_locked(now_ts)
+    try:
+        persist_tts_admin_monitor_event(
+            kind=payload["kind"],
+            status=payload["status"],
+            source=payload["source"],
+            count=payload["count"],
+            chars=payload["chars"],
+            duration_ms=payload["duration_ms"],
+            meta=payload["meta"],
+        )
+        _prune_tts_admin_monitor_events_persistent()
+    except Exception:
+        logging.debug("Failed to persist TTS admin monitor event", exc_info=True)
 
 
 def _get_tts_admin_monitor_window(seconds: int) -> list[dict]:
     window_seconds = max(1, int(seconds or 1))
     now_ts = time.time()
-    cutoff = now_ts - window_seconds
     with _TTS_ADMIN_MONITOR_LOCK:
         _prune_tts_admin_monitor_events_locked(now_ts)
-        return [item for item in _TTS_ADMIN_MONITOR_EVENTS if float(item.get("ts") or 0.0) >= cutoff]
+        fallback_events = list(_TTS_ADMIN_MONITOR_EVENTS)
+    _prune_tts_admin_monitor_events_persistent()
+    try:
+        db_events = list_tts_admin_monitor_events_since(window_seconds=window_seconds)
+        if db_events:
+            return db_events
+    except Exception:
+        logging.debug("Failed to load persistent TTS admin monitor window", exc_info=True)
+    cutoff = now_ts - window_seconds
+    return [item for item in fallback_events if float(item.get("ts") or 0.0) >= cutoff]
 
 
 def _should_send_tts_admin_alert(alert_key: str) -> bool:
@@ -8049,15 +8081,33 @@ def _maybe_send_tts_admin_pending_alert() -> None:
     pending_stale_count = int(snapshot.get("pending_stale") or 0)
     if pending_stale_count < int(TTS_ADMIN_ALERT_PENDING_THRESHOLD):
         return
+    recovery_result = None
+    try:
+        recovery_result = _recover_stale_tts_generation_jobs(source="pending_alert")
+        snapshot = _get_tts_object_cache_snapshot(stale_minutes=TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)
+        pending_stale_count = int(snapshot.get("pending_stale") or 0)
+        if pending_stale_count < int(TTS_ADMIN_ALERT_PENDING_THRESHOLD):
+            return
+    except Exception:
+        logging.exception("❌ TTS pending backlog recovery kick failed")
     if not _should_send_tts_admin_alert("tts_pending_backlog"):
         return
+    recovery_suffix = ""
+    if isinstance(recovery_result, dict):
+        recovery_suffix = (
+            f"\nRecovery checked (old stuck items inspected): {int(recovery_result.get('attempted') or 0)}"
+            f"\nRecovery requeued (stuck items pushed back into generation): {int(recovery_result.get('queued') or 0)}"
+            f"\nRecovery duplicates (already being processed elsewhere): {int(recovery_result.get('duplicates') or 0)}"
+        )
     message_text = (
-        "🚨 TTS pending backlog alert\n\n"
-        f"Pending older than {int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)} min: {pending_stale_count}\n"
-        f"Threshold: {int(TTS_ADMIN_ALERT_PENDING_THRESHOLD)}\n"
-        f"Total pending now: {int(snapshot.get('pending') or 0)}\n"
-        f"Oldest pending age: {int(snapshot.get('oldest_pending_minutes') or 0)} min\n\n"
-        "Generation looks stuck or delayed."
+        "🚨 TTS backlog alert\n\n"
+        f"Stuck pending older than {int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)} min"
+        f" (audio tasks waiting too long): {pending_stale_count}\n"
+        f"Alert threshold (when we warn admin): {int(TTS_ADMIN_ALERT_PENDING_THRESHOLD)}\n"
+        f"Pending now total (all not-finished audio tasks): {int(snapshot.get('pending') or 0)}\n"
+        f"Oldest pending age (how long the oldest task waits): {int(snapshot.get('oldest_pending_minutes') or 0)} min"
+        f"{recovery_suffix}\n\n"
+        "Meaning: audio generation looks stuck or heavily delayed."
     )
     _send_tts_admin_message(message_text)
 
@@ -8095,33 +8145,55 @@ def _build_tts_admin_digest() -> str:
         if item.get("kind") == "generation" and item.get("status") == "generated" and item.get("duration_ms") is not None
     ]
     prewarm_runs = [item for item in events if item.get("kind") == "prewarm_run"]
+    prewarm_ok_runs = [item for item in prewarm_runs if item.get("status") == "ok"]
+    prewarm_skipped_runs = [item for item in prewarm_runs if item.get("status") == "skipped"]
     prewarm_generated = sum(int((item.get("meta") or {}).get("generated") or 0) for item in prewarm_runs)
     prewarm_cached_hits = sum(int((item.get("meta") or {}).get("cached_hits") or 0) for item in prewarm_runs)
     prewarm_requeued = sum(int((item.get("meta") or {}).get("requeued") or 0) for item in prewarm_runs)
     prewarm_errors = sum(int((item.get("meta") or {}).get("errors") or 0) for item in prewarm_runs)
+    recovery_runs = [item for item in events if item.get("kind") == "recovery_run"]
+    recovery_attempted = sum(int((item.get("meta") or {}).get("attempted") or 0) for item in recovery_runs)
+    recovery_queued = sum(int((item.get("meta") or {}).get("queued") or 0) for item in recovery_runs)
+    recovery_duplicates = sum(int((item.get("meta") or {}).get("duplicates") or 0) for item in recovery_runs)
+    recovery_queue_full = sum(int((item.get("meta") or {}).get("queue_full") or 0) for item in recovery_runs)
+    recovery_skipped_invalid = sum(int((item.get("meta") or {}).get("skipped_invalid") or 0) for item in recovery_runs)
     snapshot = _get_tts_object_cache_snapshot(stale_minutes=TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)
     avg_generation_ms = int(sum(generation_durations) / len(generation_durations)) if generation_durations else 0
     max_generation_ms = max(generation_durations) if generation_durations else 0
     return (
         "📊 TTS hourly digest\n\n"
         f"Window: last {int(TTS_ADMIN_DIGEST_INTERVAL_MINUTES)} min\n\n"
-        f"Queued after dictionary save: {enqueue_queued}\n"
-        f"Already ready at enqueue: {enqueue_ready}\n"
-        f"Already pending at enqueue: {enqueue_pending}\n\n"
-        f"Generated by runners: {generation_generated}\n"
-        f"Generation errors: {generation_errors}\n"
-        f"Avg generation time: {avg_generation_ms} ms\n"
-        f"Max generation time: {max_generation_ms} ms\n\n"
-        f"Prewarm runs: {len(prewarm_runs)}\n"
-        f"Prewarm generated: {prewarm_generated}\n"
-        f"Prewarm cache hits: {prewarm_cached_hits}\n"
-        f"Prewarm requeued failed: {prewarm_requeued}\n"
-        f"Prewarm errors: {prewarm_errors}\n\n"
-        f"Current ready: {int(snapshot.get('ready') or 0)}\n"
-        f"Current pending: {int(snapshot.get('pending') or 0)}\n"
-        f"Current failed: {int(snapshot.get('failed') or 0)}\n"
-        f"Pending older than {int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)} min: {int(snapshot.get('pending_stale') or 0)}\n"
-        f"Oldest pending age: {int(snapshot.get('oldest_pending_minutes') or 0)} min"
+        "Dictionary-triggered audio requests:\n"
+        f"New tasks queued after save (new words added and sent to audio generation): {enqueue_queued}\n"
+        f"Already ready at save time (audio already existed): {enqueue_ready}\n"
+        f"Already pending at save time (audio task was already waiting): {enqueue_pending}\n\n"
+        "Generation workers:\n"
+        f"Generated by runners (audio finished successfully): {generation_generated}\n"
+        f"Generation errors (audio generation failed): {generation_errors}\n"
+        f"Avg generation time (average time to produce one audio): {avg_generation_ms} ms\n"
+        f"Max generation time (slowest finished audio): {max_generation_ms} ms\n\n"
+        "Night/automatic prewarm:\n"
+        f"Prewarm runs total (automatic background passes): {len(prewarm_runs)}\n"
+        f"Prewarm ok runs (actually processed): {len(prewarm_ok_runs)}\n"
+        f"Prewarm skipped runs (scheduler woke up but intentionally did nothing): {len(prewarm_skipped_runs)}\n"
+        f"Prewarm generated (new audios prepared automatically): {prewarm_generated}\n"
+        f"Prewarm cache hits (audio was already ready): {prewarm_cached_hits}\n"
+        f"Prewarm requeued failed (old failed items sent again): {prewarm_requeued}\n"
+        f"Prewarm errors (automatic prewarm failures): {prewarm_errors}\n\n"
+        "Stuck-task recovery:\n"
+        f"Recovery runs (attempts to revive old stuck pending items): {len(recovery_runs)}\n"
+        f"Recovery checked (old pending items inspected): {recovery_attempted}\n"
+        f"Recovery requeued (stuck items pushed back into generation): {recovery_queued}\n"
+        f"Recovery duplicates (already being processed elsewhere): {recovery_duplicates}\n"
+        f"Recovery skipped invalid (broken rows that could not be rebuilt): {recovery_skipped_invalid}\n"
+        f"Recovery queue full (could not enqueue because worker queue was full): {recovery_queue_full}\n\n"
+        "Current DB snapshot:\n"
+        f"Ready now (audio already prepared and downloadable): {int(snapshot.get('ready') or 0)}\n"
+        f"Pending now (audio tasks still not finished): {int(snapshot.get('pending') or 0)}\n"
+        f"Failed now (audio tasks ended with error): {int(snapshot.get('failed') or 0)}\n"
+        f"Stuck pending older than {int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)} min"
+        f" (waiting too long): {int(snapshot.get('pending_stale') or 0)}\n"
+        f"Oldest pending age (age of the oldest unfinished task): {int(snapshot.get('oldest_pending_minutes') or 0)} min"
     )
 
 
@@ -9075,8 +9147,17 @@ def _enqueue_dictionary_entry_tts_prewarm(
 def _run_tts_prewarm_scheduler_job() -> None:
     try:
         tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip()
-        _dispatch_tts_prewarm(force=False, tz_name=tz_name)
+        result = _dispatch_tts_prewarm(force=False, tz_name=tz_name)
+        if isinstance(result, dict) and result.get("skipped"):
+            _record_tts_admin_monitor_event(
+                "prewarm_run",
+                "skipped",
+                source="scheduler",
+                count=1,
+                meta=result,
+            )
     except Exception:
+        _record_tts_admin_monitor_event("prewarm_run", "error", source="scheduler", count=1, meta={"reason": "scheduler_exception"})
         logging.exception("❌ TTS prewarm scheduler failed")
 
 
@@ -18073,9 +18154,11 @@ def _enqueue_tts_generation_job(**kwargs) -> bool:
     return bool(_enqueue_tts_generation_job_result(**kwargs).get("queued"))
 
 
-def _recover_stale_tts_generation_jobs() -> dict:
+def _recover_stale_tts_generation_jobs(*, source: str = "scheduler") -> dict:
     if not TTS_GENERATION_RECOVERY_ENABLED:
-        return {"ok": True, "skipped": True, "reason": "disabled"}
+        result = {"ok": True, "skipped": True, "reason": "disabled"}
+        _record_tts_admin_monitor_event("recovery_run", "skipped", source=source, count=1, meta=result)
+        return result
     _ensure_tts_generation_workers_started()
     attempted = 0
     queued = 0
@@ -18112,6 +18195,20 @@ def _recover_stale_tts_generation_jobs() -> dict:
         "pending_age_minutes": int(TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES),
         "queue_size": _tts_generation_queue_size(),
     }
+    status = "ok"
+    if queue_full:
+        status = "error"
+    elif not attempted and not candidates:
+        status = "skipped"
+        result["skipped"] = True
+        result["reason"] = "no_stale_candidates"
+    _record_tts_admin_monitor_event(
+        "recovery_run",
+        status,
+        source=source,
+        count=max(1, int(attempted or len(candidates) or skipped_invalid or queue_full or 1)),
+        meta=result,
+    )
     if attempted or skipped_invalid or queue_full:
         logging.info("✅ TTS recovery finished: %s", result)
     return result
@@ -18119,8 +18216,9 @@ def _recover_stale_tts_generation_jobs() -> dict:
 
 def _run_tts_generation_recovery_scheduler_job() -> None:
     try:
-        _recover_stale_tts_generation_jobs()
+        _recover_stale_tts_generation_jobs(source="scheduler")
     except Exception:
+        _record_tts_admin_monitor_event("recovery_run", "error", source="scheduler", count=1, meta={"reason": "scheduler_exception"})
         logging.exception("❌ TTS generation recovery scheduler failed")
 
 

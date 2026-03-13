@@ -3306,6 +3306,27 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_tts_object_cache (last_hit_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_tts_admin_monitor_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'unknown',
+                    count INT NOT NULL DEFAULT 1,
+                    chars INT NOT NULL DEFAULT 0,
+                    duration_ms INT,
+                    meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tts_admin_monitor_events_created
+                ON bt_3_tts_admin_monitor_events (created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tts_admin_monitor_events_kind_created
+                ON bt_3_tts_admin_monitor_events (kind, created_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_story_bank (
                     id SERIAL PRIMARY KEY,
                     title TEXT,
@@ -7135,6 +7156,101 @@ def _map_tts_object_cache_row(row: tuple) -> dict:
         "updated_at": row[12].isoformat() if row[12] else None,
         "last_hit_at": row[13].isoformat() if row[13] else None,
     }
+
+
+def _map_tts_admin_monitor_event_row(row: tuple) -> dict:
+    created_at = row[7]
+    return {
+        "id": int(row[0] or 0),
+        "kind": str(row[1] or "").strip().lower() or "unknown",
+        "status": str(row[2] or "").strip().lower() or "unknown",
+        "source": str(row[3] or "").strip().lower() or "unknown",
+        "count": max(0, int(row[4] or 0)),
+        "chars": max(0, int(row[5] or 0)),
+        "duration_ms": int(row[6]) if row[6] is not None else None,
+        "meta": row[8] if isinstance(row[8], dict) else {},
+        "created_at": created_at.isoformat() if created_at else None,
+        "ts": float(created_at.timestamp()) if created_at else 0.0,
+    }
+
+
+def record_tts_admin_monitor_event(
+    *,
+    kind: str,
+    status: str,
+    source: str = "",
+    count: int = 1,
+    chars: int = 0,
+    duration_ms: int | None = None,
+    meta: dict | None = None,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_tts_admin_monitor_events (
+                    kind,
+                    status,
+                    source,
+                    count,
+                    chars,
+                    duration_ms,
+                    meta,
+                    created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW());
+                """,
+                (
+                    str(kind or "").strip().lower() or "unknown",
+                    str(status or "").strip().lower() or "unknown",
+                    str(source or "").strip().lower() or "unknown",
+                    max(0, int(count or 0)),
+                    max(0, int(chars or 0)),
+                    int(duration_ms) if duration_ms is not None else None,
+                    Json(meta if isinstance(meta, dict) else {}),
+                ),
+            )
+
+
+def list_tts_admin_monitor_events_since(*, window_seconds: int) -> list[dict]:
+    safe_window_seconds = max(1, int(window_seconds or 1))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    kind,
+                    status,
+                    source,
+                    count,
+                    chars,
+                    duration_ms,
+                    created_at,
+                    meta
+                FROM bt_3_tts_admin_monitor_events
+                WHERE created_at >= NOW() - (%s || ' seconds')::interval
+                ORDER BY created_at ASC, id ASC;
+                """,
+                (safe_window_seconds,),
+            )
+            rows = cursor.fetchall() or []
+    return [_map_tts_admin_monitor_event_row(row) for row in rows]
+
+
+def delete_old_tts_admin_monitor_events(*, older_than_seconds: int) -> int:
+    safe_older_than_seconds = max(60, int(older_than_seconds or 60))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_tts_admin_monitor_events
+                WHERE created_at < NOW() - (%s || ' seconds')::interval;
+                """,
+                (safe_older_than_seconds,),
+            )
+            deleted = int(cursor.rowcount or 0)
+    return deleted
 
 
 def get_tts_object_cache(cache_key: str, *, touch_hit: bool = True) -> dict | None:
