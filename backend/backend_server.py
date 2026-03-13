@@ -8314,12 +8314,27 @@ def _build_tts_admin_digest() -> str:
     prewarm_runs = [item for item in events if item.get("kind") == "prewarm_run"]
     prewarm_ok_runs = [item for item in prewarm_runs if item.get("status") == "ok"]
     prewarm_skipped_runs = [item for item in prewarm_runs if item.get("status") == "skipped"]
+    prewarm_skip_reasons = Counter(
+        str((item.get("meta") or {}).get("reason") or "").strip().lower() or "unknown"
+        for item in prewarm_skipped_runs
+    )
     prewarm_generated = sum(int((item.get("meta") or {}).get("generated") or 0) for item in prewarm_runs)
     prewarm_cached_hits = sum(int((item.get("meta") or {}).get("cached_hits") or 0) for item in prewarm_runs)
     prewarm_requeued = sum(int((item.get("meta") or {}).get("requeued") or 0) for item in prewarm_runs)
     prewarm_errors = sum(int((item.get("meta") or {}).get("errors") or 0) for item in prewarm_runs)
-    latest_prewarm_meta = (prewarm_runs[-1].get("meta") or {}) if prewarm_runs else {}
+    latest_prewarm_meta = (prewarm_ok_runs[-1].get("meta") or {}) if prewarm_ok_runs else ((prewarm_runs[-1].get("meta") or {}) if prewarm_runs else {})
     recovery_runs = [item for item in events if item.get("kind") == "recovery_run"]
+    recovery_active_runs = [
+        item
+        for item in recovery_runs
+        if str(item.get("status") or "").strip().lower() != "skipped"
+        or int((item.get("meta") or {}).get("attempted") or 0) > 0
+        or int((item.get("meta") or {}).get("queued") or 0) > 0
+        or int((item.get("meta") or {}).get("duplicates") or 0) > 0
+        or int((item.get("meta") or {}).get("queue_full") or 0) > 0
+        or int((item.get("meta") or {}).get("skipped_invalid") or 0) > 0
+    ]
+    recovery_idle_runs = max(0, len(recovery_runs) - len(recovery_active_runs))
     recovery_attempted = sum(int((item.get("meta") or {}).get("attempted") or 0) for item in recovery_runs)
     recovery_queued = sum(int((item.get("meta") or {}).get("queued") or 0) for item in recovery_runs)
     recovery_duplicates = sum(int((item.get("meta") or {}).get("duplicates") or 0) for item in recovery_runs)
@@ -8354,6 +8369,37 @@ def _build_tts_admin_digest() -> str:
             f"Top 10%% users share of predicted chars (how concentrated demand is): "
             f"{int(latest_prewarm_meta.get('predicted_chars_top10pct_share') or 0)}%\n"
         )
+    prewarm_skip_reason_lines: list[str] = []
+    skip_reason_labels = {
+        "outside_offpeak_window": "outside off-peak window",
+        "already_running": "already running in another worker",
+        "disabled": "disabled by config",
+        "no_active_users": "no active users found",
+    }
+    for reason, count in prewarm_skip_reasons.most_common():
+        if not reason:
+            continue
+        prewarm_skip_reason_lines.append(
+            f"Prewarm skip reason ({skip_reason_labels.get(reason, reason)}): {int(count)}"
+        )
+    prewarm_skip_reason_block = ""
+    if prewarm_skip_reason_lines:
+        prewarm_skip_reason_block = "\n" + "\n".join(prewarm_skip_reason_lines)
+    recovery_block = (
+        "Stuck-task recovery:\n"
+        f"Recovery active runs (found stale work to inspect or handle): {len(recovery_active_runs)}\n"
+        f"Recovery idle checks (woke up, found nothing stale): {recovery_idle_runs}\n"
+        f"Recovery checked (old pending items inspected): {recovery_attempted}\n"
+        f"Recovery requeued (stuck items pushed back into generation): {recovery_queued}\n"
+        f"Recovery duplicates (already being processed elsewhere): {recovery_duplicates}\n"
+        f"Recovery skipped invalid (broken rows that could not be rebuilt): {recovery_skipped_invalid}\n"
+        f"Recovery queue full (could not enqueue because worker queue was full): {recovery_queue_full}\n\n"
+    )
+    if not recovery_active_runs and recovery_attempted == 0 and recovery_queued == 0 and recovery_duplicates == 0 and recovery_skipped_invalid == 0 and recovery_queue_full == 0:
+        recovery_block = (
+            "Stuck-task recovery:\n"
+            f"Recovery idle checks only (scheduler woke up, but there were no stale pending items): {recovery_idle_runs}\n\n"
+        )
     return (
         "📊 TTS hourly digest\n\n"
         f"Window: last {int(TTS_ADMIN_DIGEST_INTERVAL_MINUTES)} min\n\n"
@@ -8374,14 +8420,9 @@ def _build_tts_admin_digest() -> str:
         f"Prewarm cache hits (audio was already ready): {prewarm_cached_hits}\n"
         f"Prewarm requeued failed (old failed items sent again): {prewarm_requeued}\n"
         f"Prewarm errors (automatic prewarm failures): {prewarm_errors}\n"
+        f"{prewarm_skip_reason_block}\n"
         f"{personalized_prewarm_block}\n"
-        "Stuck-task recovery:\n"
-        f"Recovery runs (attempts to revive old stuck pending items): {len(recovery_runs)}\n"
-        f"Recovery checked (old pending items inspected): {recovery_attempted}\n"
-        f"Recovery requeued (stuck items pushed back into generation): {recovery_queued}\n"
-        f"Recovery duplicates (already being processed elsewhere): {recovery_duplicates}\n"
-        f"Recovery skipped invalid (broken rows that could not be rebuilt): {recovery_skipped_invalid}\n"
-        f"Recovery queue full (could not enqueue because worker queue was full): {recovery_queue_full}\n\n"
+        f"{recovery_block}"
         "Current DB snapshot:\n"
         f"Ready now (audio already prepared and downloadable): {int(snapshot.get('ready') or 0)}\n"
         f"Pending now (audio tasks still not finished): {int(snapshot.get('pending') or 0)}\n"
