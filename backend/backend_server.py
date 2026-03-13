@@ -91,7 +91,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from uuid import uuid4
 from urllib.parse import parse_qsl, urlparse, urlencode
-from flask import Flask, request, jsonify, send_from_directory, send_file, g, redirect
+from flask import Flask, request, jsonify, send_from_directory, send_file, g, redirect, has_request_context
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import HTTPException
@@ -1259,14 +1259,18 @@ def _sanitize_observability_id(value: Any, *, max_len: int = 128) -> str | None:
 def _extract_observability_request_id(payload: dict | None = None) -> str:
     body = payload if isinstance(payload, dict) else {}
     candidates = [
-        request.headers.get("X-Request-ID"),
-        request.headers.get("X-Correlation-ID"),
-        request.args.get("request_id"),
-        request.args.get("correlation_id"),
         body.get("request_id"),
         body.get("correlation_id"),
-        getattr(g, "request_id", None),
     ]
+    if has_request_context():
+        candidates = [
+            request.headers.get("X-Request-ID"),
+            request.headers.get("X-Correlation-ID"),
+            request.args.get("request_id"),
+            request.args.get("correlation_id"),
+            *candidates,
+            getattr(g, "request_id", None),
+        ]
     for candidate in candidates:
         safe = _sanitize_observability_id(candidate)
         if safe:
@@ -1282,13 +1286,17 @@ def _build_observability_correlation_id(
 ) -> str:
     body = payload if isinstance(payload, dict) else {}
     candidates = [
-        request.headers.get("X-Correlation-ID"),
-        request.headers.get("X-Request-ID"),
-        request.args.get("correlation_id"),
-        request.args.get("request_id"),
         body.get("correlation_id"),
         body.get("request_id"),
     ]
+    if has_request_context():
+        candidates = [
+            request.headers.get("X-Correlation-ID"),
+            request.headers.get("X-Request-ID"),
+            request.args.get("correlation_id"),
+            request.args.get("request_id"),
+            *candidates,
+        ]
     for candidate in candidates:
         safe = _sanitize_observability_id(candidate)
         if safe:
@@ -8059,7 +8067,7 @@ def _maybe_send_tts_admin_failure_alert() -> None:
     failure_count = sum(
         int(item.get("count") or 0)
         for item in events
-        if item.get("status") == "error"
+        if item.get("status") == "error" and item.get("kind") in {"generation", "generation_enqueue", "prewarm_run"}
     )
     if failure_count < int(TTS_ADMIN_ALERT_FAILURE_THRESHOLD):
         return

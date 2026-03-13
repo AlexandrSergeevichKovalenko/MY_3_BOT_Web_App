@@ -1,0 +1,259 @@
+{"message":"Starting Container","level":"info","timestamp":"2026-03-13T08:09:08.197900818Z"}
+{"level":"error","timestamp":"2026-03-13T08:09:08.668017126Z","message":"[2026-03-13 08:09:07 +0000] [2] [INFO] Starting gunicorn 25.1.0"}
+{"level":"error","message":"[2026-03-13 08:09:07 +0000] [2] [INFO] Listening at: http://0.0.0.0:8080 (2)","timestamp":"2026-03-13T08:09:08.668022526Z"}
+{"message":"[2026-03-13 08:09:07 +0000] [2] [INFO] Using worker: sync","timestamp":"2026-03-13T08:09:08.668027606Z","level":"error"}
+{"level":"error","timestamp":"2026-03-13T08:09:08.668032836Z","message":"[2026-03-13 08:09:07 +0000] [2] [INFO] Control socket listening at /app/gunicorn.ctl"}
+{"message":"[2026-03-13 08:09:07 +0000] [4] [INFO] Booting worker with pid: 4","level":"error","timestamp":"2026-03-13T08:09:08.668037716Z"}
+{"level":"error","message":"[2026-03-13 08:09:07 +0000] [5] [INFO] Booting worker with pid: 5","timestamp":"2026-03-13T08:09:08.668043176Z"}
+{"timestamp":"2026-03-13T08:09:08.668048476Z","level":"error","message":"2026-03-13 08:09:08,304 - root - INFO - OpenAI SDK version detected: 2.26.0"}
+{"timestamp":"2026-03-13T08:09:08.668053556Z","message":"2026-03-13 08:09:08,304 - root - INFO - ✅ OPENAI_API_KEY успешно загружен для openai_manager.","level":"error"}
+{"level":"error","message":"2026-03-13 08:09:08,311 - root - INFO - OpenAI SDK version detected: 2.26.0","timestamp":"2026-03-13T08:09:08.668058786Z"}
+{"timestamp":"2026-03-13T08:09:08.668064086Z","message":"2026-03-13 08:09:08,312 - root - INFO - ✅ OPENAI_API_KEY успешно загружен для openai_manager.","level":"error"}
+{"message":"2026-03-13 08:09:09,166 - root - INFO - ✅ youtube_transcript_api version: 1.2.4","timestamp":"2026-03-13T08:09:09.168673114Z","level":"error"}
+{"message":"2026-03-13 08:09:09,166 - root - INFO - ✅ YouTube transcript proxy configured","level":"error","timestamp":"2026-03-13T08:09:09.168680124Z"}
+{"message":"2026-03-13 08:09:09,166 - root - INFO - ⚠️ YouTube cookies not configured","timestamp":"2026-03-13T08:09:09.168685054Z","level":"error"}
+{"level":"error","timestamp":"2026-03-13T08:09:09.168689364Z","message":"2026-03-13 08:09:09,166 - root - WARNING - ⚠️ KEY_SALT is not set. Using fallback secret for TTS cache keys."}
+{"message":"2026-03-13 08:09:09,167 - root - INFO - ✅ youtube_transcript_api version: 1.2.4","timestamp":"2026-03-13T08:09:09.171034694Z","level":"error"}
+{"message":"2026-03-13 08:09:09,167 - root - INFO - ✅ YouTube transcript proxy configured","level":"error","timestamp":"2026-03-13T08:09:09.171044054Z"}
+{"level":"error","message":"2026-03-13 08:09:09,167 - root - INFO - ⚠️ YouTube cookies not configured","timestamp":"2026-03-13T08:09:09.171051134Z"}
+{"message":"2026-03-13 08:09:09,168 - root - WARNING - ⚠️ KEY_SALT is not set. Using fallback secret for TTS cache keys.","level":"error","timestamp":"2026-03-13T08:09:09.171055234Z"}
+{"level":"error","message":"2026-03-13 08:11:23,556 - root - INFO - Billing OpenAI snapshot sync: created=1 skipped=13 errors=1","timestamp":"2026-03-13T08:11:29.195849300Z"}
+{"message":"2026-03-13 08:11:23,558 - root - INFO - ✅ TTS generation worker pool ready: workers=4 queue_maxsize=2000","timestamp":"2026-03-13T08:11:29.195853669Z","level":"error"}
+{"level":"error","message":"2026-03-13 08:11:23,561 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","timestamp":"2026-03-13T08:11:29.195857619Z"}
+{"message":"2026-03-13 08:11:23,561 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","timestamp":"2026-03-13T08:11:29.195861879Z","level":"error"}
+{"level":"error","message":"2026-03-13 08:11:23,562 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","timestamp":"2026-03-13T08:11:29.195865789Z"}
+{"message":"2026-03-13 08:11:23,562 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","level":"error","timestamp":"2026-03-13T08:11:29.195871219Z"}
+{"timestamp":"2026-03-13T08:11:29.195876259Z","level":"error","message":"2026-03-13 08:11:23,563 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts"}
+{"message":"2026-03-13 08:11:23,563 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","timestamp":"2026-03-13T08:11:29.195880059Z","level":"error"}
+{"message":"2026-03-13 08:11:23,564 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","level":"error","timestamp":"2026-03-13T08:11:29.195883669Z"}
+{"timestamp":"2026-03-13T08:11:29.195886919Z","message":"2026-03-13 08:11:23,564 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","level":"error"}
+{"timestamp":"2026-03-13T08:11:29.195890389Z","message":"2026-03-13 08:11:23,564 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","level":"error"}
+{"message":"2026-03-13 08:11:23,564 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","timestamp":"2026-03-13T08:11:29.195893919Z","level":"error"}
+{"message":"2026-03-13 08:11:23,564 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","timestamp":"2026-03-13T08:11:29.197263091Z","level":"error"}
+{"message":"2026-03-13 08:11:23,564 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","timestamp":"2026-03-13T08:11:29.197270451Z","level":"error"}
+{"message":"2026-03-13 08:11:23,564 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","level":"error","timestamp":"2026-03-13T08:11:29.197275321Z"}
+{"timestamp":"2026-03-13T08:11:29.197279021Z","message":"2026-03-13 08:11:23,564 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","level":"error"}
+{"timestamp":"2026-03-13T08:11:29.197282681Z","message":"2026-03-13 08:11:23,565 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts","level":"error"}
+{"timestamp":"2026-03-13T08:11:29.197286591Z","message":"2026-03-13 08:11:23,565 - apscheduler.scheduler - INFO - Added job \"_run_audio_scheduler_job\" to job store \"default\"","level":"error"}
+{"level":"error","timestamp":"2026-03-13T08:11:29.197297001Z","message":"2026-03-13 08:11:23,565 - apscheduler.scheduler - INFO - Added job \"_run_private_analytics_scheduler_job\" to job store \"default\""}
+{"level":"error","message":"2026-03-13 08:11:23,565 - apscheduler.scheduler - INFO - Added job \"_run_today_plan_scheduler_job\" to job store \"default\"","timestamp":"2026-03-13T08:11:29.197300950Z"}
+{"timestamp":"2026-03-13T08:11:29.197304890Z","level":"error","message":"2026-03-13 08:11:23,565 - apscheduler.scheduler - INFO - Added job \"_run_today_evening_reminders_scheduler_job\" to job store \"default\""}
+{"level":"error","message":"2026-03-13 08:11:23,565 - apscheduler.scheduler - INFO - Added job \"_run_translation_sessions_auto_close_job\" to job store \"default\"","timestamp":"2026-03-13T08:11:29.197308190Z"}
+{"message":"2026-03-13 08:11:23,565 - apscheduler.scheduler - INFO - Added job \"_run_weekly_goals_scheduler_job\" to job store \"default\"","level":"error","timestamp":"2026-03-13T08:11:29.197311280Z"}
+{"message":"2026-03-13 08:11:23,565 - apscheduler.scheduler - INFO - Added job \"_run_transcript_storage_report_job\" to job store \"default\"","level":"error","timestamp":"2026-03-13T08:11:29.197314830Z"}
+{"message":"2026-03-13 08:11:23,565 - apscheduler.scheduler - INFO - Added job \"_run_system_message_cleanup_job\" to job store \"default\"","timestamp":"2026-03-13T08:11:29.199635691Z","level":"error"}
+{"timestamp":"2026-03-13T08:11:29.199639281Z","level":"error","message":"2026-03-13 08:11:23,566 - apscheduler.scheduler - INFO - Added job \"_run_flashcard_feel_cleanup_job\" to job store \"default\""}
+{"timestamp":"2026-03-13T08:11:29.199643361Z","message":"2026-03-13 08:11:23,566 - apscheduler.scheduler - INFO - Added job \"_run_tts_prewarm_scheduler_job\" to job store \"default\"","level":"error"}
+{"message":"2026-03-13 08:11:23,566 - apscheduler.scheduler - INFO - Added job \"_run_tts_generation_recovery_scheduler_job\" to job store \"default\"","timestamp":"2026-03-13T08:11:29.199646911Z","level":"error"}
+{"message":"2026-03-13 08:11:23,566 - apscheduler.scheduler - INFO - Added job \"_run_tts_admin_digest_scheduler_job\" to job store \"default\"","level":"error","timestamp":"2026-03-13T08:11:29.199651111Z"}
+{"timestamp":"2026-03-13T08:11:29.199654891Z","message":"2026-03-13 08:11:23,566 - apscheduler.scheduler - INFO - Added job \"_run_tts_admin_alerts_scheduler_job\" to job store \"default\"","level":"error"}
+{"timestamp":"2026-03-13T08:11:29.199658571Z","message":"2026-03-13 08:11:23,566 - apscheduler.scheduler - INFO - Added job \"_run_sentence_prewarm_scheduler_job\" to job store \"default\"","level":"error"}
+{"level":"error","timestamp":"2026-03-13T08:11:29.199661481Z","message":"2026-03-13 08:11:23,566 - apscheduler.scheduler - INFO - Added job \"_run_skill_state_v2_aggregation_scheduler_job\" to job store \"default\""}
+{"level":"error","timestamp":"2026-03-13T08:11:29.199665020Z","message":"2026-03-13 08:11:23,566 - apscheduler.scheduler - INFO - Scheduler started"}
+{"level":"error","timestamp":"2026-03-13T08:11:29.199667960Z","message":"2026-03-13 08:11:23,566 - root - INFO - ✅ Audio scheduler started: 06:01 Europe/Berlin"}
+{"timestamp":"2026-03-13T08:11:29.199674610Z","message":"2026-03-13 08:11:26,531 - root - INFO - Skill resources [autoseed]: target=de skipped current_allowed=5 min_required=5","level":"error"}
+{"message":"2026-03-13 08:11:28,309 - root - INFO - Skill resources [autoseed]: target=en skipped current_allowed=5 min_required=5","timestamp":"2026-03-13T08:11:29.199680560Z","level":"error"}
+{"message":"2026-03-13 08:11:30,088 - root - INFO - Skill resources [autoseed]: target=es skipped current_allowed=5 min_required=5","timestamp":"2026-03-13T08:11:30.090660959Z","level":"error"}
+{"level":"error","message":"2026-03-13 08:11:31,868 - root - INFO - Skill resources [autoseed]: target=it skipped current_allowed=5 min_required=5","timestamp":"2026-03-13T08:11:32.091054666Z"}
+{"message":"2026-03-13 08:11:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:11:53 CET)\" (scheduled at 2026-03-13 09:11:53.564987+01:00)","timestamp":"2026-03-13T08:12:02.166372643Z","level":"error"}
+{"level":"error","message":"2026-03-13 08:12:23,565 - apscheduler.scheduler - WARNING - Execution of job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:12:23 CET)\" skipped: maximum number of running instances reached (1)","timestamp":"2026-03-13T08:12:32.167504016Z"}
+{"level":"error","timestamp":"2026-03-13T08:13:02.172747103Z","message":"2026-03-13 08:12:53,565 - apscheduler.scheduler - WARNING - Execution of job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:12:53 CET)\" skipped: maximum number of running instances reached (1)"}
+{"timestamp":"2026-03-13T08:13:21.968040038Z","message":"2026-03-13 08:13:17,365 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:13:23 CET)\" executed successfully","level":"error"}
+{"timestamp":"2026-03-13T08:13:23.567701403Z","message":"2026-03-13 08:13:23,565 - apscheduler.executors.default - INFO - Running job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:15:23 CET)\" (scheduled at 2026-03-13 09:13:23.564764+01:00)","level":"error"}
+{"timestamp":"2026-03-13T08:13:23.567705203Z","message":"2026-03-13 08:13:23,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:13:23 CET)\" (scheduled at 2026-03-13 09:13:23.564987+01:00)","level":"error"}
+{"timestamp":"2026-03-13T08:13:25.518820435Z","level":"error","message":"2026-03-13 08:13:25,511 - root - ERROR - ❌ TTS generation recovery scheduler failed"}
+{"timestamp":"2026-03-13T08:13:25.518827165Z","level":"error","message":"Traceback (most recent call last):"}
+{"level":"error","timestamp":"2026-03-13T08:13:25.518831815Z","message":"  File \"/app/backend/backend_server.py\", line 18219, in _run_tts_generation_recovery_scheduler_job"}
+{"level":"error","timestamp":"2026-03-13T08:13:25.518836685Z","message":"    _recover_stale_tts_generation_jobs(source=\"scheduler\")"}
+{"message":"    obj = instance._get_current_object()","level":"error","timestamp":"2026-03-13T08:13:25.518841755Z"}
+{"level":"error","message":"  File \"/app/backend/backend_server.py\", line 18173, in _recover_stale_tts_generation_jobs","timestamp":"2026-03-13T08:13:25.518842205Z"}
+{"level":"error","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 519, in _get_current_object","timestamp":"2026-03-13T08:13:25.518848465Z"}
+{"message":"    job_kwargs = _build_tts_generation_job_kwargs_from_meta(meta, user_id=0)","timestamp":"2026-03-13T08:13:25.518850895Z","level":"error"}
+{"message":"    raise RuntimeError(unbound_message) from None","level":"error","timestamp":"2026-03-13T08:13:25.518854505Z"}
+{"timestamp":"2026-03-13T08:13:25.518855235Z","level":"error","message":"  File \"/app/backend/backend_server.py\", line 18106, in _build_tts_generation_job_kwargs_from_meta"}
+{"timestamp":"2026-03-13T08:13:25.518859515Z","level":"error","message":"RuntimeError: Working outside of request context."}
+{"timestamp":"2026-03-13T08:13:25.518859805Z","message":"    \"correlation_id\": _build_observability_correlation_id(","level":"error"}
+{"timestamp":"2026-03-13T08:13:25.518864235Z","level":"error","message":"  File \"/app/backend/backend_server.py\", line 1285, in _build_observability_correlation_id"}
+{"timestamp":"2026-03-13T08:13:25.518864625Z","message":"","level":"error"}
+{"timestamp":"2026-03-13T08:13:25.518868975Z","level":"error","message":"    request.headers.get(\"X-Correlation-ID\"),"}
+{"timestamp":"2026-03-13T08:13:25.518869925Z","message":"This typically means that you attempted to use functionality that needed","level":"error"}
+{"level":"error","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 318, in __get__","timestamp":"2026-03-13T08:13:25.518873395Z"}
+{"timestamp":"2026-03-13T08:13:25.518873915Z","message":"an active HTTP request. Consult the documentation on testing for","level":"error"}
+{"timestamp":"2026-03-13T08:13:25.518878175Z","message":"information about how to avoid this problem.","level":"error"}
+{"level":"error","message":"2026-03-13 08:13:25,515 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:13:53 CET)\" executed successfully","timestamp":"2026-03-13T08:13:25.520545554Z"}
+{"message":"2026-03-13 08:13:25,516 - apscheduler.executors.default - INFO - Job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:15:23 CET)\" executed successfully","timestamp":"2026-03-13T08:13:25.520552784Z","level":"error"}
+{"level":"error","message":"2026-03-13 08:13:26,787 - root - INFO - Billing OpenAI snapshot sync: created=1 skipped=13 errors=1","timestamp":"2026-03-13T08:13:26.792960016Z"}
+{"message":"2026-03-13 08:13:26,789 - root - INFO - ℹ️ Audio scheduler lock not acquired (another worker)","timestamp":"2026-03-13T08:13:26.792964686Z","level":"error"}
+{"message":"2026-03-13 08:13:29,767 - root - INFO - Skill resources [autoseed]: target=de skipped current_allowed=5 min_required=5","level":"error","timestamp":"2026-03-13T08:13:29.770523478Z"}
+{"timestamp":"2026-03-13T08:13:31.556734043Z","message":"2026-03-13 08:13:31,552 - root - INFO - Skill resources [autoseed]: target=en skipped current_allowed=5 min_required=5","level":"error"}
+{"message":"2026-03-13 08:13:33,335 - root - INFO - Skill resources [autoseed]: target=es skipped current_allowed=5 min_required=5","timestamp":"2026-03-13T08:13:33.340382828Z","level":"error"}
+{"timestamp":"2026-03-13T08:13:35.345010103Z","level":"error","message":"2026-03-13 08:13:35,118 - root - INFO - Skill resources [autoseed]: target=it skipped current_allowed=5 min_required=5"}
+{"timestamp":"2026-03-13T08:13:55.057892822Z","level":"error","message":"2026-03-13 08:13:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:14:23 CET)\" (scheduled at 2026-03-13 09:13:53.564987+01:00)"}
+{"message":"2026-03-13 08:14:23,565 - apscheduler.scheduler - WARNING - Execution of job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:14:23 CET)\" skipped: maximum number of running instances reached (1)","timestamp":"2026-03-13T08:14:25.064365746Z","level":"error"}
+{"level":"error","message":"2026-03-13 08:14:53,565 - apscheduler.scheduler - WARNING - Execution of job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:14:53 CET)\" skipped: maximum number of running instances reached (1)","timestamp":"2026-03-13T08:14:55.070687902Z"}
+{"message":"2026-03-13 08:15:23,565 - apscheduler.scheduler - WARNING - Execution of job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:15:23 CET)\" skipped: maximum number of running instances reached (1)","timestamp":"2026-03-13T08:15:25.071202785Z","level":"error"}
+{"message":"2026-03-13 08:15:23,565 - apscheduler.executors.default - INFO - Running job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:17:23 CET)\" (scheduled at 2026-03-13 09:15:23.564764+01:00)","level":"error","timestamp":"2026-03-13T08:15:25.071205825Z"}
+{"level":"error","message":"2026-03-13 08:15:29,037 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:15:53 CET)\" executed successfully","timestamp":"2026-03-13T08:15:29.042617311Z"}
+{"timestamp":"2026-03-13T08:15:29.642320647Z","level":"error","message":"2026-03-13 08:15:29,638 - root - ERROR - ❌ TTS generation recovery scheduler failed"}
+{"timestamp":"2026-03-13T08:15:29.642323477Z","level":"error","message":"Traceback (most recent call last):"}
+{"message":"  File \"/app/backend/backend_server.py\", line 18219, in _run_tts_generation_recovery_scheduler_job","timestamp":"2026-03-13T08:15:29.642326197Z","level":"error"}
+{"level":"error","timestamp":"2026-03-13T08:15:29.642330887Z","message":"    _recover_stale_tts_generation_jobs(source=\"scheduler\")"}
+{"level":"error","message":"  File \"/app/backend/backend_server.py\", line 18173, in _recover_stale_tts_generation_jobs","timestamp":"2026-03-13T08:15:29.642333747Z"}
+{"timestamp":"2026-03-13T08:15:29.642336817Z","message":"    job_kwargs = _build_tts_generation_job_kwargs_from_meta(meta, user_id=0)","level":"error"}
+{"message":"  File \"/app/backend/backend_server.py\", line 18106, in _build_tts_generation_job_kwargs_from_meta","level":"error","timestamp":"2026-03-13T08:15:29.642340527Z"}
+{"message":"    \"correlation_id\": _build_observability_correlation_id(","timestamp":"2026-03-13T08:15:29.642343257Z","level":"error"}
+{"timestamp":"2026-03-13T08:15:29.642347067Z","level":"error","message":"  File \"/app/backend/backend_server.py\", line 1285, in _build_observability_correlation_id"}
+{"timestamp":"2026-03-13T08:15:29.642349817Z","level":"error","message":"    request.headers.get(\"X-Correlation-ID\"),"}
+{"message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 318, in __get__","timestamp":"2026-03-13T08:15:29.642353027Z","level":"error"}
+{"level":"error","message":"    obj = instance._get_current_object()","timestamp":"2026-03-13T08:15:29.642357107Z"}
+{"timestamp":"2026-03-13T08:15:29.642360946Z","level":"error","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 519, in _get_current_object"}
+{"message":"    raise RuntimeError(unbound_message) from None","level":"error","timestamp":"2026-03-13T08:15:29.642366086Z"}
+{"level":"error","message":"RuntimeError: Working outside of request context.","timestamp":"2026-03-13T08:15:29.642370456Z"}
+{"level":"error","timestamp":"2026-03-13T08:15:29.642374746Z","message":""}
+{"message":"This typically means that you attempted to use functionality that needed","timestamp":"2026-03-13T08:15:29.642380606Z","level":"error"}
+{"timestamp":"2026-03-13T08:15:29.642385566Z","message":"an active HTTP request. Consult the documentation on testing for","level":"error"}
+{"level":"error","message":"information about how to avoid this problem.","timestamp":"2026-03-13T08:15:29.642389806Z"}
+{"level":"error","message":"2026-03-13 08:15:29,639 - apscheduler.executors.default - INFO - Job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:17:23 CET)\" executed successfully","timestamp":"2026-03-13T08:15:29.644490320Z"}
+{"level":"error","message":"2026-03-13 08:15:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:16:23 CET)\" (scheduled at 2026-03-13 09:15:53.564987+01:00)","timestamp":"2026-03-13T08:15:59.349409422Z"}
+{"level":"error","message":"2026-03-13 08:15:54,457 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:16:23 CET)\" executed successfully","timestamp":"2026-03-13T08:15:59.349419752Z"}
+{"timestamp":"2026-03-13T08:16:29.360353727Z","message":"2026-03-13 08:16:23,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:16:53 CET)\" (scheduled at 2026-03-13 09:16:23.564987+01:00)","level":"error"}
+{"message":"2026-03-13 08:16:24,458 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:16:53 CET)\" executed successfully","timestamp":"2026-03-13T08:16:29.360363707Z","level":"error"}
+{"timestamp":"2026-03-13T08:16:59.367653007Z","message":"2026-03-13 08:16:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:17:23 CET)\" (scheduled at 2026-03-13 09:16:53.564987+01:00)","level":"error"}
+{"timestamp":"2026-03-13T08:16:59.367659436Z","message":"2026-03-13 08:16:54,462 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:17:23 CET)\" executed successfully","level":"error"}
+{"message":"2026-03-13 08:17:23,565 - apscheduler.executors.default - INFO - Running job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:19:23 CET)\" (scheduled at 2026-03-13 09:17:23.564764+01:00)","timestamp":"2026-03-13T08:17:29.366899791Z","level":"error"}
+{"timestamp":"2026-03-13T08:17:29.366903781Z","message":"2026-03-13 08:17:23,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:17:53 CET)\" (scheduled at 2026-03-13 09:17:23.564987+01:00)","level":"error"}
+{"timestamp":"2026-03-13T08:17:29.366906561Z","level":"error","message":"2026-03-13 08:17:25,508 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:17:53 CET)\" executed successfully"}
+{"message":"2026-03-13 08:17:25,524 - root - ERROR - ❌ TTS generation recovery scheduler failed","level":"error","timestamp":"2026-03-13T08:17:29.366909271Z"}
+{"message":"Traceback (most recent call last):","timestamp":"2026-03-13T08:17:29.366911991Z","level":"error"}
+{"timestamp":"2026-03-13T08:17:29.366915561Z","level":"error","message":"  File \"/app/backend/backend_server.py\", line 18219, in _run_tts_generation_recovery_scheduler_job"}
+{"timestamp":"2026-03-13T08:17:29.366918490Z","message":"    _recover_stale_tts_generation_jobs(source=\"scheduler\")","level":"error"}
+{"timestamp":"2026-03-13T08:17:29.366921680Z","message":"  File \"/app/backend/backend_server.py\", line 18173, in _recover_stale_tts_generation_jobs","level":"error"}
+{"message":"    job_kwargs = _build_tts_generation_job_kwargs_from_meta(meta, user_id=0)","timestamp":"2026-03-13T08:17:29.366924620Z","level":"error"}
+{"level":"error","message":"  File \"/app/backend/backend_server.py\", line 18106, in _build_tts_generation_job_kwargs_from_meta","timestamp":"2026-03-13T08:17:29.366927540Z"}
+{"message":"    \"correlation_id\": _build_observability_correlation_id(","level":"error","timestamp":"2026-03-13T08:17:29.366930250Z"}
+{"timestamp":"2026-03-13T08:17:29.366932900Z","level":"error","message":"  File \"/app/backend/backend_server.py\", line 1285, in _build_observability_correlation_id"}
+{"message":"    request.headers.get(\"X-Correlation-ID\"),","timestamp":"2026-03-13T08:17:29.366936750Z","level":"error"}
+{"level":"error","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 318, in __get__","timestamp":"2026-03-13T08:17:29.366939790Z"}
+{"message":"    obj = instance._get_current_object()","timestamp":"2026-03-13T08:17:29.369137693Z","level":"error"}
+{"level":"error","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 519, in _get_current_object","timestamp":"2026-03-13T08:17:29.369150163Z"}
+{"level":"error","timestamp":"2026-03-13T08:17:29.369156282Z","message":"    raise RuntimeError(unbound_message) from None"}
+{"level":"error","timestamp":"2026-03-13T08:17:29.369160902Z","message":"RuntimeError: Working outside of request context."}
+{"timestamp":"2026-03-13T08:17:29.369165632Z","level":"error","message":""}
+{"level":"error","timestamp":"2026-03-13T08:17:29.369171612Z","message":"This typically means that you attempted to use functionality that needed"}
+{"timestamp":"2026-03-13T08:17:29.369177372Z","level":"error","message":"an active HTTP request. Consult the documentation on testing for"}
+{"level":"error","message":"information about how to avoid this problem.","timestamp":"2026-03-13T08:17:29.369181532Z"}
+{"level":"error","timestamp":"2026-03-13T08:17:29.369185802Z","message":"2026-03-13 08:17:25,524 - apscheduler.executors.default - INFO - Job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:19:23 CET)\" executed successfully"}
+{"level":"error","message":"2026-03-13 08:17:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:18:23 CET)\" (scheduled at 2026-03-13 09:17:53.564987+01:00)","timestamp":"2026-03-13T08:17:59.368409351Z"}
+{"message":"2026-03-13 08:17:54,459 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:18:23 CET)\" executed successfully","timestamp":"2026-03-13T08:17:59.368423541Z","level":"error"}
+{"timestamp":"2026-03-13T08:18:29.374089304Z","level":"error","message":"2026-03-13 08:18:23,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:18:53 CET)\" (scheduled at 2026-03-13 09:18:23.564987+01:00)"}
+{"message":"2026-03-13 08:18:24,460 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:18:53 CET)\" executed successfully","level":"error","timestamp":"2026-03-13T08:18:29.374101254Z"}
+{"timestamp":"2026-03-13T08:18:59.383215637Z","level":"error","message":"2026-03-13 08:18:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:19:23 CET)\" (scheduled at 2026-03-13 09:18:53.564987+01:00)"}
+{"message":"2026-03-13 08:18:54,460 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:19:23 CET)\" executed successfully","timestamp":"2026-03-13T08:18:59.383227547Z","level":"error"}
+{"timestamp":"2026-03-13T08:19:29.388114370Z","level":"error","message":"2026-03-13 08:19:23,565 - apscheduler.executors.default - INFO - Running job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:21:23 CET)\" (scheduled at 2026-03-13 09:19:23.564764+01:00)"}
+{"level":"error","message":"2026-03-13 08:19:23,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:19:53 CET)\" (scheduled at 2026-03-13 09:19:23.564987+01:00)","timestamp":"2026-03-13T08:19:29.388122210Z"}
+{"message":"2026-03-13 08:19:25,486 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:19:53 CET)\" executed successfully","timestamp":"2026-03-13T08:19:29.388126630Z","level":"error"}
+{"timestamp":"2026-03-13T08:19:29.388130490Z","level":"error","message":"2026-03-13 08:19:25,493 - root - ERROR - ❌ TTS generation recovery scheduler failed"}
+{"message":"Traceback (most recent call last):","level":"error","timestamp":"2026-03-13T08:19:29.388134640Z"}
+{"timestamp":"2026-03-13T08:19:29.388138780Z","level":"error","message":"  File \"/app/backend/backend_server.py\", line 18219, in _run_tts_generation_recovery_scheduler_job"}
+{"level":"error","message":"    _recover_stale_tts_generation_jobs(source=\"scheduler\")","timestamp":"2026-03-13T08:19:29.388144960Z"}
+{"timestamp":"2026-03-13T08:19:29.388148970Z","level":"error","message":"  File \"/app/backend/backend_server.py\", line 18173, in _recover_stale_tts_generation_jobs"}
+{"level":"error","message":"    job_kwargs = _build_tts_generation_job_kwargs_from_meta(meta, user_id=0)","timestamp":"2026-03-13T08:19:29.388151910Z"}
+{"level":"error","message":"  File \"/app/backend/backend_server.py\", line 18106, in _build_tts_generation_job_kwargs_from_meta","timestamp":"2026-03-13T08:19:29.388155570Z"}
+{"message":"    \"correlation_id\": _build_observability_correlation_id(","timestamp":"2026-03-13T08:19:29.388158919Z","level":"error"}
+{"level":"error","message":"  File \"/app/backend/backend_server.py\", line 1285, in _build_observability_correlation_id","timestamp":"2026-03-13T08:19:29.388162849Z"}
+{"timestamp":"2026-03-13T08:19:29.388165899Z","message":"    request.headers.get(\"X-Correlation-ID\"),","level":"error"}
+{"timestamp":"2026-03-13T08:19:29.388169489Z","level":"error","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 318, in __get__"}
+{"message":"    obj = instance._get_current_object()","timestamp":"2026-03-13T08:19:29.389481612Z","level":"error"}
+{"message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 519, in _get_current_object","timestamp":"2026-03-13T08:19:29.389490142Z","level":"error"}
+{"timestamp":"2026-03-13T08:19:29.389495272Z","level":"error","message":"    raise RuntimeError(unbound_message) from None"}
+{"timestamp":"2026-03-13T08:19:29.389501802Z","level":"error","message":"RuntimeError: Working outside of request context."}
+{"message":"","timestamp":"2026-03-13T08:19:29.389506812Z","level":"error"}
+{"message":"This typically means that you attempted to use functionality that needed","timestamp":"2026-03-13T08:19:29.389511192Z","level":"error"}
+{"timestamp":"2026-03-13T08:19:29.389515002Z","level":"error","message":"an active HTTP request. Consult the documentation on testing for"}
+{"message":"information about how to avoid this problem.","timestamp":"2026-03-13T08:19:29.389518872Z","level":"error"}
+{"message":"2026-03-13 08:19:25,493 - apscheduler.executors.default - INFO - Job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:21:23 CET)\" executed successfully","level":"error","timestamp":"2026-03-13T08:19:29.389522552Z"}
+{"timestamp":"2026-03-13T08:19:59.449195349Z","message":"2026-03-13 08:19:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:20:23 CET)\" (scheduled at 2026-03-13 09:19:53.564987+01:00)","level":"error"}
+{"level":"error","timestamp":"2026-03-13T08:19:59.449202169Z","message":"2026-03-13 08:19:54,452 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:20:23 CET)\" executed successfully"}
+{"message":"2026-03-13 08:20:23,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:20:53 CET)\" (scheduled at 2026-03-13 09:20:23.564987+01:00)","timestamp":"2026-03-13T08:20:29.452494451Z","level":"error"}
+{"level":"error","timestamp":"2026-03-13T08:20:29.452499811Z","message":"2026-03-13 08:20:24,451 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:20:53 CET)\" executed successfully"}
+{"message":"2026-03-13 08:20:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:21:23 CET)\" (scheduled at 2026-03-13 09:20:53.564987+01:00)","level":"error","timestamp":"2026-03-13T08:20:59.141448236Z"}
+{"timestamp":"2026-03-13T08:20:59.141454976Z","level":"error","message":"2026-03-13 08:20:54,458 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:21:23 CET)\" executed successfully"}
+{"level":"error","timestamp":"2026-03-13T08:21:29.138431412Z","message":"2026-03-13 08:21:23,565 - apscheduler.executors.default - INFO - Running job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:23:23 CET)\" (scheduled at 2026-03-13 09:21:23.564764+01:00)"}
+{"message":"2026-03-13 08:21:23,565 - apscheduler.executors.default - INFO - Running job \"_run_tts_admin_alerts_scheduler_job (trigger: interval[0:10:00], next run at: 2026-03-13 09:31:23 CET)\" (scheduled at 2026-03-13 09:21:23.564890+01:00)","timestamp":"2026-03-13T08:21:29.138442982Z","level":"error"}
+{"message":"2026-03-13 08:21:23,566 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:21:53 CET)\" (scheduled at 2026-03-13 09:21:23.564987+01:00)","level":"error","timestamp":"2026-03-13T08:21:29.138448472Z"}
+{"timestamp":"2026-03-13T08:21:29.138453762Z","message":"2026-03-13 08:21:27,747 - root - ERROR - ❌ TTS generation recovery scheduler failed","level":"error"}
+{"level":"error","message":"Traceback (most recent call last):","timestamp":"2026-03-13T08:21:29.138459141Z"}
+{"level":"error","message":"  File \"/app/backend/backend_server.py\", line 18219, in _run_tts_generation_recovery_scheduler_job","timestamp":"2026-03-13T08:21:29.138464391Z"}
+{"level":"error","timestamp":"2026-03-13T08:21:29.138469581Z","message":"    _recover_stale_tts_generation_jobs(source=\"scheduler\")"}
+{"message":"  File \"/app/backend/backend_server.py\", line 18173, in _recover_stale_tts_generation_jobs","timestamp":"2026-03-13T08:21:29.138473921Z","level":"error"}
+{"timestamp":"2026-03-13T08:21:29.138478361Z","level":"error","message":"    job_kwargs = _build_tts_generation_job_kwargs_from_meta(meta, user_id=0)"}
+{"timestamp":"2026-03-13T08:21:29.138485281Z","message":"  File \"/app/backend/backend_server.py\", line 18106, in _build_tts_generation_job_kwargs_from_meta","level":"error"}
+{"message":"    \"correlation_id\": _build_observability_correlation_id(","timestamp":"2026-03-13T08:21:29.138490871Z","level":"error"}
+{"message":"  File \"/app/backend/backend_server.py\", line 1285, in _build_observability_correlation_id","timestamp":"2026-03-13T08:21:29.138495571Z","level":"error"}
+{"message":"    request.headers.get(\"X-Correlation-ID\"),","timestamp":"2026-03-13T08:21:29.138500001Z","level":"error"}
+{"timestamp":"2026-03-13T08:21:29.138505241Z","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 318, in __get__","level":"error"}
+{"level":"error","message":"    obj = instance._get_current_object()","timestamp":"2026-03-13T08:21:29.139519418Z"}
+{"message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 519, in _get_current_object","level":"error","timestamp":"2026-03-13T08:21:29.139525917Z"}
+{"level":"error","message":"    raise RuntimeError(unbound_message) from None","timestamp":"2026-03-13T08:21:29.139529887Z"}
+{"timestamp":"2026-03-13T08:21:29.139533357Z","level":"error","message":"RuntimeError: Working outside of request context."}
+{"level":"error","timestamp":"2026-03-13T08:21:29.139537087Z","message":""}
+{"message":"This typically means that you attempted to use functionality that needed","timestamp":"2026-03-13T08:21:29.139541307Z","level":"error"}
+{"timestamp":"2026-03-13T08:21:29.139548107Z","level":"error","message":"an active HTTP request. Consult the documentation on testing for"}
+{"level":"error","message":"information about how to avoid this problem.","timestamp":"2026-03-13T08:21:29.139552277Z"}
+{"timestamp":"2026-03-13T08:21:29.139555657Z","level":"error","message":"2026-03-13 08:21:27,747 - apscheduler.executors.default - INFO - Job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:23:23 CET)\" executed successfully"}
+{"level":"error","timestamp":"2026-03-13T08:21:29.139559937Z","message":"2026-03-13 08:21:28,211 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:21:53 CET)\" executed successfully"}
+{"message":"    obj = instance._get_current_object()","timestamp":"2026-03-13T08:21:29.559132095Z","level":"error"}
+{"timestamp":"2026-03-13T08:21:29.559146285Z","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 519, in _get_current_object","level":"error"}
+{"timestamp":"2026-03-13T08:21:29.559157355Z","message":"    raise RuntimeError(unbound_message) from None","level":"error"}
+{"level":"error","message":"RuntimeError: Working outside of request context.","timestamp":"2026-03-13T08:21:29.559164075Z"}
+{"timestamp":"2026-03-13T08:21:29.559170555Z","message":"","level":"error"}
+{"level":"error","message":"This typically means that you attempted to use functionality that needed","timestamp":"2026-03-13T08:21:29.559176555Z"}
+{"level":"error","timestamp":"2026-03-13T08:21:29.559181935Z","message":"an active HTTP request. Consult the documentation on testing for"}
+{"message":"information about how to avoid this problem.","timestamp":"2026-03-13T08:21:29.559186855Z","level":"error"}
+{"timestamp":"2026-03-13T08:21:29.559291313Z","level":"error","message":"2026-03-13 08:21:29,470 - root - ERROR - ❌ TTS pending backlog recovery kick failed"}
+{"level":"error","timestamp":"2026-03-13T08:21:29.559296293Z","message":"Traceback (most recent call last):"}
+{"message":"  File \"/app/backend/backend_server.py\", line 8086, in _maybe_send_tts_admin_pending_alert","level":"error","timestamp":"2026-03-13T08:21:29.559301263Z"}
+{"level":"error","message":"    recovery_result = _recover_stale_tts_generation_jobs(source=\"pending_alert\")","timestamp":"2026-03-13T08:21:29.559306483Z"}
+{"level":"error","message":"  File \"/app/backend/backend_server.py\", line 18173, in _recover_stale_tts_generation_jobs","timestamp":"2026-03-13T08:21:29.559312033Z"}
+{"level":"error","timestamp":"2026-03-13T08:21:29.559316753Z","message":"    job_kwargs = _build_tts_generation_job_kwargs_from_meta(meta, user_id=0)"}
+{"message":"  File \"/app/backend/backend_server.py\", line 18106, in _build_tts_generation_job_kwargs_from_meta","timestamp":"2026-03-13T08:21:29.559321123Z","level":"error"}
+{"timestamp":"2026-03-13T08:21:29.559326053Z","level":"error","message":"    \"correlation_id\": _build_observability_correlation_id("}
+{"level":"error","timestamp":"2026-03-13T08:21:29.559330663Z","message":"  File \"/app/backend/backend_server.py\", line 1285, in _build_observability_correlation_id"}
+{"message":"    request.headers.get(\"X-Correlation-ID\"),","timestamp":"2026-03-13T08:21:29.559334843Z","level":"error"}
+{"timestamp":"2026-03-13T08:21:29.559339483Z","level":"error","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 318, in __get__"}
+{"message":"2026-03-13 08:21:29,970 - apscheduler.executors.default - INFO - Job \"_run_tts_admin_alerts_scheduler_job (trigger: interval[0:10:00], next run at: 2026-03-13 09:31:23 CET)\" executed successfully","timestamp":"2026-03-13T08:21:29.973324483Z","level":"error"}
+{"timestamp":"2026-03-13T08:21:59.976649942Z","level":"error","message":"2026-03-13 08:21:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:22:23 CET)\" (scheduled at 2026-03-13 09:21:53.564987+01:00)"}
+{"timestamp":"2026-03-13T08:21:59.976656822Z","level":"error","message":"2026-03-13 08:21:54,459 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:22:23 CET)\" executed successfully"}
+{"timestamp":"2026-03-13T08:22:29.980394938Z","level":"error","message":"2026-03-13 08:22:23,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:22:53 CET)\" (scheduled at 2026-03-13 09:22:23.564987+01:00)"}
+{"timestamp":"2026-03-13T08:22:29.980398828Z","level":"error","message":"2026-03-13 08:22:24,460 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:22:53 CET)\" executed successfully"}
+{"message":"2026-03-13 08:22:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:23:23 CET)\" (scheduled at 2026-03-13 09:22:53.564987+01:00)","timestamp":"2026-03-13T08:23:00.050173591Z","level":"error"}
+{"level":"error","timestamp":"2026-03-13T08:23:00.050180461Z","message":"2026-03-13 08:22:54,459 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:23:23 CET)\" executed successfully"}
+{"timestamp":"2026-03-13T08:23:30.055653306Z","level":"error","message":"2026-03-13 08:23:23,565 - apscheduler.executors.default - INFO - Running job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:25:23 CET)\" (scheduled at 2026-03-13 09:23:23.564764+01:00)"}
+{"timestamp":"2026-03-13T08:23:30.055659046Z","level":"error","message":"2026-03-13 08:23:23,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:23:53 CET)\" (scheduled at 2026-03-13 09:23:23.564987+01:00)"}
+{"message":"2026-03-13 08:23:25,509 - root - ERROR - ❌ TTS generation recovery scheduler failed","timestamp":"2026-03-13T08:23:30.055665596Z","level":"error"}
+{"timestamp":"2026-03-13T08:23:30.055671446Z","level":"error","message":"Traceback (most recent call last):"}
+{"timestamp":"2026-03-13T08:23:30.055677236Z","level":"error","message":"  File \"/app/backend/backend_server.py\", line 18219, in _run_tts_generation_recovery_scheduler_job"}
+{"timestamp":"2026-03-13T08:23:30.055682946Z","message":"    _recover_stale_tts_generation_jobs(source=\"scheduler\")","level":"error"}
+{"level":"error","timestamp":"2026-03-13T08:23:30.055688186Z","message":"  File \"/app/backend/backend_server.py\", line 18173, in _recover_stale_tts_generation_jobs"}
+{"level":"error","timestamp":"2026-03-13T08:23:30.055693616Z","message":"    job_kwargs = _build_tts_generation_job_kwargs_from_meta(meta, user_id=0)"}
+{"level":"error","message":"  File \"/app/backend/backend_server.py\", line 18106, in _build_tts_generation_job_kwargs_from_meta","timestamp":"2026-03-13T08:23:30.055698906Z"}
+{"timestamp":"2026-03-13T08:23:30.055705015Z","level":"error","message":"    \"correlation_id\": _build_observability_correlation_id("}
+{"timestamp":"2026-03-13T08:23:30.055710185Z","message":"  File \"/app/backend/backend_server.py\", line 1285, in _build_observability_correlation_id","level":"error"}
+{"timestamp":"2026-03-13T08:23:30.055715525Z","level":"error","message":"    request.headers.get(\"X-Correlation-ID\"),"}
+{"level":"error","timestamp":"2026-03-13T08:23:30.055719985Z","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 318, in __get__"}
+{"timestamp":"2026-03-13T08:23:30.055725225Z","message":"    obj = instance._get_current_object()","level":"error"}
+{"level":"error","timestamp":"2026-03-13T08:23:30.055731015Z","message":"  File \"/usr/local/lib/python3.10/site-packages/werkzeug/local.py\", line 519, in _get_current_object"}
+{"timestamp":"2026-03-13T08:23:30.056920380Z","message":"    raise RuntimeError(unbound_message) from None","level":"error"}
+{"message":"RuntimeError: Working outside of request context.","timestamp":"2026-03-13T08:23:30.056925470Z","level":"error"}
+{"message":"","level":"error","timestamp":"2026-03-13T08:23:30.056929360Z"}
+{"timestamp":"2026-03-13T08:23:30.056933000Z","level":"error","message":"This typically means that you attempted to use functionality that needed"}
+{"timestamp":"2026-03-13T08:23:30.056936439Z","level":"error","message":"an active HTTP request. Consult the documentation on testing for"}
+{"level":"error","timestamp":"2026-03-13T08:23:30.056940020Z","message":"information about how to avoid this problem."}
+{"timestamp":"2026-03-13T08:23:30.056943410Z","level":"error","message":"2026-03-13 08:23:25,510 - apscheduler.executors.default - INFO - Job \"_run_tts_generation_recovery_scheduler_job (trigger: interval[0:02:00], next run at: 2026-03-13 09:25:23 CET)\" executed successfully"}
+{"level":"error","timestamp":"2026-03-13T08:23:30.056956800Z","message":"2026-03-13 08:23:25,511 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:23:53 CET)\" executed successfully"}
+{"message":"2026-03-13 08:23:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:24:23 CET)\" (scheduled at 2026-03-13 09:23:53.564987+01:00)","timestamp":"2026-03-13T08:24:00.055421467Z","level":"error"}
+{"timestamp":"2026-03-13T08:24:00.055425617Z","message":"2026-03-13 08:23:54,476 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:24:23 CET)\" executed successfully","level":"error"}
+{"timestamp":"2026-03-13T08:24:30.068179632Z","message":"2026-03-13 08:24:23,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:24:53 CET)\" (scheduled at 2026-03-13 09:24:23.564987+01:00)","level":"error"}
+{"message":"2026-03-13 08:24:24,463 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:24:53 CET)\" executed successfully","timestamp":"2026-03-13T08:24:30.068185992Z","level":"error"}
+{"timestamp":"2026-03-13T08:25:00.113445309Z","level":"error","message":"2026-03-13 08:24:53,565 - apscheduler.executors.default - INFO - Running job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:25:23 CET)\" (scheduled at 2026-03-13 09:24:53.564987+01:00)"}
+{"message":"2026-03-13 08:24:54,462 - apscheduler.executors.default - INFO - Job \"_run_skill_state_v2_aggregation_scheduler_job (trigger: interval[0:00:30], next run at: 2026-03-13 09:25:23 CET)\" executed successfully","timestamp":"2026-03-13T08:25:00.113450479Z","level":"error"}
