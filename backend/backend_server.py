@@ -187,7 +187,6 @@ from backend.database import (
     get_youtube_watch_state,
     get_latest_youtube_watch_state,
     upsert_youtube_watch_state,
-    get_flashcard_set,
     create_dictionary_folder,
     get_dictionary_folders,
     get_or_create_dictionary_folder,
@@ -204,6 +203,7 @@ from backend.database import (
     list_stale_pending_tts_objects,
     mark_tts_object_ready,
     mark_tts_object_failed,
+    mark_flashcards_seen,
     record_tts_admin_monitor_event as persist_tts_admin_monitor_event,
     list_tts_admin_monitor_events_since,
     delete_old_tts_admin_monitor_events,
@@ -315,6 +315,7 @@ from backend.database import (
     update_translation_check_item_result,
     finalize_translation_check_item,
     refresh_translation_check_session_counters,
+    FLASHCARD_RECENT_SEEN_HOURS,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
 )
@@ -2541,6 +2542,303 @@ def _build_srs_review_preview(*, current_state: dict | None, reviewed_at: dateti
         except Exception:
             logging.debug("Failed to build SRS preview for %s", rating_key, exc_info=True)
     return preview
+
+
+def _list_srs_queue_cards(
+    *,
+    user_id: int,
+    now_utc: datetime,
+    source_lang: str,
+    target_lang: str,
+    limit: int,
+    folder_mode: str = "all",
+    folder_id: int | None = None,
+    exclude_recent_seen: bool = False,
+    cursor=None,
+) -> tuple[list[dict], dict]:
+    safe_limit = max(1, int(limit or 1))
+    normalized_folder_mode = str(folder_mode or "all").strip().lower()
+
+    def _fetch(cur) -> tuple[list[dict], dict]:
+        folder_filter_sql = ""
+        folder_params: list[object] = []
+        if normalized_folder_mode == "folder" and folder_id is not None:
+            folder_filter_sql = " AND q.folder_id = %s"
+            folder_params.append(int(folder_id))
+        elif normalized_folder_mode == "none":
+            folder_filter_sql = " AND q.folder_id IS NULL"
+
+        base_params = [int(user_id), source_lang, target_lang]
+        recent_seen_cutoff = now_utc - timedelta(hours=FLASHCARD_RECENT_SEEN_HOURS)
+        recent_seen_sql = (
+            " AND q.id NOT IN ("
+            " SELECT entry_id"
+            " FROM bt_3_flashcard_seen"
+            " WHERE user_id = %s"
+            "   AND seen_at >= %s"
+            " )"
+        )
+        recent_seen_params = [int(user_id), recent_seen_cutoff]
+        due_count = 0
+        due_rows: list[tuple] = []
+        due_selected_ids: set[int] = set()
+        due_fallback_added = 0
+
+        cur.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM bt_3_card_srs_state s
+            JOIN bt_3_webapp_dictionary_queries q
+              ON q.id = s.card_id
+             AND q.user_id = s.user_id
+            WHERE s.user_id = %s
+              AND q.source_lang = %s
+              AND q.target_lang = %s
+              AND s.status <> 'suspended'
+              AND s.due_at <= %s
+              AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+              {folder_filter_sql};
+            """,
+            [*base_params, now_utc, *folder_params],
+        )
+        count_row = cur.fetchone()
+        due_count = int(count_row[0] if count_row else 0)
+
+        due_limit = min(due_count, safe_limit)
+        if due_limit > 0:
+            cur.execute(
+                f"""
+                SELECT
+                    s.card_id,
+                    q.word_ru,
+                    q.translation_de,
+                    q.word_de,
+                    q.translation_ru,
+                    q.response_json,
+                    q.source_lang,
+                    q.target_lang,
+                    s.status,
+                    s.due_at,
+                    s.interval_days,
+                    s.stability,
+                    s.difficulty
+                FROM bt_3_card_srs_state s
+                JOIN bt_3_webapp_dictionary_queries q
+                  ON q.id = s.card_id
+                 AND q.user_id = s.user_id
+                WHERE s.user_id = %s
+                  AND q.source_lang = %s
+                  AND q.target_lang = %s
+                  AND s.status <> 'suspended'
+                  AND s.due_at <= %s
+                  AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+                  {recent_seen_sql if exclude_recent_seen else ""}
+                  {folder_filter_sql}
+                ORDER BY s.due_at ASC
+                LIMIT %s;
+                """,
+                [
+                    *base_params,
+                    now_utc,
+                    *(recent_seen_params if exclude_recent_seen else []),
+                    *folder_params,
+                    int(due_limit),
+                ],
+            )
+            due_rows = list(cur.fetchall() or [])
+            due_selected_ids = {int(row[0]) for row in due_rows}
+
+            if exclude_recent_seen and len(due_rows) < due_limit:
+                cur.execute(
+                    f"""
+                    SELECT
+                        s.card_id,
+                        q.word_ru,
+                        q.translation_de,
+                        q.word_de,
+                        q.translation_ru,
+                        q.response_json,
+                        q.source_lang,
+                        q.target_lang,
+                        s.status,
+                        s.due_at,
+                        s.interval_days,
+                        s.stability,
+                        s.difficulty
+                    FROM bt_3_card_srs_state s
+                    JOIN bt_3_webapp_dictionary_queries q
+                      ON q.id = s.card_id
+                     AND q.user_id = s.user_id
+                    WHERE s.user_id = %s
+                      AND q.source_lang = %s
+                      AND q.target_lang = %s
+                      AND s.status <> 'suspended'
+                      AND s.due_at <= %s
+                      AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+                      AND s.card_id <> ALL(%s::bigint[])
+                      {folder_filter_sql}
+                    ORDER BY s.due_at ASC
+                    LIMIT %s;
+                    """,
+                    [
+                        *base_params,
+                        now_utc,
+                        list(due_selected_ids) or [0],
+                        *folder_params,
+                        int(due_limit - len(due_rows)),
+                    ],
+                )
+                fallback_due_rows = list(cur.fetchall() or [])
+                due_rows.extend(fallback_due_rows)
+                due_selected_ids.update(int(row[0]) for row in fallback_due_rows)
+                due_fallback_added = len(fallback_due_rows)
+
+        introduced_today = count_new_cards_introduced_today(
+            user_id=user_id,
+            now_utc=now_utc,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            cursor=cur,
+        )
+        new_remaining_today = max(NEW_PER_DAY - int(introduced_today or 0), 0)
+        remaining_slots = max(0, safe_limit - len(due_rows))
+        new_limit = min(new_remaining_today, remaining_slots)
+        new_rows: list[tuple] = []
+        new_selected_ids: set[int] = set()
+        new_fallback_added = 0
+
+        if new_limit > 0:
+            cur.execute(
+                f"""
+                SELECT
+                    q.id,
+                    q.word_ru,
+                    q.translation_de,
+                    q.word_de,
+                    q.translation_ru,
+                    q.response_json,
+                    q.source_lang,
+                    q.target_lang
+                FROM bt_3_webapp_dictionary_queries q
+                LEFT JOIN bt_3_card_srs_state s
+                  ON s.user_id = q.user_id
+                 AND s.card_id = q.id
+                WHERE q.user_id = %s
+                  AND q.source_lang = %s
+                  AND q.target_lang = %s
+                  AND s.id IS NULL
+                  AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+                  {recent_seen_sql if exclude_recent_seen else ""}
+                  {folder_filter_sql}
+                ORDER BY q.created_at ASC
+                LIMIT %s;
+                """,
+                [
+                    *base_params,
+                    *(recent_seen_params if exclude_recent_seen else []),
+                    *folder_params,
+                    int(new_limit),
+                ],
+            )
+            new_rows = list(cur.fetchall() or [])
+            new_selected_ids = {int(row[0]) for row in new_rows}
+
+            if exclude_recent_seen and len(new_rows) < new_limit:
+                cur.execute(
+                    f"""
+                    SELECT
+                        q.id,
+                        q.word_ru,
+                        q.translation_de,
+                        q.word_de,
+                        q.translation_ru,
+                        q.response_json,
+                        q.source_lang,
+                        q.target_lang
+                    FROM bt_3_webapp_dictionary_queries q
+                    LEFT JOIN bt_3_card_srs_state s
+                      ON s.user_id = q.user_id
+                     AND s.card_id = q.id
+                    WHERE q.user_id = %s
+                      AND q.source_lang = %s
+                      AND q.target_lang = %s
+                      AND s.id IS NULL
+                      AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+                      AND q.id <> ALL(%s::bigint[])
+                      {folder_filter_sql}
+                    ORDER BY q.created_at ASC
+                    LIMIT %s;
+                    """,
+                    [
+                        *base_params,
+                        list(new_selected_ids) or [0],
+                        *folder_params,
+                        int(new_limit - len(new_rows)),
+                    ],
+                )
+                fallback_new_rows = list(cur.fetchall() or [])
+                new_rows.extend(fallback_new_rows)
+                new_selected_ids.update(int(row[0]) for row in fallback_new_rows)
+                new_fallback_added = len(fallback_new_rows)
+
+        items: list[dict] = []
+        for row in due_rows:
+            items.append(
+                {
+                    "id": row[0],
+                    "word_ru": row[1],
+                    "translation_de": row[2],
+                    "word_de": row[3],
+                    "translation_ru": row[4],
+                    "response_json": row[5],
+                    "source_lang": row[6],
+                    "target_lang": row[7],
+                    "srs": {
+                        "status": row[8],
+                        "due_at": row[9],
+                        "interval_days": int(row[10] or 0),
+                        "stability": float(row[11] or 0.0),
+                        "difficulty": float(row[12] or 0.0),
+                    },
+                }
+            )
+        for row in new_rows:
+            items.append(
+                {
+                    "id": row[0],
+                    "word_ru": row[1],
+                    "translation_de": row[2],
+                    "word_de": row[3],
+                    "translation_ru": row[4],
+                    "response_json": row[5],
+                    "source_lang": row[6],
+                    "target_lang": row[7],
+                    "srs": None,
+                }
+            )
+
+        diagnostics = {
+            "selection_strategy": "fsrs_core_queue",
+            "folder_mode": normalized_folder_mode,
+            "exclude_recent_seen": bool(exclude_recent_seen),
+            "recent_seen_hours": int(FLASHCARD_RECENT_SEEN_HOURS),
+            "due_count": int(due_count),
+            "due_selected": len(due_rows),
+            "due_selected_recent_filtered": max(0, len(due_rows) - due_fallback_added),
+            "due_fallback_selected": int(due_fallback_added),
+            "new_remaining_today": int(new_remaining_today),
+            "new_selected": len(new_rows),
+            "new_selected_recent_filtered": max(0, len(new_rows) - new_fallback_added),
+            "new_fallback_selected": int(new_fallback_added),
+            "returned_items": len(items),
+        }
+        return items, diagnostics
+
+    if cursor is not None:
+        return _fetch(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _fetch(own_cursor)
 
 
 def _build_next_srs_payload(
@@ -17681,7 +17979,6 @@ def get_webapp_flashcard_set():
     init_data = payload.get("initData")
     training_mode = _normalize_flashcards_mode(payload.get("training_mode"))
     set_size = int(payload.get("set_size", 15))
-    wrong_size = int(payload.get("wrong_size", 5))
     folder_mode = payload.get("folder_mode", "all")
     folder_id = payload.get("folder_id")
 
@@ -17748,6 +18045,8 @@ def get_webapp_flashcard_set():
         "daily_words_used": flashcards_limit_state.get("used_words"),
         "server_items": 0,
         "blocks_eligible_len10_server": None,
+        "selection_strategy": None,
+        "is_supplemental_mode": False,
     }
 
     try:
@@ -17761,23 +18060,22 @@ def get_webapp_flashcard_set():
                 target_lang=target_lang,
             )
             profile_payload["server_items"] = len(decorated_items)
+            profile_payload["selection_strategy"] = "sentence_supplemental"
+            profile_payload["is_supplemental_mode"] = True
         else:
-            selection_diagnostics: dict[str, object] = {}
-            items = get_flashcard_set(
-                user_id=user_id,
-                set_size=set_size,
-                wrong_size=wrong_size,
-                folder_mode=folder_mode,
-                folder_id=resolved_folder_id,
+            items, selection_diagnostics = _list_srs_queue_cards(
+                user_id=int(user_id),
+                now_utc=datetime.now(timezone.utc),
                 source_lang=source_lang,
                 target_lang=target_lang,
-                randomize_pool=(training_mode in {"blocks", "quiz"}),
-                exclude_recent_seen=(training_mode != "quiz"),
-                wrong_source=("fsrs_review_log" if training_mode == "quiz" else "legacy"),
-                diagnostics=selection_diagnostics,
+                limit=set_size,
+                folder_mode=str(folder_mode or "all"),
+                folder_id=resolved_folder_id,
+                exclude_recent_seen=True,
             )
             profile_payload["server_items"] = len(items)
             profile_payload["selection"] = selection_diagnostics
+            profile_payload["selection_strategy"] = selection_diagnostics.get("selection_strategy")
             direction = f"{source_lang}-{target_lang}"
             decorated_items = [
                 _decorate_dictionary_item(
@@ -17795,6 +18093,15 @@ def get_webapp_flashcard_set():
                     if answer and len(answer) <= 10:
                         blocks_eligible += 1
                 profile_payload["blocks_eligible_len10_server"] = blocks_eligible
+            if decorated_items:
+                mark_flashcards_seen(
+                    user_id=int(user_id),
+                    entry_ids=[
+                        int(item.get("id"))
+                        for item in decorated_items
+                        if str(item.get("id") or "").strip().isdigit()
+                    ],
+                )
     except Exception as exc:
         return jsonify({"error": f"Ошибка получения карточек: {exc}"}), 500
     total_ms = int((time.perf_counter() - started_at) * 1000)
@@ -17973,88 +18280,14 @@ def get_srs_prefetch_cards():
                 if fsrs_limit_state.get("error"):
                     return jsonify(fsrs_limit_state.get("error")), 429
                 max_items = max(1, min(max_items, int(fsrs_limit_state.get("allowed_words") or max_items)))
-
-                due_limit = min(due_count, max_items)
-                new_limit = min(new_remaining_today, max(0, max_items - due_limit))
-                cards: list[dict] = []
-                if due_limit > 0:
-                    cursor.execute(
-                        """
-                        SELECT
-                            s.card_id,
-                            q.word_ru,
-                            q.translation_de,
-                            q.word_de,
-                            q.translation_ru,
-                            q.response_json,
-                            q.source_lang,
-                            q.target_lang
-                        FROM bt_3_card_srs_state s
-                        JOIN bt_3_webapp_dictionary_queries q
-                          ON q.id = s.card_id
-                         AND q.user_id = s.user_id
-                        WHERE s.user_id = %s
-                          AND s.status <> 'suspended'
-                          AND s.due_at <= %s
-                          AND q.source_lang = %s
-                          AND q.target_lang = %s
-                        ORDER BY s.due_at ASC
-                        LIMIT %s;
-                        """,
-                        (int(user_id), now_utc, source_lang, target_lang, int(due_limit)),
-                    )
-                    for row in cursor.fetchall():
-                        cards.append(
-                            {
-                                "id": row[0],
-                                "word_ru": row[1],
-                                "translation_de": row[2],
-                                "word_de": row[3],
-                                "translation_ru": row[4],
-                                "response_json": row[5],
-                                "source_lang": row[6],
-                                "target_lang": row[7],
-                            }
-                        )
-
-                if new_limit > 0:
-                    cursor.execute(
-                        """
-                        SELECT
-                            q.id,
-                            q.word_ru,
-                            q.translation_de,
-                            q.word_de,
-                            q.translation_ru,
-                            q.response_json,
-                            q.source_lang,
-                            q.target_lang
-                        FROM bt_3_webapp_dictionary_queries q
-                        LEFT JOIN bt_3_card_srs_state s
-                          ON s.user_id = q.user_id
-                         AND s.card_id = q.id
-                        WHERE q.user_id = %s
-                          AND s.id IS NULL
-                          AND q.source_lang = %s
-                          AND q.target_lang = %s
-                        ORDER BY q.created_at ASC
-                        LIMIT %s;
-                        """,
-                        (int(user_id), source_lang, target_lang, int(new_limit)),
-                    )
-                    for row in cursor.fetchall():
-                        cards.append(
-                            {
-                                "id": row[0],
-                                "word_ru": row[1],
-                                "translation_de": row[2],
-                                "word_de": row[3],
-                                "translation_ru": row[4],
-                                "response_json": row[5],
-                                "source_lang": row[6],
-                                "target_lang": row[7],
-                            }
-                        )
+                cards, _selection = _list_srs_queue_cards(
+                    user_id=int(user_id),
+                    now_utc=now_utc,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    limit=max_items,
+                    cursor=cursor,
+                )
 
         direction = f"{source_lang}-{target_lang}"
         decorated_items = [

@@ -2528,6 +2528,10 @@ def ensure_webapp_tables() -> None:
                 );
             """)
             cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_flashcard_seen_user_seen_desc
+                ON bt_3_flashcard_seen (user_id, seen_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_flashcard_feel_feedback_queue (
                     token TEXT PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -7961,10 +7965,55 @@ def record_flashcard_answer(user_id: int, entry_id: int, is_correct: bool) -> No
                 1 if is_correct else 0,
                 0 if is_correct else 1,
             ))
-            cursor.execute("""
-                INSERT INTO bt_3_flashcard_seen (user_id, entry_id, seen_at)
-                VALUES (%s, %s, NOW());
-            """, (user_id, entry_id))
+            mark_flashcards_seen(user_id=user_id, entry_ids=[entry_id], cursor=cursor)
+
+
+def mark_flashcards_seen(
+    *,
+    user_id: int,
+    entry_ids: list[int] | tuple[int, ...],
+    seen_at: datetime | None = None,
+    cursor=None,
+) -> int:
+    if not user_id:
+        return 0
+    normalized_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for raw_id in entry_ids or []:
+        try:
+            value = int(raw_id)
+        except Exception:
+            continue
+        if value <= 0 or value in seen_ids:
+            continue
+        seen_ids.add(value)
+        normalized_ids.append(value)
+    if not normalized_ids:
+        return 0
+
+    normalized_seen_at = seen_at or datetime.now(timezone.utc)
+    if normalized_seen_at.tzinfo is None:
+        normalized_seen_at = normalized_seen_at.replace(tzinfo=timezone.utc)
+
+    def _insert(cur) -> int:
+        execute_values(
+            cur,
+            """
+            INSERT INTO bt_3_flashcard_seen (user_id, entry_id, seen_at)
+            VALUES %s;
+            """,
+            [
+                (int(user_id), int(entry_id), normalized_seen_at)
+                for entry_id in normalized_ids
+            ],
+        )
+        return len(normalized_ids)
+
+    if cursor is not None:
+        return _insert(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _insert(own_cursor)
 
 
 def get_flashcard_set(
@@ -8391,6 +8440,7 @@ def count_due_srs_cards(
             WHERE s.user_id = %s
               AND s.status <> 'suspended'
               AND s.due_at <= %s
+              AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql};
             """,
             [int(user_id), now_utc, *language_params],
@@ -8429,6 +8479,7 @@ def count_new_cards_introduced_today(
             WHERE s.user_id = %s
               AND s.created_at >= %s
               AND s.created_at < %s
+              AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql};
             """,
             [int(user_id), day_start, day_end, *language_params],
@@ -8462,6 +8513,7 @@ def has_available_new_srs_cards(
               ON s.user_id = q.user_id AND s.card_id = q.id
             WHERE q.user_id = %s
               AND s.id IS NULL
+              AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
             LIMIT 1;
             """,
@@ -8495,6 +8547,7 @@ def count_available_new_srs_cards(
                   ON s.user_id = q.user_id AND s.card_id = q.id
                 WHERE q.user_id = %s
                   AND s.id IS NULL
+                  AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
                   {language_filter_sql};
                 """,
                 [int(user_id), *language_params],
@@ -8541,6 +8594,7 @@ def get_next_due_srs_card(
             WHERE s.user_id = %s
               AND s.status <> 'suspended'
               AND s.due_at <= %s
+              AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
             ORDER BY s.due_at ASC
             LIMIT 1;
@@ -8597,6 +8651,7 @@ def get_next_new_srs_candidate(
               ON s.user_id = q.user_id AND s.card_id = q.id
             WHERE q.user_id = %s
               AND s.id IS NULL
+              AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
             ORDER BY q.created_at ASC
             LIMIT 1;

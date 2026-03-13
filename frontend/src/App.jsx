@@ -1135,8 +1135,8 @@ function AppInner() {
     const uid = webappUser?.id ? String(webappUser.id) : 'anon';
     const dateKey = getLocalDateKey();
     return {
-      blocks: `cards_solved_today_blocks_${uid}_${dateKey}`,
-      quiz: `cards_solved_today_quiz_${uid}_${dateKey}`,
+      blocks: `cards_solved_today_core_${uid}_${dateKey}`,
+      quiz: `cards_solved_today_core_${uid}_${dateKey}`,
       sentence: `cards_solved_today_sentence_${uid}_${dateKey}`,
     };
   }, [webappUser?.id]);
@@ -4003,7 +4003,7 @@ function AppInner() {
                 'FSRS: intelligentes spaced repetition für langfristiges Behalten.',
                 'Quiz: 4 Antwortoptionen, damit du schnell Bedeutung und Form erkennst.',
                 'Blocks: du baust die richtige Antwort aus Teilen auf.',
-                'Sentence: du ergänzt eine Phrase oder einen Satz im passenden Kontext.',
+                'Sentence: ergänzende Kontextpraxis; dieser Modus bleibt bewusst supplemental.',
               ],
             },
             {
@@ -4018,9 +4018,10 @@ function AppInner() {
             {
               title: 'Wie Karten entstehen',
               items: [
-                'Quiz, Blocks und Sentence arbeiten mit deinem gespeicherten Material aus dem Wörterbuch und berücksichtigen Ordner und Modus-Einstellungen.',
+                'Quiz und Blocks ziehen Karten aus derselben FSRS-Kernwarteschlange: due zuerst, danach neue Karten.',
+                'Sentence nutzt ergänzendes Material aus Wörterbuch und GPT-Seed-Sätzen und bleibt ein supplemental mode.',
                 'Vor dem eigentlichen Training zeigt die App zuerst Karten zur kurzen Orientierung, danach startet die Session.',
-                'FSRS arbeitet anders: dort holt die App fällige Karten direkt aus der Wiederholungs-Warteschlange.',
+                'FSRS nutzt dieselbe Kernwarteschlange direkt als Review-Modus.',
               ],
             },
             {
@@ -4410,7 +4411,7 @@ function AppInner() {
               'FSRS: интервальное повторение для долгой памяти.',
               'Quiz: 4 варианта ответа для быстрой проверки знания слова.',
               'Blocks: сборка правильного ответа из частей.',
-              'Sentence: дополнение фразы или предложения по контексту.',
+              'Sentence: дополнительная контекстная практика; этот режим остаётся supplemental.',
             ],
           },
           {
@@ -4425,9 +4426,10 @@ function AppInner() {
           {
             title: 'Как формируются карточки',
             items: [
-              'Quiz, Blocks и Sentence берут материал из вашего словаря с учётом выбранной папки и настроек режима.',
+              'Quiz и Blocks берут карточки из одной общей FSRS-очереди: сначала due, потом новые.',
+              'Sentence использует дополнительный материал из словаря и GPT-seed предложений и остаётся supplemental mode.',
               'Перед самой тренировкой приложение сначала показывает карточки для быстрого ознакомления, а затем уже запускает quiz, blocks или sentence session.',
-              'FSRS работает иначе: он сразу достаёт карточки из очереди интервального повторения.',
+              'FSRS использует ту же общую очередь напрямую как основной review-режим.',
             ],
           },
           {
@@ -9788,7 +9790,7 @@ function AppInner() {
         ...item,
         response_json: coerceResponseJson(item.response_json),
       }));
-      const solvedFilteredItems = ['blocks', 'quiz', 'sentence'].includes(requestedMode)
+      const solvedFilteredItems = requestedMode === 'sentence'
         ? items.filter((item) => !readSolvedTodaySet(requestedMode).has(Number(item?.id || 0)))
         : items;
       const isBlocksSingleWordEligible = (entry) => {
@@ -9845,12 +9847,8 @@ function AppInner() {
             `Fuer den Blocks-Modus gibt es aktuell keine passenden Karten: Es werden nur Varianten bis ${BLOCKS_SINGLE_WORD_MAX_LEN} Zeichen (inklusive Leerzeichen) verwendet.`
           )
         );
-      } else if (['blocks', 'quiz', 'sentence'].includes(requestedMode) && items.length > 0 && solvedFilteredItems.length === 0) {
-        const modeLabel = requestedMode === 'blocks'
-          ? tr('Blocks', 'Blocks')
-          : requestedMode === 'sentence'
-            ? tr('Satz ergänzen', 'Satz ergaenzen')
-            : tr('Quiz 4 Options', 'Quiz 4 Options');
+      } else if (requestedMode === 'sentence' && items.length > 0 && solvedFilteredItems.length === 0) {
+        const modeLabel = tr('Satz ergänzen', 'Satz ergaenzen');
         setFlashcardsError(
           tr(
             `На сегодня в режиме ${modeLabel} всё выполнено: карточки с верным ответом больше не показываются.`,
@@ -16201,7 +16199,7 @@ function AppInner() {
                             { mode: 'fsrs', title: 'FSRS', subtitle: 'Smart spaced repetition' },
                             { mode: 'quiz', title: 'Quiz', subtitle: 'Quiz - test +4 options' },
                             { mode: 'blocks', title: 'Blocks', subtitle: 'Blocks - assemble the word' },
-                            { mode: 'sentence', title: 'Sentence', subtitle: 'Sentence - complete the phrase' },
+                            { mode: 'sentence', title: 'Sentence', subtitle: 'Sentence - supplemental context practice' },
                           ].map((entry) => (
                             <div className="flashcard-mode-item" key={`mode-${entry.mode}`}>
                               <button
@@ -16641,9 +16639,6 @@ function AppInner() {
                                             correct: prev.correct + (isCorrect ? 1 : 0),
                                             wrong: prev.wrong + (isCorrect ? 0 : 1),
                                           }));
-                                          if (isCorrect) {
-                                            markSolvedTodayByMode('blocks', entry.id);
-                                          }
                                           recordFlashcardAnswer(entry.id, isCorrect, {
                                             mode: 'blocks',
                                             timeSpentMs,
@@ -16761,7 +16756,9 @@ function AppInner() {
                                                     const solvedMode = String(flashcardTrainingMode || '').toLowerCase() === 'sentence'
                                                       ? 'sentence'
                                                       : 'quiz';
-                                                    markSolvedTodayByMode(solvedMode, entry.id);
+                                                    if (solvedMode === 'sentence') {
+                                                      markSolvedTodayByMode(solvedMode, entry.id);
+                                                    }
                                                   }
                                                   if (autoAdvanceTimeoutRef.current) {
                                                     clearTimeout(autoAdvanceTimeoutRef.current);
