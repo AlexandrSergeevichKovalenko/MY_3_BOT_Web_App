@@ -1237,6 +1237,121 @@ _AUTHORED_PRIMARY_SKILL_SENTENCE_HINTS: dict[str, tuple[str, ...]] = {
     "de_voice_active_passive_zustandspassiv_sein_partizip_ii": ("был", "была", "было", "были", "остаётся", "находится"),
 }
 
+REMEDIATION_PRIMARY_DEMOTION_SKILL_IDS: set[str] = {
+    "de_articles_determiners_definite_articles_der_die_das",
+    "de_articles_determiners_indefinite_articles_ein_eine",
+    "adjectives_case_agreement",
+    "adjectives_endings_general",
+}
+
+REMEDIATION_SENTENCE_ANCHOR_RULES: tuple[dict[str, Any], ...] = (
+    {
+        "markers": ("несмотря на",),
+        "primary": ("prepositions_usage",),
+        "secondary": ("de_cases_case_after_preposition", "cases_preposition_genitive"),
+        "supporting": ("cases_genitive",),
+        "structural": True,
+    },
+    {
+        "markers": ("кажется что", "считают что", "так чтобы", "почему"),
+        "primary": ("word_order_subordinate_clause",),
+        "secondary": ("de_clauses_sentence_types_main_vs_subordinate_clause", "word_order_modal_structure"),
+        "supporting": ("verbs_placement_subordinate",),
+        "structural": True,
+    },
+    {
+        "markers": ("чтобы",),
+        "primary": ("word_order_subordinate_clause",),
+        "secondary": ("word_order_modal_structure", "verbs_modals"),
+        "supporting": ("de_punctuation_comma_in_subordinate_clause",),
+        "structural": True,
+    },
+    {
+        "markers": ("хотя",),
+        "primary": ("de_clauses_sentence_types_concessive_clauses_obwohl",),
+        "secondary": ("word_order_subordinate_clause", "de_clauses_sentence_types_main_vs_subordinate_clause"),
+        "supporting": ("de_punctuation_comma_in_subordinate_clause",),
+        "structural": True,
+    },
+    {
+        "markers": ("если бы",),
+        "primary": ("moods_subjunctive2",),
+        "secondary": ("de_moods_konjunktiv_ii_wuerde_form", "de_clauses_sentence_types_conditionals_wenn_falls"),
+        "supporting": ("word_order_subordinate_clause",),
+        "structural": True,
+    },
+    {
+        "markers": ("вынужден", "вынуждена", "вынуждены", "вынуждено"),
+        "primary": ("de_infinitive_participles_zu_infinitive",),
+        "secondary": ("verbs_modals", "nouns_compounds"),
+        "supporting": ("de_clauses_sentence_types_infinitive_clauses_vs_dass_clause",),
+        "structural": True,
+    },
+    {
+        "markers": ("остаются недооцен", "остается недооцен", "остаётся недооцен"),
+        "primary": ("de_voice_active_passive_zustandspassiv_sein_partizip_ii",),
+        "secondary": ("de_voice_active_passive_vorgangspassiv_werden_partizip_ii", "de_word_order_placement_of_participle_perfekt_passive"),
+        "supporting": ("de_voice_active_passive_passive_word_order",),
+        "structural": True,
+    },
+)
+
+
+def _normalize_sentence_anchor_text(sentence: str | None) -> str:
+    normalized = str(sentence or "").strip().lower()
+    if not normalized:
+        return ""
+    normalized = re.sub(r"[^\w\s]+", " ", normalized, flags=re.UNICODE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return f" {normalized} "
+
+
+def _collect_sentence_anchor_skill_weights(sentence: str | None) -> tuple[dict[str, float], bool]:
+    normalized_sentence = _normalize_sentence_anchor_text(sentence)
+    if not normalized_sentence:
+        return {}, False
+
+    anchored_skill_weights: dict[str, float] = {}
+    has_structural_anchor = False
+    for rule in REMEDIATION_SENTENCE_ANCHOR_RULES:
+        markers = tuple(str(marker or "").strip().lower() for marker in rule.get("markers") or ())
+        if not markers:
+            continue
+        if not any(f" {marker} " in normalized_sentence for marker in markers):
+            continue
+        if bool(rule.get("structural")):
+            has_structural_anchor = True
+        for skill_id in rule.get("primary") or ():
+            anchored_skill_weights[str(skill_id)] = anchored_skill_weights.get(str(skill_id), 0.0) + 8.0
+        for skill_id in rule.get("secondary") or ():
+            anchored_skill_weights[str(skill_id)] = anchored_skill_weights.get(str(skill_id), 0.0) + 4.5
+        for skill_id in rule.get("supporting") or ():
+            anchored_skill_weights[str(skill_id)] = anchored_skill_weights.get(str(skill_id), 0.0) + 2.0
+    return anchored_skill_weights, has_structural_anchor
+
+
+def _load_sentence_text_for_remediation_with_cursor(
+    cursor,
+    *,
+    sentence_id_for_mistake: int,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> str:
+    cursor.execute(
+        """
+        SELECT sentence
+        FROM bt_3_daily_sentences
+        WHERE id_for_mistake_table = %s
+          AND COALESCE(source_lang, 'ru') = %s
+          AND COALESCE(target_lang, 'de') = %s
+        ORDER BY id DESC
+        LIMIT 1;
+        """,
+        (int(sentence_id_for_mistake), source_lang or "ru", target_lang or "de"),
+    )
+    row = cursor.fetchone()
+    return str(row[0] or "").strip() if row and row[0] else ""
+
 
 def _authored_sentence_matches_primary_skill(
     *,
@@ -1446,6 +1561,8 @@ async def get_original_sentences_webapp(
                     user_id=int(user_id),
                     sentence_id_for_mistake=int(sentence_id),
                     target_lang=target_lang,
+                    source_lang=source_lang,
+                    sentence_text=str(sentence or "").strip(),
                 ),
             }
         )
@@ -2382,6 +2499,8 @@ def _build_remediation_profile_with_cursor(
     user_id: int,
     sentence_id_for_mistake: int,
     target_lang: str,
+    source_lang: str = "ru",
+    sentence_text: str | None = None,
 ) -> list[dict[str, Any]]:
     if not user_id or not sentence_id_for_mistake:
         return []
@@ -2424,6 +2543,27 @@ def _build_remediation_profile_with_cursor(
             if not skill_seed:
                 continue
             aggregated_skill_weights[skill_id] = aggregated_skill_weights.get(skill_id, 0.0) + pair_weight * max(float(item.get("weight") or 1.0), 0.1)
+
+    resolved_sentence_text = str(sentence_text or "").strip() or _load_sentence_text_for_remediation_with_cursor(
+        cursor,
+        sentence_id_for_mistake=int(sentence_id_for_mistake),
+        source_lang=source_lang or "ru",
+        target_lang=target_lang or "de",
+    )
+    anchor_skill_weights, has_structural_anchor = _collect_sentence_anchor_skill_weights(resolved_sentence_text)
+    for skill_id, bonus in anchor_skill_weights.items():
+        if not _load_skill_seed_with_cursor(
+            cursor,
+            skill_id=skill_id,
+            target_lang=target_lang,
+        ):
+            continue
+        aggregated_skill_weights[skill_id] = aggregated_skill_weights.get(skill_id, 0.0) + float(bonus)
+
+    if has_structural_anchor:
+        for skill_id in REMEDIATION_PRIMARY_DEMOTION_SKILL_IDS:
+            if skill_id in aggregated_skill_weights and skill_id not in anchor_skill_weights:
+                aggregated_skill_weights[skill_id] = aggregated_skill_weights.get(skill_id, 0.0) * 0.4
     if not aggregated_skill_weights:
         return []
 
@@ -2457,6 +2597,10 @@ def _build_remediation_profile_with_cursor(
             if representative_leaf_ids:
                 representative_leaf_id = representative_leaf_ids[0]
                 promoted_leaf_scores[representative_leaf_id] = promoted_leaf_scores.get(representative_leaf_id, 0.0) + (score_value * 0.9)
+
+    for skill_id, bonus in anchor_skill_weights.items():
+        if skill_id in promoted_leaf_scores:
+            promoted_leaf_scores[skill_id] = promoted_leaf_scores.get(skill_id, 0.0) + (float(bonus) * 0.75)
 
     ranked_leaf_skill_ids = [
         skill_id
@@ -3357,7 +3501,9 @@ async def apply_translation_result_side_effects(
                         cursor,
                         user_id=int(user_id),
                         sentence_id_for_mistake=int(sentence_id_for_mistake),
+                        source_lang=source_lang or "ru",
                         target_lang=target_lang or "de",
+                        sentence_text=original_text,
                     )
 
             if was_in_mistakes:
@@ -3492,7 +3638,9 @@ async def apply_translation_result_side_effects(
                         cursor,
                         user_id=int(user_id),
                         sentence_id_for_mistake=int(sentence_id_for_mistake),
+                        source_lang=source_lang or "ru",
                         target_lang=target_lang or "de",
+                        sentence_text=original_text,
                     )
                     if tested_targets:
                         _insert_sentence_skill_targets_for_entries_with_cursor(

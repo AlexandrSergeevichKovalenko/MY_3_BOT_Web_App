@@ -1,0 +1,213 @@
+{
+  "meta": {
+    "user_id": 117649764,
+    "fail_session_id": 421868506490,
+    "recovery_session_id": 580408720043,
+    "case_count": 7,
+    "driver": "psql"
+  },
+  "per_case": [
+    {
+      "case_id": 1,
+      "source_sentence": "Несмотря на нестабильную экономическую ситуацию, компания решила инвестировать значительные средства в разработку инновационных решений для отечественного рынка.",
+      "fail_session_id": 421868506490,
+      "recovery_session_id": 580408720043,
+      "expected_primary": "prepositions_governing_cases",
+      "actual_primary": "prepositions_usage",
+      "primary_match": true,
+      "expected_secondary": [
+        "cases_dative",
+        "noun_phrases_complex"
+      ],
+      "actual_secondary": [
+        "de_cases_case_after_preposition",
+        "cases_accusative",
+        "de_articles_determiners_definite_articles_der_die_das"
+      ],
+      "matched_expected_secondary": [],
+      "secondary_overlap_score": 0.0,
+      "expected_outcome": "clean_success",
+      "actual_outcome": "clean_success",
+      "outcome_correct": true,
+      "fail_outcome_raw": "fail_new",
+      "recovery_errored_skills": [],
+      "recovery_overall_score": 99
+    },
+    {
+      "case_id": 2,
+      "source_sentence": "Несмотря на отсутствие официальных заявлений, кажется, что обсуждение новых законопроектов проводится уже несколько недель.",
+      "fail_session_id": 421868506490,
+      "recovery_session_id": 580408720043,
+      "expected_primary": "subordinate_clause_word_order",
+      "actual_primary": "de_articles_determiners_definite_articles_der_die_das",
+      "primary_match": false,
+      "expected_secondary": [
+        "impersonal_constructions",
+        "present_perfect_vs_present"
+      ],
+      "actual_secondary": [
+        "verbs_conjugation",
+        "verbs_auxiliaries",
+        "adjectives_endings_general"
+      ],
+      "matched_expected_secondary": [
+        "impersonal_constructions",
+        "present_perfect_vs_present"
+      ],
+      "secondary_overlap_score": 1.0,
+      "expected_outcome": "clean_success",
+      "actual_outcome": "recovered_final",
+      "outcome_correct": true,
+      "fail_outcome_raw": "fail_new",
+      "recovery_errored_skills": [],
+      "recovery_overall_score": 95
+    },
+    {
+      "case_id": 3,
+      "source_sentence": "Честно говоря, многие люди считают, что новости должны быть представлены так, чтобы их мог понять каждый.",
+      "fail_session_id": 421868506490,
+      "recovery_session_id": 580408720043,
+      "expected_primary": "subordinate_clause_word_order",
+      "actual_primary": "word_order_subordinate_clause",
+      "primary_match": true,
+      "expected_secondary": [
+        "modal_verbs_usage",
+        "relative_clause_structure"
+      ],
+      "actual_secondary": [
+        "verbs_modals",
+        "word_order_modal_structure",
+        "de_clauses_sentence_types_conditionals_wenn_falls"
+      ],
+      "matched_expected_secondary": [
+        "modal_verbs_usage"
+      ],
+      "secondary_overlap_score": 0.5,
+      "expected_outcome": "clean_success",
+      "actual_outcome": "clean_success",
+      "outcome_correct": true,
+      "fail_outcome_raw": "fail_new",
+      "recovery_errored_skills": [],
+      "recovery_overall_score": 98
+    },
+    {
+      "case_id": 4,
+      "source_sentence": "Честно говоря, мне сложно понять, почему, несмотря на всю известность художника, его поздние работы до сих пор остаются недооценёнными критиками.",
+      "fail_session_id": 421868506490,
+      "recovery_session_id": 580408720043,
+      "expected_primary": "subordinate_clause_word_order",
+      "actual_primary": "de_articles_determiners_definite_articles_der_die_das",
+      "primary_match": false,
+      "expected_secondary": [
+        "passive_voice",
+        "participial_adjectives"
+      ],
+      "actual_secondary": [
+        "nouns_plural",
+        "cases_accusative",
+        "adjectives_case_agreement"
+      ],
+      "matched_expected_secondary": [
+        "participial_adjectives"
+      ],
+      "secondary_overlap_score": 0.5,
+      "expected_outcome": "clean_success",
+      "actual_outcome": "recovered_final",
+      "outcome_correct": true,
+      "fail_outcome_raw": "fail_new",
+      "recovery_errored_skills": [
+        "de_nouns_noun_capitalization"
+      ],
+      "recovery_overall_score": 96
+    },
+    {
+      "case_id": 5,
+      "source_sentence": "Хотя казалось бы, что после стольких лет поиска индивидуального стиля автор наконец-то достиг своей цели, многие по-прежнему спорят о подлинности его новейших картин.",
+      "fail_session_id": 421868506490,
+      "recovery_session_id": 580408720043,
+      "expected_primary": "concessive_clauses_word_order",
+      "actual_primary": "adjectives_case_agreement",
+      "primary_match": false,
+      "expected_secondary": [
+        "perfect_tense_usage",
+        "genitive_possession"
+      ],
+      "actual_secondary": [
+        "de_articles_determiners_definite_articles_der_die_das",
+        "cases_accusative",
+        "cases_genitive"
+      ],
+      "matched_expected_secondary": [
+        "genitive_possession"
+      ],
+      "secondary_overlap_score": 0.5,
+      "expected_outcome": "clean_success",
+      "actual_outcome": "recovered_final",
+      "outcome_correct": true,
+      "fail_outcome_raw": "fail_new",
+      "recovery_errored_skills": [
+        "de_nouns_noun_capitalization"
+      ],
+      "recovery_overall_score": 99
+    },
+    {
+      "case_id": 6,
+      "source_sentence": "В условиях жёсткой конкуренции на глобальном рынке предприятия вынуждены повышать свою операционную эффективность и внедрять инновационные подходы к управлению проектами.",
+      "fail_session_id": 421868506490,
+      "recovery_session_id": 580408720043,
+      "expected_primary": "infinitive_structures",
+      "actual_primary": "adjectives_case_agreement",
+      "primary_match": false,
+      "expected_secondary": [
+        "noun_compounds",
+        "modal_necessity_structures"
+      ],
+      "actual_secondary": [
+        "prepositions_usage",
+        "de_articles_determiners_definite_articles_der_die_das",
+        "de_word_order_position_of_time_manner_place"
+      ],
+      "matched_expected_secondary": [],
+      "secondary_overlap_score": 0.0,
+      "expected_outcome": "clean_success",
+      "actual_outcome": "clean_success",
+      "outcome_correct": true,
+      "fail_outcome_raw": "fail_new",
+      "recovery_errored_skills": [],
+      "recovery_overall_score": 95
+    },
+    {
+      "case_id": 7,
+      "source_sentence": "Честно говоря, если бы не моя встреча с этим художником, я бы так никогда и не стал интересоваться абстрактным искусством.",
+      "fail_session_id": 421868506490,
+      "recovery_session_id": 580408720043,
+      "expected_primary": "conditional_konjunktiv_ii",
+      "actual_primary": "word_order_subordinate_clause",
+      "primary_match": false,
+      "expected_secondary": [
+        "verb_prefix_usage",
+        "reflexive_verbs"
+      ],
+      "actual_secondary": [
+        "de_articles_determiners_definite_articles_der_die_das",
+        "de_clauses_sentence_types_conditionals_wenn_falls",
+        "cases_dative"
+      ],
+      "matched_expected_secondary": [],
+      "secondary_overlap_score": 0.0,
+      "expected_outcome": "clean_success",
+      "actual_outcome": "recovered_final",
+      "outcome_correct": true,
+      "fail_outcome_raw": "clean_neutral",
+      "recovery_errored_skills": [
+        "de_verbs_infinitive_form_errors"
+      ],
+      "recovery_overall_score": 92
+    }
+  ],
+  "metrics": {
+    "primary_skill_accuracy": 0.2857,
+    "secondary_skill_overlap": 0.3571,
+    "outcome_classification_accuracy": 1.0
+  }
+}
