@@ -2379,6 +2379,55 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_quiz_history (word_ru, asked_at);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_telegram_quiz_delivery_history (
+                    id SERIAL PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    poll_id TEXT,
+                    word_ru TEXT NOT NULL,
+                    quiz_type TEXT,
+                    delivery_mode TEXT NOT NULL DEFAULT 'new',
+                    asked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tg_quiz_delivery_chat_time
+                ON bt_3_telegram_quiz_delivery_history (chat_id, asked_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tg_quiz_delivery_chat_word
+                ON bt_3_telegram_quiz_delivery_history (chat_id, word_ru, asked_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_telegram_quiz_attempts (
+                    id SERIAL PRIMARY KEY,
+                    poll_id TEXT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    word_ru TEXT,
+                    quiz_type TEXT,
+                    selected_option_index INTEGER,
+                    selected_text TEXT,
+                    is_correct BOOLEAN NOT NULL DEFAULT FALSE,
+                    answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (poll_id, user_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tg_quiz_attempts_chat_time
+                ON bt_3_telegram_quiz_attempts (chat_id, answered_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tg_quiz_attempts_chat_word
+                ON bt_3_telegram_quiz_attempts (chat_id, word_ru, answered_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_telegram_quiz_delivery_state (
+                    chat_id BIGINT PRIMARY KEY,
+                    next_mode TEXT NOT NULL DEFAULT 'new',
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_cache (
                     word_ru TEXT PRIMARY KEY,
                     response_json JSONB NOT NULL,
@@ -6459,6 +6508,117 @@ def get_random_dictionary_entry_for_quiz_type(
     }
 
 
+def _normalize_telegram_quiz_delivery_mode(value: str | None) -> str:
+    return "repeat" if str(value or "").strip().lower() == "repeat" else "new"
+
+
+def list_low_accuracy_telegram_quiz_entries(
+    chat_id: int,
+    *,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    accuracy_threshold: float = 0.5,
+    limit: int = 8,
+) -> list[dict]:
+    safe_limit = max(1, min(50, int(limit or 1)))
+    safe_threshold = min(1.0, max(0.0, float(accuracy_threshold)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH attempt_stats AS (
+                    SELECT
+                        word_ru,
+                        COUNT(*)::int AS attempts,
+                        SUM(CASE WHEN is_correct THEN 1 ELSE 0 END)::int AS correct_attempts
+                    FROM bt_3_telegram_quiz_attempts
+                    WHERE chat_id = %s
+                      AND COALESCE(NULLIF(word_ru, ''), '') <> ''
+                    GROUP BY word_ru
+                    HAVING COUNT(*) > 0
+                       AND (SUM(CASE WHEN is_correct THEN 1 ELSE 0 END)::float / COUNT(*)) <= %s
+                ),
+                latest_quiz_type AS (
+                    SELECT DISTINCT ON (word_ru)
+                        word_ru,
+                        COALESCE(NULLIF(quiz_type, ''), 'word') AS quiz_type
+                    FROM bt_3_telegram_quiz_attempts
+                    WHERE chat_id = %s
+                      AND COALESCE(NULLIF(word_ru, ''), '') <> ''
+                    ORDER BY word_ru, answered_at DESC
+                ),
+                delivery_stats AS (
+                    SELECT
+                        word_ru,
+                        MIN(asked_at) AS first_asked_at,
+                        MAX(asked_at) AS last_asked_at
+                    FROM bt_3_telegram_quiz_delivery_history
+                    WHERE chat_id = %s
+                      AND COALESCE(NULLIF(word_ru, ''), '') <> ''
+                    GROUP BY word_ru
+                )
+                SELECT
+                    q.id,
+                    q.user_id,
+                    q.word_ru,
+                    q.translation_de,
+                    q.response_json,
+                    q.source_lang,
+                    q.target_lang,
+                    COALESCE(latest_quiz_type.quiz_type, 'word') AS preferred_quiz_type,
+                    attempt_stats.attempts,
+                    attempt_stats.correct_attempts,
+                    delivery_stats.first_asked_at,
+                    delivery_stats.last_asked_at
+                FROM bt_3_webapp_dictionary_queries q
+                JOIN attempt_stats
+                  ON attempt_stats.word_ru = q.word_ru
+                JOIN delivery_stats
+                  ON delivery_stats.word_ru = q.word_ru
+                LEFT JOIN latest_quiz_type
+                  ON latest_quiz_type.word_ru = q.word_ru
+                WHERE q.response_json IS NOT NULL
+                  AND COALESCE(NULLIF(q.source_lang, ''), q.response_json->>'source_lang') = %s
+                  AND COALESCE(NULLIF(q.target_lang, ''), q.response_json->>'target_lang') = %s
+                ORDER BY delivery_stats.last_asked_at ASC, attempt_stats.attempts DESC, q.id ASC
+                LIMIT %s;
+                """,
+                (
+                    int(chat_id),
+                    safe_threshold,
+                    int(chat_id),
+                    int(chat_id),
+                    source_lang,
+                    target_lang,
+                    safe_limit,
+                ),
+            )
+            rows = cursor.fetchall() or []
+    items: list[dict] = []
+    for row in rows:
+        attempts = int(row[8] or 0)
+        correct_attempts = int(row[9] or 0)
+        accuracy = float(correct_attempts) / float(attempts) if attempts > 0 else 0.0
+        items.append(
+            {
+                "id": row[0],
+                "user_id": row[1],
+                "word_ru": row[2],
+                "translation_de": row[3],
+                "response_json": row[4],
+                "source_lang": row[5],
+                "target_lang": row[6],
+                "preferred_quiz_type": row[7] or "word",
+                "attempts": attempts,
+                "correct_attempts": correct_attempts,
+                "accuracy": accuracy,
+                "first_asked_at": row[10].isoformat() if row[10] else None,
+                "last_asked_at": row[11].isoformat() if row[11] else None,
+            }
+        )
+    return items
+
+
 def record_quiz_word(word_ru: str) -> None:
     if not word_ru:
         return
@@ -6470,6 +6630,138 @@ def record_quiz_word(word_ru: str) -> None:
                 VALUES (%s, NOW());
                 """,
                 (word_ru,),
+            )
+
+
+def record_telegram_quiz_delivery(
+    chat_id: int,
+    *,
+    poll_id: str | None = None,
+    word_ru: str | None = None,
+    quiz_type: str | None = None,
+    delivery_mode: str | None = None,
+) -> None:
+    normalized_word = str(word_ru or "").strip()
+    if not normalized_word:
+        return
+    normalized_mode = _normalize_telegram_quiz_delivery_mode(delivery_mode)
+    normalized_quiz_type = str(quiz_type or "").strip().lower() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_telegram_quiz_delivery_history (
+                    chat_id,
+                    poll_id,
+                    word_ru,
+                    quiz_type,
+                    delivery_mode,
+                    asked_at
+                )
+                VALUES (%s, %s, %s, %s, %s, NOW());
+                """,
+                (
+                    int(chat_id),
+                    str(poll_id or "").strip() or None,
+                    normalized_word,
+                    normalized_quiz_type,
+                    normalized_mode,
+                ),
+            )
+
+
+def record_telegram_quiz_attempt(
+    poll_id: str,
+    *,
+    chat_id: int,
+    user_id: int,
+    word_ru: str | None = None,
+    quiz_type: str | None = None,
+    selected_option_index: int | None = None,
+    selected_text: str | None = None,
+    is_correct: bool,
+) -> None:
+    normalized_poll_id = str(poll_id or "").strip()
+    if not normalized_poll_id:
+        return
+    normalized_quiz_type = str(quiz_type or "").strip().lower() or None
+    normalized_word = str(word_ru or "").strip() or None
+    normalized_selected_text = str(selected_text or "").strip() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_telegram_quiz_attempts (
+                    poll_id,
+                    chat_id,
+                    user_id,
+                    word_ru,
+                    quiz_type,
+                    selected_option_index,
+                    selected_text,
+                    is_correct,
+                    answered_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (poll_id, user_id) DO UPDATE
+                SET
+                    chat_id = EXCLUDED.chat_id,
+                    word_ru = EXCLUDED.word_ru,
+                    quiz_type = EXCLUDED.quiz_type,
+                    selected_option_index = EXCLUDED.selected_option_index,
+                    selected_text = EXCLUDED.selected_text,
+                    is_correct = EXCLUDED.is_correct,
+                    answered_at = NOW();
+                """,
+                (
+                    normalized_poll_id,
+                    int(chat_id),
+                    int(user_id),
+                    normalized_word,
+                    normalized_quiz_type,
+                    int(selected_option_index) if selected_option_index is not None else None,
+                    normalized_selected_text,
+                    bool(is_correct),
+                ),
+            )
+
+
+def get_telegram_quiz_next_mode(chat_id: int) -> str:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT next_mode
+                FROM bt_3_telegram_quiz_delivery_state
+                WHERE chat_id = %s
+                LIMIT 1;
+                """,
+                (int(chat_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return "new"
+    return _normalize_telegram_quiz_delivery_mode(row[0])
+
+
+def set_telegram_quiz_next_mode(chat_id: int, next_mode: str) -> None:
+    normalized_mode = _normalize_telegram_quiz_delivery_mode(next_mode)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_telegram_quiz_delivery_state (
+                    chat_id,
+                    next_mode,
+                    updated_at
+                )
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (chat_id) DO UPDATE
+                SET
+                    next_mode = EXCLUDED.next_mode,
+                    updated_at = NOW();
+                """,
+                (int(chat_id), normalized_mode),
             )
 
 

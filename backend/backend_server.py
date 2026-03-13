@@ -60,7 +60,7 @@ import copy
 import hashlib
 import io
 import queue
-from collections import deque
+from collections import Counter, deque
 from urllib.parse import urlparse
 from youtube_transcript_api import YouTubeTranscriptApi
 import os
@@ -171,7 +171,6 @@ from backend.database import (
     get_skill_state_v2_comparison,
     get_pending_daily_sentences,
     get_webapp_dictionary_entries,
-    get_dictionary_entries_for_tts_prewarm,
     get_recent_dictionary_user_ids,
     get_webapp_translation_history,
     get_latest_daily_sentences,
@@ -517,6 +516,19 @@ TTS_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("TTS_PREWARM_INTERVAL_MINU
 TTS_PREWARM_BATCH_SIZE = max(10, min(500, int((os.getenv("TTS_PREWARM_BATCH_SIZE") or "120").strip())))
 TTS_PREWARM_MAX_CHARS_PER_RUN = max(500, min(200000, int((os.getenv("TTS_PREWARM_MAX_CHARS_PER_RUN") or "12000").strip())))
 TTS_PREWARM_LOOKBACK_HOURS = max(1, min(24 * 90, int((os.getenv("TTS_PREWARM_LOOKBACK_HOURS") or "168").strip())))
+TTS_PREWARM_ACTIVE_USER_LOOKBACK_DAYS = max(1, min(90, int((os.getenv("TTS_PREWARM_ACTIVE_USER_LOOKBACK_DAYS") or "7").strip())))
+TTS_PREWARM_MAX_USERS = max(10, min(5000, int((os.getenv("TTS_PREWARM_MAX_USERS") or "250").strip())))
+TTS_PREWARM_HORIZON_HOURS = max(1, min(72, int((os.getenv("TTS_PREWARM_HORIZON_HOURS") or "24").strip())))
+TTS_PREWARM_PER_USER_ITEM_LIMIT = max(1, min(100, int((os.getenv("TTS_PREWARM_PER_USER_ITEM_LIMIT") or "15").strip())))
+TTS_PREWARM_PER_USER_CHAR_LIMIT = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT") or "600").strip())))
+TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT = max(
+    TTS_PREWARM_PER_USER_ITEM_LIMIT,
+    min(200, int((os.getenv("TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT") or "30").strip())),
+)
+TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT = max(
+    TTS_PREWARM_PER_USER_CHAR_LIMIT,
+    min(20000, int((os.getenv("TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT") or "1200").strip())),
+)
 TTS_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_START_HOUR") or "1").strip())))
 TTS_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
 TTS_PREWARM_ALLOW_DAYTIME = str(os.getenv("TTS_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -8060,24 +8072,171 @@ def _maybe_send_tts_admin_burst_alert() -> None:
     _send_tts_admin_message(message_text)
 
 
+def _shorten_tts_admin_text(value: Any, limit: int = 160) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    safe_limit = max(16, int(limit or 160))
+    if len(text) <= safe_limit:
+        return text
+    return text[: max(1, safe_limit - 3)].rstrip() + "..."
+
+
+def _tts_admin_event_weight(item: dict) -> int:
+    return max(1, int(item.get("count") or 1))
+
+
+def _summarize_tts_failure_window(events: list[dict]) -> dict:
+    failure_events = [
+        item
+        for item in events
+        if item.get("status") == "error" and item.get("kind") in {"generation", "generation_enqueue", "prewarm_run"}
+    ]
+    success_count = sum(
+        int(item.get("count") or 0)
+        for item in events
+        if item.get("kind") == "generation" and item.get("status") in {"generated", "hit"}
+    )
+    if not failure_events:
+        return {
+            "failure_count": 0,
+            "success_count": success_count,
+            "top_kind": "",
+            "top_source": "",
+            "top_error_code": "",
+            "top_exception_type": "",
+            "top_failure_stage": "",
+            "recent_examples": [],
+        }
+
+    counters = {
+        "kind": Counter(),
+        "source": Counter(),
+        "error_code": Counter(),
+        "exception_type": Counter(),
+        "failure_stage": Counter(),
+    }
+    recent_examples: list[str] = []
+
+    for item in failure_events:
+        weight = _tts_admin_event_weight(item)
+        meta = item.get("meta") or {}
+        kind = _shorten_tts_admin_text(item.get("kind"), 48)
+        source = _shorten_tts_admin_text(item.get("source"), 48)
+        error_code = _shorten_tts_admin_text(meta.get("error_code"), 64)
+        exception_type = _shorten_tts_admin_text(meta.get("exception_type"), 64)
+        failure_stage = _shorten_tts_admin_text(meta.get("failure_stage"), 64)
+
+        if kind:
+            counters["kind"][kind] += weight
+        if source:
+            counters["source"][source] += weight
+        if error_code:
+            counters["error_code"][error_code] += weight
+        if exception_type:
+            counters["exception_type"][exception_type] += weight
+        if failure_stage:
+            counters["failure_stage"][failure_stage] += weight
+
+    for item in reversed(failure_events):
+        meta = item.get("meta") or {}
+        parts = []
+        kind = _shorten_tts_admin_text(item.get("kind"), 32)
+        source = _shorten_tts_admin_text(item.get("source"), 32)
+        error_code = _shorten_tts_admin_text(meta.get("error_code"), 48)
+        exception_type = _shorten_tts_admin_text(meta.get("exception_type"), 48)
+        failure_stage = _shorten_tts_admin_text(meta.get("failure_stage"), 48)
+        error_message = _shorten_tts_admin_text(meta.get("error_message"), 120)
+        if kind:
+            parts.append(kind)
+        if source:
+            parts.append(source)
+        if error_code:
+            parts.append(error_code)
+        if exception_type:
+            parts.append(exception_type)
+        if failure_stage:
+            parts.append(f"stage={failure_stage}")
+        example = " / ".join(parts)
+        if error_message:
+            example = f"{example}: {error_message}" if example else error_message
+        if example:
+            recent_examples.append(example)
+        if len(recent_examples) >= 2:
+            break
+
+    def _top(counter_name: str) -> tuple[str, int]:
+        counter = counters[counter_name]
+        if not counter:
+            return "", 0
+        label, count = counter.most_common(1)[0]
+        return str(label), int(count)
+
+    top_kind, top_kind_count = _top("kind")
+    top_source, top_source_count = _top("source")
+    top_error_code, top_error_code_count = _top("error_code")
+    top_exception_type, top_exception_type_count = _top("exception_type")
+    top_failure_stage, top_failure_stage_count = _top("failure_stage")
+    return {
+        "failure_count": sum(_tts_admin_event_weight(item) for item in failure_events),
+        "success_count": success_count,
+        "top_kind": top_kind,
+        "top_kind_count": top_kind_count,
+        "top_source": top_source,
+        "top_source_count": top_source_count,
+        "top_error_code": top_error_code,
+        "top_error_code_count": top_error_code_count,
+        "top_exception_type": top_exception_type,
+        "top_exception_type_count": top_exception_type_count,
+        "top_failure_stage": top_failure_stage,
+        "top_failure_stage_count": top_failure_stage_count,
+        "recent_examples": recent_examples,
+    }
+
+
 def _maybe_send_tts_admin_failure_alert() -> None:
     if TTS_ADMIN_ALERT_FAILURE_THRESHOLD <= 0:
         return
     events = _get_tts_admin_monitor_window(int(TTS_ADMIN_ALERT_FAILURE_WINDOW_MINUTES) * 60)
-    failure_count = sum(
-        int(item.get("count") or 0)
-        for item in events
-        if item.get("status") == "error" and item.get("kind") in {"generation", "generation_enqueue", "prewarm_run"}
-    )
+    failure_summary = _summarize_tts_failure_window(events)
+    failure_count = int(failure_summary.get("failure_count") or 0)
     if failure_count < int(TTS_ADMIN_ALERT_FAILURE_THRESHOLD):
         return
     if not _should_send_tts_admin_alert("tts_failure_burst"):
         return
+    extra_lines = []
+    if failure_summary.get("success_count"):
+        extra_lines.append(
+            f"Successful audio jobs in same window: {int(failure_summary.get('success_count') or 0)}"
+        )
+    if failure_summary.get("top_kind"):
+        extra_lines.append(
+            f"Main failing process: {failure_summary['top_kind']} ({int(failure_summary.get('top_kind_count') or 0)})"
+        )
+    if failure_summary.get("top_source"):
+        extra_lines.append(
+            f"Main failing source: {failure_summary['top_source']} ({int(failure_summary.get('top_source_count') or 0)})"
+        )
+    if failure_summary.get("top_error_code"):
+        extra_lines.append(
+            f"Main error code: {failure_summary['top_error_code']} ({int(failure_summary.get('top_error_code_count') or 0)})"
+        )
+    if failure_summary.get("top_exception_type"):
+        extra_lines.append(
+            f"Main exception type: {failure_summary['top_exception_type']} ({int(failure_summary.get('top_exception_type_count') or 0)})"
+        )
+    if failure_summary.get("top_failure_stage"):
+        extra_lines.append(
+            f"Main failing step: {failure_summary['top_failure_stage']} ({int(failure_summary.get('top_failure_stage_count') or 0)})"
+        )
+    for index, sample in enumerate(failure_summary.get("recent_examples") or [], start=1):
+        extra_lines.append(f"Recent example {index}: {sample}")
+    details_block = ("\n" + "\n".join(extra_lines)) if extra_lines else ""
     message_text = (
         "🚨 TTS failure alert\n\n"
         f"Errors in the last {int(TTS_ADMIN_ALERT_FAILURE_WINDOW_MINUTES)} min: {failure_count}\n"
         f"Threshold: {int(TTS_ADMIN_ALERT_FAILURE_THRESHOLD)}\n\n"
-        "Check Google TTS, R2 and recent deploy/logs."
+        f"Check Google TTS, R2 and recent deploy/logs.{details_block}"
     )
     _send_tts_admin_message(message_text)
 
@@ -8159,6 +8318,7 @@ def _build_tts_admin_digest() -> str:
     prewarm_cached_hits = sum(int((item.get("meta") or {}).get("cached_hits") or 0) for item in prewarm_runs)
     prewarm_requeued = sum(int((item.get("meta") or {}).get("requeued") or 0) for item in prewarm_runs)
     prewarm_errors = sum(int((item.get("meta") or {}).get("errors") or 0) for item in prewarm_runs)
+    latest_prewarm_meta = (prewarm_runs[-1].get("meta") or {}) if prewarm_runs else {}
     recovery_runs = [item for item in events if item.get("kind") == "recovery_run"]
     recovery_attempted = sum(int((item.get("meta") or {}).get("attempted") or 0) for item in recovery_runs)
     recovery_queued = sum(int((item.get("meta") or {}).get("queued") or 0) for item in recovery_runs)
@@ -8168,6 +8328,32 @@ def _build_tts_admin_digest() -> str:
     snapshot = _get_tts_object_cache_snapshot(stale_minutes=TTS_ADMIN_ALERT_PENDING_AGE_MINUTES)
     avg_generation_ms = int(sum(generation_durations) / len(generation_durations)) if generation_durations else 0
     max_generation_ms = max(generation_durations) if generation_durations else 0
+    personalized_prewarm_block = ""
+    if str(latest_prewarm_meta.get("planner_mode") or "").strip() == "personalized_fsrs":
+        personalized_prewarm_block = (
+            f"Prewarm users considered (recent active learners scanned): {int(latest_prewarm_meta.get('users_considered') or 0)}\n"
+            f"Prewarm eligible users (allowed users included in plan): {int(latest_prewarm_meta.get('eligible_users') or 0)}\n"
+            f"Users with prediction (had likely next-session texts): {int(latest_prewarm_meta.get('users_with_prediction') or 0)}\n"
+            f"Base quota fit (users fully covered by 15 texts / 600 chars): {int(latest_prewarm_meta.get('base_quota_fit_pct') or 0)}%\n"
+            f"Final fit after redistribution (users fully covered after extra budget): {int(latest_prewarm_meta.get('final_quota_fit_pct') or 0)}%\n"
+            f"Predicted total (all likely next-session texts): {int(latest_prewarm_meta.get('predicted_items') or 0)}\n"
+            f"Assigned total (texts chosen for tonight): {int(latest_prewarm_meta.get('assigned_items') or 0)}\n"
+            f"Unique assigned total (duplicate texts merged before generation): {int(latest_prewarm_meta.get('unique_assigned_items') or 0)}\n"
+            f"Predicted chars p50/p90/p95 per user: "
+            f"{int(latest_prewarm_meta.get('predicted_chars_per_user_p50') or 0)}/"
+            f"{int(latest_prewarm_meta.get('predicted_chars_per_user_p90') or 0)}/"
+            f"{int(latest_prewarm_meta.get('predicted_chars_per_user_p95') or 0)}\n"
+            f"Assigned chars p50/p90/p95 per user: "
+            f"{int(latest_prewarm_meta.get('assigned_chars_per_user_p50') or 0)}/"
+            f"{int(latest_prewarm_meta.get('assigned_chars_per_user_p90') or 0)}/"
+            f"{int(latest_prewarm_meta.get('assigned_chars_per_user_p95') or 0)}\n"
+            f"Dictionary adds yesterday p50/p90/max per user: "
+            f"{int(latest_prewarm_meta.get('dictionary_adds_1d_per_user_p50') or 0)}/"
+            f"{int(latest_prewarm_meta.get('dictionary_adds_1d_per_user_p90') or 0)}/"
+            f"{int(latest_prewarm_meta.get('dictionary_adds_1d_per_user_max') or 0)}\n"
+            f"Top 10%% users share of predicted chars (how concentrated demand is): "
+            f"{int(latest_prewarm_meta.get('predicted_chars_top10pct_share') or 0)}%\n"
+        )
     return (
         "📊 TTS hourly digest\n\n"
         f"Window: last {int(TTS_ADMIN_DIGEST_INTERVAL_MINUTES)} min\n\n"
@@ -8187,7 +8373,8 @@ def _build_tts_admin_digest() -> str:
         f"Prewarm generated (new audios prepared automatically): {prewarm_generated}\n"
         f"Prewarm cache hits (audio was already ready): {prewarm_cached_hits}\n"
         f"Prewarm requeued failed (old failed items sent again): {prewarm_requeued}\n"
-        f"Prewarm errors (automatic prewarm failures): {prewarm_errors}\n\n"
+        f"Prewarm errors (automatic prewarm failures): {prewarm_errors}\n"
+        f"{personalized_prewarm_block}\n"
         "Stuck-task recovery:\n"
         f"Recovery runs (attempts to revive old stuck pending items): {len(recovery_runs)}\n"
         f"Recovery checked (old pending items inspected): {recovery_attempted}\n"
@@ -8831,6 +9018,347 @@ def _should_run_tts_prewarm_now(tz_name: str) -> bool:
     )
 
 
+def _percentile_int(values: list[int], percentile: float) -> int:
+    if not values:
+        return 0
+    ordered = sorted(int(value or 0) for value in values)
+    if len(ordered) == 1:
+        return int(ordered[0])
+    safe_percentile = min(1.0, max(0.0, float(percentile)))
+    index = int(round((len(ordered) - 1) * safe_percentile))
+    return int(ordered[index])
+
+
+def _distribution_summary(values: list[int], prefix: str) -> dict:
+    normalized = [max(0, int(value or 0)) for value in values]
+    if not normalized:
+        return {
+            f"{prefix}_avg": 0,
+            f"{prefix}_p50": 0,
+            f"{prefix}_p90": 0,
+            f"{prefix}_p95": 0,
+            f"{prefix}_max": 0,
+        }
+    return {
+        f"{prefix}_avg": int(sum(normalized) / len(normalized)),
+        f"{prefix}_p50": _percentile_int(normalized, 0.50),
+        f"{prefix}_p90": _percentile_int(normalized, 0.90),
+        f"{prefix}_p95": _percentile_int(normalized, 0.95),
+        f"{prefix}_max": max(normalized),
+    }
+
+
+def _top_share_percent(values: list[int], top_fraction: float = 0.10) -> int:
+    normalized = sorted((max(0, int(value or 0)) for value in values), reverse=True)
+    total = sum(normalized)
+    if total <= 0:
+        return 0
+    count = max(1, int(round(len(normalized) * max(0.01, float(top_fraction)))))
+    return int(round((sum(normalized[:count]) / total) * 100.0))
+
+
+def _list_tts_prewarm_active_user_ids(*, lookback_days: int, limit: int) -> list[int]:
+    safe_days = max(1, int(lookback_days or 1))
+    safe_limit = max(1, int(limit or 1))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH recent_activity AS (
+                    SELECT q.user_id, MAX(q.created_at) AS activity_at
+                    FROM bt_3_webapp_dictionary_queries q
+                    WHERE q.created_at >= NOW() - (%s || ' days')::interval
+                    GROUP BY q.user_id
+                    UNION ALL
+                    SELECT l.user_id, MAX(l.reviewed_at) AS activity_at
+                    FROM bt_3_card_review_log l
+                    WHERE l.reviewed_at >= NOW() - (%s || ' days')::interval
+                    GROUP BY l.user_id
+                    UNION ALL
+                    SELECT b.user_id, MAX(b.event_time) AS activity_at
+                    FROM bt_3_billing_events b
+                    WHERE b.user_id IS NOT NULL
+                      AND b.action_type LIKE 'flashcards_words_served_%%'
+                      AND b.event_time >= NOW() - (%s || ' days')::interval
+                    GROUP BY b.user_id
+                )
+                SELECT user_id
+                FROM recent_activity
+                WHERE user_id IS NOT NULL
+                GROUP BY user_id
+                ORDER BY MAX(activity_at) DESC, user_id DESC
+                LIMIT %s;
+                """,
+                (safe_days, safe_days, safe_days, safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [int(row[0]) for row in rows if row and row[0] is not None]
+
+
+def _get_tts_prewarm_user_activity_map(
+    *,
+    user_ids: list[int],
+    lookback_days: int,
+    horizon_utc: datetime,
+) -> dict[int, dict]:
+    normalized_user_ids = [int(item) for item in user_ids if int(item or 0) > 0]
+    if not normalized_user_ids:
+        return {}
+    safe_days = max(1, int(lookback_days or 1))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH selected_users AS (
+                    SELECT UNNEST(%s::bigint[]) AS user_id
+                ),
+                dict_stats AS (
+                    SELECT
+                        q.user_id,
+                        COUNT(*) FILTER (WHERE q.created_at >= NOW() - INTERVAL '1 day') AS dictionary_adds_1d,
+                        COUNT(*) AS dictionary_adds_7d
+                    FROM bt_3_webapp_dictionary_queries q
+                    WHERE q.user_id = ANY(%s::bigint[])
+                      AND q.created_at >= NOW() - (%s || ' days')::interval
+                    GROUP BY q.user_id
+                ),
+                review_stats AS (
+                    SELECT
+                        l.user_id,
+                        COUNT(*) AS review_events_7d,
+                        COUNT(DISTINCT (l.reviewed_at AT TIME ZONE 'Europe/Vienna')::date) AS review_days_7d
+                    FROM bt_3_card_review_log l
+                    WHERE l.user_id = ANY(%s::bigint[])
+                      AND l.reviewed_at >= NOW() - (%s || ' days')::interval
+                    GROUP BY l.user_id
+                ),
+                served_stats AS (
+                    SELECT
+                        b.user_id,
+                        COALESCE(SUM(b.units_value), 0) AS served_words_7d,
+                        COUNT(DISTINCT (b.event_time AT TIME ZONE 'Europe/Vienna')::date) AS served_days_7d
+                    FROM bt_3_billing_events b
+                    WHERE b.user_id = ANY(%s::bigint[])
+                      AND b.action_type LIKE 'flashcards_words_served_%%'
+                      AND b.units_type = 'words'
+                      AND b.event_time >= NOW() - (%s || ' days')::interval
+                    GROUP BY b.user_id
+                ),
+                due_stats AS (
+                    SELECT
+                        s.user_id,
+                        COUNT(*) AS due_24h
+                    FROM bt_3_card_srs_state s
+                    JOIN bt_3_webapp_dictionary_queries q
+                      ON q.id = s.card_id
+                     AND q.user_id = s.user_id
+                    WHERE s.user_id = ANY(%s::bigint[])
+                      AND s.status <> 'suspended'
+                      AND s.due_at <= %s
+                    GROUP BY s.user_id
+                )
+                SELECT
+                    su.user_id,
+                    COALESCE(ds.dictionary_adds_1d, 0),
+                    COALESCE(ds.dictionary_adds_7d, 0),
+                    COALESCE(rs.review_events_7d, 0),
+                    COALESCE(rs.review_days_7d, 0),
+                    COALESCE(ss.served_words_7d, 0),
+                    COALESCE(ss.served_days_7d, 0),
+                    COALESCE(ds2.due_24h, 0)
+                FROM selected_users su
+                LEFT JOIN dict_stats ds ON ds.user_id = su.user_id
+                LEFT JOIN review_stats rs ON rs.user_id = su.user_id
+                LEFT JOIN served_stats ss ON ss.user_id = su.user_id
+                LEFT JOIN due_stats ds2 ON ds2.user_id = su.user_id;
+                """,
+                (
+                    normalized_user_ids,
+                    normalized_user_ids,
+                    safe_days,
+                    normalized_user_ids,
+                    safe_days,
+                    normalized_user_ids,
+                    safe_days,
+                    normalized_user_ids,
+                    horizon_utc,
+                ),
+            )
+            rows = cursor.fetchall() or []
+    activity_map: dict[int, dict] = {}
+    for row in rows:
+        user_id = int(row[0] or 0)
+        if user_id <= 0:
+            continue
+        activity_map[user_id] = {
+            "dictionary_adds_1d": int(row[1] or 0),
+            "dictionary_adds_7d": int(row[2] or 0),
+            "review_events_7d": int(row[3] or 0),
+            "review_days_7d": int(row[4] or 0),
+            "served_words_7d": int(float(row[5] or 0.0)),
+            "served_days_7d": int(row[6] or 0),
+            "due_24h": int(row[7] or 0),
+        }
+    return activity_map
+
+
+def _compute_tts_prewarm_activity_score(stats: dict | None) -> int:
+    item = stats if isinstance(stats, dict) else {}
+    return int(
+        int(item.get("due_24h") or 0) * 3
+        + int(item.get("served_words_7d") or 0)
+        + int(item.get("review_events_7d") or 0) // 2
+        + int(item.get("dictionary_adds_7d") or 0) // 2
+        + int(item.get("review_days_7d") or 0) * 2
+        + int(item.get("served_days_7d") or 0) * 2
+    )
+
+
+def _list_predicted_tts_candidates_for_user(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    now_utc: datetime,
+    horizon_utc: datetime,
+    item_limit: int,
+) -> list[dict]:
+    safe_item_limit = max(1, int(item_limit or 1))
+    raw_limit = max(10, safe_item_limit * 4)
+    candidates: list[dict] = []
+    seen_cache_keys: set[str] = set()
+    voice = _normalize_tts_voice_name(None, target_lang)
+    language_code = _TTS_LANG_CODES.get(target_lang, _TTS_LANG_CODES["de"])
+    speaking_rate = TTS_WEBAPP_DEFAULT_SPEED
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    s.card_id,
+                    q.word_ru,
+                    q.translation_de,
+                    q.word_de,
+                    q.translation_ru,
+                    q.response_json,
+                    q.source_lang,
+                    q.target_lang
+                FROM bt_3_card_srs_state s
+                JOIN bt_3_webapp_dictionary_queries q
+                  ON q.id = s.card_id
+                 AND q.user_id = s.user_id
+                WHERE s.user_id = %s
+                  AND s.status <> 'suspended'
+                  AND s.due_at <= %s
+                  AND q.source_lang = %s
+                  AND q.target_lang = %s
+                ORDER BY s.due_at ASC
+                LIMIT %s;
+                """,
+                (int(user_id), horizon_utc, source_lang, target_lang, raw_limit),
+            )
+            due_rows = cursor.fetchall() or []
+
+            cursor.execute(
+                """
+                SELECT
+                    q.id,
+                    q.word_ru,
+                    q.translation_de,
+                    q.word_de,
+                    q.translation_ru,
+                    q.response_json,
+                    q.source_lang,
+                    q.target_lang
+                FROM bt_3_webapp_dictionary_queries q
+                LEFT JOIN bt_3_card_srs_state s
+                  ON s.user_id = q.user_id
+                 AND s.card_id = q.id
+                WHERE q.user_id = %s
+                  AND s.id IS NULL
+                  AND q.source_lang = %s
+                  AND q.target_lang = %s
+                ORDER BY q.created_at ASC
+                LIMIT %s;
+                """,
+                (int(user_id), source_lang, target_lang, raw_limit),
+            )
+            new_rows = cursor.fetchall() or []
+
+    for row in [*due_rows, *new_rows]:
+        item = {
+            "id": int(row[0] or 0),
+            "word_ru": row[1],
+            "translation_de": row[2],
+            "word_de": row[3],
+            "translation_ru": row[4],
+            "response_json": _coerce_response_json(row[5]),
+            "source_lang": row[6],
+            "target_lang": row[7],
+        }
+        _source_text, target_text = _resolve_entry_texts_for_pair(
+            item,
+            item.get("response_json") or {},
+            source_lang,
+            target_lang,
+        )
+        normalized_text = _normalize_utterance_text(target_text)
+        if not normalized_text:
+            continue
+        cache_key = _tts_object_cache_key(target_lang, voice, speaking_rate, normalized_text)
+        if cache_key in seen_cache_keys:
+            continue
+        seen_cache_keys.add(cache_key)
+        candidates.append(
+            {
+                "user_id": int(user_id),
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "language": language_code,
+                "voice": voice,
+                "speaking_rate": speaking_rate,
+                "text": normalized_text,
+                "chars": len(normalized_text),
+                "cache_key": cache_key,
+                "object_key": _tts_object_key(target_lang, voice, cache_key),
+                "due_by_horizon": True,
+            }
+        )
+        if len(candidates) >= safe_item_limit:
+            break
+    return candidates
+
+
+def _select_tts_candidates_with_budget(
+    candidates: list[dict],
+    *,
+    item_limit: int,
+    char_limit: int,
+) -> tuple[list[dict], int]:
+    safe_item_limit = max(0, int(item_limit or 0))
+    safe_char_limit = max(0, int(char_limit or 0))
+    if safe_item_limit <= 0 or safe_char_limit <= 0:
+        return [], 0
+    selected: list[dict] = []
+    selected_chars = 0
+    for candidate in candidates:
+        if len(selected) >= safe_item_limit:
+            break
+        chars = max(0, int(candidate.get("chars") or 0))
+        if selected and selected_chars + chars > safe_char_limit:
+            continue
+        if not selected and chars > safe_char_limit:
+            selected.append(candidate)
+            selected_chars += chars
+            break
+        if selected_chars + chars > safe_char_limit:
+            continue
+        selected.append(candidate)
+        selected_chars += chars
+    return selected, selected_chars
+
+
 def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
     if not TTS_PREWARM_ENABLED and not force:
         return {"ok": True, "skipped": True, "reason": "disabled"}
@@ -8841,10 +9369,28 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
 
     started_at = time.perf_counter()
     try:
-        candidates = get_dictionary_entries_for_tts_prewarm(
-            limit=max(TTS_PREWARM_BATCH_SIZE * 3, TTS_PREWARM_BATCH_SIZE),
-            lookback_hours=TTS_PREWARM_LOOKBACK_HOURS,
+        now_utc = datetime.now(timezone.utc)
+        horizon_utc = now_utc + timedelta(hours=int(TTS_PREWARM_HORIZON_HOURS))
+        active_user_ids = _list_tts_prewarm_active_user_ids(
+            lookback_days=TTS_PREWARM_ACTIVE_USER_LOOKBACK_DAYS,
+            limit=TTS_PREWARM_MAX_USERS,
         )
+        users_considered = len(active_user_ids)
+        activity_map = _get_tts_prewarm_user_activity_map(
+            user_ids=active_user_ids,
+            lookback_days=TTS_PREWARM_ACTIVE_USER_LOOKBACK_DAYS,
+            horizon_utc=horizon_utc,
+        )
+        eligible_users = 0
+        users_with_prediction = 0
+        base_quota_fit_users = 0
+        final_quota_fit_users = 0
+        predicted_total = 0
+        predicted_chars_total = 0
+        assigned_total = 0
+        assigned_chars_total = 0
+        unique_assigned_items = 0
+        unique_assigned_chars = 0
         processed = 0
         generated = 0
         cached_hits = 0
@@ -8854,61 +9400,146 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
         requeued = 0
         errors = 0
         total_chars = 0
-        seen_keys: set[str] = set()
+        user_plans: list[dict] = []
 
-        for item in candidates:
-            if processed >= TTS_PREWARM_BATCH_SIZE:
-                break
-
-            response_json = item.get("response_json")
-            if isinstance(response_json, str):
-                try:
-                    response_json = json.loads(response_json)
-                except Exception:
-                    response_json = {}
-            if not isinstance(response_json, dict):
-                response_json = {}
-
-            source_lang = _normalize_short_lang_code(
-                item.get("source_lang") or response_json.get("source_lang"),
-                fallback="ru",
-            )
-            target_lang = _normalize_short_lang_code(
-                item.get("target_lang") or response_json.get("target_lang"),
-                fallback="de",
-            )
-            _source_text, target_text = _resolve_entry_texts_for_pair(
-                item,
-                response_json,
-                source_lang,
-                target_lang,
-            )
-            text = _normalize_utterance_text(target_text)
-            if not text:
-                skipped_empty += 1
+        for user_id in active_user_ids:
+            user_id_int = int(user_id or 0)
+            if user_id_int <= 0:
                 continue
-
-            if total_chars + len(text) > TTS_PREWARM_MAX_CHARS_PER_RUN:
-                skipped_budget += 1
-                break
-
-            owner_user_id = int(item.get("user_id") or 0)
-            if owner_user_id <= 0:
+            if not _is_webapp_user_allowed(user_id_int):
+                continue
+            try:
+                source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+                predicted_candidates = _list_predicted_tts_candidates_for_user(
+                    user_id=user_id_int,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    now_utc=now_utc,
+                    horizon_utc=horizon_utc,
+                    item_limit=TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT,
+                )
+                eligible_users += 1
+                predicted_count = len(predicted_candidates)
+                predicted_chars = sum(int(candidate.get("chars") or 0) for candidate in predicted_candidates)
+                activity_stats = activity_map.get(user_id_int, {})
+                activity_score = _compute_tts_prewarm_activity_score(activity_stats)
+                base_assigned, base_assigned_chars = _select_tts_candidates_with_budget(
+                    predicted_candidates,
+                    item_limit=TTS_PREWARM_PER_USER_ITEM_LIMIT,
+                    char_limit=TTS_PREWARM_PER_USER_CHAR_LIMIT,
+                )
+                assigned_cache_keys = {str(item.get("cache_key") or "") for item in base_assigned}
+                overflow_candidates = [
+                    item
+                    for item in predicted_candidates
+                    if str(item.get("cache_key") or "") not in assigned_cache_keys
+                ]
+                if predicted_count > 0:
+                    users_with_prediction += 1
+                if predicted_count > 0 and not overflow_candidates:
+                    base_quota_fit_users += 1
+                predicted_total += predicted_count
+                predicted_chars_total += predicted_chars
+                assigned_total += len(base_assigned)
+                assigned_chars_total += base_assigned_chars
+                user_plans.append(
+                    {
+                        "user_id": user_id_int,
+                        "predicted_candidates": predicted_candidates,
+                        "predicted_count": predicted_count,
+                        "predicted_chars": predicted_chars,
+                        "assigned_candidates": list(base_assigned),
+                        "assigned_count": len(base_assigned),
+                        "assigned_chars": base_assigned_chars,
+                        "overflow_candidates": overflow_candidates,
+                        "activity_stats": activity_stats,
+                        "activity_score": activity_score,
+                    }
+                )
+            except Exception:
                 errors += 1
-                logging.warning("TTS prewarm skipped: invalid user_id for dictionary_entry_id=%s", item.get("id"))
-                continue
+                logging.exception("TTS personalized prewarm planning failed for user_id=%s", user_id_int)
 
-            voice = _normalize_tts_voice_name(None, target_lang)
-            language_code = _TTS_LANG_CODES.get(target_lang, _TTS_LANG_CODES["de"])
-            speaking_rate = TTS_WEBAPP_DEFAULT_SPEED
-            cache_key = _tts_object_cache_key(target_lang, voice, speaking_rate, text)
-            object_key = _tts_object_key(target_lang, voice, cache_key)
-            if cache_key in seen_keys:
-                continue
-            seen_keys.add(cache_key)
+        base_item_budget_total = eligible_users * int(TTS_PREWARM_PER_USER_ITEM_LIMIT)
+        base_char_budget_total = eligible_users * int(TTS_PREWARM_PER_USER_CHAR_LIMIT)
+        remaining_item_budget = max(0, base_item_budget_total - assigned_total)
+        remaining_char_budget = max(0, base_char_budget_total - assigned_chars_total)
 
+        for plan in sorted(
+            [item for item in user_plans if item.get("overflow_candidates")],
+            key=lambda item: (
+                int(item.get("activity_score") or 0),
+                int((item.get("activity_stats") or {}).get("due_24h") or 0),
+                int(item.get("predicted_chars") or 0),
+                int(item.get("predicted_count") or 0),
+                -int(item.get("user_id") or 0),
+            ),
+            reverse=True,
+        ):
+            if remaining_item_budget <= 0 or remaining_char_budget <= 0:
+                break
+            item_capacity = max(0, int(TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT) - int(plan.get("assigned_count") or 0))
+            char_capacity = max(0, int(TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT) - int(plan.get("assigned_chars") or 0))
+            if item_capacity <= 0 or char_capacity <= 0:
+                continue
+            extra_assigned, extra_chars = _select_tts_candidates_with_budget(
+                list(plan.get("overflow_candidates") or []),
+                item_limit=min(remaining_item_budget, item_capacity),
+                char_limit=min(remaining_char_budget, char_capacity),
+            )
+            if not extra_assigned:
+                continue
+            plan["assigned_candidates"].extend(extra_assigned)
+            plan["assigned_count"] = int(plan.get("assigned_count") or 0) + len(extra_assigned)
+            plan["assigned_chars"] = int(plan.get("assigned_chars") or 0) + int(extra_chars or 0)
+            assigned_total += len(extra_assigned)
+            assigned_chars_total += int(extra_chars or 0)
+            remaining_item_budget = max(0, remaining_item_budget - len(extra_assigned))
+            remaining_char_budget = max(0, remaining_char_budget - int(extra_chars or 0))
+            extra_keys = {str(item.get("cache_key") or "") for item in extra_assigned}
+            plan["overflow_candidates"] = [
+                item
+                for item in list(plan.get("overflow_candidates") or [])
+                if str(item.get("cache_key") or "") not in extra_keys
+            ]
+
+        unique_candidates: dict[str, dict] = {}
+        for plan in user_plans:
+            assigned_candidates = list(plan.get("assigned_candidates") or [])
+            if assigned_candidates and not plan.get("overflow_candidates"):
+                final_quota_fit_users += 1
+            for candidate in assigned_candidates:
+                cache_key = str(candidate.get("cache_key") or "")
+                if not cache_key:
+                    continue
+                existing = unique_candidates.get(cache_key)
+                if existing is None:
+                    unique_candidates[cache_key] = {
+                        **candidate,
+                        "assigned_user_ids": [int(plan.get("user_id") or 0)],
+                    }
+                else:
+                    assigned_user_ids = list(existing.get("assigned_user_ids") or [])
+                    user_id_value = int(plan.get("user_id") or 0)
+                    if user_id_value > 0 and user_id_value not in assigned_user_ids:
+                        assigned_user_ids.append(user_id_value)
+                        existing["assigned_user_ids"] = assigned_user_ids
+
+        unique_assigned_items = len(unique_candidates)
+        unique_assigned_chars = sum(int(item.get("chars") or 0) for item in unique_candidates.values())
+
+        for candidate in unique_candidates.values():
             processed += 1
-            total_chars += len(text)
+            total_chars += int(candidate.get("chars") or 0)
+            cache_key = str(candidate.get("cache_key") or "")
+            object_key = str(candidate.get("object_key") or "")
+            text = str(candidate.get("text") or "")
+            tts_lang_short = str(candidate.get("target_lang") or "de")
+            language_code = str(candidate.get("language") or _TTS_LANG_CODES.get(tts_lang_short, _TTS_LANG_CODES["de"]))
+            voice = str(candidate.get("voice") or "")
+            speaking_rate = float(candidate.get("speaking_rate") or TTS_WEBAPP_DEFAULT_SPEED)
+            assigned_user_ids = [int(item) for item in list(candidate.get("assigned_user_ids") or []) if int(item or 0) > 0]
+            billing_user_id = assigned_user_ids[0] if assigned_user_ids else 0
             had_existing_meta = False
             meta = get_tts_object_meta(cache_key, touch_hit=False)
             if meta:
@@ -8952,17 +9583,17 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
                     else:
                         errors += 1
                         logging.warning(
-                            "TTS prewarm claim conflict unresolved for dictionary_entry_id=%s cache_key=%s status=%s",
-                            item.get("id"),
+                            "TTS personalized prewarm claim conflict unresolved for cache_key=%s status=%s users=%s",
                             cache_key,
                             latest_status or "unknown",
+                            assigned_user_ids,
                         )
                     continue
 
                 _run_tts_generation_job(
-                    user_id=owner_user_id,
+                    user_id=billing_user_id,
                     language=language_code,
-                    tts_lang_short=target_lang,
+                    tts_lang_short=tts_lang_short,
                     voice=voice,
                     speaking_rate=speaking_rate,
                     normalized_text=text,
@@ -8971,7 +9602,7 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
                     had_existing_meta=had_existing_meta,
                     request_id=f"req_prewarm_{uuid4().hex[:20]}",
                     correlation_id=_build_observability_correlation_id(
-                        fallback_seed=f"prewarm:{owner_user_id}:{cache_key[:16]}",
+                        fallback_seed=f"prewarm:{billing_user_id}:{cache_key[:16]}",
                         prefix="tts",
                     ),
                     enqueue_ts_ms=_to_epoch_ms(),
@@ -8985,18 +9616,46 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
                 else:
                     errors += 1
                     logging.warning(
-                        "TTS prewarm did not reach ready status for dictionary_entry_id=%s cache_key=%s status=%s",
-                        item.get("id"),
+                        "TTS personalized prewarm did not reach ready status for cache_key=%s status=%s users=%s",
                         cache_key,
                         latest_status or "unknown",
+                        assigned_user_ids,
                     )
             except Exception:
                 errors += 1
-                logging.exception("TTS prewarm failed for dictionary_entry_id=%s", item.get("id"))
+                logging.exception("TTS personalized prewarm failed for cache_key=%s users=%s", cache_key, assigned_user_ids)
 
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        predicted_item_values = [int(item.get("predicted_count") or 0) for item in user_plans]
+        predicted_char_values = [int(item.get("predicted_chars") or 0) for item in user_plans]
+        assigned_item_values = [int(item.get("assigned_count") or 0) for item in user_plans]
+        assigned_char_values = [int(item.get("assigned_chars") or 0) for item in user_plans]
+        dictionary_adds_1d_values = [int((item.get("activity_stats") or {}).get("dictionary_adds_1d") or 0) for item in user_plans]
+        prediction_denominator = max(1, users_with_prediction)
         result = {
             "ok": True,
+            "planner_mode": "personalized_fsrs",
+            "users_considered": users_considered,
+            "eligible_users": eligible_users,
+            "users_with_prediction": users_with_prediction,
+            "prediction_lookback_days": int(TTS_PREWARM_ACTIVE_USER_LOOKBACK_DAYS),
+            "prediction_horizon_hours": int(TTS_PREWARM_HORIZON_HOURS),
+            "per_user_item_limit": int(TTS_PREWARM_PER_USER_ITEM_LIMIT),
+            "per_user_char_limit": int(TTS_PREWARM_PER_USER_CHAR_LIMIT),
+            "per_user_max_item_limit": int(TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT),
+            "per_user_max_char_limit": int(TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT),
+            "predicted_items": predicted_total,
+            "predicted_chars": predicted_chars_total,
+            "assigned_items": assigned_total,
+            "assigned_chars": assigned_chars_total,
+            "unique_assigned_items": unique_assigned_items,
+            "unique_assigned_chars": unique_assigned_chars,
+            "unused_base_items": remaining_item_budget,
+            "unused_base_chars": remaining_char_budget,
+            "base_quota_fit_users": base_quota_fit_users,
+            "base_quota_fit_pct": int(round((base_quota_fit_users / prediction_denominator) * 100.0)) if users_with_prediction > 0 else 0,
+            "final_quota_fit_users": final_quota_fit_users,
+            "final_quota_fit_pct": int(round((final_quota_fit_users / prediction_denominator) * 100.0)) if users_with_prediction > 0 else 0,
             "processed": processed,
             "generated": generated,
             "cached_hits": cached_hits,
@@ -9009,6 +9668,13 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
             "elapsed_ms": elapsed_ms,
             "force": bool(force),
             "tz": tz_name,
+            "predicted_items_top10pct_share": _top_share_percent(predicted_item_values),
+            "predicted_chars_top10pct_share": _top_share_percent(predicted_char_values),
+            **_distribution_summary(predicted_item_values, "predicted_items_per_user"),
+            **_distribution_summary(predicted_char_values, "predicted_chars_per_user"),
+            **_distribution_summary(assigned_item_values, "assigned_items_per_user"),
+            **_distribution_summary(assigned_char_values, "assigned_chars_per_user"),
+            **_distribution_summary(dictionary_adds_1d_values, "dictionary_adds_1d_per_user"),
         }
         _record_tts_admin_monitor_event(
             "prewarm_run",
@@ -17838,6 +18504,9 @@ def _run_tts_generation_job(
     final_status = "error"
     cache_hit = False
     error_code: str | None = None
+    exception_type: str | None = None
+    error_message: str | None = None
+    failure_stage = "prepare"
     _log_flow_observation(
         "tts",
         "generation_runner_started",
@@ -17856,6 +18525,7 @@ def _run_tts_generation_job(
         if user_id_int > 0:
             user_source_lang, user_target_lang, _profile = _get_user_language_pair(user_id_int)
         if had_existing_meta:
+            failure_stage = "r2_head"
             r2_head_started_perf = time.perf_counter()
             object_exists = bool(r2_exists(object_key))
             r2_head_duration_ms = _elapsed_ms_since(r2_head_started_perf)
@@ -17889,6 +18559,7 @@ def _run_tts_generation_job(
                 _clear_tts_url_poll_attempt(cache_key)
                 return
 
+        failure_stage = "google_synthesize"
         provider_started_perf = time.perf_counter()
         response_audio = _synthesize_mp3(
             normalized_text,
@@ -17897,6 +18568,7 @@ def _run_tts_generation_job(
             speed=speaking_rate,
         )
         provider_duration_ms = _elapsed_ms_since(provider_started_perf)
+        failure_stage = "r2_upload"
         upload_started_perf = time.perf_counter()
         r2_put_bytes(
             object_key,
@@ -17930,6 +18602,7 @@ def _run_tts_generation_job(
                 status="estimated",
                 metadata={"storage": "r2", "bytes": len(response_audio)},
             )
+        failure_stage = "mark_ready"
         public_url = r2_public_url(object_key)
         mark_tts_object_ready(
             cache_key=cache_key,
@@ -17966,6 +18639,8 @@ def _run_tts_generation_job(
         _clear_tts_url_poll_attempt(cache_key)
     except GoogleTTSBudgetBlockedError as exc:
         error_code = "google_tts_budget_blocked"
+        exception_type = exc.__class__.__name__
+        error_message = _shorten_tts_admin_text(str(exc), 220)
         mark_tts_object_failed(
             cache_key=cache_key,
             error_code="google_tts_budget_blocked",
@@ -17979,6 +18654,8 @@ def _run_tts_generation_job(
         final_status = "error"
     except Exception as exc:
         error_code = "tts_generation_failed"
+        exception_type = exc.__class__.__name__
+        error_message = _shorten_tts_admin_text(str(exc), 220)
         logging.exception("R2 TTS generation failed for cache_key=%s", cache_key)
         mark_tts_object_failed(
             cache_key=cache_key,
@@ -18008,6 +18685,9 @@ def _run_tts_generation_job(
                 "user_id": user_id_int if user_id_int > 0 else None,
                 "tts_lang_short": str(tts_lang_short or ""),
                 "error_code": error_code,
+                "exception_type": exception_type,
+                "error_message": error_message,
+                "failure_stage": str(failure_stage or ""),
             },
         )
         if final_status == "error":

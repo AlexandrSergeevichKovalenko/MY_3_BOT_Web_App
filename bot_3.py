@@ -33,6 +33,7 @@ import tempfile
 import sys
 import livekit.api # Нужен для LiveKit комнат
 from google.cloud import texttospeech
+from typing import Any, Callable
 from backend.analytics import fetch_user_summary, get_period_bounds
 from backend.backend_server import _synthesize_mp3, GoogleTTSBudgetBlockedError
 import os
@@ -61,7 +62,10 @@ from backend.database import (
     init_db,
     get_random_dictionary_entry,
     get_random_dictionary_entry_for_quiz_type,
+    list_low_accuracy_telegram_quiz_entries,
     record_quiz_word,
+    record_telegram_quiz_delivery,
+    record_telegram_quiz_attempt,
     ensure_webapp_tables,
     get_admin_telegram_ids,
     is_telegram_user_allowed,
@@ -96,6 +100,8 @@ from backend.database import (
     list_known_webapp_group_chats,
     list_webapp_group_contexts,
     upsert_webapp_group_context,
+    get_telegram_quiz_next_mode,
+    set_telegram_quiz_next_mode,
     upsert_active_quiz,
     get_active_quiz,
     delete_active_quiz,
@@ -115,6 +121,11 @@ QUIZ_FEEDBACK_TTL_SECONDS = 120
 QUIZ_CACHE_TTL_SECONDS = 60 * 60 * 24
 QUIZ_FREEFORM_OPTION = "keine korrekte Antworten"
 QUIZ_HIDE_CORRECT_PROBABILITY = 0.3
+QUIZ_REPEAT_ACCURACY_THRESHOLD = min(
+    1.0,
+    max(0.0, float(os.getenv("QUIZ_REPEAT_ACCURACY_THRESHOLD", "0.5"))),
+)
+QUIZ_REPEAT_CANDIDATE_LIMIT = max(1, int(os.getenv("QUIZ_REPEAT_CANDIDATE_LIMIT", "8")))
 FLASHCARD_REMINDER_TIMES = [(7, 0), (16, 30)]
 active_quizzes = {}
 pending_quiz_freeform = {}
@@ -2727,6 +2738,21 @@ async def handle_user_message(update: Update, context: CallbackContext):
             is_correct = _quiz_text_matches(text, correct_text)
             if not is_correct:
                 is_correct = await _quiz_text_matches_semantic(text, correct_text)
+        try:
+            quiz_data = pending.get("quiz_data") or {}
+            await asyncio.to_thread(
+                record_telegram_quiz_attempt,
+                str(pending.get("poll_id") or ""),
+                chat_id=int(quiz_data.get("chat_id") or 0),
+                user_id=int(user_id),
+                word_ru=(quiz_data.get("word_ru") or ""),
+                quiz_type=(quiz_data.get("quiz_type") or ""),
+                selected_option_index=None,
+                selected_text=text,
+                is_correct=bool(is_correct),
+            )
+        except Exception:
+            logging.warning("⚠️ Не удалось записать freeform quiz attempt user_id=%s", user_id, exc_info=True)
         await _send_quiz_result_private(
             context=context,
             user_id=user_id,
@@ -9038,22 +9064,11 @@ async def cleanup_quiz_cache(context: CallbackContext) -> None:
         logging.debug("Failed to delete active quiz from DB", exc_info=True)
 
 
-async def delete_temporary_message(context: CallbackContext) -> None:
-    chat_id = context.job.data.get("chat_id")
-    message_id = context.job.data.get("message_id")
-    if chat_id and message_id:
-        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+def _toggle_quiz_delivery_mode(mode: str | None) -> str:
+    return "new" if str(mode or "").strip().lower() == "repeat" else "repeat"
 
 
-async def _collect_quiz_delivery_targets(context: CallbackContext) -> list[int]:
-    try:
-        return await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_scheduled_quiz")
-    except Exception:
-        logging.warning("⚠️ Не удалось собрать targets для scheduled quiz", exc_info=True)
-        return []
-
-
-async def send_scheduled_quiz(context: CallbackContext) -> None:
+def _get_scheduled_quiz_generators(context: CallbackContext) -> list[tuple[str, Callable[..., Any]]]:
     generator_order = [
         ("word_order", generate_word_order_quiz),
         ("prefix", generate_prefix_quiz),
@@ -9062,12 +9077,48 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
     ]
     rotation_idx = int(context.application.bot_data.get("quiz_rotation_idx", 0)) % len(generator_order)
     context.application.bot_data["quiz_rotation_idx"] = rotation_idx + 1
+    return generator_order[rotation_idx:] + generator_order[:rotation_idx]
 
-    ordered = generator_order[rotation_idx:] + generator_order[:rotation_idx]
-    quiz = None
-    chosen_entry = None
+
+def _prioritize_quiz_generators(
+    ordered_generators: list[tuple[str, Callable[..., Any]]],
+    preferred_quiz_type: str | None,
+) -> list[tuple[str, Callable[..., Any]]]:
+    preferred = str(preferred_quiz_type or "").strip().lower()
+    if not preferred:
+        return list(ordered_generators)
+    prioritized = [item for item in ordered_generators if item[0] == preferred]
+    prioritized.extend(item for item in ordered_generators if item[0] != preferred)
+    return prioritized or list(ordered_generators)
+
+
+async def _generate_quiz_from_entry(
+    entry: dict,
+    ordered_generators: list[tuple[str, Callable[..., Any]]],
+) -> tuple[dict | None, str | None]:
+    if not entry or not _is_ru_de_quiz_entry(entry):
+        return None, None
+    for quiz_type, generator in ordered_generators:
+        try:
+            quiz = await generator(entry)
+        except Exception as exc:
+            logging.warning("⚠️ Генератор квиза '%s' упал для word=%s: %s", quiz_type, entry.get("word_ru"), exc)
+            quiz = None
+        if not quiz:
+            continue
+        if not quiz.get("quiz_type"):
+            quiz["quiz_type"] = quiz_type
+        if not quiz.get("word_ru"):
+            quiz["word_ru"] = entry.get("word_ru")
+        return quiz, quiz_type
+    return None, None
+
+
+async def _select_new_scheduled_quiz(
+    ordered_generators: list[tuple[str, Callable[..., Any]]],
+) -> dict | None:
     max_entries_per_generator = 4
-    for quiz_type, generator in ordered:
+    for quiz_type, generator in ordered_generators:
         for _ in range(max_entries_per_generator):
             entry = get_random_dictionary_entry_for_quiz_type(
                 quiz_type,
@@ -9094,33 +9145,115 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
             try:
                 quiz = await generator(entry)
             except Exception as exc:
-                logging.warning(f"⚠️ Генератор квиза '{quiz_type}' упал: {exc}")
+                logging.warning("⚠️ Генератор квиза '%s' упал: %s", quiz_type, exc)
                 quiz = None
-            if quiz:
-                if not quiz.get("quiz_type"):
-                    quiz["quiz_type"] = quiz_type
-                if not quiz.get("word_ru"):
-                    quiz["word_ru"] = entry.get("word_ru")
-                chosen_entry = entry
-                break
-        if quiz:
-            break
-        logging.info(f"ℹ️ Генератор квиза '{quiz_type}' вернул пустой результат, пробуем следующий.")
+            if not quiz:
+                continue
+            if not quiz.get("quiz_type"):
+                quiz["quiz_type"] = quiz_type
+            if not quiz.get("word_ru"):
+                quiz["word_ru"] = entry.get("word_ru")
+            return {
+                "entry": entry,
+                "quiz": quiz,
+                "resolved_quiz_type": quiz_type,
+                "used_mode": "new",
+            }
+        logging.info("ℹ️ Генератор квиза '%s' вернул пустой результат, пробуем следующий.", quiz_type)
+    return None
 
-    if not quiz:
-        logging.warning("⚠️ Не удалось сгенерировать квиз.")
-        return
 
-    shuffled_quiz = _shuffle_quiz_options(quiz)
-    if shuffled_quiz:
-        quiz = shuffled_quiz
+async def _select_repeat_scheduled_quiz(
+    target_chat_id: int,
+    ordered_generators: list[tuple[str, Callable[..., Any]]],
+) -> dict | None:
+    try:
+        candidates = await asyncio.to_thread(
+            list_low_accuracy_telegram_quiz_entries,
+            int(target_chat_id),
+            source_lang="ru",
+            target_lang="de",
+            accuracy_threshold=QUIZ_REPEAT_ACCURACY_THRESHOLD,
+            limit=QUIZ_REPEAT_CANDIDATE_LIMIT,
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось получить repeat-candidates для chat_id=%s", target_chat_id, exc_info=True)
+        return None
+    for entry in candidates:
+        prioritized_generators = _prioritize_quiz_generators(
+            ordered_generators,
+            str(entry.get("preferred_quiz_type") or ""),
+        )
+        quiz, resolved_quiz_type = await _generate_quiz_from_entry(entry, prioritized_generators)
+        if not quiz:
+            continue
+        return {
+            "entry": entry,
+            "quiz": quiz,
+            "resolved_quiz_type": resolved_quiz_type or str(entry.get("preferred_quiz_type") or ""),
+            "used_mode": "repeat",
+        }
+    return None
 
+
+async def _select_scheduled_quiz_for_target(
+    target_chat_id: int,
+    ordered_generators: list[tuple[str, Callable[..., Any]]],
+) -> dict | None:
+    desired_mode = "new"
+    try:
+        desired_mode = await asyncio.to_thread(get_telegram_quiz_next_mode, int(target_chat_id))
+    except Exception:
+        logging.warning("⚠️ Не удалось получить состояние чередования quiz для chat_id=%s", target_chat_id, exc_info=True)
+    if desired_mode == "repeat":
+        selection = await _select_repeat_scheduled_quiz(int(target_chat_id), ordered_generators)
+        if not selection:
+            selection = await _select_new_scheduled_quiz(ordered_generators)
+    else:
+        selection = await _select_new_scheduled_quiz(ordered_generators)
+        if not selection:
+            selection = await _select_repeat_scheduled_quiz(int(target_chat_id), ordered_generators)
+    if not selection:
+        return None
+    selection["desired_mode"] = desired_mode
+    return selection
+
+
+async def delete_temporary_message(context: CallbackContext) -> None:
+    chat_id = context.job.data.get("chat_id")
+    message_id = context.job.data.get("message_id")
+    if chat_id and message_id:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+
+
+async def _collect_quiz_delivery_targets(context: CallbackContext) -> list[int]:
+    try:
+        return await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_scheduled_quiz")
+    except Exception:
+        logging.warning("⚠️ Не удалось собрать targets для scheduled quiz", exc_info=True)
+        return []
+
+
+async def send_scheduled_quiz(context: CallbackContext) -> None:
+    ordered = _get_scheduled_quiz_generators(context)
     delivery_targets = await _collect_quiz_delivery_targets(context)
     if not delivery_targets:
         logging.info("ℹ️ scheduled quiz: нет targets для рассылки")
         return
     sent_count = 0
     for target_chat_id in delivery_targets:
+        selection = await _select_scheduled_quiz_for_target(int(target_chat_id), ordered)
+        if not selection:
+            logging.warning("⚠️ Не удалось подобрать scheduled quiz для chat_id=%s", target_chat_id)
+            continue
+        quiz = selection.get("quiz") or {}
+        chosen_entry = selection.get("entry") or {}
+        desired_mode = str(selection.get("desired_mode") or "new")
+        used_mode = str(selection.get("used_mode") or "new")
+        resolved_quiz_type = str(selection.get("resolved_quiz_type") or quiz.get("quiz_type") or "generated")
+        shuffled_quiz = _shuffle_quiz_options(quiz)
+        if shuffled_quiz:
+            quiz = shuffled_quiz
         try:
             poll_message = await context.bot.send_poll(
                 chat_id=int(target_chat_id),
@@ -9147,7 +9280,7 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
             "options": quiz["options"],
             "freeform_option": QUIZ_FREEFORM_OPTION,
             "message_id": poll_message.message_id,
-            "quiz_type": quiz.get("quiz_type", "generated"),
+            "quiz_type": quiz.get("quiz_type", resolved_quiz_type),
             "word_ru": quiz.get("word_ru"),
         }
         try:
@@ -9160,28 +9293,52 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
                 options=[str(option) for option in (quiz.get("options") or [])],
                 correct_text=(quiz.get("correct_text") or ""),
                 freeform_option=QUIZ_FREEFORM_OPTION,
-                quiz_type=(quiz.get("quiz_type") or "generated"),
+                quiz_type=(quiz.get("quiz_type") or resolved_quiz_type or "generated"),
                 word_ru=(quiz.get("word_ru") or ""),
             )
         except Exception:
             logging.warning("⚠️ Не удалось сохранить активный квиз в БД", exc_info=True)
+        try:
+            await asyncio.to_thread(
+                record_telegram_quiz_delivery,
+                int(target_chat_id),
+                poll_id=str(poll_message.poll.id),
+                word_ru=(quiz.get("word_ru") or chosen_entry.get("word_ru") or ""),
+                quiz_type=(quiz.get("quiz_type") or resolved_quiz_type or "generated"),
+                delivery_mode=used_mode,
+            )
+        except Exception:
+            logging.warning("⚠️ Не удалось записать историю Telegram quiz delivery", exc_info=True)
+        try:
+            await asyncio.to_thread(
+                set_telegram_quiz_next_mode,
+                int(target_chat_id),
+                _toggle_quiz_delivery_mode(desired_mode),
+            )
+        except Exception:
+            logging.warning("⚠️ Не удалось обновить состояние чередования Telegram quiz", exc_info=True)
 
         context.job_queue.run_once(
             cleanup_quiz_cache,
             when=QUIZ_CACHE_TTL_SECONDS,
             data={"poll_id": poll_message.poll.id},
         )
-
-    if sent_count > 0:
-        record_quiz_word((chosen_entry or {}).get("word_ru"))
+        try:
+            await asyncio.to_thread(record_quiz_word, (chosen_entry or {}).get("word_ru"))
+        except Exception:
+            logging.warning("⚠️ Не удалось записать global quiz history", exc_info=True)
         logging.info(
-            "✅ Quiz sent to %s chats: type=%s options=%s correct_option_id=%s word_ru=%s",
-            sent_count,
-            quiz.get("quiz_type", "generated"),
+            "✅ Quiz sent: chat_id=%s mode_slot=%s mode_used=%s type=%s options=%s correct_option_id=%s word_ru=%s",
+            int(target_chat_id),
+            desired_mode,
+            used_mode,
+            quiz.get("quiz_type", resolved_quiz_type or "generated"),
             len(quiz.get("options", [])),
             quiz.get("correct_option_id"),
             (chosen_entry or {}).get("word_ru"),
         )
+    if sent_count <= 0:
+        logging.warning("⚠️ Scheduled quiz run finished without successful deliveries.")
     else:
         logging.warning("⚠️ Квиз сгенерирован, но не был отправлен ни в один чат.")
 
@@ -9225,6 +9382,20 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     is_correct = selected_index == quiz_data["correct_option_id"]
+    try:
+        await asyncio.to_thread(
+            record_telegram_quiz_attempt,
+            str(poll_answer.poll_id),
+            chat_id=int(quiz_data.get("chat_id") or 0),
+            user_id=int(poll_answer.user.id),
+            word_ru=(quiz_data.get("word_ru") or ""),
+            quiz_type=(quiz_data.get("quiz_type") or ""),
+            selected_option_index=int(selected_index),
+            selected_text=selected_text,
+            is_correct=bool(is_correct),
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось записать quiz attempt user_id=%s poll_id=%s", poll_answer.user.id, poll_answer.poll_id, exc_info=True)
     sent_private = await _send_quiz_result_private(
         context=context,
         user_id=poll_answer.user.id,
