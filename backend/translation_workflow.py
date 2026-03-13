@@ -3341,6 +3341,24 @@ async def apply_translation_result_side_effects(
                 (sentence_id_for_mistake, user_id),
             )
             was_in_mistakes = bool(cursor.fetchone()[0])
+            tested_targets: list[dict[str, Any]] = []
+            tested_targets_seeded = False
+
+            if sentence_pk_id:
+                tested_targets = _load_sentence_skill_targets_with_cursor(
+                    cursor,
+                    sentence_id=int(sentence_pk_id),
+                )
+                tested_targets_seeded = bool(tested_targets)
+                if not tested_targets and sentence_id_for_mistake and was_in_mistakes:
+                    # Capture remediation targets before a recovery success deletes
+                    # the detailed_mistakes rows that the profile builder depends on.
+                    tested_targets = _build_remediation_profile_with_cursor(
+                        cursor,
+                        user_id=int(user_id),
+                        sentence_id_for_mistake=int(sentence_id_for_mistake),
+                        target_lang=target_lang or "de",
+                    )
 
             if was_in_mistakes:
                 if score_value >= 85:
@@ -3463,10 +3481,12 @@ async def apply_translation_result_side_effects(
                     )
 
             if sentence_pk_id:
-                tested_targets = _load_sentence_skill_targets_with_cursor(
-                    cursor,
-                    sentence_id=int(sentence_pk_id),
-                )
+                if tested_targets and not tested_targets_seeded:
+                    _insert_sentence_skill_targets_for_entries_with_cursor(
+                        cursor,
+                        sentence_profiles=[(int(sentence_pk_id), tested_targets)],
+                    )
+                    tested_targets_seeded = True
                 if not tested_targets and sentence_id_for_mistake:
                     tested_targets = _build_remediation_profile_with_cursor(
                         cursor,
@@ -3479,6 +3499,7 @@ async def apply_translation_result_side_effects(
                             cursor,
                             sentence_profiles=[(int(sentence_pk_id), tested_targets)],
                         )
+                        tested_targets_seeded = True
                 previous_shadow_state = _load_sentence_skill_shadow_state_with_cursor(
                     cursor,
                     sentence_id=int(sentence_pk_id),

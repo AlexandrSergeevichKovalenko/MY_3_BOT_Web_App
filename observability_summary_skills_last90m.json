@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "parsed_lines": 249,
+    "matched_events": 99
+  },
+  "tts": {
+    "total_sample_count": 40,
+    "count_by_stage": {
+      "tts_url_completed": 23,
+      "generation_runner_started": 6,
+      "tts_generate_completed": 5,
+      "generation_runner_finished": 6
+    },
+    "cache_hit_count": 14,
+    "cache_miss_count": 14,
+    "duration_metrics": {
+      "total_endpoint_duration_ms": {
+        "count": 28,
+        "avg": 1846.9642857142858,
+        "median": 1047.0,
+        "p95": 5983.249999999995,
+        "p99": 9603.410000000002
+      },
+      "db_lookup_duration_ms": {
+        "count": 28,
+        "avg": 1035.357142857143,
+        "median": 598.5,
+        "p95": 3703.199999999999,
+        "p99": 4162.15
+      },
+      "external_tts_provider_duration_ms": {
+        "count": 6,
+        "avg": 3320.5,
+        "median": 2553.0,
+        "p95": 5977.0,
+        "p99": 6661.800000000001
+      },
+      "storage_upload_duration_ms": {
+        "count": 6,
+        "avg": 254.5,
+        "median": 177.0,
+        "p95": 443.75,
+        "p99": 459.95
+      },
+      "runner_start_delay_ms": {
+        "count": 12,
+        "avg": 0.5,
+        "median": 0.0,
+        "p95": 2.0,
+        "p99": 2.0
+      }
+    },
+    "avg_polling_attempt_count": 1.0869565217391304,
+    "cache_hit_endpoint_duration_ms": {
+      "count": 14,
+      "avg": 2343.0714285714284,
+      "median": 1047.0,
+      "p95": 8342.949999999999,
+      "p99": 10067.789999999997
+    },
+    "cache_miss_endpoint_duration_ms": {
+      "count": 14,
+      "avg": 1350.857142857143,
+      "median": 1126.5,
+      "p95": 2714.3999999999996,
+      "p99": 3548.4799999999987
+    }
+  },
+  "translation_check": {
+    "total_sessions_observed": 1,
+    "total_item_processed_events": 7,
+    "count_by_stage": {
+      "check_start_completed": 1,
+      "runner_started": 1,
+      "check_status_completed": 48,
+      "runner_processing_started": 1,
+      "item_processed": 7,
+      "runner_finished": 1
+    },
+    "duration_metrics": {
+      "start_endpoint_duration_ms": {
+        "count": 1,
+        "avg": 40120.0,
+        "median": 40120.0,
+        "p95": 40120.0,
+        "p99": 40120.0
+      },
+      "runner_start_delay_ms": {
+        "count": 3,
+        "avg": 2530.0,
+        "median": 2530.0,
+        "p95": 2530.0,
+        "p99": 2530.0
+      },
+      "per_item_duration_ms": {
+        "count": 7,
+        "avg": 66671.14285714286,
+        "median": 72137.0,
+        "p95": 102531.19999999998,
+        "p99": 108196.63999999998
+      },
+      "db_update_duration_ms": {
+        "count": 10,
+        "avg": 3566.2,
+        "median": 3715.0,
+        "p95": 6276.75,
+        "p99": 6278.55
+      },
+      "session_completion_duration_ms": {
+        "count": 2,
+        "avg": 163075.0,
+        "median": 163075.0,
+        "p95": 163075.0,
+        "p99": 163075.0
+      }
+    },
+    "avg_items_per_session": 7.0,
+    "avg_polling_count": 13.48936170212766,
+    "terminal_outcome_counts": {
+      "success": 1,
+      "partial": 0,
+      "error": 0
+    }
+  }
+}
