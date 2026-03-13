@@ -35,7 +35,11 @@ import livekit.api # Нужен для LiveKit комнат
 from google.cloud import texttospeech
 from typing import Any, Callable
 from backend.analytics import fetch_user_summary, get_period_bounds
-from backend.backend_server import _synthesize_mp3, GoogleTTSBudgetBlockedError
+from backend.backend_server import (
+    _synthesize_mp3,
+    GoogleTTSBudgetBlockedError,
+    _build_tts_prewarm_quota_control_text,
+)
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -95,6 +99,8 @@ from backend.database import (
     get_google_tts_monthly_budget_status,
     set_provider_budget_extra_limit,
     set_provider_budget_block_state,
+    get_tts_prewarm_settings,
+    upsert_tts_prewarm_settings,
     confirm_webapp_group_participation,
     get_webapp_scope_state,
     list_known_webapp_group_chats,
@@ -138,6 +144,11 @@ pending_dictionary_lookup_inflight = set()
 pending_feel_requests_inflight = set()
 pending_tts_budget_custom = {}
 TTS_BUDGET_CUSTOM_TTL_SECONDS = 60 * 5
+TTS_PREWARM_QUOTA_MIN = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN") or "200").strip() or "200")))
+TTS_PREWARM_QUOTA_MAX = max(
+    TTS_PREWARM_QUOTA_MIN,
+    min(20000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MAX") or "3000").strip() or "3000")),
+)
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
 SYSTEM_MESSAGE_CLEANUP_TZ = (os.getenv("SYSTEM_MESSAGE_CLEANUP_TZ") or os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
 SYSTEM_MESSAGE_CLEANUP_HOUR = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "23").strip())
@@ -2025,6 +2036,57 @@ def _build_tts_budget_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _clamp_tts_prewarm_quota_limit(value: int) -> int:
+    return max(int(TTS_PREWARM_QUOTA_MIN), min(int(TTS_PREWARM_QUOTA_MAX), int(value or 0)))
+
+
+def _get_current_tts_prewarm_quota_limit() -> int:
+    settings = get_tts_prewarm_settings()
+    return _clamp_tts_prewarm_quota_limit(int(settings.get("per_user_char_limit") or 0))
+
+
+def _build_tts_prewarm_quota_keyboard(current_limit: int | None = None) -> InlineKeyboardMarkup:
+    limit_value = _clamp_tts_prewarm_quota_limit(
+        int(current_limit if current_limit is not None else _get_current_tts_prewarm_quota_limit())
+    )
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("-400", callback_data="ttsprewarmquota:delta:-400"),
+                InlineKeyboardButton("-300", callback_data="ttsprewarmquota:delta:-300"),
+                InlineKeyboardButton("-200", callback_data="ttsprewarmquota:delta:-200"),
+                InlineKeyboardButton("-100", callback_data="ttsprewarmquota:delta:-100"),
+            ],
+            [
+                InlineKeyboardButton(f"Current {limit_value}", callback_data="ttsprewarmquota:refresh"),
+            ],
+            [
+                InlineKeyboardButton("+100", callback_data="ttsprewarmquota:delta:100"),
+                InlineKeyboardButton("+200", callback_data="ttsprewarmquota:delta:200"),
+                InlineKeyboardButton("+300", callback_data="ttsprewarmquota:delta:300"),
+                InlineKeyboardButton("+400", callback_data="ttsprewarmquota:delta:400"),
+            ],
+            [
+                InlineKeyboardButton("Refresh", callback_data="ttsprewarmquota:refresh"),
+            ],
+        ]
+    )
+
+
+async def tts_prewarm_quota_command(update: Update, context: CallbackContext):
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+
+    current_limit = await asyncio.to_thread(_get_current_tts_prewarm_quota_limit)
+    text = await asyncio.to_thread(_build_tts_prewarm_quota_control_text)
+    await message.reply_text(text, reply_markup=_build_tts_prewarm_quota_keyboard(current_limit))
+
+
 async def _execute_tts_budget_action(
     *,
     action: str,
@@ -2216,6 +2278,43 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
             await query.message.edit_text(response_text, reply_markup=_build_tts_budget_keyboard())
         except Exception:
             await query.message.reply_text(response_text, reply_markup=_build_tts_budget_keyboard())
+
+
+async def handle_tts_prewarm_quota_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+
+    match = re.match(r"^ttsprewarmquota:(refresh|delta)(?::(-?\d+))?$", query.data or "")
+    if not match:
+        await query.answer("Некорректная кнопка.", show_alert=True)
+        return
+
+    action = str(match.group(1) or "refresh").strip().lower()
+    delta_value = int(match.group(2) or 0) if action == "delta" else 0
+    await query.answer("Обновляю…", show_alert=False)
+
+    if action == "delta":
+        current_settings = await asyncio.to_thread(get_tts_prewarm_settings)
+        current_limit = _clamp_tts_prewarm_quota_limit(int(current_settings.get("per_user_char_limit") or 0))
+        target_limit = _clamp_tts_prewarm_quota_limit(current_limit + delta_value)
+        await asyncio.to_thread(
+            upsert_tts_prewarm_settings,
+            per_user_char_limit=target_limit,
+            updated_by=int(admin.id),
+        )
+    current_limit = await asyncio.to_thread(_get_current_tts_prewarm_quota_limit)
+    text = await asyncio.to_thread(_build_tts_prewarm_quota_control_text)
+    reply_markup = _build_tts_prewarm_quota_keyboard(current_limit)
+    if query.message:
+        try:
+            await query.message.edit_text(text, reply_markup=reply_markup)
+        except Exception:
+            await query.message.reply_text(text, reply_markup=reply_markup)
 
 
 async def handle_button_click(update: Update, context: CallbackContext):
@@ -9437,6 +9536,7 @@ def main():
     application.add_handler(CommandHandler("mobile_token", mobile_token_command))
     application.add_handler(CommandHandler("budgets", budgets_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
+    application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
@@ -9449,6 +9549,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_pending_access_list, pattern=r"^access:pending:list$"))
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
+    application.add_handler(CallbackQueryHandler(handle_tts_prewarm_quota_callback, pattern=r"^ttsprewarmquota:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_feel_callback, pattern=r"^quizfeel:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_feel_callback, pattern=r"^dictfeel:"))

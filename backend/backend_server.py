@@ -270,6 +270,8 @@ from backend.database import (
     get_provider_monthly_budget_status,
     mark_provider_budget_threshold_notified,
     set_provider_budget_block_state,
+    has_admin_scheduler_run,
+    mark_admin_scheduler_run,
     get_today_reminder_settings,
     upsert_today_reminder_settings,
     list_today_reminder_users,
@@ -280,6 +282,8 @@ from backend.database import (
     mark_support_messages_read_for_user,
     get_audio_grammar_settings,
     upsert_audio_grammar_settings,
+    get_tts_prewarm_settings,
+    upsert_tts_prewarm_settings,
     update_translation_audio_grammar_opt_in,
     get_starter_dictionary_state,
     upsert_starter_dictionary_state,
@@ -521,6 +525,11 @@ TTS_PREWARM_MAX_USERS = max(10, min(5000, int((os.getenv("TTS_PREWARM_MAX_USERS"
 TTS_PREWARM_HORIZON_HOURS = max(1, min(72, int((os.getenv("TTS_PREWARM_HORIZON_HOURS") or "24").strip())))
 TTS_PREWARM_PER_USER_ITEM_LIMIT = max(1, min(100, int((os.getenv("TTS_PREWARM_PER_USER_ITEM_LIMIT") or "15").strip())))
 TTS_PREWARM_PER_USER_CHAR_LIMIT = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT") or "600").strip())))
+TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN") or "200").strip())))
+TTS_PREWARM_PER_USER_CHAR_LIMIT_MAX = max(
+    TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN,
+    min(20000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MAX") or "3000").strip())),
+)
 TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT = max(
     TTS_PREWARM_PER_USER_ITEM_LIMIT,
     min(200, int((os.getenv("TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT") or "30").strip())),
@@ -529,6 +538,11 @@ TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT = max(
     TTS_PREWARM_PER_USER_CHAR_LIMIT,
     min(20000, int((os.getenv("TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT") or "1200").strip())),
 )
+TTS_PREWARM_QUOTA_CONTROL_ENABLED = str(os.getenv("TTS_PREWARM_QUOTA_CONTROL_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TTS_PREWARM_QUOTA_CONTROL_TZ = (os.getenv("TTS_PREWARM_QUOTA_CONTROL_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+TTS_PREWARM_QUOTA_CONTROL_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_QUOTA_CONTROL_HOUR") or "8").strip())))
+TTS_PREWARM_QUOTA_CONTROL_MINUTE = max(0, min(59, int((os.getenv("TTS_PREWARM_QUOTA_CONTROL_MINUTE") or "10").strip())))
+TTS_PREWARM_QUOTA_CONTROL_LOOKBACK_HOURS = max(6, min(24 * 14, int((os.getenv("TTS_PREWARM_QUOTA_CONTROL_LOOKBACK_HOURS") or "72").strip())))
 TTS_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_START_HOUR") or "1").strip())))
 TTS_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
 TTS_PREWARM_ALLOW_DAYTIME = str(os.getenv("TTS_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -7987,6 +8001,161 @@ def _get_tts_admin_monitor_window(seconds: int) -> list[dict]:
     return [item for item in fallback_events if float(item.get("ts") or 0.0) >= cutoff]
 
 
+def _clamp_tts_prewarm_per_user_char_limit(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = int(TTS_PREWARM_PER_USER_CHAR_LIMIT)
+    return max(int(TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN), min(int(TTS_PREWARM_PER_USER_CHAR_LIMIT_MAX), parsed))
+
+
+def _get_effective_tts_prewarm_per_user_char_limit() -> int:
+    try:
+        settings = get_tts_prewarm_settings()
+        return _clamp_tts_prewarm_per_user_char_limit(settings.get("per_user_char_limit"))
+    except Exception:
+        logging.debug("Failed to load runtime TTS prewarm settings; falling back to env default", exc_info=True)
+        return _clamp_tts_prewarm_per_user_char_limit(TTS_PREWARM_PER_USER_CHAR_LIMIT)
+
+
+def _get_effective_tts_prewarm_per_user_max_char_limit(base_limit: int | None = None) -> int:
+    resolved_base_limit = _clamp_tts_prewarm_per_user_char_limit(
+        base_limit if base_limit is not None else _get_effective_tts_prewarm_per_user_char_limit()
+    )
+    return max(resolved_base_limit, int(TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT))
+
+
+def _get_latest_personalized_tts_prewarm_meta(*, lookback_hours: int | None = None) -> dict[str, Any]:
+    effective_lookback_hours = max(
+        1,
+        int(lookback_hours or TTS_PREWARM_QUOTA_CONTROL_LOOKBACK_HOURS or 72),
+    )
+    events = _get_tts_admin_monitor_window(effective_lookback_hours * 60 * 60)
+    latest_meta: dict[str, Any] = {}
+    for item in events:
+        if item.get("kind") != "prewarm_run" or item.get("status") != "ok":
+            continue
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        if str(meta.get("planner_mode") or "").strip().lower() != "personalized_fsrs":
+            continue
+        latest_meta = dict(meta)
+    return latest_meta
+
+
+def _build_tts_prewarm_quota_control_reply_markup_dict(current_limit: int | None = None) -> dict[str, Any]:
+    limit_value = _clamp_tts_prewarm_per_user_char_limit(
+        current_limit if current_limit is not None else _get_effective_tts_prewarm_per_user_char_limit()
+    )
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "-400", "callback_data": "ttsprewarmquota:delta:-400"},
+                {"text": "-300", "callback_data": "ttsprewarmquota:delta:-300"},
+                {"text": "-200", "callback_data": "ttsprewarmquota:delta:-200"},
+                {"text": "-100", "callback_data": "ttsprewarmquota:delta:-100"},
+            ],
+            [
+                {"text": f"Current {limit_value}", "callback_data": "ttsprewarmquota:refresh"},
+            ],
+            [
+                {"text": "+100", "callback_data": "ttsprewarmquota:delta:100"},
+                {"text": "+200", "callback_data": "ttsprewarmquota:delta:200"},
+                {"text": "+300", "callback_data": "ttsprewarmquota:delta:300"},
+                {"text": "+400", "callback_data": "ttsprewarmquota:delta:400"},
+            ],
+            [
+                {"text": "Refresh", "callback_data": "ttsprewarmquota:refresh"},
+            ],
+        ]
+    }
+
+
+def _build_tts_prewarm_quota_control_text() -> str:
+    current_limit = _get_effective_tts_prewarm_per_user_char_limit()
+    latest_meta = _get_latest_personalized_tts_prewarm_meta()
+    if latest_meta:
+        base_limit = int(latest_meta.get("per_user_char_limit") or current_limit)
+        lines = [
+            "🎛 TTS prewarm quota control",
+            "",
+            f"Current per-user char limit: {current_limit}",
+            f"Allowed range: {int(TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN)}-{int(TTS_PREWARM_PER_USER_CHAR_LIMIT_MAX)}",
+            "",
+            "Latest successful personalized prewarm:",
+            f"Users with prediction: {int(latest_meta.get('users_with_prediction') or 0)}",
+            f"Base quota fit ({int(latest_meta.get('per_user_item_limit') or TTS_PREWARM_PER_USER_ITEM_LIMIT)} texts / {base_limit} chars): {int(latest_meta.get('base_quota_fit_pct') or 0)}%",
+            f"Final fit after redistribution: {int(latest_meta.get('final_quota_fit_pct') or 0)}%",
+            "Predicted chars p50/p90/p95 per user: "
+            f"{int(latest_meta.get('predicted_chars_per_user_p50') or 0)}/"
+            f"{int(latest_meta.get('predicted_chars_per_user_p90') or 0)}/"
+            f"{int(latest_meta.get('predicted_chars_per_user_p95') or 0)}",
+            "Assigned chars p50/p90/p95 per user: "
+            f"{int(latest_meta.get('assigned_chars_per_user_p50') or 0)}/"
+            f"{int(latest_meta.get('assigned_chars_per_user_p90') or 0)}/"
+            f"{int(latest_meta.get('assigned_chars_per_user_p95') or 0)}",
+            f"Predicted total texts/chars: {int(latest_meta.get('predicted_items') or 0)}/{int(latest_meta.get('predicted_chars') or 0)}",
+            f"Assigned total texts/chars: {int(latest_meta.get('assigned_items') or 0)}/{int(latest_meta.get('assigned_chars') or 0)}",
+            "",
+            "Use the buttons below to add or subtract chars from the nightly per-user quota.",
+        ]
+        return "\n".join(lines)
+
+    return (
+        "🎛 TTS prewarm quota control\n\n"
+        f"Current per-user char limit: {current_limit}\n"
+        f"Allowed range: {int(TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN)}-{int(TTS_PREWARM_PER_USER_CHAR_LIMIT_MAX)}\n\n"
+        "No successful personalized prewarm run was found in the recent window yet.\n"
+        "Use the buttons below to adjust the nightly per-user quota."
+    )
+
+
+def _send_tts_prewarm_quota_control_message(*, force: bool = False) -> dict[str, Any]:
+    admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+    if not admin_ids:
+        return {"ok": False, "sent": 0, "reason": "no_admin_ids"}
+    try:
+        now_local = datetime.now(ZoneInfo(TTS_PREWARM_QUOTA_CONTROL_TZ))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    run_period = now_local.strftime("%Y-%m-%d")
+    current_limit = _get_effective_tts_prewarm_per_user_char_limit()
+    message_text = _build_tts_prewarm_quota_control_text()
+    reply_markup = _build_tts_prewarm_quota_control_reply_markup_dict(current_limit)
+    sent = 0
+    skipped = 0
+    errors: list[str] = []
+    for admin_id in admin_ids:
+        try:
+            if not force and has_admin_scheduler_run(
+                job_key="tts_prewarm_quota_control",
+                run_period=run_period,
+                target_chat_id=int(admin_id),
+            ):
+                skipped += 1
+                continue
+            _send_private_message(
+                user_id=int(admin_id),
+                text=message_text,
+                reply_markup=reply_markup,
+                disable_web_page_preview=True,
+            )
+            mark_admin_scheduler_run(
+                job_key="tts_prewarm_quota_control",
+                run_period=run_period,
+                target_chat_id=int(admin_id),
+                metadata={
+                    "tz": TTS_PREWARM_QUOTA_CONTROL_TZ,
+                    "current_limit": current_limit,
+                    "source": "manual" if force else "scheduler",
+                },
+            )
+            sent += 1
+        except Exception as exc:
+            errors.append(f"admin {admin_id}: {exc}")
+            logging.warning("Failed to send TTS prewarm quota control admin_id=%s", admin_id, exc_info=True)
+    return {"ok": not errors, "sent": sent, "skipped": skipped, "errors": errors}
+
+
 def _should_send_tts_admin_alert(alert_key: str) -> bool:
     now_ts = time.time()
     cooldown_seconds = int(TTS_ADMIN_ALERT_COOLDOWN_MINUTES) * 60
@@ -8345,11 +8514,13 @@ def _build_tts_admin_digest() -> str:
     max_generation_ms = max(generation_durations) if generation_durations else 0
     personalized_prewarm_block = ""
     if str(latest_prewarm_meta.get("planner_mode") or "").strip() == "personalized_fsrs":
+        digest_item_limit = int(latest_prewarm_meta.get("per_user_item_limit") or TTS_PREWARM_PER_USER_ITEM_LIMIT)
+        digest_char_limit = int(latest_prewarm_meta.get("per_user_char_limit") or _get_effective_tts_prewarm_per_user_char_limit())
         personalized_prewarm_block = (
             f"Prewarm users considered (recent active learners scanned): {int(latest_prewarm_meta.get('users_considered') or 0)}\n"
             f"Prewarm eligible users (allowed users included in plan): {int(latest_prewarm_meta.get('eligible_users') or 0)}\n"
             f"Users with prediction (had likely next-session texts): {int(latest_prewarm_meta.get('users_with_prediction') or 0)}\n"
-            f"Base quota fit (users fully covered by 15 texts / 600 chars): {int(latest_prewarm_meta.get('base_quota_fit_pct') or 0)}%\n"
+            f"Base quota fit (users fully covered by {digest_item_limit} texts / {digest_char_limit} chars): {int(latest_prewarm_meta.get('base_quota_fit_pct') or 0)}%\n"
             f"Final fit after redistribution (users fully covered after extra budget): {int(latest_prewarm_meta.get('final_quota_fit_pct') or 0)}%\n"
             f"Predicted total (all likely next-session texts): {int(latest_prewarm_meta.get('predicted_items') or 0)}\n"
             f"Assigned total (texts chosen for tonight): {int(latest_prewarm_meta.get('assigned_items') or 0)}\n"
@@ -8450,6 +8621,15 @@ def _run_tts_admin_alerts_scheduler_job() -> None:
         _maybe_send_tts_admin_pending_alert()
     except Exception:
         logging.exception("❌ TTS admin alerts scheduler failed")
+
+
+def _run_tts_prewarm_quota_control_scheduler_job() -> None:
+    if not TTS_PREWARM_QUOTA_CONTROL_ENABLED:
+        return
+    try:
+        _send_tts_prewarm_quota_control_message(force=False)
+    except Exception:
+        logging.exception("❌ TTS prewarm quota control scheduler failed")
 
 
 def _notify_admins_about_support_message(
@@ -9442,6 +9622,8 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
         errors = 0
         total_chars = 0
         user_plans: list[dict] = []
+        effective_per_user_char_limit = _get_effective_tts_prewarm_per_user_char_limit()
+        effective_per_user_max_char_limit = _get_effective_tts_prewarm_per_user_max_char_limit(effective_per_user_char_limit)
 
         for user_id in active_user_ids:
             user_id_int = int(user_id or 0)
@@ -9467,7 +9649,7 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
                 base_assigned, base_assigned_chars = _select_tts_candidates_with_budget(
                     predicted_candidates,
                     item_limit=TTS_PREWARM_PER_USER_ITEM_LIMIT,
-                    char_limit=TTS_PREWARM_PER_USER_CHAR_LIMIT,
+                    char_limit=effective_per_user_char_limit,
                 )
                 assigned_cache_keys = {str(item.get("cache_key") or "") for item in base_assigned}
                 overflow_candidates = [
@@ -9502,7 +9684,7 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
                 logging.exception("TTS personalized prewarm planning failed for user_id=%s", user_id_int)
 
         base_item_budget_total = eligible_users * int(TTS_PREWARM_PER_USER_ITEM_LIMIT)
-        base_char_budget_total = eligible_users * int(TTS_PREWARM_PER_USER_CHAR_LIMIT)
+        base_char_budget_total = eligible_users * int(effective_per_user_char_limit)
         remaining_item_budget = max(0, base_item_budget_total - assigned_total)
         remaining_char_budget = max(0, base_char_budget_total - assigned_chars_total)
 
@@ -9520,7 +9702,7 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
             if remaining_item_budget <= 0 or remaining_char_budget <= 0:
                 break
             item_capacity = max(0, int(TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT) - int(plan.get("assigned_count") or 0))
-            char_capacity = max(0, int(TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT) - int(plan.get("assigned_chars") or 0))
+            char_capacity = max(0, int(effective_per_user_max_char_limit) - int(plan.get("assigned_chars") or 0))
             if item_capacity <= 0 or char_capacity <= 0:
                 continue
             extra_assigned, extra_chars = _select_tts_candidates_with_budget(
@@ -9682,9 +9864,9 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
             "prediction_lookback_days": int(TTS_PREWARM_ACTIVE_USER_LOOKBACK_DAYS),
             "prediction_horizon_hours": int(TTS_PREWARM_HORIZON_HOURS),
             "per_user_item_limit": int(TTS_PREWARM_PER_USER_ITEM_LIMIT),
-            "per_user_char_limit": int(TTS_PREWARM_PER_USER_CHAR_LIMIT),
+            "per_user_char_limit": int(effective_per_user_char_limit),
             "per_user_max_item_limit": int(TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT),
-            "per_user_max_char_limit": int(TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT),
+            "per_user_max_char_limit": int(effective_per_user_max_char_limit),
             "predicted_items": predicted_total,
             "predicted_chars": predicted_chars_total,
             "assigned_items": assigned_total,
@@ -23168,6 +23350,17 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=120,
         )
+    if TTS_PREWARM_QUOTA_CONTROL_ENABLED:
+        _audio_scheduler.add_job(
+            _run_tts_prewarm_quota_control_scheduler_job,
+            "cron",
+            hour=TTS_PREWARM_QUOTA_CONTROL_HOUR,
+            minute=TTS_PREWARM_QUOTA_CONTROL_MINUTE,
+            timezone=TTS_PREWARM_QUOTA_CONTROL_TZ,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=900,
+        )
     if SENTENCE_PREWARM_ENABLED:
         _audio_scheduler.add_job(
             _run_sentence_prewarm_scheduler_job,
@@ -23386,6 +23579,21 @@ def send_private_analytics_now():
         target_date = datetime.utcnow().date()
 
     result = _dispatch_private_analytics(target_date)
+    return jsonify(result)
+
+
+@app.route("/api/admin/send-tts-prewarm-quota-control", methods=["POST"])
+def send_tts_prewarm_quota_control_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    force = str(payload.get("force") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    result = _send_tts_prewarm_quota_control_message(force=force)
     return jsonify(result)
 
 

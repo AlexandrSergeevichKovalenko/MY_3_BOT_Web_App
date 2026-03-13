@@ -2885,6 +2885,14 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_audio_grammar_settings (enabled, updated_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_tts_prewarm_settings (
+                    settings_key TEXT PRIMARY KEY DEFAULT 'global',
+                    per_user_char_limit INTEGER NOT NULL DEFAULT 600,
+                    updated_by BIGINT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_youtube_proxy_subtitles_access (
                     user_id BIGINT PRIMARY KEY,
                     enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -13314,6 +13322,65 @@ def upsert_audio_grammar_settings(user_id: int, *, enabled: bool) -> dict:
         "user_id": int(user_id),
         "enabled": bool(row[0]),
         "updated_at": row[1].isoformat() if row[1] else None,
+    }
+
+
+def get_tts_prewarm_settings() -> dict:
+    default_limit = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT") or "600").strip() or "600")))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT per_user_char_limit, updated_by, updated_at
+                FROM bt_3_tts_prewarm_settings
+                WHERE settings_key = 'global'
+                LIMIT 1;
+                """
+            )
+            row = cursor.fetchone()
+    if not row:
+        return {
+            "settings_key": "global",
+            "per_user_char_limit": int(default_limit),
+            "updated_by": None,
+            "updated_at": None,
+        }
+    return {
+        "settings_key": "global",
+        "per_user_char_limit": max(50, int(row[0] or default_limit)),
+        "updated_by": int(row[1]) if row[1] is not None else None,
+        "updated_at": row[2].isoformat() if row[2] else None,
+    }
+
+
+def upsert_tts_prewarm_settings(*, per_user_char_limit: int, updated_by: int | None = None) -> dict:
+    safe_limit = max(50, min(10000, int(per_user_char_limit or 0)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_tts_prewarm_settings (
+                    settings_key,
+                    per_user_char_limit,
+                    updated_by,
+                    updated_at
+                )
+                VALUES ('global', %s, %s, NOW())
+                ON CONFLICT (settings_key) DO UPDATE
+                SET
+                    per_user_char_limit = EXCLUDED.per_user_char_limit,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                RETURNING per_user_char_limit, updated_by, updated_at;
+                """,
+                (int(safe_limit), int(updated_by) if updated_by is not None else None),
+            )
+            row = cursor.fetchone()
+    return {
+        "settings_key": "global",
+        "per_user_char_limit": int(row[0] or safe_limit),
+        "updated_by": int(row[1]) if row[1] is not None else None,
+        "updated_at": row[2].isoformat() if row[2] else None,
     }
 
 
