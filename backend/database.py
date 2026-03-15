@@ -15582,6 +15582,7 @@ def get_pending_daily_sentences(
                     "id_for_mistake_table": row[0],
                     "sentence": row[1],
                     "unique_id": row[2],
+                    "source_session_id": str(latest_session_id),
                 }
                 for row in rows
             ]
