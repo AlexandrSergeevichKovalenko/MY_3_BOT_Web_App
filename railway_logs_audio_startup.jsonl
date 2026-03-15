@@ -1,0 +1,2 @@
+{"level":"error","timestamp":"2026-03-13T22:03:13.303454542Z","message":"2026-03-13 22:03:07,192 - root - INFO - ✅ Audio scheduler started: 06:01 Europe/Berlin"}
+{"timestamp":"2026-03-13T22:05:12.407127552Z","message":"2026-03-13 22:05:12,029 - root - INFO - ℹ️ Audio scheduler lock not acquired (another worker)","level":"error"}

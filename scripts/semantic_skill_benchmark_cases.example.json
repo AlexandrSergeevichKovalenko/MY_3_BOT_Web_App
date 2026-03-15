@@ -1,0 +1,40 @@
+{
+  "defaults": {
+    "source_lang": "ru",
+    "target_lang": "de"
+  },
+  "cases": [
+    {
+      "case_id": "db_med_01",
+      "source_sentence": "Несмотря на нестабильную экономическую ситуацию, компания решила инвестировать значительные средства в разработку инновационных решений для отечественного рынка.",
+      "user_translation": "FROM_DB",
+      "expected_tested_primary": "prepositions_usage",
+      "expected_tested_secondary": [
+        "de_cases_case_after_preposition",
+        "cases_accusative"
+      ],
+      "expected_errored_skills": "TBD_FROM_DB_COMPARISON",
+      "expected_outcome_type": "depends_on_attempt_context",
+      "notes": "DB-backed mode maps this benchmark sentence to all matching production attempts by normalized sentence text."
+    },
+    {
+      "case_id": "direct_med_06",
+      "source_sentence": "Честно говоря, если бы современные компьютеры не были такими мощными, большинство наших задач в области искусственного интеллекта так бы и остались нерешёнными.",
+      "user_translation": "Ehrlich gesagt, wenn moderne Computer nicht so leistungsstark wären, wären die meisten unserer Aufgaben im Bereich der künstlichen Intelligenz ungelöst geblieben.",
+      "tested_profile_lookup": {
+        "strategy": "remediation_by_source_sentence"
+      },
+      "history_lookup": {
+        "strategy": "latest_by_source_sentence"
+      },
+      "expected_tested_primary": "moods_subjunctive2",
+      "expected_tested_secondary": [
+        "de_clauses_sentence_types_conditionals_wenn_falls",
+        "de_voice_active_passive_zustandspassiv_sein_partizip_ii"
+      ],
+      "expected_errored_skills": [],
+      "expected_outcome_type": "depends_on_attempt_context",
+      "notes": "Direct mode reuses check_translation plus production shadow helpers without going through the app UI."
+    }
+  ]
+}

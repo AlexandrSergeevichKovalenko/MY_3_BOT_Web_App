@@ -276,6 +276,8 @@ from backend.database import (
     upsert_today_reminder_settings,
     list_today_reminder_users,
     get_admin_telegram_ids,
+    list_recent_semantic_audit_runs,
+    update_semantic_audit_run_delivery,
     create_support_message,
     list_support_messages_for_user,
     count_unread_support_messages_for_user,
@@ -587,6 +589,19 @@ except Exception:
 STARTER_DICTIONARY_IMPORT_LIMIT = max(1, min(5000, STARTER_DICTIONARY_IMPORT_LIMIT))
 STARTER_DICTIONARY_TEMPLATE_VERSION = str(os.getenv("STARTER_DICTIONARY_TEMPLATE_VERSION") or "v1").strip() or "v1"
 STARTER_DICTIONARY_FOLDER_NAME = str(os.getenv("STARTER_DICTIONARY_FOLDER_NAME") or "Базовый словарь").strip() or "Базовый словарь"
+SEMANTIC_AUDIT_SCHEDULER_ENABLED = str(os.getenv("SEMANTIC_AUDIT_SCHEDULER_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+SEMANTIC_AUDIT_SCHEDULER_TZ = (os.getenv("SEMANTIC_AUDIT_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+SEMANTIC_AUDIT_SCHEDULER_DAY_OF_WEEK = str(os.getenv("SEMANTIC_AUDIT_SCHEDULER_DAY_OF_WEEK") or "sun").strip().lower() or "sun"
+SEMANTIC_AUDIT_SCHEDULER_HOUR = max(0, min(23, int((os.getenv("SEMANTIC_AUDIT_SCHEDULER_HOUR") or "9").strip() or "9")))
+SEMANTIC_AUDIT_SCHEDULER_MINUTE = max(0, min(59, int((os.getenv("SEMANTIC_AUDIT_SCHEDULER_MINUTE") or "20").strip() or "20")))
+SEMANTIC_AUDIT_DAYS_BACK = max(1, min(31, int((os.getenv("SEMANTIC_AUDIT_DAYS_BACK") or "7").strip() or "7")))
+SEMANTIC_AUDIT_QUEUE_LIMIT = max(10, min(5000, int((os.getenv("SEMANTIC_AUDIT_QUEUE_LIMIT") or "300").strip() or "300")))
+SEMANTIC_AUDIT_GENERATION_LIMIT = max(1, min(200, int((os.getenv("SEMANTIC_AUDIT_GENERATION_LIMIT") or "20").strip() or "20")))
+SEMANTIC_AUDIT_MIN_ATTEMPTS = max(1, min(50, int((os.getenv("SEMANTIC_AUDIT_MIN_ATTEMPTS") or "1").strip() or "1")))
+SEMANTIC_AUDIT_ALL_USERS = str(os.getenv("SEMANTIC_AUDIT_ALL_USERS") or "1").strip().lower() in {"1", "true", "yes", "on"}
+SEMANTIC_AUDIT_LOCAL_REPLAY_TARGETING = str(os.getenv("SEMANTIC_AUDIT_LOCAL_REPLAY_TARGETING") or "0").strip().lower() in {"1", "true", "yes", "on"}
+SEMANTIC_AUDIT_TARGET_CHAT_IDS_RAW = str(os.getenv("SEMANTIC_AUDIT_TARGET_CHAT_IDS") or "").strip()
+SEMANTIC_AUDIT_REPORTS_DIR = BASE_DIR / "reports" / "semantic_audit"
 _TTS_PREWARM_LOCK = threading.Lock()
 _TTS_GENERATION_JOBS_LOCK = threading.Lock()
 _TTS_GENERATION_JOBS: set[str] = set()
@@ -11665,13 +11680,10 @@ def _fetch_youtube_transcript(
         delay_seconds = 10
 
         for attempt in range(1, max_attempts + 1):
-            country = _check_ip_country(webshare_proxy)
-            if country not in ALLOWED_COUNTRIES:
-                errors.append(f"webshare attempt {attempt}: rejected country {country}")
-                time.sleep(delay_seconds)
-                continue
-
             try:
+                # WebshareProxyConfig performs location-aware rotation itself.
+                # The raw gateway IP can resolve to a non-DE/AT country even when
+                # the requested exit node is filtered to Germany/Austria.
                 proxy_config = WebshareProxyConfig(
                     proxy_username=ws_user,
                     proxy_password=ws_pass,
@@ -11683,7 +11695,7 @@ def _fetch_youtube_transcript(
                         return {
                             "success": True,
                             "source": "webshare",
-                            "ip_country": country,
+                            "ip_country": None,
                             "language": code,
                             "is_generated": None,
                             "items": subs,
@@ -21859,8 +21871,8 @@ def _dispatch_daily_audio(target_date: date) -> dict:
 
 
 def _run_audio_scheduler_job() -> None:
-    mode = (os.getenv("AUDIO_SCHEDULER_DATE_MODE") or "today").strip().lower()
-    tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
+    mode = (os.getenv("AUDIO_SCHEDULER_DATE_MODE") or "yesterday").strip().lower()
+    tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     try:
         now = datetime.now(ZoneInfo(tz_name))
     except Exception:
@@ -21871,6 +21883,8 @@ def _run_audio_scheduler_job() -> None:
     try:
         result = _dispatch_daily_audio(target_date)
         logging.info("✅ Audio scheduler finished: %s", result)
+        if isinstance(result, dict) and result.get("errors"):
+            logging.warning("⚠️ Audio scheduler delivery errors: %s", result.get("errors"))
     except Exception:
         logging.exception("❌ Audio scheduler failed")
 
@@ -22765,6 +22779,319 @@ def _run_private_analytics_scheduler_job() -> None:
         logging.exception("❌ Private analytics scheduler failed")
 
 
+def _parse_semantic_audit_target_chat_ids() -> list[int]:
+    result: list[int] = []
+    raw = str(SEMANTIC_AUDIT_TARGET_CHAT_IDS_RAW or "").strip()
+    if raw:
+        for token in raw.replace(";", ",").split(","):
+            value = token.strip()
+            if not value:
+                continue
+            try:
+                chat_id = int(value)
+            except Exception:
+                continue
+            if chat_id not in result:
+                result.append(chat_id)
+    for admin_id in sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0):
+        if admin_id not in result:
+            result.append(admin_id)
+    return result
+
+
+def _run_local_python_script(command: list[str], *, label: str) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        command,
+        cwd=str(BASE_DIR),
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        stderr_tail = "\n".join((completed.stderr or "").splitlines()[-20:])
+        stdout_tail = "\n".join((completed.stdout or "").splitlines()[-20:])
+        raise RuntimeError(
+            f"{label} failed with exit_code={completed.returncode}\n"
+            f"stdout_tail:\n{stdout_tail}\n"
+            f"stderr_tail:\n{stderr_tail}"
+        )
+    return completed
+
+
+def _format_semantic_metric_delta(current_value: Any, previous_value: Any) -> str:
+    try:
+        current = float(current_value)
+        previous = float(previous_value)
+    except Exception:
+        return "n/a"
+    delta = round(current - previous, 4)
+    sign = "+" if delta > 0 else ""
+    return f"{sign}{delta:.4f}"
+
+
+def _semantic_attempt_classification(attempt: dict[str, Any]) -> str:
+    primary_match = attempt.get("primary_match")
+    outcome_match = attempt.get("outcome_match")
+    try:
+        secondary_overlap = float(attempt.get("secondary_skill_overlap_score") or 0.0)
+    except Exception:
+        secondary_overlap = 0.0
+    if primary_match and outcome_match and secondary_overlap >= 0.5:
+        return "clearly_correct"
+    if primary_match is False:
+        return "likely_incorrect"
+    return "questionable"
+
+
+def _load_semantic_audit_highlights(evaluator_json_path: Path | None) -> dict[str, list[str]]:
+    buckets: dict[str, list[str]] = {
+        "likely_incorrect": [],
+        "questionable": [],
+        "clearly_correct": [],
+    }
+    if evaluator_json_path is None or not evaluator_json_path.exists():
+        return buckets
+    try:
+        payload = json.loads(evaluator_json_path.read_text(encoding="utf-8"))
+    except Exception:
+        logging.warning("Failed to parse semantic evaluator artifact: %s", evaluator_json_path, exc_info=True)
+        return buckets
+    for case in list(payload.get("per_case") or []):
+        source_sentence = str(case.get("source_sentence") or "").strip()
+        short_sentence = source_sentence if len(source_sentence) <= 120 else source_sentence[:117] + "..."
+        for attempt in list(case.get("attempts") or []):
+            bucket = _semantic_attempt_classification(attempt)
+            line = (
+                f"• {short_sentence}\n"
+                f"  expected `{attempt.get('expected_tested_primary')}` -> actual `{attempt.get('actual_tested_primary')}`;"
+                f" outcome `{attempt.get('actual_outcome_type')}`"
+            )
+            if line not in buckets[bucket]:
+                buckets[bucket].append(line)
+    return buckets
+
+
+def _build_semantic_audit_digest_text(
+    *,
+    audit_payload: dict[str, Any],
+    queue_payload: dict[str, Any],
+    generation_payload: dict[str, Any],
+    previous_run: dict[str, Any] | None,
+) -> str:
+    summary = dict(audit_payload.get("summary") or {})
+    metrics = dict(audit_payload.get("metrics") or {})
+    previous_metrics = dict((previous_run or {}).get("metrics_json") or {})
+    artifacts = dict(summary.get("artifacts") or {})
+    evaluator_json_path = Path(str(artifacts.get("evaluator_json") or "").strip()) if artifacts.get("evaluator_json") else None
+    highlights = _load_semantic_audit_highlights(evaluator_json_path)
+
+    lines = [
+        "Weekly semantic audit",
+        f"Period: {summary.get('period_start')} -> {summary.get('period_end')}",
+        "",
+        "Coverage",
+        f"- unique source sentences: {summary.get('eligible_sentence_count', 0)}",
+        f"- benchmark-covered: {summary.get('benchmark_case_count', 0)}",
+        f"- missing benchmark: {summary.get('missing_benchmark_rows', 0)}",
+        f"- source sessions in audit: {summary.get('source_session_count', 0)}",
+        "",
+        "Benchmark pipeline",
+        f"- queue unique sentences: {queue_payload.get('unique_sentence_count', 0)}",
+        f"- queue pending: {queue_payload.get('queued_pending_count', 0)}",
+        f"- queue ready: {queue_payload.get('queued_ready_count', 0)}",
+        f"- generated benchmarks: {generation_payload.get('ready_count', 0)}",
+        f"- generator failures: {generation_payload.get('failed_count', 0)}",
+        "",
+        "Semantic metrics",
+        (
+            f"- primary_skill_accuracy: {metrics.get('primary_skill_accuracy')} "
+            f"(Δ { _format_semantic_metric_delta(metrics.get('primary_skill_accuracy'), previous_metrics.get('primary_skill_accuracy')) })"
+        ),
+        (
+            f"- secondary_skill_overlap: {metrics.get('secondary_skill_overlap')} "
+            f"(Δ { _format_semantic_metric_delta(metrics.get('secondary_skill_overlap'), previous_metrics.get('secondary_skill_overlap')) })"
+        ),
+        (
+            f"- outcome_classification_accuracy: {metrics.get('outcome_classification_accuracy')} "
+            f"(Δ { _format_semantic_metric_delta(metrics.get('outcome_classification_accuracy'), previous_metrics.get('outcome_classification_accuracy')) })"
+        ),
+        (
+            f"- noise_primary_overpromotion_rate: {metrics.get('noise_primary_overpromotion_rate')} "
+            f"(Δ { _format_semantic_metric_delta(metrics.get('noise_primary_overpromotion_rate'), previous_metrics.get('noise_primary_overpromotion_rate')) })"
+        ),
+        (
+            f"- missed_sentence_level_anchor_rate: {metrics.get('missed_sentence_level_anchor_rate')} "
+            f"(Δ { _format_semantic_metric_delta(metrics.get('missed_sentence_level_anchor_rate'), previous_metrics.get('missed_sentence_level_anchor_rate')) })"
+        ),
+        "",
+    ]
+
+    if highlights["likely_incorrect"]:
+        lines.append("Likely incorrect")
+        lines.extend(highlights["likely_incorrect"][:3])
+        lines.append("")
+    if highlights["questionable"]:
+        lines.append("Questionable")
+        lines.extend(highlights["questionable"][:3])
+        lines.append("")
+    if highlights["clearly_correct"]:
+        lines.append("Clearly correct")
+        lines.extend(highlights["clearly_correct"][:2])
+        lines.append("")
+
+    if artifacts:
+        lines.append("Artifacts")
+        if artifacts.get("benchmark_cases_json"):
+            lines.append(f"- benchmark cases: {artifacts.get('benchmark_cases_json')}")
+        if artifacts.get("evaluator_json"):
+            lines.append(f"- evaluator json: {artifacts.get('evaluator_json')}")
+        if artifacts.get("evaluator_md"):
+            lines.append(f"- evaluator md: {artifacts.get('evaluator_md')}")
+    return "\n".join(lines).strip()
+
+
+def _run_semantic_audit_scheduler_job() -> None:
+    target_chat_ids = _parse_semantic_audit_target_chat_ids()
+    if not target_chat_ids:
+        logging.info("ℹ️ Semantic audit scheduler skipped: no target chat ids configured")
+        return
+    try:
+        now_local = datetime.now(ZoneInfo(SEMANTIC_AUDIT_SCHEDULER_TZ))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    target_date = now_local.date()
+    run_period = target_date.isoformat()
+    pending_chat_ids = [
+        int(chat_id)
+        for chat_id in target_chat_ids
+        if not has_admin_scheduler_run(
+            job_key="semantic_weekly_audit_digest",
+            run_period=run_period,
+            target_chat_id=int(chat_id),
+        )
+    ]
+    if not pending_chat_ids:
+        logging.info("ℹ️ Semantic audit scheduler skipped: digest already sent for %s", run_period)
+        return
+
+    SEMANTIC_AUDIT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    report_prefix = SEMANTIC_AUDIT_REPORTS_DIR / f"semantic_weekly_{run_period}"
+    queue_json_path = report_prefix.with_name(report_prefix.name + "_queue.json")
+    generator_json_path = report_prefix.with_name(report_prefix.name + "_generator.json")
+    audit_json_path = report_prefix.with_name(report_prefix.name + "_audit.json")
+
+    queue_command = [
+        sys.executable,
+        "scripts/build_semantic_benchmark_queue.py",
+        "--source-lang",
+        "ru",
+        "--target-lang",
+        "de",
+        "--days-back",
+        str(int(SEMANTIC_AUDIT_DAYS_BACK)),
+        "--min-attempts",
+        str(int(SEMANTIC_AUDIT_MIN_ATTEMPTS)),
+        "--limit",
+        str(int(SEMANTIC_AUDIT_QUEUE_LIMIT)),
+        "--output-json",
+        str(queue_json_path),
+    ]
+    generator_command = [
+        sys.executable,
+        "scripts/generate_semantic_benchmark_library.py",
+        "--source-lang",
+        "ru",
+        "--target-lang",
+        "de",
+        "--limit",
+        str(int(SEMANTIC_AUDIT_GENERATION_LIMIT)),
+        "--output-json",
+        str(generator_json_path),
+    ]
+    audit_command = [
+        sys.executable,
+        "scripts/run_semantic_weekly_audit.py",
+        "--source-lang",
+        "ru",
+        "--target-lang",
+        "de",
+        "--days-back",
+        str(int(SEMANTIC_AUDIT_DAYS_BACK)),
+        "--min-attempts",
+        str(int(SEMANTIC_AUDIT_MIN_ATTEMPTS)),
+        "--run-scope",
+        "weekly",
+        "--enqueue-missing",
+        "--output-json",
+        str(audit_json_path),
+    ]
+    if SEMANTIC_AUDIT_ALL_USERS:
+        audit_command.append("--all-users")
+    if SEMANTIC_AUDIT_LOCAL_REPLAY_TARGETING:
+        audit_command.append("--local-replay-targeting")
+
+    try:
+        _run_local_python_script(queue_command, label="semantic benchmark queue builder")
+        _run_local_python_script(generator_command, label="semantic benchmark generator")
+        _run_local_python_script(audit_command, label="semantic weekly audit runner")
+
+        queue_payload = json.loads(queue_json_path.read_text(encoding="utf-8")) if queue_json_path.exists() else {}
+        generation_payload = json.loads(generator_json_path.read_text(encoding="utf-8")) if generator_json_path.exists() else {}
+        audit_payload = json.loads(audit_json_path.read_text(encoding="utf-8")) if audit_json_path.exists() else {}
+        audit_run = dict(audit_payload.get("audit_run") or {})
+        audit_run_id = int(audit_run.get("id") or 0) or None
+        recent_runs = list_recent_semantic_audit_runs(run_scope="weekly", source_lang="ru", target_lang="de", limit=4)
+        previous_run = next((item for item in recent_runs if int(item.get("id") or 0) != int(audit_run_id or 0)), None)
+        digest_text = _build_semantic_audit_digest_text(
+            audit_payload=audit_payload,
+            queue_payload=queue_payload,
+            generation_payload=generation_payload,
+            previous_run=previous_run,
+        )
+        sent = 0
+        errors: list[str] = []
+        for chat_id in pending_chat_ids:
+            try:
+                _send_private_message_chunks(int(chat_id), digest_text, limit=3500)
+                mark_admin_scheduler_run(
+                    job_key="semantic_weekly_audit_digest",
+                    run_period=run_period,
+                    target_chat_id=int(chat_id),
+                    metadata={
+                        "audit_run_id": audit_run_id,
+                        "primary_skill_accuracy": (audit_payload.get("metrics") or {}).get("primary_skill_accuracy"),
+                        "source": "scheduler",
+                    },
+                )
+                sent += 1
+            except Exception as exc:
+                errors.append(f"chat {chat_id}: {exc}")
+                logging.warning("Failed to send semantic audit digest chat_id=%s", chat_id, exc_info=True)
+        if audit_run_id is not None:
+            if sent and not errors:
+                update_semantic_audit_run_delivery(audit_run_id=int(audit_run_id), delivery_status="sent")
+            elif sent and errors:
+                update_semantic_audit_run_delivery(
+                    audit_run_id=int(audit_run_id),
+                    delivery_status="partial",
+                    last_error="; ".join(errors)[:900],
+                )
+            else:
+                update_semantic_audit_run_delivery(
+                    audit_run_id=int(audit_run_id),
+                    delivery_status="failed",
+                    last_error="; ".join(errors)[:900] or "send_failed",
+                )
+        logging.info(
+            "✅ Semantic audit scheduler finished: sent=%s pending_targets=%s audit_run_id=%s errors=%s",
+            sent,
+            len(pending_chat_ids),
+            audit_run_id,
+            errors[:3],
+        )
+    except Exception:
+        logging.exception("❌ Semantic audit scheduler failed")
+
+
 def _run_weekly_goals_scheduler_job() -> None:
     tz_name = (os.getenv("WEEKLY_GOALS_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     target_date = _get_local_today_date(tz_name)
@@ -23506,6 +23833,18 @@ def _start_audio_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=300,
+        )
+    if SEMANTIC_AUDIT_SCHEDULER_ENABLED:
+        _audio_scheduler.add_job(
+            _run_semantic_audit_scheduler_job,
+            "cron",
+            day_of_week=SEMANTIC_AUDIT_SCHEDULER_DAY_OF_WEEK,
+            hour=SEMANTIC_AUDIT_SCHEDULER_HOUR,
+            minute=SEMANTIC_AUDIT_SCHEDULER_MINUTE,
+            timezone=SEMANTIC_AUDIT_SCHEDULER_TZ,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
         )
     now = datetime.now(ZoneInfo(tz_name))
     first_report = now.replace(hour=17, minute=0, second=0, microsecond=0)

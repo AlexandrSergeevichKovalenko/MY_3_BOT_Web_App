@@ -1228,7 +1228,8 @@ def _normalize_sentence_entries(entries: list[dict[str, Any]]) -> list[dict[str,
 
 
 _AUTHORED_PRIMARY_SKILL_SENTENCE_HINTS: dict[str, tuple[str, ...]] = {
-    "de_moods_reported_speech_indirekte_rede": ("сказ", "заяв", "сообщ", "упомян", "отмет", "спрос", "объясн", "по словам"),
+    "de_moods_reported_speech_indirekte_rede": ("по словам", "как сообщ", "сообщается", "заявил", "заявила", "заявили", "утвержд", "согласно"),
+    "moods_subjunctive1": ("по словам", "как сообщ", "сообщается", "заявил", "заявила", "заявили", "утвержд", "согласно"),
     "de_clauses_sentence_types_relative_clauses": ("котор", "чей", "где", "куда", "откуда"),
     "de_clauses_sentence_types_conditionals_wenn_falls": ("если", "в случае"),
     "moods_subjunctive2": ("если бы", "мог бы", "могла бы", "могли бы", "хотел бы", "хотела бы", "хотели бы", "следовало бы", "стоило бы"),
@@ -1244,27 +1245,97 @@ REMEDIATION_PRIMARY_DEMOTION_SKILL_IDS: set[str] = {
     "adjectives_endings_general",
 }
 
+STRUCTURAL_PRIMARY_NOISE_SKILL_IDS: set[str] = {
+    "de_orthography_spelling_common_spelling_errors",
+    "de_punctuation_comma_in_subordinate_clause",
+    *REMEDIATION_PRIMARY_DEMOTION_SKILL_IDS,
+}
+REPORTED_SPEECH_PRIMARY_SKILL_IDS: set[str] = {
+    "moods_subjunctive1",
+    "de_moods_reported_speech_indirekte_rede",
+}
+CLAUSE_LEVEL_PRIMARY_SKILL_IDS: set[str] = {
+    "word_order_subordinate_clause",
+    "de_clauses_sentence_types_concessive_clauses_obwohl",
+    "de_clauses_sentence_types_conditionals_wenn_falls",
+    "de_clauses_sentence_types_purpose_clauses_damit_um_zu",
+    "de_clauses_sentence_types_relative_clauses",
+    "moods_subjunctive2",
+}
+
 REMEDIATION_SENTENCE_ANCHOR_RULES: tuple[dict[str, Any], ...] = (
+    {
+        "rule_id": "hypothetical_advice_not_stal",
+        "substring_markers": (" бы не стал ", " бы не стала ", " бы не стали ", " бы на твоем месте ", " бы на твоём месте "),
+        "primary": ("moods_subjunctive2",),
+        "secondary": ("word_order_subordinate_clause", "de_voice_active_passive_vorgangspassiv_werden_partizip_ii"),
+        "supporting": ("de_clauses_sentence_types_main_vs_subordinate_clause",),
+        "structural": True,
+        "priority": 5.25,
+        "suppressed_primary": (
+            "cases_accusative",
+            "cases_dative",
+            "de_articles_determiners_definite_articles_der_die_das",
+            "de_articles_determiners_demonstratives_dieser_jener",
+            "de_articles_determiners_indefinite_articles_ein_eine",
+        ),
+    },
+    {
+        "rule_id": "reporting_despite_clause",
+        "substring_markers": (" заметил что несмотря ", " заметила что несмотря ", " заметили что несмотря "),
+        "primary": ("word_order_subordinate_clause",),
+        "secondary": ("de_clauses_sentence_types_concessive_clauses_obwohl", "adjectives_comparative"),
+        "supporting": ("prepositions_usage",),
+        "structural": True,
+        "priority": 5.1,
+        "suppressed_primary": ("prepositions_usage",),
+    },
+    {
+        "rule_id": "concessive_clause_despite_that",
+        "markers": ("несмотря на то что",),
+        "primary": ("de_clauses_sentence_types_concessive_clauses_obwohl",),
+        "secondary": ("word_order_subordinate_clause", "de_voice_active_passive_zustandspassiv_sein_partizip_ii"),
+        "supporting": ("de_clauses_sentence_types_main_vs_subordinate_clause",),
+        "structural": True,
+        "priority": 4.5,
+        "suppressed_primary": ("prepositions_usage", "word_order_subordinate_clause"),
+    },
     {
         "markers": ("несмотря на",),
         "primary": ("prepositions_usage",),
         "secondary": ("de_cases_case_after_preposition", "cases_preposition_genitive"),
         "supporting": ("cases_genitive",),
         "structural": True,
+        "priority": 1.75,
+        "negative_markers": ("несмотря на то что",),
     },
     {
-        "markers": ("кажется что", "считают что", "так чтобы", "почему"),
+        "rule_id": "explicit_subordinate_frame",
+        "markers": ("кажется что", "считают что", "объявлено что", "было объявлено что", "объяснил что", "объяснил врачу что", "подчеркивают что", "подчёркивают что"),
         "primary": ("word_order_subordinate_clause",),
-        "secondary": ("de_clauses_sentence_types_main_vs_subordinate_clause", "word_order_modal_structure"),
+        "secondary": ("de_clauses_sentence_types_main_vs_subordinate_clause",),
         "supporting": ("verbs_placement_subordinate",),
         "structural": True,
+        "priority": 4.0,
+        "suppressed_primary": ("moods_subjunctive1", "de_moods_reported_speech_indirekte_rede"),
+    },
+    {
+        "rule_id": "plain_conditional",
+        "substring_markers": (" если ",),
+        "primary": ("de_clauses_sentence_types_conditionals_wenn_falls",),
+        "secondary": ("word_order_subordinate_clause",),
+        "supporting": ("de_clauses_sentence_types_main_vs_subordinate_clause",),
+        "structural": True,
+        "priority": 2.75,
+        "negative_markers": ("если бы",),
     },
     {
         "markers": ("чтобы",),
-        "primary": ("word_order_subordinate_clause",),
-        "secondary": ("word_order_modal_structure", "verbs_modals"),
+        "primary": ("de_clauses_sentence_types_purpose_clauses_damit_um_zu",),
+        "secondary": ("word_order_subordinate_clause", "verbs_modals", "de_verbs_verb_valency_missing_object_complement"),
         "supporting": ("de_punctuation_comma_in_subordinate_clause",),
         "structural": True,
+        "priority": 4.0,
     },
     {
         "markers": ("хотя",),
@@ -1272,20 +1343,58 @@ REMEDIATION_SENTENCE_ANCHOR_RULES: tuple[dict[str, Any], ...] = (
         "secondary": ("word_order_subordinate_clause", "de_clauses_sentence_types_main_vs_subordinate_clause"),
         "supporting": ("de_punctuation_comma_in_subordinate_clause",),
         "structural": True,
+        "priority": 4.0,
     },
     {
         "markers": ("если бы",),
         "primary": ("moods_subjunctive2",),
-        "secondary": ("de_moods_konjunktiv_ii_wuerde_form", "de_clauses_sentence_types_conditionals_wenn_falls"),
+        "secondary": ("de_clauses_sentence_types_conditionals_wenn_falls", "de_moods_konjunktiv_ii_wuerde_form", "de_voice_active_passive_zustandspassiv_sein_partizip_ii"),
         "supporting": ("word_order_subordinate_clause",),
         "structural": True,
+        "priority": 5.0,
+        "suppressed_primary": ("de_clauses_sentence_types_conditionals_wenn_falls",),
     },
     {
         "markers": ("вынужден", "вынуждена", "вынуждены", "вынуждено"),
         "primary": ("de_infinitive_participles_zu_infinitive",),
-        "secondary": ("verbs_modals", "nouns_compounds"),
+        "secondary": ("nouns_compounds", "prepositions_usage", "verbs_modals"),
         "supporting": ("de_clauses_sentence_types_infinitive_clauses_vs_dass_clause",),
         "structural": True,
+        "priority": 4.0,
+        "suppressed_primary": ("verbs_modals",),
+    },
+    {
+        "rule_id": "relative_clause",
+        "substring_markers": (" котор",),
+        "primary": ("de_clauses_sentence_types_relative_clauses",),
+        "secondary": ("word_order_subordinate_clause",),
+        "supporting": ("word_order_v2_rule",),
+        "structural": True,
+        "priority": 3.5,
+    },
+    {
+        "rule_id": "participial_modifier",
+        "substring_markers": (" позволяющ", " разработанн"),
+        "secondary": ("de_clauses_sentence_types_relative_clauses",),
+        "supporting": ("word_order_subordinate_clause",),
+        "structural": True,
+        "priority": 2.25,
+    },
+    {
+        "rule_id": "result_state_passive",
+        "substring_markers": (" не изучен", " не изучены", " оказался поставлен", " остались нереш", " остаются недооцен", " остаётся недооцен"),
+        "primary": ("de_voice_active_passive_zustandspassiv_sein_partizip_ii",),
+        "secondary": ("de_voice_active_passive_vorgangspassiv_werden_partizip_ii", "word_order_subordinate_clause"),
+        "supporting": ("de_word_order_placement_of_participle_perfekt_passive",),
+        "structural": True,
+        "priority": 3.0,
+    },
+    {
+        "rule_id": "negation_secondary",
+        "substring_markers": (" не исчез",),
+        "secondary": ("de_negation_negation_placement",),
+        "structural": False,
+        "priority": 2.0,
     },
     {
         "markers": ("остаются недооцен", "остается недооцен", "остаётся недооцен"),
@@ -1293,6 +1402,7 @@ REMEDIATION_SENTENCE_ANCHOR_RULES: tuple[dict[str, Any], ...] = (
         "secondary": ("de_voice_active_passive_vorgangspassiv_werden_partizip_ii", "de_word_order_placement_of_participle_perfekt_passive"),
         "supporting": ("de_voice_active_passive_passive_word_order",),
         "structural": True,
+        "priority": 3.0,
     },
 )
 
@@ -1307,27 +1417,202 @@ def _normalize_sentence_anchor_text(sentence: str | None) -> str:
 
 
 def _collect_sentence_anchor_skill_weights(sentence: str | None) -> tuple[dict[str, float], bool]:
+    anchor_context = _collect_sentence_anchor_context(sentence)
+    return dict(anchor_context.get("anchored_skill_weights") or {}), bool(anchor_context.get("has_structural_anchor"))
+
+
+def _sentence_has_strict_reported_speech_semantics(sentence: str | None) -> bool:
     normalized_sentence = _normalize_sentence_anchor_text(sentence)
     if not normalized_sentence:
-        return {}, False
+        return False
+    markers = _AUTHORED_PRIMARY_SKILL_SENTENCE_HINTS.get("de_moods_reported_speech_indirekte_rede") or ()
+    return any(str(marker or "").strip().lower() in normalized_sentence for marker in markers)
+
+
+def _collect_sentence_anchor_context(sentence: str | None) -> dict[str, Any]:
+    normalized_sentence = _normalize_sentence_anchor_text(sentence)
+    if not normalized_sentence:
+        return {
+            "anchored_skill_weights": {},
+            "has_structural_anchor": False,
+            "matched_rule_ids": [],
+            "suppressed_primary_skill_ids": set(),
+            "strong_clause_anchor_present": False,
+            "reported_speech_semantics": False,
+        }
 
     anchored_skill_weights: dict[str, float] = {}
     has_structural_anchor = False
+    matched_rule_ids: list[str] = []
+    structural_rule_count = 0
+    suppressed_primary_skill_ids: set[str] = set()
     for rule in REMEDIATION_SENTENCE_ANCHOR_RULES:
         markers = tuple(str(marker or "").strip().lower() for marker in rule.get("markers") or ())
-        if not markers:
+        substring_markers = tuple(str(marker or "").strip().lower() for marker in rule.get("substring_markers") or ())
+        negative_markers = tuple(str(marker or "").strip().lower() for marker in rule.get("negative_markers") or ())
+        if negative_markers and any(marker in normalized_sentence for marker in negative_markers):
             continue
-        if not any(f" {marker} " in normalized_sentence for marker in markers):
+        if markers and any(marker in normalized_sentence for marker in markers):
+            matched = True
+        else:
+            matched = bool(substring_markers and any(marker in normalized_sentence for marker in substring_markers))
+        if not matched:
             continue
+        matched_rule_ids.append(str(rule.get("rule_id") or "|".join(markers or substring_markers)))
         if bool(rule.get("structural")):
             has_structural_anchor = True
+            structural_rule_count += 1
+        priority = max(1.0, float(rule.get("priority") or 1.0))
+        suppressed_primary_skill_ids.update(
+            str(skill_id or "").strip()
+            for skill_id in (rule.get("suppressed_primary") or ())
+            if str(skill_id or "").strip()
+        )
         for skill_id in rule.get("primary") or ():
-            anchored_skill_weights[str(skill_id)] = anchored_skill_weights.get(str(skill_id), 0.0) + 8.0
+            anchored_skill_weights[str(skill_id)] = anchored_skill_weights.get(str(skill_id), 0.0) + (8.5 * priority)
         for skill_id in rule.get("secondary") or ():
-            anchored_skill_weights[str(skill_id)] = anchored_skill_weights.get(str(skill_id), 0.0) + 4.5
+            anchored_skill_weights[str(skill_id)] = anchored_skill_weights.get(str(skill_id), 0.0) + (5.25 * priority)
         for skill_id in rule.get("supporting") or ():
-            anchored_skill_weights[str(skill_id)] = anchored_skill_weights.get(str(skill_id), 0.0) + 2.0
-    return anchored_skill_weights, has_structural_anchor
+            anchored_skill_weights[str(skill_id)] = anchored_skill_weights.get(str(skill_id), 0.0) + (2.5 * priority)
+
+    if structural_rule_count >= 2:
+        anchored_skill_weights["word_order_subordinate_clause"] = anchored_skill_weights.get("word_order_subordinate_clause", 0.0) + 9.0
+        anchored_skill_weights["de_clauses_sentence_types_main_vs_subordinate_clause"] = anchored_skill_weights.get("de_clauses_sentence_types_main_vs_subordinate_clause", 0.0) + 5.0
+    if "concessive_clause_despite_that" in matched_rule_ids:
+        anchored_skill_weights["prepositions_usage"] = anchored_skill_weights.get("prepositions_usage", 0.0) * 0.55
+
+    return {
+        "anchored_skill_weights": anchored_skill_weights,
+        "has_structural_anchor": has_structural_anchor,
+        "matched_rule_ids": matched_rule_ids,
+        "suppressed_primary_skill_ids": suppressed_primary_skill_ids,
+        "strong_clause_anchor_present": any(
+            rule_id in {
+                "concessive_clause_despite_that",
+                "explicit_subordinate_frame",
+                "relative_clause",
+            }
+            for rule_id in matched_rule_ids
+        ),
+        "reported_speech_semantics": _sentence_has_strict_reported_speech_semantics(sentence),
+    }
+
+
+def _should_suppress_primary_candidate(
+    *,
+    skill_id: str,
+    anchor_context: dict[str, Any],
+) -> bool:
+    normalized_skill_id = str(skill_id or "").strip()
+    if not normalized_skill_id:
+        return True
+    if normalized_skill_id in REPORTED_SPEECH_PRIMARY_SKILL_IDS and not bool(anchor_context.get("reported_speech_semantics")):
+        return True
+    if normalized_skill_id == "de_voice_active_passive_zustandspassiv_sein_partizip_ii" and "moods_subjunctive2" in set((anchor_context.get("anchored_skill_weights") or {}).keys()):
+        return True
+    if bool(anchor_context.get("has_structural_anchor")) and normalized_skill_id in STRUCTURAL_PRIMARY_NOISE_SKILL_IDS:
+        return True
+    if normalized_skill_id in set(anchor_context.get("suppressed_primary_skill_ids") or set()):
+        return True
+    if normalized_skill_id == "prepositions_usage" and bool(anchor_context.get("strong_clause_anchor_present")):
+        return True
+    return False
+
+
+def rerank_tested_skill_profile_for_sentence(
+    sentence: str | None,
+    tested_skill_profile: list[dict[str, Any]] | None,
+    *,
+    profile_source: str | None = None,
+    profile_confidence: float | None = None,
+) -> list[dict[str, Any]]:
+    profile = [dict(item) for item in list(tested_skill_profile or []) if str(item.get("skill_id") or "").strip()]
+    anchor_context = _collect_sentence_anchor_context(sentence)
+    anchored_skill_weights = dict(anchor_context.get("anchored_skill_weights") or {})
+    if not profile and not anchored_skill_weights:
+        return []
+
+    default_source = str(
+        profile_source
+        or ((profile[0] or {}).get("profile_source") if profile else "")
+        or AUTHORED_PROFILE_SOURCE
+    ).strip() or AUTHORED_PROFILE_SOURCE
+    try:
+        default_confidence = float(
+            profile_confidence
+            if profile_confidence is not None
+            else ((profile[0] or {}).get("profile_confidence") if profile else AUTHORED_PROFILE_CONFIDENCE)
+        )
+    except Exception:
+        default_confidence = AUTHORED_PROFILE_CONFIDENCE
+    default_confidence = max(0.0, min(1.0, default_confidence))
+
+    base_role_scores = {
+        "primary": 10.0,
+        "secondary": 6.0,
+        "supporting": 3.0,
+    }
+    candidate_scores: dict[str, float] = {}
+    for item in profile:
+        skill_id = str(item.get("skill_id") or "").strip()
+        if not skill_id:
+            continue
+        role = str(item.get("role") or "supporting").strip()
+        candidate_scores[skill_id] = candidate_scores.get(skill_id, 0.0) + base_role_scores.get(role, 1.0)
+
+    for skill_id, bonus in anchored_skill_weights.items():
+        skill_key = str(skill_id or "").strip()
+        if not skill_key:
+            continue
+        candidate_scores[skill_key] = candidate_scores.get(skill_key, 0.0) + float(bonus or 0.0)
+
+    if bool(anchor_context.get("has_structural_anchor")):
+        for skill_id in list(candidate_scores.keys()):
+            if skill_id in STRUCTURAL_PRIMARY_NOISE_SKILL_IDS and skill_id not in anchored_skill_weights:
+                candidate_scores[skill_id] = candidate_scores.get(skill_id, 0.0) * 0.12
+            if skill_id in REPORTED_SPEECH_PRIMARY_SKILL_IDS and not bool(anchor_context.get("reported_speech_semantics")):
+                candidate_scores[skill_id] = candidate_scores.get(skill_id, 0.0) * 0.1
+            if skill_id == "prepositions_usage" and bool(anchor_context.get("strong_clause_anchor_present")):
+                candidate_scores[skill_id] = candidate_scores.get(skill_id, 0.0) * 0.45
+            if skill_id == "de_clauses_sentence_types_conditionals_wenn_falls" and "moods_subjunctive2" in anchored_skill_weights:
+                candidate_scores[skill_id] = candidate_scores.get(skill_id, 0.0) * 0.72
+            if skill_id == "verbs_modals" and "de_infinitive_participles_zu_infinitive" in anchored_skill_weights:
+                candidate_scores[skill_id] = candidate_scores.get(skill_id, 0.0) * 0.68
+            if skill_id == "de_voice_active_passive_zustandspassiv_sein_partizip_ii" and "moods_subjunctive2" in anchored_skill_weights:
+                candidate_scores[skill_id] = candidate_scores.get(skill_id, 0.0) * 0.58
+    if bool(anchor_context.get("strong_clause_anchor_present")):
+        candidate_scores["word_order_subordinate_clause"] = candidate_scores.get("word_order_subordinate_clause", 0.0) + 4.0
+
+    ranked_skill_ids = [
+        skill_id
+        for skill_id, _score in sorted(
+            candidate_scores.items(),
+            key=lambda item: (-float(item[1] or 0.0), item[0]),
+        )
+    ]
+    primary_skill_id = None
+    for skill_id in ranked_skill_ids:
+        if not _should_suppress_primary_candidate(
+            skill_id=skill_id,
+            anchor_context=anchor_context,
+        ):
+            primary_skill_id = skill_id
+            break
+    if primary_skill_id is None and ranked_skill_ids:
+        primary_skill_id = ranked_skill_ids[0]
+    if not primary_skill_id:
+        return []
+
+    remaining_skill_ids = [skill_id for skill_id in ranked_skill_ids if skill_id != primary_skill_id]
+    secondary_skill_ids = remaining_skill_ids[:2]
+    supporting_skill_ids = remaining_skill_ids[2:3]
+    return _build_skill_profile_from_skill_ids(
+        primary_skill_id=primary_skill_id,
+        secondary_skill_ids=secondary_skill_ids,
+        supporting_skill_ids=supporting_skill_ids,
+        profile_source=default_source,
+        profile_confidence=default_confidence,
+    )
 
 
 def _load_sentence_text_for_remediation_with_cursor(
@@ -1362,6 +1647,8 @@ def _authored_sentence_matches_primary_skill(
     normalized_primary_skill_id = str(primary_skill_id or "").strip()
     if not normalized_sentence or not normalized_primary_skill_id:
         return False
+    if normalized_primary_skill_id in REPORTED_SPEECH_PRIMARY_SKILL_IDS:
+        return _sentence_has_strict_reported_speech_semantics(sentence)
     required_markers = _AUTHORED_PRIMARY_SKILL_SENTENCE_HINTS.get(normalized_primary_skill_id)
     if not required_markers:
         return True
@@ -1422,10 +1709,15 @@ def _parse_generated_sentence_entries_payload(
         entries.append(
             {
                 "sentence": sentence,
-                "tested_skill_profile": _build_skill_profile_from_skill_ids(
-                    primary_skill_id=primary_skill_id,
-                    secondary_skill_ids=secondary_skill_ids,
-                    supporting_skill_ids=supporting_skill_ids,
+                "tested_skill_profile": rerank_tested_skill_profile_for_sentence(
+                    sentence,
+                    _build_skill_profile_from_skill_ids(
+                        primary_skill_id=primary_skill_id,
+                        secondary_skill_ids=secondary_skill_ids,
+                        supporting_skill_ids=supporting_skill_ids,
+                        profile_source=profile_source,
+                        profile_confidence=profile_confidence,
+                    ),
                     profile_source=profile_source,
                     profile_confidence=profile_confidence,
                 ),
@@ -2618,13 +2910,16 @@ def _build_remediation_profile_with_cursor(
         if skill_id not in ranked_leaf_skill_ids
     ]
     ranked_skill_ids = ranked_leaf_skill_ids + ranked_diagnostic_fallback_ids
-    primary_skill_id = ranked_skill_ids[0]
-    secondary_skill_ids = ranked_skill_ids[1:3]
-    supporting_skill_ids = ranked_skill_ids[3:4]
-    return _build_skill_profile_from_skill_ids(
-        primary_skill_id=primary_skill_id,
-        secondary_skill_ids=secondary_skill_ids,
-        supporting_skill_ids=supporting_skill_ids,
+    base_profile = _build_skill_profile_from_skill_ids(
+        primary_skill_id=ranked_skill_ids[0],
+        secondary_skill_ids=ranked_skill_ids[1:3],
+        supporting_skill_ids=ranked_skill_ids[3:4],
+        profile_source=REMEDIATION_PROFILE_SOURCE,
+        profile_confidence=REMEDIATION_PROFILE_CONFIDENCE,
+    )
+    return rerank_tested_skill_profile_for_sentence(
+        resolved_sentence_text,
+        base_profile,
         profile_source=REMEDIATION_PROFILE_SOURCE,
         profile_confidence=REMEDIATION_PROFILE_CONFIDENCE,
     )

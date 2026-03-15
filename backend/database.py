@@ -118,6 +118,17 @@ def _is_unclassified_skill_seed(skill_id: str | None, title: str | None, categor
     )
 
 
+def _semantic_benchmark_sentence_hash(
+    source_sentence: str | None,
+    *,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> str:
+    normalized_sentence = " ".join(str(source_sentence or "").strip().split())
+    payload = f"{str(source_lang or 'ru').strip().lower()}::{str(target_lang or 'de').strip().lower()}::{normalized_sentence}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
 def _normalize_dictionary_origin_process(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in DICTIONARY_ORIGIN_ALLOWED:
@@ -2581,6 +2592,160 @@ def ensure_webapp_tables() -> None:
             """)
             cursor.execute(
                 """
+                CREATE TABLE IF NOT EXISTS bt_3_semantic_benchmark_library (
+                    id BIGSERIAL PRIMARY KEY,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    source_sentence TEXT NOT NULL,
+                    source_sentence_hash TEXT NOT NULL,
+                    benchmark_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    benchmark_status TEXT NOT NULL DEFAULT 'pending',
+                    benchmark_confidence TEXT,
+                    sentence_level_anchor TEXT,
+                    prompt_version TEXT,
+                    llm_model TEXT,
+                    notes TEXT,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    approved_at TIMESTAMPTZ,
+                    last_used_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (benchmark_status IN ('pending', 'ready', 'needs_review', 'approved', 'superseded', 'error')),
+                    CHECK (benchmark_confidence IS NULL OR benchmark_confidence IN ('high', 'medium', 'low')),
+                    UNIQUE (source_lang, target_lang, source_sentence_hash)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_semantic_benchmark_library_status
+                ON bt_3_semantic_benchmark_library (benchmark_status, updated_at DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_semantic_benchmark_library_lang_used
+                ON bt_3_semantic_benchmark_library (source_lang, target_lang, last_used_at DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_semantic_benchmark_queue (
+                    id BIGSERIAL PRIMARY KEY,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    source_sentence TEXT NOT NULL,
+                    source_sentence_hash TEXT NOT NULL,
+                    queue_status TEXT NOT NULL DEFAULT 'pending',
+                    priority DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                    sample_count INT NOT NULL DEFAULT 1,
+                    first_seen_at TIMESTAMPTZ,
+                    last_seen_at TIMESTAMPTZ,
+                    recent_source_session_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    recent_check_session_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    benchmark_id BIGINT REFERENCES bt_3_semantic_benchmark_library(id) ON DELETE SET NULL,
+                    last_error TEXT,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (queue_status IN ('pending', 'processing', 'ready', 'skipped', 'error')),
+                    UNIQUE (source_lang, target_lang, source_sentence_hash)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_semantic_benchmark_queue_status
+                ON bt_3_semantic_benchmark_queue (queue_status, priority DESC, updated_at ASC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_semantic_audit_runs (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_key TEXT,
+                    run_scope TEXT NOT NULL,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    period_start DATE,
+                    period_end DATE,
+                    sample_size INT NOT NULL DEFAULT 0,
+                    benchmark_case_count INT NOT NULL DEFAULT 0,
+                    run_status TEXT NOT NULL DEFAULT 'queued',
+                    delivery_chat_id BIGINT,
+                    delivery_status TEXT NOT NULL DEFAULT 'pending',
+                    metrics_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    summary_markdown TEXT,
+                    last_error TEXT,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    started_at TIMESTAMPTZ,
+                    completed_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (run_status IN ('queued', 'running', 'done', 'failed')),
+                    CHECK (delivery_status IN ('pending', 'sent', 'failed', 'skipped'))
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_bt_3_semantic_audit_runs_run_key
+                ON bt_3_semantic_audit_runs (run_key)
+                WHERE run_key IS NOT NULL;
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_semantic_audit_runs_scope_period
+                ON bt_3_semantic_audit_runs (run_scope, source_lang, target_lang, created_at DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_semantic_audit_case_results (
+                    id BIGSERIAL PRIMARY KEY,
+                    audit_run_id BIGINT NOT NULL REFERENCES bt_3_semantic_audit_runs(id) ON DELETE CASCADE,
+                    case_id TEXT,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    source_sentence TEXT NOT NULL,
+                    source_sentence_hash TEXT NOT NULL,
+                    source_session_id TEXT,
+                    check_session_id BIGINT,
+                    sentence_id BIGINT REFERENCES bt_3_daily_sentences(id) ON DELETE SET NULL,
+                    benchmark_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    expected_tested_primary TEXT,
+                    expected_tested_secondary JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    expected_outcome_type TEXT,
+                    actual_tested_primary TEXT,
+                    actual_tested_secondary JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    actual_errored_skills JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    actual_outcome_type TEXT,
+                    primary_match BOOLEAN,
+                    secondary_skill_overlap DOUBLE PRECISION,
+                    outcome_match BOOLEAN,
+                    classification TEXT,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (classification IS NULL OR classification IN ('clearly_correct', 'questionable', 'likely_incorrect'))
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_bt_3_semantic_audit_case_results_unique
+                ON bt_3_semantic_audit_case_results (audit_run_id, source_sentence_hash, COALESCE(source_session_id, ''), COALESCE(sentence_id, 0));
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_semantic_audit_case_results_run
+                ON bt_3_semantic_audit_case_results (audit_run_id, case_id, created_at ASC);
+                """
+            )
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS bt_3_support_messages (
                     id BIGSERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -3486,6 +3651,33 @@ def ensure_webapp_tables() -> None:
                 + ", ".join(missing_phase1_objects)
             )
         _ENSURE_WEBAPP_TABLES_DONE = True
+
+
+def require_semantic_audit_tables() -> None:
+    required_tables = (
+        "bt_3_semantic_benchmark_library",
+        "bt_3_semantic_benchmark_queue",
+        "bt_3_semantic_audit_runs",
+        "bt_3_semantic_audit_case_results",
+    )
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name = ANY(%s::text[]);
+                """,
+                (list(required_tables),),
+            )
+            existing = {str(row[0]) for row in cursor.fetchall() or []}
+    missing = [table_name for table_name in required_tables if table_name not in existing]
+    if missing:
+        raise RuntimeError(
+            "Semantic audit tables are missing. Run ensure_webapp_tables() once before running semantic audit jobs. "
+            f"Missing: {', '.join(missing)}"
+        )
 
 
 def get_missing_phase1_shadow_schema_objects() -> list[str]:
@@ -9056,6 +9248,970 @@ def mark_admin_scheduler_run(
                     Json(payload),
                 ),
             )
+
+
+def _map_semantic_benchmark_library_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "source_lang": str(row[1] or "ru"),
+        "target_lang": str(row[2] or "de"),
+        "source_sentence": str(row[3] or ""),
+        "source_sentence_hash": str(row[4] or ""),
+        "benchmark_json": row[5] if isinstance(row[5], dict) else {},
+        "benchmark_status": str(row[6] or "pending"),
+        "benchmark_confidence": str(row[7] or "") or None,
+        "sentence_level_anchor": str(row[8] or "") or None,
+        "prompt_version": str(row[9] or "") or None,
+        "llm_model": str(row[10] or "") or None,
+        "notes": str(row[11] or "") or None,
+        "metadata": row[12] if isinstance(row[12], dict) else {},
+        "approved_at": row[13].isoformat() if row[13] else None,
+        "last_used_at": row[14].isoformat() if row[14] else None,
+        "created_at": row[15].isoformat() if row[15] else None,
+        "updated_at": row[16].isoformat() if row[16] else None,
+    }
+
+
+def get_semantic_benchmark_library_entry(
+    *,
+    source_sentence: str,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> dict | None:
+    sentence_text = " ".join(str(source_sentence or "").strip().split())
+    if not sentence_text:
+        return None
+    sentence_hash = _semantic_benchmark_sentence_hash(
+        sentence_text,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    source_lang,
+                    target_lang,
+                    source_sentence,
+                    source_sentence_hash,
+                    benchmark_json,
+                    benchmark_status,
+                    benchmark_confidence,
+                    sentence_level_anchor,
+                    prompt_version,
+                    llm_model,
+                    notes,
+                    metadata,
+                    approved_at,
+                    last_used_at,
+                    created_at,
+                    updated_at
+                FROM bt_3_semantic_benchmark_library
+                WHERE source_lang = %s
+                  AND target_lang = %s
+                  AND source_sentence_hash = %s
+                LIMIT 1;
+                """,
+                (
+                    str(source_lang or "ru").strip().lower(),
+                    str(target_lang or "de").strip().lower(),
+                    sentence_hash,
+                ),
+            )
+            return _map_semantic_benchmark_library_row(cursor.fetchone())
+
+
+def upsert_semantic_benchmark_library_entry(
+    *,
+    source_sentence: str,
+    benchmark_json: dict | None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    benchmark_status: str = "ready",
+    benchmark_confidence: str | None = None,
+    sentence_level_anchor: str | None = None,
+    prompt_version: str | None = None,
+    llm_model: str | None = None,
+    notes: str | None = None,
+    metadata: dict | None = None,
+    approved: bool = False,
+) -> dict | None:
+    sentence_text = " ".join(str(source_sentence or "").strip().split())
+    if not sentence_text:
+        return None
+    status_value = str(benchmark_status or "ready").strip().lower() or "ready"
+    confidence_value = str(benchmark_confidence or "").strip().lower() or None
+    sentence_hash = _semantic_benchmark_sentence_hash(
+        sentence_text,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_semantic_benchmark_library (
+                    source_lang,
+                    target_lang,
+                    source_sentence,
+                    source_sentence_hash,
+                    benchmark_json,
+                    benchmark_status,
+                    benchmark_confidence,
+                    sentence_level_anchor,
+                    prompt_version,
+                    llm_model,
+                    notes,
+                    metadata,
+                    approved_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW())
+                ON CONFLICT (source_lang, target_lang, source_sentence_hash)
+                DO UPDATE SET
+                    source_sentence = EXCLUDED.source_sentence,
+                    benchmark_json = EXCLUDED.benchmark_json,
+                    benchmark_status = EXCLUDED.benchmark_status,
+                    benchmark_confidence = EXCLUDED.benchmark_confidence,
+                    sentence_level_anchor = EXCLUDED.sentence_level_anchor,
+                    prompt_version = EXCLUDED.prompt_version,
+                    llm_model = EXCLUDED.llm_model,
+                    notes = EXCLUDED.notes,
+                    metadata = EXCLUDED.metadata,
+                    approved_at = COALESCE(EXCLUDED.approved_at, bt_3_semantic_benchmark_library.approved_at),
+                    updated_at = NOW()
+                RETURNING
+                    id,
+                    source_lang,
+                    target_lang,
+                    source_sentence,
+                    source_sentence_hash,
+                    benchmark_json,
+                    benchmark_status,
+                    benchmark_confidence,
+                    sentence_level_anchor,
+                    prompt_version,
+                    llm_model,
+                    notes,
+                    metadata,
+                    approved_at,
+                    last_used_at,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    str(source_lang or "ru").strip().lower(),
+                    str(target_lang or "de").strip().lower(),
+                    sentence_text,
+                    sentence_hash,
+                    Json(benchmark_json if isinstance(benchmark_json, dict) else {}),
+                    status_value,
+                    confidence_value,
+                    str(sentence_level_anchor or "").strip() or None,
+                    str(prompt_version or "").strip() or None,
+                    str(llm_model or "").strip() or None,
+                    str(notes or "").strip() or None,
+                    Json(metadata if isinstance(metadata, dict) else {}),
+                    datetime.now(timezone.utc) if approved else None,
+                ),
+            )
+            return _map_semantic_benchmark_library_row(cursor.fetchone())
+
+
+def touch_semantic_benchmark_library_entry(
+    *,
+    benchmark_id: int,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_semantic_benchmark_library
+                SET last_used_at = NOW(), updated_at = NOW()
+                WHERE id = %s;
+                """,
+                (int(benchmark_id),),
+            )
+
+
+def enqueue_semantic_benchmark_candidate(
+    *,
+    source_sentence: str,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    first_seen_at: datetime | None = None,
+    last_seen_at: datetime | None = None,
+    sample_count: int = 1,
+    priority: float = 0.0,
+    recent_source_session_ids: list[str] | None = None,
+    recent_check_session_ids: list[int] | None = None,
+    metadata: dict | None = None,
+) -> dict | None:
+    sentence_text = " ".join(str(source_sentence or "").strip().split())
+    if not sentence_text:
+        return None
+    source_value = str(source_lang or "ru").strip().lower()
+    target_value = str(target_lang or "de").strip().lower()
+    sentence_hash = _semantic_benchmark_sentence_hash(
+        sentence_text,
+        source_lang=source_value,
+        target_lang=target_value,
+    )
+    library_entry = get_semantic_benchmark_library_entry(
+        source_sentence=sentence_text,
+        source_lang=source_value,
+        target_lang=target_value,
+    )
+    queue_status = "ready" if library_entry else "pending"
+    benchmark_id = int(library_entry["id"]) if library_entry else None
+    source_session_ids = [
+        str(item).strip()
+        for item in list(recent_source_session_ids or [])
+        if str(item).strip()
+    ][:10]
+    check_session_ids = []
+    for item in list(recent_check_session_ids or [])[:10]:
+        try:
+            check_session_ids.append(int(item))
+        except Exception:
+            continue
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_semantic_benchmark_queue (
+                    source_lang,
+                    target_lang,
+                    source_sentence,
+                    source_sentence_hash,
+                    queue_status,
+                    priority,
+                    sample_count,
+                    first_seen_at,
+                    last_seen_at,
+                    recent_source_session_ids,
+                    recent_check_session_ids,
+                    benchmark_id,
+                    metadata,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, NOW())
+                ON CONFLICT (source_lang, target_lang, source_sentence_hash)
+                DO UPDATE SET
+                    source_sentence = EXCLUDED.source_sentence,
+                    queue_status = CASE
+                        WHEN bt_3_semantic_benchmark_queue.benchmark_id IS NOT NULL THEN 'ready'
+                        ELSE EXCLUDED.queue_status
+                    END,
+                    priority = GREATEST(bt_3_semantic_benchmark_queue.priority, EXCLUDED.priority),
+                    sample_count = GREATEST(bt_3_semantic_benchmark_queue.sample_count, EXCLUDED.sample_count),
+                    first_seen_at = COALESCE(bt_3_semantic_benchmark_queue.first_seen_at, EXCLUDED.first_seen_at),
+                    last_seen_at = GREATEST(
+                        COALESCE(bt_3_semantic_benchmark_queue.last_seen_at, EXCLUDED.last_seen_at),
+                        COALESCE(EXCLUDED.last_seen_at, bt_3_semantic_benchmark_queue.last_seen_at)
+                    ),
+                    recent_source_session_ids = EXCLUDED.recent_source_session_ids,
+                    recent_check_session_ids = EXCLUDED.recent_check_session_ids,
+                    benchmark_id = COALESCE(bt_3_semantic_benchmark_queue.benchmark_id, EXCLUDED.benchmark_id),
+                    metadata = EXCLUDED.metadata,
+                    updated_at = NOW()
+                RETURNING
+                    id,
+                    source_lang,
+                    target_lang,
+                    source_sentence,
+                    source_sentence_hash,
+                    queue_status,
+                    priority,
+                    sample_count,
+                    first_seen_at,
+                    last_seen_at,
+                    recent_source_session_ids,
+                    recent_check_session_ids,
+                    benchmark_id,
+                    last_error,
+                    metadata,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    source_value,
+                    target_value,
+                    sentence_text,
+                    sentence_hash,
+                    queue_status,
+                    float(priority or 0.0),
+                    max(1, int(sample_count or 1)),
+                    first_seen_at,
+                    last_seen_at,
+                    Json(source_session_ids),
+                    Json(check_session_ids),
+                    benchmark_id,
+                    Json(metadata if isinstance(metadata, dict) else {}),
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _map_semantic_benchmark_queue_row(row)
+
+
+def _map_semantic_benchmark_queue_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "source_lang": str(row[1] or "ru"),
+        "target_lang": str(row[2] or "de"),
+        "source_sentence": str(row[3] or ""),
+        "source_sentence_hash": str(row[4] or ""),
+        "queue_status": str(row[5] or "pending"),
+        "priority": float(row[6] or 0.0),
+        "sample_count": int(row[7] or 0),
+        "first_seen_at": row[8].isoformat() if row[8] else None,
+        "last_seen_at": row[9].isoformat() if row[9] else None,
+        "recent_source_session_ids": list(row[10] or []),
+        "recent_check_session_ids": list(row[11] or []),
+        "benchmark_id": int(row[12]) if row[12] is not None else None,
+        "last_error": str(row[13] or "") or None,
+        "metadata": row[14] if isinstance(row[14], dict) else {},
+        "created_at": row[15].isoformat() if row[15] else None,
+        "updated_at": row[16].isoformat() if row[16] else None,
+    }
+
+
+def list_semantic_benchmark_queue_candidates(
+    *,
+    queue_status: str = "pending",
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    limit: int = 25,
+) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    source_lang,
+                    target_lang,
+                    source_sentence,
+                    source_sentence_hash,
+                    queue_status,
+                    priority,
+                    sample_count,
+                    first_seen_at,
+                    last_seen_at,
+                    recent_source_session_ids,
+                    recent_check_session_ids,
+                    benchmark_id,
+                    last_error,
+                    metadata,
+                    created_at,
+                    updated_at
+                FROM bt_3_semantic_benchmark_queue
+                WHERE source_lang = %s
+                  AND target_lang = %s
+                  AND queue_status = %s
+                ORDER BY priority DESC, updated_at ASC, id ASC
+                LIMIT %s;
+                """,
+                (
+                    str(source_lang or "ru").strip().lower(),
+                    str(target_lang or "de").strip().lower(),
+                    str(queue_status or "pending").strip().lower(),
+                    max(1, int(limit or 25)),
+                ),
+            )
+            rows = cursor.fetchall() or []
+    return [_map_semantic_benchmark_queue_row(row) for row in rows if row]
+
+
+def update_semantic_benchmark_queue_item(
+    *,
+    queue_id: int,
+    queue_status: str | None = None,
+    benchmark_id: int | None = None,
+    last_error: str | None = None,
+    metadata: dict | None = None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_semantic_benchmark_queue
+                SET
+                    queue_status = COALESCE(%s, queue_status),
+                    benchmark_id = COALESCE(%s, benchmark_id),
+                    last_error = %s,
+                    metadata = CASE
+                        WHEN %s::jsonb IS NULL THEN metadata
+                        ELSE %s::jsonb
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING
+                    id,
+                    source_lang,
+                    target_lang,
+                    source_sentence,
+                    source_sentence_hash,
+                    queue_status,
+                    priority,
+                    sample_count,
+                    first_seen_at,
+                    last_seen_at,
+                    recent_source_session_ids,
+                    recent_check_session_ids,
+                    benchmark_id,
+                    last_error,
+                    metadata,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    str(queue_status or "").strip().lower() or None,
+                    int(benchmark_id) if benchmark_id is not None else None,
+                    str(last_error or "").strip() or None,
+                    Json(metadata) if isinstance(metadata, dict) else None,
+                    Json(metadata) if isinstance(metadata, dict) else None,
+                    int(queue_id),
+                ),
+            )
+            return _map_semantic_benchmark_queue_row(cursor.fetchone())
+
+
+def list_recent_unique_translation_check_sentences(
+    *,
+    period_start: datetime,
+    period_end: datetime,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    user_id: int | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    params: list[Any] = [
+        period_start,
+        period_end,
+        str(source_lang or "ru").strip().lower(),
+        str(target_lang or "de").strip().lower(),
+    ]
+    user_filter_sql = ""
+    if user_id is not None:
+        user_filter_sql = " AND s.user_id = %s "
+        params.append(int(user_id))
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = " LIMIT %s "
+        params.append(max(1, int(limit)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    i.original_text AS source_sentence,
+                    MIN(COALESCE(i.created_at, s.created_at)) AS first_seen_at,
+                    MAX(COALESCE(i.finished_at, i.updated_at, i.created_at, s.finished_at, s.created_at)) AS last_seen_at,
+                    COUNT(*)::INT AS attempts_count,
+                    ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.source_session_id), NULL) AS source_session_ids,
+                    ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.id), NULL) AS check_session_ids
+                FROM bt_3_translation_check_items i
+                JOIN bt_3_translation_check_sessions s
+                  ON s.id = i.check_session_id
+                WHERE s.status = 'done'
+                  AND s.created_at >= %s
+                  AND s.created_at < %s
+                  AND COALESCE(s.source_lang, 'ru') = %s
+                  AND COALESCE(s.target_lang, 'de') = %s
+                  {user_filter_sql}
+                  AND COALESCE(NULLIF(BTRIM(i.original_text), ''), NULL) IS NOT NULL
+                GROUP BY i.original_text
+                ORDER BY attempts_count DESC, last_seen_at DESC, i.original_text ASC
+                {limit_sql};
+                """,
+                params,
+            )
+            rows = cursor.fetchall() or []
+    result: list[dict] = []
+    for row in rows:
+        source_sentence = " ".join(str(row[0] or "").strip().split())
+        if not source_sentence:
+            continue
+        result.append(
+            {
+                "source_sentence": source_sentence,
+                "source_lang": str(source_lang or "ru").strip().lower(),
+                "target_lang": str(target_lang or "de").strip().lower(),
+                "source_sentence_hash": _semantic_benchmark_sentence_hash(
+                    source_sentence,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                ),
+                "first_seen_at": row[1].isoformat() if row[1] else None,
+                "last_seen_at": row[2].isoformat() if row[2] else None,
+                "attempts_count": int(row[3] or 0),
+                "source_session_ids": [str(item) for item in list(row[4] or []) if str(item or "").strip()],
+                "check_session_ids": [int(item) for item in list(row[5] or []) if item is not None],
+            }
+        )
+    return result
+
+
+def create_semantic_audit_run(
+    *,
+    run_scope: str,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    run_key: str | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    sample_size: int = 0,
+    benchmark_case_count: int = 0,
+    metadata: dict | None = None,
+    delivery_chat_id: int | None = None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            normalized_run_key = str(run_key or "").strip() or None
+            common_params = (
+                str(run_scope or "").strip(),
+                str(source_lang or "ru").strip().lower(),
+                str(target_lang or "de").strip().lower(),
+                period_start,
+                period_end,
+                max(0, int(sample_size or 0)),
+                max(0, int(benchmark_case_count or 0)),
+                int(delivery_chat_id) if delivery_chat_id is not None else None,
+                Json(metadata if isinstance(metadata, dict) else {}),
+            )
+            if normalized_run_key:
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM bt_3_semantic_audit_runs
+                    WHERE run_key = %s
+                    LIMIT 1;
+                    """,
+                    (normalized_run_key,),
+                )
+                existing_row = cursor.fetchone()
+                if existing_row:
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_semantic_audit_runs
+                        SET
+                            run_scope = %s,
+                            source_lang = %s,
+                            target_lang = %s,
+                            period_start = %s,
+                            period_end = %s,
+                            sample_size = %s,
+                            benchmark_case_count = %s,
+                            run_status = 'running',
+                            delivery_chat_id = %s,
+                            delivery_status = 'pending',
+                            metadata = %s::jsonb,
+                            started_at = NOW(),
+                            completed_at = NULL,
+                            updated_at = NOW(),
+                            last_error = NULL
+                        WHERE id = %s
+                        RETURNING
+                            id,
+                            run_key,
+                            run_scope,
+                            source_lang,
+                            target_lang,
+                            period_start,
+                            period_end,
+                            sample_size,
+                            benchmark_case_count,
+                            run_status,
+                            delivery_chat_id,
+                            delivery_status,
+                            metrics_json,
+                            summary_json,
+                            summary_markdown,
+                            last_error,
+                            metadata,
+                            started_at,
+                            completed_at,
+                            created_at,
+                            updated_at;
+                        """,
+                        (*common_params, int(existing_row[0])),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_semantic_audit_runs (
+                            run_key,
+                            run_scope,
+                            source_lang,
+                            target_lang,
+                            period_start,
+                            period_end,
+                            sample_size,
+                            benchmark_case_count,
+                            run_status,
+                            delivery_chat_id,
+                            delivery_status,
+                            metadata,
+                            started_at,
+                            updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'running', %s, 'pending', %s::jsonb, NOW(), NOW())
+                        RETURNING
+                            id,
+                            run_key,
+                            run_scope,
+                            source_lang,
+                            target_lang,
+                            period_start,
+                            period_end,
+                            sample_size,
+                            benchmark_case_count,
+                            run_status,
+                            delivery_chat_id,
+                            delivery_status,
+                            metrics_json,
+                            summary_json,
+                            summary_markdown,
+                            last_error,
+                            metadata,
+                            started_at,
+                            completed_at,
+                            created_at,
+                            updated_at;
+                        """,
+                        (normalized_run_key, *common_params),
+                    )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_semantic_audit_runs (
+                        run_key,
+                        run_scope,
+                        source_lang,
+                        target_lang,
+                        period_start,
+                        period_end,
+                        sample_size,
+                        benchmark_case_count,
+                        run_status,
+                        delivery_chat_id,
+                        delivery_status,
+                        metadata,
+                        started_at,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'running', %s, 'pending', %s::jsonb, NOW(), NOW())
+                    RETURNING
+                        id,
+                        run_key,
+                        run_scope,
+                        source_lang,
+                        target_lang,
+                        period_start,
+                        period_end,
+                        sample_size,
+                        benchmark_case_count,
+                        run_status,
+                        delivery_chat_id,
+                        delivery_status,
+                        metrics_json,
+                        summary_json,
+                        summary_markdown,
+                        last_error,
+                        metadata,
+                        started_at,
+                        completed_at,
+                        created_at,
+                        updated_at;
+                    """,
+                    (None, *common_params),
+                )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "run_key": str(row[1] or "") or None,
+        "run_scope": str(row[2] or ""),
+        "source_lang": str(row[3] or "ru"),
+        "target_lang": str(row[4] or "de"),
+        "period_start": row[5].isoformat() if row[5] else None,
+        "period_end": row[6].isoformat() if row[6] else None,
+        "sample_size": int(row[7] or 0),
+        "benchmark_case_count": int(row[8] or 0),
+        "run_status": str(row[9] or "queued"),
+        "delivery_chat_id": int(row[10]) if row[10] is not None else None,
+        "delivery_status": str(row[11] or "pending"),
+        "metrics_json": row[12] if isinstance(row[12], dict) else {},
+        "summary_json": row[13] if isinstance(row[13], dict) else {},
+        "summary_markdown": str(row[14] or "") or None,
+        "last_error": str(row[15] or "") or None,
+        "metadata": row[16] if isinstance(row[16], dict) else {},
+        "started_at": row[17].isoformat() if row[17] else None,
+        "completed_at": row[18].isoformat() if row[18] else None,
+        "created_at": row[19].isoformat() if row[19] else None,
+        "updated_at": row[20].isoformat() if row[20] else None,
+    }
+
+
+def finalize_semantic_audit_run(
+    *,
+    audit_run_id: int,
+    run_status: str,
+    metrics_json: dict | None = None,
+    summary_json: dict | None = None,
+    summary_markdown: str | None = None,
+    delivery_status: str | None = None,
+    last_error: str | None = None,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_semantic_audit_runs
+                SET
+                    run_status = %s,
+                    metrics_json = %s::jsonb,
+                    summary_json = %s::jsonb,
+                    summary_markdown = %s,
+                    delivery_status = COALESCE(%s, delivery_status),
+                    last_error = %s,
+                    completed_at = CASE WHEN %s IN ('done', 'failed') THEN NOW() ELSE completed_at END,
+                    updated_at = NOW()
+                WHERE id = %s;
+                """,
+                (
+                    str(run_status or "done").strip().lower(),
+                    Json(metrics_json if isinstance(metrics_json, dict) else {}),
+                    Json(summary_json if isinstance(summary_json, dict) else {}),
+                    str(summary_markdown or "").strip() or None,
+                    str(delivery_status or "").strip().lower() or None,
+                    str(last_error or "").strip() or None,
+                    str(run_status or "done").strip().lower(),
+                    int(audit_run_id),
+                ),
+            )
+
+
+def update_semantic_audit_run_delivery(
+    *,
+    audit_run_id: int,
+    delivery_status: str,
+    last_error: str | None = None,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_semantic_audit_runs
+                SET
+                    delivery_status = %s,
+                    last_error = CASE
+                        WHEN %s IS NULL OR %s = '' THEN last_error
+                        ELSE %s
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s;
+                """,
+                (
+                    str(delivery_status or "pending").strip().lower(),
+                    str(last_error or "").strip() or None,
+                    str(last_error or "").strip() or None,
+                    str(last_error or "").strip() or None,
+                    int(audit_run_id),
+                ),
+            )
+
+
+def list_recent_semantic_audit_runs(
+    *,
+    run_scope: str | None = None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    params: list[Any] = [
+        str(source_lang or "ru").strip().lower(),
+        str(target_lang or "de").strip().lower(),
+    ]
+    scope_sql = ""
+    if str(run_scope or "").strip():
+        scope_sql = " AND run_scope = %s "
+        params.append(str(run_scope).strip().lower())
+    params.append(max(1, int(limit or 8)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    id,
+                    run_key,
+                    run_scope,
+                    source_lang,
+                    target_lang,
+                    period_start,
+                    period_end,
+                    sample_size,
+                    benchmark_case_count,
+                    run_status,
+                    delivery_chat_id,
+                    delivery_status,
+                    metrics_json,
+                    summary_json,
+                    summary_markdown,
+                    last_error,
+                    metadata,
+                    started_at,
+                    completed_at,
+                    created_at,
+                    updated_at
+                FROM bt_3_semantic_audit_runs
+                WHERE source_lang = %s
+                  AND target_lang = %s
+                  {scope_sql}
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s;
+                """,
+                params,
+            )
+            rows = cursor.fetchall() or []
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        result.append(
+            {
+                "id": int(row[0]),
+                "run_key": str(row[1] or "") or None,
+                "run_scope": str(row[2] or ""),
+                "source_lang": str(row[3] or "ru"),
+                "target_lang": str(row[4] or "de"),
+                "period_start": row[5].isoformat() if row[5] else None,
+                "period_end": row[6].isoformat() if row[6] else None,
+                "sample_size": int(row[7] or 0),
+                "benchmark_case_count": int(row[8] or 0),
+                "run_status": str(row[9] or ""),
+                "delivery_chat_id": int(row[10]) if row[10] is not None else None,
+                "delivery_status": str(row[11] or ""),
+                "metrics_json": row[12] if isinstance(row[12], dict) else {},
+                "summary_json": row[13] if isinstance(row[13], dict) else {},
+                "summary_markdown": str(row[14] or "") or None,
+                "last_error": str(row[15] or "") or None,
+                "metadata": row[16] if isinstance(row[16], dict) else {},
+                "started_at": row[17].isoformat() if row[17] else None,
+                "completed_at": row[18].isoformat() if row[18] else None,
+                "created_at": row[19].isoformat() if row[19] else None,
+                "updated_at": row[20].isoformat() if row[20] else None,
+            }
+        )
+    return result
+
+
+def replace_semantic_audit_case_results(
+    *,
+    audit_run_id: int,
+    case_results: list[dict[str, Any]],
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> int:
+    normalized_rows: list[tuple[Any, ...]] = []
+    for item in list(case_results or []):
+        if not isinstance(item, dict):
+            continue
+        source_sentence = " ".join(str(item.get("source_sentence") or "").strip().split())
+        if not source_sentence:
+            continue
+        source_session_id = str(item.get("source_session_id") or "").strip() or None
+        sentence_id_value = item.get("sentence_id")
+        check_session_id_value = item.get("check_session_id")
+        try:
+            sentence_id = int(sentence_id_value) if sentence_id_value is not None else None
+        except Exception:
+            sentence_id = None
+        try:
+            check_session_id = int(check_session_id_value) if check_session_id_value is not None else None
+        except Exception:
+            check_session_id = None
+        normalized_rows.append(
+            (
+                int(audit_run_id),
+                str(item.get("case_id") or "").strip() or None,
+                str(source_lang or "ru").strip().lower(),
+                str(target_lang or "de").strip().lower(),
+                source_sentence,
+                _semantic_benchmark_sentence_hash(
+                    source_sentence,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                ),
+                source_session_id,
+                check_session_id,
+                sentence_id,
+                Json(item.get("benchmark_json") if isinstance(item.get("benchmark_json"), dict) else {}),
+                str(item.get("expected_tested_primary") or "").strip() or None,
+                Json(list(item.get("expected_tested_secondary") or [])),
+                str(item.get("expected_outcome_type") or "").strip() or None,
+                str(item.get("actual_tested_primary") or "").strip() or None,
+                Json(list(item.get("actual_tested_secondary") or [])),
+                Json(list(item.get("actual_errored_skills") or [])),
+                str(item.get("actual_outcome_type") or "").strip() or None,
+                bool(item.get("primary_match")) if item.get("primary_match") is not None else None,
+                float(item.get("secondary_skill_overlap") or 0.0) if item.get("secondary_skill_overlap") is not None else None,
+                bool(item.get("outcome_match")) if item.get("outcome_match") is not None else None,
+                str(item.get("classification") or "").strip() or None,
+                Json(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+            )
+        )
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_semantic_audit_case_results
+                WHERE audit_run_id = %s;
+                """,
+                (int(audit_run_id),),
+            )
+            if not normalized_rows:
+                return 0
+            execute_values(
+                cursor,
+                """
+                INSERT INTO bt_3_semantic_audit_case_results (
+                    audit_run_id,
+                    case_id,
+                    source_lang,
+                    target_lang,
+                    source_sentence,
+                    source_sentence_hash,
+                    source_session_id,
+                    check_session_id,
+                    sentence_id,
+                    benchmark_json,
+                    expected_tested_primary,
+                    expected_tested_secondary,
+                    expected_outcome_type,
+                    actual_tested_primary,
+                    actual_tested_secondary,
+                    actual_errored_skills,
+                    actual_outcome_type,
+                    primary_match,
+                    secondary_skill_overlap,
+                    outcome_match,
+                    classification,
+                    metadata
+                )
+                VALUES %s
+                """,
+                normalized_rows,
+            )
+    return len(normalized_rows)
 
 
 def create_support_message(

@@ -4309,6 +4309,15 @@ function AppInner() {
               'После подтверждения в Mini App в аналитике появится доступный групповой режим.',
             ],
           },
+          {
+            title: 'Как упростить доступ к приложению',
+            items: [
+              'Чтобы открывать Mini App быстрее, установите иконку приложения на главный экран телефона.',
+              'На iPhone это делается через Safari и кнопку Share -> Add to Home Screen; на Android обычно через меню браузера -> Add to Home Screen или Install App.',
+              'После этого приложение будет запускаться почти как обычное мобильное приложение, прямо с иконки.',
+              'Точный путь лучше посмотреть на видео-инструкции внутри приложения: там это показано наглядно для iPhone и Android.',
+            ],
+          },
         ],
       },
       {
@@ -4395,6 +4404,12 @@ function AppInner() {
             items: [
               'Словарь удобно держать рядом с переводами, YouTube и Reader, когда попадаются незнакомые слова.',
               'Всё сохранённое затем можно повторять в карточках и FSRS.',
+              'Если словарь в самом начале ещё пустой, но вы хотите сразу запустить Quiz, карточки и тренировку выражений, можно подключить базовый стартовый набор.',
+              'Это примерно 1000 слов и выражений из заранее подготовленной разработчиком полезной повседневной выборки.',
+              'Важно: набор удобен именно для старта, но контекст и состав не всегда идеально совпадают с личными задачами конкретного пользователя.',
+              'Поэтому стартовый словарь лучше воспринимать как базу для разгона, а дальше постепенно расширять его своими словами.',
+              'Новые слова потом удобно добавлять из YouTube, Reader, лички с ботом, обычного словаря и блока переводов.',
+              'Когда вы наберёте свой словарь, именно эти ваши слова и выражения дальше будут использоваться в карточках, FSRS и quiz-режимах.',
             ],
           },
         ],
@@ -13279,14 +13294,14 @@ function AppInner() {
                   <h3>{tr('Быстрый старт словаря', 'Schnellstart Woerterbuch')}</h3>
                   <p className="webapp-muted">
                     {tr(
-                      `Подключить базовый словарь (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} слов/фраз) для быстрого старта?`,
-                      `Basiswoerterbuch (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} Woerter/Phrasen) fuer Schnellstart verbinden?`
+                      `Подключить базовый словарь (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} слов/фраз) для быстрого старта карточек, quiz и выражений?`,
+                      `Basiswoerterbuch (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} Woerter/Phrasen) fuer schnellen Start mit Karten, Quiz und Ausdruecken verbinden?`
                     )}
                   </p>
                   <p className="webapp-muted">
                     {tr(
-                      'Это одноразовый импорт копии. Ваш словарь будет личным и не связан с оригиналом.',
-                      'Das ist ein einmaliger Import einer Kopie. Dein Woerterbuch bleibt persoenlich und ist nicht mit dem Original verknuepft.'
+                      'Это одноразовый импорт копии стартового набора. Он полезен как база на старте, а дальше словарь можно расширять уже своими словами из YouTube, Reader, переводов, словаря и лички с ботом.',
+                      'Das ist ein einmaliger Import einer Starter-Kopie. Sie hilft beim Einstieg, danach kannst du dein Woerterbuch mit eigenen Woertern aus YouTube, Reader, Uebersetzungen, Woerterbuch und Bot-Chat erweitern.'
                     )}
                   </p>
                   {starterDictionaryActionError && <div className="webapp-error">{starterDictionaryActionError}</div>}
