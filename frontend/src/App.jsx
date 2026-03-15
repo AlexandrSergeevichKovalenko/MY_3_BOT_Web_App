@@ -18,6 +18,7 @@ const SINGLE_INSTANCE_LOCK_KEY = 'dds_single_instance_lock_v1';
 const SINGLE_INSTANCE_HEARTBEAT_MS = 2000;
 const SINGLE_INSTANCE_STALE_MS = 12000;
 const TTS_CACHE_MAX_ENTRIES = 60;
+const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -530,6 +531,10 @@ function AppInner() {
   const translationSubmitInFlightRef = useRef(false);
   const translationStartInFlightRef = useRef(false);
   const translationFinishInFlightRef = useRef(false);
+  const translationDraftsRef = useRef({});
+  const translationDraftSyncTimeoutRef = useRef(null);
+  const translationDraftHydrationKeyRef = useRef('');
+  const translationDraftSentenceIdsRef = useRef(new Set());
   const explanationInFlightKeysRef = useRef(new Set());
   const supportBottomRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
@@ -595,12 +600,88 @@ function AppInner() {
     const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
     return `webapp_youtube_resume_${stableId}`;
   }, [webappUser?.id, initData]);
+  const translationDraftScopeKey = useMemo(() => {
+    for (const item of sentences) {
+      const candidate = String(item?.source_session_id || '').trim();
+      if (candidate) return candidate;
+    }
+    return '';
+  }, [sentences]);
+  const translationDraftStorageKey = useMemo(() => {
+    const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
+    const scopeKey = translationDraftScopeKey || 'nosession';
+    return `webappDrafts_${stableId}_${scopeKey}`;
+  }, [webappUser?.id, initData, translationDraftScopeKey]);
   const writeYoutubeResumeToLocalCache = useCallback((payload) => {
     if (!payload || typeof payload !== 'object') return;
     const serialized = JSON.stringify(payload);
     safeStorageSet(youtubeResumeStorageKey, serialized);
     safeStorageSet('webapp_youtube', serialized);
   }, [youtubeResumeStorageKey]);
+  const buildTranslationDraftPayload = useCallback((draftMap) => {
+    const sentenceIds = Array.from(translationDraftSentenceIdsRef.current);
+    if (!sentenceIds.length) return [];
+    return sentenceIds.map((sentenceId) => ({
+      id_for_mistake_table: sentenceId,
+      translation: String(draftMap?.[String(sentenceId)] ?? ''),
+    }));
+  }, []);
+  const persistTranslationDraftsToServer = useCallback(async (draftMap, options = {}) => {
+    if (!initData || !translationDraftScopeKey) return null;
+    try {
+      const response = await fetch('/api/webapp/translation/drafts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          drafts: buildTranslationDraftPayload(draftMap),
+        }),
+        keepalive: Boolean(options?.keepalive),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      return await response.json();
+    } catch (error) {
+      if (!options?.silent) {
+        console.warn('Failed to persist translation drafts', error);
+      }
+      return null;
+    }
+  }, [buildTranslationDraftPayload, initData, translationDraftScopeKey]);
+  const clearTranslationDraftsOnServer = useCallback(async (sentenceIds = [], options = {}) => {
+    if (!initData || !translationDraftScopeKey) return null;
+    const clearAll = Boolean(options?.clearAll);
+    const resolvedSentenceIds = Array.from(new Set(
+      (sentenceIds || [])
+        .map((item) => Number(item))
+        .filter((item) => Number.isFinite(item) && item > 0)
+    ));
+    if (!clearAll && resolvedSentenceIds.length === 0) {
+      return null;
+    }
+    try {
+      const response = await fetch('/api/webapp/translation/drafts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          clear_all: clearAll,
+          clear_sentence_ids: clearAll ? [] : resolvedSentenceIds,
+        }),
+        keepalive: Boolean(options?.keepalive),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      return await response.json();
+    } catch (error) {
+      if (!options?.silent) {
+        console.warn('Failed to clear translation drafts', error);
+      }
+      return null;
+    }
+  }, [initData, translationDraftScopeKey]);
   const persistYoutubeResumeState = useCallback((timeValue) => {
     const trimmed = String(youtubeInput || '').trim();
     const resolvedId = String(youtubeId || extractYoutubeId(trimmed) || '').trim();
@@ -3693,10 +3774,8 @@ function AppInner() {
           setTranslationAudioGrammarSaving({});
           setExplanations({});
           setTranslationDrafts({});
-          if (webappUser?.id) {
-            const oldStorageKey = `webappDrafts_${webappUser.id}_${sessionId || 'nosession'}`;
-            safeStorageRemove(oldStorageKey);
-          }
+          safeStorageRemove(translationDraftStorageKey);
+          void clearTranslationDraftsOnServer([], { clearAll: true, silent: true });
           await loadSessionInfo();
           await loadSentences();
           if (!flashcardsOnly && isSectionVisible('flashcards')) {
@@ -7177,36 +7256,179 @@ function AppInner() {
   };
 
   useEffect(() => {
-    if (!webappUser?.id || sentences.length === 0) {
+    translationDraftsRef.current = translationDrafts;
+  }, [translationDrafts]);
+
+  useEffect(() => {
+    translationDraftSentenceIdsRef.current = new Set(
+      sentences
+        .map((item) => Number(item?.id_for_mistake_table || 0))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    );
+  }, [sentences]);
+
+  useEffect(() => {
+    const stableUserId = String(webappUser?.id || getInitDataUserId(initData) || '').trim();
+    if (!stableUserId || sentences.length === 0) {
+      translationDraftHydrationKeyRef.current = '';
+      if (translationDraftSyncTimeoutRef.current) {
+        clearTimeout(translationDraftSyncTimeoutRef.current);
+        translationDraftSyncTimeoutRef.current = null;
+      }
+      setTranslationDrafts({});
       return;
     }
-    const storageKey = `webappDrafts_${webappUser.id}_${sessionId || 'nosession'}`;
-    const stored = safeStorageGet(storageKey);
-    const sentenceIds = sentences.map((item) => String(item.id_for_mistake_table));
-    let initial = sentenceIds.reduce((acc, id) => ({ ...acc, [id]: '' }), {});
+    const sentenceIds = sentences
+      .map((item) => String(item.id_for_mistake_table || '').trim())
+      .filter(Boolean);
+    const emptyDrafts = {};
+    sentenceIds.forEach((id) => {
+      emptyDrafts[id] = '';
+    });
+    const stored = translationDraftStorageKey ? safeStorageGet(translationDraftStorageKey) : null;
+    let initialLocal = { ...emptyDrafts };
     if (stored) {
       try {
         const parsed = JSON.parse(stored);
         if (parsed && typeof parsed === 'object') {
-          initial = sentenceIds.reduce((acc, id) => ({
-            ...acc,
-            [id]: parsed[id] || '',
-          }), {});
+          initialLocal = { ...emptyDrafts };
+          sentenceIds.forEach((id) => {
+            initialLocal[id] = String(parsed[id] ?? '');
+          });
         }
       } catch (error) {
         console.warn('Failed to parse saved drafts', error);
       }
     }
-    setTranslationDrafts(initial);
-  }, [sentences, webappUser?.id, sessionId]);
+    setTranslationDrafts(initialLocal);
+    const hydrationKey = `${translationDraftStorageKey}:${translationDraftScopeKey || 'nosession'}`;
+    translationDraftHydrationKeyRef.current = '';
+    let cancelled = false;
+    const hydrate = async () => {
+      if (!initData || !translationDraftScopeKey) {
+        if (!cancelled) {
+          translationDraftHydrationKeyRef.current = hydrationKey;
+        }
+        return;
+      }
+      try {
+        const response = await fetch('/api/webapp/translation/drafts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData }),
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        const data = await response.json();
+        const serverDrafts = data?.drafts && typeof data.drafts === 'object' ? data.drafts : {};
+        if (cancelled) return;
+        setTranslationDrafts((prev) => {
+          const next = {};
+          sentenceIds.forEach((id) => {
+            const baseline = String(initialLocal[id] ?? '');
+            const current = String(prev?.[id] ?? '');
+            if (current !== baseline) {
+              next[id] = current;
+              return;
+            }
+            next[id] = String(serverDrafts[id] ?? baseline);
+          });
+          return next;
+        });
+      } catch (error) {
+        console.warn('Failed to load translation drafts', error);
+      } finally {
+        if (!cancelled) {
+          translationDraftHydrationKeyRef.current = hydrationKey;
+        }
+      }
+    };
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [sentences, webappUser?.id, initData, translationDraftScopeKey, translationDraftStorageKey]);
 
   useEffect(() => {
-    if (!webappUser?.id || Object.keys(translationDrafts).length === 0) {
+    if (!translationDraftStorageKey) {
       return;
     }
-    const storageKey = `webappDrafts_${webappUser.id}_${sessionId || 'nosession'}`;
-    safeStorageSet(storageKey, JSON.stringify(translationDrafts));
-  }, [translationDrafts, webappUser?.id, sessionId]);
+    const hasNonEmptyValue = Object.values(translationDrafts).some((value) => String(value ?? '') !== '');
+    if (!hasNonEmptyValue) {
+      safeStorageRemove(translationDraftStorageKey);
+      return;
+    }
+    safeStorageSet(translationDraftStorageKey, JSON.stringify(translationDrafts));
+  }, [translationDraftStorageKey, translationDrafts]);
+
+  useEffect(() => {
+    if (!initData || !translationDraftScopeKey || sentences.length === 0) {
+      return undefined;
+    }
+    const hydrationKey = `${translationDraftStorageKey}:${translationDraftScopeKey || 'nosession'}`;
+    if (translationDraftHydrationKeyRef.current !== hydrationKey) {
+      return undefined;
+    }
+    if (translationDraftSyncTimeoutRef.current) {
+      clearTimeout(translationDraftSyncTimeoutRef.current);
+      translationDraftSyncTimeoutRef.current = null;
+    }
+    translationDraftSyncTimeoutRef.current = setTimeout(() => {
+      translationDraftSyncTimeoutRef.current = null;
+      void persistTranslationDraftsToServer(translationDraftsRef.current, { silent: true });
+    }, 350);
+    return () => {
+      if (translationDraftSyncTimeoutRef.current) {
+        clearTimeout(translationDraftSyncTimeoutRef.current);
+        translationDraftSyncTimeoutRef.current = null;
+      }
+    };
+  }, [
+    translationDrafts,
+    initData,
+    translationDraftScopeKey,
+    translationDraftStorageKey,
+    sentences.length,
+    persistTranslationDraftsToServer,
+  ]);
+
+  useEffect(() => {
+    if (!initData || !translationDraftScopeKey || sentences.length === 0) {
+      return undefined;
+    }
+    const hydrationKey = `${translationDraftStorageKey}:${translationDraftScopeKey || 'nosession'}`;
+    const flushDrafts = () => {
+      if (translationDraftHydrationKeyRef.current !== hydrationKey) {
+        return;
+      }
+      if (translationDraftSyncTimeoutRef.current) {
+        clearTimeout(translationDraftSyncTimeoutRef.current);
+        translationDraftSyncTimeoutRef.current = null;
+      }
+      void persistTranslationDraftsToServer(translationDraftsRef.current, {
+        keepalive: true,
+        silent: true,
+      });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushDrafts();
+      }
+    };
+    window.addEventListener('pagehide', flushDrafts);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', flushDrafts);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [
+    initData,
+    translationDraftScopeKey,
+    translationDraftStorageKey,
+    sentences.length,
+    persistTranslationDraftsToServer,
+  ]);
 
   useEffect(() => {
     if (isWebAppMode && initData) {
@@ -7370,6 +7592,7 @@ function AppInner() {
         });
         return next;
       });
+      void clearTranslationDraftsOnServer(Array.from(processedSentenceIds), { silent: true });
     }
 
     const progress = payload?.progress && typeof payload.progress === 'object' ? payload.progress : {};
@@ -10566,8 +10789,7 @@ function AppInner() {
       const data = await response.json();
       setFinishMessage(data.message || tr('Перевод завершён.', 'Uebersetzung abgeschlossen.'));
       setFinishStatus('done');
-      const storageKey = `webappDrafts_${webappUser?.id || 'unknown'}_${sessionId || 'nosession'}`;
-      safeStorageRemove(storageKey);
+      safeStorageRemove(translationDraftStorageKey);
       setTranslationDrafts({});
       setSessionType('none');
       setStoryGuess('');
@@ -13195,15 +13417,17 @@ function AppInner() {
                         {t('bot_username_missing')}
                       </div>
                     )}
-                    <label className="webapp-field">
-                      <span>{t('init_data_fallback')}</span>
-                      <textarea
-                        rows={3}
-                        value={initData}
-                        onChange={(event) => setInitData(event.target.value)}
-                        placeholder={t('init_data_placeholder')}
-                      />
-                    </label>
+                    {ALLOW_MANUAL_INITDATA_FALLBACK && (
+                      <label className="webapp-field">
+                        <span>{t('init_data_fallback')}</span>
+                        <textarea
+                          rows={3}
+                          value={initData}
+                          onChange={(event) => setInitData(event.target.value)}
+                          placeholder={t('init_data_placeholder')}
+                        />
+                      </label>
+                    )}
                   </>
                 )}
               </section>

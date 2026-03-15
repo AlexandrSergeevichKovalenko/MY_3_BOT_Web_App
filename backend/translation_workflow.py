@@ -29,6 +29,7 @@ from backend.database import (
     apply_skill_events_for_error,
     get_skill_mapping_for_error,
     update_translation_check_item_result,
+    delete_translation_draft_state,
 )
 
 PHASE1_SKILL_ROLE_WEIGHTS = {
@@ -4285,6 +4286,15 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
             (user_id,),
         )
         conn.commit()
+        try:
+            delete_translation_draft_state(user_id=int(user_id), source_session_id=str(session_id))
+        except Exception:
+            logging.warning(
+                "finish_translation_webapp: failed to clear translation drafts for user_id=%s session_id=%s",
+                user_id,
+                session_id,
+                exc_info=True,
+            )
 
         if translated_count == 0:
             message = (

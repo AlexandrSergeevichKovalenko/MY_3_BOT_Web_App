@@ -187,6 +187,10 @@ from backend.database import (
     get_youtube_watch_state,
     get_latest_youtube_watch_state,
     upsert_youtube_watch_state,
+    get_translation_draft_state,
+    upsert_translation_draft_state,
+    delete_translation_draft_state,
+    delete_translation_draft_state_entries,
     create_dictionary_folder,
     get_dictionary_folders,
     get_or_create_dictionary_folder,
@@ -20314,6 +20318,137 @@ def youtube_watch_state():
     return jsonify({"ok": True, "state": state})
 
 
+@app.route("/api/webapp/translation/drafts", methods=["POST"])
+def translation_draft_state():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    drafts_payload = payload.get("drafts")
+    clear_sentence_ids_payload = payload.get("clear_sentence_ids")
+    clear_all = bool(payload.get("clear_all"))
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    user_id_int = int(user_id)
+
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+    source_session_id, allowed_by_mistake_id = _load_user_translation_sentence_map(
+        user_id=user_id_int,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if not source_session_id:
+        return jsonify({"ok": True, "source_session_id": None, "drafts": {}, "state": None})
+
+    allowed_sentence_ids = {int(key) for key in allowed_by_mistake_id.keys()}
+
+    if clear_all:
+        try:
+            delete_translation_draft_state(
+                user_id=user_id_int,
+                source_session_id=source_session_id,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка очистки черновиков переводов: {exc}"}), 500
+        return jsonify({"ok": True, "source_session_id": source_session_id, "drafts": {}, "state": None})
+
+    if clear_sentence_ids_payload is not None:
+        try:
+            removable_ids = []
+            for item in list(clear_sentence_ids_payload or []):
+                try:
+                    sentence_id = int(item)
+                except Exception:
+                    continue
+                if sentence_id > 0 and sentence_id in allowed_sentence_ids:
+                    removable_ids.append(sentence_id)
+            state = delete_translation_draft_state_entries(
+                user_id=user_id_int,
+                source_session_id=source_session_id,
+                sentence_ids=removable_ids,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка очистки черновиков переводов: {exc}"}), 500
+        return jsonify(
+            {
+                "ok": True,
+                "source_session_id": source_session_id,
+                "drafts": (state or {}).get("drafts") or {},
+                "state": state,
+            }
+        )
+
+    if drafts_payload is None:
+        try:
+            state = get_translation_draft_state(user_id_int, source_session_id)
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка загрузки черновиков переводов: {exc}"}), 500
+        filtered_drafts = {}
+        if state and isinstance(state.get("drafts"), dict):
+            for key, value in state["drafts"].items():
+                try:
+                    sentence_id = int(key)
+                except Exception:
+                    continue
+                if sentence_id in allowed_sentence_ids:
+                    filtered_drafts[str(sentence_id)] = str(value or "")
+        return jsonify(
+            {
+                "ok": True,
+                "source_session_id": source_session_id,
+                "drafts": filtered_drafts,
+                "state": (
+                    {
+                        **state,
+                        "drafts": filtered_drafts,
+                    }
+                    if state
+                    else None
+                ),
+            }
+        )
+
+    try:
+        filtered_drafts = {}
+        for item in list(drafts_payload or []):
+            if not isinstance(item, dict):
+                continue
+            try:
+                sentence_id = int(item.get("id_for_mistake_table"))
+            except Exception:
+                continue
+            if sentence_id <= 0 or sentence_id not in allowed_sentence_ids:
+                continue
+            translation_value = item.get("translation")
+            translation_text = str(translation_value if translation_value is not None else "")
+            if translation_text == "":
+                continue
+            filtered_drafts[str(sentence_id)] = translation_text
+        state = upsert_translation_draft_state(
+            user_id=user_id_int,
+            source_session_id=source_session_id,
+            drafts=filtered_drafts,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения черновиков переводов: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "source_session_id": source_session_id,
+            "drafts": (state or {}).get("drafts") or {},
+            "state": state,
+        }
+    )
+
+
 @app.route("/api/webapp/youtube/catalog", methods=["POST"])
 def get_youtube_catalog():
     payload = request.get_json(silent=True) or {}
@@ -21348,7 +21483,12 @@ def normalize_lookup_text(lang_code: str = "de"):
 def get_webapp_sentences():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
-    limit = payload.get("limit", 7)
+    requested_limit = payload.get("limit", 7)
+    try:
+        limit = int(requested_limit)
+    except Exception:
+        limit = 7
+    limit = max(1, min(limit, 7))
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -21366,7 +21506,7 @@ def get_webapp_sentences():
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     sentences = get_pending_daily_sentences(
         user_id=user_id,
-        limit=int(limit),
+        limit=limit,
         source_lang=source_lang,
         target_lang=target_lang,
     )

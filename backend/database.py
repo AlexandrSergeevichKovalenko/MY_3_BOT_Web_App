@@ -2519,6 +2519,24 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_youtube_watch_state (user_id, updated_at DESC);
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_translation_draft_state (
+                    user_id BIGINT NOT NULL,
+                    source_session_id TEXT NOT NULL,
+                    drafts_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, source_session_id)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_draft_state_updated
+                ON bt_3_translation_draft_state (user_id, updated_at DESC);
+                """
+            )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_flashcard_stats (
                     user_id BIGINT NOT NULL,
@@ -7477,6 +7495,147 @@ def upsert_youtube_watch_state(
             )
             row = cursor.fetchone()
     return _youtube_watch_state_row_to_dict(row)
+
+
+def _normalize_translation_draft_map(drafts) -> dict[str, str]:
+    if not isinstance(drafts, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for raw_key, raw_value in drafts.items():
+        try:
+            sentence_id = int(raw_key)
+        except Exception:
+            continue
+        if sentence_id <= 0:
+            continue
+        text = str(raw_value if raw_value is not None else "")
+        if text == "":
+            continue
+        normalized[str(sentence_id)] = text[:10000]
+    return normalized
+
+
+def _translation_draft_state_row_to_dict(row) -> dict | None:
+    if not row:
+        return None
+    payload = row[2] if isinstance(row[2], dict) else {}
+    return {
+        "user_id": int(row[0]),
+        "source_session_id": str(row[1] or "").strip(),
+        "drafts": _normalize_translation_draft_map(payload),
+        "created_at": row[3].isoformat() if row[3] else None,
+        "updated_at": row[4].isoformat() if row[4] else None,
+    }
+
+
+def get_translation_draft_state(user_id: int, source_session_id: str) -> dict | None:
+    normalized_session_id = str(source_session_id or "").strip()
+    if not normalized_session_id:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, source_session_id, drafts_json, created_at, updated_at
+                FROM bt_3_translation_draft_state
+                WHERE user_id = %s
+                  AND source_session_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id), normalized_session_id),
+            )
+            row = cursor.fetchone()
+    return _translation_draft_state_row_to_dict(row)
+
+
+def delete_translation_draft_state(*, user_id: int, source_session_id: str) -> bool:
+    normalized_session_id = str(source_session_id or "").strip()
+    if not normalized_session_id:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_translation_draft_state
+                WHERE user_id = %s
+                  AND source_session_id = %s;
+                """,
+                (int(user_id), normalized_session_id),
+            )
+            deleted = int(cursor.rowcount or 0) > 0
+    return deleted
+
+
+def upsert_translation_draft_state(
+    *,
+    user_id: int,
+    source_session_id: str,
+    drafts: dict | None,
+) -> dict | None:
+    normalized_session_id = str(source_session_id or "").strip()
+    if not normalized_session_id:
+        return None
+    normalized_drafts = _normalize_translation_draft_map(drafts or {})
+    if not normalized_drafts:
+        delete_translation_draft_state(user_id=int(user_id), source_session_id=normalized_session_id)
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_translation_draft_state (
+                    user_id,
+                    source_session_id,
+                    drafts_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, NOW(), NOW())
+                ON CONFLICT (user_id, source_session_id) DO UPDATE
+                SET
+                    drafts_json = EXCLUDED.drafts_json,
+                    updated_at = NOW()
+                RETURNING user_id, source_session_id, drafts_json, created_at, updated_at;
+                """,
+                (
+                    int(user_id),
+                    normalized_session_id,
+                    Json(normalized_drafts),
+                ),
+            )
+            row = cursor.fetchone()
+    return _translation_draft_state_row_to_dict(row)
+
+
+def delete_translation_draft_state_entries(
+    *,
+    user_id: int,
+    source_session_id: str,
+    sentence_ids: list[int] | tuple[int, ...] | set[int],
+) -> dict | None:
+    normalized_session_id = str(source_session_id or "").strip()
+    if not normalized_session_id:
+        return None
+    removable_ids = {
+        str(int(item))
+        for item in list(sentence_ids or [])
+        if item is not None and int(item) > 0
+    }
+    if not removable_ids:
+        return get_translation_draft_state(int(user_id), normalized_session_id)
+    current = get_translation_draft_state(int(user_id), normalized_session_id)
+    if not current:
+        return None
+    next_drafts = {
+        key: value
+        for key, value in (current.get("drafts") or {}).items()
+        if key not in removable_ids
+    }
+    return upsert_translation_draft_state(
+        user_id=int(user_id),
+        source_session_id=normalized_session_id,
+        drafts=next_drafts,
+    )
 
 
 def get_tts_chunk_cache(cache_key: str) -> list[str] | None:
@@ -15348,6 +15507,7 @@ def get_latest_daily_sentences(user_id: int, limit: int = 7) -> list[dict]:
                     "id_for_mistake_table": row[0],
                     "sentence": row[1],
                     "unique_id": row[2],
+                    "source_session_id": str(latest_session_id),
                 }
                 for row in rows
             ]
@@ -15359,6 +15519,11 @@ def get_pending_daily_sentences(
     source_lang: str = "ru",
     target_lang: str = "de",
 ) -> list[dict]:
+    try:
+        safe_limit = int(limit or 7)
+    except Exception:
+        safe_limit = 7
+    safe_limit = max(1, min(safe_limit, 7))
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -15409,7 +15574,7 @@ def get_pending_daily_sentences(
                 latest_session_id,
                 source_lang,
                 target_lang,
-                limit,
+                safe_limit,
             ))
             rows = cursor.fetchall()
             return [
