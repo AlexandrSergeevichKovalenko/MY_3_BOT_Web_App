@@ -9055,6 +9055,69 @@ def _build_prefix_distractors(correct_word: str, count: int = 3) -> list[str]:
     return distractors
 
 
+def _is_sentence_like_quiz_hint(value: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+    if not cleaned:
+        return False
+    tokens = [token for token in cleaned.split(" ") if token]
+    if len(tokens) >= 5:
+        return True
+    return bool(re.search(r"[,.!?;:«»\"()]", cleaned))
+
+
+def _extract_prefix_context_options(response_json: dict, correct_word: str) -> list[str] | None:
+    raw_options = response_json.get("options") if isinstance(response_json, dict) else None
+    if not isinstance(raw_options, list):
+        return None
+    normalized_options: list[str] = []
+    seen: set[str] = set()
+    for raw_option in raw_options:
+        option = _to_letters_only_word(str(raw_option or "")).lower()
+        if not option or option in seen:
+            continue
+        if not _is_valid_prefix_quiz_verb(option):
+            return None
+        seen.add(option)
+        normalized_options.append(option)
+    if len(normalized_options) != 4:
+        return None
+    if correct_word.lower() not in normalized_options:
+        return None
+    return normalized_options
+
+
+def _extract_prefix_quiz_context(
+    response_json: dict,
+    fallback_ru: str,
+    correct_word: str,
+) -> dict | None:
+    if not isinstance(response_json, dict):
+        return None
+    sentence_with_gap = re.sub(r"\s+", " ", str(response_json.get("sentence_with_gap") or "").strip())
+    translation_ru = re.sub(r"\s+", " ", str(response_json.get("translation_ru") or fallback_ru or "").strip())
+    correct_full_sentence = re.sub(r"\s+", " ", str(response_json.get("correct_full_sentence") or "").strip())
+    payload_correct_word = _to_letters_only_word(
+        str(response_json.get("correct_word") or response_json.get("correct_infinitive") or "").strip()
+    ).lower()
+
+    if payload_correct_word and payload_correct_word != correct_word.lower():
+        return None
+    if sentence_with_gap.count("___") != 1:
+        return None
+    if not correct_full_sentence:
+        return None
+    if not translation_ru or not _contains_cyrillic_text(translation_ru):
+        return None
+    if _contains_cyrillic_text(sentence_with_gap) or not _contains_latin_text(sentence_with_gap):
+        return None
+
+    return {
+        "sentence_with_gap": sentence_with_gap,
+        "translation_ru": translation_ru,
+        "correct_full_sentence": correct_full_sentence,
+    }
+
+
 async def generate_prefix_quiz(entry: dict) -> dict | None:
     word_ru = (entry.get("word_ru") or "").strip()
     response_json = _coerce_response_json(entry.get("response_json"))
@@ -9065,14 +9128,16 @@ async def generate_prefix_quiz(entry: dict) -> dict | None:
     if not correct_word:
         return None
 
-    variants = _extract_prefix_variants(response_json)
-    options = [correct_word]
-    for variant in variants:
-        if variant.lower() == correct_word.lower():
-            continue
-        options.append(variant)
-        if len(options) >= 4:
-            break
+    context = _extract_prefix_quiz_context(response_json, word_ru, correct_word)
+    options = _extract_prefix_context_options(response_json, correct_word) or [correct_word]
+    if len(options) < 4:
+        variants = _extract_prefix_variants(response_json)
+        for variant in variants:
+            if variant.lower() == correct_word.lower():
+                continue
+            options.append(variant)
+            if len(options) >= 4:
+                break
 
     if len(options) < 4:
         fallback_distractors = _build_prefix_distractors(correct_word, count=4 - len(options))
@@ -9089,17 +9154,30 @@ async def generate_prefix_quiz(entry: dict) -> dict | None:
     if len(options) < 4:
         return None
 
+    if not context and _is_sentence_like_quiz_hint(word_ru):
+        # Long sentence prompts with one-word options are misleading. Skip this
+        # entry so scheduler can select a contextual quiz or another item.
+        return None
+
     random.shuffle(options)
     correct_option_id = options.index(correct_word)
-    question = (
-        f"Выберите правильный немецкий глагол с приставкой для «{word_ru}»."
-    )
+    if context:
+        question = (
+            "Выберите глагол, который правильно заполняет пропуск.\n"
+            f"RU: «{context['translation_ru']}»\n"
+            f"DE: {context['sentence_with_gap']}"
+        )
+    else:
+        question = (
+            f"Выберите правильный немецкий глагол с приставкой для «{word_ru}»."
+        )
     return {
         "question": question,
         "options": options,
         "correct_option_id": correct_option_id,
         "quiz_type": "prefix",
         "word_ru": word_ru,
+        "correct_text": correct_word,
     }
 
 

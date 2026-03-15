@@ -21564,6 +21564,9 @@ def start_webapp_translation():
     except Exception as exc:
         return jsonify({"error": f"Ошибка запуска сессии: {exc}"}), 500
 
+    if isinstance(result, dict) and result.get("error"):
+        return jsonify({"error": result["error"]}), 500
+
     return jsonify(
         {
             "ok": True,

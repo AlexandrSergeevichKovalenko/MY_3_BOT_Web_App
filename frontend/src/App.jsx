@@ -429,6 +429,8 @@ function AppInner() {
   const [guideStepOpenKey, setGuideStepOpenKey] = useState('start_setup');
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
+  const hasActiveTranslationSentences = sentences.length > 0;
+  const showTranslationStartConfigurator = !hasActiveTranslationSentences;
   const BLOCKS_SINGLE_WORD_MAX_LEN = 10;
   const FLASHCARDS_LOAD_DEDUP_WINDOW_MS = 900;
   const SRS_NEXT_DEDUP_WINDOW_MS = 900;
@@ -6389,19 +6391,35 @@ function AppInner() {
   useEffect(() => {
     if (!isWebAppMode) return;
     const lockHorizontalScroll = () => {
+      const scrollingElement = document.scrollingElement || document.documentElement;
+      const pageElement = document.querySelector('.webapp-page');
       if (Math.abs(window.scrollX) > 0) {
         window.scrollTo(0, window.scrollY);
+      }
+      if (scrollingElement && Math.abs(scrollingElement.scrollLeft) > 0) {
+        scrollingElement.scrollLeft = 0;
+      }
+      if (document.body && Math.abs(document.body.scrollLeft) > 0) {
+        document.body.scrollLeft = 0;
+      }
+      if (pageElement && Math.abs(pageElement.scrollLeft) > 0) {
+        pageElement.scrollLeft = 0;
       }
     };
     const onScroll = () => {
       lockHorizontalScroll();
     };
+    const viewport = window.visualViewport;
     window.addEventListener('scroll', onScroll, { passive: true });
     window.addEventListener('resize', lockHorizontalScroll);
+    viewport?.addEventListener('resize', lockHorizontalScroll);
+    viewport?.addEventListener('scroll', lockHorizontalScroll);
     lockHorizontalScroll();
     return () => {
       window.removeEventListener('scroll', onScroll);
       window.removeEventListener('resize', lockHorizontalScroll);
+      viewport?.removeEventListener('resize', lockHorizontalScroll);
+      viewport?.removeEventListener('scroll', lockHorizontalScroll);
     };
   }, [isWebAppMode]);
 
@@ -14586,109 +14604,111 @@ function AppInner() {
                     <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
                   </div>
                 </div>
-                <div className="webapp-translation-start">
-                  <label className="webapp-field">
-                    <span>{tr('Тема', 'Thema')}</span>
-                    <select
-                      value={selectedTopic}
-                      onChange={(event) => setSelectedTopic(event.target.value)}
-                      disabled={topicsLoading || webappLoading}
-                    >
-                      {topics.map((topic) => (
-                        <option key={topic} value={topic}>
-                          {topic}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {!isStoryTopic(selectedTopic) && (
+                {showTranslationStartConfigurator && (
+                  <div className="webapp-translation-start">
                     <label className="webapp-field">
-                      <span>{tr('Уровень', 'Niveau')}</span>
+                      <span>{tr('Тема', 'Thema')}</span>
                       <select
-                        value={selectedLevel}
-                        onChange={(event) => setSelectedLevel(event.target.value)}
-                        disabled={webappLoading}
+                        value={selectedTopic}
+                        onChange={(event) => setSelectedTopic(event.target.value)}
+                        disabled={topicsLoading || webappLoading}
                       >
-                        <option value="a1">A1</option>
-                        <option value="a2">A2</option>
-                        <option value="b1">B1</option>
-                        <option value="b2">B2</option>
-                        <option value="c1">C1</option>
-                        <option value="c2">C2</option>
+                        {topics.map((topic) => (
+                          <option key={topic} value={topic}>
+                            {topic}
+                          </option>
+                        ))}
                       </select>
                     </label>
-                  )}
-                  {isStoryTopic(selectedTopic) && (
-                    <>
+                    {!isStoryTopic(selectedTopic) && (
                       <label className="webapp-field">
-                        <span>{tr('История', 'Story')}</span>
+                        <span>{tr('Уровень', 'Niveau')}</span>
                         <select
-                          value={storyMode}
-                          onChange={(event) => setStoryMode(event.target.value)}
+                          value={selectedLevel}
+                          onChange={(event) => setSelectedLevel(event.target.value)}
                           disabled={webappLoading}
                         >
-                          <option value="new">{tr('Новая', 'Neu')}</option>
-                          <option value="repeat">{tr('Повторить старую', 'Alte wiederholen')}</option>
+                          <option value="a1">A1</option>
+                          <option value="a2">A2</option>
+                          <option value="b1">B1</option>
+                          <option value="b2">B2</option>
+                          <option value="c1">C1</option>
+                          <option value="c2">C2</option>
                         </select>
                       </label>
-                      {storyMode === 'repeat' && (
+                    )}
+                    {isStoryTopic(selectedTopic) && (
+                      <>
                         <label className="webapp-field">
-                          <span>{tr('Выберите историю', 'Story auswaehlen')}</span>
+                          <span>{tr('История', 'Story')}</span>
                           <select
-                            value={selectedStoryId}
-                            onChange={(event) => setSelectedStoryId(event.target.value)}
-                            disabled={webappLoading || storyHistoryLoading}
+                            value={storyMode}
+                            onChange={(event) => setStoryMode(event.target.value)}
+                            disabled={webappLoading}
                           >
-                            <option value="">{tr('Последняя', 'Letzte')}</option>
-                            {storyHistory.map((item) => (
-                              <option key={item.story_id} value={item.story_id}>
-                                {item.title || tr(`История #${item.story_id}`, `Story #${item.story_id}`)}
-                              </option>
-                            ))}
+                            <option value="new">{tr('Новая', 'Neu')}</option>
+                            <option value="repeat">{tr('Повторить старую', 'Alte wiederholen')}</option>
                           </select>
                         </label>
-                      )}
-                      <label className="webapp-field">
-                        <span>{tr('Тип истории', 'Story-Typ')}</span>
-                        <select
-                          value={storyType}
-                          onChange={(event) => setStoryType(event.target.value)}
-                          disabled={webappLoading}
-                        >
-                          <option value="знаменитая личность">{tr('Знаменитая личность', 'Beruehmte Persoenlichkeit')}</option>
-                          <option value="историческое событие">{tr('Историческое событие', 'Historisches Ereignis')}</option>
-                          <option value="выдающееся открытие">{tr('Выдающееся открытие', 'Bedeutende Entdeckung')}</option>
-                          <option value="выдающееся изобретение">{tr('Выдающееся изобретение', 'Bedeutende Erfindung')}</option>
-                          <option value="география">{tr('География', 'Geografie')}</option>
-                          <option value="космос">{tr('Космос', 'Weltraum')}</option>
-                          <option value="культура">{tr('Культура', 'Kultur')}</option>
-                          <option value="спорт">{tr('Спорт', 'Sport')}</option>
-                          <option value="политика">{tr('Политика', 'Politik')}</option>
-                        </select>
-                      </label>
-                      <label className="webapp-field">
-                        <span>{tr('Сложность', 'Schwierigkeit')}</span>
-                        <select
-                          value={storyDifficulty}
-                          onChange={(event) => setStoryDifficulty(event.target.value)}
-                          disabled={webappLoading}
-                        >
-                          <option value="начальный">{tr('Начальный', 'Anfaenger')}</option>
-                          <option value="средний">{tr('Средний', 'Mittel')}</option>
-                          <option value="продвинутый">{tr('Продвинутый', 'Fortgeschritten')}</option>
-                        </select>
-                      </label>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    className="primary-button translation-start-cta"
-                    onClick={isStoryTopic(selectedTopic) ? handleStartStory : handleStartTranslation}
-                    disabled={webappLoading || topicsLoading}
-                  >
-                    {webappLoading ? tr('Запускаем...', 'Starten...') : tr('🚀 Начать перевод', '🚀 Uebersetzung starten')}
-                  </button>
-                </div>
+                        {storyMode === 'repeat' && (
+                          <label className="webapp-field">
+                            <span>{tr('Выберите историю', 'Story auswaehlen')}</span>
+                            <select
+                              value={selectedStoryId}
+                              onChange={(event) => setSelectedStoryId(event.target.value)}
+                              disabled={webappLoading || storyHistoryLoading}
+                            >
+                              <option value="">{tr('Последняя', 'Letzte')}</option>
+                              {storyHistory.map((item) => (
+                                <option key={item.story_id} value={item.story_id}>
+                                  {item.title || tr(`История #${item.story_id}`, `Story #${item.story_id}`)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                        <label className="webapp-field">
+                          <span>{tr('Тип истории', 'Story-Typ')}</span>
+                          <select
+                            value={storyType}
+                            onChange={(event) => setStoryType(event.target.value)}
+                            disabled={webappLoading}
+                          >
+                            <option value="знаменитая личность">{tr('Знаменитая личность', 'Beruehmte Persoenlichkeit')}</option>
+                            <option value="историческое событие">{tr('Историческое событие', 'Historisches Ereignis')}</option>
+                            <option value="выдающееся открытие">{tr('Выдающееся открытие', 'Bedeutende Entdeckung')}</option>
+                            <option value="выдающееся изобретение">{tr('Выдающееся изобретение', 'Bedeutende Erfindung')}</option>
+                            <option value="география">{tr('География', 'Geografie')}</option>
+                            <option value="космос">{tr('Космос', 'Weltraum')}</option>
+                            <option value="культура">{tr('Культура', 'Kultur')}</option>
+                            <option value="спорт">{tr('Спорт', 'Sport')}</option>
+                            <option value="политика">{tr('Политика', 'Politik')}</option>
+                          </select>
+                        </label>
+                        <label className="webapp-field">
+                          <span>{tr('Сложность', 'Schwierigkeit')}</span>
+                          <select
+                            value={storyDifficulty}
+                            onChange={(event) => setStoryDifficulty(event.target.value)}
+                            disabled={webappLoading}
+                          >
+                            <option value="начальный">{tr('Начальный', 'Anfaenger')}</option>
+                            <option value="средний">{tr('Средний', 'Mittel')}</option>
+                            <option value="продвинутый">{tr('Продвинутый', 'Fortgeschritten')}</option>
+                          </select>
+                        </label>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      className="primary-button translation-start-cta"
+                      onClick={isStoryTopic(selectedTopic) ? handleStartStory : handleStartTranslation}
+                      disabled={webappLoading || topicsLoading}
+                    >
+                      {webappLoading ? tr('Запускаем...', 'Starten...') : tr('🚀 Начать перевод', '🚀 Uebersetzung starten')}
+                    </button>
+                  </div>
+                )}
                 {topicsError && <div className="webapp-error">{topicsError}</div>}
                 {storyHistoryError && <div className="webapp-error">{storyHistoryError}</div>}
                 {!isStoryResultMode && (
@@ -14728,7 +14748,7 @@ function AppInner() {
                     )}
                   </section>
 
-                  {isStorySession && (
+                  {isStorySession && hasActiveTranslationSentences && (
                     <label className="webapp-field">
                       <span>{tr('А теперь угадай, о ком / чем шла речь', 'Rate jetzt, worum oder um wen es ging')}</span>
                       <input
@@ -14739,7 +14759,7 @@ function AppInner() {
                       />
                     </label>
                   )}
-                  {!isStorySession && (
+                  {!isStorySession && hasActiveTranslationSentences && (
                     <label className="translation-private-grammar-optin">
                       <div className="translation-private-grammar-optin-copy">
                         <span>
@@ -14766,29 +14786,33 @@ function AppInner() {
                     </label>
                   )}
 
-                  <button
-                    className={`primary-button translation-check-cta ${sentences.length === 0 && !webappLoading ? 'is-disabled-empty' : ''}`}
-                    type="submit"
-                    disabled={webappLoading || sentences.length === 0}
-                  >
-                    {webappLoading
-                      ? (translationCheckProgress.total > 0
-                          ? tr(
-                              `Проверяем... ${translationCheckProgress.done}/${translationCheckProgress.total}`,
-                              `Pruefen... ${translationCheckProgress.done}/${translationCheckProgress.total}`
-                            )
-                          : tr('Проверяем...', 'Pruefen...'))
-                      : isStorySession
-                        ? tr('Проверить историю', 'Story pruefen')
-                        : tr('Проверить перевод', 'Uebersetzung pruefen')}
-                  </button>
-                  {webappLoading && translationCheckProgress.total > 0 && (
-                    <div className="webapp-muted">
-                      {tr(
-                        `Готово ${translationCheckProgress.done} из ${translationCheckProgress.total}`,
-                        `${translationCheckProgress.done} von ${translationCheckProgress.total} fertig`
+                  {hasActiveTranslationSentences && (
+                    <>
+                      <button
+                        className={`primary-button translation-check-cta ${sentences.length === 0 && !webappLoading ? 'is-disabled-empty' : ''}`}
+                        type="submit"
+                        disabled={webappLoading || sentences.length === 0}
+                      >
+                        {webappLoading
+                          ? (translationCheckProgress.total > 0
+                              ? tr(
+                                  `Проверяем... ${translationCheckProgress.done}/${translationCheckProgress.total}`,
+                                  `Pruefen... ${translationCheckProgress.done}/${translationCheckProgress.total}`
+                                )
+                              : tr('Проверяем...', 'Pruefen...'))
+                          : isStorySession
+                            ? tr('Проверить историю', 'Story pruefen')
+                            : tr('Проверить перевод', 'Uebersetzung pruefen')}
+                      </button>
+                      {webappLoading && translationCheckProgress.total > 0 && (
+                        <div className="webapp-muted">
+                          {tr(
+                            `Готово ${translationCheckProgress.done} из ${translationCheckProgress.total}`,
+                            `${translationCheckProgress.done} von ${translationCheckProgress.total} fertig`
+                          )}
+                        </div>
                       )}
-                    </div>
+                    </>
                   )}
                 </form>
                 )}

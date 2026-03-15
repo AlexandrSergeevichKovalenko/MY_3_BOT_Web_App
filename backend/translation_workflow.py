@@ -613,30 +613,57 @@ def get_active_session_type(user_id: int) -> dict[str, Any]:
                 FROM bt_3_user_progress
                 WHERE user_id = %s AND completed = FALSE
                 ORDER BY start_time DESC
-                LIMIT 1;
                 """,
                 (user_id,),
             )
-            row = cursor.fetchone()
-            if not row:
+            rows = cursor.fetchall() or []
+            if not rows:
                 return {"type": "none"}
-            session_id = row[0]
 
-            cursor.execute(
-                """
-                SELECT story_id
-                FROM bt_3_story_sessions
-                WHERE user_id = %s AND session_id = %s
-                ORDER BY created_at DESC
-                LIMIT 1;
-                """,
-                (user_id, str(session_id)),
-            )
-            story_row = cursor.fetchone()
-            if story_row:
-                return {"type": "story", "story_id": story_row[0]}
+            for row in rows:
+                session_id = row[0]
 
-            return {"type": "regular"}
+                cursor.execute(
+                    """
+                    SELECT story_id
+                    FROM bt_3_story_sessions
+                    WHERE user_id = %s AND session_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1;
+                    """,
+                    (user_id, str(session_id)),
+                )
+                story_row = cursor.fetchone()
+                if story_row:
+                    return {"type": "story", "story_id": story_row[0]}
+
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bt_3_daily_sentences
+                    WHERE user_id = %s AND session_id = %s;
+                    """,
+                    (user_id, session_id),
+                )
+                sentence_count = int((cursor.fetchone() or [0])[0] or 0)
+                if sentence_count > 0:
+                    return {"type": "regular"}
+
+                cursor.execute(
+                    """
+                    UPDATE bt_3_user_progress
+                    SET end_time = NOW(), completed = TRUE
+                    WHERE user_id = %s AND session_id = %s;
+                    """,
+                    (user_id, session_id),
+                )
+                logging.warning(
+                    "Auto-closed empty active translation session: user_id=%s session_id=%s",
+                    user_id,
+                    session_id,
+                )
+
+            return {"type": "none"}
 
 
 async def start_story_session_webapp(
@@ -1991,7 +2018,6 @@ async def start_translation_session_webapp(
             """,
             (session_id, user_id, username),
         )
-        conn.commit()
 
         skill_catalog = _load_skill_catalog_with_cursor(
             cursor,
@@ -2034,7 +2060,21 @@ async def start_translation_session_webapp(
         sentence_entries = _normalize_sentence_entries(sentence_entries)
         sentences = _dedupe_sentence_texts(correct_numbering([str(item.get("sentence") or "").strip() for item in sentence_entries if str(item.get("sentence") or "").strip()]))
         if not sentences or not sentence_entries:
-            return {"session_id": session_id, "created": True, "count": 0}
+            logging.warning(
+                "Empty translation session generation result: user_id=%s session_id=%s topic=%s level=%s source_lang=%s target_lang=%s",
+                user_id,
+                session_id,
+                topic,
+                level,
+                source_lang,
+                target_lang,
+            )
+            return {
+                "error": "Не удалось подготовить предложения для перевода. Попробуйте ещё раз.",
+                "session_id": None,
+                "created": False,
+                "count": 0,
+            }
         sentence_entry_by_text = {
             " ".join(str(item.get("sentence") or "").strip().split()).lower(): item
             for item in sentence_entries
