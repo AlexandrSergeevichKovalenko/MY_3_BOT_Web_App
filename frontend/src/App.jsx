@@ -7995,7 +7995,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка проверки истории', 'Fehler beim Pruefen der Story'));
       }
       const data = await response.json();
       setStoryResult(data);

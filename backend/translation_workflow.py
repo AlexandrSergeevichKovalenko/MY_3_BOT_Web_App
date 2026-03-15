@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import hashlib
 import logging
 import os
@@ -46,6 +47,36 @@ AUTHORED_PROFILE_SOURCE = "authored_generation"
 AUTHORED_PROFILE_CONFIDENCE = 1.0
 REMEDIATION_PROFILE_SOURCE = "remediation_history"
 REMEDIATION_PROFILE_CONFIDENCE = 0.85
+
+
+def _extract_nested_error_message(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        for key in ("error", "message", "detail", "reason"):
+            nested = _extract_nested_error_message(value.get(key))
+            if nested:
+                return nested
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            nested = _extract_nested_error_message(item)
+            if nested:
+                return nested
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text[:1] in "{[" and text[-1:] in "}]":
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(text)
+            except Exception:
+                continue
+            nested = _extract_nested_error_message(parsed)
+            if nested:
+                return nested
+    return text
 
 
 def finalize_open_translation_sessions() -> dict[str, int]:
@@ -895,7 +926,45 @@ async def submit_story_translation_webapp(
 
         original_text = "\n".join(original_sentences)
         user_text = "\n".join(user_sentences)
-        raw_feedback = await run_check_translation_story(original_text, user_text)
+        try:
+            raw_feedback = await run_check_translation_story(original_text, user_text)
+        except Exception as exc:
+            detailed_message = _extract_nested_error_message(exc)
+            logging.warning(
+                "Story translation check failed for user_id=%s session_id=%s: %s",
+                user_id,
+                session_id,
+                detailed_message or exc,
+                exc_info=True,
+            )
+            if detailed_message:
+                return {"error": f"Не удалось проверить историю. {detailed_message}"}
+            return {"error": "Не удалось проверить историю. Попробуйте ещё раз."}
+
+        if not isinstance(raw_feedback, str):
+            detailed_message = _extract_nested_error_message(raw_feedback)
+            logging.warning(
+                "Story translation check returned non-string payload for user_id=%s session_id=%s: %r",
+                user_id,
+                session_id,
+                raw_feedback,
+            )
+            if detailed_message:
+                return {"error": f"Не удалось проверить историю. {detailed_message}"}
+            return {"error": "Не удалось проверить историю. Попробуйте ещё раз."}
+
+        stripped_feedback = raw_feedback.strip()
+        if stripped_feedback.startswith("{") and stripped_feedback.endswith("}"):
+            detailed_message = _extract_nested_error_message(stripped_feedback)
+            if detailed_message and detailed_message != stripped_feedback:
+                logging.warning(
+                    "Story translation check returned error payload for user_id=%s session_id=%s: %s",
+                    user_id,
+                    session_id,
+                    detailed_message,
+                )
+                return {"error": f"Не удалось проверить историю. {detailed_message}"}
+
         parsed = _parse_story_feedback(raw_feedback)
         score_value = parsed["score"]
         feedback = parsed["feedback"] or raw_feedback

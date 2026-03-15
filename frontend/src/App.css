@@ -12036,6 +12036,69 @@ body {
 
   .reader-library-grid {
     grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .reader-library-card {
+    grid-template-columns: 76px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "cover title actions"
+      "cover meta actions";
+    align-items: start;
+    gap: 8px 12px;
+    padding: 12px;
+    border-radius: 18px;
+  }
+
+  .reader-library-cover {
+    grid-area: cover;
+    width: 76px;
+    min-width: 76px;
+    aspect-ratio: 3 / 4;
+    border-radius: 14px;
+  }
+
+  .reader-library-title {
+    grid-area: title;
+    min-width: 0;
+    font-size: 15px;
+    line-height: 1.3;
+    -webkit-line-clamp: 3;
+  }
+
+  .reader-library-meta {
+    grid-area: meta;
+    min-width: 0;
+    gap: 6px;
+    font-size: 12px;
+  }
+
+  .reader-library-actions {
+    grid-area: actions;
+    position: static;
+    align-self: start;
+    justify-self: end;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .reader-lib-action {
+    width: 30px;
+    height: 30px;
+    border-radius: 10px;
+  }
+
+  .reader-archive-cover-fallback {
+    font-size: 22px;
+  }
+
+  .reader-library-head {
+    gap: 10px;
+  }
+
+  .reader-library-head-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .reader-immersive-topbar {

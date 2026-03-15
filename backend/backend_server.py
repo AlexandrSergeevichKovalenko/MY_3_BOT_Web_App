@@ -57,6 +57,7 @@
 
 import subprocess
 import copy
+import ast
 import hashlib
 import io
 import queue
@@ -133,6 +134,36 @@ try:
 except Exception:  # pragma: no cover - optional in some deploys
     matplotlib = None
     plt = None
+
+
+def _extract_api_error_message(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        for key in ("error", "message", "detail", "reason"):
+            nested = _extract_api_error_message(value.get(key))
+            if nested:
+                return nested
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            nested = _extract_api_error_message(item)
+            if nested:
+                return nested
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text[:1] in "{[" and text[-1:] in "}]":
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(text)
+            except Exception:
+                continue
+            nested = _extract_api_error_message(parsed)
+            if nested:
+                return nested
+    return text
 
 from backend.openai_manager import (
     run_check_translation,
@@ -21696,7 +21727,10 @@ def submit_webapp_story():
             )
         )
     except Exception as exc:
-        return jsonify({"error": f"Ошибка истории: {exc}"}), 500
+        detailed_message = _extract_api_error_message(exc)
+        if detailed_message:
+            return jsonify({"error": f"Ошибка истории: {detailed_message}"}), 500
+        return jsonify({"error": "Ошибка истории: не удалось обработать проверку"}), 500
 
     if isinstance(result, dict) and result.get("error"):
         return jsonify({"error": result["error"]}), 400
@@ -22151,17 +22185,38 @@ def _build_plan_goals_chart_png(
         return None
 
     fig, ax = plt.subplots(figsize=(9, 5), dpi=140)
+    ax_reading = ax.twinx()
     x = list(range(len(labels)))
     width = 0.24
-    ax.bar([i - width for i in x], plan_values, width=width, label="План", color="#93c5fd", alpha=0.9)
-    ax.bar(x, actual_values, width=width, label="Факт", color="#34d399", alpha=0.9)
-    ax.bar([i + width for i in x], forecast_values, width=width, label="Прогноз", color="#f59e0b", alpha=0.9)
+
+    main_indexes = [0, 1, 2]
+    reading_index = 3
+
+    ax.bar([x[i] - width for i in main_indexes], [plan_values[i] for i in main_indexes], width=width, label="План", color="#93c5fd", alpha=0.9)
+    ax.bar([x[i] for i in main_indexes], [actual_values[i] for i in main_indexes], width=width, label="Факт", color="#34d399", alpha=0.9)
+    ax.bar([x[i] + width for i in main_indexes], [forecast_values[i] for i in main_indexes], width=width, label="Прогноз", color="#f59e0b", alpha=0.9)
+
+    ax_reading.bar([x[reading_index] - width], [plan_values[reading_index]], width=width, color="#93c5fd", alpha=0.9)
+    ax_reading.bar([x[reading_index]], [actual_values[reading_index]], width=width, color="#34d399", alpha=0.9)
+    ax_reading.bar([x[reading_index] + width], [forecast_values[reading_index]], width=width, color="#f59e0b", alpha=0.9)
 
     ax.set_title(f"Личные цели ({period_label}): {username} ({source_lang}->{target_lang})\n{start_date} — {end_date}")
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=0)
     ax.grid(axis="y", linestyle="--", alpha=0.25)
+    ax.set_ylabel("Переводы / слова / агент")
+    ax_reading.set_ylabel("Чтение (мин)")
+    ax_reading.grid(False)
     ax.legend(loc="upper left")
+    fig.text(
+        0.985,
+        0.02,
+        "Левая шкала: переводы / слова / агент. Правая шкала: чтение.",
+        ha="right",
+        va="bottom",
+        fontsize=8,
+        color="#475569",
+    )
     fig.tight_layout()
 
     buff = BytesIO()
