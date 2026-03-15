@@ -340,7 +340,7 @@ function AppInner() {
   ]);
   const [topicsLoading, setTopicsLoading] = useState(false);
   const [topicsError, setTopicsError] = useState('');
-  const [selectedTopic, setSelectedTopic] = useState('🧩 ЗАГАДОЧНАЯ ИСТОРИЯ');
+  const [selectedTopic, setSelectedTopic] = useState('💼 Business');
   const [selectedLevel, setSelectedLevel] = useState('c1');
   const STORY_TOPIC = '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ';
   const isStoryTopic = (value) => (value || '').includes('ЗАГАДОЧНАЯ ИСТОРИЯ');
