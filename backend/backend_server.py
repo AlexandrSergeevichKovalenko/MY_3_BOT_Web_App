@@ -585,7 +585,23 @@ TTS_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFP
 TTS_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
 TTS_PREWARM_ALLOW_DAYTIME = str(os.getenv("TTS_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
 TTS_ADMIN_DIGEST_ENABLED = str(os.getenv("TTS_ADMIN_DIGEST_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
-TTS_ADMIN_DIGEST_INTERVAL_MINUTES = max(15, min(720, int((os.getenv("TTS_ADMIN_DIGEST_INTERVAL_MINUTES") or "60").strip() or "60")))
+TTS_ADMIN_DIGEST_WINDOW_MINUTES = max(
+    15,
+    min(
+        720,
+        int(
+            (
+                os.getenv("TTS_ADMIN_DIGEST_WINDOW_MINUTES")
+                or os.getenv("TTS_ADMIN_DIGEST_INTERVAL_MINUTES")
+                or "720"
+            ).strip()
+            or "720"
+        ),
+    ),
+)
+TTS_ADMIN_DIGEST_MORNING_HOUR = max(0, min(23, int((os.getenv("TTS_ADMIN_DIGEST_MORNING_HOUR") or "7").strip() or "7")))
+TTS_ADMIN_DIGEST_EVENING_HOUR = max(0, min(23, int((os.getenv("TTS_ADMIN_DIGEST_EVENING_HOUR") or "19").strip() or "19")))
+TTS_ADMIN_DIGEST_MINUTE = max(0, min(59, int((os.getenv("TTS_ADMIN_DIGEST_MINUTE") or "0").strip() or "0")))
 TTS_ADMIN_ALERT_BURST_THRESHOLD = max(10, min(5000, int((os.getenv("TTS_ADMIN_ALERT_BURST_THRESHOLD") or "50").strip() or "50")))
 TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES = max(1, min(120, int((os.getenv("TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES") or "5").strip() or "5")))
 TTS_ADMIN_ALERT_FAILURE_THRESHOLD = max(1, min(500, int((os.getenv("TTS_ADMIN_ALERT_FAILURE_THRESHOLD") or "5").strip() or "5")))
@@ -8272,7 +8288,7 @@ def _send_tts_admin_message(text: str) -> bool:
 def _tts_admin_monitor_retention_seconds() -> int:
     return max(
         4 * 3600,
-        int(TTS_ADMIN_DIGEST_INTERVAL_MINUTES) * 120,
+        int(TTS_ADMIN_DIGEST_WINDOW_MINUTES) * 120,
         int(TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES) * 120,
         int(TTS_ADMIN_ALERT_FAILURE_WINDOW_MINUTES) * 120,
         int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES) * 120,
@@ -8797,7 +8813,7 @@ def _maybe_send_tts_admin_pending_alert() -> None:
 
 
 def _build_tts_admin_digest() -> str:
-    events = _get_tts_admin_monitor_window(int(TTS_ADMIN_DIGEST_INTERVAL_MINUTES) * 60)
+    events = _get_tts_admin_monitor_window(int(TTS_ADMIN_DIGEST_WINDOW_MINUTES) * 60)
     enqueue_queued = sum(
         int(item.get("count") or 0)
         for item in events
@@ -8920,8 +8936,8 @@ def _build_tts_admin_digest() -> str:
             f"Recovery idle checks only (scheduler woke up, but there were no stale pending items): {recovery_idle_runs}\n\n"
         )
     return (
-        "📊 TTS hourly digest\n\n"
-        f"Window: last {int(TTS_ADMIN_DIGEST_INTERVAL_MINUTES)} min\n\n"
+        "📊 TTS twice-daily digest\n\n"
+        f"Window: last {int(TTS_ADMIN_DIGEST_WINDOW_MINUTES)} min\n\n"
         "Dictionary-triggered audio requests:\n"
         f"New tasks queued after save (new words added and sent to audio generation): {enqueue_queued}\n"
         f"Already ready at save time (audio already existed): {enqueue_ready}\n"
@@ -24106,8 +24122,9 @@ def _start_audio_scheduler() -> None:
     if TTS_ADMIN_DIGEST_ENABLED:
         _audio_scheduler.add_job(
             _run_tts_admin_digest_scheduler_job,
-            "interval",
-            minutes=TTS_ADMIN_DIGEST_INTERVAL_MINUTES,
+            "cron",
+            hour=f"{int(TTS_ADMIN_DIGEST_MORNING_HOUR)},{int(TTS_ADMIN_DIGEST_EVENING_HOUR)}",
+            minute=TTS_ADMIN_DIGEST_MINUTE,
             max_instances=1,
             coalesce=True,
             misfire_grace_time=180,
