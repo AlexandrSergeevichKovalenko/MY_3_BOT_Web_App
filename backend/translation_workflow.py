@@ -1466,10 +1466,7 @@ def _upsert_shared_sentence_pool_entries_with_cursor(
             level,
             sentence,
             sentence_hash,
-            tested_skill_profile,
-            is_active,
-            created_at,
-            updated_at
+            tested_skill_profile
         )
         VALUES %s
         ON CONFLICT (source_lang, target_lang, focus_key, level, sentence_hash) DO UPDATE
