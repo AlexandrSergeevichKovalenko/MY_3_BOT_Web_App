@@ -71,54 +71,73 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   initialValue,
   placeholder,
   dictionaryLabel,
+  isAndroidClient,
   onLiveChange,
   onCommit,
   onJumpToDictionary,
 }) {
-  const [localValue, setLocalValue] = useState(() => String(initialValue || ''));
+  const textareaRef = useRef(null);
   const syncTimeoutRef = useRef(null);
+  const valueRef = useRef(String(initialValue || ''));
+
+  const commitDelayMs = isAndroidClient ? 1200 : 240;
 
   useEffect(() => {
-    setLocalValue(String(initialValue || ''));
+    const normalizedValue = String(initialValue || '');
+    const node = textareaRef.current;
+    if (!node) {
+      valueRef.current = normalizedValue;
+      return;
+    }
+    const isFocused = typeof document !== 'undefined' && document.activeElement === node;
+    if (isFocused && String(node.value || '') !== normalizedValue) {
+      valueRef.current = String(node.value || '');
+      return;
+    }
+    if (String(node.value || '') !== normalizedValue) {
+      node.value = normalizedValue;
+    }
+    valueRef.current = normalizedValue;
   }, [initialValue, sentenceId]);
 
   const flushValue = useCallback((value) => {
     onCommit(sentenceId, value);
   }, [onCommit, sentenceId]);
 
-  useEffect(() => {
-    const normalizedInitial = String(initialValue || '');
-    if (localValue === normalizedInitial) {
-      return undefined;
-    }
+  const clearPendingFlush = useCallback(() => {
     if (syncTimeoutRef.current) {
       window.clearTimeout(syncTimeoutRef.current);
       syncTimeoutRef.current = null;
     }
+  }, []);
+
+  const scheduleFlush = useCallback((value) => {
+    clearPendingFlush();
     syncTimeoutRef.current = window.setTimeout(() => {
       syncTimeoutRef.current = null;
-      flushValue(localValue);
-    }, 180);
-    return () => {
-      if (syncTimeoutRef.current) {
-        window.clearTimeout(syncTimeoutRef.current);
-        syncTimeoutRef.current = null;
-      }
-    };
-  }, [flushValue, initialValue, localValue]);
+      flushValue(valueRef.current);
+    }, commitDelayMs);
+  }, [clearPendingFlush, commitDelayMs, flushValue]);
 
-  const handleChange = (event) => {
+  useEffect(() => {
+    return () => {
+      clearPendingFlush();
+    };
+  }, [clearPendingFlush]);
+
+  const handleInput = (event) => {
     const nextValue = event.target.value;
-    setLocalValue(nextValue);
+    valueRef.current = nextValue;
     onLiveChange(sentenceId, nextValue);
+    scheduleFlush(nextValue);
   };
 
   const handleBlur = () => {
-    if (syncTimeoutRef.current) {
-      window.clearTimeout(syncTimeoutRef.current);
-      syncTimeoutRef.current = null;
-    }
-    flushValue(localValue);
+    const nextValue = textareaRef.current ? String(textareaRef.current.value || '') : valueRef.current;
+    valueRef.current = nextValue;
+    onLiveChange(sentenceId, nextValue);
+    clearPendingFlush();
+    flushValue(nextValue);
   };
 
   return (
@@ -127,9 +146,10 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
         {sentenceNumber}. {sentenceText}
       </span>
       <textarea
+        ref={textareaRef}
         rows={5}
-        value={localValue}
-        onChange={handleChange}
+        defaultValue={String(initialValue || '')}
+        onInput={handleInput}
         onBlur={handleBlur}
         placeholder={placeholder}
       />
@@ -15509,6 +15529,7 @@ function AppInner() {
                             initialValue={draft}
                             placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
                             dictionaryLabel={tr('Открыть словарь', 'Woerterbuch')}
+                            isAndroidClient={isAndroidTelegramClient}
                             onLiveChange={handleDraftLiveChange}
                             onCommit={handleDraftCommit}
                             onJumpToDictionary={jumpToDictionaryFromSentence}
