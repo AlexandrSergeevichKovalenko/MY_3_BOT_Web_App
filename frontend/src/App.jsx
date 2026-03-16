@@ -1691,13 +1691,6 @@ function AppInner() {
   ]);
 
   useEffect(() => {
-    if (!weeklySummaryModalOpen || !weeklySummaryVisitConfig) {
-      return;
-    }
-    void loadWeeklySummaryHero();
-  }, [loadWeeklySummaryHero, weeklySummaryModalOpen, weeklySummaryVisitConfig]);
-
-  useEffect(() => {
     const refreshMode = () => {
       const nextMode = detectAppMode();
       setAppMode(nextMode);
@@ -2865,6 +2858,13 @@ function AppInner() {
     readApiError,
     weeklySummaryVisitConfig,
   ]);
+
+  useEffect(() => {
+    if (!weeklySummaryModalOpen || !weeklySummaryVisitConfig) {
+      return;
+    }
+    void loadWeeklySummaryHero();
+  }, [loadWeeklySummaryHero, weeklySummaryModalOpen, weeklySummaryVisitConfig]);
 
   const saveWeeklyPlan = async () => {
     if (!initData) return;
