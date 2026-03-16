@@ -453,6 +453,23 @@ function AppInner() {
   const CUSTOM_TOPIC = '✍️ Свой грамматический фокус';
   const isStoryTopic = (value) => (value || '').includes('ЗАГАДОЧНАЯ ИСТОРИЯ');
   const isCustomTopic = (value) => String(value || '').trim() === CUSTOM_TOPIC;
+  const normalizeSelectedTopicValue = useCallback((value) => {
+    const rawValue = String(value || '').trim();
+    if (isStoryTopic(rawValue)) {
+      return STORY_TOPIC;
+    }
+    if (isCustomTopic(rawValue)) {
+      return CUSTOM_TOPIC;
+    }
+    const exactMatch = topics.find((topic) => String(topic || '').trim() === rawValue);
+    if (exactMatch) {
+      return exactMatch;
+    }
+    return rawValue;
+  }, [topics]);
+  const handleTopicChange = useCallback((event) => {
+    setSelectedTopic(normalizeSelectedTopicValue(event?.target?.value));
+  }, [normalizeSelectedTopicValue]);
   const [storyMode, setStoryMode] = useState('new');
   const [storyType, setStoryType] = useState('знаменитая личность');
   const [storyDifficulty, setStoryDifficulty] = useState('средний');
@@ -15403,11 +15420,11 @@ function AppInner() {
                   <div className="webapp-translation-start">
                     <label className="webapp-field">
                       <span>{tr('Грамматический фокус тренировки', 'Grammatikfokus fuer das Training')}</span>
-                      <select
-                        value={selectedTopic}
-                        onChange={(event) => setSelectedTopic(event.target.value)}
-                        disabled={topicsLoading || webappLoading}
-                      >
+      <select
+        value={selectedTopic}
+        onChange={handleTopicChange}
+        disabled={topicsLoading || webappLoading}
+      >
                         {topics.map((topic) => (
                           <option key={topic} value={topic}>
                             {topic}
