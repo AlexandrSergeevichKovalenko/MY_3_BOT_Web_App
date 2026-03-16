@@ -17,6 +17,7 @@ from backend.config_mistakes_data import (
     VALID_CATEGORIES,
     VALID_SUBCATEGORIES,
 )
+from backend.grammar_focuses import focus_matches_error_pair, resolve_webapp_focus
 from backend.openai_manager import (
     generate_sentences_multilang,
     llm_execute,
@@ -1324,6 +1325,166 @@ def _normalize_sentence_entries(entries: list[dict[str, Any]]) -> list[dict[str,
     return list(normalized.values())
 
 
+def _normalize_sentence_pool_text(sentence: str | None) -> str:
+    return " ".join(str(sentence or "").strip().split())
+
+
+def _sentence_pool_hash(sentence: str | None) -> str:
+    normalized = _normalize_sentence_pool_text(sentence)
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest() if normalized else ""
+
+
+def _fetch_shared_sentence_pool_entries_with_cursor(
+    cursor,
+    *,
+    focus: dict[str, Any] | None,
+    level: str | None,
+    source_lang: str,
+    target_lang: str,
+    exclude_sentences: set[str] | None = None,
+    limit: int = 0,
+) -> list[dict[str, Any]]:
+    safe_limit = max(0, int(limit or 0))
+    if safe_limit <= 0:
+        return []
+    if not isinstance(focus, dict) or str(focus.get("kind") or "").strip().lower() != "preset":
+        return []
+    focus_key = str(focus.get("key") or "").strip()
+    if not focus_key:
+        return []
+    level_key = _normalize_level(level)
+    excluded = {
+        _normalize_sentence_pool_text(item).lower()
+        for item in (exclude_sentences or set())
+        if _normalize_sentence_pool_text(item)
+    }
+    cursor.execute(
+        """
+        SELECT
+            id,
+            sentence,
+            tested_skill_profile
+        FROM bt_3_translation_sentence_pool
+        WHERE source_lang = %s
+          AND target_lang = %s
+          AND focus_key = %s
+          AND level = %s
+          AND is_active = TRUE
+        ORDER BY use_count ASC, COALESCE(last_used_at, created_at) ASC, id ASC
+        LIMIT %s;
+        """,
+        (
+            str(source_lang or "").strip().lower() or "ru",
+            str(target_lang or "").strip().lower() or "de",
+            focus_key,
+            level_key,
+            max(safe_limit * 4, safe_limit),
+        ),
+    )
+    rows = cursor.fetchall() or []
+    selected_ids: list[int] = []
+    selected_entries: list[dict[str, Any]] = []
+    seen_texts = set(excluded)
+    for row_id, sentence, tested_skill_profile in rows:
+        normalized_sentence = _normalize_sentence_pool_text(sentence)
+        if not normalized_sentence:
+            continue
+        dedupe_key = normalized_sentence.lower()
+        if dedupe_key in seen_texts:
+            continue
+        selected_ids.append(int(row_id))
+        selected_entries.append(
+            {
+                "sentence": normalized_sentence,
+                "tested_skill_profile": list(tested_skill_profile or []),
+            }
+        )
+        seen_texts.add(dedupe_key)
+        if len(selected_entries) >= safe_limit:
+            break
+    if selected_ids:
+        cursor.execute(
+            """
+            UPDATE bt_3_translation_sentence_pool
+            SET use_count = use_count + 1,
+                last_used_at = NOW(),
+                updated_at = NOW()
+            WHERE id = ANY(%s);
+            """,
+            (selected_ids,),
+        )
+    return _normalize_sentence_entries(selected_entries)
+
+
+def _upsert_shared_sentence_pool_entries_with_cursor(
+    cursor,
+    *,
+    focus: dict[str, Any] | None,
+    level: str | None,
+    source_lang: str,
+    target_lang: str,
+    entries: list[dict[str, Any]] | None,
+) -> int:
+    if not isinstance(focus, dict) or str(focus.get("kind") or "").strip().lower() != "preset":
+        return 0
+    focus_key = str(focus.get("key") or "").strip()
+    focus_label = str(focus.get("label") or "").strip()
+    if not focus_key or not focus_label:
+        return 0
+    level_key = _normalize_level(level)
+    normalized_entries = _normalize_sentence_entries(list(entries or []))
+    rows: list[tuple[Any, ...]] = []
+    for item in normalized_entries:
+        sentence = _normalize_sentence_pool_text(item.get("sentence"))
+        if not sentence:
+            continue
+        sentence_hash = _sentence_pool_hash(sentence)
+        if not sentence_hash:
+            continue
+        rows.append(
+            (
+                str(source_lang or "").strip().lower() or "ru",
+                str(target_lang or "").strip().lower() or "de",
+                focus_key,
+                focus_label,
+                level_key,
+                sentence,
+                sentence_hash,
+                Json(list(item.get("tested_skill_profile") or [])),
+            )
+        )
+    if not rows:
+        return 0
+    execute_values(
+        cursor,
+        """
+        INSERT INTO bt_3_translation_sentence_pool (
+            source_lang,
+            target_lang,
+            focus_key,
+            focus_label,
+            level,
+            sentence,
+            sentence_hash,
+            tested_skill_profile,
+            is_active,
+            created_at,
+            updated_at
+        )
+        VALUES %s
+        ON CONFLICT (source_lang, target_lang, focus_key, level, sentence_hash) DO UPDATE
+        SET
+            focus_label = EXCLUDED.focus_label,
+            sentence = EXCLUDED.sentence,
+            tested_skill_profile = EXCLUDED.tested_skill_profile,
+            is_active = TRUE,
+            updated_at = NOW();
+        """,
+        rows,
+    )
+    return len(rows)
+
+
 _AUTHORED_PRIMARY_SKILL_SENTENCE_HINTS: dict[str, tuple[str, ...]] = {
     "de_moods_reported_speech_indirekte_rede": ("по словам", "как сообщ", "сообщается", "заявил", "заявила", "заявили", "утвержд", "согласно"),
     "moods_subjunctive1": ("по словам", "как сообщ", "сообщается", "заявил", "заявила", "заявили", "утвержд", "согласно"),
@@ -1914,51 +2075,77 @@ async def get_original_sentences_webapp(
     source_lang: str = "ru",
     target_lang: str = "de",
     generation_profile_seed: dict[str, Any] | None = None,
+    grammar_focus: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     level_key = _normalize_level(level)
+    resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
+    focus_kind = str(resolved_focus.get("kind") or "").strip().lower()
     skill_catalog = _load_skill_catalog_with_cursor(
         cursor,
         target_lang=target_lang,
         authored_mastery_leaves_only=(str(target_lang or "").strip().lower() == "de"),
     )
 
-    cursor.execute("SELECT sentence FROM bt_3_sentences ORDER BY RANDOM() LIMIT 20;")
-    rows = _filter_sentences_for_level([row[0] for row in cursor.fetchall()], level_key)[:1]
-    sentence_entries: list[dict[str, Any]] = [{"sentence": str(sentence or "").strip(), "tested_skill_profile": []} for sentence in rows if str(sentence or "").strip()]
+    sentence_entries: list[dict[str, Any]] = []
+    if focus_kind not in {"preset", "custom"}:
+        cursor.execute("SELECT sentence FROM bt_3_sentences ORDER BY RANDOM() LIMIT 20;")
+        rows = _filter_sentences_for_level([row[0] for row in cursor.fetchall()], level_key)[:1]
+        sentence_entries = [{"sentence": str(sentence or "").strip(), "tested_skill_profile": []} for sentence in rows if str(sentence or "").strip()]
 
-    cursor.execute(
-        """
-        SELECT sentence, sentence_id
-        FROM bt_3_detailed_mistakes
-        WHERE user_id = %s
-        ORDER BY mistake_count DESC, last_seen ASC;
-        """,
-        (user_id,),
-    )
     already_given_sentence_ids = set()
     unique_sentences = set()
-    for sentence, sentence_id in cursor.fetchall() or []:
-        if not sentence_id or sentence_id in already_given_sentence_ids or sentence_id in unique_sentences:
-            continue
-        unique_sentences.add(sentence_id)
-        already_given_sentence_ids.add(sentence_id)
-        sentence_entries.append(
-            {
-                "sentence": str(sentence or "").strip(),
-                "tested_skill_profile": _build_remediation_profile_with_cursor(
-                    cursor,
-                    user_id=int(user_id),
-                    sentence_id_for_mistake=int(sentence_id),
-                    target_lang=target_lang,
-                    source_lang=source_lang,
-                    sentence_text=str(sentence or "").strip(),
-                ),
-            }
+    if focus_kind != "custom":
+        cursor.execute(
+            """
+            SELECT
+                sentence,
+                sentence_id,
+                COALESCE(NULLIF(main_category, ''), 'Other mistake') AS main_category,
+                COALESCE(NULLIF(sub_category, ''), 'Unclassified mistake') AS sub_category
+            FROM bt_3_detailed_mistakes
+            WHERE user_id = %s
+            ORDER BY mistake_count DESC, last_seen ASC;
+            """,
+            (user_id,),
         )
-        if len([item for item in sentence_entries if item.get("tested_skill_profile")]) >= 5:
-            break
+        for sentence, sentence_id, main_category, sub_category in cursor.fetchall() or []:
+            if focus_kind == "preset" and not focus_matches_error_pair(resolved_focus, main_category, sub_category):
+                continue
+            if not sentence_id or sentence_id in already_given_sentence_ids or sentence_id in unique_sentences:
+                continue
+            unique_sentences.add(sentence_id)
+            already_given_sentence_ids.add(sentence_id)
+            sentence_entries.append(
+                {
+                    "sentence": str(sentence or "").strip(),
+                    "tested_skill_profile": _build_remediation_profile_with_cursor(
+                        cursor,
+                        user_id=int(user_id),
+                        sentence_id_for_mistake=int(sentence_id),
+                        target_lang=target_lang,
+                        source_lang=source_lang,
+                        sentence_text=str(sentence or "").strip(),
+                    ),
+                }
+            )
+            if len([item for item in sentence_entries if item.get("tested_skill_profile")]) >= 5:
+                break
 
     num_sentences = 7 - len(sentence_entries)
+    if num_sentences > 0 and focus_kind == "preset":
+        pooled_entries = _fetch_shared_sentence_pool_entries_with_cursor(
+            cursor,
+            focus=resolved_focus,
+            level=level,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            exclude_sentences={str(item.get("sentence") or "") for item in sentence_entries},
+            limit=num_sentences,
+        )
+        if pooled_entries:
+            sentence_entries = _normalize_sentence_entries(sentence_entries + pooled_entries)
+            num_sentences = 7 - len(sentence_entries)
+
     generated_entries: list[dict[str, Any]] = []
     if num_sentences > 0:
         generated_entries = await _generate_legacy_sentence_entries_with_profiles(
@@ -1968,6 +2155,15 @@ async def get_original_sentences_webapp(
             skill_catalog=skill_catalog,
             focus_hint=generation_profile_seed,
         )
+        if generated_entries and focus_kind == "preset":
+            _upsert_shared_sentence_pool_entries_with_cursor(
+                cursor,
+                focus=resolved_focus,
+                level=level,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                entries=generated_entries,
+            )
     final_entries = _normalize_sentence_entries(sentence_entries + generated_entries)
     attempts = 0
     while len(final_entries) < 7 and attempts < 3:
@@ -1981,6 +2177,15 @@ async def get_original_sentences_webapp(
         )
         if not extra_entries:
             break
+        if focus_kind == "preset":
+            _upsert_shared_sentence_pool_entries_with_cursor(
+                cursor,
+                focus=resolved_focus,
+                level=level,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                entries=extra_entries,
+            )
         final_entries = _normalize_sentence_entries(final_entries + extra_entries)
         attempts += 1
     return final_entries[:7]
@@ -1995,6 +2200,7 @@ async def start_translation_session_webapp(
     target_lang: str = "de",
     force_new_session: bool = False,
     tested_skill_profile_seed: dict[str, Any] | None = None,
+    grammar_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -2103,6 +2309,7 @@ async def start_translation_session_webapp(
                 source_lang=source_lang,
                 target_lang=target_lang,
                 generation_profile_seed=tested_skill_profile_seed,
+                grammar_focus=grammar_focus,
             )
         else:
             generated_entries = await _generate_sentence_entries_with_profiles(

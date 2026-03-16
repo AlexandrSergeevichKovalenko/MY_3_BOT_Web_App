@@ -236,12 +236,15 @@ from backend.database import (
     create_tts_object_pending,
     requeue_tts_object_pending,
     list_stale_pending_tts_objects,
+    list_stale_ready_tts_objects,
     mark_tts_object_ready,
     mark_tts_object_failed,
+    delete_tts_object_cache_entry,
     mark_flashcards_seen,
     record_tts_admin_monitor_event as persist_tts_admin_monitor_event,
     list_tts_admin_monitor_events_since,
     delete_old_tts_admin_monitor_events,
+    delete_stale_tts_db_cache,
     get_next_due_srs_card,
     get_next_new_srs_candidate,
     count_due_srs_cards,
@@ -356,8 +359,9 @@ from backend.database import (
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
 )
-from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url
+from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url, r2_delete_object
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
+from backend.grammar_focuses import WEBAPP_TOPICS, resolve_webapp_focus
 from backend.translation_workflow import (
     build_user_daily_summary,
     check_user_translation_webapp_item,
@@ -678,26 +682,6 @@ _TODAY_PREFERRED_CHANNELS = [
     "UCVx6RFaEAg46xfbsDjb440A",
     "UCvs8dBa7v3ti1QDaXE7dtKw",
     "UCE2vOZZIluHMtt2sAXhRhcw",
-]
-
-WEBAPP_TOPICS = [
-    "🧩 ЗАГАДОЧНАЯ ИСТОРИЯ",
-    "💼 Business",
-    "🏥 Medicine",
-    "🎨 Hobbies",
-    "✈️ Travel",
-    "🔬 Science",
-    "💻 Technology",
-    "🖼️ Art",
-    "🎓 Education",
-    "🍽️ Food",
-    "⚽ Sports",
-    "🌿 Nature",
-    "🎵 Music",
-    "📚 Literature",
-    "🧠 Psychology",
-    "🏛️ History",
-    "📰 News",
 ]
 
 app = Flask(__name__)
@@ -21589,6 +21573,7 @@ def start_webapp_translation():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     topic = (payload.get("topic") or "Random sentences").strip()
+    custom_focus = str(payload.get("custom_focus") or "").strip()
     level = str(payload.get("level") or "c1").strip().lower() or "c1"
     force_new_session = bool(payload.get("force_new_session"))
 
@@ -21607,17 +21592,21 @@ def start_webapp_translation():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    resolved_focus = resolve_webapp_focus(topic, custom_focus)
+    if str(resolved_focus.get("kind") or "") == "custom" and not str(resolved_focus.get("custom_text") or "").strip():
+        return jsonify({"error": "custom_focus обязателен для пользовательского грамматического фокуса"}), 400
 
     try:
         result = asyncio.run(
             start_translation_session_webapp(
                 user_id=user_id,
                 username=username,
-                topic=topic if topic else "Random sentences",
+                topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
                 level=level,
                 source_lang=source_lang,
                 target_lang=target_lang,
                 force_new_session=force_new_session,
+                grammar_focus=resolved_focus,
             )
         )
     except Exception as exc:
@@ -23766,6 +23755,69 @@ def _run_flashcard_feel_cleanup_job() -> None:
         logging.exception("❌ Flashcard feel cleanup failed")
 
 
+def _run_tts_db_cache_cleanup_job() -> None:
+    enabled = (os.getenv("TTS_DB_CACHE_CLEANUP_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        logging.info("ℹ️ TTS DB cache cleanup disabled by TTS_DB_CACHE_CLEANUP_ENABLED")
+        return
+    retention_days = int((os.getenv("TTS_DB_CACHE_RETENTION_DAYS") or "90").strip())
+    try:
+        result = delete_stale_tts_db_cache(older_than_days=retention_days)
+        logging.info(
+            "✅ TTS DB cache cleanup finished: retention_days=%s audio_rows=%s chunk_rows=%s total_rows=%s",
+            retention_days,
+            int(result.get("audio_rows") or 0),
+            int(result.get("chunk_rows") or 0),
+            int(result.get("total_rows") or 0),
+        )
+    except Exception:
+        logging.exception("❌ TTS DB cache cleanup failed")
+
+
+def _run_tts_r2_cache_cleanup_job() -> None:
+    enabled = (os.getenv("TTS_R2_CACHE_CLEANUP_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        logging.info("ℹ️ TTS R2 cache cleanup disabled by TTS_R2_CACHE_CLEANUP_ENABLED")
+        return
+    retention_days = int((os.getenv("TTS_R2_CACHE_RETENTION_DAYS") or "60").strip())
+    batch_limit = max(1, min(5000, int((os.getenv("TTS_R2_CACHE_CLEANUP_BATCH_LIMIT") or "500").strip())))
+    deleted_objects = 0
+    deleted_rows = 0
+    missing_objects = 0
+    failed_objects = 0
+    try:
+        candidates = list_stale_ready_tts_objects(
+            limit=batch_limit,
+            older_than_days=retention_days,
+        )
+        for item in candidates:
+            cache_key = str(item.get("cache_key") or "").strip()
+            object_key = str(item.get("object_key") or "").strip()
+            if not cache_key or not object_key:
+                continue
+            try:
+                removed = bool(r2_delete_object(object_key))
+                if removed:
+                    deleted_objects += 1
+                else:
+                    missing_objects += 1
+                deleted_rows += int(delete_tts_object_cache_entry(cache_key=cache_key) or 0)
+            except Exception:
+                failed_objects += 1
+                logging.exception("❌ Failed to delete stale R2 TTS object: cache_key=%s object_key=%s", cache_key, object_key)
+        logging.info(
+            "✅ TTS R2 cache cleanup finished: retention_days=%s candidates=%s deleted_objects=%s missing_objects=%s deleted_rows=%s failed_objects=%s",
+            retention_days,
+            len(candidates),
+            deleted_objects,
+            missing_objects,
+            deleted_rows,
+            failed_objects,
+        )
+    except Exception:
+        logging.exception("❌ TTS R2 cache cleanup failed")
+
+
 def _get_youtube_oembed(video_id: str) -> dict:
     now = time.time()
     cached = _YT_OEMBED_CACHE.get(video_id)
@@ -24109,6 +24161,32 @@ def _start_audio_scheduler() -> None:
             day=feel_cleanup_day,
             hour=feel_cleanup_hour,
             minute=feel_cleanup_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+    tts_db_cache_cleanup_enabled = (os.getenv("TTS_DB_CACHE_CLEANUP_ENABLED") or "1").strip().lower()
+    if tts_db_cache_cleanup_enabled in ("1", "true", "yes", "on"):
+        tts_db_cache_cleanup_hour = int((os.getenv("TTS_DB_CACHE_CLEANUP_HOUR") or "4").strip())
+        tts_db_cache_cleanup_minute = int((os.getenv("TTS_DB_CACHE_CLEANUP_MINUTE") or "10").strip())
+        _audio_scheduler.add_job(
+            _run_tts_db_cache_cleanup_job,
+            "cron",
+            hour=tts_db_cache_cleanup_hour,
+            minute=tts_db_cache_cleanup_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+    tts_r2_cache_cleanup_enabled = (os.getenv("TTS_R2_CACHE_CLEANUP_ENABLED") or "1").strip().lower()
+    if tts_r2_cache_cleanup_enabled in ("1", "true", "yes", "on"):
+        tts_r2_cache_cleanup_hour = int((os.getenv("TTS_R2_CACHE_CLEANUP_HOUR") or "4").strip())
+        tts_r2_cache_cleanup_minute = int((os.getenv("TTS_R2_CACHE_CLEANUP_MINUTE") or "20").strip())
+        _audio_scheduler.add_job(
+            _run_tts_r2_cache_cleanup_job,
+            "cron",
+            hour=tts_r2_cache_cleanup_hour,
+            minute=tts_r2_cache_cleanup_minute,
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3600,

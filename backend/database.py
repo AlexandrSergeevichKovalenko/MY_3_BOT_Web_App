@@ -3480,6 +3480,29 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_tts_audio_cache (updated_at);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_translation_sentence_pool (
+                    id BIGSERIAL PRIMARY KEY,
+                    source_lang TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    focus_key TEXT NOT NULL,
+                    focus_label TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    sentence TEXT NOT NULL,
+                    sentence_hash TEXT NOT NULL,
+                    tested_skill_profile JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    use_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_used_at TIMESTAMPTZ,
+                    UNIQUE (source_lang, target_lang, focus_key, level, sentence_hash)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_sentence_pool_lookup
+                ON bt_3_translation_sentence_pool (source_lang, target_lang, focus_key, level, is_active, last_used_at DESC, created_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_tts_object_cache (
                     cache_key TEXT PRIMARY KEY,
                     status TEXT NOT NULL DEFAULT 'pending',
@@ -7794,6 +7817,33 @@ def upsert_tts_audio_cache(
             )
 
 
+def delete_stale_tts_db_cache(*, older_than_days: int) -> dict[str, int]:
+    safe_older_than_days = max(1, int(older_than_days or 1))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_tts_audio_cache
+                WHERE updated_at < NOW() - (%s || ' days')::interval;
+                """,
+                (safe_older_than_days,),
+            )
+            deleted_audio = int(cursor.rowcount or 0)
+            cursor.execute(
+                """
+                DELETE FROM bt_3_tts_chunk_cache
+                WHERE updated_at < NOW() - (%s || ' days')::interval;
+                """,
+                (safe_older_than_days,),
+            )
+            deleted_chunks = int(cursor.rowcount or 0)
+    return {
+        "audio_rows": deleted_audio,
+        "chunk_rows": deleted_chunks,
+        "total_rows": deleted_audio + deleted_chunks,
+    }
+
+
 def _map_tts_object_cache_row(row: tuple) -> dict:
     return {
         "cache_key": str(row[0] or ""),
@@ -8246,6 +8296,62 @@ def list_stale_pending_tts_objects(
             )
             rows = cursor.fetchall() or []
     return [_map_tts_object_cache_row(row) for row in rows]
+
+
+def list_stale_ready_tts_objects(
+    *,
+    limit: int = 500,
+    older_than_days: int = 60,
+) -> list[dict]:
+    safe_limit = max(1, min(5000, int(limit or 500)))
+    safe_age_days = max(1, int(older_than_days or 60))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    cache_key,
+                    status,
+                    language,
+                    voice,
+                    speed,
+                    source_text,
+                    object_key,
+                    url,
+                    size_bytes,
+                    error_code,
+                    error_msg,
+                    created_at,
+                    updated_at,
+                    last_hit_at
+                FROM bt_3_tts_object_cache
+                WHERE status = 'ready'
+                  AND object_key IS NOT NULL
+                  AND COALESCE(last_hit_at, updated_at, created_at) <= NOW() - (%s || ' days')::interval
+                ORDER BY COALESCE(last_hit_at, updated_at, created_at) ASC
+                LIMIT %s;
+                """,
+                (safe_age_days, safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [_map_tts_object_cache_row(row) for row in rows]
+
+
+def delete_tts_object_cache_entry(*, cache_key: str) -> int:
+    safe_cache_key = str(cache_key or "").strip()
+    if not safe_cache_key:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_tts_object_cache
+                WHERE cache_key = %s;
+                """,
+                (safe_cache_key,),
+            )
+            deleted = int(cursor.rowcount or 0)
+    return deleted
 
 
 def mark_tts_object_ready(

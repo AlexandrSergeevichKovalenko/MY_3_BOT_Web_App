@@ -64,6 +64,89 @@ class ErrorBoundary extends React.Component {
   }
 }
 
+const TranslationDraftField = React.memo(function TranslationDraftField({
+  sentenceId,
+  sentenceNumber,
+  sentenceText,
+  initialValue,
+  placeholder,
+  dictionaryLabel,
+  onLiveChange,
+  onCommit,
+  onJumpToDictionary,
+}) {
+  const [localValue, setLocalValue] = useState(() => String(initialValue || ''));
+  const syncTimeoutRef = useRef(null);
+
+  useEffect(() => {
+    setLocalValue(String(initialValue || ''));
+  }, [initialValue, sentenceId]);
+
+  const flushValue = useCallback((value) => {
+    onCommit(sentenceId, value);
+  }, [onCommit, sentenceId]);
+
+  useEffect(() => {
+    const normalizedInitial = String(initialValue || '');
+    if (localValue === normalizedInitial) {
+      return undefined;
+    }
+    if (syncTimeoutRef.current) {
+      window.clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = null;
+    }
+    syncTimeoutRef.current = window.setTimeout(() => {
+      syncTimeoutRef.current = null;
+      flushValue(localValue);
+    }, 180);
+    return () => {
+      if (syncTimeoutRef.current) {
+        window.clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+    };
+  }, [flushValue, initialValue, localValue]);
+
+  const handleChange = (event) => {
+    const nextValue = event.target.value;
+    setLocalValue(nextValue);
+    onLiveChange(sentenceId, nextValue);
+  };
+
+  const handleBlur = () => {
+    if (syncTimeoutRef.current) {
+      window.clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = null;
+    }
+    flushValue(localValue);
+  };
+
+  return (
+    <label className="webapp-translation-item">
+      <span className="translation-sentence">
+        {sentenceNumber}. {sentenceText}
+      </span>
+      <textarea
+        rows={5}
+        value={localValue}
+        onChange={handleChange}
+        onBlur={handleBlur}
+        placeholder={placeholder}
+      />
+      <div className="translation-actions">
+        <button
+          type="button"
+          className="translation-dict-jump"
+          onClick={onJumpToDictionary}
+          aria-label={dictionaryLabel}
+        >
+          {dictionaryLabel}
+        </button>
+      </div>
+    </label>
+  );
+});
+
 function AppInner() {
   const telegramApp = useMemo(() => window.Telegram?.WebApp, []);
   const [appMode, setAppMode] = useState(() => detectAppMode());
@@ -324,29 +407,32 @@ function AppInner() {
   const [flashcardTimerKey, setFlashcardTimerKey] = useState(0);
   const [topics, setTopics] = useState([
     '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ',
-    '💼 Business',
-    '🏥 Medicine',
-    '🎨 Hobbies',
-    '✈️ Travel',
-    '🔬 Science',
-    '💻 Technology',
-    '🖼️ Art',
-    '🎓 Education',
-    '🍽️ Food',
-    '⚽ Sports',
-    '🌿 Nature',
-    '🎵 Music',
-    '📚 Literature',
-    '🧠 Psychology',
-    '🏛️ History',
-    '📰 News',
+    '🧱 V2 в главном предложении',
+    '🔗 Порядок слов в придаточном',
+    '🪢 weil / dass / wenn / obwohl',
+    '🧭 Akkusativ и Dativ',
+    '📍 Wechselpraepositionen',
+    '👑 Артикли: der / die / das / ein / eine / kein',
+    '🎨 Склонение прилагательных',
+    '🔁 Отделяемые глаголы',
+    '🛠️ Модальные глаголы',
+    '🪞 Возвратные глаголы',
+    '⏳ Perfekt и Praeteritum',
+    '💭 Konjunktiv II',
+    '🧮 Passiv',
+    '🔍 Relativsaetze',
+    '⚙️ zu + Infinitiv / um ... zu',
+    '✍️ Свой грамматический фокус',
   ]);
   const [topicsLoading, setTopicsLoading] = useState(false);
   const [topicsError, setTopicsError] = useState('');
-  const [selectedTopic, setSelectedTopic] = useState('💼 Business');
+  const [selectedTopic, setSelectedTopic] = useState('🧱 V2 в главном предложении');
+  const [customTopicInput, setCustomTopicInput] = useState('');
   const [selectedLevel, setSelectedLevel] = useState('c1');
   const STORY_TOPIC = '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ';
+  const CUSTOM_TOPIC = '✍️ Свой грамматический фокус';
   const isStoryTopic = (value) => (value || '').includes('ЗАГАДОЧНАЯ ИСТОРИЯ');
+  const isCustomTopic = (value) => String(value || '').trim() === CUSTOM_TOPIC;
   const [storyMode, setStoryMode] = useState('new');
   const [storyType, setStoryType] = useState('знаменитая личность');
   const [storyDifficulty, setStoryDifficulty] = useState('средний');
@@ -544,6 +630,7 @@ function AppInner() {
   const translationFinishInFlightRef = useRef(false);
   const translationDraftsRef = useRef({});
   const translationDraftSyncTimeoutRef = useRef(null);
+  const translationDraftStorageTimeoutRef = useRef(null);
   const translationDraftHydrationKeyRef = useRef('');
   const translationDraftSentenceIdsRef = useRef(new Set());
   const explanationInFlightKeysRef = useRef(new Set());
@@ -7666,7 +7753,7 @@ function AppInner() {
       const items = Array.isArray(data.items) ? data.items : [];
       setTopics(items);
       if (items.length > 0 && !items.includes(selectedTopic)) {
-        setSelectedTopic(items[0]);
+        setSelectedTopic(items.find((item) => !isStoryTopic(item) && !isCustomTopic(item)) || items[0]);
       }
     } catch (error) {
       setTopicsError(`${tr('Ошибка тем', 'Themenfehler')}: ${error.message}`);
@@ -7774,12 +7861,25 @@ function AppInner() {
     if (!translationDraftStorageKey) {
       return;
     }
-    const hasNonEmptyValue = Object.values(translationDrafts).some((value) => String(value ?? '') !== '');
-    if (!hasNonEmptyValue) {
-      safeStorageRemove(translationDraftStorageKey);
-      return;
+    if (translationDraftStorageTimeoutRef.current) {
+      clearTimeout(translationDraftStorageTimeoutRef.current);
+      translationDraftStorageTimeoutRef.current = null;
     }
-    safeStorageSet(translationDraftStorageKey, JSON.stringify(translationDrafts));
+    translationDraftStorageTimeoutRef.current = setTimeout(() => {
+      translationDraftStorageTimeoutRef.current = null;
+      const hasNonEmptyValue = Object.values(translationDrafts).some((value) => String(value ?? '') !== '');
+      if (!hasNonEmptyValue) {
+        safeStorageRemove(translationDraftStorageKey);
+        return;
+      }
+      safeStorageSet(translationDraftStorageKey, JSON.stringify(translationDrafts));
+    }, 220);
+    return () => {
+      if (translationDraftStorageTimeoutRef.current) {
+        clearTimeout(translationDraftStorageTimeoutRef.current);
+        translationDraftStorageTimeoutRef.current = null;
+      }
+    };
   }, [translationDraftStorageKey, translationDrafts]);
 
   useEffect(() => {
@@ -8128,6 +8228,9 @@ function AppInner() {
 
   const handleWebappSubmit = async (event) => {
     event.preventDefault();
+    const liveDrafts = translationDraftsRef.current && typeof translationDraftsRef.current === 'object'
+      ? translationDraftsRef.current
+      : {};
     if (translationSubmitInFlightRef.current) {
       return;
     }
@@ -8139,7 +8242,7 @@ function AppInner() {
       setWebappError(tr('Нет предложений для перевода.', 'Keine Saetze zur Uebersetzung vorhanden.'));
       return;
     }
-    if (Object.values(translationDrafts).every((text) => !text.trim())) {
+    if (Object.values(liveDrafts).every((text) => !String(text || '').trim())) {
       setWebappError(tr('Заполните хотя бы один перевод.', 'Bitte fuelle mindestens eine Uebersetzung aus.'));
       return;
     }
@@ -8160,7 +8263,7 @@ function AppInner() {
           .map((item) => Number(item?.id_for_mistake_table || 0))
           .filter((value) => Number.isFinite(value) && value > 0)
       );
-      const submittedEntries = Object.entries(translationDrafts)
+      const submittedEntries = Object.entries(liveDrafts)
         .map(([id, translation]) => ({ id: Number(id), translation: String(translation || '').trim() }))
         .filter((item) => currentSentenceIds.has(item.id) && item.translation);
       if (!submittedEntries.length) {
@@ -8237,6 +8340,10 @@ function AppInner() {
       setWebappError(initDataMissingMsg);
       return;
     }
+    if (isCustomTopic(selectedTopic) && !customTopicInput.trim()) {
+      setWebappError(tr('Введите свой грамматический фокус.', 'Gib deinen eigenen Grammatikfokus ein.'));
+      return;
+    }
     translationStartInFlightRef.current = true;
     setWebappLoading(true);
     setWebappError('');
@@ -8250,6 +8357,7 @@ function AppInner() {
         body: JSON.stringify({
           initData,
           topic: selectedTopic,
+          custom_focus: isCustomTopic(selectedTopic) ? customTopicInput.trim() : '',
           level: selectedLevel,
           force_new_session: false,
         }),
@@ -8359,12 +8467,15 @@ function AppInner() {
   };
 
   const handleStorySubmit = async () => {
+    const liveDrafts = translationDraftsRef.current && typeof translationDraftsRef.current === 'object'
+      ? translationDraftsRef.current
+      : {};
     if (!initData) {
       setWebappError(initDataMissingMsg);
       return;
     }
     const missing = sentences.filter((item) => {
-      const value = (translationDrafts[String(item.id_for_mistake_table)] || '').trim();
+      const value = (liveDrafts[String(item.id_for_mistake_table)] || '').trim();
       return !value;
     });
     if (missing.length > 0) {
@@ -8389,7 +8500,7 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          translations: Object.entries(translationDrafts).map(([id, translation]) => ({
+          translations: Object.entries(liveDrafts).map(([id, translation]) => ({
             id_for_mistake_table: Number(id),
             translation,
           })),
@@ -8410,12 +8521,31 @@ function AppInner() {
     }
   };
 
-  const handleDraftChange = (sentenceId, value) => {
-    setTranslationDrafts((prev) => ({
-      ...prev,
-      [String(sentenceId)]: value,
-    }));
-  };
+  const handleDraftLiveChange = useCallback((sentenceId, value) => {
+    const key = String(sentenceId);
+    translationDraftsRef.current[key] = value;
+  }, []);
+
+  const handleDraftCommit = useCallback((sentenceId, value) => {
+    const key = String(sentenceId);
+    translationDraftsRef.current[key] = value;
+    const applyStateUpdate = () => {
+      setTranslationDrafts((prev) => {
+        if ((prev[key] || '') === value) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [key]: value,
+        };
+      });
+    };
+    if (typeof React.startTransition === 'function') {
+      React.startTransition(applyStateUpdate);
+      return;
+    }
+    applyStateUpdate();
+  }, []);
 
   const normalizeSelectionText = (value) => {
     if (!value) return '';
@@ -15244,7 +15374,7 @@ function AppInner() {
                 {showTranslationStartConfigurator && (
                   <div className="webapp-translation-start">
                     <label className="webapp-field">
-                      <span>{tr('Тема', 'Thema')}</span>
+                      <span>{tr('Грамматический фокус тренировки', 'Grammatikfokus fuer das Training')}</span>
                       <select
                         value={selectedTopic}
                         onChange={(event) => setSelectedTopic(event.target.value)}
@@ -15257,6 +15387,18 @@ function AppInner() {
                         ))}
                       </select>
                     </label>
+                    {!isStoryTopic(selectedTopic) && isCustomTopic(selectedTopic) && (
+                      <label className="webapp-field">
+                        <span>{tr('Свой грамматический фокус', 'Eigener Grammatikfokus')}</span>
+                        <input
+                          type="text"
+                          value={customTopicInput}
+                          onChange={(event) => setCustomTopicInput(event.target.value)}
+                          placeholder={tr('Например: Genitiv, Passiv mit Modalverben, nicht vs kein', 'Zum Beispiel: Genitiv, Passiv mit Modalverben, nicht vs kein')}
+                          disabled={webappLoading}
+                        />
+                      </label>
+                    )}
                     {!isStoryTopic(selectedTopic) && (
                       <label className="webapp-field">
                         <span>{tr('Уровень', 'Niveau')}</span>
@@ -15340,7 +15482,7 @@ function AppInner() {
                       type="button"
                       className="primary-button translation-start-cta"
                       onClick={isStoryTopic(selectedTopic) ? handleStartStory : handleStartTranslation}
-                      disabled={webappLoading || topicsLoading}
+                      disabled={webappLoading || topicsLoading || (isCustomTopic(selectedTopic) && !customTopicInput.trim())}
                     >
                       {webappLoading ? tr('Запускаем...', 'Starten...') : tr('🚀 Начать перевод', '🚀 Uebersetzung starten')}
                     </button>
@@ -15359,27 +15501,18 @@ function AppInner() {
                       sentences.map((item, index) => {
                         const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
                         return (
-                          <label key={`${item.id_for_mistake_table}-${item.unique_id ?? index}`} className="webapp-translation-item">
-                            <span className="translation-sentence">
-                              {item.unique_id ?? index + 1}. {item.sentence}
-                            </span>
-                            <textarea
-                              rows={5}
-                              value={draft}
-                              onChange={(event) => handleDraftChange(item.id_for_mistake_table, event.target.value)}
-                              placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
-                            />
-                            <div className="translation-actions">
-                              <button
-                                type="button"
-                                className="translation-dict-jump"
-                                onClick={jumpToDictionaryFromSentence}
-                                aria-label={tr('Перейти в словарь', 'Zum Woerterbuch')}
-                              >
-                                {tr('Открыть словарь', 'Woerterbuch')}
-                              </button>
-                            </div>
-                          </label>
+                          <TranslationDraftField
+                            key={`${item.id_for_mistake_table}-${item.unique_id ?? index}`}
+                            sentenceId={item.id_for_mistake_table}
+                            sentenceNumber={item.unique_id ?? index + 1}
+                            sentenceText={item.sentence}
+                            initialValue={draft}
+                            placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
+                            dictionaryLabel={tr('Открыть словарь', 'Woerterbuch')}
+                            onLiveChange={handleDraftLiveChange}
+                            onCommit={handleDraftCommit}
+                            onJumpToDictionary={jumpToDictionaryFromSentence}
+                          />
                         );
                       })
                     )}

@@ -118,3 +118,23 @@ def r2_put_bytes(
         ContentType=content_type,
         CacheControl=cache_control,
     )
+
+
+def r2_delete_object(object_key: str) -> bool:
+    cfg = load_r2_config_from_env()
+    key = _normalize_object_key(object_key)
+    client = _r2_client()
+    try:
+        from botocore.exceptions import ClientError
+    except Exception as exc:
+        raise RuntimeError(
+            "boto3/botocore are required for R2 support. Add boto3 to requirements."
+        ) from exc
+    try:
+        client.delete_object(Bucket=cfg.bucket_name, Key=key)
+        return True
+    except ClientError as exc:
+        code = str((exc.response or {}).get("Error", {}).get("Code", "")).strip()
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            return False
+        raise

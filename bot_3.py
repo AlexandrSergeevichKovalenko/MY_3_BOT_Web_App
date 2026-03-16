@@ -32,11 +32,9 @@ from telegram.error import TimedOut, BadRequest, RetryAfter, Forbidden
 import tempfile
 import sys
 import livekit.api # Нужен для LiveKit комнат
-from google.cloud import texttospeech
 from typing import Any, Callable
 from backend.analytics import fetch_user_summary, get_period_bounds
 from backend.backend_server import (
-    _synthesize_mp3,
     GoogleTTSBudgetBlockedError,
     _build_tts_prewarm_quota_control_text,
     _build_video_search_queries,
@@ -44,6 +42,8 @@ from backend.backend_server import (
     _youtube_fill_view_counts,
     _filter_videos_for_today_task,
     _sanitize_focus_topic,
+    get_or_create_tts_clip,
+    chunk_sentence_llm_de,
 )
 import os
 from pathlib import Path
@@ -7635,40 +7635,14 @@ async def mistakes_to_voice(username, sentence_pairs):
 
     audio_segments = []
 
-    def synthesize(text, language_code, voice_name):
-        audio_bytes = _synthesize_mp3(
-            text,
-            language=language_code,
-            voice=voice_name,
-            speed=0.9,
-        )
-        return AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+    async def synthesize_cached(lang: str, text: str) -> AudioSegment:
+        return await asyncio.to_thread(get_or_create_tts_clip, lang, text, 0.9)
 
     async def split_german_sentence(sentence: str) -> list[str]:
         if not sentence:
             return []
-        system_instruction_key = "tts_chunk_de"
-        task_name = "tts_chunk_de"
-
-        try:
-            text = await llm_execute(
-                task_name=task_name,
-                system_instruction_key=system_instruction_key,
-                user_message=sentence,
-                poll_interval_seconds=1.0,
-            )
-        except Exception:
-            text = ""
-
-        try:
-            chunks = json.loads(text)
-        except Exception:
-            chunks = []
-        chunks = [str(c).strip() for c in chunks if str(c).strip()]
-        if not chunks:
-            # fallback: split by commas / semicolons
-            chunks = [c.strip() for c in re.split(r"[;,]", sentence) if c.strip()]
-        return chunks or [sentence]
+        chunks = await asyncio.to_thread(chunk_sentence_llm_de, sentence)
+        return [str(chunk).strip() for chunk in (chunks or []) if str(chunk).strip()] or [sentence]
 
     pause_short = AudioSegment.silent(duration=500)
     pause_long = AudioSegment.silent(duration=900)
@@ -7677,22 +7651,22 @@ async def mistakes_to_voice(username, sentence_pairs):
     for russian, german in sentence_pairs:
         print(f"🎤 Синтезируем: {russian} -> {german}")
         # Русский (один раз)
-        ru_audio = synthesize(russian, "ru-RU", "ru-RU-Wavenet-C")
+        ru_audio = await synthesize_cached("ru", russian)
         # Немецкий: строим по кускам
         chunks = await split_german_sentence(german)
         chunk_segments = []
         for idx, chunk in enumerate(chunks):
             # повторяем кусок
-            chunk_audio = synthesize(chunk, "de-DE", german_voice)
+            chunk_audio = await synthesize_cached("de", chunk)
             chunk_segments.extend([chunk_audio, pause_short, chunk_audio, pause_short])
 
             if idx > 0:
                 combined_text = " ".join(chunks[: idx + 1])
-                combined_audio = synthesize(combined_text, "de-DE", german_voice)
+                combined_audio = await synthesize_cached("de", combined_text)
                 chunk_segments.extend([combined_audio, pause_long])
 
         # финальная фраза полностью
-        full_audio = synthesize(german, "de-DE", german_voice)
+        full_audio = await synthesize_cached("de", german)
 
         # Объединяем
         combined = ru_audio + pause_long + sum(chunk_segments, AudioSegment.silent(duration=0)) + full_audio + pause_between_sentences
