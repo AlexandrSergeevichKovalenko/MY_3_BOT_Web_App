@@ -6500,20 +6500,6 @@ function AppInner() {
       return /iPhone|iPod|Windows Phone|Android.*Mobile/i.test(userAgent);
     };
 
-    const isEditableElementFocused = () => {
-      if (typeof document === 'undefined') return false;
-      const active = document.activeElement;
-      if (!active) return false;
-      if (active instanceof HTMLTextAreaElement) return true;
-      if (active instanceof HTMLInputElement) {
-        const inputType = String(active.type || 'text').toLowerCase();
-        return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(inputType);
-      }
-      return Boolean(active.isContentEditable);
-    };
-
-    const shouldSkipViewportSync = () => isAndroidTelegramClient && isHandsetDevice() && isEditableElementFocused();
-
     const detectTabletLikeViewport = () => {
       const viewportWidth = window.innerWidth || 0;
       const viewportHeight = window.innerHeight || 0;
@@ -6568,9 +6554,6 @@ function AppInner() {
     };
 
     const syncViewportMode = () => {
-      if (shouldSkipViewportSync()) {
-        return;
-      }
       try {
         telegramApp.ready?.();
         telegramApp.expand?.();
@@ -6621,24 +6604,15 @@ function AppInner() {
     }
 
     const onResize = () => {
-      if (shouldSkipViewportSync()) {
-        return;
-      }
       fullscreenRetryCount = 0;
       syncViewportMode();
     };
     const onFocus = () => {
-      if (shouldSkipViewportSync()) {
-        return;
-      }
       fullscreenRetryCount = 0;
       syncViewportMode();
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        if (shouldSkipViewportSync()) {
-          return;
-        }
         fullscreenRetryCount = 0;
         syncViewportMode();
       }
@@ -6679,7 +6653,7 @@ function AppInner() {
         telegramApp.offEvent('viewportChanged', syncViewportMode);
       }
     };
-  }, [isAndroidTelegramClient, telegramApp]);
+  }, [telegramApp]);
 
   useEffect(() => {
     const pauseNow = () => {
