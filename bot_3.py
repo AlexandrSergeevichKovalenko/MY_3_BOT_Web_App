@@ -39,6 +39,11 @@ from backend.backend_server import (
     _synthesize_mp3,
     GoogleTTSBudgetBlockedError,
     _build_tts_prewarm_quota_control_text,
+    _build_video_search_queries,
+    _youtube_search_videos,
+    _youtube_fill_view_counts,
+    _filter_videos_for_today_task,
+    _sanitize_focus_topic,
 )
 import os
 from pathlib import Path
@@ -6539,125 +6544,99 @@ PREFERRED_CHANNELS = [
     "UCE2vOZZIluHMtt2sAXhRhcw"
 ]
 
-def search_youtube_videous(topic, max_results=5):
-    query=topic
-    if not YOUTUBE_API_KEY:
-        print("❌ Ошибка: YOUTUBE_API_KEY не задан!")
-        return []
-    try:
-        youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-        
-        # Поиск по приоритетным каналам
-        video_data = []
-        for channal_id in PREFERRED_CHANNELS:
+def search_youtube_videous(
+    topic,
+    max_results=5,
+    *,
+    main_category=None,
+    sub_category=None,
+    target_lang="de",
+):
+    skill_title = str(topic or "").strip()
+    main_category, sub_category = _sanitize_focus_topic(main_category, sub_category)
 
-            request = youtube.search().list(
-                part="snippet",
-                q=query,
-                type="video",
-                maxResults=max_results,
-                channelId=channal_id
-            )
-            response = request.execute()
+    query_stages = [
+        _build_video_search_queries(
+            main_category,
+            sub_category,
+            skill_title=skill_title,
+            target_lang=target_lang,
+        ),
+        _build_video_search_queries(
+            main_category,
+            None,
+            skill_title=skill_title,
+            target_lang=target_lang,
+        ),
+        _build_video_search_queries(
+            None,
+            sub_category,
+            skill_title=skill_title,
+            target_lang=target_lang,
+        ),
+    ]
+    if skill_title:
+        query_stages.append([skill_title])
 
-            for item in response.get("items", []):
-                title = item["snippet"]["title"]
-                #title = title.replace('{', '{{').replace('}', '}}') # Экранирование фигурных скобок
-                #title = title.replace('%', '%%') # Экранирование символов % 
-                video_id = item["id"].get("videoId", "") # Безопасное извлечение videoId
-                #video_url = f"https://www.youtube.com/watch?v={video_id}"
-                if video_id:
-                    video_data.append({'title': title, 'video_id': video_id})     
-
-        # Если не найдено видео на приоритетных каналах, ищем по всем каналам
-        if not video_data:
-            print("❌ Видео на приоритетных каналах не найдено — ищем по всем каналам.")
-            request = youtube.search().list(
-                part="snippet",
-                q=query,
-                type="video",
-                maxResults=max_results,
-                relevanceLanguage="de",
-                regionCode="DE"
-            )
-            responce = request.execute()
-
-            for item in responce.get("items", []):
-                title = item["snippet"]["title"]
-                #title = title.replace('{', '{{').replace('}', '}}') # Экранирование фигурных скобок
-                #title = title.replace('%', '%%') # Экранирование символов % 
-                video_id = item["id"].get("videoId", "") # Безопасное извлечение videoId
-                #video_url = f"https://www.youtube.com/watch?v={video_id}"
-                if video_id:
-                    video_data.append({'title': title, 'video_id': video_id})
-                                  
-        if not video_data:
-            return ["❌ Видео не найдено. Попробуйте позже."]
-        
-        # ✅ Получаем просмотры чанками (YouTube videos.list принимает max 50 id за запрос)
-        unique_video_ids = []
-        seen_video_ids = set()
-        for video in video_data:
-            vid = str(video.get("video_id") or "").strip()
-            if not vid or vid in seen_video_ids:
+    queries = []
+    seen_queries = set()
+    for stage in query_stages:
+        for query in stage:
+            normalized = " ".join(str(query or "").strip().lower().split())
+            if not normalized or normalized in seen_queries:
                 continue
-            seen_video_ids.add(vid)
-            unique_video_ids.append(vid)
+            seen_queries.add(normalized)
+            queries.append(str(query).strip())
 
-        if unique_video_ids:
-            try:
-                views_by_id = {}
-                chunk_total = (len(unique_video_ids) + 49) // 50
-                print(
-                    f"ℹ️ YouTube stats lookup: topic='{query}' "
-                    f"candidates={len(video_data)} unique_ids={len(unique_video_ids)} chunks={chunk_total}"
-                )
-                for offset in range(0, len(unique_video_ids), 50):
-                    chunk_ids = unique_video_ids[offset: offset + 50]
-                    if not chunk_ids:
-                        continue
-                    stats_request = youtube.videos().list(
-                        part="statistics",
-                        id=",".join(chunk_ids),
-                    )
-                    stats_response = stats_request.execute()
-                    for item in stats_response.get("items", []):
-                        video_id = str(item.get("id") or "").strip()
-                        if not video_id:
-                            continue
-                        view_count = int((item.get("statistics") or {}).get("viewCount", 0) or 0)
-                        views_by_id[video_id] = view_count
+    print(
+        f"ℹ️ YouTube recommendation search: topic='{skill_title}' "
+        f"main='{main_category}' sub='{sub_category}' queries={queries}"
+    )
 
-                for video in video_data:
-                    vid = str(video.get("video_id") or "").strip()
-                    if vid in views_by_id:
-                        video["views"] = views_by_id[vid]
-            except Exception as stats_error:
-                # Не роняем рекомендации, если статистика просмотров временно недоступна.
-                print(f"⚠️ Не удалось загрузить статистику просмотров YouTube: {stats_error}")
+    collected_videos = {}
+    for query in queries:
+        try:
+            videos = _youtube_search_videos(
+                query,
+                max_results=max_results,
+                target_lang=target_lang,
+            )
+            if not videos:
+                continue
+            videos = _youtube_fill_view_counts(videos, billing_target_lang=target_lang)
+            videos = _filter_videos_for_today_task(videos, target_lang=target_lang)
+            for video in videos:
+                video_id = str(video.get("video_id") or "").strip()
+                if not video_id:
+                    continue
+                existing = collected_videos.get(video_id)
+                candidate = {
+                    "video_id": video_id,
+                    "title": str(video.get("title") or "").strip(),
+                    "views": int(video.get("views") or 0),
+                    "query": query,
+                }
+                if not existing or candidate["views"] > int(existing.get("views") or 0):
+                    collected_videos[video_id] = candidate
+        except Exception as search_error:
+            print(f"⚠️ Ошибка поиска YouTube по запросу '{query}': {search_error}")
 
-        # ✅ Подставляем значение по умолчанию (если данных о просмотрах нет)
-        for video in video_data:
-            video.setdefault("views", 0)
-
-        # ✅ Сортируем по количеству просмотров (по убыванию)
-        sorted_videos = sorted(video_data, key=lambda x: x["views"], reverse=True)
-
-        # ✅ Возвращаем только 2 самых популярных видео
-        top_videos = sorted_videos[:2]
-
-        # ✅ Формируем ссылки в Telegram-формате
-        preferred_videos = [
-            f'<a href="{html.escape("https://www.youtube.com/watch?v=" + video["video_id"])}">▶️ {escape_html_with_bold(video["title"])}</a>'
-            for video in top_videos
-        ]
-
-        print(f"preferred_videos after escape_html_with_bold: {preferred_videos}")
-        return preferred_videos
-    
-    except Exception as e:
-        print(f"❌ Ошибка при поиске видео в YouTube: {e}")
+    if not collected_videos:
         return []
+
+    top_videos = sorted(
+        collected_videos.values(),
+        key=lambda item: int(item.get("views") or 0),
+        reverse=True,
+    )[:2]
+
+    preferred_videos = [
+        f'<a href="{html.escape("https://www.youtube.com/watch?v=" + video["video_id"])}">▶️ {escape_html_with_bold(video["title"])}</a>'
+        for video in top_videos
+    ]
+
+    print(f"preferred_videos after escape_html_with_bold: {preferred_videos}")
+    return preferred_videos
 
 
 #📌 this function will filter and rate mistakes
@@ -7081,7 +7060,12 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
                     print(f"⚠️ Ошибка OpenAI: {e}")
                     continue
 
-            video_data = search_youtube_videous(topic)
+            video_data = search_youtube_videous(
+                topic,
+                main_category=top_mistake_category,
+                sub_category=top_mistake_subcategory_1,
+                target_lang="de",
+            )
 
             if not isinstance(video_data, list):
                 print(f"❌ ОШИБКА: search_youtube_videous вернула {type(video_data)} вместо списка!")

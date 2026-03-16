@@ -1374,7 +1374,51 @@ body {
 
 .weekly-summary-compare-bars {
   display: grid;
+  gap: 10px;
+}
+
+.weekly-summary-compare-bar-row {
+  display: grid;
+  gap: 6px;
+}
+
+.weekly-summary-compare-bar-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.weekly-summary-compare-bar-label {
+  display: inline-flex;
+  align-items: center;
   gap: 8px;
+  color: var(--dmps-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.weekly-summary-compare-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.weekly-summary-compare-dot.is-current {
+  background: #5ddcff;
+}
+
+.weekly-summary-compare-dot.is-previous {
+  background: rgba(255, 209, 102, 0.9);
+}
+
+.weekly-summary-compare-bar-value {
+  color: var(--dmps-text-muted);
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: right;
 }
 
 .weekly-summary-compare-track {
@@ -1397,73 +1441,6 @@ body {
 
 .weekly-summary-compare-fill.is-previous {
   background: rgba(255, 209, 102, 0.9);
-}
-
-.weekly-summary-compare-labels {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--dmps-text-muted);
-  font-size: 12px;
-  line-height: 1.3;
-}
-
-.weekly-summary-progress {
-  display: grid;
-  gap: 12px;
-}
-
-.weekly-summary-progress-card {
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: rgba(15, 23, 42, 0.44);
-}
-
-.weekly-summary-progress-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-
-.weekly-summary-progress-head strong {
-  color: var(--dmps-text-title);
-  font-size: 28px;
-  line-height: 1;
-}
-
-.weekly-summary-progress-head span {
-  color: var(--dmps-text-secondary);
-  font-size: 14px;
-  line-height: 1.35;
-}
-
-.weekly-summary-progress-track {
-  width: 100%;
-  height: 12px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.14);
-}
-
-.weekly-summary-progress-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: #5ddcff;
-}
-
-.weekly-summary-progress-copy {
-  display: grid;
-  gap: 8px;
-}
-
-.weekly-summary-progress-copy p {
-  margin: 0;
-  color: var(--dmps-text-secondary);
-  font-size: 14px;
-  line-height: 1.45;
 }
 
 .weekly-summary-social {
@@ -1559,7 +1536,6 @@ body {
   .weekly-summary-hero,
   .weekly-summary-kpi-card,
   .weekly-summary-compare-row,
-  .weekly-summary-progress-card,
   .weekly-summary-recommendation-card {
     padding: 14px;
   }
@@ -1567,7 +1543,6 @@ body {
   .weekly-summary-hero-lines p,
   .weekly-summary-hero-loading,
   .weekly-summary-hero-error,
-  .weekly-summary-progress-copy p,
   .weekly-summary-recommendation-card p,
   .weekly-summary-kpi-empty {
     font-size: 13px;
@@ -1593,16 +1568,15 @@ body {
     font-size: 12px;
   }
 
-  .weekly-summary-compare-labels {
+  .weekly-summary-compare-bar-meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .weekly-summary-compare-bar-label,
+  .weekly-summary-compare-bar-value {
     font-size: 11px;
-  }
-
-  .weekly-summary-progress-head strong {
-    font-size: 24px;
-  }
-
-  .weekly-summary-progress-head span {
-    font-size: 13px;
   }
 
   .weekly-summary-social-chip {
@@ -13881,6 +13855,10 @@ body {
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 17px;
+  line-height: 1.55;
+  font-weight: 600;
 }
 
 .webapp-section.webapp-section-translations .webapp-translation-item textarea {
@@ -13890,8 +13868,10 @@ body {
   color: var(--tr-text-primary);
   padding: 12px;
   box-shadow: none;
-  font-size: 16px;
-  line-height: 1.45;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 17px;
+  line-height: 1.5;
+  font-weight: 400;
   max-width: 100%;
 }
 
@@ -15775,30 +15755,9 @@ body {
   background: #b9854b;
 }
 
-.webapp-page.is-theme-light .weekly-summary-compare-labels {
+.webapp-page.is-theme-light .weekly-summary-compare-bar-label,
+.webapp-page.is-theme-light .weekly-summary-compare-bar-value {
   color: #8a6d4c;
-}
-
-.webapp-page.is-theme-light .weekly-summary-progress-card {
-  background: rgba(255, 248, 238, 0.9);
-  border-color: rgba(171, 126, 72, 0.24);
-}
-
-.webapp-page.is-theme-light .weekly-summary-progress-head strong {
-  color: #1f1a14;
-}
-
-.webapp-page.is-theme-light .weekly-summary-progress-head span,
-.webapp-page.is-theme-light .weekly-summary-progress-copy p {
-  color: #5a4a39;
-}
-
-.webapp-page.is-theme-light .weekly-summary-progress-track {
-  background: rgba(171, 126, 72, 0.16);
-}
-
-.webapp-page.is-theme-light .weekly-summary-progress-fill {
-  background: #2d8fcb;
 }
 
 .webapp-page.is-theme-light .weekly-summary-social-chip {

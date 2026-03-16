@@ -903,25 +903,6 @@ function AppInner() {
       trendLine,
     ];
   }, [tr, weeklySummaryHeroFacts, weeklySummaryMetricTitles]);
-  const weeklySummaryPlanProgress = useMemo(() => {
-    if (!weeklySummaryHeroFacts) {
-      return null;
-    }
-    const strongest = (weeklySummaryHeroFacts.strongestKeys || [])
-      .map((key) => weeklySummaryMetricTitles[key])
-      .filter(Boolean)
-      .slice(0, 1)[0] || '';
-    const weakest = (weeklySummaryHeroFacts.weakestKeys || [])
-      .map((key) => weeklySummaryMetricTitles[key])
-      .filter(Boolean)
-      .slice(0, 1)[0] || '';
-    return {
-      percent: Math.max(0, Math.min(100, Number(weeklySummaryHeroFacts.planCompletedPercent || 0))),
-      strongest,
-      weakest,
-      hasPlan: Boolean(weeklySummaryHeroFacts.hasPlan),
-    };
-  }, [weeklySummaryHeroFacts, weeklySummaryMetricTitles]);
   const weeklySummaryRecommendation = useMemo(() => {
     if (!weeklySummaryCurrentMetrics || !weeklySummaryPreviousMetrics) {
       return null;
@@ -1025,7 +1006,6 @@ function AppInner() {
         ? weeklySummaryPreviousMetrics[meta.key]
         : {};
       const actual = Number(current.actual || 0);
-      const goal = Number(current.goal || 0);
       const delta = actual - Number(previous.actual || 0);
       const formatValue = (value) => {
         const normalized = Number(value || 0);
@@ -1042,7 +1022,7 @@ function AppInner() {
       return {
         ...meta,
         actualLabel: formatValue(actual),
-        goalLabel: formatValue(goal),
+        previousLabel: formatValue(Number(previous.actual || 0)),
         deltaLabel,
         deltaClass: delta > 0 ? 'is-positive' : delta < 0 ? 'is-negative' : 'is-neutral',
       };
@@ -13904,7 +13884,7 @@ function AppInner() {
                       {weeklySummaryKpiCards.map((card) => (
                         <article key={`weekly-summary-kpi-${card.key}`} className="weekly-summary-kpi-card">
                           <span>{card.title}</span>
-                          <strong>{card.actualLabel} / {card.goalLabel}</strong>
+                          <strong>{card.actualLabel} / {card.previousLabel}</strong>
                           <small className={`weekly-summary-kpi-delta ${card.deltaClass}`}>
                             {card.deltaLabel} {tr('vs прошлый период', 'vs letzter Zeitraum')}
                           </small>
@@ -13934,66 +13914,43 @@ function AppInner() {
                             </span>
                           </div>
                           <div className="weekly-summary-compare-bars" aria-hidden="true">
-                            <div className="weekly-summary-compare-track">
-                              <div
-                                className="weekly-summary-compare-fill is-current"
-                                style={{ width: row.currentWidth }}
-                              />
+                            <div className="weekly-summary-compare-bar-row">
+                              <div className="weekly-summary-compare-bar-meta">
+                                <span className="weekly-summary-compare-bar-label">
+                                  <span className="weekly-summary-compare-dot is-current" />
+                                  {tr('Сейчас', 'Aktuell')}
+                                </span>
+                                <span className="weekly-summary-compare-bar-value">
+                                  {row.currentLabel} {row.unit}
+                                </span>
+                              </div>
+                              <div className="weekly-summary-compare-track">
+                                <div
+                                  className="weekly-summary-compare-fill is-current"
+                                  style={{ width: row.currentWidth }}
+                                />
+                              </div>
                             </div>
-                            <div className="weekly-summary-compare-track">
-                              <div
-                                className="weekly-summary-compare-fill is-previous"
-                                style={{ width: row.previousWidth }}
-                              />
+                            <div className="weekly-summary-compare-bar-row">
+                              <div className="weekly-summary-compare-bar-meta">
+                                <span className="weekly-summary-compare-bar-label">
+                                  <span className="weekly-summary-compare-dot is-previous" />
+                                  {tr('Прошлый период', 'Letzter Zeitraum')}
+                                </span>
+                                <span className="weekly-summary-compare-bar-value">
+                                  {row.previousLabel} {row.unit}
+                                </span>
+                              </div>
+                              <div className="weekly-summary-compare-track">
+                                <div
+                                  className="weekly-summary-compare-fill is-previous"
+                                  style={{ width: row.previousWidth }}
+                                />
+                              </div>
                             </div>
-                          </div>
-                          <div className="weekly-summary-compare-labels">
-                            <span>{tr('Сейчас', 'Aktuell')}</span>
-                            <span>{tr('Прошлый период', 'Letzter Zeitraum')}</span>
                           </div>
                         </div>
                       ))}
-                    </div>
-                  )}
-                </section>
-                <section className="weekly-summary-progress" aria-label={tr('Прогресс плана', 'Planfortschritt')}>
-                  <div className="weekly-summary-hero-label">
-                    {tr('Прогресс плана', 'Planfortschritt')}
-                  </div>
-                  {weeklySummaryHeroLoading && !weeklySummaryPlanProgress ? (
-                    <div className="weekly-summary-kpi-empty">
-                      {tr('Считаю прогресс плана...', 'Ich berechne den Planfortschritt...')}
-                    </div>
-                  ) : weeklySummaryHeroError ? (
-                    <div className="weekly-summary-kpi-empty">{weeklySummaryHeroError}</div>
-                  ) : weeklySummaryPlanProgress ? (
-                    <div className="weekly-summary-progress-card">
-                      <div className="weekly-summary-progress-head">
-                        <strong>{weeklySummaryPlanProgress.percent}%</strong>
-                        <span>{tr('выполнено', 'erfuellt')}</span>
-                      </div>
-                      <div className="weekly-summary-progress-track" aria-hidden="true">
-                        <div
-                          className="weekly-summary-progress-fill"
-                          style={{ width: `${weeklySummaryPlanProgress.percent}%` }}
-                        />
-                      </div>
-                      <div className="weekly-summary-progress-copy">
-                        <p>
-                          {weeklySummaryPlanProgress.strongest
-                            ? tr(`Сильнее всего идёт: ${weeklySummaryPlanProgress.strongest}.`, `Am staerksten: ${weeklySummaryPlanProgress.strongest}.`)
-                            : tr('Сильнейшая метрика появится после первых действий.', 'Die staerkste Metrik erscheint nach den ersten Aktivitaeten.')}
-                        </p>
-                        <p>
-                          {weeklySummaryPlanProgress.weakest
-                            ? tr(`Проседает: ${weeklySummaryPlanProgress.weakest}.`, `Rueckstand: ${weeklySummaryPlanProgress.weakest}.`)
-                            : tr('Слабая метрика определится после появления сравнимого прогресса.', 'Eine schwaechere Metrik erscheint, sobald vergleichbarer Fortschritt da ist.')}
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="weekly-summary-kpi-empty">
-                      {tr('Пока нет данных для прогресса плана.', 'Es gibt noch keine Daten fuer den Planfortschritt.')}
                     </div>
                   )}
                 </section>
