@@ -5590,15 +5590,15 @@ function AppInner() {
     });
   };
 
-  const ensureSectionVisible = (key) => {
+  const ensureSectionVisible = useCallback((key) => {
     setSelectedSections((prev) => {
       const next = new Set(prev);
       next.add(key);
       return next;
     });
-  };
+  }, []);
 
-  const scrollToRef = (ref, options = {}) => {
+  const scrollToRef = useCallback((ref, options = {}) => {
     if (!ref?.current) return;
     const { center = false, block = 'start' } = options;
     if (center) {
@@ -5609,7 +5609,7 @@ function AppInner() {
       return;
     }
     ref.current.scrollIntoView({ behavior: 'smooth', block });
-  };
+  }, []);
 
   const openSectionAndScroll = (key, ref) => {
     ensureSectionVisible(key);
@@ -5663,13 +5663,13 @@ function AppInner() {
     openSingleSectionAndScroll(backKey, backRef);
   };
 
-  const jumpToDictionaryFromSentence = () => {
+  const jumpToDictionaryFromSentence = useCallback(() => {
     setLastLookupScrollY(window.scrollY);
     ensureSectionVisible('dictionary');
     setTimeout(() => {
       scrollToRef(dictionaryRef, { block: 'start' });
     }, 120);
-  };
+  }, [ensureSectionVisible, scrollToRef]);
 
   const openFlashcardsSetup = (ref) => {
     stopTtsPlayback();
@@ -8438,8 +8438,10 @@ function AppInner() {
       if (type === 'story') {
         setSelectedTopic(STORY_TOPIC);
       }
+      return data;
     } catch (error) {
       // silent
+      return null;
     }
   };
 
@@ -8476,6 +8478,13 @@ function AppInner() {
       const data = await response.json();
       if (data.blocked) {
         setFinishMessage(tr('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.', 'Es gibt eine aktive Session. Beende die aktuelle Uebersetzung, um ein neues Set zu erhalten.'));
+        const sessionInfo = await loadSessionInfo();
+        if (String(sessionInfo?.type || '') === 'story') {
+          await loadSentences();
+        } else {
+          setSentences([]);
+        }
+        return;
       }
       await loadSessionInfo();
       await loadSentences();
@@ -11370,7 +11379,6 @@ function AppInner() {
       setTranslationAudioGrammarSaving({});
       translationCheckPollTokenRef.current += 1;
       setTranslationCheckProgress({ active: false, done: 0, total: 0 });
-      setSelectedTopic('💼 Business');
       await loadSessionInfo();
     } catch (error) {
       setWebappError(`${tr('Ошибка завершения', 'Abschlussfehler')}: ${error.message}`);
