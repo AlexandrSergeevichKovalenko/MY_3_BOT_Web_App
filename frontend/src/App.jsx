@@ -9,7 +9,9 @@ import '@livekit/components-styles';
 import './App.css';
 import * as echarts from 'echarts';
 import BlocksTrainer from './components/BlocksTrainer';
+import WeeklySummaryModal from './components/WeeklySummaryModal';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
+import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
 
 // URL вашего сервера LiveKit
@@ -426,6 +428,13 @@ function AppInner() {
   const [guideQuickCardDismissed, setGuideQuickCardDismissed] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
+  const [weeklySummaryModalOpen, setWeeklySummaryModalOpen] = useState(false);
+  const [weeklySummaryHeroLoading, setWeeklySummaryHeroLoading] = useState(false);
+  const [weeklySummaryHeroError, setWeeklySummaryHeroError] = useState('');
+  const [weeklySummaryHeroFacts, setWeeklySummaryHeroFacts] = useState(null);
+  const [weeklySummaryCurrentMetrics, setWeeklySummaryCurrentMetrics] = useState(null);
+  const [weeklySummaryPreviousMetrics, setWeeklySummaryPreviousMetrics] = useState(null);
+  const [weeklySummarySocialSignal, setWeeklySummarySocialSignal] = useState(null);
   const [guideStepOpenKey, setGuideStepOpenKey] = useState('start_setup');
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
@@ -593,6 +602,9 @@ function AppInner() {
   const guideQuickCardStorageKey = useMemo(() => {
     const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
     return `guide_quick_card_dismissed_${stableId}`;
+  }, [webappUser?.id, initData]);
+  const weeklySummaryStableUserId = useMemo(() => {
+    return String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
   }, [webappUser?.id, initData]);
   const onboardingSeenStorageKey = useMemo(() => {
     const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
@@ -766,6 +778,305 @@ function AppInner() {
   const [themeMode, setThemeMode] = useState('dark');
   const t = useMemo(() => createTranslator(uiLang), [uiLang]);
   const tr = useCallback((ru, de) => (uiLang === 'de' ? de : ru), [uiLang]);
+  const weeklySummaryMetricTitles = useMemo(() => ({
+    translations: tr('переводы', 'Uebersetzungen'),
+    learned_words: tr('слова и FSRS', 'Woerter und FSRS'),
+    reading_minutes: tr('чтение', 'Lesen'),
+    youtube_minutes: tr('видео и YouTube', 'Video und YouTube'),
+    agent_minutes: tr('разговорная практика', 'Sprechpraxis'),
+  }), [tr]);
+  const weeklySummaryKpiMeta = useMemo(() => ([
+    {
+      key: 'translations',
+      title: tr('Переводы предложений', 'Satz-Uebersetzungen'),
+      unit: tr('шт', 'Stk'),
+      digits: 0,
+    },
+    {
+      key: 'learned_words',
+      title: tr('Слова / FSRS', 'Woerter / FSRS'),
+      unit: tr('слов', 'Woerter'),
+      digits: 0,
+    },
+    {
+      key: 'reading_minutes',
+      title: tr('Чтение (мин)', 'Lesen (Min)'),
+      unit: tr('мин', 'Min'),
+      digits: 0,
+    },
+    {
+      key: 'youtube_minutes',
+      title: tr('Видео / YouTube (мин)', 'Video / YouTube (Min)'),
+      unit: tr('мин', 'Min'),
+      digits: 0,
+    },
+  ]), [tr]);
+  const weeklySummaryVisitConfig = useMemo(() => buildWeeklySummaryVisitConfig({
+    now: new Date(),
+    locale: uiLang === 'de' ? 'de-AT' : 'ru-RU',
+    labels: {
+      mondayTitle: tr('Посмотри свои результаты за прошлую неделю', 'Schau dir deine Ergebnisse der letzten Woche an'),
+      wednesdayTitle: tr('Промежуточные итоги недели', 'Zwischenstand der Woche'),
+      fridayTitle: tr('Итоги недели на текущий момент', 'Dein Wochenstand bis jetzt'),
+      mondayComparisonLabel: tr('Прошлая неделя vs неделя до неё', 'Letzte Woche vs Woche davor'),
+      wednesdayComparisonLabel: tr('Пн-Вт этой недели vs Пн-Вт прошлой недели', 'Mo-Di dieser Woche vs Mo-Di der letzten Woche'),
+      fridayComparisonLabel: tr('Пн-Чт этой недели vs Пн-Чт прошлой недели', 'Mo-Do dieser Woche vs Mo-Do der letzten Woche'),
+    },
+  }), [tr, uiLang]);
+  const weeklySummaryDismissStorageKey = useMemo(() => {
+    if (!weeklySummaryVisitConfig?.visitDateKey) return '';
+    return `weekly_summary_modal_dismissed_${weeklySummaryStableUserId}_${weeklySummaryVisitConfig.visitDateKey}`;
+  }, [weeklySummaryStableUserId, weeklySummaryVisitConfig]);
+  const weeklySummaryHeroLines = useMemo(() => {
+    if (!weeklySummaryHeroFacts) {
+      return [];
+    }
+    const strongest = (weeklySummaryHeroFacts.strongestKeys || [])
+      .map((key) => weeklySummaryMetricTitles[key])
+      .filter(Boolean)
+      .slice(0, 2);
+    const weakest = (weeklySummaryHeroFacts.weakestKeys || [])
+      .map((key) => weeklySummaryMetricTitles[key])
+      .filter(Boolean)
+      .slice(0, 2);
+    const trendDelta = Number(weeklySummaryHeroFacts.trendDeltaPercent || 0);
+    let trendLine = tr(
+      'Сравнение с прошлым периодом появится после заполнения недельного плана.',
+      'Der Vergleich erscheint, sobald dein Wochenplan gesetzt ist.'
+    );
+    if (weeklySummaryHeroFacts.hasPlan) {
+      if (trendDelta > 0) {
+        trendLine = tr(
+          `По сравнению с прошлым периодом ты идёшь на ${Math.abs(trendDelta)}% лучше.`,
+          `Im Vergleich zum letzten Zeitraum liegst du um ${Math.abs(trendDelta)}% besser.`
+        );
+      } else if (trendDelta < 0) {
+        trendLine = tr(
+          `По сравнению с прошлым периодом ты сейчас на ${Math.abs(trendDelta)}% ниже.`,
+          `Im Vergleich zum letzten Zeitraum liegst du aktuell um ${Math.abs(trendDelta)}% niedriger.`
+        );
+      } else {
+        trendLine = tr(
+          'Ты идёшь примерно на уровне прошлого сравнимого периода.',
+          'Du liegst ungefaehr auf dem Niveau des letzten Vergleichszeitraums.'
+        );
+      }
+    }
+
+    if (!weeklySummaryHeroFacts.hasPlan && !weeklySummaryHeroFacts.hasActivity) {
+      return [
+        tr(
+          'Пока нет данных для weekly summary. Открой приложение позже, когда появится активность.',
+          'Es gibt noch keine Daten fuer diese Weekly Summary. Oeffne die App spaeter erneut.'
+        ),
+      ];
+    }
+
+    return [
+      weeklySummaryHeroFacts.hasPlan
+        ? tr(
+          `Ты выполнил ${weeklySummaryHeroFacts.planCompletedPercent}% недельного плана.`,
+          `Du hast ${weeklySummaryHeroFacts.planCompletedPercent}% deines Wochenplans geschafft.`
+        )
+        : tr(
+          'Недельный план ещё не задан, поэтому процент выполнения пока недоступен.',
+          'Dein Wochenplan ist noch nicht gesetzt, deshalb gibt es noch keinen Erfuellungswert.'
+        ),
+      strongest.length
+        ? tr(
+          `Лучше всего шли: ${strongest.join(' и ')}.`,
+          `Am staerksten liefen: ${strongest.join(' und ')}.`
+        )
+        : tr(
+          'Сильные стороны появятся после первых действий за период.',
+          'Staerken erscheinen nach den ersten Aktivitaeten in diesem Zeitraum.'
+        ),
+      weakest.length
+        ? tr(
+          `Просадка: ${weakest.join(' и ')}.`,
+          `Rueckstand: ${weakest.join(' und ')}.`
+        )
+        : tr(
+          'Слабые зоны определятся после появления прогресса.',
+          'Schwaechere Bereiche erscheinen, sobald Fortschritt sichtbar ist.'
+        ),
+      trendLine,
+    ];
+  }, [tr, weeklySummaryHeroFacts, weeklySummaryMetricTitles]);
+  const weeklySummaryPlanProgress = useMemo(() => {
+    if (!weeklySummaryHeroFacts) {
+      return null;
+    }
+    const strongest = (weeklySummaryHeroFacts.strongestKeys || [])
+      .map((key) => weeklySummaryMetricTitles[key])
+      .filter(Boolean)
+      .slice(0, 1)[0] || '';
+    const weakest = (weeklySummaryHeroFacts.weakestKeys || [])
+      .map((key) => weeklySummaryMetricTitles[key])
+      .filter(Boolean)
+      .slice(0, 1)[0] || '';
+    return {
+      percent: Math.max(0, Math.min(100, Number(weeklySummaryHeroFacts.planCompletedPercent || 0))),
+      strongest,
+      weakest,
+      hasPlan: Boolean(weeklySummaryHeroFacts.hasPlan),
+    };
+  }, [weeklySummaryHeroFacts, weeklySummaryMetricTitles]);
+  const weeklySummaryRecommendation = useMemo(() => {
+    if (!weeklySummaryCurrentMetrics || !weeklySummaryPreviousMetrics) {
+      return null;
+    }
+    const entries = weeklySummaryKpiMeta.map((meta) => {
+      const current = weeklySummaryCurrentMetrics?.[meta.key] && typeof weeklySummaryCurrentMetrics[meta.key] === 'object'
+        ? weeklySummaryCurrentMetrics[meta.key]
+        : {};
+      const previous = weeklySummaryPreviousMetrics?.[meta.key] && typeof weeklySummaryPreviousMetrics[meta.key] === 'object'
+        ? weeklySummaryPreviousMetrics[meta.key]
+        : {};
+      const actual = Math.max(0, Number(current.actual || 0));
+      const goal = Math.max(0, Number(current.goal || 0));
+      const delta = actual - Math.max(0, Number(previous.actual || 0));
+      const completionPercent = goal > 0 ? Number(current.completion_percent || 0) : 0;
+      const remaining = Math.max(0, goal - actual);
+      return {
+        key: meta.key,
+        title: meta.title,
+        actual,
+        goal,
+        delta,
+        completionPercent,
+        remaining,
+      };
+    });
+
+    const improved = [...entries]
+      .filter((item) => item.delta > 0)
+      .sort((a, b) => b.delta - a.delta)
+      .slice(0, 2);
+    const lagging = [...entries]
+      .filter((item) => item.goal > 0 || item.actual > 0)
+      .sort((a, b) => {
+        const aScore = a.goal > 0 ? a.completionPercent : a.delta;
+        const bScore = b.goal > 0 ? b.completionPercent : b.delta;
+        return aScore - bScore;
+      })[0] || null;
+
+    const improvedTitles = improved.map((item) => item.title);
+    let nextAction = tr(
+      'Продолжай в том же темпе и открой аналитику для деталей.',
+      'Halte das Tempo und oeffne die Analytik fuer die Details.'
+    );
+    if (lagging) {
+      if (lagging.key === 'translations') {
+        const amount = Math.max(3, Math.min(10, Math.ceil(lagging.remaining || 3)));
+        nextAction = tr(
+          `Чтобы сократить отставание, сегодня лучше сделать ещё ${amount} переводов.`,
+          `Um den Rueckstand zu verringern, mach heute am besten noch ${amount} Uebersetzungen.`
+        );
+      } else if (lagging.key === 'learned_words') {
+        const amount = Math.max(5, Math.min(15, Math.ceil(lagging.remaining || 5)));
+        nextAction = tr(
+          `Чтобы выйти на план, сегодня лучше пройти ещё ${amount} слов в FSRS.`,
+          `Um in den Plan zu kommen, geh heute am besten noch ${amount} FSRS-Woerter durch.`
+        );
+      } else if (lagging.key === 'reading_minutes') {
+        const amount = Math.max(10, Math.min(25, Math.ceil(lagging.remaining || 10)));
+        nextAction = tr(
+          `Чтобы подтянуть чтение, сегодня лучше добавить ещё ${amount} минут.`,
+          `Um Lesen aufzuholen, fuege heute am besten noch ${amount} Minuten hinzu.`
+        );
+      } else if (lagging.key === 'youtube_minutes') {
+        const amount = Math.max(5, Math.min(15, Math.ceil(lagging.remaining || 5)));
+        nextAction = tr(
+          `Чтобы добрать видео-блок, сегодня лучше посмотреть ещё ${amount} минут или 1 короткое видео.`,
+          `Um den Video-Block aufzuholen, schau heute am besten noch ${amount} Minuten oder 1 kurzes Video.`
+        );
+      }
+    }
+
+    return {
+      leadLine: improvedTitles.length
+        ? tr(
+          `Ты идёшь лучше прошлого периода по ${improvedTitles.join(' и ')}.`,
+          `Du liegst besser als im letzten Zeitraum bei ${improvedTitles.join(' und ')}.`
+        )
+        : tr(
+          'Пока нет явного роста против прошлого периода, но базовый темп уже виден.',
+          'Es gibt noch keinen klaren Vorsprung zum letzten Zeitraum, aber das Grundtempo ist schon sichtbar.'
+        ),
+      lagLine: lagging
+        ? tr(
+          `${lagging.title} сейчас отстаёт сильнее всего.`,
+          `${lagging.title} liegt aktuell am meisten zurueck.`
+        )
+        : tr(
+          'Явной просадки пока нет.',
+          'Es gibt aktuell keinen klaren Rueckstand.'
+        ),
+      nextLine: nextAction,
+    };
+  }, [tr, weeklySummaryCurrentMetrics, weeklySummaryKpiMeta, weeklySummaryPreviousMetrics]);
+  const weeklySummaryKpiCards = useMemo(() => {
+    return weeklySummaryKpiMeta.map((meta) => {
+      const current = weeklySummaryCurrentMetrics?.[meta.key] && typeof weeklySummaryCurrentMetrics[meta.key] === 'object'
+        ? weeklySummaryCurrentMetrics[meta.key]
+        : {};
+      const previous = weeklySummaryPreviousMetrics?.[meta.key] && typeof weeklySummaryPreviousMetrics[meta.key] === 'object'
+        ? weeklySummaryPreviousMetrics[meta.key]
+        : {};
+      const actual = Number(current.actual || 0);
+      const goal = Number(current.goal || 0);
+      const delta = actual - Number(previous.actual || 0);
+      const formatValue = (value) => {
+        const normalized = Number(value || 0);
+        if (!Number.isFinite(normalized)) return '0';
+        return meta.digits > 0
+          ? normalized.toFixed(meta.digits)
+          : String(Math.round(normalized));
+      };
+      const deltaLabel = delta > 0
+        ? `+${formatValue(delta)}`
+        : delta < 0
+          ? `-${formatValue(Math.abs(delta))}`
+          : `0`;
+      return {
+        ...meta,
+        actualLabel: formatValue(actual),
+        goalLabel: formatValue(goal),
+        deltaLabel,
+        deltaClass: delta > 0 ? 'is-positive' : delta < 0 ? 'is-negative' : 'is-neutral',
+      };
+    });
+  }, [weeklySummaryCurrentMetrics, weeklySummaryKpiMeta, weeklySummaryPreviousMetrics]);
+  const weeklySummaryComparisonRows = useMemo(() => {
+    return weeklySummaryKpiMeta.map((meta) => {
+      const current = weeklySummaryCurrentMetrics?.[meta.key] && typeof weeklySummaryCurrentMetrics[meta.key] === 'object'
+        ? weeklySummaryCurrentMetrics[meta.key]
+        : {};
+      const previous = weeklySummaryPreviousMetrics?.[meta.key] && typeof weeklySummaryPreviousMetrics[meta.key] === 'object'
+        ? weeklySummaryPreviousMetrics[meta.key]
+        : {};
+      const currentValue = Math.max(0, Number(current.actual || 0));
+      const previousValue = Math.max(0, Number(previous.actual || 0));
+      const scaleMax = Math.max(currentValue, previousValue, 1);
+      const formatValue = (value) => {
+        const normalized = Number(value || 0);
+        if (!Number.isFinite(normalized)) return '0';
+        return meta.digits > 0
+          ? normalized.toFixed(meta.digits)
+          : String(Math.round(normalized));
+      };
+      return {
+        key: meta.key,
+        title: meta.title,
+        unit: meta.unit,
+        currentLabel: formatValue(currentValue),
+        previousLabel: formatValue(previousValue),
+        currentWidth: currentValue > 0 ? `${Math.max(6, Math.round((currentValue / scaleMax) * 100))}%` : '0%',
+        previousWidth: previousValue > 0 ? `${Math.max(6, Math.round((previousValue / scaleMax) * 100))}%` : '0%',
+      };
+    });
+  }, [weeklySummaryCurrentMetrics, weeklySummaryKpiMeta, weeklySummaryPreviousMetrics]);
   const forceSingleInstanceTakeover = useCallback(() => {
     if (!isWebAppMode) return;
     const now = Date.now();
@@ -1358,6 +1669,33 @@ function AppInner() {
       setOnboardingOpen(true);
     }
   }, [initData, needsLanguageProfileChoice, languageProfileGateOpen, onboardingSeenStorageKey]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || flashcardsOnly || onboardingOpen) {
+      setWeeklySummaryModalOpen(false);
+      return;
+    }
+    if (!weeklySummaryVisitConfig || !weeklySummaryDismissStorageKey) {
+      setWeeklySummaryModalOpen(false);
+      return;
+    }
+    const dismissed = safeStorageGet(weeklySummaryDismissStorageKey) === '1';
+    setWeeklySummaryModalOpen(!dismissed);
+  }, [
+    flashcardsOnly,
+    initData,
+    isWebAppMode,
+    onboardingOpen,
+    weeklySummaryDismissStorageKey,
+    weeklySummaryVisitConfig,
+  ]);
+
+  useEffect(() => {
+    if (!weeklySummaryModalOpen || !weeklySummaryVisitConfig) {
+      return;
+    }
+    void loadWeeklySummaryHero();
+  }, [loadWeeklySummaryHero, weeklySummaryModalOpen, weeklySummaryVisitConfig]);
 
   useEffect(() => {
     const refreshMode = () => {
@@ -2465,6 +2803,68 @@ function AppInner() {
       setPlanAnalyticsLoading(false);
     }
   };
+
+  const loadWeeklySummaryHero = useCallback(async () => {
+    if (!initData || !weeklySummaryVisitConfig) {
+      setWeeklySummaryHeroFacts(null);
+      setWeeklySummaryCurrentMetrics(null);
+      setWeeklySummaryPreviousMetrics(null);
+      return;
+    }
+    const buildUrl = (periodConfig) => {
+      const params = new URLSearchParams({
+        initData,
+        period: 'week',
+        week_start: String(periodConfig?.startDate || ''),
+        as_of_date: String(periodConfig?.endDate || ''),
+      });
+      return `/api/progress/plan-analytics?${params.toString()}`;
+    };
+    try {
+      setWeeklySummaryHeroLoading(true);
+      setWeeklySummaryHeroError('');
+      const [currentResponse, previousResponse] = await Promise.all([
+        fetchGetWithRetry(buildUrl(weeklySummaryVisitConfig.currentPeriod), 45000),
+        fetchGetWithRetry(buildUrl(weeklySummaryVisitConfig.previousPeriod), 45000),
+      ]);
+      if (!currentResponse.ok) {
+        throw new Error(await readApiError(currentResponse, 'Ошибка загрузки weekly summary', 'Fehler beim Laden der Weekly Summary'));
+      }
+      if (!previousResponse.ok) {
+        throw new Error(await readApiError(previousResponse, 'Ошибка загрузки weekly summary', 'Fehler beim Laden der Weekly Summary'));
+      }
+      const [currentData, previousData] = await Promise.all([
+        currentResponse.json(),
+        previousResponse.json(),
+      ]);
+      setWeeklySummaryCurrentMetrics(currentData?.metrics || {});
+      setWeeklySummaryPreviousMetrics(previousData?.metrics || {});
+      const facts = buildWeeklySummaryHeroFacts({
+        currentMetrics: currentData?.metrics || {},
+        previousMetrics: previousData?.metrics || {},
+        metricPriority: ['translations', 'learned_words', 'reading_minutes', 'youtube_minutes'],
+      });
+      setWeeklySummaryHeroFacts(facts);
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось загрузить summary по неделе.',
+        'Die Wochenzusammenfassung konnte nicht geladen werden.'
+      );
+      setWeeklySummaryHeroError(friendly);
+      setWeeklySummaryHeroFacts(null);
+      setWeeklySummaryCurrentMetrics(null);
+      setWeeklySummaryPreviousMetrics(null);
+    } finally {
+      setWeeklySummaryHeroLoading(false);
+    }
+  }, [
+    fetchGetWithRetry,
+    initData,
+    normalizeNetworkErrorMessage,
+    readApiError,
+    weeklySummaryVisitConfig,
+  ]);
 
   const saveWeeklyPlan = async () => {
     if (!initData) return;
@@ -5255,6 +5655,28 @@ function AppInner() {
     setSelectedSections(new Set());
     setMoviesCollapsed(false);
   };
+
+  const dismissWeeklySummaryModal = useCallback(() => {
+    if (weeklySummaryDismissStorageKey) {
+      safeStorageSet(weeklySummaryDismissStorageKey, '1');
+    }
+    setWeeklySummaryModalOpen(false);
+  }, [weeklySummaryDismissStorageKey]);
+
+  const openAnalyticsFromWeeklySummary = useCallback(() => {
+    dismissWeeklySummaryModal();
+    setSelectedSections((prev) => {
+      if (!menuMultiSelect) {
+        return new Set(['analytics']);
+      }
+      const next = new Set(prev);
+      next.add('analytics');
+      return next;
+    });
+    setTimeout(() => {
+      scrollToRef(analyticsRef, { block: 'start' });
+    }, 120);
+  }, [dismissWeeklySummaryModal, menuMultiSelect]);
 
   const handleMenuSelection = (key, ref) => {
     if (key === 'economics' && !canViewEconomics) return;
@@ -12289,6 +12711,84 @@ function AppInner() {
     }
   };
 
+  const loadWeeklySummarySocialSignal = useCallback(async () => {
+    if (!initData || !weeklySummaryVisitConfig) {
+      setWeeklySummarySocialSignal(null);
+      return;
+    }
+    try {
+      let scopePayload = analyticsScopeData;
+      if (!scopePayload) {
+        const scopeContext = buildAnalyticsScopeContextPayload();
+        const scopeBody = { initData };
+        if (Object.keys(scopeContext).length > 0) {
+          scopeBody.scope_context = scopeContext;
+        }
+        const scopeResponse = await fetch('/api/webapp/analytics/scope', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(scopeBody),
+        });
+        if (scopeResponse.ok) {
+          scopePayload = await scopeResponse.json();
+          applyAnalyticsScopePayload(scopePayload);
+        }
+      }
+      const resolvedScopeKey = normalizeAnalyticsScopeKeyFromPayload(scopePayload || analyticsScopeData || {});
+      const scope = parseAnalyticsScopeKey(resolvedScopeKey || analyticsScopeKey);
+      if (scope.scope_kind !== 'group') {
+        setWeeklySummarySocialSignal(null);
+        return;
+      }
+      const scopeContext = buildAnalyticsScopeContextPayload();
+      const body = {
+        initData,
+        period: 'week',
+        start_date: weeklySummaryVisitConfig.currentPeriod.startDate,
+        end_date: weeklySummaryVisitConfig.currentPeriod.endDate,
+        limit: 200,
+        scope: scope.scope_key,
+        scope_kind: scope.scope_kind,
+        scope_chat_id: scope.scope_chat_id,
+      };
+      if (Object.keys(scopeContext).length > 0) {
+        body.scope_context = scopeContext;
+      }
+      const response = await fetch('/api/webapp/analytics/compare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки social signal', 'Fehler beim Laden des Social Signals'));
+      }
+      const data = await response.json();
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const selfRank = Math.max(0, Number(data?.self?.rank || 0));
+      const effectiveScopeKind = String(data?.scope?.scope_kind || scope.scope_kind || '').trim().toLowerCase();
+      if (effectiveScopeKind !== 'group' || items.length <= 1 || selfRank <= 0) {
+        setWeeklySummarySocialSignal(null);
+        return;
+      }
+      const total = items.length;
+      const percentile = total > 1 ? Math.round(((total - selfRank) / (total - 1)) * 100) : 0;
+      let text = tr(`Твоё место в группе: #${selfRank}`, `Dein Platz in der Gruppe: #${selfRank}`);
+      if (selfRank > 3 && percentile > 0) {
+        text = tr(`Ты выше ${percentile}% участников`, `Du liegst vor ${percentile}% der Teilnehmenden`);
+      }
+      setWeeklySummarySocialSignal({ text });
+    } catch (_error) {
+      setWeeklySummarySocialSignal(null);
+    }
+  }, [
+    analyticsScopeData,
+    analyticsScopeKey,
+    initData,
+    readApiError,
+    tr,
+    weeklySummaryVisitConfig,
+  ]);
+
   const handleAnalyticsScopeSelect = async (nextScopeRaw) => {
     if (!initData) {
       setAnalyticsScopeError(initDataMissingMsg);
@@ -12589,6 +13089,14 @@ function AppInner() {
       loadBillingPlans();
     }
   }, [initData, isWebAppMode, selectedSections, flashcardsOnly]);
+
+  useEffect(() => {
+    if (!weeklySummaryModalOpen || !weeklySummaryVisitConfig) {
+      setWeeklySummarySocialSignal(null);
+      return;
+    }
+    void loadWeeklySummarySocialSignal();
+  }, [loadWeeklySummarySocialSignal, weeklySummaryModalOpen, weeklySummaryVisitConfig]);
 
   useEffect(() => {
     if (canViewEconomics) return;
@@ -13347,6 +13855,178 @@ function AppInner() {
                   </div>
                 </div>
               </div>
+            )}
+
+            {weeklySummaryVisitConfig && !onboardingOpen && (
+              <WeeklySummaryModal
+                isOpen={weeklySummaryModalOpen}
+                title={weeklySummaryVisitConfig.title}
+                subtitle={weeklySummaryVisitConfig.subtitle}
+                closeLabel={tr('Закрыть weekly summary', 'Weekly Summary schliessen')}
+                openAnalyticsLabel={tr('Открыть аналитику', 'Analytik oeffnen')}
+                onClose={dismissWeeklySummaryModal}
+                onOpenAnalytics={openAnalyticsFromWeeklySummary}
+              >
+                <section className="weekly-summary-hero" aria-live="polite">
+                  <div className="weekly-summary-hero-label">
+                    {tr('Краткий итог', 'Kurzfazit')}
+                  </div>
+                  {weeklySummaryHeroLoading ? (
+                    <div className="weekly-summary-hero-loading">
+                      {tr('Собираю краткую сводку по неделе...', 'Ich erstelle gerade die Wochenkurzzusammenfassung...')}
+                    </div>
+                  ) : weeklySummaryHeroError ? (
+                    <div className="weekly-summary-hero-error">{weeklySummaryHeroError}</div>
+                  ) : weeklySummaryHeroLines.length === 0 ? (
+                    <div className="weekly-summary-hero-loading">
+                      {tr('Пока нет данных для краткого weekly summary.', 'Es gibt noch keine Daten fuer diese kurze Weekly Summary.')}
+                    </div>
+                  ) : (
+                    <div className="weekly-summary-hero-lines">
+                      {weeklySummaryHeroLines.map((line, index) => (
+                        <p key={`weekly-summary-hero-line-${index}`}>{line}</p>
+                      ))}
+                    </div>
+                  )}
+                </section>
+                <section className="weekly-summary-kpi" aria-label={tr('Ключевые показатели', 'Kernmetriken')}>
+                  <div className="weekly-summary-hero-label">
+                    {tr('Ключевые показатели', 'Kernmetriken')}
+                  </div>
+                  {weeklySummaryHeroLoading && !weeklySummaryCurrentMetrics ? (
+                    <div className="weekly-summary-kpi-empty">
+                      {tr('Загружаю KPI для weekly summary...', 'Ich lade die KPI fuer die Weekly Summary...')}
+                    </div>
+                  ) : weeklySummaryHeroError ? (
+                    <div className="weekly-summary-kpi-empty">{weeklySummaryHeroError}</div>
+                  ) : (
+                    <div className="weekly-summary-kpi-grid">
+                      {weeklySummaryKpiCards.map((card) => (
+                        <article key={`weekly-summary-kpi-${card.key}`} className="weekly-summary-kpi-card">
+                          <span>{card.title}</span>
+                          <strong>{card.actualLabel} / {card.goalLabel}</strong>
+                          <small className={`weekly-summary-kpi-delta ${card.deltaClass}`}>
+                            {card.deltaLabel} {tr('vs прошлый период', 'vs letzter Zeitraum')}
+                          </small>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </section>
+                <section className="weekly-summary-compare" aria-label={tr('Сравнение с прошлым периодом', 'Vergleich mit dem letzten Zeitraum')}>
+                  <div className="weekly-summary-hero-label">
+                    {weeklySummaryVisitConfig.comparisonLabel || tr('Сравнение с прошлым периодом', 'Vergleich mit dem letzten Zeitraum')}
+                  </div>
+                  {weeklySummaryHeroLoading && !weeklySummaryCurrentMetrics ? (
+                    <div className="weekly-summary-kpi-empty">
+                      {tr('Загружаю сравнение периодов...', 'Ich lade den Periodenvergleich...')}
+                    </div>
+                  ) : weeklySummaryHeroError ? (
+                    <div className="weekly-summary-kpi-empty">{weeklySummaryHeroError}</div>
+                  ) : (
+                    <div className="weekly-summary-compare-rows">
+                      {weeklySummaryComparisonRows.map((row) => (
+                        <div key={`weekly-summary-compare-${row.key}`} className="weekly-summary-compare-row">
+                          <div className="weekly-summary-compare-topline">
+                            <span className="weekly-summary-compare-title">{row.title}</span>
+                            <span className="weekly-summary-compare-values">
+                              {row.currentLabel} / {row.previousLabel} {row.unit}
+                            </span>
+                          </div>
+                          <div className="weekly-summary-compare-bars" aria-hidden="true">
+                            <div className="weekly-summary-compare-track">
+                              <div
+                                className="weekly-summary-compare-fill is-current"
+                                style={{ width: row.currentWidth }}
+                              />
+                            </div>
+                            <div className="weekly-summary-compare-track">
+                              <div
+                                className="weekly-summary-compare-fill is-previous"
+                                style={{ width: row.previousWidth }}
+                              />
+                            </div>
+                          </div>
+                          <div className="weekly-summary-compare-labels">
+                            <span>{tr('Сейчас', 'Aktuell')}</span>
+                            <span>{tr('Прошлый период', 'Letzter Zeitraum')}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+                <section className="weekly-summary-progress" aria-label={tr('Прогресс плана', 'Planfortschritt')}>
+                  <div className="weekly-summary-hero-label">
+                    {tr('Прогресс плана', 'Planfortschritt')}
+                  </div>
+                  {weeklySummaryHeroLoading && !weeklySummaryPlanProgress ? (
+                    <div className="weekly-summary-kpi-empty">
+                      {tr('Считаю прогресс плана...', 'Ich berechne den Planfortschritt...')}
+                    </div>
+                  ) : weeklySummaryHeroError ? (
+                    <div className="weekly-summary-kpi-empty">{weeklySummaryHeroError}</div>
+                  ) : weeklySummaryPlanProgress ? (
+                    <div className="weekly-summary-progress-card">
+                      <div className="weekly-summary-progress-head">
+                        <strong>{weeklySummaryPlanProgress.percent}%</strong>
+                        <span>{tr('выполнено', 'erfuellt')}</span>
+                      </div>
+                      <div className="weekly-summary-progress-track" aria-hidden="true">
+                        <div
+                          className="weekly-summary-progress-fill"
+                          style={{ width: `${weeklySummaryPlanProgress.percent}%` }}
+                        />
+                      </div>
+                      <div className="weekly-summary-progress-copy">
+                        <p>
+                          {weeklySummaryPlanProgress.strongest
+                            ? tr(`Сильнее всего идёт: ${weeklySummaryPlanProgress.strongest}.`, `Am staerksten: ${weeklySummaryPlanProgress.strongest}.`)
+                            : tr('Сильнейшая метрика появится после первых действий.', 'Die staerkste Metrik erscheint nach den ersten Aktivitaeten.')}
+                        </p>
+                        <p>
+                          {weeklySummaryPlanProgress.weakest
+                            ? tr(`Проседает: ${weeklySummaryPlanProgress.weakest}.`, `Rueckstand: ${weeklySummaryPlanProgress.weakest}.`)
+                            : tr('Слабая метрика определится после появления сравнимого прогресса.', 'Eine schwaechere Metrik erscheint, sobald vergleichbarer Fortschritt da ist.')}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="weekly-summary-kpi-empty">
+                      {tr('Пока нет данных для прогресса плана.', 'Es gibt noch keine Daten fuer den Planfortschritt.')}
+                    </div>
+                  )}
+                </section>
+                {weeklySummarySocialSignal?.text && (
+                  <section className="weekly-summary-social" aria-label={tr('Позиция в группе', 'Gruppensignal')}>
+                    <div className="weekly-summary-social-chip">
+                      {weeklySummarySocialSignal.text}
+                    </div>
+                  </section>
+                )}
+                <section className="weekly-summary-recommendation" aria-label={tr('Следующий шаг', 'Naechster Schritt')}>
+                  <div className="weekly-summary-hero-label">
+                    {tr('Следующий шаг', 'Naechster Schritt')}
+                  </div>
+                  {weeklySummaryHeroLoading && !weeklySummaryRecommendation ? (
+                    <div className="weekly-summary-kpi-empty">
+                      {tr('Готовлю короткую рекомендацию...', 'Ich bereite eine kurze Empfehlung vor...')}
+                    </div>
+                  ) : weeklySummaryHeroError ? (
+                    <div className="weekly-summary-kpi-empty">{weeklySummaryHeroError}</div>
+                  ) : weeklySummaryRecommendation ? (
+                    <div className="weekly-summary-recommendation-card">
+                      <p>{weeklySummaryRecommendation.leadLine}</p>
+                      <p>{weeklySummaryRecommendation.lagLine}</p>
+                      <p>{weeklySummaryRecommendation.nextLine}</p>
+                    </div>
+                  ) : (
+                    <div className="weekly-summary-kpi-empty">
+                      {tr('Пока нет данных для рекомендации.', 'Es gibt noch keine Daten fuer eine Empfehlung.')}
+                    </div>
+                  )}
+                </section>
+              </WeeklySummaryModal>
             )}
 
             {showHero && (

@@ -17188,6 +17188,16 @@ def get_plan_analytics():
         raw_period = "half-year"
     if raw_period not in {"week", "month", "quarter", "half-year", "year"}:
         return jsonify({"error": "period must be one of: week, month, quarter, half-year, year"}), 400
+    week_start_raw = str(request.args.get("week_start") or "").strip()
+    as_of_date_raw = str(request.args.get("as_of_date") or "").strip()
+    week_start = _parse_iso_date(week_start_raw or None)
+    as_of_date = _parse_iso_date(as_of_date_raw or None)
+    if week_start_raw and week_start is None:
+        return jsonify({"error": "week_start must be an ISO date"}), 400
+    if as_of_date_raw and as_of_date is None:
+        return jsonify({"error": "as_of_date must be an ISO date"}), 400
+    if week_start is not None and raw_period != "week":
+        return jsonify({"error": "week_start is only supported for period=week"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
         progress = get_plan_progress(
@@ -17196,6 +17206,8 @@ def get_plan_analytics():
             target_lang=target_lang,
             mature_interval_days=MATURE_INTERVAL_DAYS,
             period=raw_period,
+            week_start=week_start,
+            as_of_date=as_of_date,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка расчёта аналитики плана: {exc}"}), 500

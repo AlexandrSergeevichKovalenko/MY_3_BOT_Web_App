@@ -10734,6 +10734,23 @@ def get_plan_progress(
             learned_words_goal = max(0, int(goals_row[1] or 0)) if goals_row else 0
             agent_minutes_goal = max(0, int(goals_row[2] or 0)) if goals_row else 0
             reading_minutes_goal = max(0, int(goals_row[3] or 0)) if goals_row else 0
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(i.estimated_minutes), 0)
+                FROM bt_3_daily_plans p
+                JOIN bt_3_daily_plan_items i ON i.plan_id = p.id
+                WHERE p.user_id = %s
+                  AND p.plan_date BETWEEN %s AND %s
+                  AND LOWER(COALESCE(i.task_type, '')) IN ('video', 'youtube');
+                """,
+                (
+                    int(user_id),
+                    resolved_start,
+                    resolved_end,
+                ),
+            )
+            video_goal_row = cursor.fetchone()
+            youtube_minutes_goal = max(0, int(video_goal_row[0] or 0)) if video_goal_row else 0
 
             cursor.execute(
                 """
@@ -10907,6 +10924,42 @@ def get_plan_progress(
             else:
                 reading_minutes_actual = 0.0
 
+            cursor.execute(
+                """
+                SELECT COALESCE(
+                    SUM(
+                        GREATEST(
+                            0,
+                            CASE
+                                WHEN COALESCE(NULLIF(i.payload ->> 'timer_seconds', ''), '') <> ''
+                                    THEN (i.payload ->> 'timer_seconds')::numeric / 60.0
+                                WHEN LOWER(COALESCE(i.status, '')) = 'done'
+                                    THEN COALESCE(
+                                        NULLIF(i.payload ->> 'duration_sec', '')::numeric / 60.0,
+                                        NULLIF(i.estimated_minutes, 0)::numeric,
+                                        0
+                                    )
+                                ELSE 0
+                            END
+                        )
+                    ),
+                    0
+                )
+                FROM bt_3_daily_plans p
+                JOIN bt_3_daily_plan_items i ON i.plan_id = p.id
+                WHERE p.user_id = %s
+                  AND p.plan_date BETWEEN %s AND %s
+                  AND LOWER(COALESCE(i.task_type, '')) IN ('video', 'youtube');
+                """,
+                (
+                    int(user_id),
+                    resolved_start,
+                    effective_end,
+                ),
+            )
+            youtube_row = cursor.fetchone()
+            youtube_minutes_actual = float(youtube_row[0] or 0.0) if youtube_row else 0.0
+
     def _metric(goal: int, actual: float) -> dict:
         safe_goal = max(0, int(goal or 0))
         safe_actual = max(0.0, float(actual or 0.0))
@@ -10938,6 +10991,7 @@ def get_plan_progress(
             "learned_words": _metric(learned_words_goal, learned_words_actual),
             "agent_minutes": _metric(agent_minutes_goal, agent_minutes_actual),
             "reading_minutes": _metric(reading_minutes_goal, reading_minutes_actual),
+            "youtube_minutes": _metric(youtube_minutes_goal, youtube_minutes_actual),
         },
     }
 
