@@ -23,6 +23,22 @@ const TTS_CACHE_MAX_ENTRIES = 60;
 const READER_IDLE_TIMEOUT_MS = 60000;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
 
+function isEditableElement(element) {
+  if (!element || typeof element !== 'object') return false;
+  const tagName = String(element.tagName || '').toUpperCase();
+  if (tagName === 'TEXTAREA') return true;
+  if (tagName !== 'INPUT') {
+    return Boolean(element.isContentEditable);
+  }
+  const type = String(element.type || '').toLowerCase();
+  return !['button', 'checkbox', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+}
+
+function hasFocusedEditableElement() {
+  if (typeof document === 'undefined') return false;
+  return isEditableElement(document.activeElement);
+}
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -6647,6 +6663,7 @@ function AppInner() {
     let fullscreenRetryTimer = null;
     let expandPulseTimer = null;
     let stopped = false;
+    let viewportSyncFrame = null;
 
     const isHandsetDevice = () => {
       const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
@@ -6706,7 +6723,11 @@ function AppInner() {
         });
     };
 
-    const syncViewportMode = () => {
+    const syncViewportMode = (options = {}) => {
+      const force = Boolean(options?.force);
+      if (!force && isAndroidTelegramClient && hasFocusedEditableElement()) {
+        return;
+      }
       try {
         telegramApp.ready?.();
         telegramApp.expand?.();
@@ -6740,8 +6761,20 @@ function AppInner() {
       }
     };
 
+    const requestViewportSync = (options = {}) => {
+      if (viewportSyncFrame !== null) {
+        window.cancelAnimationFrame(viewportSyncFrame);
+        viewportSyncFrame = null;
+      }
+      viewportSyncFrame = window.requestAnimationFrame(() => {
+        viewportSyncFrame = null;
+        syncViewportMode(options);
+      });
+    };
+
     const onFirstUserGesture = () => {
       if (!detectTabletLikeViewport()) return;
+      if (isAndroidTelegramClient && hasFocusedEditableElement()) return;
       try {
         fullscreenRetryCount = 0;
         tryEnterTelegramFullscreen();
@@ -6751,23 +6784,23 @@ function AppInner() {
     };
 
     try {
-      syncViewportMode();
+      syncViewportMode({ force: true });
     } catch (error) {
       // Telegram API may be partially unavailable in browser mode.
     }
 
     const onResize = () => {
       fullscreenRetryCount = 0;
-      syncViewportMode();
+      requestViewportSync();
     };
     const onFocus = () => {
       fullscreenRetryCount = 0;
-      syncViewportMode();
+      requestViewportSync();
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         fullscreenRetryCount = 0;
-        syncViewportMode();
+        requestViewportSync();
       }
     };
     window.addEventListener('resize', onResize);
@@ -6777,25 +6810,29 @@ function AppInner() {
     window.addEventListener('touchstart', onFirstUserGesture, { passive: true });
     window.addEventListener('click', onFirstUserGesture, { passive: true });
     if (typeof telegramApp.onEvent === 'function') {
-      telegramApp.onEvent('viewportChanged', syncViewportMode);
+      telegramApp.onEvent('viewportChanged', requestViewportSync);
     }
     expandPulseTimer = window.setTimeout(() => {
       if (stopped) return;
-      syncViewportMode();
+      syncViewportMode({ force: true });
     }, 180);
     window.setTimeout(() => {
       if (stopped) return;
-      syncViewportMode();
+      syncViewportMode({ force: true });
     }, 620);
     window.setTimeout(() => {
       if (stopped) return;
-      syncViewportMode();
+      syncViewportMode({ force: true });
     }, 1200);
 
     return () => {
       stopped = true;
       if (fullscreenRetryTimer) window.clearTimeout(fullscreenRetryTimer);
       if (expandPulseTimer) window.clearTimeout(expandPulseTimer);
+      if (viewportSyncFrame !== null) {
+        window.cancelAnimationFrame(viewportSyncFrame);
+        viewportSyncFrame = null;
+      }
       window.removeEventListener('resize', onResize);
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -6803,10 +6840,10 @@ function AppInner() {
       window.removeEventListener('touchstart', onFirstUserGesture);
       window.removeEventListener('click', onFirstUserGesture);
       if (typeof telegramApp.offEvent === 'function') {
-        telegramApp.offEvent('viewportChanged', syncViewportMode);
+        telegramApp.offEvent('viewportChanged', requestViewportSync);
       }
     };
-  }, [telegramApp]);
+  }, [telegramApp, isAndroidTelegramClient]);
 
   useEffect(() => {
     const pauseNow = () => {
@@ -7055,7 +7092,11 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode) return;
+    let lockFrame = null;
     const lockHorizontalScroll = () => {
+      if (isAndroidTelegramClient && hasFocusedEditableElement()) {
+        return;
+      }
       const scrollingElement = document.scrollingElement || document.documentElement;
       const pageElement = document.querySelector('.webapp-page');
       if (Math.abs(window.scrollX) > 0) {
@@ -7071,22 +7112,30 @@ function AppInner() {
         pageElement.scrollLeft = 0;
       }
     };
-    const onScroll = () => {
-      lockHorizontalScroll();
+    const requestHorizontalLock = () => {
+      if (lockFrame !== null) return;
+      lockFrame = window.requestAnimationFrame(() => {
+        lockFrame = null;
+        lockHorizontalScroll();
+      });
     };
     const viewport = window.visualViewport;
-    window.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('resize', lockHorizontalScroll);
-    viewport?.addEventListener('resize', lockHorizontalScroll);
-    viewport?.addEventListener('scroll', lockHorizontalScroll);
-    lockHorizontalScroll();
+    window.addEventListener('scroll', requestHorizontalLock, { passive: true });
+    window.addEventListener('resize', requestHorizontalLock);
+    viewport?.addEventListener('resize', requestHorizontalLock);
+    viewport?.addEventListener('scroll', requestHorizontalLock);
+    requestHorizontalLock();
     return () => {
-      window.removeEventListener('scroll', onScroll);
-      window.removeEventListener('resize', lockHorizontalScroll);
-      viewport?.removeEventListener('resize', lockHorizontalScroll);
-      viewport?.removeEventListener('scroll', lockHorizontalScroll);
+      if (lockFrame !== null) {
+        window.cancelAnimationFrame(lockFrame);
+        lockFrame = null;
+      }
+      window.removeEventListener('scroll', requestHorizontalLock);
+      window.removeEventListener('resize', requestHorizontalLock);
+      viewport?.removeEventListener('resize', requestHorizontalLock);
+      viewport?.removeEventListener('scroll', requestHorizontalLock);
     };
-  }, [isWebAppMode]);
+  }, [isWebAppMode, isAndroidTelegramClient]);
 
   useEffect(() => {
     if (telegramApp?.initData) return;
