@@ -326,6 +326,13 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     'data-translation-draft-field': 'true',
   };
 
+  if (isAndroidClient) {
+    textareaProps.autoCapitalize = 'off';
+    textareaProps.autoComplete = 'off';
+    textareaProps.autoCorrect = 'off';
+    textareaProps.spellCheck = false;
+  }
+
   if (!isPureTextareaExperiment) {
     if (isChangeDrivenAndroidExperiment) {
       textareaProps.onChange = handleChange;
