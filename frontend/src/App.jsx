@@ -21,6 +21,10 @@ const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
 const TTS_CACHE_MAX_ENTRIES = 60;
 const READER_IDLE_TIMEOUT_MS = 60000;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
+const ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY = 'translation_draft_debug';
+const ANDROID_TRANSLATION_DRAFT_VARIANT_QUERY_KEY = 'translation_draft_variant';
+const ANDROID_TRANSLATION_DRAFT_VARIANTS = new Set(['a', 'b', 'c', 'd', 'e']);
+const DEFAULT_ANDROID_TRANSLATION_DRAFT_VARIANT = 'd';
 
 function isEditableElement(element) {
   if (!element || typeof element !== 'object') return false;
@@ -36,6 +40,11 @@ function isEditableElement(element) {
 function hasFocusedEditableElement() {
   if (typeof document === 'undefined') return false;
   return isEditableElement(document.activeElement);
+}
+
+function hasFocusedTranslationDraftField() {
+  if (typeof document === 'undefined') return false;
+  return String(document.activeElement?.dataset?.translationDraftField || '') === 'true';
 }
 
 function resolveExternalThemeMode(telegramApp) {
@@ -107,15 +116,33 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   placeholder,
   dictionaryLabel,
   isAndroidClient,
+  androidDebugEnabled,
+  androidExperimentVariant,
   onLiveChange,
   onCommit,
+  onRequestPersist,
+  onRegisterValueAccessor,
+  onDebugEvent,
   onJumpToDictionary,
 }) {
   const textareaRef = useRef(null);
-  const syncTimeoutRef = useRef(null);
+  const commitTimeoutRef = useRef(null);
+  const androidPersistTimeoutRef = useRef(null);
   const valueRef = useRef(String(initialValue || ''));
 
   const commitDelayMs = isAndroidClient ? 1200 : 240;
+  const androidPersistDelayMs = 900;
+  const normalizedAndroidVariant = isAndroidClient
+    ? String(androidExperimentVariant || DEFAULT_ANDROID_TRANSLATION_DRAFT_VARIANT).trim().toLowerCase()
+    : '';
+  const isPureTextareaExperiment = isAndroidClient && normalizedAndroidVariant === 'a';
+  const isEmptyInputExperiment = isAndroidClient && normalizedAndroidVariant === 'b';
+  const isCurrentAndroidPathExperiment = isAndroidClient && normalizedAndroidVariant === 'c';
+  const isChangeDrivenAndroidExperiment = isAndroidClient && normalizedAndroidVariant === 'e';
+  const usesBufferedAndroidPath = isAndroidClient
+    && !isPureTextareaExperiment
+    && !isEmptyInputExperiment
+    && !isCurrentAndroidPathExperiment;
 
   useEffect(() => {
     const normalizedValue = String(initialValue || '');
@@ -139,59 +166,180 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     onCommit(sentenceId, value, { reason });
   }, [onCommit, sentenceId]);
 
-  const clearPendingFlush = useCallback(() => {
-    if (syncTimeoutRef.current) {
-      window.clearTimeout(syncTimeoutRef.current);
-      syncTimeoutRef.current = null;
+  const clearPendingCommit = useCallback(() => {
+    if (commitTimeoutRef.current) {
+      window.clearTimeout(commitTimeoutRef.current);
+      commitTimeoutRef.current = null;
     }
   }, []);
 
   const scheduleFlush = useCallback((value) => {
-    clearPendingFlush();
-    syncTimeoutRef.current = window.setTimeout(() => {
-      syncTimeoutRef.current = null;
+    clearPendingCommit();
+    commitTimeoutRef.current = window.setTimeout(() => {
+      commitTimeoutRef.current = null;
       flushValue(valueRef.current, 'idle');
     }, commitDelayMs);
-  }, [clearPendingFlush, commitDelayMs, flushValue]);
+  }, [clearPendingCommit, commitDelayMs, flushValue]);
+
+  const clearPendingAndroidPersist = useCallback(() => {
+    if (androidPersistTimeoutRef.current) {
+      window.clearTimeout(androidPersistTimeoutRef.current);
+      androidPersistTimeoutRef.current = null;
+    }
+  }, []);
+
+  const flushAndroidPersistence = useCallback((value, reason = 'idle') => {
+    if (!usesBufferedAndroidPath) return;
+    onRequestPersist(sentenceId, value, { reason });
+  }, [onRequestPersist, sentenceId, usesBufferedAndroidPath]);
+
+  const scheduleAndroidPersistence = useCallback((value) => {
+    if (!usesBufferedAndroidPath) return;
+    clearPendingAndroidPersist();
+    androidPersistTimeoutRef.current = window.setTimeout(() => {
+      androidPersistTimeoutRef.current = null;
+      flushAndroidPersistence(valueRef.current, 'idle');
+    }, androidPersistDelayMs);
+  }, [androidPersistDelayMs, clearPendingAndroidPersist, flushAndroidPersistence, usesBufferedAndroidPath]);
 
   useEffect(() => {
     return () => {
-      clearPendingFlush();
+      clearPendingCommit();
+      clearPendingAndroidPersist();
     };
-  }, [clearPendingFlush]);
+  }, [clearPendingCommit, clearPendingAndroidPersist]);
 
-  const handleInput = (event) => {
-    const nextValue = event.target.value;
-    valueRef.current = nextValue;
-    if (isAndroidClient) {
-      onLiveChange(sentenceId, nextValue, { persist: false });
-      return;
+  useEffect(() => {
+    if (typeof onRegisterValueAccessor !== 'function') {
+      return undefined;
     }
-    onLiveChange(sentenceId, nextValue, { persist: true });
-    scheduleFlush(nextValue);
-  };
+    const accessor = () => {
+      const node = textareaRef.current;
+      if (node) {
+        return String(node.value || '');
+      }
+      return String(valueRef.current || '');
+    };
+    const unregister = onRegisterValueAccessor(sentenceId, accessor);
+    return () => {
+      if (typeof unregister === 'function') {
+        unregister();
+      }
+    };
+  }, [onRegisterValueAccessor, sentenceId]);
+
+  useEffect(() => {
+    if (!androidDebugEnabled) {
+      return undefined;
+    }
+    const node = textareaRef.current;
+    if (!node) {
+      return undefined;
+    }
+    const emit = (name, options = {}) => {
+      onDebugEvent?.(name, options);
+    };
+    const handlers = [
+      ['beforeinput', (event) => emit('field.beforeinput', { focusedOnly: false, composing: Boolean(event?.isComposing) })],
+      ['input', (event) => emit('field.native_input', { focusedOnly: false, composing: Boolean(event?.isComposing) })],
+      ['change', (event) => emit('field.native_change', { focusedOnly: false, composing: Boolean(event?.isComposing) })],
+      ['compositionstart', () => emit('field.compositionstart', { focusedOnly: false })],
+      ['compositionupdate', () => emit('field.compositionupdate', { focusedOnly: false })],
+      ['compositionend', () => emit('field.compositionend', { focusedOnly: false })],
+      ['focus', () => emit('field.focus', { focusedOnly: false, flush: true })],
+      ['blur', () => emit('field.blur_event', { focusedOnly: false, flush: true })],
+    ];
+    handlers.forEach(([eventName, handler]) => node.addEventListener(eventName, handler));
+    return () => {
+      handlers.forEach(([eventName, handler]) => node.removeEventListener(eventName, handler));
+    };
+  }, [androidDebugEnabled, onDebugEvent]);
+
+  const processInputValue = useCallback((nextValue, channel = 'input') => {
+    valueRef.current = nextValue;
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : 0;
+    try {
+      if (isAndroidClient) {
+        if (isPureTextareaExperiment || isEmptyInputExperiment) {
+          return;
+        }
+        if (isCurrentAndroidPathExperiment) {
+          onLiveChange(sentenceId, nextValue, { persist: false });
+          return;
+        }
+        scheduleAndroidPersistence(nextValue);
+        return;
+      }
+      onLiveChange(sentenceId, nextValue, { persist: true });
+      scheduleFlush(nextValue);
+    } finally {
+      if (startedAt) {
+        onDebugEvent?.(`field.${channel}_handler`, {
+          focusedOnly: false,
+          durationMs: performance.now() - startedAt,
+        });
+      }
+    }
+  }, [
+    isAndroidClient,
+    isCurrentAndroidPathExperiment,
+    isEmptyInputExperiment,
+    isPureTextareaExperiment,
+    onDebugEvent,
+    onLiveChange,
+    scheduleAndroidPersistence,
+    scheduleFlush,
+    sentenceId,
+  ]);
+
+  const handleInput = useCallback((event) => {
+    processInputValue(String(event.target.value || ''), 'input');
+  }, [processInputValue]);
+
+  const handleChange = useCallback((event) => {
+    if (isChangeDrivenAndroidExperiment) {
+      processInputValue(String(event.target.value || ''), 'change');
+    }
+  }, [isChangeDrivenAndroidExperiment, processInputValue]);
 
   const handleBlur = () => {
+    onDebugEvent?.('field.blur_handler', { focusedOnly: false, flush: true });
+    if (isPureTextareaExperiment) {
+      clearPendingAndroidPersist();
+      clearPendingCommit();
+      return;
+    }
     const nextValue = textareaRef.current ? String(textareaRef.current.value || '') : valueRef.current;
     valueRef.current = nextValue;
+    clearPendingAndroidPersist();
     onLiveChange(sentenceId, nextValue, { persist: false });
-    clearPendingFlush();
+    clearPendingCommit();
     flushValue(nextValue, 'blur');
   };
+
+  const textareaProps = {
+    ref: textareaRef,
+    rows: 5,
+    defaultValue: String(initialValue || ''),
+    onBlur: handleBlur,
+    placeholder,
+    'data-translation-draft-field': 'true',
+  };
+
+  if (!isPureTextareaExperiment) {
+    if (isChangeDrivenAndroidExperiment) {
+      textareaProps.onChange = handleChange;
+    } else {
+      textareaProps.onInput = handleInput;
+    }
+  }
 
   return (
     <label className="webapp-translation-item">
       <span className="translation-sentence">
         {sentenceNumber}. {sentenceText}
       </span>
-      <textarea
-        ref={textareaRef}
-        rows={5}
-        defaultValue={String(initialValue || '')}
-        onInput={handleInput}
-        onBlur={handleBlur}
-        placeholder={placeholder}
-      />
+      <textarea {...textareaProps} />
       <div className="translation-actions">
         <button
           type="button"
@@ -243,6 +391,22 @@ function AppInner() {
     const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
     return /Android/i.test(userAgent);
   }, [telegramApp]);
+  const androidTranslationDraftDebugConfig = useMemo(() => {
+    if (!isAndroidTelegramClient || typeof window === 'undefined') {
+      return {
+        enabled: false,
+        variant: DEFAULT_ANDROID_TRANSLATION_DRAFT_VARIANT,
+      };
+    }
+    const params = new URLSearchParams(window.location.search);
+    const debugRaw = String(params.get(ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY) || '').trim().toLowerCase();
+    const variantRaw = String(params.get(ANDROID_TRANSLATION_DRAFT_VARIANT_QUERY_KEY) || '').trim().toLowerCase();
+    const enabled = ['1', 'true', 'yes', 'debug'].includes(debugRaw);
+    const variant = ANDROID_TRANSLATION_DRAFT_VARIANTS.has(variantRaw)
+      ? variantRaw
+      : (enabled ? 'c' : DEFAULT_ANDROID_TRANSLATION_DRAFT_VARIANT);
+    return { enabled, variant };
+  }, [isAndroidTelegramClient]);
   const needsContainedWebappScroll = useMemo(() => {
     if (!isWebAppMode) return false;
     const userAgent = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
@@ -713,10 +877,16 @@ function AppInner() {
   const translationStartInFlightRef = useRef(false);
   const translationFinishInFlightRef = useRef(false);
   const translationDraftsRef = useRef({});
+  const translationDraftFieldAccessorsRef = useRef(new Map());
   const translationDraftSyncTimeoutRef = useRef(null);
   const translationDraftStorageTimeoutRef = useRef(null);
   const translationDraftHydrationKeyRef = useRef('');
   const translationDraftSentenceIdsRef = useRef(new Set());
+  const translationDraftAndroidDebugRef = useRef({
+    counters: {},
+    timings: {},
+    flushTimer: null,
+  });
   const explanationInFlightKeysRef = useRef(new Set());
   const supportBottomRef = useRef(null);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
@@ -797,6 +967,103 @@ function AppInner() {
     const scopeKey = translationDraftScopeKey || 'nosession';
     return `webappDrafts_${stableId}_${scopeKey}`;
   }, [webappUser?.id, initData, translationDraftScopeKey]);
+  const flushTranslationDraftAndroidDebugSummary = useCallback((reason = 'timer') => {
+    if (!androidTranslationDraftDebugConfig.enabled) {
+      return;
+    }
+    const debugState = translationDraftAndroidDebugRef.current;
+    if (debugState.flushTimer) {
+      clearTimeout(debugState.flushTimer);
+      debugState.flushTimer = null;
+    }
+    const counterEntries = Object.entries(debugState.counters || {});
+    const timingEntries = Object.entries(debugState.timings || {});
+    if (counterEntries.length === 0 && timingEntries.length === 0) {
+      return;
+    }
+    const timings = {};
+    timingEntries.forEach(([name, stats]) => {
+      const count = Number(stats?.count || 0);
+      const totalMs = Number(stats?.totalMs || 0);
+      const maxMs = Number(stats?.maxMs || 0);
+      if (count > 0) {
+        timings[name] = {
+          count,
+          avgMs: Number((totalMs / count).toFixed(2)),
+          maxMs: Number(maxMs.toFixed(2)),
+        };
+      }
+    });
+    console.info('[translation-android-debug]', {
+      reason,
+      variant: androidTranslationDraftDebugConfig.variant,
+      focused: hasFocusedTranslationDraftField(),
+      counters: debugState.counters,
+      timings,
+    });
+    debugState.counters = {};
+    debugState.timings = {};
+  }, [androidTranslationDraftDebugConfig.enabled, androidTranslationDraftDebugConfig.variant]);
+  const recordTranslationDraftAndroidDebugEvent = useCallback((name, options = {}) => {
+    if (!androidTranslationDraftDebugConfig.enabled) {
+      return;
+    }
+    if (options?.focusedOnly && !hasFocusedTranslationDraftField()) {
+      return;
+    }
+    const debugState = translationDraftAndroidDebugRef.current;
+    debugState.counters[name] = Number(debugState.counters[name] || 0) + 1;
+    if (options?.composing) {
+      const composingKey = `${name}.composing`;
+      debugState.counters[composingKey] = Number(debugState.counters[composingKey] || 0) + 1;
+    }
+    if (Number.isFinite(options?.durationMs)) {
+      const timing = debugState.timings[name] || { count: 0, totalMs: 0, maxMs: 0 };
+      timing.count += 1;
+      timing.totalMs += Number(options.durationMs);
+      timing.maxMs = Math.max(timing.maxMs, Number(options.durationMs));
+      debugState.timings[name] = timing;
+    }
+    if (debugState.flushTimer) {
+      clearTimeout(debugState.flushTimer);
+    }
+    debugState.flushTimer = window.setTimeout(() => {
+      flushTranslationDraftAndroidDebugSummary('timer');
+    }, options?.flush ? 0 : 1600);
+  }, [androidTranslationDraftDebugConfig.enabled, flushTranslationDraftAndroidDebugSummary]);
+  useEffect(() => {
+    if (!androidTranslationDraftDebugConfig.enabled) {
+      return undefined;
+    }
+    console.info('[translation-android-debug]', {
+      enabled: true,
+      variant: androidTranslationDraftDebugConfig.variant,
+      queryKeys: {
+        debug: ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY,
+        variant: ANDROID_TRANSLATION_DRAFT_VARIANT_QUERY_KEY,
+      },
+    });
+    return () => {
+      flushTranslationDraftAndroidDebugSummary('unmount');
+    };
+  }, [
+    androidTranslationDraftDebugConfig.enabled,
+    androidTranslationDraftDebugConfig.variant,
+    flushTranslationDraftAndroidDebugSummary,
+  ]);
+  const registerTranslationDraftValueAccessor = useCallback((sentenceId, accessor) => {
+    const key = String(sentenceId || '').trim();
+    if (!key || typeof accessor !== 'function') {
+      return undefined;
+    }
+    translationDraftFieldAccessorsRef.current.set(key, accessor);
+    return () => {
+      const current = translationDraftFieldAccessorsRef.current.get(key);
+      if (current === accessor) {
+        translationDraftFieldAccessorsRef.current.delete(key);
+      }
+    };
+  }, []);
   const writeYoutubeResumeToLocalCache = useCallback((payload) => {
     if (!payload || typeof payload !== 'object') return;
     const serialized = JSON.stringify(payload);
@@ -838,7 +1105,11 @@ function AppInner() {
     const next = {};
     translationDraftSentenceIdsRef.current.forEach((sentenceId) => {
       const key = String(sentenceId);
-      next[key] = String(translationDraftsRef.current?.[key] ?? '');
+      const accessor = translationDraftFieldAccessorsRef.current.get(key);
+      const liveValue = typeof accessor === 'function'
+        ? accessor()
+        : translationDraftsRef.current?.[key];
+      next[key] = String(liveValue ?? translationDraftsRef.current?.[key] ?? '');
     });
     return next;
   }, []);
@@ -912,6 +1183,22 @@ function AppInner() {
     flushTranslationDraftsToServer,
     isAndroidTelegramClient,
   ]);
+  const requestAndroidDraftPersistence = useCallback((sentenceId, value, options = {}) => {
+    const key = String(sentenceId || '').trim();
+    if (!key) return;
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : 0;
+    translationDraftsRef.current[key] = String(value ?? '');
+    scheduleTranslationDraftPersistence({
+      local: true,
+      server: false,
+      immediateLocal: options?.reason === 'blur',
+      localDelayMs: options?.reason === 'blur' ? 0 : undefined,
+    });
+    recordTranslationDraftAndroidDebugEvent('android.persist_request', {
+      focusedOnly: false,
+      durationMs: startedAt ? performance.now() - startedAt : undefined,
+    });
+  }, [recordTranslationDraftAndroidDebugEvent, scheduleTranslationDraftPersistence]);
   const clearTranslationDraftsOnServer = useCallback(async (sentenceIds = [], options = {}) => {
     if (!initData || !translationDraftScopeKey) return null;
     const clearAll = Boolean(options?.clearAll);
@@ -4612,6 +4899,7 @@ function AppInner() {
             translationDraftSyncTimeoutRef.current = null;
           }
           translationDraftsRef.current = {};
+          recordTranslationDraftAndroidDebugEvent('draft.state_update.reset_after_finish', { focusedOnly: false, flush: true });
           setTranslationDrafts({});
           safeStorageRemove(translationDraftStorageKey);
           void clearTranslationDraftsOnServer([], { clearAll: true, silent: true });
@@ -7156,8 +7444,10 @@ function AppInner() {
     const syncViewportMode = (options = {}) => {
       const force = Boolean(options?.force);
       if (!force && isAndroidTelegramClient && hasFocusedEditableElement()) {
+        recordTranslationDraftAndroidDebugEvent('viewport.sync.skipped_focused', { focusedOnly: true });
         return;
       }
+      const startedAt = typeof performance !== 'undefined' ? performance.now() : 0;
       try {
         telegramApp.ready?.();
         telegramApp.expand?.();
@@ -7188,10 +7478,16 @@ function AppInner() {
           // ignore
         }
         // Telegram API may be partially unavailable in browser mode.
+      } finally {
+        recordTranslationDraftAndroidDebugEvent('viewport.sync.run', {
+          focusedOnly: true,
+          durationMs: startedAt ? performance.now() - startedAt : undefined,
+        });
       }
     };
 
     const requestViewportSync = (options = {}) => {
+      recordTranslationDraftAndroidDebugEvent('viewport.sync.request', { focusedOnly: true });
       if (viewportSyncFrame !== null) {
         window.cancelAnimationFrame(viewportSyncFrame);
         viewportSyncFrame = null;
@@ -7221,17 +7517,24 @@ function AppInner() {
 
     const onResize = () => {
       fullscreenRetryCount = 0;
+      recordTranslationDraftAndroidDebugEvent('window.resize', { focusedOnly: true });
       requestViewportSync();
     };
     const onFocus = () => {
       fullscreenRetryCount = 0;
+      recordTranslationDraftAndroidDebugEvent('window.focus', { focusedOnly: true });
       requestViewportSync();
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         fullscreenRetryCount = 0;
+        recordTranslationDraftAndroidDebugEvent('document.visibility.visible', { focusedOnly: true });
         requestViewportSync();
       }
+    };
+    const onViewportChanged = () => {
+      recordTranslationDraftAndroidDebugEvent('telegram.viewport_changed', { focusedOnly: true });
+      requestViewportSync();
     };
     window.addEventListener('resize', onResize);
     window.addEventListener('focus', onFocus);
@@ -7240,7 +7543,7 @@ function AppInner() {
     window.addEventListener('touchstart', onFirstUserGesture, { passive: true });
     window.addEventListener('click', onFirstUserGesture, { passive: true });
     if (typeof telegramApp.onEvent === 'function') {
-      telegramApp.onEvent('viewportChanged', requestViewportSync);
+      telegramApp.onEvent('viewportChanged', onViewportChanged);
     }
     expandPulseTimer = window.setTimeout(() => {
       if (stopped) return;
@@ -7270,10 +7573,10 @@ function AppInner() {
       window.removeEventListener('touchstart', onFirstUserGesture);
       window.removeEventListener('click', onFirstUserGesture);
       if (typeof telegramApp.offEvent === 'function') {
-        telegramApp.offEvent('viewportChanged', requestViewportSync);
+        telegramApp.offEvent('viewportChanged', onViewportChanged);
       }
     };
-  }, [telegramApp, isAndroidTelegramClient]);
+  }, [telegramApp, isAndroidTelegramClient, recordTranslationDraftAndroidDebugEvent]);
 
   useEffect(() => {
     const pauseNow = () => {
@@ -7525,8 +7828,10 @@ function AppInner() {
     let lockFrame = null;
     const lockHorizontalScroll = () => {
       if (isAndroidTelegramClient && hasFocusedEditableElement()) {
+        recordTranslationDraftAndroidDebugEvent('layout.horizontal_lock.skipped_focused', { focusedOnly: true });
         return;
       }
+      const startedAt = typeof performance !== 'undefined' ? performance.now() : 0;
       const scrollingElement = document.scrollingElement || document.documentElement;
       const pageElement = document.querySelector('.webapp-page');
       if (Math.abs(window.scrollX) > 0) {
@@ -7541,8 +7846,13 @@ function AppInner() {
       if (pageElement && Math.abs(pageElement.scrollLeft) > 0) {
         pageElement.scrollLeft = 0;
       }
+      recordTranslationDraftAndroidDebugEvent('layout.horizontal_lock.run', {
+        focusedOnly: true,
+        durationMs: startedAt ? performance.now() - startedAt : undefined,
+      });
     };
     const requestHorizontalLock = () => {
+      recordTranslationDraftAndroidDebugEvent('layout.horizontal_lock.request', { focusedOnly: true });
       if (lockFrame !== null) return;
       lockFrame = window.requestAnimationFrame(() => {
         lockFrame = null;
@@ -7550,22 +7860,38 @@ function AppInner() {
       });
     };
     const viewport = window.visualViewport;
-    window.addEventListener('scroll', requestHorizontalLock, { passive: true });
-    window.addEventListener('resize', requestHorizontalLock);
-    viewport?.addEventListener('resize', requestHorizontalLock);
-    viewport?.addEventListener('scroll', requestHorizontalLock);
+    const handleWindowScroll = () => {
+      recordTranslationDraftAndroidDebugEvent('window.scroll', { focusedOnly: true });
+      requestHorizontalLock();
+    };
+    const handleWindowResize = () => {
+      recordTranslationDraftAndroidDebugEvent('window.resize.horizontal_lock', { focusedOnly: true });
+      requestHorizontalLock();
+    };
+    const handleViewportResize = () => {
+      recordTranslationDraftAndroidDebugEvent('visual_viewport.resize', { focusedOnly: true });
+      requestHorizontalLock();
+    };
+    const handleViewportScroll = () => {
+      recordTranslationDraftAndroidDebugEvent('visual_viewport.scroll', { focusedOnly: true });
+      requestHorizontalLock();
+    };
+    window.addEventListener('scroll', handleWindowScroll, { passive: true });
+    window.addEventListener('resize', handleWindowResize);
+    viewport?.addEventListener('resize', handleViewportResize);
+    viewport?.addEventListener('scroll', handleViewportScroll);
     requestHorizontalLock();
     return () => {
       if (lockFrame !== null) {
         window.cancelAnimationFrame(lockFrame);
         lockFrame = null;
       }
-      window.removeEventListener('scroll', requestHorizontalLock);
-      window.removeEventListener('resize', requestHorizontalLock);
-      viewport?.removeEventListener('resize', requestHorizontalLock);
-      viewport?.removeEventListener('scroll', requestHorizontalLock);
+      window.removeEventListener('scroll', handleWindowScroll);
+      window.removeEventListener('resize', handleWindowResize);
+      viewport?.removeEventListener('resize', handleViewportResize);
+      viewport?.removeEventListener('scroll', handleViewportScroll);
     };
-  }, [isWebAppMode, isAndroidTelegramClient]);
+  }, [isWebAppMode, isAndroidTelegramClient, recordTranslationDraftAndroidDebugEvent]);
 
   useEffect(() => {
     if (telegramApp?.initData) return;
@@ -8460,6 +8786,7 @@ function AppInner() {
         translationDraftStorageTimeoutRef.current = null;
       }
       translationDraftsRef.current = {};
+      recordTranslationDraftAndroidDebugEvent('draft.state_update.clear_no_sentences', { focusedOnly: false, flush: true });
       setTranslationDrafts({});
       return;
     }
@@ -8486,6 +8813,7 @@ function AppInner() {
       }
     }
     translationDraftsRef.current = { ...initialLocal };
+    recordTranslationDraftAndroidDebugEvent('draft.state_update.hydrate_local', { focusedOnly: false, flush: true });
     setTranslationDrafts(initialLocal);
     const hydrationKey = `${translationDraftStorageKey}:${translationDraftScopeKey || 'nosession'}`;
     translationDraftHydrationKeyRef.current = '';
@@ -8509,6 +8837,7 @@ function AppInner() {
         const data = await response.json();
         const serverDrafts = data?.drafts && typeof data.drafts === 'object' ? data.drafts : {};
         if (cancelled) return;
+        recordTranslationDraftAndroidDebugEvent('draft.state_update.hydrate_server', { focusedOnly: false, flush: true });
         setTranslationDrafts((prev) => {
           const next = {};
           sentenceIds.forEach((id) => {
@@ -8554,8 +8883,10 @@ function AppInner() {
         clearTimeout(translationDraftStorageTimeoutRef.current);
         translationDraftStorageTimeoutRef.current = null;
       }
-      flushTranslationDraftsToLocalCache();
-      void persistTranslationDraftsToServer(translationDraftsRef.current, {
+      const liveDraftSnapshot = getActiveTranslationDraftMap();
+      translationDraftsRef.current = { ...liveDraftSnapshot };
+      persistTranslationDraftsToLocalCache(liveDraftSnapshot);
+      void persistTranslationDraftsToServer(liveDraftSnapshot, {
         keepalive: true,
         silent: true,
       });
@@ -8572,8 +8903,9 @@ function AppInner() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [
+    getActiveTranslationDraftMap,
     initData,
-    flushTranslationDraftsToLocalCache,
+    persistTranslationDraftsToLocalCache,
     translationDraftScopeKey,
     translationDraftStorageKey,
     sentences.length,
@@ -8748,6 +9080,7 @@ function AppInner() {
         delete nextDraftRefMap[String(sentenceId)];
       });
       translationDraftsRef.current = nextDraftRefMap;
+      recordTranslationDraftAndroidDebugEvent('draft.state_update.remove_processed', { focusedOnly: false, flush: true });
       setTranslationDrafts((prev) => {
         const next = { ...prev };
         processedSentenceIds.forEach((sentenceId) => {
@@ -8872,9 +9205,7 @@ function AppInner() {
 
   const handleWebappSubmit = async (event) => {
     event.preventDefault();
-    const liveDrafts = translationDraftsRef.current && typeof translationDraftsRef.current === 'object'
-      ? translationDraftsRef.current
-      : {};
+    const liveDrafts = getActiveTranslationDraftMap();
     if (translationSubmitInFlightRef.current) {
       return;
     }
@@ -9120,9 +9451,7 @@ function AppInner() {
   };
 
   const handleStorySubmit = async () => {
-    const liveDrafts = translationDraftsRef.current && typeof translationDraftsRef.current === 'object'
-      ? translationDraftsRef.current
-      : {};
+    const liveDrafts = getActiveTranslationDraftMap();
     if (!initData) {
       setWebappError(initDataMissingMsg);
       return;
@@ -9175,22 +9504,41 @@ function AppInner() {
   };
 
   const handleDraftLiveChange = useCallback((sentenceId, value, options = {}) => {
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : 0;
     const key = String(sentenceId);
     translationDraftsRef.current[key] = value;
     if (options?.persist === false) {
+      recordTranslationDraftAndroidDebugEvent('draft.live_change.no_persist', {
+        focusedOnly: false,
+        durationMs: startedAt ? performance.now() - startedAt : undefined,
+      });
       return;
     }
     scheduleTranslationDraftPersistence({ local: true, server: false });
-  }, [scheduleTranslationDraftPersistence]);
+    recordTranslationDraftAndroidDebugEvent('draft.live_change.persist', {
+      focusedOnly: false,
+      durationMs: startedAt ? performance.now() - startedAt : undefined,
+    });
+  }, [recordTranslationDraftAndroidDebugEvent, scheduleTranslationDraftPersistence]);
 
   const handleDraftCommit = useCallback((sentenceId, value, options = {}) => {
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : 0;
     const key = String(sentenceId);
     translationDraftsRef.current[key] = value;
     if (options?.reason !== 'blur') {
+      recordTranslationDraftAndroidDebugEvent('draft.commit.non_blur', {
+        focusedOnly: false,
+        durationMs: startedAt ? performance.now() - startedAt : undefined,
+      });
       return;
     }
     const applyStateUpdate = () => {
+      recordTranslationDraftAndroidDebugEvent('draft.state_update.request', { focusedOnly: false });
       setTranslationDrafts((prev) => {
+        recordTranslationDraftAndroidDebugEvent('draft.state_update.apply', {
+          focusedOnly: false,
+          flush: true,
+        });
         if ((prev[key] || '') === value) {
           return prev;
         }
@@ -9211,7 +9559,12 @@ function AppInner() {
       local: true,
       server: true,
     });
-  }, [scheduleTranslationDraftPersistence]);
+    recordTranslationDraftAndroidDebugEvent('draft.commit.blur', {
+      focusedOnly: false,
+      durationMs: startedAt ? performance.now() - startedAt : undefined,
+      flush: true,
+    });
+  }, [recordTranslationDraftAndroidDebugEvent, scheduleTranslationDraftPersistence]);
 
   const normalizeSelectionText = (value) => {
     if (!value) return '';
@@ -12020,6 +12373,7 @@ function AppInner() {
       }
       translationDraftsRef.current = {};
       safeStorageRemove(translationDraftStorageKey);
+      recordTranslationDraftAndroidDebugEvent('draft.state_update.clear_session', { focusedOnly: false, flush: true });
       setTranslationDrafts({});
       setSessionType('none');
       setStoryGuess('');
@@ -16227,8 +16581,13 @@ function AppInner() {
                             placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
                             dictionaryLabel={tr('Открыть словарь', 'Woerterbuch')}
                             isAndroidClient={isAndroidTelegramClient}
+                            androidDebugEnabled={androidTranslationDraftDebugConfig.enabled}
+                            androidExperimentVariant={androidTranslationDraftDebugConfig.variant}
                             onLiveChange={handleDraftLiveChange}
                             onCommit={handleDraftCommit}
+                            onRequestPersist={requestAndroidDraftPersistence}
+                            onRegisterValueAccessor={registerTranslationDraftValueAccessor}
+                            onDebugEvent={recordTranslationDraftAndroidDebugEvent}
                             onJumpToDictionary={jumpToDictionaryFromSentence}
                           />
                         );
