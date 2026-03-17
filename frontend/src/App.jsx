@@ -5685,10 +5685,19 @@ function AppInner() {
         .replace(/^Gruppe:\s*/i, '')
         .trim();
       return selectedLabel
-        ? tr(`Сейчас показана статистика группы: ${selectedLabel}`, `Aktuell wird Gruppen-Statistik gezeigt: ${selectedLabel}`)
-        : tr('Сейчас показана статистика группы.', 'Aktuell wird Gruppen-Statistik gezeigt.');
+        ? tr(
+          `Верхняя динамика показывает только ваши попытки. Нижнее сравнение сейчас по группе: ${selectedLabel}`,
+          `Die obere Dynamik zeigt nur deine Versuche. Der untere Vergleich ist aktuell fuer die Gruppe: ${selectedLabel}`
+        )
+        : tr(
+          'Верхняя динамика показывает только ваши попытки. Нижнее сравнение сейчас по группе.',
+          'Die obere Dynamik zeigt nur deine Versuche. Der untere Vergleich ist aktuell fuer die Gruppe.'
+        );
     }
-    return tr('Сейчас показана статистика: только ваша.', 'Aktuell wird nur deine Statistik angezeigt.');
+    return tr(
+      'Верхняя динамика показывает только ваши попытки. Нижнее сравнение сейчас тоже персональное.',
+      'Die obere Dynamik zeigt nur deine Versuche. Der untere Vergleich ist aktuell ebenfalls persoenlich.'
+    );
   }, [analyticsScopeKey, analyticsScopeOptions, tr]);
   const analyticsScopeSelectorRequired = Boolean(analyticsScopeData?.selector?.required);
   const readerVisibleText = useMemo(() => {
@@ -13574,13 +13583,19 @@ function AppInner() {
     if (Object.keys(scopeContext).length > 0) {
       payloadBase.scope_context = scopeContext;
     }
+    const personalPayloadBase = {
+      ...payloadBase,
+      scope: 'personal',
+      scope_kind: 'personal',
+      scope_chat_id: null,
+    };
     setAnalyticsLoading(true);
     setAnalyticsError('');
     try {
       const summaryResponse = await fetch('/api/webapp/analytics/summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payloadBase),
+        body: JSON.stringify(personalPayloadBase),
       });
       if (!summaryResponse.ok) {
         throw new Error(await readApiError(summaryResponse, 'Ошибка загрузки аналитики', 'Fehler beim Laden der Analytik'));
@@ -13591,7 +13606,7 @@ function AppInner() {
       const seriesResponse = await fetch('/api/webapp/analytics/timeseries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payloadBase, granularity }),
+        body: JSON.stringify({ ...personalPayloadBase, granularity }),
       });
       if (!seriesResponse.ok) {
         throw new Error(await readApiError(seriesResponse, 'Ошибка загрузки динамики', 'Fehler beim Laden des Verlaufs'));
@@ -13609,7 +13624,7 @@ function AppInner() {
       }
       const compareData = await compareResponse.json();
       setAnalyticsCompare(compareData.items || []);
-      setAnalyticsRank(compareData.self?.rank ?? null);
+      setAnalyticsRank(scope.scope_kind === 'group' ? (compareData.self?.rank ?? null) : null);
     } catch (error) {
       setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${error.message}`);
     } finally {
