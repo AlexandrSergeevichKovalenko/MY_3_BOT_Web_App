@@ -45,6 +45,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "feel_word_multilang",
     "enrich_word",
     "enrich_word_multilang",
+    "quiz_followup_question",
     "check_translation",
     "check_translation_multilang",
     "check_translation_story",
@@ -872,6 +873,40 @@ Task:
 - Keep explanation practical and compact.
 - If you provide examples in target_language, add immediate source_language translation.
 - End with 1-2 concise "gut feeling" lines.
+""",
+"quiz_followup_question": """
+You answer a learner's follow-up question about a studied word, phrase, or sentence.
+
+Input JSON:
+{
+  "source_language": "de|en|es|it|ru",
+  "target_language": "de|en|es|it|ru",
+  "source_text": "...",
+  "target_text": "...",
+  "learner_question": "..."
+}
+
+Return STRICT JSON only with this schema:
+{
+  "reply_text": "...",
+  "save_source_text": "...",
+  "save_target_text": "..."
+}
+
+Rules:
+- reply_text must be written in target_language.
+- Answer the learner's question directly and practically.
+- Keep reply_text compact and Telegram-friendly: ideally 500-1200 characters, hard maximum 1600.
+- Use short paragraphs or short bullet-style lines separated by \\n, but keep it plain text.
+- If useful, you may include 1-2 short examples in source_language with immediate target_language translation.
+- Do not write academic lectures or long introductions.
+- save_source_text must be ONE useful phrase/example in source_language that is worth saving to the learner's dictionary.
+- save_target_text must be the direct translation of save_source_text in target_language.
+- save_source_text should usually be at most 140 characters.
+- save_target_text should usually be at most 180 characters.
+- If there is no good save candidate, return empty strings for save_source_text and save_target_text.
+- Never swap source and target languages.
+- Output ONLY valid JSON. No markdown fences. No extra commentary.
 """,
 "enrich_word_multilang":"""
 You are a multilingual lexicography assistant.
@@ -3646,6 +3681,15 @@ async def run_beginner_topic(payload: dict) -> dict:
         task_name="beginner_topic",
         system_instruction_key="beginner_topic",
         payload=payload or {},
+    )
+
+
+async def run_quiz_followup_question(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="quiz_followup_question",
+        system_instruction_key="quiz_followup_question",
+        payload=payload or {},
+        poll_delay_sec=1.2,
     )
 
 

@@ -64,6 +64,7 @@ from backend.openai_manager import (
     run_dictionary_collocations,
     run_dictionary_collocations_multilang,
     run_generate_word_quiz,
+    run_quiz_followup_question,
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
 )
@@ -132,6 +133,8 @@ QUIZ_FEEDBACK_TTL_SECONDS = 120
 QUIZ_CACHE_TTL_SECONDS = 60 * 60 * 24
 QUIZ_FREEFORM_OPTION = "keine korrekte Antworten"
 QUIZ_HIDE_CORRECT_PROBABILITY = 0.3
+QUIZ_QUESTION_TTL_SECONDS = 60 * 30
+QUIZ_QUESTION_REPLY_MAX_CHARS = 3200
 QUIZ_REPEAT_ACCURACY_THRESHOLD = min(
     1.0,
     max(0.0, float(os.getenv("QUIZ_REPEAT_ACCURACY_THRESHOLD", "0.5"))),
@@ -142,6 +145,9 @@ active_quizzes = {}
 pending_quiz_freeform = {}
 quiz_ru_translation_cache = {}
 pending_quiz_feel_requests = {}
+pending_quiz_question_requests = {}
+pending_quiz_question_input = {}
+pending_quiz_question_save_requests = {}
 pending_dictionary_cards = {}
 pending_dictionary_save_options = {}
 pending_dictionary_lookup_requests = {}
@@ -2867,6 +2873,63 @@ async def handle_user_message(update: Update, context: CallbackContext):
         pending_quiz_freeform.pop(user_id, None)
         return
 
+    pending_question = pending_quiz_question_input.get(user_id)
+    if pending_question:
+        if update.effective_chat and update.effective_chat.type != "private":
+            await update.message.reply_text("Вопрос по квизу отправьте в личку с ботом.")
+            return
+
+        request_key = str((pending_question or {}).get("request_key") or "").strip()
+        request_payload = pending_quiz_question_requests.get(request_key)
+        if not request_key or not request_payload or _is_quiz_question_payload_expired(request_payload):
+            pending_quiz_question_input.pop(user_id, None)
+            pending_quiz_question_requests.pop(request_key, None)
+            await update.message.reply_text("Этот контекст вопроса уже устарел. Нажмите кнопку под результатом квиза ещё раз.")
+            return
+
+        lowered = str(text or "").strip().lower()
+        if lowered in {"cancel", "/cancel", "отмена"}:
+            pending_quiz_question_input.pop(user_id, None)
+            await update.message.reply_text("Ок, отменил вопрос.")
+            return
+
+        await update.message.reply_text("⏳ Думаю над ответом...")
+        try:
+            llm_payload = {
+                "source_language": str(request_payload.get("source_lang") or "").strip().lower(),
+                "target_language": str(request_payload.get("target_lang") or "").strip().lower(),
+                "source_text": str(request_payload.get("source_text") or "").strip(),
+                "target_text": str(request_payload.get("target_text") or "").strip(),
+                "learner_question": text,
+            }
+            llm_response = await run_quiz_followup_question(llm_payload)
+            normalized = _normalize_quiz_question_llm_response(
+                llm_response,
+                source_lang=llm_payload["source_language"],
+                target_lang=llm_payload["target_language"],
+            )
+            save_key = None
+            if normalized["save_source_text"] and normalized["save_target_text"]:
+                save_key = _store_pending_quiz_question_save_request(
+                    user_id=int(user_id),
+                    request_key=request_key,
+                    source_text=normalized["save_source_text"],
+                    target_text=normalized["save_target_text"],
+                    source_lang=normalized["source_lang"],
+                    target_lang=normalized["target_lang"],
+                )
+            await update.message.reply_text(
+                normalized["reply_text"],
+                disable_web_page_preview=True,
+                reply_markup=_build_quiz_question_answer_keyboard(request_key=request_key, save_key=save_key),
+            )
+        except Exception:
+            logging.exception("❌ Ошибка ответа на quiz follow-up user_id=%s", user_id)
+            await update.message.reply_text("Не удалось подготовить ответ. Попробуйте чуть позже.")
+        finally:
+            pending_quiz_question_input.pop(user_id, None)
+        return
+
     # Проверяем, является ли сообщение переводом (поддержка многострочных сообщений)
     pattern = re.compile(r"^(\d+)\.\s*([^\d\n]+(?:\n[^\d\n]+)*)", re.MULTILINE)
     translations = pattern.findall(text)
@@ -4715,6 +4778,121 @@ async def handle_quiz_feel_callback(update: Update, context: CallbackContext) ->
         await query.answer("Не удалось сделать разбор. Попробуйте позже.", show_alert=True)
     finally:
         pending_feel_requests_inflight.discard(inflight_key)
+
+
+async def handle_quiz_ask_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+
+    request_key = parts[1].strip()
+    payload = pending_quiz_question_requests.get(request_key)
+    if not payload or _is_quiz_question_payload_expired(payload):
+        pending_quiz_question_requests.pop(request_key, None)
+        await query.answer("Кнопка устарела. Пройдите квиз ещё раз.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Кнопка доступна только автору результата.", show_alert=True)
+        return
+
+    pending_quiz_question_input[int(user.id)] = {
+        "request_key": request_key,
+        "started_at": time.time(),
+    }
+    try:
+        await query.answer("Жду ваш вопрос")
+    except Exception:
+        pass
+    await query.message.reply_text(
+        "❓ Напишите одним сообщением ваш вопрос по этой фразе.\n\n"
+        "Например:\n"
+        "• когда так говорят\n"
+        "• в чём разница с похожим вариантом\n"
+        "• дайте ещё 2 примера\n"
+        "• почему здесь именно такая форма\n\n"
+        "Если передумали, напишите: отмена"
+    )
+
+
+async def handle_quiz_question_save_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+
+    save_key = parts[1].strip()
+    payload = pending_quiz_question_save_requests.get(save_key)
+    if not payload or _is_quiz_question_payload_expired(payload):
+        pending_quiz_question_save_requests.pop(save_key, None)
+        await query.answer("Эта кнопка уже устарела. Задайте вопрос заново.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Кнопка доступна только автору ответа.", show_alert=True)
+        return
+    if payload.get("saved"):
+        await query.answer("Эта фраза уже сохранена.")
+        return
+
+    source_text = str(payload.get("source_text") or "").strip()
+    target_text = str(payload.get("target_text") or "").strip()
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    if not source_text or not target_text or not source_lang or not target_lang:
+        await query.answer("Не удалось определить языковую пару для сохранения.", show_alert=True)
+        return
+
+    save_payload = {
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "direction": f"{source_lang}-{target_lang}",
+        "lookup": {
+            "word_source": source_text,
+            "word_target": target_text,
+        },
+    }
+    chosen = {
+        "source": source_text,
+        "target": target_text,
+    }
+    save_ok, save_msg = _save_dictionary_option_for_user(
+        payload=save_payload,
+        chosen=chosen,
+        user_id=int(user.id),
+    )
+    if not save_ok:
+        await query.answer(save_msg or "Ошибка сохранения. Попробуйте позже.", show_alert=True)
+        return
+
+    payload["saved"] = True
+    pending_quiz_question_save_requests[save_key] = payload
+    try:
+        if query.message:
+            request_key = str(payload.get("request_key") or "").strip()
+            await query.message.edit_reply_markup(
+                reply_markup=_build_quiz_question_answer_keyboard(request_key=request_key, save_key=None)
+            )
+    except Exception:
+        logging.debug("Failed to update quiz question save keyboard", exc_info=True)
+    try:
+        await query.answer("✅ Сохранено")
+    except Exception:
+        pass
+    await query.message.reply_text(f"✅ Сохранена фраза: {source_text} -> {target_text}")
 
 
 async def handle_flashcard_feel_feedback_callback(update: Update, context: CallbackContext) -> None:
@@ -8255,6 +8433,142 @@ async def _translate_quiz_text_to_ru(de_text: str, fallback_ru: str | None = Non
     return translated or "—"
 
 
+def _is_quiz_question_payload_expired(payload: dict | None) -> bool:
+    started_at = float((payload or {}).get("started_at") or 0.0)
+    if started_at <= 0:
+        return True
+    return (time.time() - started_at) > QUIZ_QUESTION_TTL_SECONDS
+
+
+def _truncate_telegram_reply_text(text: str, max_chars: int = QUIZ_QUESTION_REPLY_MAX_CHARS) -> str:
+    normalized = str(text or "").strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    shortened = normalized[: max_chars - 3].rstrip()
+    split_idx = max(shortened.rfind("\n"), shortened.rfind(". "), shortened.rfind("! "), shortened.rfind("? "))
+    if split_idx >= max_chars // 2:
+        shortened = shortened[:split_idx].rstrip()
+    return shortened.rstrip() + "..."
+
+
+def _text_matches_language_side(text: str, lang: str) -> bool:
+    normalized = str(text or "").strip()
+    code = str(lang or "").strip().lower()
+    if not normalized or not code:
+        return False
+    if code == "de":
+        return bool(re.search(r"[A-Za-zÄÖÜäöüß]", normalized))
+    if code == "ru":
+        return bool(re.search(r"[А-Яа-яЁё]", normalized))
+    return True
+
+
+def _store_pending_quiz_question_request(
+    *,
+    user_id: int,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    key = hashlib.sha1(
+        f"quizq:{user_id}:{source_lang}:{target_lang}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
+    ).hexdigest()[:20]
+    pending_quiz_question_requests[key] = {
+        "user_id": int(user_id),
+        "source_text": str(source_text or "").strip(),
+        "target_text": str(target_text or "").strip(),
+        "source_lang": str(source_lang or "").strip().lower(),
+        "target_lang": str(target_lang or "").strip().lower(),
+        "started_at": time.time(),
+    }
+    if len(pending_quiz_question_requests) > 500:
+        oldest_key = next(iter(pending_quiz_question_requests))
+        pending_quiz_question_requests.pop(oldest_key, None)
+    return key
+
+
+def _store_pending_quiz_question_save_request(
+    *,
+    user_id: int,
+    request_key: str,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    save_key = hashlib.sha1(
+        f"quizqsave:{user_id}:{request_key}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
+    ).hexdigest()[:20]
+    pending_quiz_question_save_requests[save_key] = {
+        "user_id": int(user_id),
+        "request_key": str(request_key or "").strip(),
+        "source_text": str(source_text or "").strip(),
+        "target_text": str(target_text or "").strip(),
+        "source_lang": str(source_lang or "").strip().lower(),
+        "target_lang": str(target_lang or "").strip().lower(),
+        "started_at": time.time(),
+        "saved": False,
+    }
+    if len(pending_quiz_question_save_requests) > 500:
+        oldest_key = next(iter(pending_quiz_question_save_requests))
+        pending_quiz_question_save_requests.pop(oldest_key, None)
+    return save_key
+
+
+def _build_quiz_result_keyboard(*, feel_key: str | None = None, question_key: str | None = None) -> InlineKeyboardMarkup | None:
+    rows = []
+    if feel_key:
+        rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"quizfeel:{feel_key}")])
+    if question_key:
+        rows.append([InlineKeyboardButton("❓ Задать свой вопрос", callback_data=f"quizask:{question_key}")])
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_quiz_question_answer_keyboard(*, request_key: str, save_key: str | None = None) -> InlineKeyboardMarkup:
+    rows = []
+    if save_key:
+        rows.append([InlineKeyboardButton("💾 Сохранить фразу", callback_data=f"quizqsave:{save_key}")])
+    rows.append([InlineKeyboardButton("❓ Ещё вопрос", callback_data=f"quizask:{request_key}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _normalize_quiz_question_llm_response(
+    raw_payload: dict,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
+    reply_text = _truncate_telegram_reply_text(str(payload.get("reply_text") or "").strip())
+    save_source_text = str(payload.get("save_source_text") or "").strip()
+    save_target_text = str(payload.get("save_target_text") or "").strip()
+    if not reply_text:
+        reply_text = "Не удалось подготовить ответ. Попробуйте переформулировать вопрос чуть короче."
+    if len(save_source_text) > 180:
+        save_source_text = save_source_text[:177].rstrip() + "..."
+    if len(save_target_text) > 220:
+        save_target_text = save_target_text[:217].rstrip() + "..."
+    if save_source_text and not _text_matches_language_side(save_source_text, source_lang):
+        save_source_text = ""
+        save_target_text = ""
+    if save_target_text and not _text_matches_language_side(save_target_text, target_lang):
+        save_source_text = ""
+        save_target_text = ""
+    if not save_source_text or not save_target_text:
+        save_source_text = ""
+        save_target_text = ""
+    return {
+        "reply_text": reply_text,
+        "save_source_text": save_source_text,
+        "save_target_text": save_target_text,
+        "source_lang": str(source_lang or "").strip().lower(),
+        "target_lang": str(target_lang or "").strip().lower(),
+    }
+
+
 async def _send_quiz_result_private(
     context: ContextTypes.DEFAULT_TYPE,
     user_id: int,
@@ -8299,6 +8613,7 @@ async def _send_quiz_result_private(
     ])
 
     reply_markup = None
+    question_key = None
     feel_source_text = (de_text or correct_text or "").strip()
     feel_target_text = (ru_text or fallback_ru or "").strip()
     if feel_source_text:
@@ -8315,9 +8630,14 @@ async def _send_quiz_result_private(
         if len(pending_quiz_feel_requests) > 500:
             oldest_key = next(iter(pending_quiz_feel_requests))
             pending_quiz_feel_requests.pop(oldest_key, None)
-        reply_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"quizfeel:{feel_key}")]
-        ])
+        question_key = _store_pending_quiz_question_request(
+            user_id=int(user_id),
+            source_text=feel_source_text,
+            target_text=feel_target_text,
+            source_lang="de",
+            target_lang="ru",
+        )
+        reply_markup = _build_quiz_result_keyboard(feel_key=feel_key, question_key=question_key)
 
     max_attempts = 2
     for attempt in range(max_attempts):
@@ -9587,6 +9907,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_tts_prewarm_quota_callback, pattern=r"^ttsprewarmquota:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
+    application.add_handler(CallbackQueryHandler(handle_quiz_ask_callback, pattern=r"^quizask:"))
+    application.add_handler(CallbackQueryHandler(handle_quiz_question_save_callback, pattern=r"^quizqsave:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_feel_callback, pattern=r"^quizfeel:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_feel_callback, pattern=r"^dictfeel:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_pair_callback, pattern=r"^dictpair:"))
