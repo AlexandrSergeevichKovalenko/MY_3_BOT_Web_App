@@ -1573,56 +1573,6 @@ function AppInner() {
       items: [tr('Лимиты для этого тарифа обновляются. Попробуйте позже.', 'Die Limits fuer diesen Tarif werden aktualisiert. Bitte spaeter erneut pruefen.')],
     };
   }, [billingPlanDetailsOpenFor, billingPlanLimitDetails, tr]);
-  const readApiError = useCallback(async (response, fallbackRu, fallbackDe) => {
-    const fallback = tr(fallbackRu, fallbackDe);
-    const formatBillingLimitError = (payload) => {
-      if (!payload || typeof payload !== 'object') return '';
-      const errorCode = String(payload.error || '').trim();
-      if (errorCode === 'cost_cap_exceeded') {
-        const spent = Number(payload.spent_eur || 0);
-        const cap = Number(payload.cap_eur || 0);
-        const resetAt = String(payload.reset_at || '');
-        return tr(
-          `Дневной лимит расходов исчерпан: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Сброс: ${resetAt}`,
-          `Taegliches Kostenlimit erreicht: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Reset: ${resetAt}`
-        );
-      }
-      if (errorCode === 'feature_limit_exceeded') {
-        const feature = String(payload.feature || '').trim();
-        const used = Number(payload.used || 0);
-        const limit = Number(payload.limit || 0);
-        const unit = String(payload.unit || '').trim();
-        const resetAt = String(payload.reset_at || '');
-        return tr(
-          `Лимит функции исчерпан (${feature}): ${used} / ${limit} ${unit}. Сброс: ${resetAt}`,
-          `Funktionslimit erreicht (${feature}): ${used} / ${limit} ${unit}. Reset: ${resetAt}`
-        );
-      }
-      return '';
-    };
-    try {
-      const raw = await response.text();
-      if (!raw) return `${fallback} (HTTP ${response.status})`;
-      try {
-        const parsed = JSON.parse(raw);
-        const billingLimitMessage = formatBillingLimitError(parsed);
-        if (billingLimitMessage) return billingLimitMessage;
-        const message = String(parsed?.error || parsed?.message || '').trim();
-        if (isInitDataAuthFailureMessage(message)) {
-          handleInitDataAuthFailure(message);
-        }
-        return message || `${fallback} (HTTP ${response.status})`;
-      } catch (_jsonError) {
-        const compact = String(raw).replace(/\s+/g, ' ').trim();
-        if (isInitDataAuthFailureMessage(compact)) {
-          handleInitDataAuthFailure(compact);
-        }
-        return compact || `${fallback} (HTTP ${response.status})`;
-      }
-    } catch (_readError) {
-      return `${fallback} (HTTP ${response.status})`;
-    }
-  }, [handleInitDataAuthFailure, isInitDataAuthFailureMessage, tr]);
   const normalizeNetworkErrorMessage = useCallback((error, fallbackRu, fallbackDe) => {
     const fallback = tr(fallbackRu, fallbackDe);
     const name = String(error?.name || '').trim().toLowerCase();
@@ -1744,6 +1694,56 @@ function AppInner() {
       return false;
     }
   }, [handleInitDataAuthFailure, isInitDataAuthFailureMessage]);
+  const readApiError = useCallback(async (response, fallbackRu, fallbackDe) => {
+    const fallback = tr(fallbackRu, fallbackDe);
+    const formatBillingLimitError = (payload) => {
+      if (!payload || typeof payload !== 'object') return '';
+      const errorCode = String(payload.error || '').trim();
+      if (errorCode === 'cost_cap_exceeded') {
+        const spent = Number(payload.spent_eur || 0);
+        const cap = Number(payload.cap_eur || 0);
+        const resetAt = String(payload.reset_at || '');
+        return tr(
+          `Дневной лимит расходов исчерпан: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Сброс: ${resetAt}`,
+          `Taegliches Kostenlimit erreicht: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Reset: ${resetAt}`
+        );
+      }
+      if (errorCode === 'feature_limit_exceeded') {
+        const feature = String(payload.feature || '').trim();
+        const used = Number(payload.used || 0);
+        const limit = Number(payload.limit || 0);
+        const unit = String(payload.unit || '').trim();
+        const resetAt = String(payload.reset_at || '');
+        return tr(
+          `Лимит функции исчерпан (${feature}): ${used} / ${limit} ${unit}. Сброс: ${resetAt}`,
+          `Funktionslimit erreicht (${feature}): ${used} / ${limit} ${unit}. Reset: ${resetAt}`
+        );
+      }
+      return '';
+    };
+    try {
+      const raw = await response.text();
+      if (!raw) return `${fallback} (HTTP ${response.status})`;
+      try {
+        const parsed = JSON.parse(raw);
+        const billingLimitMessage = formatBillingLimitError(parsed);
+        if (billingLimitMessage) return billingLimitMessage;
+        const message = String(parsed?.error || parsed?.message || '').trim();
+        if (isInitDataAuthFailureMessage(message)) {
+          handleInitDataAuthFailure(message);
+        }
+        return message || `${fallback} (HTTP ${response.status})`;
+      } catch (_jsonError) {
+        const compact = String(raw).replace(/\s+/g, ' ').trim();
+        if (isInitDataAuthFailureMessage(compact)) {
+          handleInitDataAuthFailure(compact);
+        }
+        return compact || `${fallback} (HTTP ${response.status})`;
+      }
+    } catch (_readError) {
+      return `${fallback} (HTTP ${response.status})`;
+    }
+  }, [handleInitDataAuthFailure, isInitDataAuthFailureMessage, tr]);
   const postSupportApi = useCallback(async (path, body = {}) => {
     if (!initData) {
       throw new Error(initDataMissingMsg);
