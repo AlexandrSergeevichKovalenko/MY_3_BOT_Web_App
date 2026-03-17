@@ -17,8 +17,7 @@ import { detectAppMode } from './utils/appMode';
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
 const SINGLE_INSTANCE_LOCK_KEY = 'dds_single_instance_lock_v1';
-const SINGLE_INSTANCE_HEARTBEAT_MS = 2000;
-const SINGLE_INSTANCE_STALE_MS = 12000;
+const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
 const TTS_CACHE_MAX_ENTRIES = 60;
 const READER_IDLE_TIMEOUT_MS = 60000;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
@@ -689,6 +688,9 @@ function AppInner() {
   const singleInstanceTokenRef = useRef(`inst_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
   const singleInstanceOwnsLockRef = useRef(false);
   const singleInstanceHeartbeatRef = useRef(null);
+  const singleInstanceDeactivateInFlightRef = useRef(false);
+  const singleInstanceStopTtsRef = useRef(null);
+  const singleInstancePauseTimersRef = useRef(null);
   const inlineToastTimeoutRef = useRef(null);
   const readerSessionStartingRef = useRef(false);
   const readerStateSaveTimeoutRef = useRef(null);
@@ -1305,146 +1307,6 @@ function AppInner() {
       };
     });
   }, [weeklySummaryCurrentMetrics, weeklySummaryKpiMeta, weeklySummaryPreviousMetrics]);
-  const forceSingleInstanceTakeover = useCallback(() => {
-    if (!isWebAppMode) return;
-    const now = Date.now();
-    safeStorageSet(SINGLE_INSTANCE_LOCK_KEY, JSON.stringify({
-      owner: singleInstanceTokenRef.current,
-      lastSeen: now,
-      openedAt: now,
-      href: window.location.href,
-    }));
-    singleInstanceOwnsLockRef.current = true;
-    setSingleInstanceBlocked(false);
-  }, [isWebAppMode]);
-  useEffect(() => {
-    if (!isWebAppMode) {
-      setSingleInstanceBlocked(false);
-      singleInstanceOwnsLockRef.current = false;
-      if (singleInstanceHeartbeatRef.current) {
-        clearInterval(singleInstanceHeartbeatRef.current);
-        singleInstanceHeartbeatRef.current = null;
-      }
-      return undefined;
-    }
-
-    const parseLock = () => {
-      const raw = safeStorageGet(SINGLE_INSTANCE_LOCK_KEY);
-      if (!raw) return null;
-      try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return null;
-        return {
-          owner: String(parsed.owner || '').trim(),
-          lastSeen: Number(parsed.lastSeen || 0),
-        };
-      } catch (_error) {
-        return null;
-      }
-    };
-
-    const isFreshLock = (lock) => {
-      if (!lock?.owner) return false;
-      if (!Number.isFinite(lock?.lastSeen)) return false;
-      return (Date.now() - Number(lock.lastSeen)) <= SINGLE_INSTANCE_STALE_MS;
-    };
-
-    const writeOwnLock = () => {
-      const now = Date.now();
-      safeStorageSet(SINGLE_INSTANCE_LOCK_KEY, JSON.stringify({
-        owner: singleInstanceTokenRef.current,
-        lastSeen: now,
-        openedAt: now,
-        href: window.location.href,
-      }));
-    };
-
-    const releaseOwnLock = () => {
-      const lock = parseLock();
-      if (lock?.owner === singleInstanceTokenRef.current) {
-        safeStorageRemove(SINGLE_INSTANCE_LOCK_KEY);
-      }
-      singleInstanceOwnsLockRef.current = false;
-    };
-
-    const acquireOrBlock = (force = false) => {
-      const lock = parseLock();
-      const occupiedByOther = Boolean(
-        lock?.owner
-        && lock.owner !== singleInstanceTokenRef.current
-        && isFreshLock(lock)
-      );
-      if (!force && occupiedByOther) {
-        singleInstanceOwnsLockRef.current = false;
-        setSingleInstanceBlocked(true);
-        return false;
-      }
-      writeOwnLock();
-      singleInstanceOwnsLockRef.current = true;
-      setSingleInstanceBlocked(false);
-      return true;
-    };
-
-    const heartbeat = () => {
-      const lock = parseLock();
-      if (singleInstanceOwnsLockRef.current) {
-        const otherFresh = Boolean(
-          lock?.owner
-          && lock.owner !== singleInstanceTokenRef.current
-          && isFreshLock(lock)
-        );
-        if (otherFresh) {
-          singleInstanceOwnsLockRef.current = false;
-          setSingleInstanceBlocked(true);
-          return;
-        }
-        writeOwnLock();
-        return;
-      }
-      if (!lock || !isFreshLock(lock)) {
-        acquireOrBlock(false);
-      } else if (lock.owner !== singleInstanceTokenRef.current) {
-        setSingleInstanceBlocked(true);
-      }
-    };
-
-    const onStorage = (event) => {
-      if (event.key !== SINGLE_INSTANCE_LOCK_KEY) return;
-      heartbeat();
-    };
-
-    const onVisible = () => {
-      if (document.visibilityState !== 'visible') return;
-      heartbeat();
-    };
-
-    const onPageHide = () => {
-      releaseOwnLock();
-    };
-
-    const onBeforeUnload = () => {
-      releaseOwnLock();
-    };
-
-    acquireOrBlock(false);
-    singleInstanceHeartbeatRef.current = window.setInterval(heartbeat, SINGLE_INSTANCE_HEARTBEAT_MS);
-    window.addEventListener('storage', onStorage);
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('pagehide', onPageHide);
-    window.addEventListener('beforeunload', onBeforeUnload);
-
-    return () => {
-      if (singleInstanceHeartbeatRef.current) {
-        clearInterval(singleInstanceHeartbeatRef.current);
-        singleInstanceHeartbeatRef.current = null;
-      }
-      window.removeEventListener('storage', onStorage);
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('pagehide', onPageHide);
-      window.removeEventListener('beforeunload', onBeforeUnload);
-      releaseOwnLock();
-    };
-  }, [isWebAppMode]);
   const billingReturnMessage = useMemo(() => {
     if (billingReturnContext.kind === 'success') {
       return tr('Оплата прошла успешно. Проверяю подписку и обновляю статус.', 'Zahlung erfolgreich. Ich pruefe jetzt dein Abo und aktualisiere den Status.');
@@ -1669,6 +1531,58 @@ function AppInner() {
     initDataExpiredMsg,
     telegramApp,
   ]);
+  const handleSingleInstanceConflict = useCallback(async (_message = '') => {
+    if (singleInstanceDeactivateInFlightRef.current) return;
+    singleInstanceDeactivateInFlightRef.current = true;
+    singleInstanceOwnsLockRef.current = false;
+    if (singleInstanceHeartbeatRef.current) {
+      window.clearInterval(singleInstanceHeartbeatRef.current);
+      singleInstanceHeartbeatRef.current = null;
+    }
+    setSingleInstanceBlocked(true);
+    setAssistantToken(null);
+    setAssistantError('');
+    setToken(null);
+    try {
+      singleInstanceStopTtsRef.current?.({ invalidatePending: false });
+    } catch (error) {
+      console.warn('single instance TTS stop failed', error);
+    }
+    try {
+      await singleInstancePauseTimersRef.current?.('lifecycle');
+    } catch (error) {
+      console.warn('single instance timer pause failed', error);
+    } finally {
+      singleInstanceDeactivateInFlightRef.current = false;
+    }
+  }, []);
+  const inspectSingleInstanceConflictResponse = useCallback(async (response) => {
+    if (!response || response.ok || response.status !== 409) {
+      return false;
+    }
+    try {
+      const cloned = response.clone();
+      const raw = await cloned.text();
+      const compact = String(raw || '').trim();
+      if (!compact) return false;
+      let errorCode = '';
+      let message = compact;
+      try {
+        const parsed = JSON.parse(compact);
+        errorCode = String(parsed?.error || '').trim();
+        message = String(parsed?.message || parsed?.error || compact).trim();
+      } catch (_jsonError) {
+        message = compact;
+      }
+      if (errorCode !== 'webapp_instance_conflict') {
+        return false;
+      }
+      await handleSingleInstanceConflict(message);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }, [handleSingleInstanceConflict]);
   const inspectInitDataAuthFailureResponse = useCallback(async (response) => {
     if (!response || response.ok || (response.status !== 401 && response.status !== 403)) {
       return false;
@@ -1728,6 +1642,9 @@ function AppInner() {
         const parsed = JSON.parse(raw);
         const billingLimitMessage = formatBillingLimitError(parsed);
         if (billingLimitMessage) return billingLimitMessage;
+        if (String(parsed?.error || '').trim() === 'webapp_instance_conflict') {
+          await handleSingleInstanceConflict(String(parsed?.message || '').trim());
+        }
         const message = String(parsed?.error || parsed?.message || '').trim();
         if (isInitDataAuthFailureMessage(message)) {
           handleInitDataAuthFailure(message);
@@ -1743,7 +1660,7 @@ function AppInner() {
     } catch (_readError) {
       return `${fallback} (HTTP ${response.status})`;
     }
-  }, [handleInitDataAuthFailure, isInitDataAuthFailureMessage, tr]);
+  }, [handleInitDataAuthFailure, handleSingleInstanceConflict, isInitDataAuthFailureMessage, tr]);
   const postSupportApi = useCallback(async (path, body = {}) => {
     if (!initData) {
       throw new Error(initDataMissingMsg);
@@ -1790,6 +1707,7 @@ function AppInner() {
       try {
         const response = await fetch(url, { ...options, signal: controller.signal });
         await inspectInitDataAuthFailureResponse(response);
+        await inspectSingleInstanceConflictResponse(response);
         return response;
       } catch (error) {
         if (didTimeout) {
@@ -1807,7 +1725,75 @@ function AppInner() {
       }
     }
     throw lastError || new Error('Request failed');
-  }, [inspectInitDataAuthFailureResponse]);
+  }, [inspectInitDataAuthFailureResponse, inspectSingleInstanceConflictResponse]);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.fetch !== 'function') {
+      return undefined;
+    }
+    const originalFetch = window.fetch;
+    const shouldDecorateApiRequest = (input) => {
+      if (!isWebAppMode || !initData) return false;
+      const rawUrl = typeof input === 'string' || input instanceof URL
+        ? String(input)
+        : String(input?.url || '');
+      if (!rawUrl) return false;
+      try {
+        const resolved = new URL(rawUrl, window.location.origin);
+        return resolved.origin === window.location.origin && resolved.pathname.startsWith('/api/');
+      } catch (_error) {
+        return false;
+      }
+    };
+    const wrappedFetch = async (input, init) => {
+      let finalInput = input;
+      let finalInit = init;
+      const shouldDecorate = shouldDecorateApiRequest(input);
+      if (shouldDecorate) {
+        const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+        if (!headers.has('X-Webapp-Instance-Id')) {
+          headers.set('X-Webapp-Instance-Id', singleInstanceTokenRef.current);
+        }
+        if (sessionId && !headers.has('X-Webapp-Session-Id')) {
+          headers.set('X-Webapp-Session-Id', String(sessionId));
+        }
+        if (appMode && !headers.has('X-Webapp-App-Context')) {
+          headers.set('X-Webapp-App-Context', String(appMode));
+        }
+        if (telegramApp?.platform && !headers.has('X-Webapp-Platform')) {
+          headers.set('X-Webapp-Platform', String(telegramApp.platform));
+        }
+        if (input instanceof Request) {
+          finalInput = new Request(input, {
+            headers,
+            signal: init?.signal ?? input.signal,
+          });
+          finalInit = init;
+        } else {
+          finalInit = { ...(init || {}), headers };
+        }
+      }
+      const response = await originalFetch.call(window, finalInput, finalInit);
+      if (shouldDecorate) {
+        await inspectInitDataAuthFailureResponse(response);
+        await inspectSingleInstanceConflictResponse(response);
+      }
+      return response;
+    };
+    window.fetch = wrappedFetch;
+    return () => {
+      if (window.fetch === wrappedFetch) {
+        window.fetch = originalFetch;
+      }
+    };
+  }, [
+    appMode,
+    initData,
+    inspectInitDataAuthFailureResponse,
+    inspectSingleInstanceConflictResponse,
+    isWebAppMode,
+    sessionId,
+    telegramApp,
+  ]);
   const fetchGetWithRetry = useCallback(async (url, timeoutMs = 45000) => {
     let response = await fetchWithTimeout(url, {}, timeoutMs);
     if (!response.ok && response.status >= 500) {
@@ -6877,6 +6863,116 @@ function AppInner() {
     stopReaderSessionTracking,
     stopAssistantSessionTracking,
   ]);
+  singleInstanceStopTtsRef.current = stopTtsPlayback;
+  singleInstancePauseTimersRef.current = pauseAllActiveTimers;
+
+  useEffect(() => {
+    if (!isWebAppMode || typeof window === 'undefined') {
+      setSingleInstanceBlocked(false);
+      return undefined;
+    }
+
+    const readLeaderToken = () => {
+      try {
+        const raw = String(window.localStorage.getItem(SINGLE_INSTANCE_LOCK_KEY) || '').trim();
+        if (!raw) return '';
+        if (!raw.startsWith('{')) {
+          return raw;
+        }
+        const parsed = JSON.parse(raw);
+        return String(parsed?.token || parsed?.instanceId || parsed?.id || '').trim();
+      } catch (error) {
+        return '';
+      }
+    };
+
+    const token = singleInstanceTokenRef.current;
+    try {
+      window.localStorage.setItem(SINGLE_INSTANCE_LOCK_KEY, token);
+    } catch (error) {
+      console.warn('single instance lock write failed', error);
+    }
+    singleInstanceOwnsLockRef.current = true;
+    setSingleInstanceBlocked(false);
+
+    const ensureLeadership = () => {
+      if (readLeaderToken() !== token) {
+        void handleSingleInstanceConflict();
+      }
+    };
+
+    singleInstanceHeartbeatRef.current = window.setInterval(ensureLeadership, SINGLE_INSTANCE_HEARTBEAT_MS);
+    const handleStorage = (event) => {
+      if (event.key !== SINGLE_INSTANCE_LOCK_KEY) return;
+      ensureLeadership();
+    };
+
+    window.addEventListener('storage', handleStorage);
+
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      if (singleInstanceHeartbeatRef.current) {
+        window.clearInterval(singleInstanceHeartbeatRef.current);
+        singleInstanceHeartbeatRef.current = null;
+      }
+      if (singleInstanceOwnsLockRef.current && readLeaderToken() === token) {
+        try {
+          window.localStorage.removeItem(SINGLE_INSTANCE_LOCK_KEY);
+        } catch (error) {
+          // ignore
+        }
+      }
+      singleInstanceOwnsLockRef.current = false;
+    };
+  }, [handleSingleInstanceConflict, isWebAppMode]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || singleInstanceBlocked || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    let stopped = false;
+    let heartbeatTimer = null;
+    const claimServerLease = async (reason = 'heartbeat') => {
+      if (stopped || singleInstanceBlocked) return;
+      try {
+        await fetch('/api/webapp/instance/claim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            instanceId: singleInstanceTokenRef.current,
+            sessionId,
+            appContext: appMode,
+            platform: telegramApp?.platform || '',
+            reason,
+          }),
+        });
+      } catch (error) {
+        console.warn('webapp instance lease heartbeat failed', error);
+      }
+    };
+
+    void claimServerLease('claim');
+    heartbeatTimer = window.setInterval(() => {
+      void claimServerLease('heartbeat');
+    }, 10000);
+
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void claimServerLease('heartbeat');
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisible);
+
+    return () => {
+      stopped = true;
+      document.removeEventListener('visibilitychange', handleVisible);
+      if (heartbeatTimer) {
+        window.clearInterval(heartbeatTimer);
+      }
+    };
+  }, [appMode, initData, isWebAppMode, sessionId, singleInstanceBlocked, telegramApp]);
 
   const resumeAutoPausedVisibleTimers = useCallback(async () => {
     if (globalTimerAutoResumeInFlightRef.current) return;
@@ -14034,22 +14130,14 @@ function AppInner() {
           <div className="webapp-card">
             <header className="webapp-header">
               <span className="pill">Telegram Web App</span>
-              <h1>{tr('Уже открыто в другом окне', 'Bereits in einem anderen Fenster offen')}</h1>
+              <h1>{tr('Эта копия больше не активна', 'Diese Kopie ist nicht mehr aktiv')}</h1>
               <p>
                 {tr(
-                  'Сейчас активна другая копия приложения. Это защита от параллельных сессий и дублирования действий.',
-                  'Aktuell ist bereits eine andere App-Kopie aktiv. Das ist ein Schutz gegen parallele Sessions und doppelte Aktionen.'
+                  'Приложение продолжило работу в другом окне. Это окно можно просто закрыть.',
+                  'Die App laeuft jetzt in einem anderen Fenster weiter. Dieses Fenster kann einfach geschlossen werden.'
                 )}
               </p>
             </header>
-            <div className="webapp-actions">
-              <button type="button" className="primary-button" onClick={forceSingleInstanceTakeover}>
-                {tr('Открыть эту копию', 'Diese Kopie öffnen')}
-              </button>
-              <button type="button" className="secondary-button" onClick={() => window.location.reload()}>
-                {tr('Проверить снова', 'Erneut prüfen')}
-              </button>
-            </div>
           </div>
         </div>
       );

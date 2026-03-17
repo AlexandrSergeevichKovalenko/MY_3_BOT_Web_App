@@ -1411,6 +1411,22 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_webapp_group_contexts (chat_id, participation_confirmed, last_seen_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_webapp_instance_leases (
+                    user_id BIGINT PRIMARY KEY,
+                    instance_id TEXT NOT NULL,
+                    session_id TEXT,
+                    platform TEXT,
+                    app_context TEXT,
+                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_instance_leases_seen
+                ON bt_3_webapp_instance_leases (last_seen_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_checks (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -4688,6 +4704,132 @@ def _build_webapp_scope_key(scope_kind: str, scope_chat_id: int | None) -> str:
     if scope_kind == "group" and scope_chat_id is not None:
         return f"group:{int(scope_chat_id)}"
     return "personal"
+
+
+def _normalize_webapp_instance_id(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("instance_id обязателен")
+    compact = re.sub(r"[^a-zA-Z0-9._:-]+", "-", raw).strip("-")
+    if not compact:
+        raise ValueError("instance_id пуст после нормализации")
+    return compact[:128]
+
+
+def _map_webapp_instance_lease_row(row: Any, *, user_id: int | None = None) -> dict | None:
+    if not row:
+        return None
+    resolved_user_id = int(row[0]) if row[0] is not None else int(user_id or 0)
+    if resolved_user_id <= 0:
+        return None
+    return {
+        "user_id": resolved_user_id,
+        "instance_id": str(row[1] or "").strip(),
+        "session_id": str(row[2] or "").strip() or None,
+        "platform": str(row[3] or "").strip() or None,
+        "app_context": str(row[4] or "").strip() or None,
+        "claimed_at": row[5].isoformat() if row[5] else None,
+        "last_seen_at": row[6].isoformat() if row[6] else None,
+        "updated_at": row[7].isoformat() if row[7] else None,
+    }
+
+
+def get_webapp_instance_lease(user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    user_id,
+                    instance_id,
+                    session_id,
+                    platform,
+                    app_context,
+                    claimed_at,
+                    last_seen_at,
+                    updated_at
+                FROM bt_3_webapp_instance_leases
+                WHERE user_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            return _map_webapp_instance_lease_row(cursor.fetchone(), user_id=int(user_id))
+
+
+def claim_webapp_instance_lease(
+    *,
+    user_id: int,
+    instance_id: str,
+    session_id: str | None = None,
+    platform: str | None = None,
+    app_context: str | None = None,
+) -> dict:
+    normalized_instance_id = _normalize_webapp_instance_id(instance_id)
+    normalized_session_id = str(session_id or "").strip()[:128] or None
+    normalized_platform = str(platform or "").strip()[:64] or None
+    normalized_app_context = str(app_context or "").strip()[:64] or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_webapp_instance_leases (
+                    user_id,
+                    instance_id,
+                    session_id,
+                    platform,
+                    app_context,
+                    claimed_at,
+                    last_seen_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET
+                    instance_id = EXCLUDED.instance_id,
+                    session_id = EXCLUDED.session_id,
+                    platform = EXCLUDED.platform,
+                    app_context = EXCLUDED.app_context,
+                    last_seen_at = NOW(),
+                    updated_at = NOW()
+                RETURNING
+                    user_id,
+                    instance_id,
+                    session_id,
+                    platform,
+                    app_context,
+                    claimed_at,
+                    last_seen_at,
+                    updated_at;
+                """,
+                (
+                    int(user_id),
+                    normalized_instance_id,
+                    normalized_session_id,
+                    normalized_platform,
+                    normalized_app_context,
+                ),
+            )
+            row = cursor.fetchone()
+    lease = _map_webapp_instance_lease_row(row, user_id=int(user_id))
+    if not lease:
+        raise RuntimeError("Не удалось сохранить lease WebApp instance")
+    return lease
+
+
+def release_webapp_instance_lease(*, user_id: int, instance_id: str) -> bool:
+    normalized_instance_id = _normalize_webapp_instance_id(instance_id)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_webapp_instance_leases
+                WHERE user_id = %s
+                  AND instance_id = %s;
+                """,
+                (int(user_id), normalized_instance_id),
+            )
+            return bool(cursor.rowcount)
 
 
 def get_webapp_scope_state(user_id: int) -> dict:

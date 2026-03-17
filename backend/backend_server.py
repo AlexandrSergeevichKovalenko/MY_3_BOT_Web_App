@@ -262,6 +262,9 @@ from backend.database import (
     upsert_user_language_profile,
     get_webapp_scope_state,
     upsert_webapp_scope_state,
+    get_webapp_instance_lease,
+    claim_webapp_instance_lease,
+    release_webapp_instance_lease,
     upsert_webapp_group_context,
     list_webapp_group_contexts,
     list_webapp_group_member_user_ids,
@@ -454,6 +457,7 @@ MOBILE_AUTH_SECRET = (os.getenv("MOBILE_AUTH_SECRET") or TELEGRAM_Deutsch_BOT_TO
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
 TELEGRAM_LOGIN_TTL_SECONDS = int(os.getenv("TELEGRAM_LOGIN_TTL_SECONDS", "86400"))
 TELEGRAM_WEBAPP_INIT_TTL_SECONDS = int(os.getenv("TELEGRAM_WEBAPP_INIT_TTL_SECONDS", "86400"))
+WEBAPP_INSTANCE_LEASE_TTL_SECONDS = max(15, int(os.getenv("WEBAPP_INSTANCE_LEASE_TTL_SECONDS", "45")))
 NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 TODAY_PLAN_DEFAULT_TZ = (os.getenv("TODAY_PLAN_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
@@ -827,6 +831,43 @@ def enforce_webapp_access():
     g.telegram_user_id = int(user_id)
     g.telegram_user = user_data
     g.telegram_init_data = parsed
+    return None
+
+
+@app.before_request
+def enforce_webapp_single_instance():
+    path = request.path or ""
+    is_protected = path.startswith("/api/webapp/") or path in _ACCESS_PROTECTED_EXACT_PATHS
+    if not is_protected or path in _ACCESS_PUBLIC_WEBAPP_PATHS:
+        return None
+    if path in {"/api/webapp/bootstrap", "/api/webapp/instance/claim", "/api/webapp/instance/release"}:
+        return None
+
+    user_id = getattr(g, "telegram_user_id", None)
+    if not user_id:
+        return None
+
+    instance_id = _extract_webapp_instance_id()
+    if not instance_id:
+        return None
+
+    active_lease = get_webapp_instance_lease(int(user_id))
+    if not active_lease or not _webapp_instance_lease_is_fresh(active_lease):
+        claim_webapp_instance_lease(
+            user_id=int(user_id),
+            instance_id=instance_id,
+            session_id=request.headers.get("X-Webapp-Session-Id"),
+            platform=request.headers.get("X-Webapp-Platform"),
+            app_context=request.headers.get("X-Webapp-App-Context"),
+        )
+        g.webapp_instance_id = instance_id
+        return None
+
+    active_instance_id = str(active_lease.get("instance_id") or "").strip()
+    if active_instance_id and active_instance_id != instance_id:
+        return jsonify(_build_webapp_instance_conflict_payload(active_lease)), 409
+
+    g.webapp_instance_id = instance_id
     return None
 
 
@@ -1355,6 +1396,52 @@ def _extract_request_init_data(payload: dict | None = None) -> str:
         or request.args.get("initData")
         or ""
     ).strip()
+
+
+def _extract_webapp_instance_id(payload: dict | None = None) -> str | None:
+    body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    raw = str(
+        request.headers.get("X-Webapp-Instance-Id")
+        or body.get("instanceId")
+        or body.get("instance_id")
+        or ""
+    ).strip()
+    if not raw:
+        return None
+    cleaned = re.sub(r"[^a-zA-Z0-9._:-]+", "-", raw).strip("-")
+    return cleaned[:128] if cleaned else None
+
+
+def _webapp_instance_lease_is_fresh(lease: dict | None) -> bool:
+    if not isinstance(lease, dict):
+        return False
+    last_seen_at = str(lease.get("last_seen_at") or "").strip()
+    if not last_seen_at:
+        return False
+    try:
+        seen_dt = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    if seen_dt.tzinfo is None:
+        seen_dt = seen_dt.replace(tzinfo=timezone.utc)
+    age_seconds = (datetime.now(timezone.utc) - seen_dt.astimezone(timezone.utc)).total_seconds()
+    return age_seconds <= max(5, int(WEBAPP_INSTANCE_LEASE_TTL_SECONDS))
+
+
+def _build_webapp_instance_conflict_payload(lease: dict | None = None) -> dict:
+    payload = {
+        "error": "webapp_instance_conflict",
+        "message": "Приложение уже продолжило работу в другом окне.",
+        "ttl_seconds": int(WEBAPP_INSTANCE_LEASE_TTL_SECONDS),
+    }
+    if isinstance(lease, dict):
+        active_instance_id = str(lease.get("instance_id") or "").strip()
+        if active_instance_id:
+            payload["active_instance_id"] = active_instance_id
+        last_seen_at = str(lease.get("last_seen_at") or "").strip()
+        if last_seen_at:
+            payload["active_last_seen_at"] = last_seen_at
+    return payload
 
 
 def _sanitize_observability_id(value: Any, *, max_len: int = 128) -> str | None:
@@ -12540,6 +12627,76 @@ def bootstrap_webapp_session():
             "starter_dictionary": starter_dictionary,
         }
     )
+
+
+@app.route("/api/webapp/instance/claim", methods=["POST"])
+def claim_webapp_instance():
+    payload = request.get_json(silent=True) or {}
+    init_data = _extract_request_init_data(payload)
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    if not _is_webapp_user_allowed(int(user_id)):
+        return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
+
+    instance_id = _extract_webapp_instance_id(payload)
+    if not instance_id:
+        return jsonify({"error": "instanceId обязателен"}), 400
+
+    reason = str(payload.get("reason") or "heartbeat").strip().lower() or "heartbeat"
+    previous_lease = get_webapp_instance_lease(int(user_id))
+    previous_active = bool(previous_lease and _webapp_instance_lease_is_fresh(previous_lease))
+    previous_instance_id = str(previous_lease.get("instance_id") or "").strip() if isinstance(previous_lease, dict) else ""
+    if previous_active and previous_instance_id and previous_instance_id != instance_id and reason != "claim":
+        return jsonify(_build_webapp_instance_conflict_payload(previous_lease)), 409
+    lease = claim_webapp_instance_lease(
+        user_id=int(user_id),
+        instance_id=instance_id,
+        session_id=str(payload.get("sessionId") or request.headers.get("X-Webapp-Session-Id") or "").strip() or None,
+        platform=str(payload.get("platform") or request.headers.get("X-Webapp-Platform") or request.user_agent.string or "").strip()[:64] or None,
+        app_context=str(payload.get("appContext") or request.headers.get("X-Webapp-App-Context") or "").strip()[:64] or None,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "lease": lease,
+            "ttl_seconds": int(WEBAPP_INSTANCE_LEASE_TTL_SECONDS),
+            "reason": reason,
+            "takeover": bool(previous_active and previous_instance_id and previous_instance_id != instance_id),
+        }
+    )
+
+
+@app.route("/api/webapp/instance/release", methods=["POST"])
+def release_webapp_instance():
+    payload = request.get_json(silent=True) or {}
+    init_data = _extract_request_init_data(payload)
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    if not _is_webapp_user_allowed(int(user_id)):
+        return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
+
+    instance_id = _extract_webapp_instance_id(payload)
+    if not instance_id:
+        return jsonify({"error": "instanceId обязателен"}), 400
+
+    released = release_webapp_instance_lease(user_id=int(user_id), instance_id=instance_id)
+    return jsonify({"ok": True, "released": bool(released)})
 
 
 def _load_user_translation_sentence_map(
