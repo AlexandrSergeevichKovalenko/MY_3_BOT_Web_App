@@ -12046,6 +12046,8 @@ def update_daily_plan_item_timer(
 
             current_item = _map_daily_plan_item(row)
             current_payload = current_item["payload"] if isinstance(current_item["payload"], dict) else {}
+            task_type = str(current_item.get("task_type") or "").strip().lower()
+            is_translation_task = task_type == "translation"
             estimated_minutes = max(0, int(current_item.get("estimated_minutes") or 0))
             goal_seconds = estimated_minutes * 60
 
@@ -12100,7 +12102,7 @@ def update_daily_plan_item_timer(
             elif next_elapsed > 0:
                 progress_percent = 100.0
 
-            if goal_seconds > 0 and next_elapsed >= goal_seconds:
+            if not is_translation_task and goal_seconds > 0 and next_elapsed >= goal_seconds:
                 next_status = "done"
                 next_running = False
                 next_paused = False

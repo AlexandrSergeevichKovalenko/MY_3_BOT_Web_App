@@ -117,8 +117,8 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     valueRef.current = normalizedValue;
   }, [initialValue, sentenceId]);
 
-  const flushValue = useCallback((value) => {
-    onCommit(sentenceId, value);
+  const flushValue = useCallback((value, reason = 'idle') => {
+    onCommit(sentenceId, value, { reason });
   }, [onCommit, sentenceId]);
 
   const clearPendingFlush = useCallback(() => {
@@ -132,7 +132,7 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     clearPendingFlush();
     syncTimeoutRef.current = window.setTimeout(() => {
       syncTimeoutRef.current = null;
-      flushValue(valueRef.current);
+      flushValue(valueRef.current, 'idle');
     }, commitDelayMs);
   }, [clearPendingFlush, commitDelayMs, flushValue]);
 
@@ -154,7 +154,7 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     valueRef.current = nextValue;
     onLiveChange(sentenceId, nextValue);
     clearPendingFlush();
-    flushValue(nextValue);
+    flushValue(nextValue, 'blur');
   };
 
   return (
@@ -809,6 +809,84 @@ function AppInner() {
       return null;
     }
   }, [buildTranslationDraftPayload, initData, translationDraftScopeKey]);
+  const getActiveTranslationDraftMap = useCallback(() => {
+    const next = {};
+    translationDraftSentenceIdsRef.current.forEach((sentenceId) => {
+      const key = String(sentenceId);
+      next[key] = String(translationDraftsRef.current?.[key] ?? '');
+    });
+    return next;
+  }, []);
+  const persistTranslationDraftsToLocalCache = useCallback((draftMap) => {
+    if (!translationDraftStorageKey) return;
+    const hasNonEmptyValue = Object.values(draftMap || {}).some((value) => String(value ?? '').trim() !== '');
+    if (!hasNonEmptyValue) {
+      safeStorageRemove(translationDraftStorageKey);
+      return;
+    }
+    safeStorageSet(translationDraftStorageKey, JSON.stringify(draftMap));
+  }, [translationDraftStorageKey]);
+  const flushTranslationDraftsToLocalCache = useCallback(() => {
+    persistTranslationDraftsToLocalCache(getActiveTranslationDraftMap());
+  }, [getActiveTranslationDraftMap, persistTranslationDraftsToLocalCache]);
+  const flushTranslationDraftsToServer = useCallback((options = {}) => {
+    const hydrationKey = `${translationDraftStorageKey}:${translationDraftScopeKey || 'nosession'}`;
+    if (!initData || !translationDraftScopeKey || translationDraftSentenceIdsRef.current.size === 0) {
+      return null;
+    }
+    if (translationDraftHydrationKeyRef.current !== hydrationKey) {
+      return null;
+    }
+    return persistTranslationDraftsToServer(getActiveTranslationDraftMap(), options);
+  }, [
+    getActiveTranslationDraftMap,
+    initData,
+    persistTranslationDraftsToServer,
+    translationDraftScopeKey,
+    translationDraftStorageKey,
+  ]);
+  const scheduleTranslationDraftPersistence = useCallback((options = {}) => {
+    const localDelayMs = Number.isFinite(options?.localDelayMs)
+      ? Math.max(0, Number(options.localDelayMs))
+      : (isAndroidTelegramClient ? 700 : 220);
+    const serverDelayMs = Number.isFinite(options?.serverDelayMs)
+      ? Math.max(0, Number(options.serverDelayMs))
+      : (isAndroidTelegramClient ? 1800 : 350);
+    const shouldPersistLocal = options?.local !== false;
+    const shouldPersistServer = options?.server === true || (!isAndroidTelegramClient && options?.server !== false);
+    if (translationDraftStorageTimeoutRef.current) {
+      clearTimeout(translationDraftStorageTimeoutRef.current);
+      translationDraftStorageTimeoutRef.current = null;
+    }
+    if (translationDraftSyncTimeoutRef.current) {
+      clearTimeout(translationDraftSyncTimeoutRef.current);
+      translationDraftSyncTimeoutRef.current = null;
+    }
+    if (shouldPersistLocal) {
+      if (options?.immediateLocal) {
+        flushTranslationDraftsToLocalCache();
+      } else {
+        translationDraftStorageTimeoutRef.current = setTimeout(() => {
+          translationDraftStorageTimeoutRef.current = null;
+          flushTranslationDraftsToLocalCache();
+        }, localDelayMs);
+      }
+    }
+    if (shouldPersistServer) {
+      if (options?.immediateServer) {
+        void flushTranslationDraftsToServer({ silent: true, keepalive: Boolean(options?.keepalive) });
+      } else {
+        translationDraftSyncTimeoutRef.current = setTimeout(() => {
+          translationDraftSyncTimeoutRef.current = null;
+          void flushTranslationDraftsToServer({ silent: true });
+        }, serverDelayMs);
+      }
+    }
+  }, [
+    flushTranslationDraftsToLocalCache,
+    flushTranslationDraftsToServer,
+    isAndroidTelegramClient,
+  ]);
   const clearTranslationDraftsOnServer = useCallback(async (sentenceIds = [], options = {}) => {
     if (!initData || !translationDraftScopeKey) return null;
     const clearAll = Boolean(options?.clearAll);
@@ -3378,7 +3456,29 @@ function AppInner() {
     return baseSeconds + liveExtra;
   };
 
+  const getTodayTranslationProgress = (item) => {
+    const payload = getTodayItemTimerPayload(item);
+    const targetCount = Math.max(0, Math.floor(Number(
+      payload?.translation_target_count
+      || payload?.sentences
+      || 0
+    )));
+    const completedCount = Math.max(0, Math.floor(Number(payload?.translation_completed_count || 0)));
+    const progressPercent = targetCount > 0
+      ? Math.max(0, Math.min(100, (completedCount / targetCount) * 100))
+      : 0;
+    return {
+      completedCount,
+      targetCount,
+      progressPercent,
+    };
+  };
+
   const getTodayItemProgressPercent = (item, nowMs = Date.now()) => {
+    const taskType = String(item?.task_type || '').toLowerCase();
+    if (taskType === 'translation') {
+      return getTodayTranslationProgress(item).progressPercent;
+    }
     const goalSeconds = getTodayItemGoalSeconds(item);
     const elapsed = getTodayItemElapsedSeconds(item, nowMs);
     if (goalSeconds <= 0) return elapsed > 0 ? 100 : 0;
@@ -3694,6 +3794,16 @@ function AppInner() {
           ));
         }
         const data = await response.json();
+        const updatedItem = data?.item && typeof data.item === 'object' ? data.item : null;
+        if (updatedItem) {
+          setTodayPlan((prev) => {
+            if (!prev || !Array.isArray(prev.items)) return prev;
+            return {
+              ...prev,
+              items: prev.items.map((planItem) => (planItem.id === updatedItem.id ? { ...planItem, ...updatedItem } : planItem)),
+            };
+          });
+        }
         const practice = data?.practice || {};
         const levelLabel = String(practice?.level || '').trim().toLowerCase();
         if (levelLabel) {
@@ -4301,6 +4411,15 @@ function AppInner() {
           setTranslationAudioGrammarOptIn({});
           setTranslationAudioGrammarSaving({});
           setExplanations({});
+          if (translationDraftStorageTimeoutRef.current) {
+            clearTimeout(translationDraftStorageTimeoutRef.current);
+            translationDraftStorageTimeoutRef.current = null;
+          }
+          if (translationDraftSyncTimeoutRef.current) {
+            clearTimeout(translationDraftSyncTimeoutRef.current);
+            translationDraftSyncTimeoutRef.current = null;
+          }
+          translationDraftsRef.current = {};
           setTranslationDrafts({});
           safeStorageRemove(translationDraftStorageKey);
           void clearTranslationDraftsOnServer([], { clearAll: true, silent: true });
@@ -8025,6 +8144,11 @@ function AppInner() {
         clearTimeout(translationDraftSyncTimeoutRef.current);
         translationDraftSyncTimeoutRef.current = null;
       }
+      if (translationDraftStorageTimeoutRef.current) {
+        clearTimeout(translationDraftStorageTimeoutRef.current);
+        translationDraftStorageTimeoutRef.current = null;
+      }
+      translationDraftsRef.current = {};
       setTranslationDrafts({});
       return;
     }
@@ -8050,6 +8174,7 @@ function AppInner() {
         console.warn('Failed to parse saved drafts', error);
       }
     }
+    translationDraftsRef.current = { ...initialLocal };
     setTranslationDrafts(initialLocal);
     const hydrationKey = `${translationDraftStorageKey}:${translationDraftScopeKey || 'nosession'}`;
     translationDraftHydrationKeyRef.current = '';
@@ -8084,6 +8209,7 @@ function AppInner() {
             }
             next[id] = String(serverDrafts[id] ?? baseline);
           });
+          translationDraftsRef.current = { ...next };
           return next;
         });
       } catch (error) {
@@ -8101,62 +8227,6 @@ function AppInner() {
   }, [sentences, webappUser?.id, initData, translationDraftScopeKey, translationDraftStorageKey]);
 
   useEffect(() => {
-    if (!translationDraftStorageKey) {
-      return;
-    }
-    if (translationDraftStorageTimeoutRef.current) {
-      clearTimeout(translationDraftStorageTimeoutRef.current);
-      translationDraftStorageTimeoutRef.current = null;
-    }
-    translationDraftStorageTimeoutRef.current = setTimeout(() => {
-      translationDraftStorageTimeoutRef.current = null;
-      const hasNonEmptyValue = Object.values(translationDrafts).some((value) => String(value ?? '') !== '');
-      if (!hasNonEmptyValue) {
-        safeStorageRemove(translationDraftStorageKey);
-        return;
-      }
-      safeStorageSet(translationDraftStorageKey, JSON.stringify(translationDrafts));
-    }, 220);
-    return () => {
-      if (translationDraftStorageTimeoutRef.current) {
-        clearTimeout(translationDraftStorageTimeoutRef.current);
-        translationDraftStorageTimeoutRef.current = null;
-      }
-    };
-  }, [translationDraftStorageKey, translationDrafts]);
-
-  useEffect(() => {
-    if (!initData || !translationDraftScopeKey || sentences.length === 0) {
-      return undefined;
-    }
-    const hydrationKey = `${translationDraftStorageKey}:${translationDraftScopeKey || 'nosession'}`;
-    if (translationDraftHydrationKeyRef.current !== hydrationKey) {
-      return undefined;
-    }
-    if (translationDraftSyncTimeoutRef.current) {
-      clearTimeout(translationDraftSyncTimeoutRef.current);
-      translationDraftSyncTimeoutRef.current = null;
-    }
-    translationDraftSyncTimeoutRef.current = setTimeout(() => {
-      translationDraftSyncTimeoutRef.current = null;
-      void persistTranslationDraftsToServer(translationDraftsRef.current, { silent: true });
-    }, 350);
-    return () => {
-      if (translationDraftSyncTimeoutRef.current) {
-        clearTimeout(translationDraftSyncTimeoutRef.current);
-        translationDraftSyncTimeoutRef.current = null;
-      }
-    };
-  }, [
-    translationDrafts,
-    initData,
-    translationDraftScopeKey,
-    translationDraftStorageKey,
-    sentences.length,
-    persistTranslationDraftsToServer,
-  ]);
-
-  useEffect(() => {
     if (!initData || !translationDraftScopeKey || sentences.length === 0) {
       return undefined;
     }
@@ -8169,6 +8239,11 @@ function AppInner() {
         clearTimeout(translationDraftSyncTimeoutRef.current);
         translationDraftSyncTimeoutRef.current = null;
       }
+      if (translationDraftStorageTimeoutRef.current) {
+        clearTimeout(translationDraftStorageTimeoutRef.current);
+        translationDraftStorageTimeoutRef.current = null;
+      }
+      flushTranslationDraftsToLocalCache();
       void persistTranslationDraftsToServer(translationDraftsRef.current, {
         keepalive: true,
         silent: true,
@@ -8187,6 +8262,7 @@ function AppInner() {
     };
   }, [
     initData,
+    flushTranslationDraftsToLocalCache,
     translationDraftScopeKey,
     translationDraftStorageKey,
     sentences.length,
@@ -8348,6 +8424,19 @@ function AppInner() {
     );
     if (processedSentenceIds.size > 0) {
       setSentences((prev) => prev.filter((item) => !processedSentenceIds.has(Number(item?.id_for_mistake_table || 0))));
+      if (translationDraftStorageTimeoutRef.current) {
+        clearTimeout(translationDraftStorageTimeoutRef.current);
+        translationDraftStorageTimeoutRef.current = null;
+      }
+      if (translationDraftSyncTimeoutRef.current) {
+        clearTimeout(translationDraftSyncTimeoutRef.current);
+        translationDraftSyncTimeoutRef.current = null;
+      }
+      const nextDraftRefMap = { ...translationDraftsRef.current };
+      processedSentenceIds.forEach((sentenceId) => {
+        delete nextDraftRefMap[String(sentenceId)];
+      });
+      translationDraftsRef.current = nextDraftRefMap;
       setTranslationDrafts((prev) => {
         const next = { ...prev };
         processedSentenceIds.forEach((sentenceId) => {
@@ -8414,6 +8503,7 @@ function AppInner() {
         throw new Error(tr('Сессия проверки не найдена.', 'Pruefungssession wurde nicht gefunden.'));
       }
       if (nextState.status === 'done' || nextState.status === 'failed' || nextState.status === 'canceled') {
+        void loadTodayPlan();
         return data;
       }
     }
@@ -8776,11 +8866,15 @@ function AppInner() {
   const handleDraftLiveChange = useCallback((sentenceId, value) => {
     const key = String(sentenceId);
     translationDraftsRef.current[key] = value;
-  }, []);
+    scheduleTranslationDraftPersistence({ local: true, server: false });
+  }, [scheduleTranslationDraftPersistence]);
 
-  const handleDraftCommit = useCallback((sentenceId, value) => {
+  const handleDraftCommit = useCallback((sentenceId, value, options = {}) => {
     const key = String(sentenceId);
     translationDraftsRef.current[key] = value;
+    if (options?.reason !== 'blur') {
+      return;
+    }
     const applyStateUpdate = () => {
       setTranslationDrafts((prev) => {
         if ((prev[key] || '') === value) {
@@ -8794,10 +8888,16 @@ function AppInner() {
     };
     if (typeof React.startTransition === 'function') {
       React.startTransition(applyStateUpdate);
-      return;
+    } else {
+      applyStateUpdate();
     }
-    applyStateUpdate();
-  }, []);
+    scheduleTranslationDraftPersistence({
+      immediateLocal: true,
+      immediateServer: true,
+      local: true,
+      server: true,
+    });
+  }, [scheduleTranslationDraftPersistence]);
 
   const normalizeSelectionText = (value) => {
     if (!value) return '';
@@ -11596,6 +11696,15 @@ function AppInner() {
       const data = await response.json();
       setFinishMessage(data.message || tr('Перевод завершён.', 'Uebersetzung abgeschlossen.'));
       setFinishStatus('done');
+      if (translationDraftStorageTimeoutRef.current) {
+        clearTimeout(translationDraftStorageTimeoutRef.current);
+        translationDraftStorageTimeoutRef.current = null;
+      }
+      if (translationDraftSyncTimeoutRef.current) {
+        clearTimeout(translationDraftSyncTimeoutRef.current);
+        translationDraftSyncTimeoutRef.current = null;
+      }
+      translationDraftsRef.current = {};
       safeStorageRemove(translationDraftStorageKey);
       setTranslationDrafts({});
       setSessionType('none');
@@ -14823,9 +14932,11 @@ function AppInner() {
                     {todayPlan.items.map((item) => {
                       const loadingAction = todayItemLoading[item.id];
                       const taskType = String(item?.task_type || '').toLowerCase();
+                      const isTranslationTask = taskType === 'translation';
                       const isVideoTask = taskType === 'video' || taskType === 'youtube';
                       const elapsedSeconds = getTodayItemElapsedSeconds(item, todayTimerNowMs);
                       const progressPercent = getTodayItemProgressPercent(item, todayTimerNowMs);
+                      const translationProgress = isTranslationTask ? getTodayTranslationProgress(item) : null;
                       const doneByProgress = progressPercent >= 100;
                       const done = String(item?.status || '').toLowerCase() === 'done' || doneByProgress;
                       const itemStatusClass = done ? 'done' : (item.status || 'todo');
@@ -14835,6 +14946,20 @@ function AppInner() {
                       const videoDislikes = Number(payload?.video_dislikes || 0);
                       const videoScore = Number(payload?.video_score || 0);
                       const userVote = Number(payload?.video_user_vote || 0);
+                      const progressBadgeTitle = done
+                        ? tr('Задача выполнена', 'Aufgabe erledigt')
+                        : (
+                          isTranslationTask
+                            ? `${translationProgress?.completedCount || 0}/${translationProgress?.targetCount || 0}`
+                            : `${Math.round(progressPercent)}%`
+                        );
+                      const progressBadgeText = done
+                        ? '✅'
+                        : (
+                          isTranslationTask
+                            ? `⭕ ${translationProgress?.completedCount || 0}/${translationProgress?.targetCount || 0}`
+                            : `⭕ ${Math.round(progressPercent)}%`
+                        );
                       return (
                         <div className={`today-plan-item is-${itemStatusClass}`} key={item.id}>
                           <div className="today-plan-item-main">
@@ -14868,8 +14993,8 @@ function AppInner() {
                             >
                               {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
                             </button>
-                            <div className={`today-task-progress-badge ${isVideoTask ? 'today-video-progress-badge' : ''} ${done ? 'is-done' : ''}`} title={done ? tr('Задача выполнена', 'Aufgabe erledigt') : `${Math.round(progressPercent)}%`}>
-                              {done ? '✅' : `⭕ ${Math.round(progressPercent)}%`}
+                            <div className={`today-task-progress-badge ${isVideoTask ? 'today-video-progress-badge' : ''} ${done ? 'is-done' : ''}`} title={progressBadgeTitle}>
+                              {progressBadgeText}
                             </div>
                             {isVideoTask && (
                               <>

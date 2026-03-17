@@ -13043,6 +13043,22 @@ def _run_translation_check_session(
             terminal_outcome=terminal_outcome,
             duration_ms=_elapsed_ms_since(runner_started_perf),
         )
+        try:
+            _sync_today_translation_task_progress_for_session(
+                user_id=int((session or {}).get("user_id") or 0),
+                username=str((session or {}).get("username") or "").strip() or None,
+                source_lang=str((session or {}).get("source_lang") or "ru"),
+                target_lang=str((session or {}).get("target_lang") or "de"),
+                translation_session_id=str((session or {}).get("source_session_id") or "").strip() or None,
+                trigger="translation_check_runner",
+            )
+        except Exception:
+            logging.warning(
+                "Today translation task sync after check runner failed: session=%s user=%s",
+                session_id,
+                (session or {}).get("user_id") if isinstance(session, dict) else None,
+                exc_info=True,
+            )
     except Exception as exc:
         logging.error("Translation check session failed: session=%s error=%s", session_id, exc, exc_info=True)
         try:
@@ -15837,6 +15853,14 @@ def get_today_plan():
             source_lang=source_lang,
             target_lang=target_lang,
         )
+        plan = _sync_today_plan_translation_progress(
+            user_id=int(user_id),
+            username=username,
+            plan=plan,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            trigger="today_fetch",
+        )
     except Exception as exc:
         return jsonify({"error": f"Ошибка формирования плана: {exc}"}), 500
 
@@ -15991,11 +16015,31 @@ def start_today_translation_item(item_id: int):
     except Exception as exc:
         return jsonify({"error": f"Ошибка запуска переводов по задаче дня: {exc}"}), 500
 
+    session_id_value = _normalize_today_translation_session_id(session.get("session_id"))
+    target_count = max(1, int(session.get("count") or task_payload.get("sentences") or 7))
+    completed_count = _count_translation_session_completed_sentences(
+        user_id=int(user_id),
+        translation_session_id=session_id_value,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    ) if session_id_value else 0
+    progress_percent = min(100.0, (float(completed_count) / float(target_count)) * 100.0) if target_count > 0 else 0.0
+    updated_item = update_daily_plan_item_payload(
+        user_id=int(user_id),
+        item_id=int(item_id),
+        payload_updates={
+            "translation_session_id": session_id_value or None,
+            "translation_target_count": int(target_count),
+            "translation_completed_count": int(completed_count),
+            "translation_progress_percent": round(progress_percent, 2),
+            "translation_completed_at": None,
+        },
+    ) or item
     updated_item = update_daily_plan_item_status(
         user_id=int(user_id),
         item_id=int(item_id),
-        status="doing",
-    )
+        status="done" if completed_count >= target_count else "doing",
+    ) or updated_item
     return jsonify(
         {
             "ok": True,
@@ -23966,11 +24010,254 @@ def _resolve_user_group_chat_id_for_today_motivation(user_id: int) -> int | None
     return None
 
 
+def _normalize_today_translation_session_id(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(int(raw))
+    except Exception:
+        return raw
+
+
+def _count_translation_session_completed_sentences(
+    *,
+    user_id: int,
+    translation_session_id: str,
+    source_lang: str,
+    target_lang: str,
+) -> int:
+    normalized_session_id = _normalize_today_translation_session_id(translation_session_id)
+    if not normalized_session_id:
+        return 0
+    try:
+        session_id_value = int(normalized_session_id)
+    except Exception:
+        return 0
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT tr.sentence_id)
+                FROM bt_3_translations tr
+                JOIN bt_3_daily_sentences ds
+                  ON ds.id = tr.sentence_id
+                WHERE tr.user_id = %s
+                  AND ds.user_id = %s
+                  AND ds.session_id = %s
+                  AND COALESCE(tr.source_lang, 'ru') = %s
+                  AND COALESCE(tr.target_lang, 'de') = %s
+                  AND COALESCE(ds.source_lang, 'ru') = %s
+                  AND COALESCE(ds.target_lang, 'de') = %s;
+                """,
+                (
+                    int(user_id),
+                    int(user_id),
+                    int(session_id_value),
+                    str(source_lang or "ru").strip().lower() or "ru",
+                    str(target_lang or "de").strip().lower() or "de",
+                    str(source_lang or "ru").strip().lower() or "ru",
+                    str(target_lang or "de").strip().lower() or "de",
+                ),
+            )
+            row = cursor.fetchone()
+    return max(0, int(row[0] or 0)) if row else 0
+
+
+def _sync_today_translation_item_progress(
+    *,
+    user_id: int,
+    username: str | None,
+    item: dict | None,
+    source_lang: str,
+    target_lang: str,
+    trigger: str,
+) -> dict | None:
+    if not isinstance(item, dict):
+        return item
+    if str(item.get("task_type") or "").strip().lower() != "translation":
+        return item
+
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    translation_session_id = _normalize_today_translation_session_id(
+        payload.get("translation_session_id") or payload.get("source_session_id")
+    )
+    if not translation_session_id:
+        return item
+
+    target_count = max(1, int(payload.get("translation_target_count") or payload.get("sentences") or 7))
+    completed_count = _count_translation_session_completed_sentences(
+        user_id=int(user_id),
+        translation_session_id=translation_session_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    progress_percent = min(100.0, (float(completed_count) / float(target_count)) * 100.0) if target_count > 0 else 0.0
+    current_status = str(item.get("status") or "todo").strip().lower() or "todo"
+
+    desired_status = current_status
+    if completed_count >= target_count and target_count > 0:
+        desired_status = "done"
+    elif current_status == "done":
+        desired_status = "doing" if translation_session_id else "todo"
+    elif current_status in {"todo", "skipped"} and (completed_count > 0 or translation_session_id):
+        desired_status = "doing"
+
+    payload_updates = {
+        "translation_session_id": translation_session_id,
+        "translation_target_count": int(target_count),
+        "translation_completed_count": int(completed_count),
+        "translation_progress_percent": round(progress_percent, 2),
+        "translation_completed_at": datetime.now(timezone.utc).isoformat()
+        if desired_status == "done"
+        else None,
+    }
+    changed_payload = any(payload.get(key) != value for key, value in payload_updates.items())
+
+    updated_item = item
+    if changed_payload:
+        saved_item = update_daily_plan_item_payload(
+            user_id=int(user_id),
+            item_id=int(item.get("id") or 0),
+            payload_updates=payload_updates,
+        )
+        if saved_item:
+            updated_item = saved_item
+    if desired_status != current_status:
+        saved_status_item = update_daily_plan_item_status(
+            user_id=int(user_id),
+            item_id=int(item.get("id") or 0),
+            status=desired_status,
+        )
+        if saved_status_item:
+            updated_item = saved_status_item
+
+    if str((updated_item or {}).get("status") or "").strip().lower() == "done":
+        try:
+            _announce_today_task_completion_to_group(
+                user_id=int(user_id),
+                username=username,
+                item=updated_item,
+                trigger=trigger,
+            )
+        except Exception:
+            logging.warning(
+                "Today translation task group announcement failed: user=%s item=%s",
+                user_id,
+                (updated_item or {}).get("id"),
+                exc_info=True,
+            )
+    return updated_item
+
+
+def _sync_today_plan_translation_progress(
+    *,
+    user_id: int,
+    username: str | None,
+    plan: dict | None,
+    source_lang: str,
+    target_lang: str,
+    trigger: str,
+) -> dict | None:
+    if not isinstance(plan, dict):
+        return plan
+    items = list(plan.get("items") or [])
+    if not items:
+        return plan
+    synced_items: list[dict] = []
+    changed = False
+    for item in items:
+        if str(item.get("task_type") or "").strip().lower() != "translation":
+            synced_items.append(item)
+            continue
+        synced_item = _sync_today_translation_item_progress(
+            user_id=int(user_id),
+            username=username,
+            item=item,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            trigger=trigger,
+        )
+        synced_items.append(synced_item or item)
+        changed = changed or (synced_item is not None and synced_item != item)
+    if not changed:
+        return plan
+    return {
+        **plan,
+        "items": synced_items,
+    }
+
+
+def _sync_today_translation_task_progress_for_session(
+    *,
+    user_id: int,
+    username: str | None,
+    source_lang: str,
+    target_lang: str,
+    translation_session_id: str | None,
+    trigger: str,
+) -> dict | None:
+    normalized_session_id = _normalize_today_translation_session_id(translation_session_id)
+    if not normalized_session_id:
+        return None
+    today_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    plan = get_daily_plan(user_id=int(user_id), plan_date=today_date)
+    if not plan:
+        return None
+
+    target_item = None
+    for item in (plan.get("items") or []):
+        if str(item.get("task_type") or "").strip().lower() != "translation":
+            continue
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        item_session_id = _normalize_today_translation_session_id(
+            payload.get("translation_session_id") or payload.get("source_session_id")
+        )
+        if item_session_id == normalized_session_id:
+            target_item = item
+            break
+
+    if target_item is None:
+        translation_items = [
+            item
+            for item in (plan.get("items") or [])
+            if str(item.get("task_type") or "").strip().lower() == "translation"
+        ]
+        if len(translation_items) == 1:
+            target_item = translation_items[0]
+
+    if target_item is None:
+        return None
+
+    return _sync_today_translation_item_progress(
+        user_id=int(user_id),
+        username=username,
+        item=target_item,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        trigger=trigger,
+    )
+
+
 def _is_today_task_done_for_group_announcement(item: dict | None) -> bool:
     payload = item.get("payload") if isinstance(item, dict) and isinstance(item.get("payload"), dict) else {}
     status = str((item or {}).get("status") or "").strip().lower()
     if status == "done":
         return True
+    task_type = str((item or {}).get("task_type") or "").strip().lower()
+    if task_type == "translation":
+        try:
+            progress = float(
+                payload.get("translation_progress_percent")
+                or (
+                    (float(payload.get("translation_completed_count") or 0.0) / max(1.0, float(payload.get("translation_target_count") or payload.get("sentences") or 7.0)))
+                    * 100.0
+                )
+            )
+        except Exception:
+            progress = 0.0
+        return progress >= 100.0
     try:
         progress = float(payload.get("timer_progress_percent") or 0.0)
     except Exception:
