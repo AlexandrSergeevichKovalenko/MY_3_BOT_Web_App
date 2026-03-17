@@ -2769,6 +2769,10 @@ def ensure_webapp_tables() -> None:
                     user_id BIGINT NOT NULL,
                     from_role TEXT NOT NULL,
                     message_text TEXT NOT NULL,
+                    attachment_url TEXT,
+                    attachment_kind TEXT,
+                    attachment_mime_type TEXT,
+                    attachment_file_name TEXT,
                     admin_telegram_id BIGINT,
                     telegram_chat_id BIGINT,
                     telegram_message_id BIGINT,
@@ -2794,6 +2798,15 @@ def ensure_webapp_tables() -> None:
                 """
                 CREATE INDEX IF NOT EXISTS idx_bt_3_support_messages_telegram_ref
                 ON bt_3_support_messages (telegram_chat_id, telegram_message_id);
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE bt_3_support_messages
+                    ADD COLUMN IF NOT EXISTS attachment_url TEXT,
+                    ADD COLUMN IF NOT EXISTS attachment_kind TEXT,
+                    ADD COLUMN IF NOT EXISTS attachment_mime_type TEXT,
+                    ADD COLUMN IF NOT EXISTS attachment_file_name TEXT;
                 """
             )
             cursor.execute("""
@@ -10484,6 +10497,10 @@ def create_support_message(
     user_id: int,
     from_role: str,
     message_text: str,
+    attachment_url: str | None = None,
+    attachment_kind: str | None = None,
+    attachment_mime_type: str | None = None,
+    attachment_file_name: str | None = None,
     admin_telegram_id: int | None = None,
     telegram_chat_id: int | None = None,
     telegram_message_id: int | None = None,
@@ -10494,8 +10511,14 @@ def create_support_message(
     if normalized_role not in {"user", "admin", "system"}:
         raise ValueError("from_role must be one of: user, admin, system")
     text = str(message_text or "").strip()
-    if not text:
-        raise ValueError("message_text is required")
+    normalized_attachment_url = str(attachment_url or "").strip() or None
+    normalized_attachment_kind = str(attachment_kind or "").strip().lower() or None
+    normalized_attachment_mime_type = str(attachment_mime_type or "").strip().lower() or None
+    normalized_attachment_file_name = str(attachment_file_name or "").strip() or None
+    if normalized_attachment_kind and normalized_attachment_kind not in {"image"}:
+        raise ValueError("attachment_kind must be one of: image")
+    if not text and not normalized_attachment_url:
+        raise ValueError("message_text or attachment_url is required")
     if is_read_by_user is None:
         is_read_by_user = normalized_role != "admin"
 
@@ -10507,19 +10530,30 @@ def create_support_message(
                     user_id,
                     from_role,
                     message_text,
+                    attachment_url,
+                    attachment_kind,
+                    attachment_mime_type,
+                    attachment_file_name,
                     admin_telegram_id,
                     telegram_chat_id,
                     telegram_message_id,
                     reply_to_id,
                     is_read_by_user
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, user_id, from_role, message_text, admin_telegram_id, telegram_chat_id, telegram_message_id, reply_to_id, is_read_by_user, created_at;
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING
+                    id, user_id, from_role, message_text,
+                    attachment_url, attachment_kind, attachment_mime_type, attachment_file_name,
+                    admin_telegram_id, telegram_chat_id, telegram_message_id, reply_to_id, is_read_by_user, created_at;
                 """,
                 (
                     int(user_id),
                     normalized_role,
                     text,
+                    normalized_attachment_url,
+                    normalized_attachment_kind,
+                    normalized_attachment_mime_type,
+                    normalized_attachment_file_name,
                     int(admin_telegram_id) if admin_telegram_id is not None else None,
                     int(telegram_chat_id) if telegram_chat_id is not None else None,
                     int(telegram_message_id) if telegram_message_id is not None else None,
@@ -10533,12 +10567,16 @@ def create_support_message(
         "user_id": int(row[1]),
         "from_role": str(row[2] or ""),
         "message_text": str(row[3] or ""),
-        "admin_telegram_id": int(row[4]) if row[4] is not None else None,
-        "telegram_chat_id": int(row[5]) if row[5] is not None else None,
-        "telegram_message_id": int(row[6]) if row[6] is not None else None,
-        "reply_to_id": int(row[7]) if row[7] is not None else None,
-        "is_read_by_user": bool(row[8]),
-        "created_at": row[9].isoformat() if row[9] else None,
+        "attachment_url": str(row[4] or "").strip() or None,
+        "attachment_kind": str(row[5] or "").strip() or None,
+        "attachment_mime_type": str(row[6] or "").strip() or None,
+        "attachment_file_name": str(row[7] or "").strip() or None,
+        "admin_telegram_id": int(row[8]) if row[8] is not None else None,
+        "telegram_chat_id": int(row[9]) if row[9] is not None else None,
+        "telegram_message_id": int(row[10]) if row[10] is not None else None,
+        "reply_to_id": int(row[11]) if row[11] is not None else None,
+        "is_read_by_user": bool(row[12]),
+        "created_at": row[13].isoformat() if row[13] else None,
     }
 
 
@@ -10548,7 +10586,10 @@ def list_support_messages_for_user(*, user_id: int, limit: int = 100) -> list[di
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, user_id, from_role, message_text, admin_telegram_id, telegram_chat_id, telegram_message_id, reply_to_id, is_read_by_user, created_at
+                SELECT
+                    id, user_id, from_role, message_text,
+                    attachment_url, attachment_kind, attachment_mime_type, attachment_file_name,
+                    admin_telegram_id, telegram_chat_id, telegram_message_id, reply_to_id, is_read_by_user, created_at
                 FROM bt_3_support_messages
                 WHERE user_id = %s
                 ORDER BY created_at ASC
@@ -10563,12 +10604,16 @@ def list_support_messages_for_user(*, user_id: int, limit: int = 100) -> list[di
             "user_id": int(row[1]),
             "from_role": str(row[2] or ""),
             "message_text": str(row[3] or ""),
-            "admin_telegram_id": int(row[4]) if row[4] is not None else None,
-            "telegram_chat_id": int(row[5]) if row[5] is not None else None,
-            "telegram_message_id": int(row[6]) if row[6] is not None else None,
-            "reply_to_id": int(row[7]) if row[7] is not None else None,
-            "is_read_by_user": bool(row[8]),
-            "created_at": row[9].isoformat() if row[9] else None,
+            "attachment_url": str(row[4] or "").strip() or None,
+            "attachment_kind": str(row[5] or "").strip() or None,
+            "attachment_mime_type": str(row[6] or "").strip() or None,
+            "attachment_file_name": str(row[7] or "").strip() or None,
+            "admin_telegram_id": int(row[8]) if row[8] is not None else None,
+            "telegram_chat_id": int(row[9]) if row[9] is not None else None,
+            "telegram_message_id": int(row[10]) if row[10] is not None else None,
+            "reply_to_id": int(row[11]) if row[11] is not None else None,
+            "is_read_by_user": bool(row[12]),
+            "created_at": row[13].isoformat() if row[13] else None,
         }
         for row in rows
     ]
@@ -10613,7 +10658,10 @@ def get_support_message_by_telegram_ref(*, telegram_chat_id: int, telegram_messa
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, user_id, from_role, message_text, admin_telegram_id, telegram_chat_id, telegram_message_id, reply_to_id, is_read_by_user, created_at
+                SELECT
+                    id, user_id, from_role, message_text,
+                    attachment_url, attachment_kind, attachment_mime_type, attachment_file_name,
+                    admin_telegram_id, telegram_chat_id, telegram_message_id, reply_to_id, is_read_by_user, created_at
                 FROM bt_3_support_messages
                 WHERE telegram_chat_id = %s
                   AND telegram_message_id = %s
@@ -10630,12 +10678,16 @@ def get_support_message_by_telegram_ref(*, telegram_chat_id: int, telegram_messa
         "user_id": int(row[1]),
         "from_role": str(row[2] or ""),
         "message_text": str(row[3] or ""),
-        "admin_telegram_id": int(row[4]) if row[4] is not None else None,
-        "telegram_chat_id": int(row[5]) if row[5] is not None else None,
-        "telegram_message_id": int(row[6]) if row[6] is not None else None,
-        "reply_to_id": int(row[7]) if row[7] is not None else None,
-        "is_read_by_user": bool(row[8]),
-        "created_at": row[9].isoformat() if row[9] else None,
+        "attachment_url": str(row[4] or "").strip() or None,
+        "attachment_kind": str(row[5] or "").strip() or None,
+        "attachment_mime_type": str(row[6] or "").strip() or None,
+        "attachment_file_name": str(row[7] or "").strip() or None,
+        "admin_telegram_id": int(row[8]) if row[8] is not None else None,
+        "telegram_chat_id": int(row[9]) if row[9] is not None else None,
+        "telegram_message_id": int(row[10]) if row[10] is not None else None,
+        "reply_to_id": int(row[11]) if row[11] is not None else None,
+        "is_read_by_user": bool(row[12]),
+        "created_at": row[13].isoformat() if row[13] else None,
     }
 
 
@@ -11067,21 +11119,12 @@ def get_plan_progress(
             youtube_minutes_actual = float(youtube_row[0] or 0.0) if youtube_row else 0.0
 
     def _metric(goal: int, actual: float) -> dict:
-        safe_goal = max(0, int(goal or 0))
-        safe_actual = max(0.0, float(actual or 0.0))
-        forecast = (safe_actual / float(days_elapsed)) * float(days_total)
-        expected_to_date = (safe_goal / float(days_total)) * float(days_elapsed)
-        completion = (safe_actual / float(safe_goal) * 100.0) if safe_goal > 0 else 0.0
-        return {
-            "goal": safe_goal,
-            "actual": round(safe_actual, 2),
-            "forecast": round(forecast, 2),
-            "completion_percent": round(completion, 1),
-            "delta_vs_goal": round(safe_actual - safe_goal, 2),
-            "forecast_delta_vs_goal": round(forecast - safe_goal, 2),
-            "expected_to_date": round(expected_to_date, 2),
-            "delta_vs_expected": round(safe_actual - expected_to_date, 2),
-        }
+        return _build_plan_metric(
+            goal,
+            actual,
+            days_elapsed=days_elapsed,
+            days_total=days_total,
+        )
 
     return {
         "period": normalized_period,
@@ -11099,6 +11142,35 @@ def get_plan_progress(
             "reading_minutes": _metric(reading_minutes_goal, reading_minutes_actual),
             "youtube_minutes": _metric(youtube_minutes_goal, youtube_minutes_actual),
         },
+    }
+
+
+def _build_plan_metric(
+    goal: int,
+    actual: float,
+    *,
+    days_elapsed: int,
+    days_total: int,
+) -> dict:
+    safe_goal = max(0, int(goal or 0))
+    safe_actual = max(0.0, float(actual or 0.0))
+    safe_days_elapsed = max(1, int(days_elapsed or 1))
+    safe_days_total = max(1, int(days_total or 1))
+    raw_forecast = (safe_actual / float(safe_days_elapsed)) * float(safe_days_total)
+    # Once the user has already cleared the goal, showing a pace-based extrapolation
+    # creates misleading spikes (for example, one long reading session on Monday).
+    forecast = safe_actual if safe_goal > 0 and safe_actual >= float(safe_goal) else raw_forecast
+    expected_to_date = (safe_goal / float(safe_days_total)) * float(safe_days_elapsed)
+    completion = (safe_actual / float(safe_goal) * 100.0) if safe_goal > 0 else 0.0
+    return {
+        "goal": safe_goal,
+        "actual": round(safe_actual, 2),
+        "forecast": round(forecast, 2),
+        "completion_percent": round(completion, 1),
+        "delta_vs_goal": round(safe_actual - safe_goal, 2),
+        "forecast_delta_vs_goal": round(forecast - safe_goal, 2),
+        "expected_to_date": round(expected_to_date, 2),
+        "delta_vs_expected": round(safe_actual - expected_to_date, 2),
     }
 
 

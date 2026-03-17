@@ -20,6 +20,7 @@ const SINGLE_INSTANCE_LOCK_KEY = 'dds_single_instance_lock_v1';
 const SINGLE_INSTANCE_HEARTBEAT_MS = 2000;
 const SINGLE_INSTANCE_STALE_MS = 12000;
 const TTS_CACHE_MAX_ENTRIES = 60;
+const READER_IDLE_TIMEOUT_MS = 60000;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
 
 class ErrorBoundary extends React.Component {
@@ -548,6 +549,7 @@ function AppInner() {
   const [supportSending, setSupportSending] = useState(false);
   const [supportError, setSupportError] = useState('');
   const [supportDraft, setSupportDraft] = useState('');
+  const [supportAttachment, setSupportAttachment] = useState(null);
   const [guideQuickCardDismissed, setGuideQuickCardDismissed] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
@@ -634,6 +636,7 @@ function AppInner() {
   const billingRef = useRef(null);
   const assistantRef = useRef(null);
   const supportRef = useRef(null);
+  const supportAttachmentInputRef = useRef(null);
   const guideRef = useRef(null);
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
@@ -651,6 +654,8 @@ function AppInner() {
   const readerSessionStartingRef = useRef(false);
   const readerStateSaveTimeoutRef = useRef(null);
   const readerTimerIntervalRef = useRef(null);
+  const readerIdleTimeoutRef = useRef(null);
+  const readerLastInteractionAtRef = useRef(0);
   const readerSwipeStartRef = useRef(null);
   const readerPageNavLockRef = useRef(false);
   const todayTimerCompletionLockRef = useRef(new Set());
@@ -660,6 +665,7 @@ function AppInner() {
   const autoPausedTodayTimerIdsRef = useRef(new Set());
   const youtubeTodayTimerSyncInFlightRef = useRef(false);
   const readerAutoPausedByNavigationRef = useRef(false);
+  const readerAutoPausedByIdleRef = useRef(false);
   const translationCheckPollTokenRef = useRef(0);
   const translationCheckUnmountedRef = useRef(false);
   const translationSubmitInFlightRef = useRef(false);
@@ -5399,6 +5405,16 @@ function AppInner() {
   const readerElapsedTotalSeconds = Math.max(0, Number(readerAccumulatedSeconds || 0) + Number(readerLiveSeconds || 0));
   const readerSwipeThreshold = readerSwipeSensitivity === 'high' ? 24 : readerSwipeSensitivity === 'low' ? 52 : 36;
   const readerSwipeLockMs = readerSwipeSensitivity === 'high' ? 180 : readerSwipeSensitivity === 'low' ? 340 : 260;
+  const readerTrackingVisible = Boolean(
+    isWebAppMode
+    && initData
+    && !flashcardsOnly
+    && selectedSections.has('reader')
+    && readerImmersive
+    && !readerArchiveOpen
+    && !readerSettingsOpen
+    && readerHasContent
+  );
   const youtubeTodayTask = getTodayTaskForSection('youtube');
   const youtubeTaskProgress = youtubeTodayTask ? getTodayItemProgressPercent(youtubeTodayTask, todayTimerNowMs) : 0;
   const youtubeTaskDone = Boolean(
@@ -5855,13 +5871,80 @@ function AppInner() {
     }
   }, [postSupportApi]);
 
-  const sendSupportMessage = useCallback(async (text, retryId = '') => {
-    const clean = String(text || '').trim();
-    if (!clean || supportSending) return;
+  const clearSupportAttachment = useCallback(() => {
+    setSupportAttachment((prev) => {
+      const previewUrl = String(prev?.preview_url || '');
+      if (previewUrl.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(previewUrl);
+        } catch (_error) {
+          // ignore
+        }
+      }
+      return null;
+    });
+    if (supportAttachmentInputRef.current) {
+      supportAttachmentInputRef.current.value = '';
+    }
+  }, []);
+
+  const handleSupportAttachmentSelect = useCallback(async (event) => {
+    const file = event?.target?.files?.[0] || null;
+    if (!file) {
+      clearSupportAttachment();
+      return;
+    }
+    const mimeType = String(file.type || '').toLowerCase();
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+      setSupportError(tr('Можно прикрепить только JPG, PNG или WEBP.', 'Es koennen nur JPG, PNG oder WEBP angehaengt werden.'));
+      clearSupportAttachment();
+      return;
+    }
+    if (Number(file.size || 0) > 8 * 1024 * 1024) {
+      setSupportError(tr('Фото слишком большое. Максимум 8 МБ.', 'Das Bild ist zu gross. Maximal 8 MB.'));
+      clearSupportAttachment();
+      return;
+    }
+    try {
+      const imageBase64 = await readFileAsBase64(file);
+      setSupportError('');
+      setSupportAttachment((prev) => {
+        const previousUrl = String(prev?.preview_url || '');
+        if (previousUrl.startsWith('blob:')) {
+          try {
+            URL.revokeObjectURL(previousUrl);
+          } catch (_error) {
+            // ignore
+          }
+        }
+        return {
+          file_name: String(file.name || 'support-image'),
+          mime_type: mimeType,
+          image_base64: imageBase64,
+          preview_url: URL.createObjectURL(file),
+        };
+      });
+    } catch (error) {
+      setSupportError(normalizeNetworkErrorMessage(error, 'Не удалось прочитать фото', 'Bild konnte nicht gelesen werden'));
+      clearSupportAttachment();
+    }
+  }, [clearSupportAttachment, normalizeNetworkErrorMessage, tr]);
+
+  const sendSupportMessage = useCallback(async (payload, retryId = '') => {
+    const rawText = typeof payload === 'string' ? payload : payload?.text;
+    const clean = String(rawText || '').trim();
+    const attachment = typeof payload === 'string' ? null : (payload?.attachment || null);
+    if ((!clean && !attachment?.image_base64) || supportSending) return;
     setSupportSending(true);
     setSupportError('');
     try {
-      const data = await postSupportApi('/api/webapp/support/messages/send', { text: clean });
+      const requestPayload = { text: clean };
+      if (attachment?.image_base64) {
+        requestPayload.image_base64 = attachment.image_base64;
+        requestPayload.image_mime_type = attachment.mime_type;
+        requestPayload.image_file_name = attachment.file_name;
+      }
+      const data = await postSupportApi('/api/webapp/support/messages/send', requestPayload);
       const item = data?.item;
       if (item && typeof item === 'object') {
         setSupportMessages((prev) => [...prev, item]);
@@ -5869,6 +5952,7 @@ function AppInner() {
         await loadSupportMessages();
       }
       setSupportDraft('');
+      clearSupportAttachment();
       if (retryId) {
         setSupportFailedMessages((prev) => prev.filter((entry) => entry.temp_id !== retryId));
       }
@@ -5883,6 +5967,11 @@ function AppInner() {
             temp_id: tempId,
             from_role: 'user',
             message_text: clean,
+            attachment_url: attachment?.preview_url || null,
+            attachment_kind: attachment?.image_base64 ? 'image' : '',
+            attachment_mime_type: attachment?.mime_type || null,
+            attachment_file_name: attachment?.file_name || null,
+            attachment_payload: attachment ? { ...attachment } : null,
             created_at: new Date().toISOString(),
             is_failed: true,
           },
@@ -5891,7 +5980,7 @@ function AppInner() {
     } finally {
       setSupportSending(false);
     }
-  }, [loadSupportMessages, normalizeNetworkErrorMessage, postSupportApi, supportSending]);
+  }, [clearSupportAttachment, loadSupportMessages, normalizeNetworkErrorMessage, postSupportApi, supportSending]);
 
   const resolveFolderIconLabel = (icon) => {
     const map = {
@@ -6261,6 +6350,7 @@ function AppInner() {
       const startedAt = String(data?.session?.started_at || '').trim();
       setReaderSessionStartedAt(startedAt);
       setReaderLiveSeconds(0);
+      readerLastInteractionAtRef.current = Date.now();
     } catch (error) {
       console.warn('reader session start error', error);
     } finally {
@@ -6301,9 +6391,51 @@ function AppInner() {
     }
   };
 
+  const pauseReaderForIdle = useCallback(() => {
+    if (!readerTrackingVisible || readerTimerPaused || !readerHasContent) return;
+    const nowMs = Date.now();
+    const startedTs = Date.parse(String(readerSessionStartedAt || ''));
+    const segmentSeconds = Number.isFinite(startedTs)
+      ? Math.max(0, Math.floor((nowMs - startedTs) / 1000))
+      : 0;
+    if (segmentSeconds > 0) {
+      setReaderAccumulatedSeconds((prev) => prev + segmentSeconds);
+    }
+    setReaderTimerPaused(true);
+    setGlobalPauseReason(tr('Поставлено на паузу: нет активности в читалке', 'Pausiert: keine Aktivitaet im Leser'));
+    readerAutoPausedByIdleRef.current = true;
+    if (readerSessionId) {
+      void stopReaderSessionTracking(readerSessionId);
+    }
+  }, [
+    readerTrackingVisible,
+    readerTimerPaused,
+    readerHasContent,
+    readerSessionStartedAt,
+    readerSessionId,
+    stopReaderSessionTracking,
+    tr,
+  ]);
+
+  const markReaderInteraction = useCallback(() => {
+    readerLastInteractionAtRef.current = Date.now();
+    if (readerAutoPausedByIdleRef.current && readerTrackingVisible && readerTimerPaused) {
+      readerAutoPausedByIdleRef.current = false;
+      setReaderTimerPaused(false);
+      setGlobalPauseReason('');
+      void startReaderSessionTracking();
+    }
+  }, [
+    readerTrackingVisible,
+    readerTimerPaused,
+    startReaderSessionTracking,
+  ]);
+
   const toggleReaderTimerPause = async () => {
     if (!readerHasContent) return;
     if (readerTimerPaused) {
+      readerAutoPausedByIdleRef.current = false;
+      readerLastInteractionAtRef.current = Date.now();
       setReaderTimerPaused(false);
       await startReaderSessionTracking();
       return;
@@ -6313,6 +6445,7 @@ function AppInner() {
       : 0;
     setReaderAccumulatedSeconds((prev) => prev + segmentSeconds);
     setReaderTimerPaused(true);
+    readerAutoPausedByIdleRef.current = false;
     if (readerSessionId) {
       await stopReaderSessionTracking(readerSessionId);
     }
@@ -6359,6 +6492,7 @@ function AppInner() {
           setReaderAccumulatedSeconds((prev) => prev + segmentSeconds);
         }
         setReaderTimerPaused(true);
+        readerAutoPausedByIdleRef.current = false;
         if (readerSessionId) {
           await stopReaderSessionTracking(readerSessionId, {
             keepalive: reason === 'pagehide' || reason === 'beforeunload',
@@ -6455,6 +6589,8 @@ function AppInner() {
 
       let readerResumed = false;
       if (sectionVisibility.reader && readerHasContent && readerTimerPaused && readerAutoPausedByNavigationRef.current) {
+        readerAutoPausedByIdleRef.current = false;
+        readerLastInteractionAtRef.current = Date.now();
         setReaderTimerPaused(false);
         void startReaderSessionTracking();
         readerAutoPausedByNavigationRef.current = false;
@@ -6831,6 +6967,7 @@ function AppInner() {
       setReaderTimerPaused(true);
       setGlobalPauseReason(tr('Поставлено на паузу: переход в другой раздел', 'Pausiert: Wechsel in einen anderen Bereich'));
       readerAutoPausedByNavigationRef.current = true;
+      readerAutoPausedByIdleRef.current = false;
       if (readerSessionId) {
         void stopReaderSessionTracking(readerSessionId);
       }
@@ -6845,6 +6982,8 @@ function AppInner() {
       && !readerArchiveOpen
       && !readerSettingsOpen
     ) {
+      readerAutoPausedByIdleRef.current = false;
+      readerLastInteractionAtRef.current = Date.now();
       setReaderTimerPaused(false);
       void startReaderSessionTracking();
       setGlobalPauseReason('');
@@ -7279,17 +7418,7 @@ function AppInner() {
   }, [flashcardsOnly, selectedSections]);
 
   useEffect(() => {
-    const shouldTrackReader = Boolean(
-      isWebAppMode
-      && initData
-      && !flashcardsOnly
-      && selectedSections.has('reader')
-      && readerImmersive
-      && !readerArchiveOpen
-      && !readerSettingsOpen
-      && String(readerContent || '').trim()
-      && !readerTimerPaused
-    );
+    const shouldTrackReader = Boolean(readerTrackingVisible && !readerTimerPaused);
     if (shouldTrackReader) {
       startReaderSessionTracking();
       return;
@@ -7298,14 +7427,7 @@ function AppInner() {
       stopReaderSessionTracking(readerSessionId);
     }
   }, [
-    isWebAppMode,
-    initData,
-    flashcardsOnly,
-    selectedSections,
-    readerImmersive,
-    readerArchiveOpen,
-    readerSettingsOpen,
-    readerContent,
+    readerTrackingVisible,
     readerTimerPaused,
   ]);
 
@@ -7338,6 +7460,38 @@ function AppInner() {
   }, [readerSessionStartedAt]);
 
   useEffect(() => {
+    if (readerIdleTimeoutRef.current) {
+      clearTimeout(readerIdleTimeoutRef.current);
+      readerIdleTimeoutRef.current = null;
+    }
+    if (!readerTrackingVisible || readerTimerPaused || !readerHasContent) {
+      return undefined;
+    }
+    if (!readerLastInteractionAtRef.current) {
+      readerLastInteractionAtRef.current = Date.now();
+    }
+    const scheduleIdleCheck = () => {
+      const idleForMs = Date.now() - readerLastInteractionAtRef.current;
+      const timeoutMs = Math.max(250, READER_IDLE_TIMEOUT_MS - idleForMs);
+      readerIdleTimeoutRef.current = window.setTimeout(() => {
+        const idleNowMs = Date.now() - readerLastInteractionAtRef.current;
+        if (idleNowMs >= READER_IDLE_TIMEOUT_MS) {
+          pauseReaderForIdle();
+          return;
+        }
+        scheduleIdleCheck();
+      }, timeoutMs);
+    };
+    scheduleIdleCheck();
+    return () => {
+      if (readerIdleTimeoutRef.current) {
+        clearTimeout(readerIdleTimeoutRef.current);
+        readerIdleTimeoutRef.current = null;
+      }
+    };
+  }, [readerTrackingVisible, readerTimerPaused, readerHasContent, pauseReaderForIdle]);
+
+  useEffect(() => {
     if (!isWebAppMode) return;
     const saved = safeStorageGet('reader_swipe_sensitivity');
     if (saved === 'high' || saved === 'medium' || saved === 'low') {
@@ -7357,6 +7511,8 @@ function AppInner() {
     setReaderAccumulatedSeconds(0);
     setReaderLiveSeconds(0);
     setReaderSessionStartedAt('');
+    readerAutoPausedByIdleRef.current = false;
+    readerLastInteractionAtRef.current = 0;
   }, [readerHasContent]);
 
   useEffect(() => {
@@ -7364,6 +7520,7 @@ function AppInner() {
     if (!node || !readerDocumentId || !readerContent) return undefined;
     if (readerPageCount > 0) return undefined;
     const handleScroll = () => {
+      markReaderInteraction();
       const nextPercent = computeReaderProgressPercent();
       setReaderProgressPercent(nextPercent);
       if (readerStateSaveTimeoutRef.current) {
@@ -7381,7 +7538,7 @@ function AppInner() {
         readerStateSaveTimeoutRef.current = null;
       }
     };
-  }, [readerDocumentId, readerReadingMode, readerContent, readerPageCount]);
+  }, [readerDocumentId, readerReadingMode, readerContent, readerPageCount, markReaderInteraction]);
 
   useEffect(() => {
     if (!readerDocumentId || readerPageCount === 0) return;
@@ -9848,6 +10005,7 @@ function AppInner() {
   }
 
   const handleReaderStructuredClick = (event) => {
+    markReaderInteraction();
     const root = readerArticleRef.current;
     if (!root) return;
     const target = event?.target;
@@ -9961,10 +10119,12 @@ function AppInner() {
   };
 
   const handleReaderArticleMouseUp = (event) => {
+    markReaderInteraction();
     handleReaderStructuredSelectionEnd(event);
   };
 
   const handleReaderArticleTouchEnd = (event) => {
+    markReaderInteraction();
     handleReaderPageTouchEnd(event);
     handleReaderStructuredSelectionEnd(event);
   };
@@ -10121,6 +10281,7 @@ function AppInner() {
 
   const handleReaderPageWheel = (event) => {
     if (readerPageCount === 0) return;
+    markReaderInteraction();
     event.preventDefault();
     if (readerPageNavLockRef.current) return;
     const deltaRaw = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
@@ -10134,6 +10295,7 @@ function AppInner() {
 
   const handleReaderPageTouchStart = (event) => {
     if (readerPageCount === 0) return;
+    markReaderInteraction();
     const touch = event?.touches?.[0];
     if (!touch) return;
     readerSwipeStartRef.current = {
@@ -18192,10 +18354,24 @@ function AppInner() {
                       const isAdmin = role === 'admin';
                       const isFailed = Boolean(item?.is_failed);
                       const key = String(item?.id || item?.temp_id || `${item?.created_at || ''}:${item?.message_text || ''}`);
+                      const attachmentUrl = String(item?.attachment_url || item?.preview_url || '').trim();
+                      const hasImageAttachment = String(item?.attachment_kind || '').toLowerCase() === 'image' && attachmentUrl;
                       return (
                         <div key={key} className={`support-row ${isAdmin ? 'is-admin' : 'is-user'}`}>
                           <div className={`support-bubble ${isAdmin ? 'is-admin' : 'is-user'} ${isFailed ? 'is-failed' : ''}`}>
-                            <div className="support-bubble-text">{String(item?.message_text || '')}</div>
+                            {hasImageAttachment && (
+                              <a href={attachmentUrl} target="_blank" rel="noreferrer" className="support-bubble-image-link">
+                                <img
+                                  src={attachmentUrl}
+                                  alt={String(item?.attachment_file_name || 'support image')}
+                                  className="support-bubble-image"
+                                  loading="lazy"
+                                />
+                              </a>
+                            )}
+                            {String(item?.message_text || '').trim() && (
+                              <div className="support-bubble-text">{String(item?.message_text || '')}</div>
+                            )}
                             <div className="support-bubble-meta">
                               <span>{formatSupportTime(item?.created_at)}</span>
                               {isFailed && (
@@ -18204,7 +18380,10 @@ function AppInner() {
                                   <button
                                     type="button"
                                     className="support-retry-button"
-                                    onClick={() => sendSupportMessage(item?.message_text || '', String(item?.temp_id || ''))}
+                                    onClick={() => sendSupportMessage({
+                                      text: item?.message_text || '',
+                                      attachment: item?.attachment_payload || null,
+                                    }, String(item?.temp_id || ''))}
                                     disabled={supportSending}
                                   >
                                     {tr('Повторить', 'Erneut senden')}
@@ -18223,26 +18402,52 @@ function AppInner() {
                     className="support-composer"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      void sendSupportMessage(supportDraft);
+                      void sendSupportMessage({ text: supportDraft, attachment: supportAttachment });
                     }}
                   >
-                    <textarea
-                      value={supportDraft}
-                      onChange={(event) => setSupportDraft(event.target.value)}
-                      placeholder={tr('Напишите сообщение...', 'Nachricht schreiben...')}
-                      rows={2}
+                    <div className="support-composer-fields">
+                      {supportAttachment?.preview_url && (
+                        <div className="support-attachment-preview">
+                          <img src={supportAttachment.preview_url} alt={supportAttachment.file_name || 'support attachment'} className="support-attachment-preview-image" />
+                          <button type="button" className="support-attachment-remove" onClick={clearSupportAttachment} disabled={supportSending}>
+                            {tr('Убрать фото', 'Bild entfernen')}
+                          </button>
+                        </div>
+                      )}
+                      <textarea
+                        value={supportDraft}
+                        onChange={(event) => setSupportDraft(event.target.value)}
+                        placeholder={tr('Напишите сообщение...', 'Nachricht schreiben...')}
+                        rows={2}
+                        disabled={supportSending}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' && !event.shiftKey) {
+                            event.preventDefault();
+                            void sendSupportMessage({ text: supportDraft, attachment: supportAttachment });
+                          }
+                        }}
+                      />
+                    </div>
+                    <input
+                      ref={supportAttachmentInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={handleSupportAttachmentSelect}
                       disabled={supportSending}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' && !event.shiftKey) {
-                          event.preventDefault();
-                          void sendSupportMessage(supportDraft);
-                        }
-                      }}
+                      hidden
                     />
+                    <button
+                      type="button"
+                      className="secondary-button support-attach-button"
+                      onClick={() => supportAttachmentInputRef.current?.click()}
+                      disabled={supportSending}
+                    >
+                      {supportAttachment?.preview_url ? tr('Фото выбрано', 'Bild gewaehlt') : tr('Фото', 'Bild')}
+                    </button>
                     <button
                       type="submit"
                       className="primary-button"
-                      disabled={supportSending || !String(supportDraft || '').trim()}
+                      disabled={supportSending || (!String(supportDraft || '').trim() && !supportAttachment?.image_base64)}
                     >
                       {supportSending ? tr('Отправка...', 'Senden...') : tr('Отправить', 'Senden')}
                     </button>

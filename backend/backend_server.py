@@ -265,6 +265,7 @@ from backend.database import (
     upsert_webapp_group_context,
     list_webapp_group_contexts,
     list_webapp_group_member_user_ids,
+    list_known_webapp_group_chats,
     get_daily_plan,
     create_daily_plan,
     update_daily_plan_item_status,
@@ -457,6 +458,12 @@ TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstri
 TODAY_PLAN_DEFAULT_TZ = (os.getenv("TODAY_PLAN_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 YOUTUBE_API_KEY = (os.getenv("YOUTUBE_API_KEY") or "").strip()
 SUPPORT_MESSAGE_MAX_LEN = int((os.getenv("SUPPORT_MESSAGE_MAX_LEN") or "2000").strip() or "2000")
+SUPPORT_ATTACHMENT_MAX_BYTES = int((os.getenv("SUPPORT_ATTACHMENT_MAX_BYTES") or str(8 * 1024 * 1024)).strip() or str(8 * 1024 * 1024))
+SUPPORT_ATTACHMENT_ALLOWED_MIME_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
 THEORY_PACKAGE_TTL_MINUTES = max(1, int((os.getenv("THEORY_PACKAGE_TTL_MINUTES") or "720").strip()))
 BILLING_CURRENCY_DEFAULT = (os.getenv("BILLING_CURRENCY") or "USD").strip().upper() or "USD"
 BILLING_ALLOCATION_DEFAULT = (os.getenv("BILLING_ALLOCATION_METHOD_DEFAULT") or "weighted").strip().lower() or "weighted"
@@ -8980,12 +8987,56 @@ def _run_tts_prewarm_quota_control_scheduler_job() -> None:
         logging.exception("❌ TTS prewarm quota control scheduler failed")
 
 
+def _store_support_image_attachment(
+    *,
+    user_id: int,
+    image_b64: str,
+    mime_type: str | None = None,
+    file_name: str | None = None,
+) -> dict[str, Any]:
+    raw_b64 = str(image_b64 or "").strip()
+    if not raw_b64:
+        raise ValueError("image_base64 is required")
+    normalized_mime_type = str(mime_type or "").strip().lower() or "image/jpeg"
+    extension = SUPPORT_ATTACHMENT_ALLOWED_MIME_TYPES.get(normalized_mime_type)
+    if not extension:
+        raise ValueError("Поддерживаются только JPG, PNG и WEBP")
+    try:
+        image_bytes = base64.b64decode(raw_b64, validate=True)
+    except Exception as exc:
+        raise ValueError("Некорректный base64 файла") from exc
+    if not image_bytes:
+        raise ValueError("Пустой файл")
+    if len(image_bytes) > SUPPORT_ATTACHMENT_MAX_BYTES:
+        raise ValueError(f"Файл слишком большой (максимум {SUPPORT_ATTACHMENT_MAX_BYTES // (1024 * 1024)} МБ)")
+    object_key = (
+        f"support_attachments/{datetime.now(timezone.utc).strftime('%Y/%m')}/"
+        f"{int(user_id)}/{uuid4().hex}{extension}"
+    )
+    r2_put_bytes(
+        object_key,
+        image_bytes,
+        content_type=normalized_mime_type,
+        cache_control="public, max-age=31536000, immutable",
+    )
+    return {
+        "url": r2_public_url(object_key),
+        "kind": "image",
+        "mime_type": normalized_mime_type,
+        "file_name": str(file_name or "").strip() or f"support{extension}",
+        "bytes": image_bytes,
+    }
+
+
 def _notify_admins_about_support_message(
     *,
     user_id: int,
     username: str | None,
     text: str,
     support_message_id: int,
+    attachment_bytes: bytes | None = None,
+    attachment_mime_type: str | None = None,
+    attachment_file_name: str | None = None,
 ) -> dict:
     admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
     if not admin_ids:
@@ -8997,24 +9048,53 @@ def _notify_admins_about_support_message(
         f"User: {sender_label}\n"
         f"Support User ID: {int(user_id)}\n"
         f"Support Message ID: {int(support_message_id)}\n\n"
-        f"{text}\n\n"
+        f"{text or '[photo]'}\n\n"
         "Ответьте РЕПЛАЕМ на это сообщение, и ответ попадет пользователю в WebApp (раздел «Техподдержка»)."
     )
-    url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendMessage"
+    send_message_url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendMessage"
+    send_photo_url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendPhoto"
 
     sent = 0
     failed = 0
     for admin_id in admin_ids:
         try:
-            response = requests.post(
-                url,
-                json={
-                    "chat_id": int(admin_id),
-                    "text": message_text,
-                    "disable_web_page_preview": True,
-                },
-                timeout=15,
-            )
+            if attachment_bytes:
+                caption_text = message_text[:1000]
+                response = requests.post(
+                    send_photo_url,
+                    data={
+                        "chat_id": int(admin_id),
+                        "caption": caption_text,
+                    },
+                    files={
+                        "photo": (
+                            str(attachment_file_name or "support.jpg"),
+                            bytes(attachment_bytes),
+                            str(attachment_mime_type or "image/jpeg"),
+                        )
+                    },
+                    timeout=30,
+                )
+                if response.status_code < 400 and len(message_text) > len(caption_text):
+                    requests.post(
+                        send_message_url,
+                        json={
+                            "chat_id": int(admin_id),
+                            "text": message_text,
+                            "disable_web_page_preview": True,
+                        },
+                        timeout=15,
+                    )
+            else:
+                response = requests.post(
+                    send_message_url,
+                    json={
+                        "chat_id": int(admin_id),
+                        "text": message_text,
+                        "disable_web_page_preview": True,
+                    },
+                    timeout=15,
+                )
             if response.status_code >= 400:
                 failed += 1
                 logging.warning(
@@ -13572,21 +13652,42 @@ def send_webapp_support_message():
         return jsonify({"error": error}), 401
 
     text = str(payload.get("text") or "").strip()
-    if not text:
-        return jsonify({"error": "text обязателен"}), 400
     if len(text) > SUPPORT_MESSAGE_MAX_LEN:
         return jsonify({"error": f"Сообщение слишком длинное (максимум {SUPPORT_MESSAGE_MAX_LEN} символов)"}), 400
+    attachment_payload: dict[str, Any] | None = None
+    image_b64 = str(payload.get("image_base64") or "").strip()
+    if image_b64:
+        try:
+            attachment_payload = _store_support_image_attachment(
+                user_id=int(user_id),
+                image_b64=image_b64,
+                mime_type=payload.get("image_mime_type"),
+                file_name=payload.get("image_file_name"),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": f"Не удалось загрузить фото: {exc}"}), 500
+    if not text and not attachment_payload:
+        return jsonify({"error": "Нужно сообщение или фото"}), 400
 
     message = create_support_message(
         user_id=int(user_id),
         from_role="user",
         message_text=text,
+        attachment_url=attachment_payload.get("url") if attachment_payload else None,
+        attachment_kind=attachment_payload.get("kind") if attachment_payload else None,
+        attachment_mime_type=attachment_payload.get("mime_type") if attachment_payload else None,
+        attachment_file_name=attachment_payload.get("file_name") if attachment_payload else None,
     )
     delivery = _notify_admins_about_support_message(
         user_id=int(user_id),
         username=username,
         text=text,
         support_message_id=int(message["id"]),
+        attachment_bytes=attachment_payload.get("bytes") if attachment_payload else None,
+        attachment_mime_type=attachment_payload.get("mime_type") if attachment_payload else None,
+        attachment_file_name=attachment_payload.get("file_name") if attachment_payload else None,
     )
     return jsonify({"ok": True, "item": message, "delivery": delivery})
 
@@ -17468,7 +17569,7 @@ def export_webapp_dictionary_pdf():
         line_height = 14
         title_size = 16
         target_word_size = 18
-        source_word_size = 11
+        source_word_size = max(target_word_size - 2, 10)
         normal_size = 10.5
         meta_size = 9.5
         card_padding_x = 14
@@ -17517,7 +17618,12 @@ def export_webapp_dictionary_pdf():
             )
             headline_word = target_text or word_de or translation_de or word_ru or translation_ru or "—"
             source_word = source_text or word_ru or translation_ru or word_de or translation_de or "—"
-            created_at = str(item.get("created_at") or "").replace("T", " ").replace("+00:00", " UTC")
+            created_at = str(item.get("created_at") or "").strip()
+            created_at_date = ""
+            if created_at:
+                created_at_date = created_at.replace("T", " ").split(" ", 1)[0].strip()
+            source_is_ru = item_source_lang == "ru"
+            source_line_height = 18 if source_is_ru else 12
             examples = response_json.get("usage_examples") or []
             if isinstance(examples, str):
                 examples = [examples]
@@ -17530,7 +17636,7 @@ def export_webapp_dictionary_pdf():
                     continue
                 example_lines.append(f"- {wrapped_example[0]}")
                 example_lines.extend([f"  {line}" for line in wrapped_example[1:]])
-            body_lines = [f"Дата: {created_at}"] if created_at else []
+            body_lines = [f"Дата: {created_at_date}"] if created_at_date else []
             if example_lines:
                 body_lines.append("Примеры:")
                 body_lines.extend(example_lines)
@@ -17540,7 +17646,7 @@ def export_webapp_dictionary_pdf():
                 + 16
                 + (len(headline_lines) * 21)
                 + 8
-                + (len(source_lines) * 12)
+                + (len(source_lines) * source_line_height)
                 + 8
                 + (len(body_lines) * 12)
             )
@@ -17573,10 +17679,11 @@ def export_webapp_dictionary_pdf():
 
             text_y -= 2
             pdf.setFillColorRGB(0.30, 0.32, 0.37)
-            pdf.setFont(font_name, source_word_size)
+            source_font_name = font_bold if source_is_ru else font_name
+            pdf.setFont(source_font_name, source_word_size)
             for line in source_lines:
                 pdf.drawString(text_x, text_y, str(line))
-                text_y -= 12
+                text_y -= source_line_height
 
             text_y -= 4
             pdf.setFillColor(colors.black)
@@ -21987,79 +22094,102 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                             }
                         )
 
+    def _render_enriched_audio(mistakes: list[dict], *, source_lang: str, target_lang: str) -> bytes:
+        enriched: list[dict] = []
+        for item in mistakes:
+            enriched_item = dict(item)
+            if bool(item.get("audio_grammar_opt_in")):
+                explanation_text = _generate_audio_grammar_explanation(
+                    sentence=str(item.get("target_text") or ""),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+                if explanation_text:
+                    enriched_item["explanation_text"] = explanation_text
+            enriched.append(enriched_item)
+        script = build_full_script(enriched, source_lang=source_lang, target_lang=target_lang)
+        return render_script_to_audio(script)
+
     sent_daily = 0
     sent_story = 0
     errors: list[str] = []
+    group_targets = _collect_group_summary_targets()
+    group_chat_ids = [int(item.get("chat_id") or 0) for item in group_targets if int(item.get("chat_id") or 0) < 0]
 
-    for (user_id, source_lang, target_lang), mistakes in daily_by_user_pair.items():
-        if not mistakes:
-            continue
-        try:
-            enriched: list[dict] = []
-            for item in mistakes:
-                enriched_item = dict(item)
-                if bool(item.get("audio_grammar_opt_in")):
-                    explanation_text = _generate_audio_grammar_explanation(
-                        sentence=str(item.get("target_text") or ""),
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                    )
-                    if explanation_text:
-                        enriched_item["explanation_text"] = explanation_text
-                enriched.append(enriched_item)
-            mistakes = enriched
-            script = build_full_script(mistakes, source_lang=source_lang, target_lang=target_lang)
-            audio = render_script_to_audio(script)
-            name = daily_names.get(user_id) or f"user_{user_id}"
-            pair_label = _pair_code(source_lang, target_lang)
-            filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
-            caption = f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
-            target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.daily")
-            if int(target_chat_id) < 0:
-                _send_group_audio(audio, filename, caption, chat_id=int(target_chat_id))
-            else:
-                _send_private_audio(user_id=int(target_chat_id), audio_bytes=audio, filename=filename, caption=caption)
-            sent_daily += 1
-        except Exception as exc:
-            errors.append(f"daily user {user_id} {source_lang}->{target_lang}: {exc}")
+    if group_chat_ids:
+        for chat_id in group_chat_ids:
+            member_user_ids = set(list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False))
 
-    for (user_id, source_lang, target_lang), mistakes in story_by_user_pair.items():
-        if not mistakes:
-            continue
-        try:
-            enriched: list[dict] = []
-            for item in mistakes:
-                enriched_item = dict(item)
-                if bool(item.get("audio_grammar_opt_in")):
-                    explanation_text = _generate_audio_grammar_explanation(
-                        sentence=str(item.get("target_text") or ""),
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                    )
-                    if explanation_text:
-                        enriched_item["explanation_text"] = explanation_text
-                enriched.append(enriched_item)
-            mistakes = enriched
-            script = build_full_script(mistakes, source_lang=source_lang, target_lang=target_lang)
-            audio = render_script_to_audio(script)
-            name = story_names.get(user_id) or f"user_{user_id}"
-            pair_label = _pair_code(source_lang, target_lang)
-            filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
-            caption = f"История за {target_date.isoformat()} — {name} ({pair_label})"
-            target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.story")
-            if int(target_chat_id) < 0:
-                _send_group_audio(audio, filename, caption, chat_id=int(target_chat_id))
-            else:
-                _send_private_audio(user_id=int(target_chat_id), audio_bytes=audio, filename=filename, caption=caption)
-            sent_story += 1
-        except Exception as exc:
-            errors.append(f"story user {user_id} {source_lang}->{target_lang}: {exc}")
+            for (user_id, source_lang, target_lang), mistakes in daily_by_user_pair.items():
+                if not mistakes or user_id not in member_user_ids:
+                    continue
+                try:
+                    audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
+                    name = daily_names.get(user_id) or f"user_{user_id}"
+                    pair_label = _pair_code(source_lang, target_lang)
+                    filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
+                    caption = f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
+                    _send_group_audio(audio, filename, caption, chat_id=int(chat_id))
+                    sent_daily += 1
+                except Exception as exc:
+                    errors.append(f"daily chat {chat_id} user {user_id} {source_lang}->{target_lang}: {exc}")
+
+            for (user_id, source_lang, target_lang), mistakes in story_by_user_pair.items():
+                if not mistakes or user_id not in member_user_ids:
+                    continue
+                try:
+                    audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
+                    name = story_names.get(user_id) or f"user_{user_id}"
+                    pair_label = _pair_code(source_lang, target_lang)
+                    filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
+                    caption = f"История за {target_date.isoformat()} — {name} ({pair_label})"
+                    _send_group_audio(audio, filename, caption, chat_id=int(chat_id))
+                    sent_story += 1
+                except Exception as exc:
+                    errors.append(f"story chat {chat_id} user {user_id} {source_lang}->{target_lang}: {exc}")
+    else:
+        for (user_id, source_lang, target_lang), mistakes in daily_by_user_pair.items():
+            if not mistakes:
+                continue
+            try:
+                audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
+                name = daily_names.get(user_id) or f"user_{user_id}"
+                pair_label = _pair_code(source_lang, target_lang)
+                filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
+                caption = f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
+                target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.daily")
+                if int(target_chat_id) < 0:
+                    _send_group_audio(audio, filename, caption, chat_id=int(target_chat_id))
+                else:
+                    _send_private_audio(user_id=int(target_chat_id), audio_bytes=audio, filename=filename, caption=caption)
+                sent_daily += 1
+            except Exception as exc:
+                errors.append(f"daily user {user_id} {source_lang}->{target_lang}: {exc}")
+
+        for (user_id, source_lang, target_lang), mistakes in story_by_user_pair.items():
+            if not mistakes:
+                continue
+            try:
+                audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
+                name = story_names.get(user_id) or f"user_{user_id}"
+                pair_label = _pair_code(source_lang, target_lang)
+                filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
+                caption = f"История за {target_date.isoformat()} — {name} ({pair_label})"
+                target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.story")
+                if int(target_chat_id) < 0:
+                    _send_group_audio(audio, filename, caption, chat_id=int(target_chat_id))
+                else:
+                    _send_private_audio(user_id=int(target_chat_id), audio_bytes=audio, filename=filename, caption=caption)
+                sent_story += 1
+            except Exception as exc:
+                errors.append(f"story user {user_id} {source_lang}->{target_lang}: {exc}")
 
     return {
         "ok": True,
         "date": target_date.isoformat(),
         "sent_daily": sent_daily,
         "sent_story": sent_story,
+        "group_targets": len(group_chat_ids),
         "errors": errors,
     }
 
@@ -23338,6 +23468,391 @@ def _run_weekly_goals_scheduler_job() -> None:
         logging.exception("❌ Weekly goals scheduler failed")
 
 
+def _collect_group_summary_targets(limit: int = 500) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    seen_chat_ids: set[int] = set()
+    try:
+        known_groups = list_known_webapp_group_chats(limit=limit)
+    except Exception:
+        known_groups = []
+
+    for item in known_groups:
+        try:
+            chat_id = int(item.get("chat_id") or 0)
+        except Exception:
+            continue
+        if chat_id >= 0 or chat_id in seen_chat_ids:
+            continue
+        seen_chat_ids.add(chat_id)
+        targets.append(
+            {
+                "chat_id": chat_id,
+                "chat_title": str(item.get("chat_title") or "").strip() or None,
+            }
+        )
+
+    if TELEGRAM_GROUP_CHAT_ID:
+        try:
+            fallback_chat_id = int(TELEGRAM_GROUP_CHAT_ID)
+        except Exception:
+            fallback_chat_id = 0
+        if fallback_chat_id < 0 and fallback_chat_id not in seen_chat_ids:
+            seen_chat_ids.add(fallback_chat_id)
+            targets.append({"chat_id": fallback_chat_id, "chat_title": None})
+
+    return targets
+
+
+def _normalize_group_summary_user_ids(user_ids: list[int] | tuple[int, ...] | set[int] | None) -> list[int]:
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for raw in list(user_ids or []):
+        try:
+            candidate = int(raw)
+        except Exception:
+            continue
+        if candidate <= 0 or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def _fetch_group_daily_summary_rows(*, target_date: date, cohort_user_ids: list[int]) -> list[dict[str, Any]]:
+    normalized_user_ids = _normalize_group_summary_user_ids(cohort_user_ids)
+    if not normalized_user_ids:
+        return []
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    ds.user_id,
+                    COALESCE(NULLIF(BTRIM(MAX(t.username)), ''), NULLIF(BTRIM(MAX(au.username)), ''), '') AS username,
+                    COUNT(DISTINCT ds.id) AS total_sentences,
+                    COUNT(DISTINCT t.id) AS translated,
+                    COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id) AS missed,
+                    COALESCE(p.avg_time, 0) AS avg_time_minutes,
+                    COALESCE(p.total_time, 0) AS total_time_minutes,
+                    COALESCE(AVG(t.score), 0) AS avg_score,
+                    COALESCE(AVG(t.score), 0)
+                        - COALESCE(p.avg_time, 0)
+                        - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) * 20) AS final_score
+                FROM bt_3_daily_sentences ds
+                LEFT JOIN bt_3_translations t
+                    ON ds.user_id = t.user_id
+                   AND ds.id = t.sentence_id
+                LEFT JOIN bt_3_allowed_users au
+                    ON au.user_id = ds.user_id
+                LEFT JOIN (
+                    SELECT
+                        user_id,
+                        AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0) AS avg_time,
+                        SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0) AS total_time
+                    FROM bt_3_user_progress
+                    WHERE completed = TRUE
+                      AND start_time::date = %s
+                      AND user_id = ANY(%s)
+                    GROUP BY user_id
+                ) p ON p.user_id = ds.user_id
+                WHERE ds.date = %s
+                  AND ds.user_id = ANY(%s)
+                GROUP BY ds.user_id, p.avg_time, p.total_time
+                ORDER BY final_score DESC, translated DESC, total_time_minutes DESC, ds.user_id ASC;
+                """,
+                (
+                    target_date,
+                    normalized_user_ids,
+                    target_date,
+                    normalized_user_ids,
+                ),
+            )
+            rows = cursor.fetchall() or []
+
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        result.append(
+            {
+                "user_id": int(row[0] or 0),
+                "username": str(row[1] or "").strip(),
+                "total_sentences": int(row[2] or 0),
+                "translated": int(row[3] or 0),
+                "missed": int(row[4] or 0),
+                "avg_session_time_min": round(float(row[5] or 0.0), 1),
+                "total_time_min": round(float(row[6] or 0.0), 1),
+                "avg_score": round(float(row[7] or 0.0), 1),
+                "final_score": round(float(row[8] or 0.0), 1),
+            }
+        )
+    return result
+
+
+def _fetch_group_weekly_summary_rows(*, week_start: date, week_end: date, cohort_user_ids: list[int]) -> list[dict[str, Any]]:
+    normalized_user_ids = _normalize_group_summary_user_ids(cohort_user_ids)
+    if not normalized_user_ids:
+        return []
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    t.user_id,
+                    COALESCE(NULLIF(BTRIM(MAX(t.username)), ''), NULLIF(BTRIM(MAX(au.username)), ''), '') AS username,
+                    COUNT(DISTINCT t.sentence_id) AS translated,
+                    COALESCE(AVG(t.score), 0) AS avg_score,
+                    COALESCE(p.avg_time, 0) AS avg_time_minutes,
+                    COALESCE(p.total_time, 0) AS total_time_minutes,
+                    GREATEST(
+                        0,
+                        (
+                            SELECT COUNT(*)
+                            FROM bt_3_daily_sentences ds
+                            WHERE ds.user_id = t.user_id
+                              AND ds.date BETWEEN %s AND %s
+                        ) - COUNT(DISTINCT t.sentence_id)
+                    ) AS missed,
+                    COALESCE(AVG(t.score), 0)
+                        - COALESCE(p.avg_time, 0)
+                        - (
+                            GREATEST(
+                                0,
+                                (
+                                    SELECT COUNT(*)
+                                    FROM bt_3_daily_sentences ds
+                                    WHERE ds.user_id = t.user_id
+                                      AND ds.date BETWEEN %s AND %s
+                                ) - COUNT(DISTINCT t.sentence_id)
+                            ) * 20
+                        ) AS final_score
+                FROM bt_3_translations t
+                LEFT JOIN bt_3_allowed_users au
+                    ON au.user_id = t.user_id
+                LEFT JOIN (
+                    SELECT
+                        user_id,
+                        AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0) AS avg_time,
+                        SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0) AS total_time
+                    FROM bt_3_user_progress
+                    WHERE completed = TRUE
+                      AND start_time::date BETWEEN %s AND %s
+                      AND user_id = ANY(%s)
+                    GROUP BY user_id
+                ) p ON p.user_id = t.user_id
+                WHERE t.timestamp::date BETWEEN %s AND %s
+                  AND t.user_id = ANY(%s)
+                GROUP BY t.user_id, p.avg_time, p.total_time
+                ORDER BY final_score DESC, translated DESC, total_time_minutes DESC, t.user_id ASC;
+                """,
+                (
+                    week_start,
+                    week_end,
+                    week_start,
+                    week_end,
+                    week_start,
+                    week_end,
+                    normalized_user_ids,
+                    week_start,
+                    week_end,
+                    normalized_user_ids,
+                ),
+            )
+            rows = cursor.fetchall() or []
+
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        result.append(
+            {
+                "user_id": int(row[0] or 0),
+                "username": str(row[1] or "").strip(),
+                "translated": int(row[2] or 0),
+                "avg_score": round(float(row[3] or 0.0), 1),
+                "avg_session_time_min": round(float(row[4] or 0.0), 1),
+                "total_time_min": round(float(row[5] or 0.0), 1),
+                "missed": int(row[6] or 0),
+                "final_score": round(float(row[7] or 0.0), 1),
+            }
+        )
+    return result
+
+
+def _format_group_daily_summary_message(*, target_date: date, rows: list[dict[str, Any]]) -> str:
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [f"📊 Итоги дня ({target_date.isoformat()}):", ""]
+    if not rows:
+        lines.append("📊 Сегодня никто не перевёл ни одного предложения!")
+        return "\n".join(lines)
+
+    for index, row in enumerate(rows):
+        medal = medals[index] if index < len(medals) else "💩"
+        username = str(row.get("username") or "").strip() or f"user_{int(row.get('user_id') or 0)}"
+        lines.extend(
+            [
+                f"{medal} {username}",
+                f"📜 Всего предложений: {int(row.get('total_sentences') or 0)}",
+                f"✅ Переведено: {int(row.get('translated') or 0)}",
+                f"🚨 Не переведено: {int(row.get('missed') or 0)}",
+                f"⏱ Среднее время сессии: {float(row.get('avg_session_time_min') or 0.0):.1f} мин",
+                f"⏱ Время общее: {float(row.get('total_time_min') or 0.0):.1f} мин",
+                f"🎯 Средняя оценка: {float(row.get('avg_score') or 0.0):.1f}/100",
+                f"🏆 Итоговый балл: {float(row.get('final_score') or 0.0):.1f}",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def _format_group_weekly_summary_message(*, week_start: date, week_end: date, rows: list[dict[str, Any]]) -> str:
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [f"🏆 Итоги недели ({week_start.isoformat()} — {week_end.isoformat()}):", ""]
+    if not rows:
+        lines.append("📊 Неделя прошла, но никто не перевёл ни одного предложения!")
+        return "\n".join(lines)
+
+    for index, row in enumerate(rows):
+        medal = medals[index] if index < len(medals) else "💩"
+        username = str(row.get("username") or "").strip() or f"user_{int(row.get('user_id') or 0)}"
+        lines.extend(
+            [
+                f"{medal} {username}",
+                f"📜 Переведено: {int(row.get('translated') or 0)}",
+                f"🎯 Средняя оценка: {float(row.get('avg_score') or 0.0):.1f}/100",
+                f"⏱ Среднее время сессии: {float(row.get('avg_session_time_min') or 0.0):.1f} мин",
+                f"⏱ Время общее: {float(row.get('total_time_min') or 0.0):.1f} мин",
+                f"🚨 Пропущено: {int(row.get('missed') or 0)}",
+                f"🏆 Итоговый балл: {float(row.get('final_score') or 0.0):.1f}",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def _apply_group_summary_labels(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    cache: dict[int, str | None] = {}
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        user_id = int(item.get("user_id") or 0)
+        item["username"] = _resolve_today_group_user_label(
+            user_id,
+            str(item.get("username") or "").strip() or None,
+            cache=cache,
+        )
+        normalized.append(item)
+    return normalized
+
+
+def _dispatch_daily_group_summary(*, target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict[str, Any]:
+    targets = _collect_group_summary_targets()
+    if not targets:
+        return {"ok": True, "date": target_date.isoformat(), "sent": 0, "groups": 0, "errors": [], "tz": tz_name}
+
+    sent = 0
+    errors: list[str] = []
+    groups = 0
+    for target in targets:
+        chat_id = int(target.get("chat_id") or 0)
+        if chat_id >= 0:
+            continue
+        groups += 1
+        try:
+            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
+            rows = _fetch_group_daily_summary_rows(target_date=target_date, cohort_user_ids=member_user_ids)
+            labeled_rows = _apply_group_summary_labels(rows)
+            text = _format_group_daily_summary_message(target_date=target_date, rows=labeled_rows)
+            _send_group_message(text=text, chat_id=chat_id)
+            sent += 1
+        except Exception as exc:
+            errors.append(f"chat {chat_id}: {exc}")
+            logging.warning("⚠️ Failed to send daily group summary chat_id=%s", chat_id, exc_info=True)
+
+    return {
+        "ok": True,
+        "date": target_date.isoformat(),
+        "tz": tz_name,
+        "groups": groups,
+        "sent": sent,
+        "errors": errors,
+    }
+
+
+def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict[str, Any]:
+    bounds = get_period_bounds("week", today=target_date)
+    targets = _collect_group_summary_targets()
+    if not targets:
+        return {
+            "ok": True,
+            "date": target_date.isoformat(),
+            "week_start": bounds.start_date.isoformat(),
+            "week_end": bounds.end_date.isoformat(),
+            "sent": 0,
+            "groups": 0,
+            "errors": [],
+            "tz": tz_name,
+        }
+
+    sent = 0
+    errors: list[str] = []
+    groups = 0
+    for target in targets:
+        chat_id = int(target.get("chat_id") or 0)
+        if chat_id >= 0:
+            continue
+        groups += 1
+        try:
+            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
+            rows = _fetch_group_weekly_summary_rows(
+                week_start=bounds.start_date,
+                week_end=bounds.end_date,
+                cohort_user_ids=member_user_ids,
+            )
+            labeled_rows = _apply_group_summary_labels(rows)
+            text = _format_group_weekly_summary_message(
+                week_start=bounds.start_date,
+                week_end=bounds.end_date,
+                rows=labeled_rows,
+            )
+            _send_group_message(text=text, chat_id=chat_id)
+            sent += 1
+        except Exception as exc:
+            errors.append(f"chat {chat_id}: {exc}")
+            logging.warning("⚠️ Failed to send weekly group summary chat_id=%s", chat_id, exc_info=True)
+
+    return {
+        "ok": True,
+        "date": target_date.isoformat(),
+        "week_start": bounds.start_date.isoformat(),
+        "week_end": bounds.end_date.isoformat(),
+        "tz": tz_name,
+        "groups": groups,
+        "sent": sent,
+        "errors": errors,
+    }
+
+
+def _run_daily_group_summary_scheduler_job() -> None:
+    tz_name = (os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    target_date = _get_local_today_date(tz_name)
+    try:
+        result = _dispatch_daily_group_summary(target_date=target_date, tz_name=tz_name)
+        logging.info("✅ Daily group summary scheduler finished: %s", result)
+    except Exception:
+        logging.exception("❌ Daily group summary scheduler failed")
+
+
+def _run_weekly_group_summary_scheduler_job() -> None:
+    tz_name = (os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    target_date = _get_local_today_date(tz_name)
+    try:
+        result = _dispatch_weekly_group_summary(target_date=target_date, tz_name=tz_name)
+        logging.info("✅ Weekly group summary scheduler finished: %s", result)
+    except Exception:
+        logging.exception("❌ Weekly group summary scheduler failed")
+
+
 def _format_today_plan_message(plan: dict) -> str:
     total = int(plan.get("total_minutes") or 0)
     lines = ["Твои задачи на сегодня готовы ✅", f"Всего {total} минут:"]
@@ -24053,6 +24568,48 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=300,
         )
+    group_summary_enabled = (os.getenv("GROUP_DAILY_SUMMARY_ENABLED") or "1").strip().lower()
+    if group_summary_enabled in ("1", "true", "yes", "on"):
+        group_summary_hour = int((os.getenv("GROUP_DAILY_SUMMARY_HOUR") or "22").strip())
+        group_summary_minute = int((os.getenv("GROUP_DAILY_SUMMARY_MINUTE") or "30").strip())
+        group_summary_tz_name = (os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ or "UTC").strip() or "UTC"
+        try:
+            group_summary_tz = ZoneInfo(group_summary_tz_name)
+        except Exception:
+            logging.warning("⚠️ Invalid GROUP_SUMMARY_TZ for daily group summary: %s. Falling back to UTC", group_summary_tz_name)
+            group_summary_tz = ZoneInfo("UTC")
+        _audio_scheduler.add_job(
+            _run_daily_group_summary_scheduler_job,
+            "cron",
+            hour=group_summary_hour,
+            minute=group_summary_minute,
+            timezone=group_summary_tz,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
+    weekly_group_summary_enabled = (os.getenv("GROUP_WEEKLY_SUMMARY_ENABLED") or "1").strip().lower()
+    if weekly_group_summary_enabled in ("1", "true", "yes", "on"):
+        weekly_group_summary_day = (os.getenv("GROUP_WEEKLY_SUMMARY_DAY_OF_WEEK") or "sun").strip() or "sun"
+        weekly_group_summary_hour = int((os.getenv("GROUP_WEEKLY_SUMMARY_HOUR") or "22").strip())
+        weekly_group_summary_minute = int((os.getenv("GROUP_WEEKLY_SUMMARY_MINUTE") or "35").strip())
+        weekly_group_summary_tz_name = (os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ or "UTC").strip() or "UTC"
+        try:
+            weekly_group_summary_tz = ZoneInfo(weekly_group_summary_tz_name)
+        except Exception:
+            logging.warning("⚠️ Invalid GROUP_SUMMARY_TZ for weekly group summary: %s. Falling back to UTC", weekly_group_summary_tz_name)
+            weekly_group_summary_tz = ZoneInfo("UTC")
+        _audio_scheduler.add_job(
+            _run_weekly_group_summary_scheduler_job,
+            "cron",
+            day_of_week=weekly_group_summary_day,
+            hour=weekly_group_summary_hour,
+            minute=weekly_group_summary_minute,
+            timezone=weekly_group_summary_tz,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
     today_plan_enabled = (os.getenv("TODAY_PLAN_SCHEDULER_ENABLED") or "1").strip().lower()
     if today_plan_enabled in ("1", "true", "yes", "on"):
         today_hour = int((os.getenv("TODAY_PLAN_SCHEDULER_HOUR") or "7").strip())
@@ -24580,6 +25137,54 @@ def send_today_evening_reminders_now():
         target_date = _get_local_today_date(tz_name)
 
     result = _dispatch_today_evening_reminders(target_date=target_date, tz_name=tz_name)
+    return jsonify(result)
+
+
+@app.route("/api/admin/send-daily-group-summary", methods=["POST"])
+def send_daily_group_summary_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    tz_name = (payload.get("tz") or os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    date_str = (payload.get("date") or "").strip()
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
+    else:
+        target_date = _get_local_today_date(tz_name)
+
+    result = _dispatch_daily_group_summary(target_date=target_date, tz_name=tz_name)
+    return jsonify(result)
+
+
+@app.route("/api/admin/send-weekly-group-summary", methods=["POST"])
+def send_weekly_group_summary_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    tz_name = (payload.get("tz") or os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    date_str = (payload.get("date") or "").strip()
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
+    else:
+        target_date = _get_local_today_date(tz_name)
+
+    result = _dispatch_weekly_group_summary(target_date=target_date, tz_name=tz_name)
     return jsonify(result)
 
 
