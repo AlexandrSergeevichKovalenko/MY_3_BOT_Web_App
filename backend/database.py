@@ -12058,10 +12058,9 @@ def update_daily_plan_item_timer(
             if stored_running and stored_started_at:
                 live_elapsed += max(0, int((now_utc - stored_started_at).total_seconds()))
 
-            if safe_elapsed_override is not None:
-                live_elapsed = max(live_elapsed, safe_elapsed_override)
+            authoritative_elapsed = live_elapsed if safe_elapsed_override is None else safe_elapsed_override
 
-            next_elapsed = max(0, int(live_elapsed))
+            next_elapsed = max(0, int(authoritative_elapsed))
             next_running = stored_running
             next_paused = bool(current_payload.get("timer_paused")) and not stored_running
             next_started_at = stored_started_at if stored_running else None
@@ -12076,9 +12075,8 @@ def update_daily_plan_item_timer(
             elif normalized_action == "resume":
                 if next_status != "done":
                     next_status = "doing"
-                    if not next_running:
-                        next_running = True
-                        next_started_at = now_utc
+                    next_running = True
+                    next_started_at = now_utc
                     next_paused = False
             elif normalized_action == "pause":
                 next_running = False
@@ -12089,8 +12087,7 @@ def update_daily_plan_item_timer(
                     if bool(running) and next_status != "done":
                         next_running = True
                         next_paused = False
-                        if not next_started_at:
-                            next_started_at = now_utc
+                        next_started_at = now_utc
                     else:
                         next_running = False
                         next_paused = next_status != "done"

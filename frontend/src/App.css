@@ -301,6 +301,87 @@ body {
   color: #6f1c16;
 }
 
+.lesson-page.is-theme-light {
+  background:
+    radial-gradient(circle at 16% 14%, rgba(241, 216, 177, 0.42), transparent 42%),
+    radial-gradient(circle at 84% 10%, rgba(225, 201, 164, 0.34), transparent 48%),
+    radial-gradient(circle at 58% 86%, rgba(214, 186, 146, 0.28), transparent 52%),
+    #efe4d1;
+}
+
+.lesson-page.is-theme-light::before {
+  background: radial-gradient(circle at 30% 30%, rgba(240, 205, 158, 0.72), transparent 70%);
+}
+
+.lesson-page.is-theme-light::after {
+  background: radial-gradient(circle at 70% 40%, rgba(224, 194, 151, 0.58), transparent 70%);
+}
+
+.lesson-page.is-theme-light .lesson-bg {
+  background:
+    linear-gradient(120deg, rgba(253, 247, 236, 0.98), rgba(244, 233, 214, 0.82)),
+    radial-gradient(circle at top right, rgba(226, 194, 146, 0.44), transparent 58%),
+    radial-gradient(circle at bottom left, rgba(214, 186, 146, 0.28), transparent 56%);
+}
+
+.lesson-page.is-theme-light .pill {
+  background: linear-gradient(135deg, #e6be8b, #d8a76a);
+  color: #1f1a14;
+}
+
+.lesson-page.is-theme-light .login-card,
+.lesson-page.is-theme-light .lesson-hero,
+.lesson-page.is-theme-light .lesson-controls,
+.lesson-page.is-theme-light .lesson-meta {
+  background: rgba(253, 247, 236, 0.95);
+  border: 1px solid rgba(171, 139, 98, 0.26);
+  box-shadow: 0 16px 34px rgba(105, 78, 47, 0.14);
+}
+
+.lesson-page.is-theme-light .field,
+.lesson-page.is-theme-light .lesson-header p,
+.lesson-page.is-theme-light .lesson-copy p,
+.lesson-page.is-theme-light .lesson-controls p,
+.lesson-page.is-theme-light .lesson-hint,
+.lesson-page.is-theme-light .lesson-meta,
+.lesson-page.is-theme-light .login-header p {
+  color: rgba(46, 37, 27, 0.82);
+}
+
+.lesson-page.is-theme-light .field input {
+  background: #fff9f0;
+  border-color: rgba(130, 101, 67, 0.24);
+  color: #1f1a14;
+}
+
+.lesson-page.is-theme-light .primary-button {
+  background: linear-gradient(135deg, #e6be8b, #d8a76a);
+  color: #1f1a14;
+  box-shadow: 0 10px 20px rgba(166, 121, 67, 0.22);
+}
+
+.lesson-page.is-theme-light .lesson-control-bar .lk-control-bar {
+  background: rgba(255, 249, 240, 0.96);
+  border-color: rgba(171, 139, 98, 0.24);
+  box-shadow: 0 12px 28px rgba(105, 78, 47, 0.14);
+}
+
+.lesson-page.is-theme-light .lesson-control-bar .lk-button {
+  background: rgba(246, 236, 220, 0.92);
+  border-color: rgba(171, 126, 72, 0.28);
+  color: #1f1a14;
+}
+
+.lesson-page.is-theme-light .lesson-control-bar .lk-button:hover {
+  background: rgba(234, 215, 187, 0.94);
+}
+
+.lesson-page.is-theme-light .lesson-control-bar .lk-button.lk-button-danger {
+  background: rgba(254, 226, 226, 0.96);
+  color: #7f1d1d;
+  border-color: rgba(185, 28, 28, 0.2);
+}
+
 .webapp-page {
   min-height: 100vh;
   padding: 24px clamp(16px, 4vw, 48px);
@@ -15593,6 +15674,59 @@ body {
   background: linear-gradient(135deg, #e6be8b, #d8a76a);
   color: #1f1a14;
   box-shadow: 0 10px 20px rgba(166, 121, 67, 0.22);
+}
+
+.webapp-page.is-theme-light .voice-assistant-join {
+  background: linear-gradient(180deg, rgba(251, 245, 233, 0.98), rgba(245, 235, 220, 0.95));
+  border-color: rgba(171, 139, 98, 0.28);
+  box-shadow: 0 14px 30px rgba(105, 78, 47, 0.12);
+}
+
+.webapp-page.is-theme-light .voice-assistant-meta {
+  color: rgba(46, 37, 27, 0.82);
+}
+
+.webapp-page.is-theme-light .voice-assistant-room-wrap {
+  border-color: rgba(171, 139, 98, 0.3);
+  background:
+    radial-gradient(circle at 18% 18%, rgba(230, 190, 139, 0.2), transparent 48%),
+    radial-gradient(circle at 82% 22%, rgba(207, 157, 99, 0.18), transparent 46%),
+    linear-gradient(180deg, rgba(251, 245, 233, 0.98), rgba(244, 233, 214, 0.96));
+  box-shadow: 0 16px 34px rgba(105, 78, 47, 0.14);
+}
+
+.webapp-page.is-theme-light .voice-assistant-room,
+.webapp-page.is-theme-light .voice-assistant-room h3 {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .voice-assistant-hint {
+  color: rgba(46, 37, 27, 0.78);
+}
+
+.webapp-page.is-theme-light .voice-assistant-controls {
+  background: rgba(255, 249, 240, 0.96);
+  border-color: rgba(171, 139, 98, 0.28);
+}
+
+.webapp-page.is-theme-light .voice-assistant-controls .lk-control-bar {
+  background: transparent;
+}
+
+.webapp-page.is-theme-light .voice-assistant-controls .lk-button {
+  background: rgba(246, 236, 220, 0.92);
+  border: 1px solid rgba(171, 126, 72, 0.28);
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .voice-assistant-controls .lk-button:hover {
+  background: rgba(234, 215, 187, 0.94);
+}
+
+.webapp-page.is-theme-light .voice-assistant-controls .lk-button.lk-button-danger {
+  background: rgba(254, 226, 226, 0.96);
+  color: #7f1d1d;
+  border-color: rgba(185, 28, 28, 0.2);
 }
 
 .webapp-page.is-theme-light .webapp-selection-menu {

@@ -453,6 +453,7 @@ TELEGRAM_Deutsch_BOT_TOKEN = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
 MOBILE_AUTH_SECRET = (os.getenv("MOBILE_AUTH_SECRET") or TELEGRAM_Deutsch_BOT_TOKEN or "").strip()
 MOBILE_AUTH_TTL_SECONDS = int(os.getenv("MOBILE_AUTH_TTL_SECONDS", "2592000"))
 TELEGRAM_LOGIN_TTL_SECONDS = int(os.getenv("TELEGRAM_LOGIN_TTL_SECONDS", "86400"))
+TELEGRAM_WEBAPP_INIT_TTL_SECONDS = int(os.getenv("TELEGRAM_WEBAPP_INIT_TTL_SECONDS", "86400"))
 NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 TODAY_PLAN_DEFAULT_TZ = (os.getenv("TODAY_PLAN_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
@@ -1238,6 +1239,8 @@ def _build_telegram_data_check_string(init_data: str) -> str:
 
 
 def _telegram_hash_is_valid(init_data: str) -> bool:
+    if not _telegram_init_data_auth_date_is_fresh(init_data):
+        return False
     data_check_string = _build_telegram_data_check_string(init_data)
     secret_key = hmac.new(
         b"WebAppData",
@@ -1251,6 +1254,29 @@ def _telegram_hash_is_valid(init_data: str) -> bool:
     ).hexdigest()
     received_hash = dict(parse_qsl(init_data, keep_blank_values=True)).get("hash")
     return hmac.compare_digest(calculated_hash, received_hash or "")
+
+
+def _telegram_init_data_auth_date_is_fresh(
+    init_data: str,
+    *,
+    max_age_seconds: int | None = None,
+    max_future_skew_seconds: int = 300,
+) -> bool:
+    if not init_data:
+        return False
+    ttl_seconds = max(60, int(max_age_seconds or TELEGRAM_WEBAPP_INIT_TTL_SECONDS))
+    parsed_pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+    auth_date_raw = str(parsed_pairs.get("auth_date") or "").strip()
+    if not auth_date_raw:
+        return False
+    try:
+        auth_date = int(auth_date_raw)
+    except Exception:
+        return False
+    now_ts = int(time.time())
+    if auth_date > now_ts + max(0, int(max_future_skew_seconds)):
+        return False
+    return (now_ts - auth_date) <= ttl_seconds
 
 
 def _parse_telegram_init_data(init_data: str) -> dict:
@@ -15853,6 +15879,11 @@ def get_today_plan():
             source_lang=source_lang,
             target_lang=target_lang,
         )
+        plan = _normalize_stale_today_plan_timers(
+            user_id=int(user_id),
+            plan=plan,
+            stale_after_seconds=int((os.getenv("TODAY_PLAN_TIMER_STALE_AFTER_SECONDS") or "120").strip() or "120"),
+        )
         plan = _sync_today_plan_translation_progress(
             user_id=int(user_id),
             username=username,
@@ -24238,6 +24269,59 @@ def _sync_today_translation_task_progress_for_session(
         target_lang=target_lang,
         trigger=trigger,
     )
+
+
+def _normalize_stale_today_plan_timers(
+    *,
+    user_id: int,
+    plan: dict | None,
+    stale_after_seconds: int = 120,
+) -> dict | None:
+    if not isinstance(plan, dict):
+        return plan
+    items = list(plan.get("items") or [])
+    if not items:
+        return plan
+    now_utc = datetime.now(timezone.utc)
+    normalized_items: list[dict] = []
+    changed = False
+    safe_stale_after = max(30, int(stale_after_seconds or 120))
+
+    for item in items:
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        status = str(item.get("status") or "").strip().lower()
+        timer_running = bool(payload.get("timer_running"))
+        if status == "done" or not timer_running:
+            normalized_items.append(item)
+            continue
+
+        marker_dt = _parse_iso_datetime(payload.get("timer_updated_at")) or _parse_iso_datetime(payload.get("timer_started_at"))
+        if marker_dt is None:
+            normalized_items.append(item)
+            continue
+        stale_seconds = max(0.0, (now_utc - marker_dt).total_seconds())
+        if stale_seconds < float(safe_stale_after):
+            normalized_items.append(item)
+            continue
+
+        stored_elapsed = max(0, int(payload.get("timer_seconds") or 0))
+        paused_item = update_daily_plan_item_timer(
+            user_id=int(user_id),
+            item_id=int(item.get("id") or 0),
+            action="pause",
+            elapsed_seconds=stored_elapsed,
+            running=False,
+            event_at=now_utc,
+        ) or item
+        normalized_items.append(paused_item)
+        changed = True
+
+    if not changed:
+        return plan
+    return {
+        **plan,
+        "items": normalized_items,
+    }
 
 
 def _is_today_task_done_for_group_announcement(item: dict | None) -> bool:

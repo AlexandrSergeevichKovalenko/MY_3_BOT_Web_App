@@ -39,6 +39,25 @@ function hasFocusedEditableElement() {
   return isEditableElement(document.activeElement);
 }
 
+function resolveExternalThemeMode(telegramApp) {
+  const telegramScheme = String(
+    telegramApp?.colorScheme
+    || telegramApp?.themeParams?.color_scheme
+    || ''
+  ).trim().toLowerCase();
+  if (telegramScheme === 'light' || telegramScheme === 'dark') {
+    return telegramScheme;
+  }
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    try {
+      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    } catch (_error) {
+      return 'dark';
+    }
+  }
+  return 'dark';
+}
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -145,14 +164,18 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   const handleInput = (event) => {
     const nextValue = event.target.value;
     valueRef.current = nextValue;
-    onLiveChange(sentenceId, nextValue);
+    if (isAndroidClient) {
+      onLiveChange(sentenceId, nextValue, { persist: false });
+      return;
+    }
+    onLiveChange(sentenceId, nextValue, { persist: true });
     scheduleFlush(nextValue);
   };
 
   const handleBlur = () => {
     const nextValue = textareaRef.current ? String(textareaRef.current.value || '') : valueRef.current;
     valueRef.current = nextValue;
-    onLiveChange(sentenceId, nextValue);
+    onLiveChange(sentenceId, nextValue, { persist: false });
     clearPendingFlush();
     flushValue(nextValue, 'blur');
   };
@@ -999,7 +1022,8 @@ function AppInner() {
   };
 
   const [uiLang, setUiLang] = useState('ru');
-  const [themeMode, setThemeMode] = useState('dark');
+  const [themeMode, setThemeMode] = useState(() => resolveExternalThemeMode(window.Telegram?.WebApp));
+  const [themeModeOverride, setThemeModeOverride] = useState(null);
   const t = useMemo(() => createTranslator(uiLang), [uiLang]);
   const tr = useCallback((ru, de) => (uiLang === 'de' ? de : ru), [uiLang]);
   const weeklySummaryMetricTitles = useMemo(() => ({
@@ -1584,15 +1608,21 @@ function AppInner() {
         const billingLimitMessage = formatBillingLimitError(parsed);
         if (billingLimitMessage) return billingLimitMessage;
         const message = String(parsed?.error || parsed?.message || '').trim();
+        if (isInitDataAuthFailureMessage(message)) {
+          handleInitDataAuthFailure(message);
+        }
         return message || `${fallback} (HTTP ${response.status})`;
       } catch (_jsonError) {
         const compact = String(raw).replace(/\s+/g, ' ').trim();
+        if (isInitDataAuthFailureMessage(compact)) {
+          handleInitDataAuthFailure(compact);
+        }
         return compact || `${fallback} (HTTP ${response.status})`;
       }
     } catch (_readError) {
       return `${fallback} (HTTP ${response.status})`;
     }
-  }, [tr]);
+  }, [handleInitDataAuthFailure, isInitDataAuthFailureMessage, tr]);
   const normalizeNetworkErrorMessage = useCallback((error, fallbackRu, fallbackDe) => {
     const fallback = tr(fallbackRu, fallbackDe);
     const name = String(error?.name || '').trim().toLowerCase();
@@ -1649,6 +1679,71 @@ function AppInner() {
     'initData не найдено. Откройте Web App внутри Telegram.',
     'initData nicht gefunden. Oeffne die Web App in Telegram.'
   );
+  const initDataExpiredMsg = tr(
+    'Сессия Telegram устарела. Войдите заново.',
+    'Die Telegram-Sitzung ist abgelaufen. Bitte erneut anmelden.'
+  );
+  const initDataExpiredMiniAppMsg = tr(
+    'Сессия Telegram устарела. Закройте и заново откройте Mini App.',
+    'Die Telegram-Sitzung ist abgelaufen. Bitte die Mini App erneut oeffnen.'
+  );
+  const isInitDataAuthFailureMessage = useCallback((message) => {
+    const raw = String(message || '').trim().toLowerCase();
+    if (!raw) return false;
+    return (
+      raw.includes('initdata не прошёл')
+      || raw.includes('initdata ne proshyol')
+      || raw.includes('initdata expired')
+      || raw.includes('initdata invalid')
+      || raw.includes('telegram login expired')
+      || (raw.includes('initdata') && raw.includes('expired'))
+      || (raw.includes('auth_date') && raw.includes('invalid'))
+    );
+  }, []);
+  const handleInitDataAuthFailure = useCallback((message = '') => {
+    const normalizedMessage = String(message || '').trim();
+    if (telegramApp?.initData) {
+      setWebappError(normalizedMessage || initDataExpiredMiniAppMsg);
+      return;
+    }
+    safeStorageRemove('browser_init_data');
+    setInitData('');
+    setSessionId(null);
+    setWebappUser(null);
+    setWebappChatType('');
+    setBrowserAuthLoading(false);
+    setBrowserAuthError(normalizedMessage || initDataExpiredMsg);
+    setWebappError(normalizedMessage || initDataExpiredMsg);
+  }, [
+    initDataExpiredMiniAppMsg,
+    initDataExpiredMsg,
+    telegramApp,
+  ]);
+  const inspectInitDataAuthFailureResponse = useCallback(async (response) => {
+    if (!response || response.ok || (response.status !== 401 && response.status !== 403)) {
+      return false;
+    }
+    try {
+      const cloned = response.clone();
+      const raw = await cloned.text();
+      const compact = String(raw || '').trim();
+      if (!compact) return false;
+      let message = compact;
+      try {
+        const parsed = JSON.parse(compact);
+        message = String(parsed?.error || parsed?.message || compact).trim();
+      } catch (_jsonError) {
+        message = compact;
+      }
+      if (!isInitDataAuthFailureMessage(message)) {
+        return false;
+      }
+      handleInitDataAuthFailure(message);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }, [handleInitDataAuthFailure, isInitDataAuthFailureMessage]);
   const postSupportApi = useCallback(async (path, body = {}) => {
     if (!initData) {
       throw new Error(initDataMissingMsg);
@@ -1670,10 +1765,13 @@ function AppInner() {
           message = '';
         }
       }
+      if (isInitDataAuthFailureMessage(message)) {
+        handleInitDataAuthFailure(message);
+      }
       throw new Error(message || tr('Ошибка техподдержки', 'Support-Fehler'));
     }
     return response.json();
-  }, [initData, initDataMissingMsg, tr]);
+  }, [handleInitDataAuthFailure, initData, initDataMissingMsg, isInitDataAuthFailureMessage, tr]);
   const fetchWithTimeout = useCallback(async (url, options = {}, timeoutMs = 15000) => {
     const method = String(options?.method || 'GET').trim().toUpperCase();
     const maxAttempts = method === 'GET' || method === 'HEAD' ? 2 : 1;
@@ -1690,7 +1788,9 @@ function AppInner() {
         controller.abort();
       }, effectiveTimeout);
       try {
-        return await fetch(url, { ...options, signal: controller.signal });
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        await inspectInitDataAuthFailureResponse(response);
+        return response;
       } catch (error) {
         if (didTimeout) {
           const timeoutError = new Error('Request timed out');
@@ -1707,7 +1807,7 @@ function AppInner() {
       }
     }
     throw lastError || new Error('Request failed');
-  }, []);
+  }, [inspectInitDataAuthFailureResponse]);
   const fetchGetWithRetry = useCallback(async (url, timeoutMs = 45000) => {
     let response = await fetchWithTimeout(url, {}, timeoutMs);
     if (!response.ok && response.status >= 500) {
@@ -1831,7 +1931,12 @@ function AppInner() {
   };
 
   const toggleThemeMode = () => {
-    setThemeMode((prev) => (prev === 'light' ? 'dark' : 'light'));
+    const externalThemeMode = resolveExternalThemeMode(telegramApp);
+    setThemeMode((prev) => {
+      const next = prev === 'light' ? 'dark' : 'light';
+      setThemeModeOverride(next === externalThemeMode ? null : next);
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -1849,15 +1954,77 @@ function AppInner() {
   }, [uiLang]);
 
   useEffect(() => {
-    const stored = String(safeStorageGet('ui_theme_mode') || '').trim().toLowerCase();
-    if (stored === 'light' || stored === 'dark') {
-      setThemeMode(stored);
+    const storedOverride = String(safeStorageGet('ui_theme_mode_override') || '').trim().toLowerCase();
+    const legacyStored = String(safeStorageGet('ui_theme_mode') || '').trim().toLowerCase();
+    const externalThemeMode = resolveExternalThemeMode(telegramApp);
+    const resolvedOverride = storedOverride === 'light' || storedOverride === 'dark'
+      ? storedOverride
+      : ((legacyStored === 'light' || legacyStored === 'dark') ? legacyStored : '');
+    if (resolvedOverride) {
+      setThemeModeOverride(resolvedOverride === externalThemeMode ? null : resolvedOverride);
+      setThemeMode(resolvedOverride);
+      return;
     }
-  }, []);
+    setThemeModeOverride(null);
+    setThemeMode(externalThemeMode);
+  }, [telegramApp]);
 
   useEffect(() => {
     safeStorageSet('ui_theme_mode', themeMode);
   }, [themeMode]);
+
+  useEffect(() => {
+    if (themeModeOverride === 'light' || themeModeOverride === 'dark') {
+      safeStorageSet('ui_theme_mode_override', themeModeOverride);
+      return;
+    }
+    safeStorageRemove('ui_theme_mode_override');
+  }, [themeModeOverride]);
+
+  useEffect(() => {
+    const applyExternalTheme = () => {
+      if (themeModeOverride === 'light' || themeModeOverride === 'dark') {
+        return;
+      }
+      setThemeMode(resolveExternalThemeMode(telegramApp));
+    };
+
+    applyExternalTheme();
+
+    let mediaQuery = null;
+    const handleMediaChange = () => {
+      applyExternalTheme();
+    };
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+      try {
+        mediaQuery = window.matchMedia('(prefers-color-scheme: light)');
+        if (typeof mediaQuery.addEventListener === 'function') {
+          mediaQuery.addEventListener('change', handleMediaChange);
+        } else if (typeof mediaQuery.addListener === 'function') {
+          mediaQuery.addListener(handleMediaChange);
+        }
+      } catch (_error) {
+        mediaQuery = null;
+      }
+    }
+
+    if (typeof telegramApp?.onEvent === 'function') {
+      telegramApp.onEvent('themeChanged', applyExternalTheme);
+    }
+
+    return () => {
+      if (mediaQuery) {
+        if (typeof mediaQuery.removeEventListener === 'function') {
+          mediaQuery.removeEventListener('change', handleMediaChange);
+        } else if (typeof mediaQuery.removeListener === 'function') {
+          mediaQuery.removeListener(handleMediaChange);
+        }
+      }
+      if (typeof telegramApp?.offEvent === 'function') {
+        telegramApp.offEvent('themeChanged', applyExternalTheme);
+      }
+    };
+  }, [telegramApp, themeModeOverride]);
 
   useEffect(() => {
     const stored = safeStorageGet(guideQuickCardStorageKey);
@@ -1926,6 +2093,7 @@ function AppInner() {
   const handleBrowserLogout = () => {
     safeStorageRemove('browser_init_data');
     setInitData('');
+    setSessionId(null);
     setWebappUser(null);
     setWebappChatType('');
     setBrowserAuthError('');
@@ -4039,6 +4207,44 @@ function AppInner() {
         });
     });
   }, [todayPlan, todayTimerNowMs]);
+
+  useEffect(() => {
+    const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
+    const hasRunning = items.some((item) => isTodayItemTimerRunning(item));
+    if (!hasRunning) return undefined;
+
+    const isTaskVisible = (item) => {
+      const taskType = String(item?.task_type || '').toLowerCase();
+      if (taskType === 'cards') {
+        return flashcardsOnly || selectedSections.has('flashcards');
+      }
+      if (taskType === 'translation') {
+        return !flashcardsOnly && selectedSections.has('translations');
+      }
+      if (taskType === 'theory') {
+        return !flashcardsOnly && selectedSections.has('theory');
+      }
+      if (taskType === 'video' || taskType === 'youtube') {
+        return !flashcardsOnly && selectedSections.has('youtube');
+      }
+      return false;
+    };
+
+    const intervalId = window.setInterval(() => {
+      const nowMs = Date.now();
+      items.forEach((item) => {
+        if (!item?.id) return;
+        if (!isTodayItemTimerRunning(item)) return;
+        if (!isTaskVisible(item)) return;
+        void syncTodayItemTimer(item, 'sync', {
+          elapsedSeconds: getTodayItemElapsedSeconds(item, nowMs),
+          running: true,
+        });
+      });
+    }, 15000);
+
+    return () => window.clearInterval(intervalId);
+  }, [todayPlan, flashcardsOnly, selectedSections]);
 
   const drainSrsReviewBuffer = useCallback(async () => {
     if (!initData || srsReviewDrainInFlightRef.current) return;
@@ -7316,13 +7522,13 @@ function AppInner() {
       try {
         setWebappError('');
         setBrowserAuthError('');
-        const response = await fetch('/api/webapp/bootstrap', {
+        const response = await fetchWithTimeout('/api/webapp/bootstrap', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ initData }),
-        });
+        }, 30000);
         if (!response.ok) {
-          throw new Error(await response.text());
+          throw new Error(await readApiError(response, 'Ошибка инициализации', 'Initialisierungsfehler'));
         }
         const data = await response.json();
         setSessionId(data.session_id);
@@ -7333,16 +7539,16 @@ function AppInner() {
         setStarterDictionaryOffer(starterOffer);
         setStarterDictionaryPromptOpen(Boolean(starterOffer?.should_prompt));
       } catch (error) {
-        if (!telegramApp?.initData && String(error?.message || '').includes('initData не прошёл')) {
-          safeStorageRemove('browser_init_data');
-          setInitData('');
+        const message = String(error?.message || '').trim();
+        if (isInitDataAuthFailureMessage(message)) {
+          handleInitDataAuthFailure(message);
         }
-        setWebappError(`${tr('Ошибка инициализации', 'Initialisierungsfehler')}: ${error.message}`);
+        setWebappError(`${tr('Ошибка инициализации', 'Initialisierungsfehler')}: ${message}`);
       }
     };
 
     bootstrap();
-  }, [initData, isWebAppMode, normalizeStarterDictionaryOffer]);
+  }, [fetchWithTimeout, handleInitDataAuthFailure, initData, isInitDataAuthFailureMessage, isWebAppMode, normalizeStarterDictionaryOffer, readApiError, telegramApp, tr]);
 
   useEffect(() => {
     if (isWebAppMode && initData) {
@@ -8863,9 +9069,12 @@ function AppInner() {
     }
   };
 
-  const handleDraftLiveChange = useCallback((sentenceId, value) => {
+  const handleDraftLiveChange = useCallback((sentenceId, value, options = {}) => {
     const key = String(sentenceId);
     translationDraftsRef.current[key] = value;
+    if (options?.persist === false) {
+      return;
+    }
     scheduleTranslationDraftPersistence({ local: true, server: false });
   }, [scheduleTranslationDraftPersistence]);
 
@@ -12065,6 +12274,30 @@ function AppInner() {
     if (!feedback) return null;
     const lines = feedback.split('\n').map((line) => line.trim()).filter(Boolean);
     return lines.map((line, index) => {
+      const synonymLikeMatch = line.match(/^(?:[-•]\s*)?(Original Word|Possible Synonyms|Synonyms):\*?\s*(.+)$/i);
+      if (synonymLikeMatch) {
+        const rawLabel = String(synonymLikeMatch[1] || '').trim().toLowerCase();
+        const value = String(synonymLikeMatch[2] || '').trim();
+        const label = rawLabel === 'original word'
+          ? '• Original Word:'
+          : (rawLabel === 'possible synonyms' ? '• Possible Synonyms:' : '➡️ Synonyms:');
+        return (
+          <div
+            key={`fb-syn-${index}`}
+            className="webapp-feedback-line"
+            onMouseUp={handleSelection}
+          >
+            <span className="webapp-feedback-label">{label}</span>
+            <span className="webapp-feedback-value">{renderClickableText(value, {
+              compact: true,
+              inlineLookup: true,
+              lookupLang: getNormalizeLookupLang(),
+              selectionType: 'translation_result_word',
+              stopPropagation: true,
+            })}</span>
+          </div>
+        );
+      }
       const match = line.match(/Correct Translation:\*?\s*(.+)$/i);
       if (match) {
         return (
@@ -18441,7 +18674,7 @@ function AppInner() {
                 </div>
 
                 {!assistantToken ? (
-                  <div className="voice-assistant-join">
+                  <div className={`voice-assistant-join ${isLightTheme ? 'is-theme-light' : ''}`}>
                     <div className="voice-assistant-meta">
                       <span>{tr('Пользователь', 'Nutzer')}: {assistantIdentity.displayName || '—'}</span>
                       <span>ID: {assistantIdentity.userId || '—'}</span>
@@ -18457,7 +18690,7 @@ function AppInner() {
                     </button>
                   </div>
                 ) : (
-                  <div className="voice-assistant-room-wrap" data-lk-theme="default">
+                  <div className={`voice-assistant-room-wrap ${isLightTheme ? 'is-theme-light' : ''}`} data-lk-theme="default">
                     <LiveKitRoom
                       serverUrl={livekitUrl}
                       token={assistantToken}
@@ -18476,7 +18709,7 @@ function AppInner() {
                         setAssistantToken(null);
                       }}
                       onError={(e) => setAssistantError(`LiveKit error: ${e?.message || e}`)}
-                      className="voice-assistant-room"
+                      className={`voice-assistant-room ${isLightTheme ? 'is-theme-light' : ''}`}
                     >
                       <div className="voice-assistant-room-head">
                         <div>
@@ -19332,7 +19565,7 @@ function AppInner() {
   // Кнопка <button type="submit">: Кнопка для отправки формы. При нажатии запускается событие onSubmit формы, вызывая handleConnect.
 if (!token) {
     return (
-      <div className="lesson-page lesson-login" data-lk-theme="default">
+      <div className={`lesson-page lesson-login ${isLightTheme ? 'is-theme-light' : 'is-theme-dark'}`} data-lk-theme="default">
         <div className="lesson-bg" aria-hidden="true" />
         <div className="login-card">
           <div className="login-header">
@@ -19379,7 +19612,7 @@ if (!token) {
       video={false}
       onDisconnected={() => setToken(null)}
       onError={(e) => console.error("LiveKit error:", e)}
-      className="lesson-page lesson-room"
+      className={`lesson-page lesson-room ${isLightTheme ? 'is-theme-light' : 'is-theme-dark'}`}
       data-lk-theme="default"
     >
       <div className="lesson-bg" aria-hidden="true" />
