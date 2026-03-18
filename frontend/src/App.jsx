@@ -14927,6 +14927,10 @@ function AppInner() {
     };
     setAnalyticsLoading(true);
     setAnalyticsError('');
+    setAnalyticsSummary(null);
+    setAnalyticsPoints([]);
+    setAnalyticsCompare([]);
+    setAnalyticsRank(null);
     try {
       const summaryResponse = await fetch('/api/webapp/analytics/summary', {
         method: 'POST',

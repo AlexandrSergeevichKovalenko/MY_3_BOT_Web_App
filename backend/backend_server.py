@@ -8854,7 +8854,7 @@ def _get_tts_object_cache_snapshot(*, stale_minutes: int | None = None) -> dict:
                 elif normalized == "failed":
                     failed_count = int(count_value or 0)
             cursor.execute(
-                """
+                f"""
                 SELECT
                     COUNT(*),
                     COALESCE(MAX(EXTRACT(EPOCH FROM (NOW() - updated_at)) / 60.0), 0)

@@ -129,7 +129,7 @@ def get_all_time_bounds_for_users(user_ids: list[int] | tuple[int, ...] | set[in
     normalized_user_ids = _normalize_user_ids(user_ids)
     if not normalized_user_ids:
         return get_all_time_bounds(None)
-    sql = """
+    sql = f"""
         WITH dates AS (
             SELECT MIN(date) AS min_date, MAX(date) AS max_date
             FROM bt_3_daily_sentences
@@ -497,7 +497,7 @@ def fetch_user_summary(
     source_lang: str = "ru",
     target_lang: str = "de",
 ) -> dict[str, Any]:
-    sql = """
+    sql = f"""
         WITH base AS (
             SELECT
                 t.user_id,
@@ -677,7 +677,7 @@ def fetch_scope_summary(
             target_lang=target_lang,
         )
 
-    sql = """
+    sql = f"""
         WITH base AS (
             SELECT
                 t.user_id,
