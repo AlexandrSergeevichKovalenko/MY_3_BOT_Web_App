@@ -169,6 +169,49 @@ def get_grammar_focus_by_label(label: str | None) -> dict[str, Any] | None:
     return None
 
 
+def recommend_webapp_focus_for_error_pair(
+    main_category: str | None,
+    sub_category: str | None,
+) -> dict[str, str]:
+    normalized_main = str(main_category or "").strip()
+    normalized_sub = str(sub_category or "").strip()
+
+    if normalized_sub:
+        for item in GRAMMAR_FOCUS_PRESETS:
+            preset_subcategories = {
+                str(value or "").strip()
+                for value in (item.get("subcategories") or [])
+                if str(value or "").strip()
+            }
+            if normalized_sub in preset_subcategories:
+                return {
+                    "label": str(item.get("label") or "").strip(),
+                    "custom_focus": "",
+                }
+
+    if normalized_main:
+        matching_by_main = []
+        for item in GRAMMAR_FOCUS_PRESETS:
+            preset_main_categories = {
+                str(value or "").strip()
+                for value in (item.get("main_categories") or [])
+                if str(value or "").strip()
+            }
+            if normalized_main in preset_main_categories:
+                matching_by_main.append(item)
+        if len(matching_by_main) == 1:
+            return {
+                "label": str(matching_by_main[0].get("label") or "").strip(),
+                "custom_focus": "",
+            }
+
+    custom_focus = normalized_sub or normalized_main
+    return {
+        "label": CUSTOM_FOCUS_LABEL,
+        "custom_focus": custom_focus,
+    }
+
+
 def resolve_webapp_focus(topic_label: str | None, custom_focus: str | None = None) -> dict[str, Any]:
     raw_label = str(topic_label or "").strip()
     custom_text = " ".join(str(custom_focus or "").strip().split())

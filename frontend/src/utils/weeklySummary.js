@@ -115,6 +115,7 @@ export function buildWeeklySummaryHeroFacts({
     const previous = previousMetrics?.[key] && typeof previousMetrics[key] === 'object' ? previousMetrics[key] : {};
     const goal = Math.max(0, Number(current.goal || 0));
     const actual = Math.max(0, Number(current.actual || 0));
+    const previousActual = Math.max(0, Number(previous.actual || 0));
     const completionPercent = goal > 0 ? Number(current.completion_percent || 0) : 0;
     const previousGoal = Math.max(0, Number(previous.goal || 0));
     const previousCompletionPercent = previousGoal > 0 ? Number(previous.completion_percent || 0) : 0;
@@ -122,6 +123,8 @@ export function buildWeeklySummaryHeroFacts({
       key,
       goal,
       actual,
+      previousActual,
+      deltaActual: actual - previousActual,
       completionPercent,
       previousCompletionPercent,
       activityScore: goal > 0 ? completionPercent : actual,
@@ -133,15 +136,38 @@ export function buildWeeklySummaryHeroFacts({
   const basis = planned.length ? planned : active;
   const strongestCount = basis.length <= 2 ? Math.min(1, basis.length) : 2;
   const weakestCount = basis.length <= 2 ? Math.min(1, Math.max(0, basis.length - strongestCount)) : 2;
-  const strongest = [...basis]
-    .sort((a, b) => b.activityScore - a.activityScore)
-    .slice(0, strongestCount)
-    .map((item) => item.key);
-  const weakest = [...basis]
-    .sort((a, b) => a.activityScore - b.activityScore)
-    .filter((item) => !strongest.includes(item.key))
-    .slice(0, weakestCount)
-    .map((item) => item.key);
+  const hasComparablePreviousActivity = basis.some((item) => item.previousActual > 0);
+
+  let strongest = [];
+  let weakest = [];
+
+  if (hasComparablePreviousActivity) {
+    strongest = [...basis]
+      .filter((item) => item.deltaActual > 0)
+      .sort((a, b) => b.deltaActual - a.deltaActual)
+      .slice(0, strongestCount)
+      .map((item) => item.key);
+    weakest = [...basis]
+      .filter((item) => item.deltaActual < 0 && !strongest.includes(item.key))
+      .sort((a, b) => a.deltaActual - b.deltaActual)
+      .slice(0, weakestCount)
+      .map((item) => item.key);
+  }
+
+  if (!strongest.length) {
+    strongest = [...basis]
+      .sort((a, b) => b.activityScore - a.activityScore)
+      .slice(0, strongestCount)
+      .map((item) => item.key);
+  }
+
+  if (!weakest.length) {
+    weakest = [...basis]
+      .sort((a, b) => a.activityScore - b.activityScore)
+      .filter((item) => !strongest.includes(item.key))
+      .slice(0, weakestCount)
+      .map((item) => item.key);
+  }
 
   const currentAverageCompletion = planned.length
     ? planned.reduce((sum, item) => sum + item.completionPercent, 0) / planned.length

@@ -12579,14 +12579,16 @@ def consume_today_regenerate_limit(
     }
 
 
-def get_top_weak_topic(
+def list_top_weak_topics(
     *,
     user_id: int,
     lookback_days: int = 7,
     source_lang: str | None = None,
     target_lang: str | None = None,
-) -> dict | None:
+    limit: int = 5,
+) -> list[dict]:
     lookback_days = max(1, int(lookback_days))
+    limit = max(1, min(int(limit or 5), 20))
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -12607,21 +12609,45 @@ def get_top_weak_topic(
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
                     GROUP BY 1, 2
                     ORDER BY total_mistakes DESC, main_category ASC, sub_category ASC
-                    LIMIT 1;
+                    LIMIT %s;
                     """,
-                    (int(user_id), source_lang or "ru", target_lang or "de", lookback_days),
+                    (int(user_id), source_lang or "ru", target_lang or "de", lookback_days, limit),
                 )
-                row = cursor.fetchone()
+                rows = cursor.fetchall()
     except Exception:
-        return None
+        return []
 
-    if not row:
+    topics: list[dict] = []
+    for row in rows or []:
+        if not row:
+            continue
+        topics.append(
+            {
+                "main_category": row[0],
+                "sub_category": row[1],
+                "mistakes": int(row[2] or 0),
+            }
+        )
+    return topics
+
+
+def get_top_weak_topic(
+    *,
+    user_id: int,
+    lookback_days: int = 7,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> dict | None:
+    topics = list_top_weak_topics(
+        user_id=user_id,
+        lookback_days=lookback_days,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        limit=1,
+    )
+    if not topics:
         return None
-    return {
-        "main_category": row[0],
-        "sub_category": row[1],
-        "mistakes": int(row[2] or 0),
-    }
+    return topics[0]
 
 
 def get_weak_topic_sentences(
@@ -12673,6 +12699,71 @@ def get_weak_topic_sentences(
     except Exception:
         return []
     return [str(row[0]).strip() for row in rows if row and str(row[0]).strip()]
+
+
+def list_recent_started_video_topics(
+    *,
+    user_id: int,
+    lookback_days: int = 7,
+    limit: int = 20,
+) -> list[dict]:
+    safe_lookback_days = max(1, int(lookback_days or 7))
+    safe_limit = max(1, min(int(limit or 20), 100))
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT ON (
+                        COALESCE(NULLIF(i.payload ->> 'skill_id', ''), ''),
+                        COALESCE(NULLIF(i.payload ->> 'main_category', ''), ''),
+                        COALESCE(NULLIF(i.payload ->> 'sub_category', ''), '')
+                    )
+                        NULLIF(i.payload ->> 'skill_id', '') AS skill_id,
+                        NULLIF(i.payload ->> 'main_category', '') AS main_category,
+                        NULLIF(i.payload ->> 'sub_category', '') AS sub_category,
+                        COALESCE(i.completed_at, p.created_at) AS last_used_at
+                    FROM bt_3_daily_plan_items i
+                    JOIN bt_3_daily_plans p ON p.id = i.plan_id
+                    WHERE p.user_id = %s
+                      AND p.plan_date >= (CURRENT_DATE - ((%s::int - 1) * INTERVAL '1 day'))::date
+                      AND LOWER(COALESCE(i.task_type, '')) IN ('video', 'youtube')
+                      AND (
+                        LOWER(COALESCE(i.status, '')) IN ('doing', 'done')
+                        OR COALESCE(NULLIF(i.payload ->> 'timer_seconds', '')::int, 0) > 0
+                        OR COALESCE(NULLIF(i.payload ->> 'video_user_vote', '')::int, 0) <> 0
+                      )
+                    ORDER BY
+                        COALESCE(NULLIF(i.payload ->> 'skill_id', ''), ''),
+                        COALESCE(NULLIF(i.payload ->> 'main_category', ''), ''),
+                        COALESCE(NULLIF(i.payload ->> 'sub_category', ''), ''),
+                        COALESCE(i.completed_at, p.created_at) DESC
+                    LIMIT %s;
+                    """,
+                    (int(user_id), safe_lookback_days, safe_limit),
+                )
+                rows = cursor.fetchall()
+    except Exception:
+        return []
+
+    topics: list[dict] = []
+    for row in rows or []:
+        if not row:
+            continue
+        skill_id = str(row[0] or "").strip() or None
+        main_category = str(row[1] or "").strip() or None
+        sub_category = str(row[2] or "").strip() or None
+        if not skill_id and not main_category and not sub_category:
+            continue
+        topics.append(
+            {
+                "skill_id": skill_id,
+                "main_category": main_category,
+                "sub_category": sub_category,
+                "last_used_at": row[3].isoformat() if row[3] else None,
+            }
+        )
+    return topics
 
 
 def get_recent_mistake_examples_for_topic(

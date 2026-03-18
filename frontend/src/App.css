@@ -13848,6 +13848,84 @@ body {
   max-width: 100%;
 }
 
+.webapp-section.webapp-section-translations .today-translation-recommendation-card {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--tr-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0)),
+    var(--tr-bg-card-alt);
+  box-shadow: var(--tr-shadow-card);
+}
+
+.webapp-section.webapp-section-translations .today-translation-recommendation-card__eyebrow {
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tr-primary);
+}
+
+.webapp-section.webapp-section-translations .today-translation-recommendation-card__title {
+  font-size: 18px;
+  line-height: 1.25;
+  font-weight: 800;
+  color: var(--tr-text-title);
+}
+
+.webapp-section.webapp-section-translations .today-translation-recommendation-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--tr-text-secondary);
+}
+
+.webapp-section.webapp-section-translations .today-translation-recommendation-card__copy,
+.webapp-section.webapp-section-translations .today-translation-recommendation-card__hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--tr-text-muted);
+}
+
+.webapp-section.webapp-section-translations .today-translation-recommendation-card__examples {
+  display: grid;
+  gap: 8px;
+}
+
+.webapp-section.webapp-section-translations .today-translation-recommendation-card__examples > span {
+  font-size: 12px;
+  line-height: 1.3;
+  font-weight: 700;
+  color: var(--tr-text-subtle);
+}
+
+.webapp-section.webapp-section-translations .today-translation-recommendation-card__example {
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--tr-border-subtle);
+  background: var(--tr-bg-card);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--tr-text-secondary);
+}
+
+.webapp-section.webapp-section-translations .today-translation-recommendation-card__actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.webapp-section.webapp-section-translations .today-translation-recommendation-card__actions .secondary-button {
+  min-height: 40px;
+  border-radius: 14px;
+}
+
 @media (min-width: 901px) {
   .webapp-main {
     align-content: start;
@@ -14102,10 +14180,66 @@ body {
   border-radius: 16px;
   background: var(--tr-bg-card-alt);
   color: var(--tr-text-primary);
+  font-size: clamp(16px, 3.9vw, 18px);
+  line-height: 1.62;
+  padding: 16px 18px;
   min-width: 0;
   max-width: 100%;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.webapp-section.webapp-section-translations .webapp-feedback-line,
+.webapp-section.webapp-section-translations .webapp-explanation-line {
+  margin-bottom: 10px;
+  line-height: inherit;
+}
+
+.webapp-section.webapp-section-translations .webapp-feedback-label,
+.webapp-section.webapp-section-translations .webapp-feedback-value {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.webapp-section.webapp-section-translations .webapp-feedback-label {
+  font-weight: 700;
+}
+
+.webapp-section.webapp-section-translations .translation-feedback-label-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  vertical-align: baseline;
+}
+
+.webapp-section.webapp-section-translations .translation-inline-info-button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--tr-primary);
+  background: color-mix(in srgb, var(--tr-primary) 18%, var(--tr-bg-card-alt));
+  color: var(--tr-primary);
+  font-size: 17px;
+  line-height: 1;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  cursor: pointer;
+  padding: 0;
+}
+
+.webapp-section.webapp-section-translations .translation-inline-info-button:hover {
+  background: color-mix(in srgb, var(--tr-primary) 26%, var(--tr-bg-card-alt));
+}
+
+.webapp-section.webapp-section-translations .webapp-result-text .clickable-word,
+.webapp-section.webapp-section-translations .webapp-explanation .clickable-word {
+  color: var(--tr-primary);
+  font-weight: 600;
+  text-underline-offset: 0.16em;
 }
 
 .webapp-section.webapp-section-translations .story-result {
@@ -14415,13 +14549,13 @@ body {
 
 .webapp-dictionary .dictionary-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
 .webapp-dictionary .dictionary-actions .dictionary-fast-button,
 .webapp-dictionary .dictionary-actions .dictionary-button,
-.webapp-dictionary .dictionary-actions .dictionary-save-button {
+.webapp-dictionary .dictionary-save-button {
   min-height: 48px;
   border-radius: 16px;
   font-size: 14px;
@@ -14447,10 +14581,10 @@ body {
   box-shadow: none;
 }
 
-.webapp-dictionary .dictionary-actions .dictionary-save-button {
+.webapp-dictionary .dictionary-save-button {
   border: 1px solid var(--dict-border);
   background: transparent;
-  color: var(--dict-text-secondary);
+  color: var(--dict-text-title);
   box-shadow: none;
 }
 
@@ -14465,7 +14599,7 @@ body {
 }
 
 .webapp-dictionary .dictionary-actions .dictionary-fast-button:hover,
-.webapp-dictionary .dictionary-actions .dictionary-save-button:hover,
+.webapp-dictionary .dictionary-save-button:hover,
 .webapp-dictionary .dictionary-actions .dictionary-back-icon:hover {
   background: #1f2937;
 }
@@ -14565,11 +14699,11 @@ body {
   background: #1f2937;
 }
 
-.webapp-dictionary .dictionary-flashcards {
-  margin-top: 0;
+.webapp-dictionary .dictionary-result-actions {
+  margin-top: 18px;
 }
 
-.webapp-dictionary .dictionary-flashcards .secondary-button {
+.webapp-dictionary .dictionary-result-actions .dictionary-save-button {
   width: 100%;
   min-height: 56px;
   border-radius: 16px;
@@ -14581,7 +14715,7 @@ body {
   box-shadow: none;
 }
 
-.webapp-dictionary .dictionary-flashcards .secondary-button:hover {
+.webapp-dictionary .dictionary-result-actions .dictionary-save-button:hover {
   background: #1f2937;
 }
 
@@ -14676,7 +14810,7 @@ body {
 
   .webapp-dictionary .dictionary-actions .dictionary-fast-button,
   .webapp-dictionary .dictionary-actions .dictionary-button,
-  .webapp-dictionary .dictionary-actions .dictionary-save-button {
+  .webapp-dictionary .dictionary-save-button {
     min-height: 52px;
     padding: 0 10px;
     font-size: 13px;
@@ -14708,7 +14842,7 @@ body {
     text-align: center;
   }
 
-  .webapp-dictionary .dictionary-flashcards .secondary-button {
+  .webapp-dictionary .dictionary-result-actions .dictionary-save-button {
     min-height: 52px;
   }
 }
@@ -14830,19 +14964,19 @@ body {
   }
 
   .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
   }
 
   .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-fast-button,
   .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-button,
-  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-save-button {
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-save-button {
     min-height: 54px;
     border-radius: 16px;
   }
 
   .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-fast-button,
-  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-save-button,
+  .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-save-button,
   .webapp-page.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-back-icon {
     border-color: #334155;
     background: transparent;
@@ -16034,8 +16168,8 @@ body {
 }
 
 .webapp-page.is-theme-light .webapp-section.webapp-section-translations .webapp-translation-item textarea {
-  color: #17120d;
-  caret-color: #000000;
+  color: #183a68;
+  caret-color: #183a68;
   font-weight: 700;
 }
 
@@ -16107,7 +16241,7 @@ body {
   }
 
   .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-fast-button,
-  .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-save-button,
+  .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .dictionary-save-button,
   .webapp-page.is-theme-light.is-dictionary-layout .webapp-dictionary .dictionary-actions .dictionary-back-icon {
     border-color: #d2c2aa;
     background: transparent;

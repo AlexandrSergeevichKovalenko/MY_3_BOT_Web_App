@@ -284,7 +284,9 @@ from backend.database import (
     get_skill_by_id,
     get_skill_progress_report,
     get_top_weak_topic,
+    list_top_weak_topics,
     get_weak_topic_sentences,
+    list_recent_started_video_topics,
     get_recent_mistake_examples_for_topic,
     list_default_topics_for_user,
     add_default_topic_for_user,
@@ -365,7 +367,7 @@ from backend.database import (
 )
 from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url, r2_delete_object
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
-from backend.grammar_focuses import WEBAPP_TOPICS, resolve_webapp_focus
+from backend.grammar_focuses import WEBAPP_TOPICS, resolve_webapp_focus, recommend_webapp_focus_for_error_pair
 from backend.translation_workflow import (
     build_user_daily_summary,
     check_user_translation_webapp_item,
@@ -3738,6 +3740,154 @@ def _pick_today_recommended_video(
     return None
 
 
+def _normalize_video_focus_identity(
+    skill_id: str | None = None,
+    main_category: str | None = None,
+    sub_category: str | None = None,
+) -> tuple[str, str, str]:
+    return (
+        str(skill_id or "").strip().lower(),
+        str(main_category or "").strip().lower(),
+        str(sub_category or "").strip().lower(),
+    )
+
+
+def _build_video_focus_candidate(
+    *,
+    skill_id: str | None = None,
+    skill_title: str | None = None,
+    main_category: str | None = None,
+    sub_category: str | None = None,
+    examples: list[str] | None = None,
+    source: str = "fallback",
+) -> dict | None:
+    resolved_skill_id = str(skill_id or "").strip() or None
+    resolved_skill_title = str(skill_title or "").strip() or None
+    resolved_main, resolved_sub = _sanitize_focus_topic(main_category, sub_category)
+    if _is_unclassified_focus_topic(resolved_main, resolved_sub):
+        resolved_main, resolved_sub = "", ""
+    if not resolved_skill_id and not resolved_skill_title and not resolved_main and not resolved_sub:
+        return None
+    return {
+        "skill_id": resolved_skill_id,
+        "skill_title": resolved_skill_title,
+        "main_category": resolved_main or None,
+        "sub_category": resolved_sub or None,
+        "examples": [str(item).strip() for item in (examples or []) if str(item).strip()][:5],
+        "source": source,
+    }
+
+
+def _select_today_video_focus_candidate(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    weakest_skill: dict | None,
+    weak_topic: dict | None,
+    weak_sentences: list[str] | None,
+    lookback_days: int = 7,
+    cooldown_days: int = 7,
+    candidate_limit: int = 5,
+) -> dict | None:
+    recent_topics = list_recent_started_video_topics(
+        user_id=int(user_id),
+        lookback_days=max(1, int(cooldown_days or 7)),
+        limit=max(5, int(candidate_limit or 5) * 3),
+    )
+    recent_focuses = {
+        _normalize_video_focus_identity(
+            entry.get("skill_id"),
+            entry.get("main_category"),
+            entry.get("sub_category"),
+        )
+        for entry in recent_topics
+        if isinstance(entry, dict)
+    }
+
+    candidates: list[dict] = []
+    seen_identities: set[tuple[str, str, str]] = set()
+
+    def add_candidate(candidate: dict | None) -> None:
+        if not candidate:
+            return
+        identity = _normalize_video_focus_identity(
+            candidate.get("skill_id"),
+            candidate.get("main_category"),
+            candidate.get("sub_category"),
+        )
+        if identity in seen_identities:
+            return
+        seen_identities.add(identity)
+        candidates.append(candidate)
+
+    add_candidate(
+        _build_video_focus_candidate(
+            skill_id=(weakest_skill or {}).get("skill_id"),
+            skill_title=(weakest_skill or {}).get("skill_title"),
+            main_category=(weak_topic or {}).get("main_category"),
+            sub_category=(weak_topic or {}).get("sub_category"),
+            examples=weak_sentences or [],
+            source="primary_weak_topic",
+        )
+    )
+
+    for topic in list_top_weak_topics(
+        user_id=int(user_id),
+        lookback_days=max(1, int(lookback_days or 7)),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        limit=max(2, int(candidate_limit or 5)),
+    ):
+        if not isinstance(topic, dict):
+            continue
+        topic_main = str(topic.get("main_category") or "").strip()
+        topic_sub = str(topic.get("sub_category") or "").strip()
+        examples = get_weak_topic_sentences(
+            user_id=int(user_id),
+            main_category=topic_main,
+            sub_category=topic_sub,
+            lookback_days=max(1, int(lookback_days or 7)),
+            limit=5,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        add_candidate(
+            _build_video_focus_candidate(
+                main_category=topic_main,
+                sub_category=topic_sub,
+                examples=examples,
+                source="alternate_weak_topic",
+            )
+        )
+
+    if not candidates:
+        return _build_video_focus_candidate(
+            skill_id=(weakest_skill or {}).get("skill_id"),
+            skill_title=(weakest_skill or {}).get("skill_title"),
+            source="skill_only_fallback",
+        )
+
+    for candidate in candidates:
+        identity = _normalize_video_focus_identity(
+            candidate.get("skill_id"),
+            candidate.get("main_category"),
+            candidate.get("sub_category"),
+        )
+        if identity not in recent_focuses:
+            return {
+                **candidate,
+                "cooldown_applied": bool(recent_focuses),
+                "cooldown_skipped_recent": False,
+            }
+
+    return {
+        **candidates[0],
+        "cooldown_applied": bool(recent_focuses),
+        "cooldown_skipped_recent": True,
+    }
+
+
 def _format_theory_mistake_examples(examples: list[dict] | None) -> list[str]:
     rows: list[str] = []
     for item in examples or []:
@@ -6033,6 +6183,19 @@ def _build_today_plan_for_user(
     source_lang: str,
     target_lang: str,
 ) -> dict:
+    def _recommend_today_translation_level(skill_mastery: object) -> str:
+        try:
+            mastery = float(skill_mastery)
+        except Exception:
+            return "b1"
+        if mastery < 30:
+            return "a2"
+        if mastery < 50:
+            return "b1"
+        if mastery < 75:
+            return "b2"
+        return "c1"
+
     now_utc = datetime.now(timezone.utc)
     due_count = 0
     has_new_candidates = False
@@ -6130,6 +6293,13 @@ def _build_today_plan_for_user(
         weak_title = f"Перевод: 7 предложений ({weakest_skill.get('skill_title')})"
     elif weak_topic and weak_topic.get("sub_category"):
         weak_title = f"Перевод: 7 предложений ({weak_topic.get('sub_category')})"
+    recommended_focus = recommend_webapp_focus_for_error_pair(
+        weak_topic.get("main_category") if weak_topic else None,
+        weak_topic.get("sub_category") if weak_topic else None,
+    )
+    recommended_level = _recommend_today_translation_level(
+        weakest_skill.get("mastery") if isinstance(weakest_skill, dict) else None,
+    )
     items.append(
         {
             "task_type": "translation",
@@ -6147,7 +6317,11 @@ def _build_today_plan_for_user(
                 "main_category": weak_topic.get("main_category") if weak_topic else None,
                 "sub_category": weak_topic.get("sub_category") if weak_topic else None,
                 "examples": weak_sentences[:7],
-                "level": "c1",
+                "level": recommended_level,
+                "recommended_level": recommended_level,
+                "recommended_topic_label": str(recommended_focus.get("label") or "").strip() or None,
+                "recommended_custom_focus": str(recommended_focus.get("custom_focus") or "").strip() or None,
+                "recommended_reason_examples": weak_sentences[:3],
                 "start_action": "translations",
             },
             "status": "todo",
@@ -6182,11 +6356,22 @@ def _build_today_plan_for_user(
 
     include_video = str(os.getenv("TODAY_PLAN_INCLUDE_VIDEO") or "0").strip().lower() in {"1", "true", "yes", "on"}
     if include_video:
+        video_focus = _select_today_video_focus_candidate(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            weakest_skill=weakest_skill if isinstance(weakest_skill, dict) else None,
+            weak_topic=weak_topic if isinstance(weak_topic, dict) else None,
+            weak_sentences=weak_sentences,
+            lookback_days=7,
+            cooldown_days=int(os.getenv("TODAY_VIDEO_TOPIC_COOLDOWN_DAYS") or 7),
+            candidate_limit=5,
+        ) or {}
         recommended_video = _pick_today_recommended_video(
-            weak_topic.get("main_category") if weak_topic else None,
-            weak_topic.get("sub_category") if weak_topic else None,
-            skill_title=weakest_skill.get("skill_title") if weakest_skill else None,
-            examples=weak_sentences[:5],
+            video_focus.get("main_category"),
+            video_focus.get("sub_category"),
+            skill_title=video_focus.get("skill_title"),
+            examples=(video_focus.get("examples") if isinstance(video_focus.get("examples"), list) else weak_sentences[:5]),
             target_lang=target_lang,
             billing_user_id=int(user_id),
             billing_source_lang=source_lang,
@@ -6201,12 +6386,14 @@ def _build_today_plan_for_user(
                     "mode": "short_video",
                     "source": "youtube_library",
                     "duration_sec": 300,
-                    "focus": "same_as_weak_topic",
-                    "focus_source": "mastery" if weakest_skill else "mistakes",
-                    "skill_id": weakest_skill.get("skill_id") if weakest_skill else None,
-                    "skill_title": weakest_skill.get("skill_title") if weakest_skill else None,
-                    "main_category": weak_topic.get("main_category") if weak_topic else None,
-                    "sub_category": weak_topic.get("sub_category") if weak_topic else None,
+                    "focus": "rotated_weak_topic" if bool(video_focus.get("cooldown_applied")) else "same_as_weak_topic",
+                    "focus_source": "video_topic_rotation" if bool(video_focus.get("cooldown_applied")) else ("mastery" if weakest_skill else "mistakes"),
+                    "skill_id": video_focus.get("skill_id"),
+                    "skill_title": video_focus.get("skill_title"),
+                    "main_category": video_focus.get("main_category"),
+                    "sub_category": video_focus.get("sub_category"),
+                    "focus_cooldown_applied": bool(video_focus.get("cooldown_applied")),
+                    "focus_cooldown_fallback_same_topic": bool(video_focus.get("cooldown_skipped_recent")),
                     "start_action": "youtube",
                     "video_id": (recommended_video or {}).get("video_id"),
                     "video_url": (recommended_video or {}).get("video_url"),
@@ -16318,9 +16505,12 @@ def recommend_today_video():
     skill_title = str(payload.get("skill_title") or "").strip()
     main_category = str(payload.get("main_category") or "").strip()
     sub_category = str(payload.get("sub_category") or "").strip()
+    explicit_focus_requested = bool(skill_id or skill_title or main_category or sub_category)
     main_category, sub_category = _sanitize_focus_topic(main_category, sub_category)
     examples_payload = payload.get("examples") if isinstance(payload.get("examples"), list) else []
     resolved_skill = None
+    weak_topic = None
+    weak_sentences: list[str] = []
 
     if not skill_id:
         try:
@@ -16365,6 +16555,44 @@ def recommend_today_video():
         except Exception:
             pass
     main_category, sub_category = _sanitize_focus_topic(main_category, sub_category)
+
+    if main_category and sub_category:
+        try:
+            weak_sentences = get_weak_topic_sentences(
+                user_id=int(user_id),
+                main_category=main_category,
+                sub_category=sub_category,
+                lookback_days=lookback_days,
+                limit=5,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        except Exception:
+            weak_sentences = []
+
+    if not explicit_focus_requested:
+        video_focus = _select_today_video_focus_candidate(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            weakest_skill=resolved_skill if isinstance(resolved_skill, dict) else None,
+            weak_topic=weak_topic if isinstance(weak_topic, dict) else (
+                {"main_category": main_category, "sub_category": sub_category}
+                if main_category or sub_category
+                else None
+            ),
+            weak_sentences=weak_sentences,
+            lookback_days=lookback_days,
+            cooldown_days=int(os.getenv("TODAY_VIDEO_TOPIC_COOLDOWN_DAYS") or 7),
+            candidate_limit=5,
+        ) or {}
+        if video_focus:
+            skill_id = str(video_focus.get("skill_id") or skill_id).strip()
+            skill_title = str(video_focus.get("skill_title") or skill_title).strip()
+            main_category = str(video_focus.get("main_category") or main_category).strip()
+            sub_category = str(video_focus.get("sub_category") or sub_category).strip()
+            if isinstance(video_focus.get("examples"), list) and video_focus.get("examples"):
+                examples_payload = video_focus.get("examples")
 
     recommended_video = None
     recommendation_row = None
@@ -22209,49 +22437,103 @@ def _dispatch_daily_audio(target_date: date) -> dict:
             if story_session_ids:
                 cursor.execute(
                     """
+                    WITH daily_mistakes AS (
+                        SELECT DISTINCT
+                            dm.user_id,
+                            dm.sentence_id AS mistake_sentence_id
+                        FROM bt_3_detailed_mistakes dm
+                        JOIN bt_3_daily_sentences ds
+                          ON ds.id_for_mistake_table = dm.sentence_id
+                         AND ds.user_id = dm.user_id
+                        WHERE ds.date = %s
+                    )
                     SELECT
-                        t.user_id,
-                        t.username,
-                        t.id AS translation_id,
-                        t.feedback,
-                        t.user_translation,
-                        COALESCE(t.audio_grammar_opt_in, FALSE) AS audio_grammar_opt_in,
+                        dm.user_id,
+                        latest_tr.username,
+                        latest_tr.translation_id,
+                        latest_tr.feedback,
+                        latest_tr.user_translation,
+                        COALESCE(latest_tr.audio_grammar_opt_in, FALSE) AS audio_grammar_opt_in,
                         ds.sentence,
                         ds.unique_id,
-                        t.session_id,
-                        COALESCE(t.source_lang, 'ru') AS source_lang,
-                        COALESCE(t.target_lang, 'de') AS target_lang
-                    FROM bt_3_translations t
-                    JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
-                    WHERE ds.date = %s
-                      AND t.score < 85
-                      AND t.session_id NOT IN %s
-                    ORDER BY t.user_id, ds.unique_id;
+                        latest_tr.session_id,
+                        COALESCE(ds.source_lang, latest_tr.source_lang, 'ru') AS source_lang,
+                        COALESCE(ds.target_lang, latest_tr.target_lang, 'de') AS target_lang
+                    FROM daily_mistakes dm
+                    JOIN bt_3_daily_sentences ds
+                      ON ds.id_for_mistake_table = dm.mistake_sentence_id
+                     AND ds.user_id = dm.user_id
+                     AND ds.date = %s
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            t.id AS translation_id,
+                            t.username,
+                            t.feedback,
+                            t.user_translation,
+                            t.session_id,
+                            t.source_lang,
+                            t.target_lang,
+                            t.audio_grammar_opt_in
+                        FROM bt_3_translations t
+                        WHERE t.user_id = dm.user_id
+                          AND t.id_for_mistake_table = dm.mistake_sentence_id
+                        ORDER BY t.timestamp DESC, t.id DESC
+                        LIMIT 1
+                    ) latest_tr ON TRUE
+                    WHERE COALESCE(latest_tr.session_id, '') NOT IN %s
+                    ORDER BY dm.user_id, ds.unique_id;
                     """,
-                    (target_date, tuple(story_session_ids)),
+                    (target_date, target_date, tuple(story_session_ids)),
                 )
             else:
                 cursor.execute(
                     """
+                    WITH daily_mistakes AS (
+                        SELECT DISTINCT
+                            dm.user_id,
+                            dm.sentence_id AS mistake_sentence_id
+                        FROM bt_3_detailed_mistakes dm
+                        JOIN bt_3_daily_sentences ds
+                          ON ds.id_for_mistake_table = dm.sentence_id
+                         AND ds.user_id = dm.user_id
+                        WHERE ds.date = %s
+                    )
                     SELECT
-                        t.user_id,
-                        t.username,
-                        t.id AS translation_id,
-                        t.feedback,
-                        t.user_translation,
-                        COALESCE(t.audio_grammar_opt_in, FALSE) AS audio_grammar_opt_in,
+                        dm.user_id,
+                        latest_tr.username,
+                        latest_tr.translation_id,
+                        latest_tr.feedback,
+                        latest_tr.user_translation,
+                        COALESCE(latest_tr.audio_grammar_opt_in, FALSE) AS audio_grammar_opt_in,
                         ds.sentence,
                         ds.unique_id,
-                        t.session_id,
-                        COALESCE(t.source_lang, 'ru') AS source_lang,
-                        COALESCE(t.target_lang, 'de') AS target_lang
-                    FROM bt_3_translations t
-                    JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
-                    WHERE ds.date = %s
-                      AND t.score < 85
-                    ORDER BY t.user_id, ds.unique_id;
+                        latest_tr.session_id,
+                        COALESCE(ds.source_lang, latest_tr.source_lang, 'ru') AS source_lang,
+                        COALESCE(ds.target_lang, latest_tr.target_lang, 'de') AS target_lang
+                    FROM daily_mistakes dm
+                    JOIN bt_3_daily_sentences ds
+                      ON ds.id_for_mistake_table = dm.mistake_sentence_id
+                     AND ds.user_id = dm.user_id
+                     AND ds.date = %s
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            t.id AS translation_id,
+                            t.username,
+                            t.feedback,
+                            t.user_translation,
+                            t.session_id,
+                            t.source_lang,
+                            t.target_lang,
+                            t.audio_grammar_opt_in
+                        FROM bt_3_translations t
+                        WHERE t.user_id = dm.user_id
+                          AND t.id_for_mistake_table = dm.mistake_sentence_id
+                        ORDER BY t.timestamp DESC, t.id DESC
+                        LIMIT 1
+                    ) latest_tr ON TRUE
+                    ORDER BY dm.user_id, ds.unique_id;
                     """,
-                    (target_date,),
+                    (target_date, target_date),
                 )
             daily_rows = cursor.fetchall()
 
@@ -22267,7 +22549,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         correct = _extract_correct_translation(feedback, _unique_id)
         ru_original = (_sentence or "").strip()
         de_correct = (correct or user_translation or "").strip()
-        if not de_correct:
+        if not ru_original or not de_correct:
             continue
         daily_by_user_pair.setdefault((user_id, src, tgt), []).append(
             {
@@ -25517,7 +25799,14 @@ def send_daily_audio_to_group():
     else:
         target_date = (datetime.utcnow().date() - timedelta(days=1))
 
+    logging.info(
+        "📤 Manual daily audio dispatch requested: date=%s remote_addr=%s user_agent=%s",
+        target_date.isoformat(),
+        request.headers.get("X-Forwarded-For") or request.remote_addr,
+        request.headers.get("User-Agent"),
+    )
     result = _dispatch_daily_audio(target_date)
+    logging.info("✅ Manual daily audio dispatch finished: %s", result)
     return jsonify(result)
 
 

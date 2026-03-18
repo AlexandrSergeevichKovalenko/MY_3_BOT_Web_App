@@ -579,6 +579,7 @@ function AppInner() {
   const [todayPlan, setTodayPlan] = useState(null);
   const [todayPlanLoading, setTodayPlanLoading] = useState(false);
   const [todayPlanError, setTodayPlanError] = useState('');
+  const [todayTranslationRecommendation, setTodayTranslationRecommendation] = useState(null);
   const [todayTestSending, setTodayTestSending] = useState(false);
   const [todayItemLoading, setTodayItemLoading] = useState({});
   const [todayTimerNowMs, setTodayTimerNowMs] = useState(Date.now());
@@ -680,6 +681,58 @@ function AppInner() {
   const handleTopicChange = useCallback((event) => {
     setSelectedTopic(normalizeSelectedTopicValue(event?.target?.value));
   }, [normalizeSelectedTopicValue]);
+  const buildTodayTranslationRecommendation = useCallback((item) => {
+    if (!item || String(item?.task_type || '').toLowerCase() !== 'translation') {
+      return null;
+    }
+    const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+    const recommendedLevel = String(payload?.recommended_level || payload?.level || selectedLevel || 'b1').trim().toLowerCase() || 'b1';
+    const recommendedTopicLabel = String(payload?.recommended_topic_label || '').trim();
+    const recommendedCustomFocus = String(
+      payload?.recommended_custom_focus
+      || payload?.sub_category
+      || payload?.skill_title
+      || payload?.main_category
+      || ''
+    ).trim();
+    const reasonExamples = Array.isArray(payload?.recommended_reason_examples)
+      ? payload.recommended_reason_examples
+      : (Array.isArray(payload?.examples) ? payload.examples : []);
+    const skillTitle = String(payload?.skill_title || '').trim();
+    const subCategory = String(payload?.sub_category || '').trim();
+    const mainCategory = String(payload?.main_category || '').trim();
+    return {
+      itemId: Number(item?.id || 0),
+      title: skillTitle || subCategory || mainCategory || tr('Персональный фокус дня', 'Persoenlicher Fokus des Tages'),
+      reason: subCategory || mainCategory || skillTitle,
+      topicLabel: recommendedTopicLabel,
+      customFocus: recommendedCustomFocus,
+      level: recommendedLevel,
+      examples: reasonExamples
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean)
+        .slice(0, 2),
+      createdAt: Date.now(),
+    };
+  }, [selectedLevel, tr]);
+  const applyTodayTranslationRecommendation = useCallback(() => {
+    if (!todayTranslationRecommendation) return;
+    const recommendedLevel = String(todayTranslationRecommendation?.level || '').trim().toLowerCase();
+    if (['a1', 'a2', 'b1', 'b2', 'c1', 'c2'].includes(recommendedLevel)) {
+      setSelectedLevel(recommendedLevel);
+    }
+    const recommendedTopicLabel = String(todayTranslationRecommendation?.topicLabel || '').trim();
+    const recommendedCustomFocus = String(todayTranslationRecommendation?.customFocus || '').trim();
+    if (recommendedTopicLabel && recommendedTopicLabel !== CUSTOM_TOPIC) {
+      setSelectedTopic(normalizeSelectedTopicValue(recommendedTopicLabel));
+      setCustomTopicInput('');
+      return;
+    }
+    if (recommendedCustomFocus) {
+      setSelectedTopic(CUSTOM_TOPIC);
+      setCustomTopicInput(recommendedCustomFocus);
+    }
+  }, [todayTranslationRecommendation, normalizeSelectedTopicValue]);
   const [storyMode, setStoryMode] = useState('new');
   const [storyType, setStoryType] = useState('знаменитая личность');
   const [storyDifficulty, setStoryDifficulty] = useState('средний');
@@ -4219,57 +4272,11 @@ function AppInner() {
     }
     if (taskType === 'translation') {
       openSingleSectionAndScroll('translations', translationsRef);
-      const taskPayload = effectiveItem?.payload && typeof effectiveItem.payload === 'object' ? effectiveItem.payload : {};
-      try {
-        setWebappLoading(true);
-        setWebappError('');
-        setFinishMessage('');
-        setFinishStatus('idle');
-        setTranslationCheckProgress({ active: false, done: 0, total: 0 });
-        const response = await fetch(`/api/today/items/${effectiveItem.id}/translation/start`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            initData,
-            level: String(taskPayload?.level || selectedLevel || 'c1').toLowerCase(),
-          }),
-        });
-        if (!response.ok) {
-          throw new Error(await readApiError(
-            response,
-            'Ошибка запуска переводов по задаче дня',
-            'Fehler beim Start der Tagesaufgabe (Uebersetzung)'
-          ));
-        }
-        const data = await response.json();
-        const updatedItem = data?.item && typeof data.item === 'object' ? data.item : null;
-        if (updatedItem) {
-          setTodayPlan((prev) => {
-            if (!prev || !Array.isArray(prev.items)) return prev;
-            return {
-              ...prev,
-              items: prev.items.map((planItem) => (planItem.id === updatedItem.id ? { ...planItem, ...updatedItem } : planItem)),
-            };
-          });
-        }
-        const practice = data?.practice || {};
-        const levelLabel = String(practice?.level || '').trim().toLowerCase();
-        if (levelLabel) {
-          setSelectedLevel(levelLabel);
-        }
-        if (data?.blocked) {
-          setFinishMessage(tr(
-            'Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.',
-            'Es gibt eine aktive Session. Beende die aktuelle Uebersetzung, um ein neues Set zu erhalten.'
-          ));
-        }
-        await loadSessionInfo();
-        await loadSentences();
-      } catch (error) {
-        setWebappError(`${tr('Ошибка старта', 'Startfehler')}: ${error.message}`);
-      } finally {
-        setWebappLoading(false);
-      }
+      setWebappError('');
+      setFinishMessage('');
+      setFinishStatus('idle');
+      setTranslationCheckProgress({ active: false, done: 0, total: 0 });
+      setTodayTranslationRecommendation(buildTodayTranslationRecommendation(effectiveItem));
       return;
     }
     if (taskType === 'theory') {
@@ -8781,6 +8788,12 @@ function AppInner() {
   }, [sentences]);
 
   useEffect(() => {
+    if (sentences.length > 0) {
+      setTodayTranslationRecommendation(null);
+    }
+  }, [sentences.length]);
+
+  useEffect(() => {
     const stableUserId = String(webappUser?.id || getInitDataUserId(initData) || '').trim();
     if (!stableUserId || sentences.length === 0) {
       translationDraftHydrationKeyRef.current = '';
@@ -9348,6 +9361,7 @@ function AppInner() {
         throw new Error(await response.text());
       }
       const data = await response.json();
+      setTodayTranslationRecommendation(null);
       if (data.blocked) {
         setFinishMessage(tr('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.', 'Es gibt eine aktive Session. Beende die aktuelle Uebersetzung, um ein neues Set zu erhalten.'));
       }
@@ -12081,6 +12095,31 @@ function AppInner() {
     }
   );
 
+  const showTranslationClickableWordsHint = () => {
+    const title = tr('Подсказка', 'Hinweis');
+    const message = tr(
+      'Слова в этом блоке кликабельные: нажмите на любое непонятное слово, чтобы быстро посмотреть его перевод.',
+      'Die Woerter in diesem Block sind anklickbar: Tippe auf ein unbekanntes Wort, um schnell die Uebersetzung zu sehen.'
+    );
+    const tg = window.Telegram?.WebApp;
+    if (tg?.showPopup) {
+      try {
+        tg.showPopup(
+          {
+            title,
+            message,
+            buttons: [{ id: 'ok', type: 'default', text: 'OK' }],
+          },
+          () => {}
+        );
+        return;
+      } catch (_popupError) {
+        // fallback below
+      }
+    }
+    window.alert(message);
+  };
+
   const getActiveSubtitleIndex = () => {
     const hasTiming = youtubeTranscriptHasTiming || youtubeTranscript.some((item) => Number(item?.start) > 0);
     if (!hasTiming) return -1;
@@ -12713,75 +12752,168 @@ function AppInner() {
     );
   };
 
-  const renderExplanationRichText = (text) => {
-    if (!text) return '';
-    const escaped = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+  const renderExplanationContent = (text) => {
+    if (!text) return null;
+    const lines = String(text || '').split(/\r?\n/);
+    const clickableOptions = {
+      compact: true,
+      inlineLookup: true,
+      lookupLang: getNormalizeLookupLang(),
+      selectionType: 'translation_result_word',
+      stopPropagation: true,
+    };
 
-    const withSections = escaped
-      .replace(/^Error\s+(\d+):/gim, '<strong>🔴 Error $1:</strong>')
-      .replace(/^Correct Translation:/gim, '<strong>🟣 Correct Translation:</strong>')
-      .replace(/^Grammar Explanation:/gim, '<strong>🟡 Grammar Explanation:</strong>')
-      .replace(/^Alternative Sentence Construction:/gim, '<strong>🔵 Alternative Sentence Construction:</strong>')
-      .replace(/^Alternative Construction:/gim, '<strong>🔵 Alternative Sentence Construction:</strong>')
-      .replace(/^Synonyms:/gim, '<strong>➡️ Synonyms:</strong>')
-      .replace(/^Original Word:/gim, '<strong>• Original Word:</strong>')
-      .replace(/^Possible Synonyms:/gim, '<strong>• Possible Synonyms:</strong>');
+    const renderLabeledLine = (key, label, value = '') => (
+      <div key={key} className="webapp-feedback-line webapp-explanation-line">
+        <span className="webapp-feedback-label">{label}</span>
+        {String(value || '').trim() ? (
+          <span className="webapp-feedback-value">
+            {renderClickableText(String(value || '').trim(), clickableOptions)}
+          </span>
+        ) : null}
+      </div>
+    );
 
-    return withSections
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.+?)\*/g, '<strong>$1</strong>')
-      .replace(/\n/g, '<br />');
+    return lines.map((rawLine, index) => {
+      const line = String(rawLine || '').trim();
+      if (!line) {
+        return <div key={`exp-spacer-${index}`} className="webapp-explanation-spacer" aria-hidden="true" />;
+      }
+
+      const matchers = [
+        {
+          pattern: /^Error\s+(\d+):\s*(.*)$/i,
+          render: (match) => renderLabeledLine(`exp-error-${index}`, `🔴 Error ${match[1]}:`, match[2]),
+        },
+        {
+          pattern: /^Original russian sentence:\*?\s*(.*)$/i,
+          render: (match) => renderLabeledLine(`exp-orig-${index}`, '🟢 Original russian sentence:', match[1]),
+        },
+        {
+          pattern: /^User translation:\*?\s*(.*)$/i,
+          render: (match) => renderLabeledLine(`exp-user-${index}`, '🟣 User translation:', match[1]),
+        },
+        {
+          pattern: /^Correct Translation:\*?\s*(.*)$/i,
+          render: (match) => renderLabeledLine(`exp-correct-${index}`, '🟣 Correct Translation:', match[1]),
+        },
+        {
+          pattern: /^Grammar Explanation:\*?\s*(.*)$/i,
+          render: (match) => renderLabeledLine(`exp-grammar-${index}`, '🟡 Grammar Explanation:', match[1]),
+        },
+        {
+          pattern: /^(?:Alternative Sentence Construction|Alternative Construction):\*?\s*(.*)$/i,
+          render: (match) => renderLabeledLine(`exp-alt-${index}`, '🔵 Alternative Sentence Construction:', match[1]),
+        },
+        {
+          pattern: /^Synonyms:\*?\s*(.*)$/i,
+          render: (match) => renderLabeledLine(`exp-syn-${index}`, '➡️ Synonyms:', match[1]),
+        },
+        {
+          pattern: /^Original Word:\*?\s*(.*)$/i,
+          render: (match) => renderLabeledLine(`exp-word-${index}`, '• Original Word:', match[1]),
+        },
+        {
+          pattern: /^Possible Synonyms:\*?\s*(.*)$/i,
+          render: (match) => renderLabeledLine(`exp-psyn-${index}`, '• Possible Synonyms:', match[1]),
+        },
+      ];
+
+      for (const matcher of matchers) {
+        const match = line.match(matcher.pattern);
+        if (match) {
+          return matcher.render(match);
+        }
+      }
+
+      return (
+        <div key={`exp-${index}`} className="webapp-feedback-line webapp-explanation-line">
+          {renderClickableText(line, clickableOptions)}
+        </div>
+      );
+    });
   };
 
   const renderFeedback = (feedback) => {
     if (!feedback) return null;
+    const clickableOptions = {
+      compact: true,
+      inlineLookup: true,
+      lookupLang: getNormalizeLookupLang(),
+      selectionType: 'translation_result_word',
+      stopPropagation: true,
+    };
+    const correctTranslationLabel = (
+      <span className="translation-feedback-label-group">
+        <button
+          type="button"
+          className="translation-inline-info-button"
+          aria-label={tr('Показать подсказку о кликабельных словах', 'Hinweis zu anklickbaren Woertern anzeigen')}
+          title={tr('Показать подсказку', 'Hinweis anzeigen')}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            showTranslationClickableWordsHint();
+          }}
+          onMouseUp={(event) => event.stopPropagation()}
+          onTouchEnd={(event) => event.stopPropagation()}
+        >
+          i
+        </button>
+        <span>Correct Translation:</span>
+      </span>
+    );
+    const renderLabeledFeedbackLine = (key, label, value = '') => (
+      <div
+        key={key}
+        className="webapp-feedback-line"
+        onMouseUp={handleSelection}
+        onTouchEnd={handleSelection}
+      >
+        <span className="webapp-feedback-label">{label}</span>
+        {String(value || '').trim() ? (
+          <span className="webapp-feedback-value">
+            {renderClickableText(String(value || '').trim(), clickableOptions)}
+          </span>
+        ) : null}
+      </div>
+    );
     const lines = feedback.split('\n').map((line) => line.trim()).filter(Boolean);
     return lines.map((line, index) => {
-      const synonymLikeMatch = line.match(/^(?:[-•]\s*)?(Original Word|Possible Synonyms|Synonyms):\*?\s*(.+)$/i);
-      if (synonymLikeMatch) {
-        const rawLabel = String(synonymLikeMatch[1] || '').trim().toLowerCase();
-        const value = String(synonymLikeMatch[2] || '').trim();
-        const label = rawLabel === 'original word'
-          ? '• Original Word:'
-          : (rawLabel === 'possible synonyms' ? '• Possible Synonyms:' : '➡️ Synonyms:');
-        return (
-          <div
-            key={`fb-syn-${index}`}
-            className="webapp-feedback-line"
-            onMouseUp={handleSelection}
-          >
-            <span className="webapp-feedback-label">{label}</span>
-            <span className="webapp-feedback-value">{renderClickableText(value, {
-              compact: true,
-              inlineLookup: true,
-              lookupLang: getNormalizeLookupLang(),
-              selectionType: 'translation_result_word',
-              stopPropagation: true,
-            })}</span>
-          </div>
-        );
+      const matchers = [
+        {
+          pattern: /^(?:[-•]\s*)?(Original Word):\*?\s*(.+)$/i,
+          label: '• Original Word:',
+        },
+        {
+          pattern: /^(?:[-•]\s*)?(Possible Synonyms):\*?\s*(.+)$/i,
+          label: '• Possible Synonyms:',
+        },
+        {
+          pattern: /^(?:[-•]\s*)?(Synonyms):\*?\s*(.+)$/i,
+          label: '➡️ Synonyms:',
+        },
+        {
+          pattern: /^Correct Translation:\*?\s*(.+)$/i,
+          label: correctTranslationLabel,
+        },
+        {
+          pattern: /^Grammar Explanation:\*?\s*(.+)$/i,
+          label: '🟡 Grammar Explanation:',
+        },
+        {
+          pattern: /^(?:Alternative Sentence Construction|Alternative Construction):\*?\s*(.+)$/i,
+          label: '🔵 Alternative Sentence Construction:',
+        },
+      ];
+
+      for (const matcher of matchers) {
+        const match = line.match(matcher.pattern);
+        if (match) {
+          return renderLabeledFeedbackLine(`fb-${index}`, matcher.label, match[match.length - 1]);
+        }
       }
-      const match = line.match(/Correct Translation:\*?\s*(.+)$/i);
-      if (match) {
-        return (
-          <div
-            key={`fb-${index}`}
-            className="webapp-feedback-line"
-            onMouseUp={handleSelection}
-          >
-            <span className="webapp-feedback-label">🟣 Correct Translation:</span>
-            <span className="webapp-feedback-value">{renderClickableText(match[1], {
-              compact: true,
-              inlineLookup: true,
-              lookupLang: getNormalizeLookupLang(),
-              selectionType: 'translation_result_word',
-            })}</span>
-          </div>
-        );
-      }
+
       return (
         <div
           key={`fb-${index}`}
@@ -16449,6 +16581,50 @@ function AppInner() {
                     <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
                   </div>
                 </div>
+                {showTranslationStartConfigurator && todayTranslationRecommendation && (
+                  <div className="today-translation-recommendation-card">
+                    <div className="today-translation-recommendation-card__eyebrow">
+                      {tr('Рекомендация на сегодня', 'Empfehlung fuer heute')}
+                    </div>
+                    <div className="today-translation-recommendation-card__title">
+                      {todayTranslationRecommendation.title}
+                    </div>
+                    <div className="today-translation-recommendation-card__meta">
+                      <span>{tr('Уровень', 'Niveau')}: <strong>{String(todayTranslationRecommendation.level || '').toUpperCase()}</strong></span>
+                      {todayTranslationRecommendation.topicLabel && todayTranslationRecommendation.topicLabel !== CUSTOM_TOPIC && (
+                        <span>{tr('Тема', 'Thema')}: <strong>{todayTranslationRecommendation.topicLabel}</strong></span>
+                      )}
+                    </div>
+                    {todayTranslationRecommendation.reason && (
+                      <p className="today-translation-recommendation-card__copy">
+                        {tr('Система предлагает потренировать это слабое место по вашим последним ошибкам.', 'Das System empfiehlt diesen Fokus basierend auf deinen letzten Fehlern.')}
+                      </p>
+                    )}
+                    {todayTranslationRecommendation.examples.length > 0 && (
+                      <div className="today-translation-recommendation-card__examples">
+                        <span>{tr('Недавние примеры', 'Letzte Beispiele')}</span>
+                        {todayTranslationRecommendation.examples.map((example, index) => (
+                          <div key={`today_translation_recommendation_example_${index}`} className="today-translation-recommendation-card__example">
+                            {example}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="today-translation-recommendation-card__actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={applyTodayTranslationRecommendation}
+                        disabled={webappLoading || topicsLoading}
+                      >
+                        {tr('Применить рекомендацию', 'Empfehlung anwenden')}
+                      </button>
+                    </div>
+                    <div className="today-translation-recommendation-card__hint">
+                      {tr('Или просто настройте тему и уровень ниже вручную.', 'Oder stelle Thema und Niveau unten einfach selbst ein.')}
+                    </div>
+                  </div>
+                )}
                 {showTranslationStartConfigurator && (
                   <div className="webapp-translation-start">
                     <label className="webapp-field">
@@ -16792,14 +16968,11 @@ function AppInner() {
                                   : tr('Объяснить ошибки', 'Fehler erklaeren')}
                               </button>
                               {explanations[String(item.sentence_number ?? item.original_text)] && (
-                                <div
-                                  className="webapp-explanation"
-                                  dangerouslySetInnerHTML={{
-                                    __html: renderExplanationRichText(
-                                      explanations[String(item.sentence_number ?? item.original_text)]
-                                    ),
-                                  }}
-                                />
+                                <div className="webapp-explanation">
+                                  {renderExplanationContent(
+                                    explanations[String(item.sentence_number ?? item.original_text)]
+                                  )}
+                                </div>
                               )}
                             </>
                           )}
@@ -17485,14 +17658,6 @@ function AppInner() {
                             {tr('↙ к предложению', '↙ zum Satz')}
                           </button>
                         )}
-                        <button
-                          className="secondary-button dictionary-save-button"
-                          type="button"
-                          onClick={handleDictionarySave}
-                          disabled={dictionaryLoading || !dictionaryResult}
-                        >
-                          {tr('В словарь', 'Speichern')}
-                        </button>
                       </div>
                     </form>
 
@@ -17727,6 +17892,16 @@ function AppInner() {
                             </ul>
                           </div>
                         )}
+                        <div className="dictionary-result-actions">
+                          <button
+                            className="secondary-button dictionary-save-button"
+                            type="button"
+                            onClick={handleDictionarySave}
+                            disabled={dictionaryLoading || !dictionaryResult}
+                          >
+                            {tr('Добавить слово в словарь', 'Wort zum Woerterbuch hinzufuegen')}
+                          </button>
+                        </div>
                       </div>
                     )}
                     {collocationsVisible && (
@@ -17778,17 +17953,6 @@ function AppInner() {
                         </div>
                       </div>
                     )}
-                    <div className="dictionary-flashcards">
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => {
-                          openFlashcardsSetup(flashcardsRef);
-                        }}
-                      >
-                        {tr('Повторить слова', 'Woerter wiederholen')}
-                      </button>
-                    </div>
                   </section>
                 )}
               </div>
