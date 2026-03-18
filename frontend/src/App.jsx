@@ -769,6 +769,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   renderTranslationsTaskHud,
   showTranslationStartConfigurator,
   todayTranslationRecommendation,
+  customTopicLabel,
   applyTodayTranslationRecommendation,
   webappLoading,
   topicsLoading,
@@ -866,7 +867,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
             </div>
             <div className="today-translation-recommendation-card__meta">
               <span>{tr('Уровень', 'Niveau')}: <strong>{String(todayTranslationRecommendation.level || '').toUpperCase()}</strong></span>
-              {todayTranslationRecommendation.topicLabel && todayTranslationRecommendation.topicLabel !== CUSTOM_TOPIC && (
+              {todayTranslationRecommendation.topicLabel && todayTranslationRecommendation.topicLabel !== customTopicLabel && (
                 <span>{tr('Тема', 'Thema')}: <strong>{todayTranslationRecommendation.topicLabel}</strong></span>
               )}
             </div>
@@ -1571,6 +1572,8 @@ function AppInner() {
   const [weeklyPlanError, setWeeklyPlanError] = useState('');
   const [weeklyPlanDraft, setWeeklyPlanDraft] = useState({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '', reading_minutes_goal: '' });
   const [weeklyPlanCollapsed, setWeeklyPlanCollapsed] = useState(false);
+  const [startupPhase2Ready, setStartupPhase2Ready] = useState(false);
+  const [startupPhase3Ready, setStartupPhase3Ready] = useState(false);
   const [planAnalyticsPeriod, setPlanAnalyticsPeriod] = useState('week');
   const [planAnalyticsMetrics, setPlanAnalyticsMetrics] = useState({});
   const [planAnalyticsRange, setPlanAnalyticsRange] = useState(null);
@@ -1920,6 +1923,11 @@ function AppInner() {
   });
   const explanationInFlightKeysRef = useRef(new Set());
   const supportBottomRef = useRef(null);
+  const startupPhase1TimerRef = useRef(null);
+  const startupPhase2TimerRef = useRef(null);
+  const startupPhase3TimerRef = useRef(null);
+  const startupSequenceTokenRef = useRef(0);
+  const startupLoadedLanguagePairRef = useRef('');
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.webp`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
@@ -6099,7 +6107,7 @@ function AppInner() {
   }, [initData, initDataMissingMsg, normalizeStarterDictionaryOffer, readApiError, tr]);
 
   const loadLanguageProfile = async () => {
-    if (!initData) return;
+    if (!initData) return null;
     try {
       setLanguageProfileLoading(true);
       setLanguageProfileError('');
@@ -6127,8 +6135,10 @@ function AppInner() {
           native_language: profile.native_language || 'ru',
         });
       }
+      return profile;
     } catch (error) {
       setLanguageProfileError(`${tr('Ошибка профиля языка', 'Sprachprofil-Fehler')}: ${error.message}`);
+      return null;
     } finally {
       setLanguageProfileLoading(false);
     }
@@ -9320,6 +9330,22 @@ function AppInner() {
     if (isWebAppMode && initData) {
       return;
     }
+    startupSequenceTokenRef.current += 1;
+    if (startupPhase1TimerRef.current) {
+      window.clearTimeout(startupPhase1TimerRef.current);
+      startupPhase1TimerRef.current = null;
+    }
+    if (startupPhase2TimerRef.current) {
+      window.clearTimeout(startupPhase2TimerRef.current);
+      startupPhase2TimerRef.current = null;
+    }
+    if (startupPhase3TimerRef.current) {
+      window.clearTimeout(startupPhase3TimerRef.current);
+      startupPhase3TimerRef.current = null;
+    }
+    startupLoadedLanguagePairRef.current = '';
+    setStartupPhase2Ready(false);
+    setStartupPhase3Ready(false);
     setStarterDictionaryOffer(null);
     setStarterDictionaryPromptOpen(false);
     setStarterDictionaryActionLoading(false);
@@ -9328,21 +9354,84 @@ function AppInner() {
   }, [isWebAppMode, initData]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData) return;
-    loadLanguageProfile();
+    if (!isWebAppMode || !initData) return undefined;
+    startupSequenceTokenRef.current += 1;
+    const sequenceToken = startupSequenceTokenRef.current;
+    setStartupPhase2Ready(false);
+    setStartupPhase3Ready(false);
+    if (startupPhase1TimerRef.current) {
+      window.clearTimeout(startupPhase1TimerRef.current);
+      startupPhase1TimerRef.current = null;
+    }
+    if (startupPhase2TimerRef.current) {
+      window.clearTimeout(startupPhase2TimerRef.current);
+      startupPhase2TimerRef.current = null;
+    }
+    if (startupPhase3TimerRef.current) {
+      window.clearTimeout(startupPhase3TimerRef.current);
+      startupPhase3TimerRef.current = null;
+    }
+
+    startupPhase1TimerRef.current = window.setTimeout(() => {
+      void (async () => {
+        let profile = null;
+        let profileWaitTimerId = null;
+        try {
+          profile = await Promise.race([
+            loadLanguageProfile(),
+            new Promise((resolve) => {
+              profileWaitTimerId = window.setTimeout(() => resolve(null), 1800);
+            }),
+          ]);
+        } finally {
+          if (profileWaitTimerId) {
+            window.clearTimeout(profileWaitTimerId);
+          }
+        }
+        if (startupSequenceTokenRef.current !== sequenceToken) return;
+        const pairKey = `${profile?.native_language || ''}:${profile?.learning_language || ''}`;
+        if (pairKey) {
+          startupLoadedLanguagePairRef.current = pairKey;
+        }
+        await loadTodayPlan();
+        if (startupSequenceTokenRef.current !== sequenceToken) return;
+        startupPhase2TimerRef.current = window.setTimeout(() => {
+          if (startupSequenceTokenRef.current !== sequenceToken) return;
+          setStartupPhase2Ready(true);
+          startupPhase3TimerRef.current = window.setTimeout(() => {
+            if (startupSequenceTokenRef.current !== sequenceToken) return;
+            setStartupPhase3Ready(true);
+          }, 600);
+        }, 0);
+      })();
+    }, 120);
+
+    return () => {
+      if (startupPhase1TimerRef.current) {
+        window.clearTimeout(startupPhase1TimerRef.current);
+        startupPhase1TimerRef.current = null;
+      }
+      if (startupPhase2TimerRef.current) {
+        window.clearTimeout(startupPhase2TimerRef.current);
+        startupPhase2TimerRef.current = null;
+      }
+      if (startupPhase3TimerRef.current) {
+        window.clearTimeout(startupPhase3TimerRef.current);
+        startupPhase3TimerRef.current = null;
+      }
+    };
   }, [isWebAppMode, initData]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData || !languageProfile?.has_profile) {
+    if (!isWebAppMode || !initData || !startupPhase3Ready || !languageProfile?.has_profile) {
       return;
     }
     void loadStarterDictionaryStatus();
   }, [
     isWebAppMode,
     initData,
+    startupPhase3Ready,
     languageProfile?.has_profile,
-    languageProfile?.native_language,
-    languageProfile?.learning_language,
     loadStarterDictionaryStatus,
   ]);
 
@@ -9352,11 +9441,7 @@ function AppInner() {
       setTodayPlanError('');
       return;
     }
-    const timer = window.setTimeout(() => {
-      loadTodayPlan();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+  }, [isWebAppMode, initData]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -9364,11 +9449,9 @@ function AppInner() {
       setSkillReportError('');
       return;
     }
-    const timer = window.setTimeout(() => {
-      loadSkillReport();
-    }, 150);
-    return () => window.clearTimeout(timer);
-  }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+    if (!startupPhase2Ready) return;
+    void loadSkillReport();
+  }, [isWebAppMode, initData, startupPhase2Ready]);
 
   useEffect(() => {
     if (!isWebAppMode) {
@@ -9431,7 +9514,7 @@ function AppInner() {
   ]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData) {
+    if (!isWebAppMode || !initData || !startupPhase3Ready) {
       setSupportUnreadCount(0);
       setSupportMessages([]);
       setSupportFailedMessages([]);
@@ -9442,7 +9525,7 @@ function AppInner() {
       void loadSupportUnread();
     }, 15000);
     return () => window.clearInterval(timer);
-  }, [isWebAppMode, initData, loadSupportUnread]);
+  }, [isWebAppMode, initData, startupPhase3Ready, loadSupportUnread]);
 
   useEffect(() => {
     if (!supportSectionVisible || !initData) return;
@@ -9485,25 +9568,61 @@ function AppInner() {
       });
       return;
     }
-    const timer = window.setTimeout(() => {
-      loadWeeklyPlan();
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+    if (!startupPhase2Ready) return;
+    void loadWeeklyPlan();
+  }, [isWebAppMode, initData, startupPhase2Ready]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData) {
+    if (!isWebAppMode || !initData || !startupPhase3Ready) {
       setReaderDocuments([]);
       setReaderLibraryError('');
       return;
     }
-    loadReaderLibrary();
-  }, [isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language, readerIncludeArchived]);
+    void loadReaderLibrary();
+  }, [isWebAppMode, initData, startupPhase3Ready, readerIncludeArchived]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData) return;
-    loadPlanAnalytics(planAnalyticsPeriod);
-  }, [planAnalyticsPeriod, isWebAppMode, initData, languageProfile?.native_language, languageProfile?.learning_language]);
+    if (!isWebAppMode || !initData || !startupPhase3Ready) return;
+    void loadPlanAnalytics(planAnalyticsPeriod);
+  }, [planAnalyticsPeriod, isWebAppMode, initData, startupPhase3Ready]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      startupLoadedLanguagePairRef.current = '';
+      return;
+    }
+    const nextPairKey = `${languageProfile?.native_language || ''}:${languageProfile?.learning_language || ''}`;
+    if (!nextPairKey) return;
+    const prevPairKey = startupLoadedLanguagePairRef.current;
+    if (!prevPairKey) {
+      startupLoadedLanguagePairRef.current = nextPairKey;
+      return;
+    }
+    if (prevPairKey === nextPairKey) return;
+    startupLoadedLanguagePairRef.current = nextPairKey;
+    void loadTodayPlan();
+    if (startupPhase2Ready) {
+      void loadSkillReport();
+      void loadWeeklyPlan();
+    }
+    if (startupPhase3Ready) {
+      if (languageProfile?.has_profile) {
+        void loadStarterDictionaryStatus();
+      }
+      void loadReaderLibrary();
+      void loadPlanAnalytics(planAnalyticsPeriod);
+    }
+  }, [
+    initData,
+    isWebAppMode,
+    languageProfile?.has_profile,
+    languageProfile?.learning_language,
+    languageProfile?.native_language,
+    loadStarterDictionaryStatus,
+    planAnalyticsPeriod,
+    startupPhase2Ready,
+    startupPhase3Ready,
+  ]);
 
   useEffect(() => {
     if (!isWebAppMode) return;
@@ -18207,6 +18326,7 @@ function AppInner() {
                 renderTranslationsTaskHud={renderTranslationsTaskHud}
                 showTranslationStartConfigurator={showTranslationStartConfigurator}
                 todayTranslationRecommendation={todayTranslationRecommendation}
+                customTopicLabel={CUSTOM_TOPIC}
                 applyTodayTranslationRecommendation={applyTodayTranslationRecommendation}
                 webappLoading={webappLoading}
                 topicsLoading={topicsLoading}
