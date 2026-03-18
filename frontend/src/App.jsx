@@ -754,6 +754,571 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   );
 });
 
+function useStableCallback(callback) {
+  const callbackRef = useRef(callback);
+  callbackRef.current = callback;
+  return useCallback((...args) => callbackRef.current(...args), []);
+}
+
+const TranslationsSection = React.memo(function TranslationsSection({
+  tr,
+  translationsRef,
+  heroStickerSrc,
+  isFocusedTranslations,
+  goHomeScreen,
+  renderTranslationsTaskHud,
+  showTranslationStartConfigurator,
+  todayTranslationRecommendation,
+  applyTodayTranslationRecommendation,
+  webappLoading,
+  topicsLoading,
+  selectedTopic,
+  selectedTopicIsStoryTopic,
+  selectedTopicIsCustomTopic,
+  handleTopicChange,
+  topics,
+  customTopicInput,
+  setCustomTopicInput,
+  selectedLevel,
+  setSelectedLevel,
+  storyMode,
+  setStoryMode,
+  selectedStoryId,
+  setSelectedStoryId,
+  storyHistoryLoading,
+  storyHistory,
+  storyType,
+  setStoryType,
+  storyDifficulty,
+  setStoryDifficulty,
+  handleStartStory,
+  handleStartTranslation,
+  topicsError,
+  storyHistoryError,
+  isStoryResultMode,
+  handleTranslationSubmit,
+  sentences,
+  translationDrafts,
+  isAndroidTelegramClient,
+  androidTranslationDraftDebugConfig,
+  handleDraftLiveChange,
+  handleDraftCommit,
+  requestAndroidDraftPersistence,
+  registerTranslationDraftValueAccessor,
+  recordTranslationDraftAndroidDebugEvent,
+  jumpToDictionaryFromSentence,
+  isStorySession,
+  hasActiveTranslationSentences,
+  storyGuess,
+  setStoryGuess,
+  translationPrivateGrammarTextOptIn,
+  setTranslationPrivateGrammarTextOptIn,
+  translationCheckProgress,
+  webappError,
+  finishMessage,
+  storyResult,
+  renderStoryFeedback,
+  results,
+  extractCorrectTranslationText,
+  handleSelection,
+  renderFeedback,
+  isTtsPending,
+  playTtsWithUi,
+  learningTtsLocale,
+  renderTtsButtonContent,
+  handleExplainTranslation,
+  explanationLoading,
+  explanations,
+  renderExplanationContent,
+  handleFinishTranslation,
+  finishStatus,
+  handleLoadDailyHistory,
+  historyLoading,
+  historyVisible,
+  historyError,
+  activeLanguagePairLabel,
+  historyItems,
+}) {
+  return (
+    <PerfProfiler id="section.translations">
+      <section className="webapp-section webapp-section-translations" ref={translationsRef}>
+        <div className="webapp-section-title webapp-section-title-with-logo translations-title-row">
+          <div className="translations-title-main">
+            <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
+            {isFocusedTranslations && (
+              <button type="button" className="section-home-back" onClick={goHomeScreen}>
+                {tr('На главную', 'Startseite')}
+              </button>
+            )}
+          </div>
+          <div className="translations-title-side">
+            {renderTranslationsTaskHud()}
+            <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
+          </div>
+        </div>
+        {showTranslationStartConfigurator && todayTranslationRecommendation && (
+          <div className="today-translation-recommendation-card">
+            <div className="today-translation-recommendation-card__eyebrow">
+              {tr('Рекомендация на сегодня', 'Empfehlung fuer heute')}
+            </div>
+            <div className="today-translation-recommendation-card__title">
+              {todayTranslationRecommendation.title}
+            </div>
+            <div className="today-translation-recommendation-card__meta">
+              <span>{tr('Уровень', 'Niveau')}: <strong>{String(todayTranslationRecommendation.level || '').toUpperCase()}</strong></span>
+              {todayTranslationRecommendation.topicLabel && todayTranslationRecommendation.topicLabel !== CUSTOM_TOPIC && (
+                <span>{tr('Тема', 'Thema')}: <strong>{todayTranslationRecommendation.topicLabel}</strong></span>
+              )}
+            </div>
+            {todayTranslationRecommendation.reason && (
+              <p className="today-translation-recommendation-card__copy">
+                {tr('Система предлагает потренировать это слабое место по вашим последним ошибкам.', 'Das System empfiehlt diesen Fokus basierend auf deinen letzten Fehlern.')}
+              </p>
+            )}
+            {todayTranslationRecommendation.examples.length > 0 && (
+              <div className="today-translation-recommendation-card__examples">
+                <span>{tr('Недавние примеры', 'Letzte Beispiele')}</span>
+                {todayTranslationRecommendation.examples.map((example, index) => (
+                  <div key={`today_translation_recommendation_example_${index}`} className="today-translation-recommendation-card__example">
+                    {example}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="today-translation-recommendation-card__actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={applyTodayTranslationRecommendation}
+                disabled={webappLoading || topicsLoading}
+              >
+                {tr('Применить рекомендацию', 'Empfehlung anwenden')}
+              </button>
+            </div>
+            <div className="today-translation-recommendation-card__hint">
+              {tr('Или просто настройте тему и уровень ниже вручную.', 'Oder stelle Thema und Niveau unten einfach selbst ein.')}
+            </div>
+          </div>
+        )}
+        {showTranslationStartConfigurator && (
+          <div className="webapp-translation-start">
+            <label className="webapp-field">
+              <span>{tr('Грамматический фокус тренировки', 'Grammatikfokus fuer das Training')}</span>
+              <select
+                value={selectedTopic}
+                onChange={handleTopicChange}
+                disabled={topicsLoading || webappLoading}
+              >
+                {topics.map((topic) => (
+                  <option key={topic} value={topic}>
+                    {topic}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {!selectedTopicIsStoryTopic && selectedTopicIsCustomTopic && (
+              <label className="webapp-field">
+                <span>{tr('Свой грамматический фокус', 'Eigener Grammatikfokus')}</span>
+                <input
+                  type="text"
+                  value={customTopicInput}
+                  onChange={(event) => setCustomTopicInput(event.target.value)}
+                  placeholder={tr('Например: Genitiv, Passiv mit Modalverben, nicht vs kein', 'Zum Beispiel: Genitiv, Passiv mit Modalverben, nicht vs kein')}
+                  disabled={webappLoading}
+                />
+              </label>
+            )}
+            {!selectedTopicIsStoryTopic && (
+              <label className="webapp-field">
+                <span>{tr('Уровень', 'Niveau')}</span>
+                <select
+                  value={selectedLevel}
+                  onChange={(event) => setSelectedLevel(event.target.value)}
+                  disabled={webappLoading}
+                >
+                  <option value="a1">A1</option>
+                  <option value="a2">A2</option>
+                  <option value="b1">B1</option>
+                  <option value="b2">B2</option>
+                  <option value="c1">C1</option>
+                  <option value="c2">C2</option>
+                </select>
+              </label>
+            )}
+            {selectedTopicIsStoryTopic && (
+              <>
+                <label className="webapp-field">
+                  <span>{tr('История', 'Story')}</span>
+                  <select
+                    value={storyMode}
+                    onChange={(event) => setStoryMode(event.target.value)}
+                    disabled={webappLoading}
+                  >
+                    <option value="new">{tr('Новая', 'Neu')}</option>
+                    <option value="repeat">{tr('Повторить старую', 'Alte wiederholen')}</option>
+                  </select>
+                </label>
+                {storyMode === 'repeat' && (
+                  <label className="webapp-field">
+                    <span>{tr('Выберите историю', 'Story auswaehlen')}</span>
+                    <select
+                      value={selectedStoryId}
+                      onChange={(event) => setSelectedStoryId(event.target.value)}
+                      disabled={webappLoading || storyHistoryLoading}
+                    >
+                      <option value="">{tr('Последняя', 'Letzte')}</option>
+                      {storyHistory.map((item) => (
+                        <option key={item.story_id} value={item.story_id}>
+                          {item.title || tr(`История #${item.story_id}`, `Story #${item.story_id}`)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label className="webapp-field">
+                  <span>{tr('Тип истории', 'Story-Typ')}</span>
+                  <select
+                    value={storyType}
+                    onChange={(event) => setStoryType(event.target.value)}
+                    disabled={webappLoading}
+                  >
+                    <option value="знаменитая личность">{tr('Знаменитая личность', 'Beruehmte Persoenlichkeit')}</option>
+                    <option value="историческое событие">{tr('Историческое событие', 'Historisches Ereignis')}</option>
+                    <option value="выдающееся открытие">{tr('Выдающееся открытие', 'Bedeutende Entdeckung')}</option>
+                    <option value="выдающееся изобретение">{tr('Выдающееся изобретение', 'Bedeutende Erfindung')}</option>
+                    <option value="география">{tr('География', 'Geografie')}</option>
+                    <option value="космос">{tr('Космос', 'Weltraum')}</option>
+                    <option value="культура">{tr('Культура', 'Kultur')}</option>
+                    <option value="спорт">{tr('Спорт', 'Sport')}</option>
+                    <option value="политика">{tr('Политика', 'Politik')}</option>
+                  </select>
+                </label>
+                <label className="webapp-field">
+                  <span>{tr('Сложность', 'Schwierigkeit')}</span>
+                  <select
+                    value={storyDifficulty}
+                    onChange={(event) => setStoryDifficulty(event.target.value)}
+                    disabled={webappLoading}
+                  >
+                    <option value="начальный">{tr('Начальный', 'Anfaenger')}</option>
+                    <option value="средний">{tr('Средний', 'Mittel')}</option>
+                    <option value="продвинутый">{tr('Продвинутый', 'Fortgeschritten')}</option>
+                  </select>
+                </label>
+              </>
+            )}
+            <button
+              type="button"
+              className="primary-button translation-start-cta"
+              onClick={selectedTopicIsStoryTopic ? handleStartStory : handleStartTranslation}
+              disabled={webappLoading || topicsLoading || (selectedTopicIsCustomTopic && !customTopicInput.trim())}
+            >
+              {webappLoading ? tr('Запускаем...', 'Starten...') : tr('🚀 Начать перевод', '🚀 Uebersetzung starten')}
+            </button>
+          </div>
+        )}
+        {topicsError && <div className="webapp-error">{topicsError}</div>}
+        {storyHistoryError && <div className="webapp-error">{storyHistoryError}</div>}
+        {!isStoryResultMode && (
+          <form className="webapp-form translation-form" onSubmit={handleTranslationSubmit}>
+            <section className="webapp-translation-list">
+              {sentences.length === 0 ? (
+                <p className="webapp-muted translation-empty-state">
+                  {tr('Нет активных предложений. Нажмите «🚀 Начать перевод», чтобы получить новые.', 'Keine aktiven Saetze. Druecke «🚀 Uebersetzung starten», um neue zu laden.')}
+                </p>
+              ) : (
+                sentences.map((item, index) => {
+                  const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
+                  return (
+                    <TranslationDraftField
+                      key={`${item.id_for_mistake_table}-${item.unique_id ?? index}`}
+                      sentenceId={item.id_for_mistake_table}
+                      sentenceNumber={item.unique_id ?? index + 1}
+                      sentenceText={item.sentence}
+                      initialValue={draft}
+                      placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
+                      dictionaryLabel={tr('Открыть словарь', 'Woerterbuch')}
+                      isAndroidClient={isAndroidTelegramClient}
+                      androidDebugEnabled={androidTranslationDraftDebugConfig.enabled}
+                      androidExperimentVariant={androidTranslationDraftDebugConfig.variant}
+                      onLiveChange={handleDraftLiveChange}
+                      onCommit={handleDraftCommit}
+                      onRequestPersist={requestAndroidDraftPersistence}
+                      onRegisterValueAccessor={registerTranslationDraftValueAccessor}
+                      onDebugEvent={recordTranslationDraftAndroidDebugEvent}
+                      onJumpToDictionary={jumpToDictionaryFromSentence}
+                    />
+                  );
+                })
+              )}
+            </section>
+
+            {isStorySession && hasActiveTranslationSentences && (
+              <label className="webapp-field">
+                <span>{tr('А теперь угадай, о ком / чем шла речь', 'Rate jetzt, worum oder um wen es ging')}</span>
+                <input
+                  type="text"
+                  value={storyGuess}
+                  onChange={(event) => setStoryGuess(event.target.value)}
+                  placeholder={tr('Ваш ответ...', 'Deine Antwort...')}
+                />
+              </label>
+            )}
+            {!isStorySession && hasActiveTranslationSentences && (
+              <label className="translation-private-grammar-optin">
+                <div className="translation-private-grammar-optin-copy">
+                  <span>
+                    {tr(
+                      'Отправлять текстовое объяснение грамматики в личку сразу после проверки',
+                      'Textuelle Grammatikerklaerung sofort nach der Pruefung in den privaten Chat senden'
+                    )}
+                  </span>
+                  <small>
+                    {tr(
+                      'Разбор приходит отдельным сообщением по каждому проверенному предложению.',
+                      'Die Analyse kommt als separate Nachricht fuer jeden geprueften Satz.'
+                    )}
+                  </small>
+                </div>
+                <span className="translation-private-grammar-optin-check">
+                  <input
+                    type="checkbox"
+                    checked={translationPrivateGrammarTextOptIn}
+                    onChange={(event) => setTranslationPrivateGrammarTextOptIn(event.target.checked)}
+                    disabled={webappLoading}
+                  />
+                </span>
+              </label>
+            )}
+
+            {hasActiveTranslationSentences && (
+              <>
+                <button
+                  className={`primary-button translation-check-cta ${sentences.length === 0 && !webappLoading ? 'is-disabled-empty' : ''}`}
+                  type="submit"
+                  disabled={webappLoading || sentences.length === 0}
+                >
+                  {webappLoading
+                    ? (translationCheckProgress.total > 0
+                        ? tr(
+                            `Проверяем... ${translationCheckProgress.done}/${translationCheckProgress.total}`,
+                            `Pruefen... ${translationCheckProgress.done}/${translationCheckProgress.total}`
+                          )
+                        : tr('Проверяем...', 'Pruefen...'))
+                    : isStorySession
+                      ? tr('Проверить историю', 'Story pruefen')
+                      : tr('Проверить перевод', 'Uebersetzung pruefen')}
+                </button>
+                {webappLoading && translationCheckProgress.total > 0 && (
+                  <div className="webapp-muted">
+                    {tr(
+                      `Готово ${translationCheckProgress.done} из ${translationCheckProgress.total}`,
+                      `${translationCheckProgress.done} von ${translationCheckProgress.total} fertig`
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </form>
+        )}
+
+        {webappError && <div className="webapp-error">{webappError}</div>}
+        {finishMessage && <div className="webapp-success">{finishMessage}</div>}
+
+        {isStoryResultMode && (
+          <section className="webapp-result">
+            <h3>{tr('Результат истории', 'Story-Ergebnis')}</h3>
+            <div className="webapp-result-card story-result">
+              <div className="story-result-head">
+                <strong>{tr('⭐ Итоговый балл:', '⭐ Gesamtscore:')}</strong> {storyResult.score ?? '—'} / 100
+              </div>
+
+              {storyResult.feedback && renderStoryFeedback(storyResult.feedback)}
+
+              <div className="webapp-result-text story-result-answer">
+                <div><strong>{tr('🎯 Ответ пользователя:', '🎯 Antwort des Nutzers:')}</strong> {storyResult.guess_correct ? tr('верно по смыслу', 'inhaltlich richtig') : tr('неверно по смыслу', 'inhaltlich falsch')}</div>
+                <div><strong>{tr('✅ Эталон:', '✅ Referenz:')}</strong> {storyResult.answer || '—'}</div>
+                {storyResult.guess_reason && (
+                  <div><strong>{tr('📝 Пояснение:', '📝 Erklaerung:')}</strong> {storyResult.guess_reason}</div>
+                )}
+              </div>
+
+              {storyResult.extra_de && (
+                <div className="webapp-result-text story-result-extra">
+                  <strong>{tr('📌 Дополнительно (DE):', '📌 Zusaetzlich (DE):')}</strong> {storyResult.extra_de}
+                </div>
+              )}
+              {Array.isArray(storyResult.source_links) && storyResult.source_links.length > 0 && (
+                <div className="webapp-result-text story-result-links">
+                  <strong>{tr('🔗 Официальные источники:', '🔗 Offizielle Quellen:')}</strong>
+                  <ul>
+                    {storyResult.source_links.map((item, idx) => (
+                      <li key={`${item.url}-${idx}`}>
+                        <a href={item.url} target="_blank" rel="noreferrer">{item.lang}: {item.url}</a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {results.length > 0 && (
+          <section className="webapp-result">
+            <h3>{tr('Результат проверки', 'Pruefungsergebnis')}</h3>
+            <div className="webapp-result-list">
+              {results.map((item, index) => {
+                const correctTextForTts = extractCorrectTranslationText(item);
+                return (
+                  <div key={`${item.check_item_id ?? item.translation_id ?? item.sentence_id_for_mistake_table ?? item.sentence_number ?? index}-${index}`} className="webapp-result-card">
+                    {item.error ? (
+                      <div className="webapp-error">{item.error}</div>
+                    ) : (
+                      <>
+                        {Number(item?.translation_id || 0) > 0 && (
+                          <>
+                            {/*
+                            <label className="result-audio-optin">
+                              <span>{tr('Аудио-объяснение для этого предложения', 'Audio-Erklaerung fuer diesen Satz')}</span>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(
+                                  translationAudioGrammarOptIn[Number(item.translation_id)] ?? item?.audio_grammar_opt_in
+                                )}
+                                onChange={(event) => handleToggleResultAudioGrammar(item, event.target.checked)}
+                                disabled={Boolean(translationAudioGrammarSaving[Number(item.translation_id)])}
+                              />
+                            </label>
+                            */}
+                          </>
+                        )}
+                        <div
+                          className="webapp-result-text"
+                          onMouseUp={handleSelection}
+                          onTouchEnd={handleSelection}
+                        >
+                          {renderFeedback(item.feedback)}
+                        </div>
+                        {correctTextForTts && (
+                          <div className="result-inline-audio-row">
+                            {(() => {
+                              const ttsKey = `result-correct-${item.translation_id || item.sentence_number || index}`;
+                              const loading = isTtsPending(ttsKey);
+                              return (
+                                <>
+                                  <span className="webapp-muted">
+                                    {tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className={`inline-tts-button ${loading ? 'is-loading' : ''}`}
+                                    onClick={() => {
+                                      void playTtsWithUi(ttsKey, correctTextForTts, learningTtsLocale);
+                                    }}
+                                    aria-label={tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
+                                    title={tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
+                                    disabled={loading}
+                                  >
+                                    {renderTtsButtonContent(loading)}
+                                  </button>
+                                  {loading && (
+                                    <span className="tts-loading-note">
+                                      {tr('Озвучиваем...', 'Wird vorgelesen...')}
+                                    </span>
+                                  )}
+                                </>
+                              );
+                            })()}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          className="secondary-button explanation-button"
+                          onClick={() => handleExplainTranslation(item)}
+                          disabled={explanationLoading[String(item.sentence_number ?? item.original_text)]}
+                        >
+                          {explanationLoading[String(item.sentence_number ?? item.original_text)]
+                            ? tr('Запрашиваем объяснение...', 'Erklaerung wird angefragt...')
+                            : tr('Объяснить ошибки', 'Fehler erklaeren')}
+                        </button>
+                        {explanations[String(item.sentence_number ?? item.original_text)] && (
+                          <div className="webapp-explanation">
+                            {renderExplanationContent(
+                              explanations[String(item.sentence_number ?? item.original_text)]
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        <div className="webapp-actions webapp-actions-footer">
+          {sentences.length === 0 && !webappLoading && (
+            <div className="webapp-muted">
+              {tr('Если сессия зависла, можно завершить её вручную.', 'Wenn die Session haengt, kann sie manuell beendet werden.')}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={handleFinishTranslation}
+            className={`primary-button finish-button ${finishStatus === 'done' ? 'status-done' : ''}`}
+            disabled={webappLoading || ((results.length === 0 && !storyResult) && sentences.length > 0)}
+          >
+            {finishStatus === 'done' ? tr('Завершено', 'Abgeschlossen') : tr('Завершить перевод', 'Uebersetzung beenden')}
+          </button>
+          <button
+            type="button"
+            onClick={handleLoadDailyHistory}
+            className="secondary-button"
+            disabled={webappLoading || historyLoading}
+          >
+            {historyLoading
+              ? tr('Загружаем...', 'Laden...')
+              : historyVisible
+                ? tr('Скрыть результаты', 'Ergebnisse ausblenden')
+                : tr('Посмотреть результат за сегодня', 'Ergebnis fuer heute anzeigen')}
+          </button>
+          {results.length === 0 && !storyResult && !webappLoading && (
+            <div className="webapp-muted">{tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst pruefen, dann beenden.')}</div>
+          )}
+        </div>
+
+        {historyError && <div className="webapp-error">{historyError}</div>}
+
+        {historyVisible && (
+          <section className="webapp-result">
+            <h3>{tr('История переводов за сегодня', 'Uebersetzungsverlauf fuer heute')}</h3>
+            <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {activeLanguagePairLabel}</p>
+            {historyItems.length === 0 ? (
+              <p className="webapp-muted">{tr('Сегодня пока нет завершённых переводов.', 'Heute gibt es noch keine abgeschlossenen Uebersetzungen.')}</p>
+            ) : (
+              <div className="webapp-result-list">
+                {historyItems.map((item, index) => (
+                  <div key={item.id ?? index} className="webapp-result-card">
+                    <pre className="webapp-result-text">
+                      {`Sentence number: ${item.sentence_number ?? '—'}\nScore: ${
+                        item.score ?? '—'
+                      }/100\nOriginal: ${item.original_text ?? '—'}\nTranslation: ${
+                        item.user_translation ?? '—'
+                      }\nCorrect: ${item.correct_translation ?? '—'}`}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+      </section>
+    </PerfProfiler>
+  );
+});
+
 function AppInner() {
   const telegramApp = useMemo(() => window.Telegram?.WebApp, []);
   const [appMode, setAppMode] = useState(() => detectAppMode());
@@ -1228,6 +1793,8 @@ function AppInner() {
   const isStoryResultMode = Boolean(storyResult && isStorySession);
   const hasActiveTranslationSentences = sentences.length > 0;
   const showTranslationStartConfigurator = !hasActiveTranslationSentences;
+  const selectedTopicIsStoryTopic = isStoryTopic(selectedTopic);
+  const selectedTopicIsCustomTopic = isCustomTopic(selectedTopic);
   const BLOCKS_SINGLE_WORD_MAX_LEN = 10;
   const FLASHCARDS_LOAD_DEDUP_WINDOW_MS = 900;
   const SRS_NEXT_DEDUP_WINDOW_MS = 900;
@@ -14915,6 +15482,23 @@ function AppInner() {
     }
   };
 
+  const isFocusedTranslations = isFocusedSection('translations');
+  const learningTtsLocale = getLearningTtsLocale();
+  const activeLanguagePairLabel = getActiveLanguagePairLabel();
+  const renderTranslationsTaskHud = useStableCallback(() => renderTodaySectionTaskHud('translations'));
+  const goHomeScreenStable = useStableCallback(goHomeScreen);
+  const handleTranslationSubmitStable = useStableCallback(handleTranslationSubmit);
+  const handleStartTranslationStable = useStableCallback(handleStartTranslation);
+  const handleStartStoryStable = useStableCallback(handleStartStory);
+  const extractCorrectTranslationTextStable = useStableCallback(extractCorrectTranslationText);
+  const handleSelectionStable = useStableCallback(handleSelection);
+  const renderStoryFeedbackStable = useStableCallback(renderStoryFeedback);
+  const renderFeedbackStable = useStableCallback(renderFeedback);
+  const handleExplainTranslationStable = useStableCallback(handleExplainTranslation);
+  const renderExplanationContentStable = useStableCallback(renderExplanationContent);
+  const handleFinishTranslationStable = useStableCallback(handleFinishTranslation);
+  const handleLoadDailyHistoryStable = useStableCallback(handleLoadDailyHistory);
+
   const buildAnalyticsScopeContextPayload = () => {
     const unsafeChat = telegramApp?.initDataUnsafe?.chat || {};
     const chatType = String(
@@ -17614,481 +18198,85 @@ function AppInner() {
             )}
 
             {!flashcardsOnly && isSectionVisible('translations') && (
-              <PerfProfiler id="section.translations">
-                <section className="webapp-section webapp-section-translations" ref={translationsRef}>
-                <div className="webapp-section-title webapp-section-title-with-logo translations-title-row">
-                  <div className="translations-title-main">
-                    <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
-                    {isFocusedSection('translations') && (
-                      <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                        {tr('На главную', 'Startseite')}
-                      </button>
-                    )}
-                  </div>
-                  <div className="translations-title-side">
-                    {renderTodaySectionTaskHud('translations')}
-                    <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
-                  </div>
-                </div>
-                {showTranslationStartConfigurator && todayTranslationRecommendation && (
-                  <div className="today-translation-recommendation-card">
-                    <div className="today-translation-recommendation-card__eyebrow">
-                      {tr('Рекомендация на сегодня', 'Empfehlung fuer heute')}
-                    </div>
-                    <div className="today-translation-recommendation-card__title">
-                      {todayTranslationRecommendation.title}
-                    </div>
-                    <div className="today-translation-recommendation-card__meta">
-                      <span>{tr('Уровень', 'Niveau')}: <strong>{String(todayTranslationRecommendation.level || '').toUpperCase()}</strong></span>
-                      {todayTranslationRecommendation.topicLabel && todayTranslationRecommendation.topicLabel !== CUSTOM_TOPIC && (
-                        <span>{tr('Тема', 'Thema')}: <strong>{todayTranslationRecommendation.topicLabel}</strong></span>
-                      )}
-                    </div>
-                    {todayTranslationRecommendation.reason && (
-                      <p className="today-translation-recommendation-card__copy">
-                        {tr('Система предлагает потренировать это слабое место по вашим последним ошибкам.', 'Das System empfiehlt diesen Fokus basierend auf deinen letzten Fehlern.')}
-                      </p>
-                    )}
-                    {todayTranslationRecommendation.examples.length > 0 && (
-                      <div className="today-translation-recommendation-card__examples">
-                        <span>{tr('Недавние примеры', 'Letzte Beispiele')}</span>
-                        {todayTranslationRecommendation.examples.map((example, index) => (
-                          <div key={`today_translation_recommendation_example_${index}`} className="today-translation-recommendation-card__example">
-                            {example}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <div className="today-translation-recommendation-card__actions">
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={applyTodayTranslationRecommendation}
-                        disabled={webappLoading || topicsLoading}
-                      >
-                        {tr('Применить рекомендацию', 'Empfehlung anwenden')}
-                      </button>
-                    </div>
-                    <div className="today-translation-recommendation-card__hint">
-                      {tr('Или просто настройте тему и уровень ниже вручную.', 'Oder stelle Thema und Niveau unten einfach selbst ein.')}
-                    </div>
-                  </div>
-                )}
-                {showTranslationStartConfigurator && (
-                  <div className="webapp-translation-start">
-                    <label className="webapp-field">
-                      <span>{tr('Грамматический фокус тренировки', 'Grammatikfokus fuer das Training')}</span>
-      <select
-        value={selectedTopic}
-        onChange={handleTopicChange}
-        disabled={topicsLoading || webappLoading}
-      >
-                        {topics.map((topic) => (
-                          <option key={topic} value={topic}>
-                            {topic}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    {!isStoryTopic(selectedTopic) && isCustomTopic(selectedTopic) && (
-                      <label className="webapp-field">
-                        <span>{tr('Свой грамматический фокус', 'Eigener Grammatikfokus')}</span>
-                        <input
-                          type="text"
-                          value={customTopicInput}
-                          onChange={(event) => setCustomTopicInput(event.target.value)}
-                          placeholder={tr('Например: Genitiv, Passiv mit Modalverben, nicht vs kein', 'Zum Beispiel: Genitiv, Passiv mit Modalverben, nicht vs kein')}
-                          disabled={webappLoading}
-                        />
-                      </label>
-                    )}
-                    {!isStoryTopic(selectedTopic) && (
-                      <label className="webapp-field">
-                        <span>{tr('Уровень', 'Niveau')}</span>
-                        <select
-                          value={selectedLevel}
-                          onChange={(event) => setSelectedLevel(event.target.value)}
-                          disabled={webappLoading}
-                        >
-                          <option value="a1">A1</option>
-                          <option value="a2">A2</option>
-                          <option value="b1">B1</option>
-                          <option value="b2">B2</option>
-                          <option value="c1">C1</option>
-                          <option value="c2">C2</option>
-                        </select>
-                      </label>
-                    )}
-                    {isStoryTopic(selectedTopic) && (
-                      <>
-                        <label className="webapp-field">
-                          <span>{tr('История', 'Story')}</span>
-                          <select
-                            value={storyMode}
-                            onChange={(event) => setStoryMode(event.target.value)}
-                            disabled={webappLoading}
-                          >
-                            <option value="new">{tr('Новая', 'Neu')}</option>
-                            <option value="repeat">{tr('Повторить старую', 'Alte wiederholen')}</option>
-                          </select>
-                        </label>
-                        {storyMode === 'repeat' && (
-                          <label className="webapp-field">
-                            <span>{tr('Выберите историю', 'Story auswaehlen')}</span>
-                            <select
-                              value={selectedStoryId}
-                              onChange={(event) => setSelectedStoryId(event.target.value)}
-                              disabled={webappLoading || storyHistoryLoading}
-                            >
-                              <option value="">{tr('Последняя', 'Letzte')}</option>
-                              {storyHistory.map((item) => (
-                                <option key={item.story_id} value={item.story_id}>
-                                  {item.title || tr(`История #${item.story_id}`, `Story #${item.story_id}`)}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        )}
-                        <label className="webapp-field">
-                          <span>{tr('Тип истории', 'Story-Typ')}</span>
-                          <select
-                            value={storyType}
-                            onChange={(event) => setStoryType(event.target.value)}
-                            disabled={webappLoading}
-                          >
-                            <option value="знаменитая личность">{tr('Знаменитая личность', 'Beruehmte Persoenlichkeit')}</option>
-                            <option value="историческое событие">{tr('Историческое событие', 'Historisches Ereignis')}</option>
-                            <option value="выдающееся открытие">{tr('Выдающееся открытие', 'Bedeutende Entdeckung')}</option>
-                            <option value="выдающееся изобретение">{tr('Выдающееся изобретение', 'Bedeutende Erfindung')}</option>
-                            <option value="география">{tr('География', 'Geografie')}</option>
-                            <option value="космос">{tr('Космос', 'Weltraum')}</option>
-                            <option value="культура">{tr('Культура', 'Kultur')}</option>
-                            <option value="спорт">{tr('Спорт', 'Sport')}</option>
-                            <option value="политика">{tr('Политика', 'Politik')}</option>
-                          </select>
-                        </label>
-                        <label className="webapp-field">
-                          <span>{tr('Сложность', 'Schwierigkeit')}</span>
-                          <select
-                            value={storyDifficulty}
-                            onChange={(event) => setStoryDifficulty(event.target.value)}
-                            disabled={webappLoading}
-                          >
-                            <option value="начальный">{tr('Начальный', 'Anfaenger')}</option>
-                            <option value="средний">{tr('Средний', 'Mittel')}</option>
-                            <option value="продвинутый">{tr('Продвинутый', 'Fortgeschritten')}</option>
-                          </select>
-                        </label>
-                      </>
-                    )}
-                    <button
-                      type="button"
-                      className="primary-button translation-start-cta"
-                      onClick={isStoryTopic(selectedTopic) ? handleStartStory : handleStartTranslation}
-                      disabled={webappLoading || topicsLoading || (isCustomTopic(selectedTopic) && !customTopicInput.trim())}
-                    >
-                      {webappLoading ? tr('Запускаем...', 'Starten...') : tr('🚀 Начать перевод', '🚀 Uebersetzung starten')}
-                    </button>
-                  </div>
-                )}
-                {topicsError && <div className="webapp-error">{topicsError}</div>}
-                {storyHistoryError && <div className="webapp-error">{storyHistoryError}</div>}
-                {!isStoryResultMode && (
-                <form className="webapp-form translation-form" onSubmit={handleTranslationSubmit}>
-                  <section className="webapp-translation-list">
-                    {sentences.length === 0 ? (
-                      <p className="webapp-muted translation-empty-state">
-                        {tr('Нет активных предложений. Нажмите «🚀 Начать перевод», чтобы получить новые.', 'Keine aktiven Saetze. Druecke «🚀 Uebersetzung starten», um neue zu laden.')}
-                      </p>
-                    ) : (
-                      sentences.map((item, index) => {
-                        const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
-                        return (
-                          <TranslationDraftField
-                            key={`${item.id_for_mistake_table}-${item.unique_id ?? index}`}
-                            sentenceId={item.id_for_mistake_table}
-                            sentenceNumber={item.unique_id ?? index + 1}
-                            sentenceText={item.sentence}
-                            initialValue={draft}
-                            placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
-                            dictionaryLabel={tr('Открыть словарь', 'Woerterbuch')}
-                            isAndroidClient={isAndroidTelegramClient}
-                            androidDebugEnabled={androidTranslationDraftDebugConfig.enabled}
-                            androidExperimentVariant={androidTranslationDraftDebugConfig.variant}
-                            onLiveChange={handleDraftLiveChange}
-                            onCommit={handleDraftCommit}
-                            onRequestPersist={requestAndroidDraftPersistence}
-                            onRegisterValueAccessor={registerTranslationDraftValueAccessor}
-                            onDebugEvent={recordTranslationDraftAndroidDebugEvent}
-                            onJumpToDictionary={jumpToDictionaryFromSentence}
-                          />
-                        );
-                      })
-                    )}
-                  </section>
-
-                  {isStorySession && hasActiveTranslationSentences && (
-                    <label className="webapp-field">
-                      <span>{tr('А теперь угадай, о ком / чем шла речь', 'Rate jetzt, worum oder um wen es ging')}</span>
-                      <input
-                        type="text"
-                        value={storyGuess}
-                        onChange={(event) => setStoryGuess(event.target.value)}
-                        placeholder={tr('Ваш ответ...', 'Deine Antwort...')}
-                      />
-                    </label>
-                  )}
-                  {!isStorySession && hasActiveTranslationSentences && (
-                    <label className="translation-private-grammar-optin">
-                      <div className="translation-private-grammar-optin-copy">
-                        <span>
-                          {tr(
-                            'Отправлять текстовое объяснение грамматики в личку сразу после проверки',
-                            'Textuelle Grammatikerklaerung sofort nach der Pruefung in den privaten Chat senden'
-                          )}
-                        </span>
-                        <small>
-                          {tr(
-                            'Разбор приходит отдельным сообщением по каждому проверенному предложению.',
-                            'Die Analyse kommt als separate Nachricht fuer jeden geprueften Satz.'
-                          )}
-                        </small>
-                      </div>
-                      <span className="translation-private-grammar-optin-check">
-                        <input
-                          type="checkbox"
-                          checked={translationPrivateGrammarTextOptIn}
-                          onChange={(event) => setTranslationPrivateGrammarTextOptIn(event.target.checked)}
-                          disabled={webappLoading}
-                        />
-                      </span>
-                    </label>
-                  )}
-
-                  {hasActiveTranslationSentences && (
-                    <>
-                      <button
-                        className={`primary-button translation-check-cta ${sentences.length === 0 && !webappLoading ? 'is-disabled-empty' : ''}`}
-                        type="submit"
-                        disabled={webappLoading || sentences.length === 0}
-                      >
-                        {webappLoading
-                          ? (translationCheckProgress.total > 0
-                              ? tr(
-                                  `Проверяем... ${translationCheckProgress.done}/${translationCheckProgress.total}`,
-                                  `Pruefen... ${translationCheckProgress.done}/${translationCheckProgress.total}`
-                                )
-                              : tr('Проверяем...', 'Pruefen...'))
-                          : isStorySession
-                            ? tr('Проверить историю', 'Story pruefen')
-                            : tr('Проверить перевод', 'Uebersetzung pruefen')}
-                      </button>
-                      {webappLoading && translationCheckProgress.total > 0 && (
-                        <div className="webapp-muted">
-                          {tr(
-                            `Готово ${translationCheckProgress.done} из ${translationCheckProgress.total}`,
-                            `${translationCheckProgress.done} von ${translationCheckProgress.total} fertig`
-                          )}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </form>
-                )}
-
-                {webappError && <div className="webapp-error">{webappError}</div>}
-                {finishMessage && <div className="webapp-success">{finishMessage}</div>}
-
-                {isStoryResultMode && (
-                  <section className="webapp-result">
-                    <h3>{tr('Результат истории', 'Story-Ergebnis')}</h3>
-                    <div className="webapp-result-card story-result">
-                      <div className="story-result-head">
-                        <strong>{tr('⭐ Итоговый балл:', '⭐ Gesamtscore:')}</strong> {storyResult.score ?? '—'} / 100
-                      </div>
-
-                      {storyResult.feedback && renderStoryFeedback(storyResult.feedback)}
-
-                      <div className="webapp-result-text story-result-answer">
-                        <div><strong>{tr('🎯 Ответ пользователя:', '🎯 Antwort des Nutzers:')}</strong> {storyResult.guess_correct ? tr('верно по смыслу', 'inhaltlich richtig') : tr('неверно по смыслу', 'inhaltlich falsch')}</div>
-                        <div><strong>{tr('✅ Эталон:', '✅ Referenz:')}</strong> {storyResult.answer || '—'}</div>
-                        {storyResult.guess_reason && (
-                          <div><strong>{tr('📝 Пояснение:', '📝 Erklaerung:')}</strong> {storyResult.guess_reason}</div>
-                        )}
-                      </div>
-
-                      {storyResult.extra_de && (
-                        <div className="webapp-result-text story-result-extra">
-                          <strong>{tr('📌 Дополнительно (DE):', '📌 Zusaetzlich (DE):')}</strong> {storyResult.extra_de}
-                        </div>
-                      )}
-                      {Array.isArray(storyResult.source_links) && storyResult.source_links.length > 0 && (
-                        <div className="webapp-result-text story-result-links">
-                          <strong>{tr('🔗 Официальные источники:', '🔗 Offizielle Quellen:')}</strong>
-                          <ul>
-                            {storyResult.source_links.map((item, idx) => (
-                              <li key={`${item.url}-${idx}`}>
-                                <a href={item.url} target="_blank" rel="noreferrer">{item.lang}: {item.url}</a>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
-                  </section>
-                )}
-
-                {results.length > 0 && (
-                  <section className="webapp-result">
-                    <h3>{tr('Результат проверки', 'Pruefungsergebnis')}</h3>
-                    <div className="webapp-result-list">
-                      {results.map((item, index) => {
-                        const correctTextForTts = extractCorrectTranslationText(item);
-                        return (
-                        <div key={`${item.check_item_id ?? item.translation_id ?? item.sentence_id_for_mistake_table ?? item.sentence_number ?? index}-${index}`} className="webapp-result-card">
-                          {item.error ? (
-                            <div className="webapp-error">{item.error}</div>
-                          ) : (
-                            <>
-                              {Number(item?.translation_id || 0) > 0 && (
-                                <>
-                                  {/*
-                                  <label className="result-audio-optin">
-                                    <span>{tr('Аудио-объяснение для этого предложения', 'Audio-Erklaerung fuer diesen Satz')}</span>
-                                    <input
-                                      type="checkbox"
-                                      checked={Boolean(
-                                        translationAudioGrammarOptIn[Number(item.translation_id)] ?? item?.audio_grammar_opt_in
-                                      )}
-                                      onChange={(event) => handleToggleResultAudioGrammar(item, event.target.checked)}
-                                      disabled={Boolean(translationAudioGrammarSaving[Number(item.translation_id)])}
-                                    />
-                                  </label>
-                                  */}
-                                </>
-                              )}
-                              <div
-                                className="webapp-result-text"
-                                onMouseUp={handleSelection}
-                                onTouchEnd={handleSelection}
-                              >
-                                {renderFeedback(item.feedback)}
-                              </div>
-                              {correctTextForTts && (
-                                <div className="result-inline-audio-row">
-                                  {(() => {
-                                    const ttsKey = `result-correct-${item.translation_id || item.sentence_number || index}`;
-                                    const loading = isTtsPending(ttsKey);
-                                    return (
-                                      <>
-                                  <span className="webapp-muted">
-                                    {tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className={`inline-tts-button ${loading ? 'is-loading' : ''}`}
-                                    onClick={() => {
-                                      void playTtsWithUi(ttsKey, correctTextForTts, getLearningTtsLocale());
-                                    }}
-                                    aria-label={tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
-                                    title={tr('Озвучить корректный вариант', 'Korrekte Version vorlesen')}
-                                    disabled={loading}
-                                  >
-                                    {renderTtsButtonContent(loading)}
-                                  </button>
-                                  {loading && (
-                                    <span className="tts-loading-note">
-                                      {tr('Озвучиваем...', 'Wird vorgelesen...')}
-                                    </span>
-                                  )}
-                                      </>
-                                    );
-                                  })()}
-                                </div>
-                              )}
-                              <button
-                                type="button"
-                                className="secondary-button explanation-button"
-                                onClick={() => handleExplainTranslation(item)}
-                                disabled={explanationLoading[String(item.sentence_number ?? item.original_text)]}
-                              >
-                                {explanationLoading[String(item.sentence_number ?? item.original_text)]
-                                  ? tr('Запрашиваем объяснение...', 'Erklaerung wird angefragt...')
-                                  : tr('Объяснить ошибки', 'Fehler erklaeren')}
-                              </button>
-                              {explanations[String(item.sentence_number ?? item.original_text)] && (
-                                <div className="webapp-explanation">
-                                  {renderExplanationContent(
-                                    explanations[String(item.sentence_number ?? item.original_text)]
-                                  )}
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      )})}
-                    </div>
-                  </section>
-                )}
-
-                <div className="webapp-actions webapp-actions-footer">
-                  {sentences.length === 0 && !webappLoading && (
-                    <div className="webapp-muted">
-                      {tr('Если сессия зависла, можно завершить её вручную.', 'Wenn die Session haengt, kann sie manuell beendet werden.')}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={handleFinishTranslation}
-                    className={`primary-button finish-button ${finishStatus === 'done' ? 'status-done' : ''}`}
-                    disabled={webappLoading || ((results.length === 0 && !storyResult) && sentences.length > 0)}
-                  >
-                    {finishStatus === 'done' ? tr('Завершено', 'Abgeschlossen') : tr('Завершить перевод', 'Uebersetzung beenden')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleLoadDailyHistory}
-                    className="secondary-button"
-                    disabled={webappLoading || historyLoading}
-                  >
-                    {historyLoading
-                      ? tr('Загружаем...', 'Laden...')
-                      : historyVisible
-                        ? tr('Скрыть результаты', 'Ergebnisse ausblenden')
-                        : tr('Посмотреть результат за сегодня', 'Ergebnis fuer heute anzeigen')}
-                  </button>
-                  {results.length === 0 && !storyResult && !webappLoading && (
-                    <div className="webapp-muted">{tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst pruefen, dann beenden.')}</div>
-                  )}
-                </div>
-
-                {historyError && <div className="webapp-error">{historyError}</div>}
-
-                {historyVisible && (
-                  <section className="webapp-result">
-                    <h3>{tr('История переводов за сегодня', 'Uebersetzungsverlauf fuer heute')}</h3>
-                    <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {getActiveLanguagePairLabel()}</p>
-                    {historyItems.length === 0 ? (
-                      <p className="webapp-muted">{tr('Сегодня пока нет завершённых переводов.', 'Heute gibt es noch keine abgeschlossenen Uebersetzungen.')}</p>
-                    ) : (
-                      <div className="webapp-result-list">
-                        {historyItems.map((item, index) => (
-                          <div key={item.id ?? index} className="webapp-result-card">
-                            <pre className="webapp-result-text">
-                              {`Sentence number: ${item.sentence_number ?? '—'}\nScore: ${
-                                item.score ?? '—'
-                              }/100\nOriginal: ${item.original_text ?? '—'}\nTranslation: ${
-                                item.user_translation ?? '—'
-                              }\nCorrect: ${item.correct_translation ?? '—'}`}
-                            </pre>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                )}
-                </section>
-              </PerfProfiler>
+              <TranslationsSection
+                tr={tr}
+                translationsRef={translationsRef}
+                heroStickerSrc={heroStickerSrc}
+                isFocusedTranslations={isFocusedTranslations}
+                goHomeScreen={goHomeScreenStable}
+                renderTranslationsTaskHud={renderTranslationsTaskHud}
+                showTranslationStartConfigurator={showTranslationStartConfigurator}
+                todayTranslationRecommendation={todayTranslationRecommendation}
+                applyTodayTranslationRecommendation={applyTodayTranslationRecommendation}
+                webappLoading={webappLoading}
+                topicsLoading={topicsLoading}
+                selectedTopic={selectedTopic}
+                selectedTopicIsStoryTopic={selectedTopicIsStoryTopic}
+                selectedTopicIsCustomTopic={selectedTopicIsCustomTopic}
+                handleTopicChange={handleTopicChange}
+                topics={topics}
+                customTopicInput={customTopicInput}
+                setCustomTopicInput={setCustomTopicInput}
+                selectedLevel={selectedLevel}
+                setSelectedLevel={setSelectedLevel}
+                storyMode={storyMode}
+                setStoryMode={setStoryMode}
+                selectedStoryId={selectedStoryId}
+                setSelectedStoryId={setSelectedStoryId}
+                storyHistoryLoading={storyHistoryLoading}
+                storyHistory={storyHistory}
+                storyType={storyType}
+                setStoryType={setStoryType}
+                storyDifficulty={storyDifficulty}
+                setStoryDifficulty={setStoryDifficulty}
+                handleStartStory={handleStartStoryStable}
+                handleStartTranslation={handleStartTranslationStable}
+                topicsError={topicsError}
+                storyHistoryError={storyHistoryError}
+                isStoryResultMode={isStoryResultMode}
+                handleTranslationSubmit={handleTranslationSubmitStable}
+                sentences={sentences}
+                translationDrafts={translationDrafts}
+                isAndroidTelegramClient={isAndroidTelegramClient}
+                androidTranslationDraftDebugConfig={androidTranslationDraftDebugConfig}
+                handleDraftLiveChange={handleDraftLiveChange}
+                handleDraftCommit={handleDraftCommit}
+                requestAndroidDraftPersistence={requestAndroidDraftPersistence}
+                registerTranslationDraftValueAccessor={registerTranslationDraftValueAccessor}
+                recordTranslationDraftAndroidDebugEvent={recordTranslationDraftAndroidDebugEvent}
+                jumpToDictionaryFromSentence={jumpToDictionaryFromSentence}
+                isStorySession={isStorySession}
+                hasActiveTranslationSentences={hasActiveTranslationSentences}
+                storyGuess={storyGuess}
+                setStoryGuess={setStoryGuess}
+                translationPrivateGrammarTextOptIn={translationPrivateGrammarTextOptIn}
+                setTranslationPrivateGrammarTextOptIn={setTranslationPrivateGrammarTextOptIn}
+                translationCheckProgress={translationCheckProgress}
+                webappError={webappError}
+                finishMessage={finishMessage}
+                storyResult={storyResult}
+                renderStoryFeedback={renderStoryFeedbackStable}
+                results={results}
+                extractCorrectTranslationText={extractCorrectTranslationTextStable}
+                handleSelection={handleSelectionStable}
+                renderFeedback={renderFeedbackStable}
+                isTtsPending={isTtsPending}
+                playTtsWithUi={playTtsWithUi}
+                learningTtsLocale={learningTtsLocale}
+                renderTtsButtonContent={renderTtsButtonContent}
+                handleExplainTranslation={handleExplainTranslationStable}
+                explanationLoading={explanationLoading}
+                explanations={explanations}
+                renderExplanationContent={renderExplanationContentStable}
+                handleFinishTranslation={handleFinishTranslationStable}
+                finishStatus={finishStatus}
+                handleLoadDailyHistory={handleLoadDailyHistoryStable}
+                historyLoading={historyLoading}
+                historyVisible={historyVisible}
+                historyError={historyError}
+                activeLanguagePairLabel={activeLanguagePairLabel}
+                historyItems={historyItems}
+              />
             )}
 
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
