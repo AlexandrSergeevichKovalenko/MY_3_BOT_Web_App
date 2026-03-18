@@ -743,6 +743,8 @@ function AppInner() {
   const [storyGuess, setStoryGuess] = useState('');
   const [storyResult, setStoryResult] = useState(null);
   const [sessionType, setSessionType] = useState('none');
+  const [translationSessionId, setTranslationSessionId] = useState(null);
+  const [pageVisible, setPageVisible] = useState(() => (typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'));
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
@@ -888,6 +890,9 @@ function AppInner() {
   const ttsLastRef = useRef({ key: '', ts: 0 });
   const ttsCurrentAudioRef = useRef(null);
   const ttsPlaybackSeqRef = useRef(0);
+  const translationActivityRunningRef = useRef(false);
+  const translationActivityInFlightRef = useRef(false);
+  const translationActivitySessionRef = useRef('');
   const audioContextRef = useRef(null);
   const positiveAudioRef = useRef(null);
   const negativeAudioRef = useRef(null);
@@ -1742,10 +1747,6 @@ function AppInner() {
       tr('«Почувствуй слово»: безлимитно.', '„Wort fuehlen“: unbegrenzt.'),
       tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.'),
       tr('Прокачка навыков: безлимитно.', 'Skill-Training: unbegrenzt.'),
-      tr(
-        'По запросу можно обсудить индивидуальную доработку/персональную тренировку для этого пользователя (по технической возможности).',
-        'Auf Wunsch kann eine individuelle technische Anpassung/persoenliches Training besprochen werden (sofern technisch machbar).'
-      ),
     ];
     return {
       free: {
@@ -5988,6 +5989,33 @@ function AppInner() {
     );
   }, [analyticsScopeKey, analyticsScopeOptions, tr]);
   const analyticsScopeSelectorRequired = Boolean(analyticsScopeData?.selector?.required);
+  const analyticsCompareInsight = useMemo(() => {
+    const items = Array.isArray(analyticsCompare) ? analyticsCompare : [];
+    const scopeKey = String(analyticsScopeKey || '').trim().toLowerCase();
+    const maxFinalScore = items.reduce((maxValue, item) => Math.max(maxValue, Number(item?.final_score || 0)), 0);
+    if (scopeKey === 'personal') {
+      return tr(
+        'Нижняя диаграмма сравнивает участников выбранного режима. Сейчас выбран персональный режим, поэтому здесь только ваши данные.',
+        'Das untere Diagramm vergleicht die Teilnehmenden des gewaehlten Modus. Aktuell ist der persoenliche Modus aktiv, deshalb siehst du hier nur deine Daten.'
+      );
+    }
+    if (items.length <= 1) {
+      return tr(
+        'Для выбранной группы пока недостаточно участников или данных для сравнения.',
+        'Fuer die gewaehlte Gruppe gibt es aktuell noch zu wenige Teilnehmende oder Daten fuer einen Vergleich.'
+      );
+    }
+    if (maxFinalScore <= 0) {
+      return tr(
+        'Сравнение есть, но итоговые баллы сейчас равны 0, поэтому столбцы почти не видны.',
+        'Der Vergleich ist vorhanden, aber die Gesamtscores liegen aktuell bei 0, deshalb sind die Balken fast unsichtbar.'
+      );
+    }
+    return tr(
+      'Нижняя диаграмма показывает сравнение участников по итоговому баллу за выбранный период.',
+      'Das untere Diagramm zeigt den Vergleich der Teilnehmenden nach Gesamtscore fuer den gewaehlten Zeitraum.'
+    );
+  }, [analyticsCompare, analyticsScopeKey, tr]);
   const readerVisibleText = useMemo(() => {
     if (readerPageCount > 0) {
       return String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '');
@@ -8940,6 +8968,46 @@ function AppInner() {
     }
   }, [initData, isWebAppMode]);
 
+  const syncTranslationSessionActivity = useCallback(async (action, options = {}) => {
+    const normalizedAction = String(action || '').trim().toLowerCase();
+    if (!['start', 'resume', 'pause', 'stop'].includes(normalizedAction)) {
+      return false;
+    }
+    if (!initData || !translationSessionId) {
+      return false;
+    }
+    const wantsRunning = normalizedAction === 'start' || normalizedAction === 'resume';
+    const force = Boolean(options?.force);
+    if (!force && translationActivityRunningRef.current === wantsRunning) {
+      return true;
+    }
+    if (translationActivityInFlightRef.current) {
+      return false;
+    }
+    translationActivityInFlightRef.current = true;
+    try {
+      const response = await fetch('/api/webapp/session/activity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        keepalive: Boolean(options?.keepalive),
+        body: JSON.stringify({
+          initData,
+          session_id: translationSessionId,
+          action: normalizedAction,
+        }),
+      });
+      if (!response.ok) {
+        return false;
+      }
+      translationActivityRunningRef.current = wantsRunning;
+      return true;
+    } catch (_error) {
+      return false;
+    } finally {
+      translationActivityInFlightRef.current = false;
+    }
+  }, [initData, translationSessionId]);
+
   useEffect(() => {
     translationCheckUnmountedRef.current = false;
     return () => {
@@ -8971,6 +9039,69 @@ function AppInner() {
       cancelled = true;
     };
   }, [initData, flashcardsOnly, selectedSections, isStorySession]);
+
+  useEffect(() => {
+    const normalizedSessionId = String(translationSessionId || '').trim();
+    if (translationActivitySessionRef.current !== normalizedSessionId) {
+      translationActivitySessionRef.current = normalizedSessionId;
+      translationActivityRunningRef.current = false;
+      translationActivityInFlightRef.current = false;
+    }
+    if (!normalizedSessionId) {
+      translationActivityRunningRef.current = false;
+    }
+  }, [translationSessionId]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      const visible = document.visibilityState !== 'hidden';
+      setPageVisible(visible);
+      if (!visible) {
+        translationActivityRunningRef.current = false;
+        void syncTranslationSessionActivity('pause', { force: true, keepalive: true });
+      }
+    };
+    const onPageHide = () => {
+      setPageVisible(false);
+      translationActivityRunningRef.current = false;
+      void syncTranslationSessionActivity('pause', { force: true, keepalive: true });
+    };
+    const onPageShow = () => {
+      setPageVisible(document.visibilityState !== 'hidden');
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', onPageShow);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
+    };
+  }, [syncTranslationSessionActivity]);
+
+  useEffect(() => {
+    const shouldTrackTranslationActivity = Boolean(
+      initData
+      && translationSessionId
+      && sessionType === 'regular'
+      && !isStorySession
+      && hasActiveTranslationSentences
+      && !flashcardsOnly
+      && selectedSections.has('translations')
+      && pageVisible
+    );
+    void syncTranslationSessionActivity(shouldTrackTranslationActivity ? 'start' : 'pause');
+  }, [
+    flashcardsOnly,
+    hasActiveTranslationSentences,
+    initData,
+    isStorySession,
+    pageVisible,
+    selectedSections,
+    sessionType,
+    syncTranslationSessionActivity,
+    translationSessionId,
+  ]);
 
   useEffect(() => {
     if (!isStoryTopic(selectedTopic)) {
@@ -9411,12 +9542,14 @@ function AppInner() {
       const data = await response.json();
       const type = data.type || 'none';
       setSessionType(type);
+      setTranslationSessionId(type === 'regular' ? String(data.session_id || '').trim() || null : null);
       if (type === 'story') {
         setSelectedTopic(STORY_TOPIC);
       }
       return data;
     } catch (error) {
       // silent
+      setTranslationSessionId(null);
       return null;
     }
   };
@@ -12391,6 +12524,7 @@ function AppInner() {
     setFinishMessage('');
     setFinishStatus('idle');
     try {
+      await syncTranslationSessionActivity('pause', { force: true });
       const response = await fetch('/api/webapp/finish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -12422,6 +12556,7 @@ function AppInner() {
       recordTranslationDraftAndroidDebugEvent('draft.state_update.clear_session', { focusedOnly: false, flush: true });
       setTranslationDrafts({});
       setSessionType('none');
+      setTranslationSessionId(null);
       setStoryGuess('');
       setStoryResult(null);
       setResults([]);
@@ -14607,6 +14742,15 @@ function AppInner() {
           data,
           barWidth: 18,
           borderRadius: [8, 8, 8, 8],
+          label: {
+            show: true,
+            position: 'right',
+            color: chartTextColor,
+            formatter: (params) => {
+              const item = analyticsCompare[params.dataIndex];
+              return `${Number(item?.final_score || 0)}`;
+            },
+          },
         },
       ],
     });
@@ -19607,6 +19751,7 @@ function AppInner() {
                 )}
 
                 <div className="analytics-chart" ref={analyticsTrendRef} />
+                <div className="webapp-muted analytics-compare-hint">{analyticsCompareInsight}</div>
                 <div className="analytics-chart analytics-compare" ref={analyticsCompareRef} />
               </section>
             )}

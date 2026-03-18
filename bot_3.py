@@ -71,6 +71,7 @@ from backend.openai_manager import (
 )
 from backend.database import (
     init_db,
+    build_translation_session_minutes_sql,
     get_random_dictionary_entry,
     get_random_dictionary_entry_for_quiz_type,
     list_low_accuracy_telegram_quiz_entries,
@@ -643,6 +644,9 @@ def initialise_database():
                     username TEXT,
                     start_time TIMESTAMP,
                     end_time TIMESTAMP,
+                    active_seconds BIGINT,
+                    active_started_at TIMESTAMPTZ,
+                    active_running BOOLEAN,
                     completed BOOLEAN DEFAULT FALSE,
                     CONSTRAINT unique_user_session_bt_3 UNIQUE (user_id, start_time)
                 );
@@ -7571,10 +7575,10 @@ async def send_weekly_summary(context: CallbackContext):
     cursor = conn.cursor()
 
     # 🔹 Собираем статистику за неделю
-    cursor.execute("""
-        SELECT 
+    cursor.execute(f"""
+    SELECT 
         t.user_id,
-        t.username, 
+        t.username,
         COUNT(DISTINCT t.sentence_id) AS всего_переводов,
         COALESCE(AVG(t.score), 0) AS средняя_оценка,
         COALESCE(p.avg_time, 0) AS среднее_время_сессии_в_минутах, -- ✅ Среднее время сессии
@@ -7595,8 +7599,8 @@ async def send_weekly_summary(context: CallbackContext):
     FROM bt_3_translations t
     LEFT JOIN (
         SELECT user_id, 
-            AVG(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS avg_time, -- ✅ Среднее время сессии
-            SUM(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS total_time -- ✅ Общее время
+            AVG({build_translation_session_minutes_sql('p')}) AS avg_time, -- ✅ Среднее время сессии
+            SUM({build_translation_session_minutes_sql('p')}) AS total_time -- ✅ Общее время
         FROM bt_3_user_progress 
         WHERE completed = TRUE 
         AND start_time >= CURRENT_DATE - INTERVAL '6 days'
@@ -7766,7 +7770,7 @@ async def send_daily_summary(context: CallbackContext):
         print(f"User ID from rows: {user_id}, uswername: {username}")
 
     # 🔹 Собираем статистику за день
-    cursor.execute("""
+    cursor.execute(f"""
        SELECT 
             ds.user_id, 
             COUNT(DISTINCT ds.id) AS total_sentences,
@@ -7782,8 +7786,8 @@ async def send_daily_summary(context: CallbackContext):
         LEFT JOIN bt_3_translations t ON ds.user_id = t.user_id AND ds.id = t.sentence_id
         LEFT JOIN (
             SELECT user_id, 
-                AVG(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS avg_time, 
-                SUM(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS total_time
+                AVG({build_translation_session_minutes_sql('p')}) AS avg_time, 
+                SUM({build_translation_session_minutes_sql('p')}) AS total_time
             FROM bt_3_user_progress
             WHERE completed = true
         		AND start_time::date = CURRENT_DATE -- ✅ Теперь только за день
@@ -7887,7 +7891,7 @@ async def send_progress_report(context: CallbackContext):
     active_users = {row[0] for row in cursor.fetchall()}
 
     # 🔹 Собираем статистику по пользователям **за сегодня**(checked)
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT 
         ds.user_id,
         COUNT(DISTINCT ds.id) AS всего_предложений,
@@ -7903,8 +7907,8 @@ async def send_progress_report(context: CallbackContext):
     LEFT JOIN bt_3_translations t ON ds.user_id = t.user_id AND ds.id = t.sentence_id
     LEFT JOIN (
         SELECT user_id, 
-            AVG(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS avg_time, -- ✅ Среднее время сессии за день
-            SUM(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS total_time -- ✅ Общее время за день
+            AVG({build_translation_session_minutes_sql('p')}) AS avg_time, -- ✅ Среднее время сессии за день
+            SUM({build_translation_session_minutes_sql('p')}) AS total_time -- ✅ Общее время за день
         FROM bt_3_user_progress
         WHERE completed = TRUE 
             AND start_time::date = CURRENT_DATE -- ✅ Теперь только за день

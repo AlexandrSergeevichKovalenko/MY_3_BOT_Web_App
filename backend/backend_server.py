@@ -364,6 +364,8 @@ from backend.database import (
     FLASHCARD_RECENT_SEEN_HOURS,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
+    build_translation_session_minutes_sql,
+    sync_translation_session_activity,
 )
 from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url, r2_delete_object
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
@@ -4227,7 +4229,7 @@ def _ensure_skill_resource_domains_table() -> None:
                 """
             )
             cursor.execute(
-                """
+                f"""
                 CREATE INDEX IF NOT EXISTS idx_bt3_skill_resource_domains_status
                 ON bt_3_skill_resource_domains (status, updated_at DESC);
                 """
@@ -8852,7 +8854,7 @@ def _get_tts_object_cache_snapshot(*, stale_minutes: int | None = None) -> dict:
                 elif normalized == "failed":
                     failed_count = int(count_value or 0)
             cursor.execute(
-                f"""
+                """
                 SELECT
                     COUNT(*),
                     COALESCE(MAX(EXTRACT(EPOCH FROM (NOW() - updated_at)) / 60.0), 0)
@@ -10210,7 +10212,7 @@ def _list_predicted_tts_candidates_for_user(
             due_rows = cursor.fetchall() or []
 
             cursor.execute(
-                """
+                f"""
                 SELECT
                     q.id,
                     q.word_ru,
@@ -22350,6 +22352,55 @@ def get_webapp_session():
     return jsonify({"ok": True, **info})
 
 
+@app.route("/api/webapp/session/activity", methods=["POST"])
+def sync_webapp_translation_session_activity():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    session_id = payload.get("session_id")
+    action = str(payload.get("action") or "").strip().lower()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not session_id:
+        return jsonify({"error": "session_id обязателен"}), 400
+    if action not in {"start", "resume", "pause", "stop"}:
+        return jsonify({"error": "Некорректное действие активности"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        result = sync_translation_session_activity(
+            user_id=int(user_id),
+            session_id=session_id,
+            action=action,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logging.warning(
+            "Failed to sync translation session activity: user_id=%s session_id=%s action=%s error=%s",
+            user_id,
+            session_id,
+            action,
+            exc,
+            exc_info=True,
+        )
+        return jsonify({"error": "Не удалось синхронизировать активное время"}), 500
+
+    if not result:
+        return jsonify({"error": "Сессия не найдена"}), 404
+
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/api/webapp/submit-group", methods=["POST"])
 def submit_webapp_group_message():
     payload = request.get_json(silent=True) or {}
@@ -23085,7 +23136,7 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 WITH week_users AS (
                     SELECT user_id
                     FROM (
@@ -23133,7 +23184,7 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                 translation_time AS (
                     SELECT
                         p.user_id,
-                        COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time)) / 60.0), 0.0) AS translation_minutes
+                        COALESCE(SUM({build_translation_session_minutes_sql('p')}), 0.0) AS translation_minutes
                     FROM bt_3_user_progress p
                     WHERE p.completed = TRUE
                       AND p.start_time::date BETWEEN %s AND %s
@@ -24040,7 +24091,7 @@ def _fetch_group_daily_summary_rows(*, target_date: date, cohort_user_ids: list[
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT
                     ds.user_id,
                     COALESCE(NULLIF(BTRIM(MAX(t.username)), ''), NULLIF(BTRIM(MAX(au.username)), ''), '') AS username,
@@ -24062,8 +24113,8 @@ def _fetch_group_daily_summary_rows(*, target_date: date, cohort_user_ids: list[
                 LEFT JOIN (
                     SELECT
                         user_id,
-                        AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0) AS avg_time,
-                        SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0) AS total_time
+                        AVG({build_translation_session_minutes_sql('p')}) AS avg_time,
+                        SUM({build_translation_session_minutes_sql('p')}) AS total_time
                     FROM bt_3_user_progress
                     WHERE completed = TRUE
                       AND start_time::date = %s
@@ -24110,7 +24161,7 @@ def _fetch_group_weekly_summary_rows(*, week_start: date, week_end: date, cohort
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT
                     t.user_id,
                     COALESCE(NULLIF(BTRIM(MAX(t.username)), ''), NULLIF(BTRIM(MAX(au.username)), ''), '') AS username,
@@ -24146,8 +24197,8 @@ def _fetch_group_weekly_summary_rows(*, week_start: date, week_end: date, cohort
                 LEFT JOIN (
                     SELECT
                         user_id,
-                        AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0) AS avg_time,
-                        SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0) AS total_time
+                        AVG({build_translation_session_minutes_sql('p')}) AS avg_time,
+                        SUM({build_translation_session_minutes_sql('p')}) AS total_time
                     FROM bt_3_user_progress
                     WHERE completed = TRUE
                       AND start_time::date BETWEEN %s AND %s

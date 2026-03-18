@@ -136,6 +136,97 @@ def _normalize_dictionary_origin_process(value: str | None) -> str:
     return "unknown"
 
 
+def build_translation_session_minutes_sql(alias: str = "p") -> str:
+    safe_alias = re.sub(r"[^A-Za-z0-9_]", "", str(alias or "p")) or "p"
+    return (
+        f"CASE "
+        f"WHEN {safe_alias}.active_seconds IS NOT NULL THEN "
+        f"(COALESCE({safe_alias}.active_seconds, 0)::numeric / 60.0) "
+        f"WHEN {safe_alias}.end_time IS NOT NULL AND {safe_alias}.start_time IS NOT NULL THEN "
+        f"(EXTRACT(EPOCH FROM ({safe_alias}.end_time - {safe_alias}.start_time)) / 60.0) "
+        f"ELSE 0 END"
+    )
+
+
+def sync_translation_session_activity(
+    *,
+    user_id: int,
+    session_id: int | str,
+    action: str,
+) -> dict[str, Any] | None:
+    normalized_action = str(action or "").strip().lower()
+    if normalized_action not in {"start", "resume", "pause", "stop"}:
+        raise ValueError(f"Unsupported translation session activity action: {action}")
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if normalized_action in {"start", "resume"}:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_user_progress
+                    SET
+                        active_seconds = COALESCE(active_seconds, 0),
+                        active_started_at = CASE
+                            WHEN completed = FALSE THEN NOW()
+                            ELSE active_started_at
+                        END,
+                        active_running = CASE
+                            WHEN completed = FALSE THEN TRUE
+                            ELSE COALESCE(active_running, FALSE)
+                        END
+                    WHERE user_id = %s
+                      AND session_id = %s
+                    RETURNING
+                        session_id,
+                        completed,
+                        COALESCE(active_seconds, 0),
+                        COALESCE(active_running, FALSE),
+                        active_started_at;
+                    """,
+                    (int(user_id), str(session_id)),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_user_progress
+                    SET
+                        active_seconds = COALESCE(active_seconds, 0)
+                            + CASE
+                                WHEN COALESCE(active_running, FALSE) = TRUE
+                                 AND active_started_at IS NOT NULL
+                                    THEN GREATEST(
+                                        0,
+                                        EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
+                                    )
+                                ELSE 0
+                            END,
+                        active_started_at = NULL,
+                        active_running = FALSE
+                    WHERE user_id = %s
+                      AND session_id = %s
+                    RETURNING
+                        session_id,
+                        completed,
+                        COALESCE(active_seconds, 0),
+                        COALESCE(active_running, FALSE),
+                        active_started_at;
+                    """,
+                    (int(user_id), str(session_id)),
+                )
+            row = cursor.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "session_id": str(row[0]),
+        "completed": bool(row[1]),
+        "active_seconds": int(row[2] or 0),
+        "active_running": bool(row[3]),
+        "active_started_at": row[4].isoformat() if row[4] else None,
+    }
+
+
 def _coerce_json_object(value) -> dict:
     if isinstance(value, dict):
         return dict(value)
@@ -1375,6 +1466,21 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_scope_state_updated
                 ON bt_3_webapp_scope_state (updated_at DESC);
             """)
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF to_regclass('public.bt_3_user_progress') IS NOT NULL THEN
+                        ALTER TABLE bt_3_user_progress
+                            ADD COLUMN IF NOT EXISTS active_seconds BIGINT;
+                        ALTER TABLE bt_3_user_progress
+                            ADD COLUMN IF NOT EXISTS active_started_at TIMESTAMPTZ;
+                        ALTER TABLE bt_3_user_progress
+                            ADD COLUMN IF NOT EXISTS active_running BOOLEAN;
+                    END IF;
+                END $$;
+                """
+            )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_group_contexts (
                     user_id BIGINT NOT NULL,

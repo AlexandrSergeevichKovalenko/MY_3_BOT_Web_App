@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from calendar import monthrange
 from typing import Any
 
-from backend.database import get_db_connection_context
+from backend.database import get_db_connection_context, build_translation_session_minutes_sql
 
 
 ALLOWED_PERIODS = {"day", "week", "month", "quarter", "half-year", "year", "all"}
@@ -263,8 +263,8 @@ def fetch_user_timeseries(
             )
             SELECT
                 {period_expr_p}::date AS period_start,
-                SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS total_time_min,
-                AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS avg_session_time_min
+                SUM({build_translation_session_minutes_sql('p')}) AS total_time_min,
+                AVG({build_translation_session_minutes_sql('p')}) AS avg_session_time_min
             FROM bt_3_user_progress p
             JOIN pair_sessions ps ON ps.session_id = p.session_id
             WHERE p.user_id = %s
@@ -416,8 +416,8 @@ def fetch_scope_timeseries(
             )
             SELECT
                 {period_expr_p}::date AS period_start,
-                SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS total_time_min,
-                AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS avg_session_time_min
+                SUM({build_translation_session_minutes_sql('p')}) AS total_time_min,
+                AVG({build_translation_session_minutes_sql('p')}) AS avg_session_time_min
             FROM bt_3_user_progress p
             JOIN pair_sessions ps ON ps.user_id = p.user_id AND ps.session_id = p.session_id
             WHERE p.user_id = ANY(%s)
@@ -542,8 +542,8 @@ def fetch_user_summary(
                   AND t.session_id IS NOT NULL
             )
             SELECT
-                SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS total_time_min,
-                AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS avg_session_time_min
+                SUM({build_translation_session_minutes_sql('p')}) AS total_time_min,
+                AVG({build_translation_session_minutes_sql('p')}) AS avg_session_time_min
             FROM bt_3_user_progress p
             JOIN pair_sessions ps ON ps.session_id = p.session_id
             WHERE user_id = %s
@@ -587,8 +587,8 @@ def fetch_user_summary(
         ),
         active_range AS (
             SELECT
-                GREATEST(%s::date, COALESCE(first_activity.first_activity_date, %s::date)) AS active_start,
-                LEAST(%s::date, CURRENT_DATE) AS active_end
+                COALESCE(first_activity.first_activity_date, CURRENT_DATE) AS active_start,
+                CURRENT_DATE AS active_end
             FROM first_activity
         ),
         translated_days AS (
@@ -598,7 +598,7 @@ def fetch_user_summary(
             WHERE t.user_id = %s
               AND COALESCE(t.source_lang, 'ru') = %s
               AND COALESCE(t.target_lang, 'de') = %s
-              AND ds.date BETWEEN %s AND %s
+              AND ds.date <= CURRENT_DATE
         ),
         missed_days AS (
             SELECT COUNT(*) AS missed_days
@@ -646,14 +646,9 @@ def fetch_user_summary(
                     user_id,
                     user_id,
                     user_id,
-                    start_date,
-                    start_date,
-                    end_date,
                     user_id,
                     source_lang,
                     target_lang,
-                    start_date,
-                    end_date,
                 ),
             )
             columns = [desc[0] for desc in cursor.description]
@@ -727,8 +722,8 @@ def fetch_scope_summary(
                   AND t.session_id IS NOT NULL
             )
             SELECT
-                SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS total_time_min,
-                AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS avg_session_time_min
+                SUM({build_translation_session_minutes_sql('p')}) AS total_time_min,
+                AVG({build_translation_session_minutes_sql('p')}) AS avg_session_time_min
             FROM bt_3_user_progress p
             JOIN pair_sessions ps ON ps.user_id = p.user_id AND ps.session_id = p.session_id
             WHERE p.user_id = ANY(%s)
@@ -772,8 +767,8 @@ def fetch_scope_summary(
         ),
         active_range AS (
             SELECT
-                GREATEST(%s::date, COALESCE(first_activity.first_activity_date, %s::date)) AS active_start,
-                LEAST(%s::date, CURRENT_DATE) AS active_end
+                COALESCE(first_activity.first_activity_date, CURRENT_DATE) AS active_start,
+                CURRENT_DATE AS active_end
             FROM first_activity
         ),
         translated_days AS (
@@ -783,7 +778,7 @@ def fetch_scope_summary(
             WHERE t.user_id = ANY(%s)
               AND COALESCE(t.source_lang, 'ru') = %s
               AND COALESCE(t.target_lang, 'de') = %s
-              AND ds.date BETWEEN %s AND %s
+              AND ds.date <= CURRENT_DATE
         ),
         missed_days AS (
             SELECT COUNT(*) AS missed_days
@@ -831,14 +826,9 @@ def fetch_scope_summary(
                     normalized_user_ids,
                     normalized_user_ids,
                     normalized_user_ids,
-                    start_date,
-                    start_date,
-                    end_date,
                     normalized_user_ids,
                     source_lang,
                     target_lang,
-                    start_date,
-                    end_date,
                 ),
             )
             columns = [desc[0] for desc in cursor.description]
@@ -911,7 +901,7 @@ def fetch_comparison_leaderboard(
             )
             SELECT
                 p.user_id,
-                SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS total_time_min
+                SUM({build_translation_session_minutes_sql('p')}) AS total_time_min
             FROM bt_3_user_progress p
             JOIN pair_sessions ps ON ps.user_id = p.user_id AND ps.session_id = p.session_id
             WHERE completed = TRUE

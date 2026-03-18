@@ -32,6 +32,7 @@ from backend.database import (
     get_skill_mapping_for_error,
     update_translation_check_item_result,
     delete_translation_draft_state,
+    build_translation_session_minutes_sql,
 )
 
 PHASE1_SKILL_ROLE_WEIGHTS = {
@@ -87,7 +88,21 @@ def finalize_open_translation_sessions() -> dict[str, int]:
             cursor.execute(
                 """
                 UPDATE bt_3_user_progress up
-                SET end_time = NOW(), completed = TRUE
+                SET
+                    active_seconds = COALESCE(up.active_seconds, 0)
+                        + CASE
+                            WHEN COALESCE(up.active_running, FALSE) = TRUE
+                             AND up.active_started_at IS NOT NULL
+                                THEN GREATEST(
+                                    0,
+                                    EXTRACT(EPOCH FROM (NOW() - up.active_started_at))::BIGINT
+                                )
+                            ELSE 0
+                        END,
+                    active_started_at = NULL,
+                    active_running = FALSE,
+                    end_time = NOW(),
+                    completed = TRUE
                 WHERE up.completed = FALSE
                   AND EXISTS (
                     SELECT 1
@@ -650,7 +665,7 @@ def get_active_session_type(user_id: int) -> dict[str, Any]:
             )
             rows = cursor.fetchall() or []
             if not rows:
-                return {"type": "none"}
+                return {"type": "none", "session_id": None}
 
             for row in rows:
                 session_id = row[0]
@@ -667,7 +682,7 @@ def get_active_session_type(user_id: int) -> dict[str, Any]:
                 )
                 story_row = cursor.fetchone()
                 if story_row:
-                    return {"type": "story", "story_id": story_row[0]}
+                    return {"type": "story", "story_id": story_row[0], "session_id": str(session_id)}
 
                 cursor.execute(
                     """
@@ -679,12 +694,26 @@ def get_active_session_type(user_id: int) -> dict[str, Any]:
                 )
                 sentence_count = int((cursor.fetchone() or [0])[0] or 0)
                 if sentence_count > 0:
-                    return {"type": "regular"}
+                    return {"type": "regular", "session_id": str(session_id)}
 
                 cursor.execute(
                     """
                     UPDATE bt_3_user_progress
-                    SET end_time = NOW(), completed = TRUE
+                    SET
+                        active_seconds = COALESCE(active_seconds, 0)
+                            + CASE
+                                WHEN COALESCE(active_running, FALSE) = TRUE
+                                 AND active_started_at IS NOT NULL
+                                    THEN GREATEST(
+                                        0,
+                                        EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
+                                    )
+                                ELSE 0
+                            END,
+                        active_started_at = NULL,
+                        active_running = FALSE,
+                        end_time = NOW(),
+                        completed = TRUE
                     WHERE user_id = %s AND session_id = %s;
                     """,
                     (user_id, session_id),
@@ -695,7 +724,7 @@ def get_active_session_type(user_id: int) -> dict[str, Any]:
                     session_id,
                 )
 
-            return {"type": "none"}
+            return {"type": "none", "session_id": None}
 
 
 async def start_story_session_webapp(
@@ -719,7 +748,21 @@ async def start_story_session_webapp(
         cursor.execute(
             """
             UPDATE bt_3_user_progress
-            SET end_time = NOW(), completed = TRUE
+            SET
+                active_seconds = COALESCE(active_seconds, 0)
+                    + CASE
+                        WHEN COALESCE(active_running, FALSE) = TRUE
+                         AND active_started_at IS NOT NULL
+                            THEN GREATEST(
+                                0,
+                                EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
+                            )
+                        ELSE 0
+                    END,
+                active_started_at = NULL,
+                active_running = FALSE,
+                end_time = NOW(),
+                completed = TRUE
             WHERE user_id = %s AND completed = FALSE;
             """,
             (user_id,),
@@ -728,8 +771,16 @@ async def start_story_session_webapp(
         session_id = int(hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest(), 16) % (10**12)
         cursor.execute(
             """
-            INSERT INTO bt_3_user_progress (session_id, user_id, username, start_time, completed)
-            VALUES (%s, %s, %s, NOW(), FALSE);
+            INSERT INTO bt_3_user_progress (
+                session_id,
+                user_id,
+                username,
+                start_time,
+                active_seconds,
+                active_running,
+                completed
+            )
+            VALUES (%s, %s, %s, NOW(), 0, FALSE, FALSE);
             """,
             (session_id, user_id, username),
         )
@@ -2222,7 +2273,11 @@ async def start_translation_session_webapp(
                 cursor.execute(
                     """
                     UPDATE bt_3_user_progress
-                    SET completed = FALSE, end_time = NULL
+                    SET
+                        completed = FALSE,
+                        end_time = NULL,
+                        active_started_at = NULL,
+                        active_running = FALSE
                     WHERE user_id = %s AND session_id = %s;
                     """,
                     (user_id, recovered_session_id),
@@ -2266,7 +2321,21 @@ async def start_translation_session_webapp(
                 cursor.execute(
                     """
                     UPDATE bt_3_user_progress
-                    SET end_time = NOW(), completed = TRUE
+                    SET
+                        active_seconds = COALESCE(active_seconds, 0)
+                            + CASE
+                                WHEN COALESCE(active_running, FALSE) = TRUE
+                                 AND active_started_at IS NOT NULL
+                                    THEN GREATEST(
+                                        0,
+                                        EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
+                                    )
+                                ELSE 0
+                            END,
+                        active_started_at = NULL,
+                        active_running = FALSE,
+                        end_time = NOW(),
+                        completed = TRUE
                     WHERE user_id = %s AND session_id = %s;
                     """,
                     (user_id, active_session_id),
@@ -2276,7 +2345,21 @@ async def start_translation_session_webapp(
         cursor.execute(
             """
             UPDATE bt_3_user_progress
-            SET end_time = NOW(), completed = TRUE
+            SET
+                active_seconds = COALESCE(active_seconds, 0)
+                    + CASE
+                        WHEN COALESCE(active_running, FALSE) = TRUE
+                         AND active_started_at IS NOT NULL
+                            THEN GREATEST(
+                                0,
+                                EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
+                            )
+                        ELSE 0
+                    END,
+                active_started_at = NULL,
+                active_running = FALSE,
+                end_time = NOW(),
+                completed = TRUE
             WHERE user_id = %s AND start_time::date < CURRENT_DATE AND completed = FALSE;
             """,
             (user_id,),
@@ -2285,8 +2368,16 @@ async def start_translation_session_webapp(
         session_id = int(hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest(), 16) % (10**12)
         cursor.execute(
             """
-            INSERT INTO bt_3_user_progress (session_id, user_id, username, start_time, completed)
-            VALUES (%s, %s, %s, NOW(), FALSE);
+            INSERT INTO bt_3_user_progress (
+                session_id,
+                user_id,
+                username,
+                start_time,
+                active_seconds,
+                active_running,
+                completed
+            )
+            VALUES (%s, %s, %s, NOW(), 0, FALSE, FALSE);
             """,
             (session_id, user_id, username),
         )
@@ -4593,7 +4684,21 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
         cursor.execute(
             """
             UPDATE bt_3_user_progress
-            SET end_time = NOW(), completed = TRUE
+            SET
+                active_seconds = COALESCE(active_seconds, 0)
+                    + CASE
+                        WHEN COALESCE(active_running, FALSE) = TRUE
+                         AND active_started_at IS NOT NULL
+                            THEN GREATEST(
+                                0,
+                                EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
+                            )
+                        ELSE 0
+                    END,
+                active_started_at = NULL,
+                active_running = FALSE,
+                end_time = NOW(),
+                completed = TRUE
             WHERE user_id = %s AND completed = FALSE;
             """,
             (user_id,),
@@ -4642,7 +4747,7 @@ def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 WITH latest_translations AS (
                     SELECT
                         sentence_id,
@@ -4676,8 +4781,8 @@ def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
                     ON ds.id = lt.sentence_id
                 LEFT JOIN (
                     SELECT user_id,
-                        AVG(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS avg_time,
-                        SUM(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS total_time
+                        AVG({build_translation_session_minutes_sql('p')}) AS avg_time,
+                        SUM({build_translation_session_minutes_sql('p')}) AS total_time
                     FROM bt_3_user_progress
                     WHERE completed = TRUE
                         AND start_time::date = CURRENT_DATE

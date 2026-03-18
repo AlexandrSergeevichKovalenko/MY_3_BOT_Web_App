@@ -2612,6 +2612,12 @@ body {
   height: 280px;
 }
 
+.analytics-compare-hint {
+  margin: -2px 4px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .webapp-economics {
   background: linear-gradient(145deg, rgba(26, 31, 52, 0.96), rgba(11, 17, 36, 0.96));
   border: 1px solid rgba(251, 191, 36, 0.16);
