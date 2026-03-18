@@ -8613,6 +8613,7 @@ async def _send_quiz_result_private(
     ])
 
     reply_markup = None
+    fallback_reply_markup = None
     question_key = None
     feel_source_text = (de_text or correct_text or "").strip()
     feel_target_text = (ru_text or fallback_ru or "").strip()
@@ -8630,36 +8631,72 @@ async def _send_quiz_result_private(
         if len(pending_quiz_feel_requests) > 500:
             oldest_key = next(iter(pending_quiz_feel_requests))
             pending_quiz_feel_requests.pop(oldest_key, None)
-        question_key = _store_pending_quiz_question_request(
-            user_id=int(user_id),
-            source_text=feel_source_text,
-            target_text=feel_target_text,
-            source_lang="de",
-            target_lang="ru",
-        )
-        reply_markup = _build_quiz_result_keyboard(feel_key=feel_key, question_key=question_key)
+        fallback_reply_markup = _build_quiz_result_keyboard(feel_key=feel_key, question_key=None)
+        reply_markup = fallback_reply_markup
+        try:
+            question_key = _store_pending_quiz_question_request(
+                user_id=int(user_id),
+                source_text=feel_source_text,
+                target_text=feel_target_text,
+                source_lang="de",
+                target_lang="ru",
+            )
+            reply_markup = _build_quiz_result_keyboard(feel_key=feel_key, question_key=question_key)
+        except Exception:
+            logging.exception("❌ Не удалось подготовить кнопку quiz follow-up user_id=%s", user_id)
+            reply_markup = fallback_reply_markup
 
     max_attempts = 2
+    send_variants = []
+    if reply_markup is not None:
+        send_variants.append(("full_markup", reply_markup))
+    if fallback_reply_markup is not None and fallback_reply_markup is not reply_markup:
+        send_variants.append(("feel_only_markup", fallback_reply_markup))
+    send_variants.append(("no_markup", None))
     for attempt in range(max_attempts):
-        try:
-            await context.bot.send_message(
-                chat_id=int(user_id),
-                text="\n".join(lines),
-                reply_markup=reply_markup,
-            )
-            return True
-        except RetryAfter as exc:
-            delay = max(1, int(getattr(exc, "retry_after", 1)))
-            logging.warning("⚠️ RetryAfter for quiz private result user_id=%s, sleep=%ss", user_id, delay)
-            await asyncio.sleep(delay)
-        except TimedOut:
-            if attempt + 1 < max_attempts:
-                await asyncio.sleep(1.0)
+        for variant_name, variant_markup in send_variants:
+            try:
+                await context.bot.send_message(
+                    chat_id=int(user_id),
+                    text="\n".join(lines),
+                    reply_markup=variant_markup,
+                )
+                return True
+            except RetryAfter as exc:
+                delay = max(1, int(getattr(exc, "retry_after", 1)))
+                logging.warning(
+                    "⚠️ RetryAfter for quiz private result user_id=%s variant=%s sleep=%ss",
+                    user_id,
+                    variant_name,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                break
+            except TimedOut:
+                if attempt + 1 < max_attempts:
+                    await asyncio.sleep(1.0)
+                    break
+                logging.warning("⚠️ Timeout sending quiz private result user_id=%s variant=%s", user_id, variant_name)
+            except BadRequest as exc:
+                logging.warning(
+                    "⚠️ BadRequest sending quiz private result user_id=%s variant=%s: %s",
+                    user_id,
+                    variant_name,
+                    exc,
+                    exc_info=True,
+                )
                 continue
-            logging.warning("⚠️ Timeout sending quiz private result user_id=%s", user_id)
-        except Exception as exc:
-            logging.warning(f"⚠️ Не удалось отправить результат квиза в личку user_id={user_id}: {exc}")
-            return False
+            except Exception as exc:
+                logging.warning(
+                    "⚠️ Не удалось отправить результат квиза в личку user_id=%s variant=%s: %s",
+                    user_id,
+                    variant_name,
+                    exc,
+                    exc_info=True,
+                )
+                if variant_markup is not None:
+                    continue
+                return False
     return False
 
 
@@ -9800,16 +9837,46 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     poll_answer = update.poll_answer
+    if not poll_answer:
+        logging.warning("⚠️ handle_poll_answer called without poll_answer payload")
+        return
+    logging.info(
+        "🗳️ Poll answer received: poll_id=%s user_id=%s option_ids=%s",
+        poll_answer.poll_id,
+        getattr(getattr(poll_answer, "user", None), "id", None),
+        list(getattr(poll_answer, "option_ids", []) or []),
+    )
     quiz_data = active_quizzes.get(poll_answer.poll_id)
+    quiz_source = "memory" if quiz_data else ""
     if not quiz_data:
         try:
             quiz_data = await asyncio.to_thread(get_active_quiz, str(poll_answer.poll_id))
             if quiz_data:
                 active_quizzes[poll_answer.poll_id] = dict(quiz_data)
+                quiz_source = "db"
         except Exception:
             logging.warning("⚠️ Не удалось получить active quiz из БД", exc_info=True)
-    if not quiz_data or not poll_answer.option_ids:
+    if not quiz_data:
+        logging.warning(
+            "⚠️ Poll answer ignored: active quiz not found poll_id=%s user_id=%s",
+            poll_answer.poll_id,
+            getattr(getattr(poll_answer, "user", None), "id", None),
+        )
         return
+    if not poll_answer.option_ids:
+        logging.warning(
+            "⚠️ Poll answer ignored: empty option_ids poll_id=%s user_id=%s quiz_source=%s",
+            poll_answer.poll_id,
+            getattr(getattr(poll_answer, "user", None), "id", None),
+            quiz_source or "unknown",
+        )
+        return
+    logging.info(
+        "🗳️ Poll answer resolved: poll_id=%s user_id=%s quiz_source=%s",
+        poll_answer.poll_id,
+        getattr(getattr(poll_answer, "user", None), "id", None),
+        quiz_source or "memory",
+    )
 
     selected_index = poll_answer.option_ids[0]
     options = quiz_data.get("options") or []
@@ -9851,12 +9918,25 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
     except Exception:
         logging.warning("⚠️ Не удалось записать quiz attempt user_id=%s poll_id=%s", poll_answer.user.id, poll_answer.poll_id, exc_info=True)
+    logging.info(
+        "📨 Sending quiz private result: poll_id=%s user_id=%s is_correct=%s selected_index=%s",
+        poll_answer.poll_id,
+        poll_answer.user.id,
+        bool(is_correct),
+        int(selected_index),
+    )
     sent_private = await _send_quiz_result_private(
         context=context,
         user_id=poll_answer.user.id,
         quiz_data=quiz_data,
         is_correct=is_correct,
         selected_text=selected_text,
+    )
+    logging.info(
+        "📨 Quiz private result completed: poll_id=%s user_id=%s sent_private=%s",
+        poll_answer.poll_id,
+        poll_answer.user.id,
+        bool(sent_private),
     )
     if not sent_private:
         await context.bot.send_message(
