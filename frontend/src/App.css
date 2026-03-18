@@ -16381,6 +16381,13 @@ body {
   color: #7a6854;
 }
 
+.webapp-page.is-theme-light .flashcard-preview-ru-hint {
+  font-size: clamp(15px, 3.2vw, 18px);
+  line-height: 1.42;
+  color: #1f1a14;
+  font-weight: 500;
+}
+
 .webapp-page.is-theme-light .skill-training-section textarea {
   border-color: #d2c2aa;
   background: #fff9f0;
