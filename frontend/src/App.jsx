@@ -13651,15 +13651,16 @@ function AppInner() {
     const lookupLang = options.lookupLang || '';
     const selectionTypeOption = String(options.selectionType || '').trim();
     const stopPropagation = Boolean(options.stopPropagation);
+    const keyPrefix = options.keyPrefix || 'w';
     if (!text) return null;
     return text.split(/\s+/).map((word, index) => {
       const cleaned = word.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё'’-]/g, '');
       if (!cleaned) {
-        return <span key={`w-${index}`}>{word} </span>;
+        return <span key={`${keyPrefix}-${index}`}>{word} </span>;
       }
       return (
         <span
-          key={`w-${index}`}
+          key={`${keyPrefix}-${index}`}
           className={className}
           onClick={(event) => {
             if (stopPropagation) {
@@ -14136,6 +14137,29 @@ function AppInner() {
       .replace(/\n/g, '<br />');
   };
 
+  const stripMarkdownEmphasis = (text) => String(text || '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1');
+
+  const renderRichClickableText = (text, options = {}) => {
+    const source = String(text || '');
+    if (!source) return null;
+    const keyPrefix = options.keyPrefix || 'rich';
+    const parts = source.split(/(\*\*.+?\*\*|\*.+?\*)/g).filter((part) => part !== '');
+    return parts.map((part, index) => {
+      const isBold = /^\*\*.+\*\*$/.test(part) || /^\*.+\*$/.test(part);
+      const content = isBold ? part.replace(/^\*\*?/, '').replace(/\*\*?$/, '') : part;
+      const rendered = renderClickableText(content, {
+        ...options,
+        keyPrefix: `${keyPrefix}-${index}`,
+      });
+      if (isBold) {
+        return <strong key={`${keyPrefix}-part-${index}`}>{rendered}</strong>;
+      }
+      return <span key={`${keyPrefix}-part-${index}`}>{rendered}</span>;
+    });
+  };
+
   const normalizeStoryFeedbackLine = (line) => String(line || '')
     .replace(/\u00a0/g, ' ')
     .replace(/^\s+/, '')
@@ -14376,7 +14400,10 @@ function AppInner() {
         <span className="webapp-feedback-label">{label}</span>
         {String(value || '').trim() ? (
           <span className="webapp-feedback-value">
-            {renderClickableText(String(value || '').trim(), clickableOptions)}
+            {renderRichClickableText(String(value || '').trim(), {
+              ...clickableOptions,
+              keyPrefix: `${key}-value`,
+            })}
           </span>
         ) : null}
       </div>
@@ -14384,51 +14411,52 @@ function AppInner() {
 
     return lines.map((rawLine, index) => {
       const line = String(rawLine || '').trim();
+      const normalizedLine = stripMarkdownEmphasis(line);
       if (!line) {
         return <div key={`exp-spacer-${index}`} className="webapp-explanation-spacer" aria-hidden="true" />;
       }
 
       const matchers = [
         {
-          pattern: /^Error\s+(\d+):\s*(.*)$/i,
+          pattern: /^[^A-Za-z0-9]*Error\s+(\d+):?\s*(.*)$/i,
           render: (match) => renderLabeledLine(`exp-error-${index}`, `🔴 Error ${match[1]}:`, match[2]),
         },
         {
-          pattern: /^Original russian sentence:\*?\s*(.*)$/i,
+          pattern: /^[^A-Za-z0-9]*Original russian sentence:?\s*(.*)$/i,
           render: (match) => renderLabeledLine(`exp-orig-${index}`, '🟢 Original russian sentence:', match[1]),
         },
         {
-          pattern: /^User translation:\*?\s*(.*)$/i,
+          pattern: /^[^A-Za-z0-9]*User translation:?\s*(.*)$/i,
           render: (match) => renderLabeledLine(`exp-user-${index}`, '🟣 User translation:', match[1]),
         },
         {
-          pattern: /^Correct Translation:\*?\s*(.*)$/i,
-          render: (match) => renderLabeledLine(`exp-correct-${index}`, '🟣 Correct Translation:', match[1]),
+          pattern: /^[^A-Za-z0-9]*Correct Translation:?\s*(.*)$/i,
+          render: (match) => renderLabeledLine(`exp-correct-${index}`, '✅ Correct Translation:', match[1]),
         },
         {
-          pattern: /^Grammar Explanation:\*?\s*(.*)$/i,
+          pattern: /^[^A-Za-z0-9]*Grammar Explanation:?\s*(.*)$/i,
           render: (match) => renderLabeledLine(`exp-grammar-${index}`, '🟡 Grammar Explanation:', match[1]),
         },
         {
-          pattern: /^(?:Alternative Sentence Construction|Alternative Construction):\*?\s*(.*)$/i,
+          pattern: /^[^A-Za-z0-9]*(?:Alternative Sentence Construction|Alternative Construction):?\s*(.*)$/i,
           render: (match) => renderLabeledLine(`exp-alt-${index}`, '🔵 Alternative Sentence Construction:', match[1]),
         },
         {
-          pattern: /^Synonyms:\*?\s*(.*)$/i,
+          pattern: /^[^A-Za-z0-9]*Synonyms:?\s*(.*)$/i,
           render: (match) => renderLabeledLine(`exp-syn-${index}`, '➡️ Synonyms:', match[1]),
         },
         {
-          pattern: /^Original Word:\*?\s*(.*)$/i,
+          pattern: /^[^A-Za-z0-9]*Original Word:?\s*(.*)$/i,
           render: (match) => renderLabeledLine(`exp-word-${index}`, '• Original Word:', match[1]),
         },
         {
-          pattern: /^Possible Synonyms:\*?\s*(.*)$/i,
+          pattern: /^[^A-Za-z0-9]*Possible Synonyms:?\s*(.*)$/i,
           render: (match) => renderLabeledLine(`exp-psyn-${index}`, '• Possible Synonyms:', match[1]),
         },
       ];
 
       for (const matcher of matchers) {
-        const match = line.match(matcher.pattern);
+        const match = normalizedLine.match(matcher.pattern);
         if (match) {
           return matcher.render(match);
         }
@@ -14436,7 +14464,10 @@ function AppInner() {
 
       return (
         <div key={`exp-${index}`} className="webapp-feedback-line webapp-explanation-line">
-          {renderClickableText(line, clickableOptions)}
+          {renderRichClickableText(line, {
+            ...clickableOptions,
+            keyPrefix: `exp-${index}`,
+          })}
         </div>
       );
     });

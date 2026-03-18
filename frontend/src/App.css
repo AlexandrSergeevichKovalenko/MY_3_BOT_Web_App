@@ -14211,6 +14211,17 @@ body {
 
 .webapp-section.webapp-section-translations .webapp-feedback-label {
   font-weight: 700;
+  color: var(--tr-text-title);
+}
+
+.webapp-section.webapp-section-translations .webapp-feedback-value {
+  color: var(--tr-text-primary);
+}
+
+.webapp-section.webapp-section-translations .webapp-result-text strong,
+.webapp-section.webapp-section-translations .webapp-explanation strong {
+  color: var(--tr-text-title);
+  font-weight: 800;
 }
 
 .webapp-section.webapp-section-translations .translation-feedback-label-group {
@@ -14245,9 +14256,24 @@ body {
 
 .webapp-section.webapp-section-translations .webapp-result-text .clickable-word,
 .webapp-section.webapp-section-translations .webapp-explanation .clickable-word {
-  color: var(--tr-primary);
-  font-weight: 600;
+  color: inherit;
+  font-weight: inherit;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 0.08em;
+  text-decoration-color: color-mix(in srgb, var(--tr-primary) 58%, transparent);
   text-underline-offset: 0.16em;
+}
+
+.webapp-section.webapp-section-translations .webapp-result-text .clickable-word:hover,
+.webapp-section.webapp-section-translations .webapp-explanation .clickable-word:hover {
+  color: var(--tr-text-title);
+  text-decoration-color: var(--tr-primary);
+}
+
+.webapp-section.webapp-section-translations .webapp-result-text strong .clickable-word,
+.webapp-section.webapp-section-translations .webapp-explanation strong .clickable-word {
+  font-weight: 800;
 }
 
 .webapp-section.webapp-section-translations .story-result {
@@ -14299,6 +14325,12 @@ body {
 }
 
 @media (max-width: 700px) {
+  .webapp-section.webapp-section-translations {
+    padding: 14px 10px 16px;
+    gap: 16px;
+    border-radius: 22px;
+  }
+
   .webapp-section.webapp-section-translations .translations-title-row {
     grid-template-columns: 1fr;
   }
@@ -14306,12 +14338,37 @@ body {
   .webapp-section.webapp-section-translations .translations-title-side {
     justify-content: flex-start;
   }
+
+  .webapp-section.webapp-section-translations .webapp-translation-start,
+  .webapp-section.webapp-section-translations .webapp-translation-item,
+  .webapp-section.webapp-section-translations .webapp-result-card {
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .webapp-section.webapp-section-translations .translation-form {
+    gap: 16px;
+  }
+
+  .webapp-section.webapp-section-translations .webapp-translation-list {
+    gap: 12px;
+  }
+
+  .webapp-section.webapp-section-translations .webapp-result-text,
+  .webapp-section.webapp-section-translations .webapp-explanation {
+    padding: 13px 14px;
+    border-radius: 14px;
+  }
+
+  .webapp-section.webapp-section-translations .webapp-translation-item textarea {
+    padding: 11px 12px;
+  }
 }
 
 @media (max-width: 420px) {
   .webapp-section.webapp-section-translations {
-    padding: 20px;
-    gap: 20px;
+    padding: 12px 8px 14px;
+    gap: 14px;
   }
 
   .webapp-section.webapp-section-translations .translations-title-row {
@@ -14358,6 +14415,22 @@ body {
   .webapp-section.webapp-section-translations .translations-corner-logo {
     width: 44px;
     height: 44px;
+  }
+
+  .webapp-section.webapp-section-translations .webapp-translation-start,
+  .webapp-section.webapp-section-translations .webapp-translation-item,
+  .webapp-section.webapp-section-translations .webapp-result-card {
+    padding: 12px;
+  }
+
+  .webapp-section.webapp-section-translations .webapp-result-text,
+  .webapp-section.webapp-section-translations .webapp-explanation {
+    padding: 12px;
+  }
+
+  .webapp-section.webapp-section-translations .translation-sentence,
+  .webapp-section.webapp-section-translations .webapp-translation-item textarea {
+    font-size: 16px;
   }
 }
 
