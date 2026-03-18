@@ -845,6 +845,7 @@ function AppInner() {
   const [selectedCollocations, setSelectedCollocations] = useState([]);
   const [flashcardExitSummary, setFlashcardExitSummary] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
+  const [dictionaryShareLoading, setDictionaryShareLoading] = useState(false);
   const [dictionaryPdfUrl, setDictionaryPdfUrl] = useState('');
   const [dictionaryPdfName, setDictionaryPdfName] = useState('dictionary.pdf');
   const [youtubeInput, setYoutubeInput] = useState('');
@@ -10846,6 +10847,67 @@ function AppInner() {
     const { sourceText, targetText } = getDictionarySourceTarget(item, direction);
     return targetText || sourceText || '';
   }
+  const formatDictionaryExampleText = (example) => {
+    if (typeof example === 'string') {
+      return String(example || '').trim();
+    }
+    if (example && typeof example === 'object') {
+      const source = String(example.source || '').trim();
+      const target = String(example.target || '').trim();
+      if (source && target) return `${source} → ${target}`;
+      return source || target;
+    }
+    return '';
+  };
+  const buildDictionaryShareText = (item) => {
+    const { sourceText, targetText } = getDictionarySourceTarget(item, dictionaryDirection);
+    const lines = [
+      `${tr('Перевод', 'Uebersetzung')}: ${targetText || '—'}`,
+      `${tr('Исходное', 'Ausgangstext')}: ${sourceText || '—'}`,
+      `${tr('Направление', 'Richtung')}: ${getLookupDirectionLabel()}`,
+    ];
+    const partOfSpeech = String(item?.part_of_speech || '').trim();
+    const article = String(item?.article || '').trim();
+    const provider = String(item?.provider || '').trim();
+    if (partOfSpeech) {
+      lines.push(`${tr('Часть речи', 'Wortart')}: ${partOfSpeech}`);
+    }
+    if (article) {
+      lines.push(`${tr('Артикль', 'Artikel')}: ${article}`);
+    }
+    if (provider) {
+      lines.push(`${tr('Источник', 'Quelle')}: ${provider.toUpperCase()}`);
+    }
+    const formRows = getDictionaryFormRows(item).slice(0, 5);
+    if (formRows.length > 0) {
+      lines.push('');
+      lines.push(`${tr('Формы', 'Formen')}:`);
+      formRows.forEach((row) => {
+        lines.push(`${row.label}: ${row.value}`);
+      });
+    }
+    const examples = Array.isArray(item?.usage_examples)
+      ? item.usage_examples.map(formatDictionaryExampleText).filter(Boolean).slice(0, 4)
+      : [];
+    if (examples.length > 0) {
+      lines.push('');
+      lines.push(`${tr('Примеры', 'Beispiele')}:`);
+      examples.forEach((example) => {
+        lines.push(`• ${example}`);
+      });
+    }
+    return lines.join('\n').trim();
+  };
+  const getDictionaryShareFileName = (item) => {
+    const translation = getDictionaryDisplayedTranslation(item, dictionaryDirection) || dictionaryWord.trim() || 'dictionary_card';
+    const sanitized = String(translation)
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 48);
+    return `${sanitized || 'dictionary_card'}.pdf`;
+  };
   const getFormValue = (forms, keys) => {
     if (!forms || typeof forms !== 'object') return '';
     const candidates = Array.isArray(keys) ? keys : [keys];
@@ -14072,6 +14134,103 @@ function AppInner() {
       setDictionaryError(`${tr('Ошибка выгрузки PDF', 'PDF-Exportfehler')}: ${error.message}`);
     } finally {
       setExportLoading(false);
+    }
+  };
+
+  const handleShareDictionaryCard = async () => {
+    if (!initData) {
+      setDictionaryError(initDataMissingMsg);
+      return;
+    }
+    if (!dictionaryResult) {
+      setDictionaryError(tr('Сначала выполните перевод в словаре.', 'Fuehre zuerst eine Uebersetzung im Woerterbuch aus.'));
+      return;
+    }
+    setDictionaryShareLoading(true);
+    setDictionaryError('');
+    setDictionarySaved('');
+    try {
+      const response = await fetch('/api/webapp/dictionary/export/card-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          item: {
+            ...dictionaryResult,
+            direction: dictionaryDirection,
+            language_pair: resolveLanguagePairForUI(dictionaryLanguagePair),
+          },
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка подготовки карточки', 'Fehler beim Vorbereiten der Karte'));
+      }
+
+      const blob = await response.blob();
+      const fileName = getDictionaryShareFileName(dictionaryResult);
+      const shareText = buildDictionaryShareText(dictionaryResult);
+      const nav = typeof navigator !== 'undefined' ? navigator : null;
+      const file = typeof File !== 'undefined' ? new File([blob], fileName, { type: 'application/pdf' }) : null;
+
+      if (nav?.share && file) {
+        try {
+          const sharePayload = {
+            title: tr('Карточка словаря', 'Woerterbuchkarte'),
+            text: shareText,
+            files: [file],
+          };
+          if (!nav.canShare || nav.canShare({ files: [file] })) {
+            await nav.share(sharePayload);
+            setDictionarySaved(tr('Карточка готова к отправке ✅', 'Karte ist zum Teilen bereit ✅'));
+            return;
+          }
+        } catch (error) {
+          if (String(error?.name || '') === 'AbortError') {
+            return;
+          }
+          throw error;
+        }
+      }
+
+      let copied = false;
+      if (nav?.clipboard?.writeText) {
+        try {
+          await nav.clipboard.writeText(shareText);
+          copied = true;
+        } catch (_error) {
+          copied = false;
+        }
+      }
+
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => {
+        try {
+          window.URL.revokeObjectURL(url);
+        } catch (_error) {
+          // ignore revoke errors
+        }
+      }, 15000);
+
+      setDictionarySaved(
+        copied
+          ? tr('PDF карточки скачан, текст скопирован ✅', 'PDF der Karte wurde geladen, Text kopiert ✅')
+          : tr('PDF карточки скачан ✅', 'PDF der Karte wurde geladen ✅')
+      );
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось подготовить карточку для отправки.',
+        'Karte konnte nicht zum Teilen vorbereitet werden.',
+      );
+      setDictionaryError(`${tr('Ошибка шаринга', 'Share-Fehler')}: ${friendly}`);
+    } finally {
+      setDictionaryShareLoading(false);
     }
   };
 
@@ -18768,18 +18927,7 @@ function AppInner() {
                             <strong>{tr('Примеры:', 'Beispiele:')}</strong>
                             <ul>
                               {dictionaryResult.usage_examples.map((example, index) => {
-                                let exampleText = '';
-                                if (typeof example === 'string') {
-                                  exampleText = example.trim();
-                                } else if (example && typeof example === 'object') {
-                                  const source = String(example.source || '').trim();
-                                  const target = String(example.target || '').trim();
-                                  if (source && target) {
-                                    exampleText = `${source} → ${target}`;
-                                  } else {
-                                    exampleText = source || target;
-                                  }
-                                }
+                                const exampleText = formatDictionaryExampleText(example);
                                 if (!exampleText) return null;
                                 return <li key={`example-${index}-${exampleText}`}>{exampleText}</li>;
                               })}
@@ -18794,6 +18942,29 @@ function AppInner() {
                             disabled={dictionaryLoading || !dictionaryResult}
                           >
                             {tr('Добавить слово в словарь', 'Wort zum Woerterbuch hinzufuegen')}
+                          </button>
+                          <button
+                            className="secondary-button dictionary-share-button"
+                            type="button"
+                            onClick={handleShareDictionaryCard}
+                            disabled={dictionaryLoading || dictionaryShareLoading || !dictionaryResult}
+                            aria-label={tr('Поделиться карточкой', 'Karte teilen')}
+                            title={tr('Поделиться карточкой', 'Karte teilen')}
+                          >
+                            {dictionaryShareLoading ? (
+                              <span className="tts-mini-spinner" aria-hidden="true" />
+                            ) : (
+                              <svg viewBox="0 0 24 24" aria-hidden="true" className="dictionary-share-icon">
+                                <path
+                                  d="M12 3v10m0-10 4 4m-4-4-4 4M7 10v8h10v-8"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            )}
                           </button>
                         </div>
                       </div>

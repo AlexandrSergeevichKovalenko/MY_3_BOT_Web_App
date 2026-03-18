@@ -17974,6 +17974,267 @@ def _wrap_text(text: str, max_chars: int = 80) -> list[str]:
     return lines
 
 
+def _build_dictionary_card_example_lines(examples: Any, *, limit: int = 4) -> list[str]:
+    if isinstance(examples, str):
+        normalized_examples = [examples]
+    elif isinstance(examples, list):
+        normalized_examples = examples
+    else:
+        normalized_examples = []
+
+    result: list[str] = []
+    for raw_example in normalized_examples:
+        example_text = ""
+        if isinstance(raw_example, str):
+            example_text = raw_example.strip()
+        elif isinstance(raw_example, dict):
+            source = str(raw_example.get("source") or "").strip()
+            target = str(raw_example.get("target") or "").strip()
+            if source and target:
+                example_text = f"{source} → {target}"
+            else:
+                example_text = source or target
+        if example_text:
+            result.append(example_text)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _build_dictionary_card_pdf(
+    *,
+    item: dict[str, Any],
+    source_lang: str,
+    target_lang: str,
+) -> tuple[BytesIO, str]:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen import canvas
+
+    payload = item if isinstance(item, dict) else {}
+    response_json = payload.get("response_json")
+    if isinstance(response_json, str):
+        try:
+            response_json = json.loads(response_json)
+        except Exception:
+            response_json = {}
+    if not isinstance(response_json, dict):
+        response_json = {}
+
+    direction_raw = str(payload.get("direction") or response_json.get("direction") or "").strip().lower()
+    direction_pair = _parse_direction_pair(direction_raw)
+    item_source_lang = _normalize_short_lang_code(
+        payload.get("source_lang") or response_json.get("source_lang"),
+        fallback=direction_pair[0] if direction_pair else source_lang,
+    )
+    item_target_lang = _normalize_short_lang_code(
+        payload.get("target_lang") or response_json.get("target_lang"),
+        fallback=direction_pair[1] if direction_pair else target_lang,
+    )
+    if not item_source_lang:
+        item_source_lang = source_lang
+    if not item_target_lang:
+        item_target_lang = target_lang
+    if item_source_lang == item_target_lang:
+        item_source_lang = source_lang
+        item_target_lang = target_lang
+
+    source_text, target_text, word_ru, word_de, translation_de, translation_ru = _align_dictionary_legacy_ru_de_columns(
+        source_lang=item_source_lang,
+        target_lang=item_target_lang,
+        source_text=str(payload.get("source_text") or response_json.get("source_text") or ""),
+        target_text=str(payload.get("target_text") or response_json.get("target_text") or ""),
+        word_ru=str(payload.get("word_ru") or response_json.get("word_ru") or ""),
+        word_de=str(payload.get("word_de") or response_json.get("word_de") or ""),
+        translation_de=str(payload.get("translation_de") or response_json.get("translation_de") or ""),
+        translation_ru=str(payload.get("translation_ru") or response_json.get("translation_ru") or ""),
+    )
+
+    def _lang_label(code: str) -> str:
+        normalized = _normalize_short_lang_code(code, fallback="")
+        return normalized.upper() or "?"
+
+    target_headline = target_text or word_de or translation_de or word_ru or translation_ru or "—"
+    source_value = source_text or word_ru or translation_ru or word_de or translation_de or "—"
+    part_of_speech = str(payload.get("part_of_speech") or response_json.get("part_of_speech") or "").strip()
+    article = str(payload.get("article") or response_json.get("article") or "").strip()
+    provider = str(payload.get("provider") or response_json.get("provider") or "").strip().upper()
+    forms = payload.get("forms") if isinstance(payload.get("forms"), dict) else response_json.get("forms")
+    if not isinstance(forms, dict):
+        forms = {}
+    created_at = str(payload.get("created_at") or response_json.get("created_at") or "").strip()
+    created_at_label = created_at.replace("T", " ").split(" ", 1)[0].strip() if created_at else ""
+    examples = _build_dictionary_card_example_lines(
+        payload.get("usage_examples") if payload.get("usage_examples") is not None else response_json.get("usage_examples"),
+        limit=4,
+    )
+
+    metadata_rows: list[tuple[str, str]] = [
+        ("Направление", f"{_lang_label(item_source_lang)} → {_lang_label(item_target_lang)}"),
+    ]
+    if part_of_speech:
+        metadata_rows.append(("Часть речи", part_of_speech))
+    if article:
+        metadata_rows.append(("Артикль", article))
+    if provider:
+        metadata_rows.append(("Источник", provider))
+    if created_at_label:
+        metadata_rows.append(("Дата", created_at_label))
+
+    form_rows: list[tuple[str, str]] = []
+    for raw_key, raw_value in forms.items():
+        value = str(raw_value or "").strip()
+        if not value or value in {"-", "—"}:
+            continue
+        label = str(raw_key or "").strip().replace("_", " ")
+        if not label:
+            continue
+        form_rows.append((label[:1].upper() + label[1:], value))
+        if len(form_rows) >= 5:
+            break
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+
+    font_name = "Helvetica"
+    font_bold = "Helvetica-Bold"
+    font_paths = [
+        os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans.ttf"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    font_bold_paths = [
+        os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans-Bold.ttf"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    for fp in font_paths:
+        if not os.path.exists(fp):
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVuSans", fp))
+            font_name = "DejaVuSans"
+            break
+        except Exception:
+            continue
+    for fp in font_bold_paths:
+        if not os.path.exists(fp):
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", fp))
+            font_bold = "DejaVuSans-Bold"
+            break
+        except Exception:
+            continue
+    if font_bold == "Helvetica-Bold" and font_name != "Helvetica":
+        font_bold = font_name
+
+    width, height = A4
+    margin_x = 42
+    top_y = height - 44
+    card_width = width - margin_x * 2
+    card_bottom = 96
+    card_height = top_y - 28 - card_bottom
+
+    pdf.setFillColorRGB(0.965, 0.954, 0.93)
+    pdf.rect(0, 0, width, height, stroke=0, fill=1)
+
+    pdf.setFillColorRGB(0.15, 0.19, 0.28)
+    pdf.setFont(font_bold, 18)
+    pdf.drawString(margin_x, top_y, "Das Deutsche Schluempfchen")
+    pdf.setFont(font_name, 10.5)
+    pdf.setFillColorRGB(0.41, 0.45, 0.53)
+    pdf.drawString(margin_x, top_y - 16, "Dictionary Card")
+
+    pdf.setFillColorRGB(0.985, 0.979, 0.955)
+    pdf.setStrokeColorRGB(0.84, 0.81, 0.74)
+    pdf.roundRect(margin_x, card_bottom, card_width, card_height, 18, stroke=1, fill=1)
+
+    cursor_x = margin_x + 18
+    cursor_y = card_bottom + card_height - 22
+    content_width = card_width - 36
+
+    pdf.setFillColorRGB(0.43, 0.36, 0.22)
+    pdf.setFont(font_bold, 10)
+    pdf.drawString(cursor_x, cursor_y, _lang_label(item_target_lang))
+    cursor_y -= 18
+
+    headline_lines = _wrap_text(str(target_headline), 32)[:3] or ["—"]
+    pdf.setFillColorRGB(0.12, 0.25, 0.65)
+    pdf.setFont(font_bold, 24 if len(headline_lines) == 1 else 21)
+    for line in headline_lines:
+        pdf.drawString(cursor_x, cursor_y, line)
+        cursor_y -= 25
+
+    cursor_y -= 4
+    pdf.setFillColorRGB(0.29, 0.32, 0.39)
+    pdf.setFont(font_name if item_source_lang != "ru" else font_bold, 14)
+    source_lines = _wrap_text(f"{_lang_label(item_source_lang)}: {source_value}", 48)[:3] or ["—"]
+    for line in source_lines:
+        pdf.drawString(cursor_x, cursor_y, line)
+        cursor_y -= 16 if item_source_lang != "ru" else 18
+
+    cursor_y -= 6
+    pdf.setStrokeColorRGB(0.88, 0.85, 0.78)
+    pdf.line(cursor_x, cursor_y, cursor_x + content_width, cursor_y)
+    cursor_y -= 18
+
+    pdf.setFont(font_bold, 11)
+    pdf.setFillColorRGB(0.18, 0.20, 0.26)
+    for label, value in metadata_rows:
+        wrapped_value = _wrap_text(str(value), 54)[:2] or ["—"]
+        pdf.drawString(cursor_x, cursor_y, f"{label}:")
+        pdf.setFont(font_name, 11)
+        text_y = cursor_y
+        for index, line in enumerate(wrapped_value):
+            offset_x = 84 if index == 0 else 0
+            pdf.drawString(cursor_x + offset_x, text_y, line)
+            text_y -= 14
+        cursor_y = text_y - 4
+        pdf.setFont(font_bold, 11)
+
+    if form_rows:
+        pdf.setFillColorRGB(0.18, 0.20, 0.26)
+        pdf.setFont(font_bold, 11.5)
+        pdf.drawString(cursor_x, cursor_y, "Формы")
+        cursor_y -= 16
+        for label, value in form_rows:
+            wrapped_value = _wrap_text(str(value), 56)[:2] or ["—"]
+            pdf.setFont(font_bold, 10.5)
+            pdf.drawString(cursor_x, cursor_y, f"{label}:")
+            pdf.setFont(font_name, 10.5)
+            text_y = cursor_y
+            for index, line in enumerate(wrapped_value):
+                offset_x = 88 if index == 0 else 0
+                pdf.drawString(cursor_x + offset_x, text_y, line)
+                text_y -= 13
+            cursor_y = text_y - 3
+
+    if examples:
+        pdf.setFillColorRGB(0.18, 0.20, 0.26)
+        pdf.setFont(font_bold, 11.5)
+        pdf.drawString(cursor_x, cursor_y, "Примеры")
+        cursor_y -= 16
+        pdf.setFont(font_name, 10.5)
+        for example in examples:
+            wrapped_lines = _wrap_text(example, 62)[:3]
+            if not wrapped_lines:
+                continue
+            pdf.drawString(cursor_x, cursor_y, f"• {wrapped_lines[0]}")
+            cursor_y -= 13
+            for line in wrapped_lines[1:]:
+                pdf.drawString(cursor_x + 12, cursor_y, line)
+                cursor_y -= 13
+            cursor_y -= 4
+
+    pdf.setFillColor(colors.black)
+    pdf.save()
+    buffer.seek(0)
+
+    filename_stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(target_headline or source_value or "dictionary_card")).strip("_") or "dictionary_card"
+    return buffer, f"{filename_stem[:48]}.pdf"
+
+
 @app.route("/api/webapp/dictionary/export/pdf", methods=["POST"])
 def export_webapp_dictionary_pdf():
     payload = request.get_json(silent=True) or {}
@@ -18191,6 +18452,44 @@ def export_webapp_dictionary_pdf():
     except Exception as exc:
         logging.exception("Dictionary PDF export failed: user_id=%s folder_mode=%s folder_id=%s", user_id, folder_mode, folder_id)
         return jsonify({"error": f"Ошибка генерации PDF: {exc}"}), 500
+
+
+@app.route("/api/webapp/dictionary/export/card-pdf", methods=["POST"])
+def export_webapp_dictionary_card_pdf():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    item = payload.get("item")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not isinstance(item, dict):
+        return jsonify({"error": "item обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
+    try:
+        buffer, download_name = _build_dictionary_card_pdf(
+            item=item,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=download_name,
+            mimetype="application/pdf",
+        )
+    except Exception as exc:
+        logging.exception("Dictionary card PDF export failed: user_id=%s", user_id)
+        return jsonify({"error": f"Ошибка генерации PDF карточки: {exc}"}), 500
 
 
 @app.route("/api/webapp/dictionary/save", methods=["POST"])
