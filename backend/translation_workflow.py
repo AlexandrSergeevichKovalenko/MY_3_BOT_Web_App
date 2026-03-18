@@ -4770,11 +4770,11 @@ def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
                     COUNT(DISTINCT ds.id) AS total_sentences,
                     COUNT(DISTINCT lt.sentence_id) AS translated,
                     (COUNT(DISTINCT ds.id) - COUNT(DISTINCT lt.sentence_id)) AS missed,
-                    COALESCE(p.avg_time, 0) AS avg_time_minutes,
-                    COALESCE(p.total_time, 0) AS total_time_minutes,
+                    COALESCE(progress_summary.avg_time, 0) AS avg_time_minutes,
+                    COALESCE(progress_summary.total_time, 0) AS total_time_minutes,
                     COALESCE(AVG(lt.score), 0) AS avg_score,
                     COALESCE(AVG(lt.score), 0)
-                        - (COALESCE(p.avg_time, 0) * 1)
+                        - (COALESCE(progress_summary.avg_time, 0) * 1)
                         - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT lt.sentence_id)) * 20) AS final_score
                 FROM bt_3_daily_sentences ds
                 LEFT JOIN latest_translations lt
@@ -4783,13 +4783,13 @@ def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
                     SELECT user_id,
                         AVG({build_translation_session_minutes_sql('p')}) AS avg_time,
                         SUM({build_translation_session_minutes_sql('p')}) AS total_time
-                    FROM bt_3_user_progress
+                    FROM bt_3_user_progress p
                     WHERE completed = TRUE
                         AND start_time::date = CURRENT_DATE
                     GROUP BY user_id
-                ) p ON ds.user_id = p.user_id
+                ) progress_summary ON ds.user_id = progress_summary.user_id
                 WHERE ds.date = CURRENT_DATE AND ds.user_id = %s
-                GROUP BY ds.user_id, p.avg_time, p.total_time;
+                GROUP BY ds.user_id, progress_summary.avg_time, progress_summary.total_time;
                 """,
                 (user_id, user_id),
             )

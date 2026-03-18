@@ -26983,8 +26983,13 @@ def finish_webapp_translation():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     result = finish_translation_webapp(user_id)
-    summary = build_user_daily_summary(user_id=user_id, username=username or user_name)
+    summary = None
     group_warning = None
+    try:
+        summary = build_user_daily_summary(user_id=user_id, username=username or user_name)
+    except Exception as exc:
+        logging.warning("finish_webapp_translation: daily summary build failed for user_id=%s: %s", user_id, exc, exc_info=True)
+        group_warning = f"Не удалось собрать сводку: {exc}"
     if summary:
         try:
             target_chat_id = _resolve_user_delivery_chat_id(int(user_id), job_name="finish_webapp_translation")
