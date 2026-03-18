@@ -6254,11 +6254,13 @@ body {
   min-height: 0;
   flex: 1 1 auto;
   width: 100%;
+  justify-content: flex-start;
   border-radius: 0;
   padding: clamp(12px, 3vw, 24px) clamp(12px, 4vw, 24px) clamp(18px, 4vw, 28px);
 }
 
 .flashcard-stage.is-session.is-quiz-layout {
+  align-items: stretch;
   background:
     radial-gradient(85% 70% at 50% -5%, rgba(39, 82, 180, 0.28), transparent 65%),
     radial-gradient(70% 60% at 20% 85%, rgba(13, 40, 116, 0.24), transparent 70%),
