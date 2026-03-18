@@ -2516,6 +2516,52 @@ function AppInner() {
       singleInstanceDeactivateInFlightRef.current = false;
     }
   }, []);
+  const isSingleInstanceWindowPreferred = useCallback(() => {
+    if (typeof document === 'undefined') return false;
+    const isVisible = document.visibilityState !== 'hidden';
+    const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+    return isVisible && hasFocus;
+  }, []);
+  const reactivateSingleInstanceWindow = useCallback(() => {
+    if (!isWebAppMode || typeof window === 'undefined') return false;
+    try {
+      window.localStorage.setItem(SINGLE_INSTANCE_LOCK_KEY, singleInstanceTokenRef.current);
+    } catch (error) {
+      console.warn('single instance lock takeover failed', error);
+    }
+    singleInstanceOwnsLockRef.current = true;
+    setSingleInstanceBlocked(false);
+    return true;
+  }, [isWebAppMode]);
+  const claimSingleInstanceServerLease = useCallback(async (reason = 'claim') => {
+    if (!isWebAppMode || !initData || typeof window === 'undefined') {
+      return false;
+    }
+    try {
+      const response = await fetch('/api/webapp/instance/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          instanceId: singleInstanceTokenRef.current,
+          sessionId,
+          appContext: appMode,
+          platform: telegramApp?.platform || '',
+          reason,
+        }),
+      });
+      return response.ok;
+    } catch (error) {
+      console.warn('single instance lease claim failed', error);
+      return false;
+    }
+  }, [appMode, initData, isWebAppMode, sessionId, telegramApp]);
+  const continueSingleInstanceHere = useCallback((reason = 'focus') => {
+    const activated = reactivateSingleInstanceWindow();
+    if (activated) {
+      void claimSingleInstanceServerLease(reason);
+    }
+  }, [claimSingleInstanceServerLease, reactivateSingleInstanceWindow]);
   const inspectSingleInstanceConflictResponse = useCallback(async (response) => {
     if (!response || response.ok || response.status !== 409) {
       return false;
@@ -7829,30 +7875,51 @@ function AppInner() {
     };
 
     const token = singleInstanceTokenRef.current;
-    try {
-      window.localStorage.setItem(SINGLE_INSTANCE_LOCK_KEY, token);
-    } catch (error) {
-      console.warn('single instance lock write failed', error);
-    }
-    singleInstanceOwnsLockRef.current = true;
-    setSingleInstanceBlocked(false);
-
-    const ensureLeadership = () => {
-      if (readLeaderToken() !== token) {
-        void handleSingleInstanceConflict();
+    const ensureLeadership = (reason = 'heartbeat') => {
+      const leaderToken = readLeaderToken();
+      if (leaderToken === token) {
+        singleInstanceOwnsLockRef.current = true;
+        if (singleInstanceBlocked) {
+          setSingleInstanceBlocked(false);
+        }
+        return;
       }
+      if (isSingleInstanceWindowPreferred()) {
+        continueSingleInstanceHere(reason);
+        return;
+      }
+      void handleSingleInstanceConflict();
     };
+
+    ensureLeadership('mount');
 
     singleInstanceHeartbeatRef.current = window.setInterval(ensureLeadership, SINGLE_INSTANCE_HEARTBEAT_MS);
     const handleStorage = (event) => {
       if (event.key !== SINGLE_INSTANCE_LOCK_KEY) return;
-      ensureLeadership();
+      ensureLeadership('storage');
+    };
+    const handleFocus = () => {
+      ensureLeadership('focus');
+    };
+    const handlePageShow = () => {
+      ensureLeadership('pageshow');
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        ensureLeadership('visible');
+      }
     };
 
     window.addEventListener('storage', handleStorage);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('pageshow', handlePageShow);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('pageshow', handlePageShow);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (singleInstanceHeartbeatRef.current) {
         window.clearInterval(singleInstanceHeartbeatRef.current);
         singleInstanceHeartbeatRef.current = null;
@@ -7866,7 +7933,13 @@ function AppInner() {
       }
       singleInstanceOwnsLockRef.current = false;
     };
-  }, [handleSingleInstanceConflict, isWebAppMode]);
+  }, [
+    continueSingleInstanceHere,
+    handleSingleInstanceConflict,
+    isSingleInstanceWindowPreferred,
+    isWebAppMode,
+    singleInstanceBlocked,
+  ]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData || singleInstanceBlocked || typeof window === 'undefined') {
@@ -15390,7 +15463,20 @@ function AppInner() {
                   'Die App laeuft jetzt in einem anderen Fenster weiter. Dieses Fenster kann einfach geschlossen werden.'
                 )}
               </p>
+              <p className="webapp-muted">
+                {tr(
+                  'Если хотите продолжить именно здесь, просто нажмите кнопку ниже.',
+                  'Wenn du genau hier weitermachen willst, tippe einfach auf die Taste unten.'
+                )}
+              </p>
             </header>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => continueSingleInstanceHere('manual')}
+            >
+              {tr('Продолжить в этом окне', 'In diesem Fenster fortsetzen')}
+            </button>
           </div>
         </div>
       );
