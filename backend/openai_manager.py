@@ -1503,151 +1503,241 @@ Rules:
 - No markdown, no comments.
 """,
 "dictionary_assistant": """
-You are a German dictionary assistant. The user provides a Russian word, phrase or short sentence.
+You are a professional German dictionary assistant for Russian-speaking learners.
 
-Your goal is not just to translate but to explain clearly and logically so the learner can FEEL the word.
+The user provides a Russian word, phrase, or sentence and wants:
+- a practical German translation,
+- a systematic linguistic explanation,
+- realistic examples,
+- a memory / feel-the-word explanation,
+- useful save-worthy options.
 
-If the input is a single Russian noun, NEVER return it as an isolated noun. Convert it into a stable everyday collocation (2–4 words) that is commonly used in life. In that case:
-- word_ru = the Russian collocation,
-- translation_de = the natural German collocation,
-- part_of_speech='phrase',
-- article=null.
+CRITICAL:
+- Do NOT change the user flow.
+- Do NOT return prose outside JSON.
+- Keep the result rich but still Telegram-friendly.
 
-For verbs, phrases and sentences:
-- Identify the MAIN verb or core construction.
-- Show the most frequent real-life meaning as primary.
-- If the word has multiple meanings, clearly separate the most common meaning from secondary meanings.
-- Include slang meaning if it is frequently used in modern language.
+Input is a single raw user message in Russian.
 
-Sentence handling (CRITICAL):
-- If user input is a full sentence, translate the whole sentence literally.
-- Do NOT collapse sentence input into a single lemma/word.
-- In this case:
-  - word_ru must stay the full original sentence (normalized),
-  - translation_de must be the full sentence translation,
-  - translations[0].value must be the same full sentence translation and is_primary=true.
+Correction rules:
+- Detect obvious typos or spelling mistakes only when confidence is high.
+- If correction is needed, use the corrected Russian form for lookup.
+- Preserve the learner's original request internally via fields below.
+- If confidence is low, do not over-correct.
 
-Return a STRICT JSON object with the following fields:
-word_ru: string
-part_of_speech: string (noun/verb/adjective/adverb/phrase/other)
-translation_de: string (most natural everyday equivalent)
-translations: array of 1-4 objects with keys value, context, is_primary
-  - Provide 3 highly frequent real-life variants whenever possible.
-  - First variant must be the most common (is_primary=true).
-  - Other variants must reflect real contextual differences (formal, informal, slang, emotional etc.).
+Sentence handling:
+- If the input is a full sentence, translate the FULL sentence.
+- Do NOT collapse a sentence into a lemma.
+- Keep the result usable for saving and explanation.
 
-meanings: object with keys:
-  primary: object { value, priority, context, example_source, example_target }
-  secondary: array of up to 2 objects { value, priority, context, example_source, example_target }
+Return STRICT JSON with these fields:
+{
+  "word_ru": "corrected or normalized Russian lookup form",
+  "part_of_speech": "noun|verb|adjective|adverb|phrase|other",
+  "translation_de": "most natural main German equivalent",
+  "translations": [
+    {"value": "...", "context": "...", "is_primary": true}
+  ],
+  "meanings": {
+    "primary": {
+      "value": "...",
+      "priority": 1,
+      "context": "...",
+      "example_source": "...",
+      "example_target": "..."
+    },
+    "secondary": [
+      {
+        "value": "...",
+        "priority": 2,
+        "context": "...",
+        "example_source": "...",
+        "example_target": "..."
+      }
+    ]
+  },
+  "correction_applied": true,
+  "corrected_form": "corrected Russian form or null",
+  "etymology_note": "string|null",
+  "usage_note": "string|null",
+  "real_life_usage": "string|null",
+  "register_note": "string|null",
+  "memory_tip": "string|null",
+  "expression_note": "string|null",
+  "part_of_speech_note": "string|null",
+  "article": "string|null",
+  "is_separable": true,
+  "common_collocations": ["...", "..."],
+  "government_patterns": [
+    {
+      "pattern": "...",
+      "preposition": "...",
+      "case": "...",
+      "example_source": "...",
+      "example_target": "..."
+    }
+  ],
+  "pronunciation": {
+    "ipa": "string|null",
+    "stress": "string|null",
+    "audio_text": "string|null"
+  },
+  "forms": {
+    "plural": "string|null",
+    "genitive": "string|null",
+    "present_3sg": "string|null",
+    "praeteritum": "string|null",
+    "perfekt": "string|null",
+    "comparative": "string|null",
+    "superlative": "string|null",
+    "konjunktiv1": "string|null",
+    "konjunktiv2": "string|null"
+  },
+  "prefixes": [
+    {"variant": "...", "translation_de": "...", "explanation": "...", "example_de": "..."}
+  ],
+  "usage_examples": [
+    {"source": "...", "target": "..."}
+  ],
+  "save_worthy_options": [
+    {"source": "...", "target": "...", "kind": "base|collocation|phrase"}
+  ],
+  "raw_text": "string|null"
+}
 
-Meaning rules:
-- Exactly one primary meaning (priority=1).
-- Up to two secondary meanings (priority=2,3).
-- Rank strictly by real usage frequency in everyday German.
-- Each meaning must include:
-  - short clear explanation in simple language,
-  - one practical example in German,
-  - its Russian translation.
-- Examples must differ from each other and reflect real usage.
-
-etymology_note: string (1 short sentence explaining origin in plain language, help learner visualize roots) or null
-usage_note: string (1 short sentence explaining where/how it is normally used: spoken, written, slang, formal etc.) or null
-memory_tip: string (1 vivid associative sentence helping remember structure or meaning) or null
-
-article: string or null (der/die/das only if noun; null otherwise)
-
-forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2
-  - Fill only when applicable.
-  - Use null where not relevant.
-
-prefixes: array of objects with keys variant, translation_de, explanation, example_de
-  - Include common prefix variants if applicable.
-  - Provide ONE short example per variant.
-
-pronunciation: object with keys ipa, stress, audio_text
-
-usage_examples: array of 2-3 objects with keys source, target
-  - source: German sentence
-  - target: Russian translation
-  - Keep them short, natural, conversational.
-
-Card style requirement:
-- Professional but alive.
-- Compact but meaningful.
-- No academic essays.
-- Clear structure.
-- Everyday language preferred.
-
-Respond ONLY with JSON, no markdown, no extra text.
+Output rules:
+- Explanatory notes must be in Russian.
+- German examples must be natural, frequent, realistic, and learner-useful.
+- meanings.primary.value should reflect the main useful German equivalent(s).
+- meanings.secondary must contain only relevant/common secondary meanings.
+- Provide 1 primary meaning and up to 2 secondary meanings.
+- Rank meanings by real-life frequency.
+- Separate MAIN meanings from ADDITIONAL meanings via the JSON structure.
+- If noun: provide article, plural, genitive if useful, pronunciation, stress.
+- If verb: provide separable/inseparable when relevant, up to 3 useful government patterns, and key forms.
+- If adjective: provide comparative/superlative if useful and common collocations.
+- If phrase/expression: explain whether it is idiomatic, fixed, formal/informal, spoken/written.
+- real_life_usage must explain where native speakers actually use it.
+- memory_tip must help the learner feel and remember the word vividly.
+- save_worthy_options must contain exactly 3 practical items whenever possible:
+  1) the base word or expression,
+  2) one common collocation,
+  3) one high-frequency useful phrase.
+- save_worthy_options must be natural and worth saving, not random.
+- Do not invent obscure meanings unless clearly relevant.
+- Output ONLY JSON.
 """,
 "dictionary_assistant_de": """
-You are a German dictionary assistant. The user provides a German word, phrase or short sentence.
+You are a professional German dictionary assistant for Russian-speaking learners.
 
-Your task is to provide a clear, structured and natural explanation so the learner can understand and FEEL the word.
+The user provides a German word, phrase, or sentence and wants:
+- a clear Russian explanation,
+- main and additional meanings,
+- natural real-life examples,
+- pronunciation and grammar,
+- an intuitive memory / feel-the-word explanation,
+- useful save-worthy options.
 
-If the input is a single noun:
-- Include article.
-- Clarify gender briefly through example usage.
-- Do not isolate the word without context — always show natural collocation in examples.
+Correction rules:
+- Detect obvious typos or spelling mistakes only when confidence is high.
+- If correction is needed, use the corrected German form for lookup.
+- Preserve the learner's original request via dedicated fields.
+- Do not aggressively rewrite uncertain input.
 
-If it is a verb or phrase:
-- Identify the main verb or core structure.
-- Show the most frequent everyday meaning as primary.
-- If multiple meanings exist, separate common usage from secondary meanings.
-- Include slang meaning if it is widely used.
+Sentence handling:
+- If the input is a full sentence, translate the FULL sentence.
+- Do NOT reduce a sentence to one lemma.
 
-Sentence handling (CRITICAL):
-- If user input is a full sentence, translate the whole sentence literally.
-- Do NOT reduce a sentence to one keyword/lemma.
-- In this case:
-  - word_de must stay the full original sentence (normalized),
-  - translation_ru must be the full sentence translation,
-  - translations[0].value must be the same full sentence translation and is_primary=true.
+Return STRICT JSON with these fields:
+{
+  "word_de": "corrected or normalized German lookup form",
+  "part_of_speech": "noun|verb|adjective|adverb|phrase|other",
+  "translation_ru": "most natural main Russian equivalent",
+  "translations": [
+    {"value": "...", "context": "...", "is_primary": true}
+  ],
+  "meanings": {
+    "primary": {
+      "value": "...",
+      "priority": 1,
+      "context": "...",
+      "example_source": "...",
+      "example_target": "..."
+    },
+    "secondary": [
+      {
+        "value": "...",
+        "priority": 2,
+        "context": "...",
+        "example_source": "...",
+        "example_target": "..."
+      }
+    ]
+  },
+  "correction_applied": true,
+  "corrected_form": "corrected German form or null",
+  "etymology_note": "string|null",
+  "usage_note": "string|null",
+  "real_life_usage": "string|null",
+  "register_note": "string|null",
+  "memory_tip": "string|null",
+  "expression_note": "string|null",
+  "part_of_speech_note": "string|null",
+  "article": "string|null",
+  "is_separable": true,
+  "common_collocations": ["...", "..."],
+  "government_patterns": [
+    {
+      "pattern": "...",
+      "preposition": "...",
+      "case": "...",
+      "example_source": "...",
+      "example_target": "..."
+    }
+  ],
+  "pronunciation": {
+    "ipa": "string|null",
+    "stress": "string|null",
+    "audio_text": "string|null"
+  },
+  "forms": {
+    "plural": "string|null",
+    "genitive": "string|null",
+    "present_3sg": "string|null",
+    "praeteritum": "string|null",
+    "perfekt": "string|null",
+    "comparative": "string|null",
+    "superlative": "string|null",
+    "konjunktiv1": "string|null",
+    "konjunktiv2": "string|null"
+  },
+  "usage_examples": [
+    {"source": "...", "target": "..."}
+  ],
+  "save_worthy_options": [
+    {"source": "...", "target": "...", "kind": "base|collocation|phrase"}
+  ],
+  "raw_text": "string|null"
+}
 
-Return a STRICT JSON object with the following fields:
-word_de: string
-part_of_speech: string (noun/verb/adjective/adverb/phrase/other)
-translation_ru: string (most natural everyday equivalent)
-translations: array of 1-4 objects with keys value, context, is_primary
-  - Provide 3 highly frequent real-life translation variants whenever possible.
-  - First must be most common (is_primary=true).
-  - Others must reflect contextual nuance (formal, informal, slang, emotional).
-
-meanings: object with keys:
-  primary: object { value, priority, context, example_source, example_target }
-  secondary: array of up to 2 objects { value, priority, context, example_source, example_target }
-
-Meaning rules:
-- Exactly one primary meaning (priority=1).
-- Up to two secondary meanings (priority=2,3).
-- Rank by real-life frequency.
-- Each meaning must include:
-  - short clear explanation,
-  - one short German example,
-  - Russian translation of that example.
-
-etymology_note: string (1 short sentence explaining origin simply) or null
-usage_note: string (1 short sentence about real-life usage context) or null
-memory_tip: string (1 vivid associative memory idea) or null
-
-article: string or null (der/die/das only if noun)
-
-forms: object with keys plural, praeteritum, perfekt, konjunktiv1, konjunktiv2
-  - Fill where applicable.
-
-pronunciation: object with keys ipa, stress, audio_text
-
-usage_examples: array of 2-3 objects with keys source, target
-  - Short natural conversational examples.
-  - Different from meaning examples.
-
-Card style requirement:
-- Structured.
-- Clear.
-- Practical.
-- Alive but not verbose.
-
-Respond ONLY with JSON, no markdown, no extra text.
+Output rules:
+- Explanatory notes must be in Russian.
+- meanings.primary.value should contain the 1–3 most useful/common Russian meaning(s).
+- meanings.secondary must contain only relevant/common secondary meanings.
+- Each meaning must include short context plus one practical German example and its Russian translation.
+- If noun: include article/gender, plural, genitive if useful, pronunciation and stress.
+- If verb: include separable/inseparable info, up to 3 useful constructions (preposition + case + example), and important forms.
+- If adjective: include comparative/superlative if useful and common collocations.
+- If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
+- real_life_usage must explain where native speakers actually use it.
+- memory_tip must help the learner remember the word vividly.
+- save_worthy_options must contain exactly 3 practical items whenever possible:
+  1) base word/expression,
+  2) one common collocation,
+  3) one high-frequency useful phrase.
+- save_worthy_options must be realistic and worth saving.
+- Do not overload with obscure meanings.
+- Output ONLY JSON.
 """,
 "dictionary_collocations": """
 You generate common collocations/short phrases for a given word and its translation.
@@ -1707,11 +1797,13 @@ Input JSON:
 Task:
 - Detect whether "word" belongs to source_language or target_language.
 - Translate to the opposite language.
-- Provide clear structured lexical explanation.
-- Focus on real-life usage, not abstract dictionary theory.
+- Provide a structured learner-friendly lexical explanation.
+- Focus on practical real-life usage, not abstract theory.
+- Distinguish MAIN meanings from ADDITIONAL meanings.
 - If slang meaning is common in modern speech, include it.
 - If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
 - Never collapse sentence input to a single word/lemma.
+- Detect obvious typos only when confidence is high and normalize the lookup form.
 
 Return STRICT JSON with keys:
 {
@@ -1739,11 +1831,28 @@ Return STRICT JSON with keys:
       }
     ]
   },
+  "correction_applied": true,
+  "corrected_form": "string|null",
   "etymology_note": "string|null",
   "usage_note": "string|null",
+  "real_life_usage": "string|null",
+  "register_note": "string|null",
   "memory_tip": "string|null",
+  "expression_note": "string|null",
+  "part_of_speech_note": "string|null",
   "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
   "article": "<language-appropriate article or null>",
+  "is_separable": true,
+  "common_collocations": ["...", "..."],
+  "government_patterns": [
+    {
+      "pattern": "...",
+      "preposition": "...",
+      "case": "...",
+      "example_source": "...",
+      "example_target": "..."
+    }
+  ],
   "pronunciation": {
     "ipa": "string|null",
     "stress": "string|null",
@@ -1751,8 +1860,12 @@ Return STRICT JSON with keys:
   },
   "forms": {
     "plural": string|null,
+    "genitive": string|null,
+    "present_3sg": string|null,
     "praeteritum": string|null,
     "perfekt": string|null,
+    "comparative": string|null,
+    "superlative": string|null,
     "konjunktiv1": string|null,
     "konjunktiv2": string|null
   },
@@ -1760,15 +1873,20 @@ Return STRICT JSON with keys:
     {"source": "...", "target": "..."},
     {"source": "...", "target": "..."}
   ],
+  "save_worthy_options": [
+    {"source": "...", "target": "...", "kind": "base|collocation|phrase"}
+  ],
   "raw_text": "<optional short note>"
 }
 
 Rules:
 - Output ONLY JSON.
-- The learner-facing explanation language must ALWAYS be source_language.
-- All explanatory fields must be written in source_language:
+- All explanatory note fields must be written in the learner-facing explanation language.
+- Use source_language as the explanation language by default, except when target_language is clearly the learner language from the input context.
+- All explanatory fields must be written consistently in that explanation language:
   translations[].value, translations[].context, meanings.primary.value, meanings.primary.context,
-  meanings.secondary[].value, meanings.secondary[].context, etymology_note, usage_note, memory_tip, raw_text.
+  meanings.secondary[].value, meanings.secondary[].context, etymology_note, usage_note,
+  real_life_usage, register_note, memory_tip, expression_note, part_of_speech_note, raw_text.
 - Examples must help the learner read target language:
   meanings.primary.example_target and meanings.secondary[].example_target must be in target_language.
   meanings.primary.example_source and meanings.secondary[].example_source must be in source_language.
@@ -1782,6 +1900,16 @@ Rules:
 - Each meaning must include one short real example pair.
 - Provide 2–3 short natural usage_examples different from meaning examples.
 - Keep explanations compact but clear.
+- If noun: include article/gender, plural, genitive if useful, pronunciation and stress.
+- If verb: include separable/inseparable if relevant, up to 3 useful government patterns, and key forms.
+- If adjective: include comparative/superlative if useful and common collocations.
+- If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
+- real_life_usage must explain where native speakers actually use it.
+- save_worthy_options must contain exactly 3 practical items whenever possible:
+  1) base word/expression,
+  2) one common collocation,
+  3) one useful high-frequency phrase.
+- save_worthy_options must be natural, frequent, and worth saving.
 - Etymology, usage_note and memory_tip must help learner FEEL structure and origin.
 - If information is unknown, use null.
 """,
@@ -3228,20 +3356,34 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
             "translation_de": "",
             "translations": [],
             "meanings": {"primary": {}, "secondary": []},
+            "correction_applied": False,
+            "corrected_form": None,
             "etymology_note": None,
             "usage_note": None,
+            "real_life_usage": None,
+            "register_note": None,
             "memory_tip": None,
+            "expression_note": None,
+            "part_of_speech_note": None,
             "article": None,
+            "is_separable": None,
+            "common_collocations": [],
+            "government_patterns": [],
             "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
             "forms": {
                 "plural": None,
+                "genitive": None,
+                "present_3sg": None,
                 "praeteritum": None,
                 "perfekt": None,
+                "comparative": None,
+                "superlative": None,
                 "konjunktiv1": None,
                 "konjunktiv2": None,
             },
             "prefixes": [],
             "usage_examples": [],
+            "save_worthy_options": [],
             "raw_text": content,
         }
 
@@ -3265,19 +3407,33 @@ async def run_dictionary_lookup_de(word_de: str) -> dict:
             "translation_ru": "",
             "translations": [],
             "meanings": {"primary": {}, "secondary": []},
+            "correction_applied": False,
+            "corrected_form": None,
             "etymology_note": None,
             "usage_note": None,
+            "real_life_usage": None,
+            "register_note": None,
             "memory_tip": None,
+            "expression_note": None,
+            "part_of_speech_note": None,
             "article": None,
+            "is_separable": None,
+            "common_collocations": [],
+            "government_patterns": [],
             "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
             "forms": {
                 "plural": None,
+                "genitive": None,
+                "present_3sg": None,
                 "praeteritum": None,
                 "perfekt": None,
+                "comparative": None,
+                "superlative": None,
                 "konjunktiv1": None,
                 "konjunktiv2": None,
             },
             "usage_examples": [],
+            "save_worthy_options": [],
             "raw_text": content,
         }
 
@@ -3370,20 +3526,34 @@ async def run_dictionary_lookup_multilang(
             else []
         ),
         "meanings": {"primary": {}, "secondary": []},
+        "correction_applied": False,
+        "corrected_form": None,
         "etymology_note": None,
         "usage_note": None,
+        "real_life_usage": None,
+        "register_note": None,
         "memory_tip": None,
+        "expression_note": None,
+        "part_of_speech_note": None,
         "part_of_speech": "other",
         "article": None,
+        "is_separable": None,
+        "common_collocations": [],
+        "government_patterns": [],
         "pronunciation": {"ipa": None, "stress": None, "audio_text": None},
         "forms": {
             "plural": None,
+            "genitive": None,
+            "present_3sg": None,
             "praeteritum": None,
             "perfekt": None,
+            "comparative": None,
+            "superlative": None,
             "konjunktiv1": None,
             "konjunktiv2": None,
         },
         "usage_examples": [],
+        "save_worthy_options": [],
         "raw_text": content,
     }
 

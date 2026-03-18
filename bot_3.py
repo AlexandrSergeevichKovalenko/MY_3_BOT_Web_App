@@ -2919,8 +2919,9 @@ async def handle_user_message(update: Update, context: CallbackContext):
                     source_lang=normalized["source_lang"],
                     target_lang=normalized["target_lang"],
                 )
+            reply_text = _build_quiz_question_reply_message(normalized)
             await update.message.reply_text(
-                normalized["reply_text"],
+                reply_text,
                 disable_web_page_preview=True,
                 reply_markup=_build_quiz_question_answer_keyboard(request_key=request_key, save_key=save_key),
             )
@@ -3071,6 +3072,18 @@ def _extract_card_key_from_reply_markup(reply_markup) -> str:
     return ""
 
 
+def _extract_dictionary_question_key_from_reply_markup(reply_markup) -> str:
+    if not reply_markup:
+        return ""
+    rows = getattr(reply_markup, "inline_keyboard", None) or []
+    for row in rows:
+        for button in row or []:
+            callback_data = str(getattr(button, "callback_data", "") or "").strip()
+            if callback_data.startswith("quizask:"):
+                return callback_data.split(":", 1)[1].strip()
+    return ""
+
+
 def _parse_dictionary_options_from_message_text(message_text: str) -> tuple[str, str, list[dict]]:
     text = str(message_text or "")
     lines = text.splitlines()
@@ -3122,7 +3135,9 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
     user_id = int(getattr(query.from_user, "id", 0) or 0)
     if user_id <= 0:
         return None
-    card_key = _extract_card_key_from_reply_markup(getattr(message, "reply_markup", None))
+    reply_markup = getattr(message, "reply_markup", None)
+    card_key = _extract_card_key_from_reply_markup(reply_markup)
+    question_request_key = _extract_dictionary_question_key_from_reply_markup(reply_markup)
     lookup = {
         "word_source": str(options[0].get("source") or "").strip(),
         "word_target": str(options[0].get("target") or "").strip(),
@@ -3138,6 +3153,7 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
         "lookup": lookup,
         "options": options,
         "selected": [],
+        "question_request_key": question_request_key,
     }
     pending_dictionary_save_options[option_key] = payload
     if card_key and card_key not in pending_dictionary_cards:
@@ -3150,6 +3166,7 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
             "lookup": lookup,
             "saved": False,
             "original_query": str(options[0].get("source") or "").strip(),
+            "question_request_key": question_request_key,
         }
     return payload
 
@@ -3185,6 +3202,13 @@ def _has_cyrillic_chars(text: str) -> bool:
 
 def _has_latin_chars(text: str) -> bool:
     return bool(re.search(r"[A-Za-zÄÖÜäöüßẞÀ-ÿ]", str(text or "")))
+
+
+def _normalize_dictionary_compare_key(text: str) -> str:
+    normalized = str(text or "").strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = normalized.strip(" \t\r\n.,!?;:()[]{}\"'«»")
+    return normalized.casefold()
 
 
 def _looks_like_target_language(text: str, target_lang: str) -> bool:
@@ -3299,6 +3323,15 @@ async def _coerce_sentence_lookup_payload(
     if not _is_sentence_like_lookup(normalized_input):
         return payload if isinstance(payload, dict) else {}
 
+    incoming_payload = payload if isinstance(payload, dict) else {}
+    model_source_text = str(incoming_payload.get("word_source") or "").strip()
+    correction_applied = bool(incoming_payload.get("correction_applied"))
+    corrected_form = str(incoming_payload.get("corrected_form") or "").strip()
+    if not corrected_form and model_source_text:
+        if _normalize_dictionary_compare_key(model_source_text) != _normalize_dictionary_compare_key(normalized_input):
+            corrected_form = model_source_text
+            correction_applied = True
+
     forced_target = ""
     try:
         translated_lines = await run_translate_subtitles_multilang(
@@ -3314,16 +3347,19 @@ async def _coerce_sentence_lookup_payload(
     if not forced_target or forced_target.casefold() == normalized_input.casefold():
         return payload if isinstance(payload, dict) else {}
 
-    result = dict(payload or {})
-    result["word_source"] = normalized_input
+    result = dict(incoming_payload or {})
+    effective_source = corrected_form or model_source_text or normalized_input
+    result["word_source"] = effective_source
     result["word_target"] = forced_target
     result["part_of_speech"] = "phrase"
+    result["correction_applied"] = bool(correction_applied)
+    result["corrected_form"] = corrected_form or None
 
     if source_lang == "ru" and target_lang == "de":
-        result["word_ru"] = normalized_input
+        result["word_ru"] = effective_source
         result["translation_de"] = forced_target
     elif source_lang == "de" and target_lang == "ru":
-        result["word_de"] = normalized_input
+        result["word_de"] = effective_source
         result["translation_ru"] = forced_target
 
     dedup_values: set[str] = {forced_target.casefold()}
@@ -3356,13 +3392,13 @@ async def _coerce_sentence_lookup_payload(
             "value": forced_target,
             "priority": 1,
             "context": "full_sentence",
-            "example_source": normalized_input,
+            "example_source": effective_source,
             "example_target": forced_target,
         },
         "secondary": [],
     }
 
-    usage_examples = [{"source": normalized_input, "target": forced_target}]
+    usage_examples = [{"source": effective_source, "target": forced_target}]
     existing_examples = result.get("usage_examples")
     if isinstance(existing_examples, list):
         for item in existing_examples:
@@ -3372,7 +3408,7 @@ async def _coerce_sentence_lookup_payload(
             tgt = str(item.get("target") or "").strip()
             if not src or not tgt:
                 continue
-            if src.casefold() == normalized_input.casefold() and tgt.casefold() == forced_target.casefold():
+            if src.casefold() == effective_source.casefold() and tgt.casefold() == forced_target.casefold():
                 continue
             usage_examples.append({"source": src, "target": tgt})
             if len(usage_examples) >= 3:
@@ -3423,8 +3459,12 @@ def _format_forms_block(forms: dict | None) -> list[str]:
         return []
     items = [
         ("Plural", forms.get("plural")),
+        ("Genitiv", forms.get("genitive") or forms.get("genitiv")),
+        ("Praesens (er/sie/es)", forms.get("present_3sg") or forms.get("praesens_3sg")),
         ("Prateritum", forms.get("praeteritum")),
-        ("Perfekt", forms.get("perfekt")),
+        ("Partizip II", forms.get("partizip2") or forms.get("perfekt")),
+        ("Komparativ", forms.get("comparative") or forms.get("komparativ")),
+        ("Superlativ", forms.get("superlative") or forms.get("superlativ")),
         ("Konjunktiv I", forms.get("konjunktiv1")),
         ("Konjunktiv II", forms.get("konjunktiv2")),
     ]
@@ -3628,39 +3668,149 @@ def _apply_article_for_display(value: str, lookup: dict, target_lang: str) -> st
 
 def _extract_learning_notes(lookup: dict) -> dict:
     if not isinstance(lookup, dict):
-        return {"etymology_note": "", "usage_note": "", "memory_tip": ""}
+        return {
+            "etymology_note": "",
+            "usage_note": "",
+            "real_life_usage": "",
+            "register_note": "",
+            "memory_tip": "",
+            "expression_note": "",
+            "part_of_speech_note": "",
+        }
     return {
         "etymology_note": str(lookup.get("etymology_note") or "").strip(),
         "usage_note": str(lookup.get("usage_note") or "").strip(),
+        "real_life_usage": str(lookup.get("real_life_usage") or "").strip(),
+        "register_note": str(lookup.get("register_note") or "").strip(),
         "memory_tip": str(lookup.get("memory_tip") or "").strip(),
+        "expression_note": str(lookup.get("expression_note") or "").strip(),
+        "part_of_speech_note": str(lookup.get("part_of_speech_note") or "").strip(),
     }
 
 
-def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text: str, lookup: dict) -> str:
+def _extract_translation_variants(lookup: dict, target_lang: str) -> list[str]:
+    if not isinstance(lookup, dict):
+        return []
+    variants: list[str] = []
+    seen: set[str] = set()
+    translations = lookup.get("translations") if isinstance(lookup.get("translations"), list) else []
+    ordered = sorted(
+        [item for item in translations if isinstance(item, dict)],
+        key=lambda item: (0 if bool(item.get("is_primary")) else 1),
+    )
+    for item in ordered[:3]:
+        value = _apply_article_for_display(str(item.get("value") or "").strip(), lookup, target_lang)
+        key = _normalize_dictionary_compare_key(value)
+        if not value or not key or key in seen:
+            continue
+        seen.add(key)
+        variants.append(value)
+    return variants
+
+
+def _format_government_patterns_block(patterns: list | None) -> list[str]:
+    if not isinstance(patterns, list):
+        return []
+    lines: list[str] = []
+    for item in patterns[:3]:
+        if not isinstance(item, dict):
+            continue
+        pattern = str(item.get("pattern") or "").strip()
+        preposition = str(item.get("preposition") or "").strip()
+        case_name = str(item.get("case") or "").strip()
+        example_source = str(item.get("example_source") or "").strip()
+        example_target = str(item.get("example_target") or "").strip()
+        if not pattern:
+            pieces = []
+            if preposition:
+                pieces.append(preposition)
+            if case_name:
+                pieces.append(case_name)
+            pattern = " + ".join(pieces)
+        if not pattern:
+            continue
+        head = pattern
+        if preposition and preposition.casefold() not in pattern.casefold():
+            head = f"{head} ({preposition})"
+        if case_name and case_name.casefold() not in head.casefold():
+            head = f"{head} + {case_name}"
+        lines.append(f"- {head}")
+        if example_source:
+            lines.append(f"  Пример: {example_source}")
+        if example_target:
+            lines.append(f"  ↳ {example_target}")
+    return lines
+
+
+def _format_common_collocations(collocations: list | None) -> str:
+    if not isinstance(collocations, list):
+        return ""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in collocations[:4]:
+        if isinstance(item, dict):
+            value = str(item.get("source") or item.get("value") or "").strip()
+        else:
+            value = str(item or "").strip()
+        key = _normalize_dictionary_compare_key(value)
+        if not value or not key or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(value)
+    return "; ".join(cleaned[:3])
+
+
+def _build_dictionary_card_text(
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+    lookup: dict,
+    *,
+    original_query: str = "",
+) -> str:
     def _esc(value: str) -> str:
         return html.escape(str(value or "").strip())
 
     source_text = source_text.strip()
     translation = (lookup.get("word_target") or "").strip()
     meanings = _extract_lookup_meanings(lookup)
+    translation_variants = _extract_translation_variants(lookup, target_lang)
     notes = _extract_learning_notes(lookup)
     part_of_speech = (lookup.get("part_of_speech") or "").strip()
     article = (lookup.get("article") or "").strip()
+    corrected_form = str(lookup.get("corrected_form") or "").strip()
+    correction_applied = bool(lookup.get("correction_applied"))
+    original_request = str(original_query or lookup.get("original_query") or source_text).strip()
     pronunciation = lookup.get("pronunciation") if isinstance(lookup.get("pronunciation"), dict) else {}
     ipa = str(pronunciation.get("ipa") or "").strip()
     stress = str(pronunciation.get("stress") or "").strip()
     forms = _format_forms_block(lookup.get("forms"))
+    is_separable = lookup.get("is_separable")
+    collocations = _format_common_collocations(lookup.get("common_collocations"))
+    government_lines = _format_government_patterns_block(lookup.get("government_patterns"))
+    show_corrected = False
+    if corrected_form and original_request:
+        show_corrected = _normalize_dictionary_compare_key(corrected_form) != _normalize_dictionary_compare_key(original_request)
+    elif correction_applied and source_text and original_request:
+        show_corrected = _normalize_dictionary_compare_key(source_text) != _normalize_dictionary_compare_key(original_request)
+        if show_corrected and not corrected_form:
+            corrected_form = source_text
 
     lines: list[str] = []
     lines.append("🔹 <b>Запрос</b>")
-    lines.append(f"• <code>{_esc(source_text or '—')}</code>")
+    lines.append(f"• <code>{_esc(original_request or source_text or '—')}</code>")
+    if show_corrected:
+        lines.append(f"• Исправленная форма: <code>{_esc(corrected_form)}</code>")
 
     if meanings:
         primary = meanings[0]
         primary_value = _apply_article_for_display(str(translation or primary.get("value") or "—"), lookup, target_lang)
         lines.append("")
-        lines.append("🎯 <b>Основной перевод</b>")
-        lines.append(f"• <b>{_esc(primary_value)}</b>")
+        lines.append("🎯 <b>Основные значения</b>")
+        if translation_variants:
+            lines.append(f"• <b>{_esc('; '.join(translation_variants))}</b>")
+        else:
+            lines.append(f"• <b>{_esc(primary_value)}</b>")
         primary_context = str(primary.get("context") or "").strip()
         primary_source = str(primary.get("example_source") or "").strip()
         primary_target = str(primary.get("example_target") or "").strip()
@@ -3689,33 +3839,55 @@ def _build_dictionary_card_text(source_lang: str, target_lang: str, source_text:
                     lines.append(f"     ↳ {_esc(item_target)}")
     else:
         lines.append("")
-        lines.append("🎯 <b>Основной перевод</b>")
+        lines.append("🎯 <b>Основные значения</b>")
         lines.append(f"• <b>{_esc(_apply_article_for_display(translation or '—', lookup, target_lang))}</b>")
 
     lines.append("")
-    lines.append("🗂 <b>Грамматика и произношение</b>")
+    lines.append("🗂 <b>Лингвистическая информация</b>")
     lines.append(f"• Часть речи: {_esc(part_of_speech or '—')}")
     if article:
-        lines.append(f"• Артикль: <b>{_esc(article)}</b>")
+        lines.append(f"• Род / артикль: <b>{_esc(article)}</b>")
+    if notes["part_of_speech_note"]:
+        lines.append(f"• Особенность: {_esc(notes['part_of_speech_note'])}")
     if ipa or stress:
         pron = f"{ipa or '—'}{f' | ударение: {stress}' if stress else ''}"
         lines.append(f"• Произношение: {_esc(pron)}")
+    if isinstance(is_separable, bool):
+        lines.append(f"• Отделяемость: {_esc('отделяемый' if is_separable else 'неотделяемый')}")
+    if notes["expression_note"]:
+        lines.append(f"• Тип выражения: {_esc(notes['expression_note'])}")
+    if collocations:
+        lines.append(f"• Частые сочетания: {_esc(collocations)}")
+    if government_lines:
+        lines.append("• Управление / конструкции:")
+        for gov_line in government_lines:
+            lines.append(f"   {_esc(gov_line)}")
     if forms:
         lines.append("• Формы:")
         for form_line in forms:
             cleaned = form_line.replace("- ", "", 1)
             lines.append(f"   - {_esc(cleaned)}")
 
+    usage_lines = []
+    if notes["usage_note"]:
+        usage_lines.append(f"• Базовый контекст: {_esc(notes['usage_note'])}")
+    if notes["real_life_usage"]:
+        usage_lines.append(f"• В реальной жизни: {_esc(notes['real_life_usage'])}")
+    if notes["register_note"]:
+        usage_lines.append(f"• Регистр / стиль: {_esc(notes['register_note'])}")
+    if usage_lines:
+        lines.append("")
+        lines.append("🌍 <b>Как используется в жизни</b>")
+        lines.extend(usage_lines)
+
     note_lines = []
     if notes["etymology_note"]:
         note_lines.append(f"• Происхождение: {_esc(notes['etymology_note'])}")
-    if notes["usage_note"]:
-        note_lines.append(f"• Где используется: {_esc(notes['usage_note'])}")
     if notes["memory_tip"]:
         note_lines.append(f"• Фишка запоминания: {_esc(notes['memory_tip'])}")
     if note_lines:
         lines.append("")
-        lines.append("💡 <b>Как запомнить</b>")
+        lines.append("💡 <b>Как почувствовать и запомнить</b>")
         lines.extend(note_lines)
 
     return "\n".join(lines)
@@ -3756,6 +3928,7 @@ def _store_pending_dictionary_save_options(
     lookup: dict,
     source_lang: str,
     target_lang: str,
+    question_request_key: str = "",
 ) -> str:
     direction = f"{source_lang}-{target_lang}"
     key = hashlib.sha1(
@@ -3770,6 +3943,7 @@ def _store_pending_dictionary_save_options(
         "lookup": lookup,
         "options": options[:3],
         "selected": [],
+        "question_request_key": str(question_request_key or "").strip(),
     }
     if len(pending_dictionary_save_options) > 500:
         oldest_key = next(iter(pending_dictionary_save_options))
@@ -3790,6 +3964,7 @@ def _build_save_variant_keyboard(
     options: list[dict],
     selected: list[int] | None = None,
     feel_card_key: str | None = None,
+    question_request_key: str | None = None,
 ) -> InlineKeyboardMarkup:
     selected_set = set(int(item) for item in (selected or []) if isinstance(item, int) or str(item).isdigit())
     rows = []
@@ -3800,6 +3975,8 @@ def _build_save_variant_keyboard(
     rows.append([InlineKeyboardButton("☑️ Выбрать все", callback_data=f"dictselall:{option_key}")])
     if feel_card_key:
         rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"dictfeel:{feel_card_key}")])
+    if question_request_key:
+        rows.append([InlineKeyboardButton("❓ Задать свой вопрос", callback_data=f"quizask:{question_request_key}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -4195,10 +4372,23 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
         options.append({"source": s, "target": t, "is_original": bool(is_original)})
 
     original_query = str(payload.get("original_query") or "").strip()
-    if original_query:
+    if original_query and _normalize_dictionary_compare_key(original_query) == _normalize_dictionary_compare_key(source_text):
         _add_option(original_query, default_option.get("target") or "", is_original=True)
 
     _add_option(default_option.get("source") or "", default_option.get("target") or "", is_original=False)
+
+    predefined = lookup.get("save_worthy_options") if isinstance(lookup, dict) else None
+    if isinstance(predefined, list):
+        for item in predefined:
+            if not isinstance(item, dict):
+                continue
+            _add_option(
+                item.get("source") or item.get("word_source") or "",
+                item.get("target") or item.get("word_target") or "",
+                is_original=False,
+            )
+            if len(options) >= 3:
+                return options[:3]
 
     if isinstance(items, list):
         for item in items:
@@ -4377,6 +4567,7 @@ async def _send_dictionary_lookup_result(
         await message.reply_text("Не удалось разобрать ответ словаря. Попробуйте ещё раз.")
         return
 
+    lookup["original_query"] = str(lookup.get("original_query") or lookup_input).strip()
     source_text = (lookup.get("word_source") or lookup_input).strip()
     card_key = _store_pending_dictionary_card(
         user_id,
@@ -4386,6 +4577,17 @@ async def _send_dictionary_lookup_result(
         lookup,
         original_query=lookup_input,
     )
+    question_request_key = _store_pending_quiz_question_request(
+        user_id=int(user_id),
+        source_text=source_text,
+        target_text=str(lookup.get("word_target") or "").strip(),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    card_payload = pending_dictionary_cards.get(card_key)
+    if isinstance(card_payload, dict):
+        card_payload["question_request_key"] = question_request_key
+        pending_dictionary_cards[card_key] = card_payload
 
     try:
         options = await _generate_dictionary_save_options(
@@ -4411,12 +4613,25 @@ async def _send_dictionary_lookup_result(
         lookup=lookup,
         source_lang=source_lang,
         target_lang=target_lang,
+        question_request_key=question_request_key,
     )
 
-    card_text = _build_dictionary_card_text(source_lang, target_lang, source_text, lookup)
+    card_text = _build_dictionary_card_text(
+        source_lang,
+        target_lang,
+        source_text,
+        lookup,
+        original_query=lookup_input,
+    )
     variants_text = _build_save_variants_text(source_lang, target_lang, options)
     full_text = f"{card_text}\n\n{variants_text}"
-    keyboard = _build_save_variant_keyboard(option_key, options, selected=[], feel_card_key=card_key)
+    keyboard = _build_save_variant_keyboard(
+        option_key,
+        options,
+        selected=[],
+        feel_card_key=card_key,
+        question_request_key=question_request_key,
+    )
     msg = await message.reply_text(
         full_text,
         reply_markup=keyboard,
@@ -5023,9 +5238,16 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
         lookup=lookup,
         source_lang=source_lang,
         target_lang=target_lang,
+        question_request_key=str(payload.get("question_request_key") or "").strip(),
     )
     variants_text = _build_save_variants_text(source_lang, target_lang, options)
-    keyboard = _build_save_variant_keyboard(option_key, options, selected=[], feel_card_key=key)
+    keyboard = _build_save_variant_keyboard(
+        option_key,
+        options,
+        selected=[],
+        feel_card_key=key,
+        question_request_key=str(payload.get("question_request_key") or "").strip() or None,
+    )
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
@@ -5222,6 +5444,7 @@ async def handle_dictionary_select_toggle_callback(update: Update, context: Call
         options,
         selected=payload["selected"],
         feel_card_key=str(payload.get("card_key") or "").strip() or None,
+        question_request_key=str(payload.get("question_request_key") or "").strip() or None,
     )
     try:
         await query.edit_message_reply_markup(reply_markup=keyboard)
@@ -5258,6 +5481,7 @@ async def handle_dictionary_select_all_callback(update: Update, context: Callbac
         options,
         selected=payload["selected"],
         feel_card_key=str(payload.get("card_key") or "").strip() or None,
+        question_request_key=str(payload.get("question_request_key") or "").strip() or None,
     )
     try:
         await query.edit_message_reply_markup(reply_markup=keyboard)
@@ -8531,7 +8755,7 @@ def _build_quiz_result_keyboard(*, feel_key: str | None = None, question_key: st
 def _build_quiz_question_answer_keyboard(*, request_key: str, save_key: str | None = None) -> InlineKeyboardMarkup:
     rows = []
     if save_key:
-        rows.append([InlineKeyboardButton("💾 Сохранить фразу", callback_data=f"quizqsave:{save_key}")])
+        rows.append([InlineKeyboardButton("💾 Сохранить эту фразу", callback_data=f"quizqsave:{save_key}")])
     rows.append([InlineKeyboardButton("❓ Ещё вопрос", callback_data=f"quizask:{request_key}")])
     return InlineKeyboardMarkup(rows)
 
@@ -8568,6 +8792,20 @@ def _normalize_quiz_question_llm_response(
         "source_lang": str(source_lang or "").strip().lower(),
         "target_lang": str(target_lang or "").strip().lower(),
     }
+
+
+def _build_quiz_question_reply_message(normalized: dict) -> str:
+    reply_text = str((normalized or {}).get("reply_text") or "").strip()
+    save_source_text = str((normalized or {}).get("save_source_text") or "").strip()
+    save_target_text = str((normalized or {}).get("save_target_text") or "").strip()
+    if not save_source_text or not save_target_text:
+        return _truncate_telegram_reply_text(reply_text)
+    combined = (
+        f"{reply_text}\n\n"
+        f"💾 Фраза для сохранения: {save_source_text}\n"
+        f"Перевод: {save_target_text}"
+    )
+    return _truncate_telegram_reply_text(combined)
 
 
 async def _send_quiz_result_private(
