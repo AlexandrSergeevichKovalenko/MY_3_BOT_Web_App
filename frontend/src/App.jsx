@@ -660,6 +660,11 @@ function AppInner() {
   const [selectedTopic, setSelectedTopic] = useState('🧱 V2 в главном предложении');
   const [customTopicInput, setCustomTopicInput] = useState('');
   const [selectedLevel, setSelectedLevel] = useState('c1');
+  const [uiLang, setUiLang] = useState('ru');
+  const [themeMode, setThemeMode] = useState(() => resolveExternalThemeMode(window.Telegram?.WebApp));
+  const [themeModeOverride, setThemeModeOverride] = useState(null);
+  const t = useMemo(() => createTranslator(uiLang), [uiLang]);
+  const tr = useCallback((ru, de) => (uiLang === 'de' ? de : ru), [uiLang]);
   const STORY_TOPIC = '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ';
   const CUSTOM_TOPIC = '✍️ Свой грамматический фокус';
   const isStoryTopic = (value) => (value || '').includes('ЗАГАДОЧНАЯ ИСТОРИЯ');
@@ -1375,11 +1380,6 @@ function AppInner() {
     return normalized;
   };
 
-  const [uiLang, setUiLang] = useState('ru');
-  const [themeMode, setThemeMode] = useState(() => resolveExternalThemeMode(window.Telegram?.WebApp));
-  const [themeModeOverride, setThemeModeOverride] = useState(null);
-  const t = useMemo(() => createTranslator(uiLang), [uiLang]);
-  const tr = useCallback((ru, de) => (uiLang === 'de' ? de : ru), [uiLang]);
   const weeklySummaryMetricTitles = useMemo(() => ({
     translations: tr('переводы', 'Uebersetzungen'),
     learned_words: tr('слова и FSRS', 'Woerter und FSRS'),
