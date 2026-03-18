@@ -722,6 +722,13 @@ _force_backend_schema_bootstrap = str(
 ).strip().lower() in {"1", "true", "yes", "on"}
 _BACKEND_SCHEMA_BOOTSTRAP_LOCK = threading.Lock()
 _BACKEND_SCHEMA_READY = False
+_BACKEND_SCHEMA_BOOTSTRAP_RETRIES = 3
+_BACKEND_SCHEMA_BOOTSTRAP_RETRY_DELAY_SECONDS = 1.0
+
+
+def _is_retryable_schema_bootstrap_error(exc: Exception) -> bool:
+    message = str(exc or "").strip().lower()
+    return "deadlock detected" in message or "could not obtain lock" in message
 
 
 def _bootstrap_backend_schema_or_raise() -> None:
@@ -731,14 +738,31 @@ def _bootstrap_backend_schema_or_raise() -> None:
     with _BACKEND_SCHEMA_BOOTSTRAP_LOCK:
         if _BACKEND_SCHEMA_READY:
             return
-        ensure_webapp_tables()
-        missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
-        if missing_phase1_objects:
-            raise RuntimeError(
-                "Missing required skill shadow schema objects after bootstrap: "
-                + ", ".join(missing_phase1_objects)
-            )
-        _BACKEND_SCHEMA_READY = True
+        last_error: Exception | None = None
+        for attempt in range(1, _BACKEND_SCHEMA_BOOTSTRAP_RETRIES + 1):
+            try:
+                ensure_webapp_tables()
+                missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
+                if missing_phase1_objects:
+                    raise RuntimeError(
+                        "Missing required skill shadow schema objects after bootstrap: "
+                        + ", ".join(missing_phase1_objects)
+                    )
+                _BACKEND_SCHEMA_READY = True
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt >= _BACKEND_SCHEMA_BOOTSTRAP_RETRIES or not _is_retryable_schema_bootstrap_error(exc):
+                    raise
+                logging.warning(
+                    "Schema bootstrap retry after lock/deadlock failure: attempt=%s/%s error=%s",
+                    attempt,
+                    _BACKEND_SCHEMA_BOOTSTRAP_RETRIES,
+                    exc,
+                )
+                time.sleep(_BACKEND_SCHEMA_BOOTSTRAP_RETRY_DELAY_SECONDS * attempt)
+        if last_error is not None:
+            raise last_error
 
 
 if _force_backend_schema_bootstrap or not _imported_by_bot_process:
