@@ -18,6 +18,7 @@ import { detectAppMode } from './utils/appMode';
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
 const SINGLE_INSTANCE_LOCK_KEY = 'dds_single_instance_lock_v1';
 const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
+const SINGLE_INSTANCE_STALE_MS = 5000;
 const TTS_CACHE_MAX_ENTRIES = 60;
 const READER_IDLE_TIMEOUT_MS = 60000;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
@@ -64,6 +65,50 @@ function resolveExternalThemeMode(telegramApp) {
     }
   }
   return 'dark';
+}
+
+function readSingleInstanceLockSnapshot() {
+  if (typeof window === 'undefined') {
+    return { token: '', updatedAt: 0 };
+  }
+  try {
+    const raw = String(window.localStorage.getItem(SINGLE_INSTANCE_LOCK_KEY) || '').trim();
+    if (!raw) {
+      return { token: '', updatedAt: 0 };
+    }
+    if (!raw.startsWith('{')) {
+      return { token: raw, updatedAt: 0 };
+    }
+    const parsed = JSON.parse(raw);
+    const token = String(parsed?.token || parsed?.instanceId || parsed?.id || '').trim();
+    const updatedAt = Number(parsed?.updatedAt || parsed?.ts || 0);
+    return {
+      token,
+      updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
+    };
+  } catch (_error) {
+    return { token: '', updatedAt: 0 };
+  }
+}
+
+function writeSingleInstanceLockSnapshot(token) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(
+    SINGLE_INSTANCE_LOCK_KEY,
+    JSON.stringify({
+      token: String(token || '').trim(),
+      updatedAt: Date.now(),
+    })
+  );
+}
+
+function isSingleInstanceLockFresh(snapshot) {
+  const token = String(snapshot?.token || '').trim();
+  const updatedAt = Number(snapshot?.updatedAt || 0);
+  if (!token || !Number.isFinite(updatedAt) || updatedAt <= 0) {
+    return false;
+  }
+  return Date.now() - updatedAt <= SINGLE_INSTANCE_STALE_MS;
 }
 
 class ErrorBoundary extends React.Component {
@@ -2525,7 +2570,7 @@ function AppInner() {
   const reactivateSingleInstanceWindow = useCallback(() => {
     if (!isWebAppMode || typeof window === 'undefined') return false;
     try {
-      window.localStorage.setItem(SINGLE_INSTANCE_LOCK_KEY, singleInstanceTokenRef.current);
+      writeSingleInstanceLockSnapshot(singleInstanceTokenRef.current);
     } catch (error) {
       console.warn('single instance lock takeover failed', error);
     }
@@ -7860,28 +7905,23 @@ function AppInner() {
       return undefined;
     }
 
-    const readLeaderToken = () => {
-      try {
-        const raw = String(window.localStorage.getItem(SINGLE_INSTANCE_LOCK_KEY) || '').trim();
-        if (!raw) return '';
-        if (!raw.startsWith('{')) {
-          return raw;
-        }
-        const parsed = JSON.parse(raw);
-        return String(parsed?.token || parsed?.instanceId || parsed?.id || '').trim();
-      } catch (error) {
-        return '';
-      }
-    };
-
     const token = singleInstanceTokenRef.current;
     const ensureLeadership = (reason = 'heartbeat') => {
-      const leaderToken = readLeaderToken();
-      if (leaderToken === token) {
+      const snapshot = readSingleInstanceLockSnapshot();
+      if (snapshot.token === token) {
+        try {
+          writeSingleInstanceLockSnapshot(token);
+        } catch (error) {
+          console.warn('single instance lock refresh failed', error);
+        }
         singleInstanceOwnsLockRef.current = true;
         if (singleInstanceBlocked) {
           setSingleInstanceBlocked(false);
         }
+        return;
+      }
+      if (!isSingleInstanceLockFresh(snapshot)) {
+        continueSingleInstanceHere(`stale_${reason}`);
         return;
       }
       if (isSingleInstanceWindowPreferred()) {
@@ -7924,7 +7964,7 @@ function AppInner() {
         window.clearInterval(singleInstanceHeartbeatRef.current);
         singleInstanceHeartbeatRef.current = null;
       }
-      if (singleInstanceOwnsLockRef.current && readLeaderToken() === token) {
+      if (singleInstanceOwnsLockRef.current && readSingleInstanceLockSnapshot().token === token) {
         try {
           window.localStorage.removeItem(SINGLE_INSTANCE_LOCK_KEY);
         } catch (error) {
