@@ -1320,6 +1320,679 @@ const TranslationsSection = React.memo(function TranslationsSection({
   );
 });
 
+const HomeScreenSection = React.memo(function HomeScreenSection({
+  tr,
+  planAnalyticsPeriod,
+  setPlanAnalyticsPeriod,
+  planAnalyticsLoading,
+  weeklyPlan,
+  weeklyPlanCollapsed,
+  setWeeklyPlanCollapsed,
+  weeklyPlanDraft,
+  setWeeklyPlanDraft,
+  weeklyPlanSaving,
+  weeklyPlanLoading,
+  weeklyPlanError,
+  planAnalyticsMetrics,
+  planAnalyticsRange,
+  planAnalyticsError,
+  weeklyMetricExpanded,
+  setWeeklyMetricExpanded,
+  saveWeeklyPlan,
+  todayPlan,
+  todayPlanLoading,
+  todayPlanError,
+  todayItemLoading,
+  todayTimerNowMs,
+  regenerateTodayPlan,
+  loadTodayPlan,
+  sendTodayReminderTest,
+  todayTestSending,
+  startTodayTask,
+  submitTodayVideoFeedback,
+  getTodayItemElapsedSeconds,
+  getTodayItemProgressPercent,
+  getTodayTranslationProgress,
+  getTodayItemTitle,
+  formatCompactTimer,
+  skillReport,
+  skillReportLoading,
+  skillReportError,
+  skillPracticeLoading,
+  loadSkillReport,
+  startSkillPractice,
+  resumeSkillPractice,
+  skillTrainingStatusMap,
+  getStoredSkillTrainingSnapshot,
+}) {
+  useAppPerfRenderProbe('HomeScreenSection', {
+    weeklyPlanLoading: Boolean(weeklyPlanLoading),
+    weeklyPlanHasData: Boolean(weeklyPlan?.week),
+    todayPlanLoading: Boolean(todayPlanLoading),
+    todayPlanItems: Array.isArray(todayPlan?.items) ? todayPlan.items.length : 0,
+    skillReportLoading: Boolean(skillReportLoading),
+    skillGroups: Array.isArray(skillReport?.groups) ? skillReport.groups.length : 0,
+    planAnalyticsPeriod: String(planAnalyticsPeriod || 'week'),
+  });
+
+  const ringPalette = ['#ff5d7a', '#ff9d57', '#ffd84d', '#46dca0', '#53c7ff', '#7c9dff'];
+  const ringSize = 264;
+  const ringCenter = ringSize / 2;
+  const ringStartRadius = 118;
+  const ringStep = 14;
+  const weeklyPlanUsesDeferredAnalytics = planAnalyticsPeriod !== 'week';
+  const hasPlanAnalyticsMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0;
+  const weeklyMetrics = weeklyPlanUsesDeferredAnalytics
+    ? (hasPlanAnalyticsMetrics ? planAnalyticsMetrics : {})
+    : (weeklyPlan?.metrics || {});
+  const hasWeeklyPlanSnapshot = Boolean(
+    weeklyPlan?.week
+    || (weeklyPlan?.metrics && Object.keys(weeklyPlan.metrics).length > 0)
+  );
+  const weeklyMetricRows = useMemo(() => ([
+    {
+      key: 'translations',
+      title: tr('Переводы предложений', 'Satz-Uebersetzungen'),
+      unit: tr('шт', 'Stk'),
+      data: weeklyMetrics.translations || {},
+    },
+    {
+      key: 'learned_words',
+      title: tr('Выученные слова (FSRS)', 'Gelernte Woerter (FSRS)'),
+      unit: tr('слов', 'Woerter'),
+      data: weeklyMetrics.learned_words || {},
+    },
+    {
+      key: 'agent_minutes',
+      title: tr('Минуты разговора с агентом', 'Gesprächsminuten mit Assistent'),
+      unit: tr('мин', 'Min'),
+      data: weeklyMetrics.agent_minutes || {},
+    },
+    {
+      key: 'reading_minutes',
+      title: tr('Чтение (минуты)', 'Lesen (Minuten)'),
+      unit: tr('мин', 'Min'),
+      data: weeklyMetrics.reading_minutes || {},
+    },
+  ]), [tr, weeklyMetrics]);
+  const hasWeeklyMetricRows = weeklyMetricRows.some((item) => Object.keys(item.data || {}).length > 0);
+  const canRenderWeeklyMetrics = weeklyPlanUsesDeferredAnalytics
+    ? hasPlanAnalyticsMetrics && !planAnalyticsError
+    : hasWeeklyMetricRows;
+  const showWeeklyPlanSkeleton = !weeklyPlanError && !canRenderWeeklyMetrics;
+  const weeklyWeekLabel = weeklyPlanUsesDeferredAnalytics
+    ? (
+      planAnalyticsRange?.start_date && planAnalyticsRange?.end_date
+        ? `${planAnalyticsRange.start_date} — ${planAnalyticsRange.end_date}`
+        : ''
+    )
+    : (
+      weeklyPlan?.week?.start_date && weeklyPlan?.week?.end_date
+        ? `${weeklyPlan.week.start_date} — ${weeklyPlan.week.end_date}`
+        : ''
+    );
+  const periodDaysElapsed = Math.max(
+    0,
+    Number(
+      weeklyPlanUsesDeferredAnalytics
+        ? (planAnalyticsRange?.days_elapsed ?? 0)
+        : (weeklyPlan?.week?.days_elapsed ?? 0)
+    ) || 0
+  );
+  const periodDaysTotal = Math.max(
+    1,
+    Number(
+      weeklyPlanUsesDeferredAnalytics
+        ? (planAnalyticsRange?.days_total ?? 7)
+        : (weeklyPlan?.week?.days_total ?? 7)
+    ) || 1
+  );
+  const expectedProgressPercent = Math.max(0, Math.min(100, (periodDaysElapsed / periodDaysTotal) * 100));
+  const planPeriodLabel = {
+    week: tr('Неделя', 'Woche'),
+    month: tr('Месяц', 'Monat'),
+    quarter: tr('Квартал', 'Quartal'),
+    'half-year': tr('Полугодие', 'Halbjahr'),
+    year: tr('Год', 'Jahr'),
+  }[planAnalyticsPeriod] || tr('Неделя', 'Woche');
+  const weeklyMetricToneClass = (key) => {
+    if (key === 'translations') return 'is-translations';
+    if (key === 'learned_words') return 'is-words';
+    if (key === 'agent_minutes') return 'is-agent';
+    if (key === 'reading_minutes') return 'is-reading';
+    return '';
+  };
+  const formatWeeklyValue = (value, digits = 0) => {
+    const num = Number(value || 0);
+    if (!Number.isFinite(num)) return '0';
+    if (digits <= 0) return String(Math.round(num));
+    return num.toFixed(digits);
+  };
+  const uniqueSkills = useMemo(() => {
+    const flat = (Array.isArray(skillReport?.groups) ? skillReport.groups : [])
+      .flatMap((group) => (Array.isArray(group?.skills) ? group.skills : []));
+    const byId = new Map();
+    for (const skill of flat) {
+      const id = String(skill?.skill_id || '').trim();
+      if (!id || byId.has(id)) continue;
+      byId.set(id, skill);
+    }
+    return Array.from(byId.values());
+  }, [skillReport?.groups]);
+  const ringSkills = useMemo(() => {
+    const skilledWithData = uniqueSkills.filter((item) => Boolean(item?.has_data) && item?.mastery !== null && item?.mastery !== undefined);
+    const weakestSkills = [...skilledWithData]
+      .sort((a, b) => (Number(a?.mastery || 0) - Number(b?.mastery || 0)) || (Number(b?.errors_7d || 0) - Number(a?.errors_7d || 0)))
+      .slice(0, 3)
+      .map((item) => ({ ...item, ring_type: 'weak' }));
+    const strongestSkills = [...skilledWithData]
+      .sort((a, b) => (Number(b?.mastery || 0) - Number(a?.mastery || 0)) || (Number(a?.errors_7d || 0) - Number(b?.errors_7d || 0)))
+      .filter((item) => !weakestSkills.some((weak) => String(weak?.skill_id || '') === String(item?.skill_id || '')))
+      .slice(0, 3)
+      .map((item) => ({ ...item, ring_type: 'best' }));
+    return [...weakestSkills, ...strongestSkills];
+  }, [uniqueSkills]);
+  const getSkillTrainingStatus = useCallback((skillId) => {
+    const normalized = String(skillId || '').trim();
+    if (!normalized) return null;
+    const value = skillTrainingStatusMap?.[normalized];
+    if (!value || typeof value !== 'object') return null;
+    return {
+      state: String(value?.state || '').trim().toLowerCase(),
+      is_complete: Boolean(value?.is_complete),
+      opened_count: Number(value?.opened_count || 0),
+      required_count: Number(value?.required_count || 0),
+      practice_submitted: Boolean(value?.practice_submitted),
+    };
+  }, [skillTrainingStatusMap]);
+
+  return (
+    <PerfProfiler id="section.home">
+      <>
+        <section className="weekly-plan-panel">
+          <div className="weekly-plan-head">
+            <div>
+              <h2>{tr('План на неделю', 'Wochenplan')}</h2>
+              <p>{tr('Личные цели и факт с прогнозом до конца недели', 'Persoenliche Ziele mit Ist-Werten und Prognose bis Wochenende')}</p>
+            </div>
+            <div className="weekly-plan-head-actions">
+              <label className="weekly-plan-period-select">
+                <span>{tr('Период', 'Zeitraum')}</span>
+                <select
+                  value={planAnalyticsPeriod}
+                  onChange={(event) => setPlanAnalyticsPeriod(event.target.value)}
+                  disabled={planAnalyticsLoading}
+                >
+                  <option value="week">{tr('Неделя', 'Woche')}</option>
+                  <option value="month">{tr('Месяц', 'Monat')}</option>
+                  <option value="quarter">{tr('Квартал', 'Quartal')}</option>
+                  <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
+                  <option value="year">{tr('Год', 'Jahr')}</option>
+                </select>
+              </label>
+              {weeklyWeekLabel && (
+                <span className="weekly-plan-period">{planPeriodLabel}: {weeklyWeekLabel}</span>
+              )}
+              <button
+                type="button"
+                className="secondary-button weekly-plan-collapse-btn"
+                onClick={() => setWeeklyPlanCollapsed((prev) => !prev)}
+              >
+                {weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
+              </button>
+            </div>
+          </div>
+
+          {!weeklyPlanCollapsed && (
+            <div className="weekly-plan-form">
+              <label className="webapp-field">
+                <span>{tr('Количество переводов', 'Anzahl Uebersetzungen')}</span>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="numeric"
+                  value={weeklyPlanDraft.translations_goal}
+                  onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, translations_goal: event.target.value }))}
+                  disabled={weeklyPlanSaving}
+                  placeholder="0"
+                />
+              </label>
+              <label className="webapp-field">
+                <span>{tr('Количество выученных слов', 'Anzahl gelernter Woerter')}</span>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="numeric"
+                  value={weeklyPlanDraft.learned_words_goal}
+                  onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, learned_words_goal: event.target.value }))}
+                  disabled={weeklyPlanSaving}
+                  placeholder="0"
+                />
+              </label>
+              <label className="webapp-field">
+                <span>{tr('Минуты разговора с агентом', 'Gesprächsminuten mit Assistent')}</span>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="numeric"
+                  value={weeklyPlanDraft.agent_minutes_goal}
+                  onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, agent_minutes_goal: event.target.value }))}
+                  disabled={weeklyPlanSaving}
+                  placeholder="0"
+                />
+              </label>
+              <label className="webapp-field">
+                <span>{tr('Минуты чтения', 'Leseminuten')}</span>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="numeric"
+                  value={weeklyPlanDraft.reading_minutes_goal}
+                  onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, reading_minutes_goal: event.target.value }))}
+                  disabled={weeklyPlanSaving}
+                  placeholder="0"
+                />
+              </label>
+              <button
+                type="button"
+                className="primary-button weekly-plan-save-btn"
+                onClick={saveWeeklyPlan}
+                disabled={weeklyPlanSaving || weeklyPlanLoading}
+              >
+                {weeklyPlanSaving ? tr('Сохраняем...', 'Speichern...') : tr('Сохранить план', 'Plan speichern')}
+              </button>
+            </div>
+          )}
+
+          {weeklyPlanLoading && !hasWeeklyPlanSnapshot && (
+            <div className="webapp-muted">{tr('Считаем недельные показатели...', 'Wochenwerte werden berechnet...')}</div>
+          )}
+          {weeklyPlanLoading && hasWeeklyPlanSnapshot && (
+            <div className="webapp-muted">{tr('Обновляем недельный план в фоне...', 'Wochenplan wird im Hintergrund aktualisiert...')}</div>
+          )}
+          {weeklyPlanError && <div className="webapp-error">{weeklyPlanError}</div>}
+          {weeklyPlanUsesDeferredAnalytics && planAnalyticsLoading && (
+            <div className="webapp-muted">{tr('Считаем показатели плана...', 'Planwerte werden berechnet...')}</div>
+          )}
+          {weeklyPlanUsesDeferredAnalytics && planAnalyticsError && <div className="webapp-error">{planAnalyticsError}</div>}
+
+          {showWeeklyPlanSkeleton && (
+            <div className="weekly-plan-metrics" aria-hidden="true">
+              {weeklyMetricRows.map((item) => (
+                <article className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`} key={`weekly-skeleton-${item.key}`} style={{ opacity: 0.72 }}>
+                  <div className="weekly-plan-metric-top">
+                    <div>
+                      <h4>{item.title}</h4>
+                      <p>{tr('Загружаем показатели...', 'Werte werden geladen...')}</p>
+                    </div>
+                    <div className="weekly-plan-progress-ring" style={{ background: 'radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), conic-gradient(rgba(94, 117, 159, 0.35) 0% 100%)' }}>
+                      <span>…</span>
+                    </div>
+                  </div>
+                  <div className="weekly-plan-values-compact">
+                    <span>{tr('Факт', 'Ist')}: <strong>…</strong></span>
+                    <span>{tr('План', 'Plan')}: <strong>…</strong></span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+
+          {canRenderWeeklyMetrics && (
+            <div className="weekly-plan-metrics">
+              {weeklyMetricRows.map((item) => {
+                const goal = Number(item.data?.goal || 0);
+                const actual = Number(item.data?.actual || 0);
+                const forecast = Number(item.data?.forecast || 0);
+                const completion = Number(item.data?.completion_percent || 0);
+                const completionClamped = Math.max(0, Math.min(100, completion));
+                const ringExpected = expectedProgressPercent;
+                const forecastDelta = Number(item.data?.forecast_delta_vs_goal || 0);
+                const deficit = Math.max(0, ringExpected - completionClamped);
+                const ahead = Math.max(0, completionClamped - ringExpected);
+                const expectedPart = Math.min(completionClamped, ringExpected);
+                let ringGradient = '';
+                if (deficit > 0.01) {
+                  ringGradient = `conic-gradient(#7bf1b3 0% ${expectedPart}%, #ff6b6b ${expectedPart}% ${ringExpected}%, rgba(94, 117, 159, 0.35) ${ringExpected}% 100%)`;
+                } else if (ahead > 0.01) {
+                  ringGradient = `conic-gradient(#7bf1b3 0% ${ringExpected}%, #60a5fa ${ringExpected}% ${completionClamped}%, rgba(94, 117, 159, 0.35) ${completionClamped}% 100%)`;
+                } else {
+                  ringGradient = `conic-gradient(#7bf1b3 0% ${completionClamped}%, rgba(94, 117, 159, 0.35) ${completionClamped}% 100%)`;
+                }
+                const completionRingStyle = {
+                  background: `radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), ${ringGradient}`,
+                };
+                const forecastClass = forecastDelta >= 0 ? 'is-good' : 'is-bad';
+                const expanded = Boolean(weeklyMetricExpanded[item.key]);
+                return (
+                  <article className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`} key={item.key}>
+                    <div className="weekly-plan-metric-top">
+                      <div>
+                        <h4>{item.title}</h4>
+                        <p>{tr('План/Факт/Прогноз', 'Plan/Ist/Prognose')}</p>
+                      </div>
+                      <div className="weekly-plan-metric-actions">
+                        <div className="weekly-plan-progress-ring" style={completionRingStyle} title={`${tr('Факт', 'Ist')}: ${Math.round(completionClamped)}% • ${tr('Должно быть к текущему дню', 'Soll bis heute sein')}: ${Math.round(ringExpected)}%`}>
+                          <span>{Math.round(completionClamped)}%</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="secondary-button weekly-plan-card-toggle"
+                          onClick={() => setWeeklyMetricExpanded((prev) => ({ ...prev, [item.key]: !prev[item.key] }))}
+                        >
+                          {expanded ? tr('Свернуть', 'Einklappen') : tr('Развернуть', 'Aufklappen')}
+                        </button>
+                      </div>
+                    </div>
+                    {expanded ? (
+                      <div className="weekly-plan-values">
+                        <div>
+                          <span>{tr('План', 'Plan')}</span>
+                          <strong>{formatWeeklyValue(goal)} {item.unit}</strong>
+                        </div>
+                        <div>
+                          <span>{tr('Факт', 'Ist')}</span>
+                          <strong>{formatWeeklyValue(actual)} {item.unit}</strong>
+                        </div>
+                        <div>
+                          <span>{tr('Прогноз', 'Prognose')}</span>
+                          <strong>{formatWeeklyValue(forecast, 1)} {item.unit}</strong>
+                        </div>
+                        <div className={forecastClass}>
+                          <span>{tr('Отклонение прогноза', 'Abweichung Prognose')}</span>
+                          <strong>{forecastDelta >= 0 ? '+' : ''}{formatWeeklyValue(forecastDelta, 1)} {item.unit}</strong>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="weekly-plan-values-compact">
+                        <span>{tr('Факт', 'Ist')}: <strong>{formatWeeklyValue(actual)} {item.unit}</strong></span>
+                        <span>{tr('План', 'Plan')}: <strong>{formatWeeklyValue(goal)} {item.unit}</strong></span>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="today-plan-panel">
+          <div className="today-plan-head">
+            <div className="today-plan-title-wrap">
+              <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
+              <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persoenlicher Plan fuer heute')}</p>
+            </div>
+            <span className="today-plan-total">
+              {tr('Всего', 'Gesamt')}: {todayPlan?.total_minutes || 0} {tr('мин', 'Min')}
+            </span>
+          </div>
+          <div className="today-plan-toolbar">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={regenerateTodayPlan}
+              disabled={todayPlanLoading}
+            >
+              {todayPlanLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить план', 'Plan aktualisieren')}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={loadTodayPlan}
+              disabled={todayPlanLoading}
+            >
+              {todayPlanLoading ? tr('Загружаем...', 'Laden...') : tr('Показать план', 'Plan zeigen')}
+            </button>
+            <button
+              type="button"
+              className="secondary-button today-plan-mail-check-btn"
+              onClick={sendTodayReminderTest}
+              disabled={todayTestSending}
+            >
+              {todayTestSending ? tr('Отправка...', 'Senden...') : tr('Проверить личку', 'Privat testen')}
+            </button>
+          </div>
+          {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
+          {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
+          {!todayPlanLoading && !todayPlanError && (!todayPlan?.items || todayPlan.items.length === 0) && (
+            <div className="webapp-muted">{tr('План на сегодня пуст.', 'Tagesplan ist leer.')}</div>
+          )}
+          {!todayPlanLoading && !todayPlanError && Array.isArray(todayPlan?.items) && todayPlan.items.length > 0 && (
+            <div className="today-plan-items">
+              {todayPlan.items.map((item) => {
+                const loadingAction = todayItemLoading[item.id];
+                const taskType = String(item?.task_type || '').toLowerCase();
+                const isTranslationTask = taskType === 'translation';
+                const isVideoTask = taskType === 'video' || taskType === 'youtube';
+                const elapsedSeconds = getTodayItemElapsedSeconds(item, todayTimerNowMs);
+                const progressPercent = getTodayItemProgressPercent(item, todayTimerNowMs);
+                const translationProgress = isTranslationTask ? getTodayTranslationProgress(item) : null;
+                const doneByProgress = progressPercent >= 100;
+                const done = String(item?.status || '').toLowerCase() === 'done' || doneByProgress;
+                const itemStatusClass = done ? 'done' : (item.status || 'todo');
+                const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+                const videoTopic = String(payload?.sub_category || payload?.skill_title || payload?.main_category || '').trim();
+                const videoLikes = Number(payload?.video_likes || 0);
+                const videoDislikes = Number(payload?.video_dislikes || 0);
+                const videoScore = Number(payload?.video_score || 0);
+                const userVote = Number(payload?.video_user_vote || 0);
+                const progressBadgeTitle = done
+                  ? tr('Задача выполнена', 'Aufgabe erledigt')
+                  : (
+                    isTranslationTask
+                      ? `${translationProgress?.completedCount || 0}/${translationProgress?.targetCount || 0}`
+                      : `${Math.round(progressPercent)}%`
+                  );
+                const progressBadgeText = done
+                  ? '✅'
+                  : (
+                    isTranslationTask
+                      ? `⭕ ${translationProgress?.completedCount || 0}/${translationProgress?.targetCount || 0}`
+                      : `⭕ ${Math.round(progressPercent)}%`
+                  );
+                return (
+                  <div className={`today-plan-item is-${itemStatusClass}`} key={item.id}>
+                    <div className="today-plan-item-main">
+                      <div className="today-plan-item-title">{getTodayItemTitle(item)}</div>
+                      <div className="today-plan-item-meta">
+                        {!isVideoTask && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
+                        <span>{done ? 'DONE' : String(item.status || 'todo').toUpperCase()}</span>
+                        <span>⏱ {formatCompactTimer(elapsedSeconds)}</span>
+                      </div>
+                      {isVideoTask && (
+                        <div className="today-video-hint">
+                          <div className="today-video-topic-line">
+                            <span>{tr('Тема для тренировки:', 'Thema fuer Training:')}</span>{' '}
+                            <span className="today-video-topic-value">{videoTopic || tr('не определена', 'nicht definiert')}</span>
+                          </div>
+                          {tr(
+                            'Если видео полезно по теме - поставьте 👍. Если не по теме - 👎.',
+                            'Wenn das Video zum Thema passt - 👍. Wenn nicht - 👎.'
+                          )}
+                          {' '}
+                          <span>{tr('Рейтинг', 'Bewertung')}: {videoLikes}/{videoDislikes} ({videoScore >= 0 ? '+' : ''}{videoScore})</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className={`today-plan-item-actions ${isVideoTask ? 'is-video-task' : ''}`}>
+                      <button
+                        type="button"
+                        className={`secondary-button ${isVideoTask ? 'today-video-start-btn' : ''}`}
+                        onClick={() => startTodayTask(item)}
+                        disabled={Boolean(loadingAction) || (!isVideoTask && done)}
+                      >
+                        {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
+                      </button>
+                      <div className={`today-task-progress-badge ${isVideoTask ? 'today-video-progress-badge' : ''} ${done ? 'is-done' : ''}`} title={progressBadgeTitle}>
+                        {progressBadgeText}
+                      </div>
+                      {isVideoTask && (
+                        <>
+                          <button
+                            type="button"
+                            className={`secondary-button today-video-vote ${userVote === 1 ? 'is-active' : ''}`}
+                            onClick={() => submitTodayVideoFeedback(item, 'like')}
+                            disabled={Boolean(loadingAction)}
+                            title={tr('Лайк: видео полезно по теме', 'Like: Video passt zum Thema')}
+                          >
+                            {loadingAction === 'vote_like' ? '…' : '👍'}
+                          </button>
+                          <button
+                            type="button"
+                            className={`secondary-button today-video-vote ${userVote === -1 ? 'is-active is-negative' : ''}`}
+                            onClick={() => submitTodayVideoFeedback(item, 'dislike')}
+                            disabled={Boolean(loadingAction)}
+                            title={tr('Дизлайк: видео не по теме', 'Dislike: Video passt nicht zum Thema')}
+                          >
+                            {loadingAction === 'vote_dislike' ? '…' : '👎'}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="skill-report-panel">
+          <div className="skill-report-head">
+            <h3>{tr('Карта навыков', 'Skill-Ringe')}</h3>
+            <div className="skill-report-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={loadSkillReport}
+                disabled={skillReportLoading}
+              >
+                {skillReportLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
+              </button>
+            </div>
+          </div>
+          {skillReportLoading && <div className="webapp-muted">{tr('Загружаем прогресс...', 'Fortschritt wird geladen...')}</div>}
+          {skillReportError && <div className="webapp-error">{skillReportError}</div>}
+          {!skillReportLoading && !skillReportError && (
+            <div className="skill-rings-layout">
+              <div className="skill-rings-canvas">
+                <svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`} role="img" aria-label="Skill rings">
+                  {ringSkills.map((skill, index) => {
+                    const radius = ringStartRadius - index * ringStep;
+                    const circumference = 2 * Math.PI * radius;
+                    const progress = Math.max(0, Math.min(1, Number(skill?.mastery || 0) / 100));
+                    const offset = circumference * (1 - progress);
+                    const color = ringPalette[index % ringPalette.length];
+                    return (
+                      <g key={skill.skill_id}>
+                        <circle
+                          cx={ringCenter}
+                          cy={ringCenter}
+                          r={radius}
+                          fill="none"
+                          stroke="rgba(143, 167, 206, 0.22)"
+                          strokeWidth="10"
+                        />
+                        <circle
+                          cx={ringCenter}
+                          cy={ringCenter}
+                          r={radius}
+                          fill="none"
+                          stroke={color}
+                          strokeWidth="10"
+                          strokeLinecap="round"
+                          strokeDasharray={`${circumference} ${circumference}`}
+                          strokeDashoffset={offset}
+                          transform={`rotate(-90 ${ringCenter} ${ringCenter})`}
+                        />
+                      </g>
+                    );
+                  })}
+                </svg>
+                <div className="skill-rings-center">
+                  <div className="skill-rings-center-title">{tr('Фокус', 'Fokus')}</div>
+                  <div className="skill-rings-center-value">{ringSkills.length}</div>
+                  <div className="skill-rings-center-sub">{tr('3 слабых + 3 сильных', '3 schwache + 3 starke')}</div>
+                </div>
+              </div>
+              <div className="skill-rings-legend">
+                {ringSkills.map((skill, index) => {
+                  const color = ringPalette[index % ringPalette.length];
+                  const trainingStatus = getSkillTrainingStatus(skill?.skill_id);
+                  const isSkillComplete = Boolean(trainingStatus?.is_complete);
+                  const showSkillInProgress = Boolean(trainingStatus && !isSkillComplete);
+                  const storedTrainingSnapshot = getStoredSkillTrainingSnapshot(skill?.skill_id);
+                  const canResumeSkillTraining = Boolean(storedTrainingSnapshot);
+                  const isSkillBusy = Boolean(skillPracticeLoading[String(skill.skill_id || '')]);
+                  return (
+                    <div
+                      className={`skill-rings-legend-item ${skill.ring_type === 'weak' ? 'is-weak' : 'is-strong'}`}
+                      key={`legend-${skill.skill_id}`}
+                    >
+                      <span className="skill-rings-dot" style={{ backgroundColor: color }} />
+                      <div className="skill-rings-text">
+                        <div className="skill-rings-name">
+                          {skill.name}
+                          {isSkillComplete && (
+                            <span className="skill-train-status-badge is-complete">✅ {tr('Готово', 'Fertig')}</span>
+                          )}
+                          {showSkillInProgress && (
+                            <span className="skill-train-status-badge is-progress">
+                              {tr('в процессе', 'in Arbeit')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="skill-rings-meta">
+                          <span>{skill.ring_type === 'weak' ? tr('Слабый', 'Schwach') : tr('Сильный', 'Stark')}</span>
+                          <span>
+                            {tr('Оценка', 'Score')}: {skill?.mastery === null || skill?.mastery === undefined
+                              ? tr('нет данных', 'keine Daten')
+                              : `${Math.round(Number(skill.mastery || 0))}%`}
+                          </span>
+                          <span>{tr('Ошибки 7д', 'Fehler 7T')}: {Number(skill.errors_7d || 0)}</span>
+                          {trainingStatus && (
+                            <span>
+                              {tr('Ссылки', 'Links')}: {Math.max(0, Number(trainingStatus.opened_count || 0))}/{Math.max(0, Number(trainingStatus.required_count || 0))}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="skill-rings-actions">
+                        <button
+                          type="button"
+                          className="secondary-button skill-rings-train-btn"
+                          onClick={() => startSkillPractice(skill, { forceRefresh: false })}
+                          disabled={isSkillBusy}
+                        >
+                          {isSkillBusy
+                            ? tr('Запуск...', 'Start...')
+                            : tr('Прокачать', 'Trainieren')}
+                        </button>
+                        {canResumeSkillTraining && (
+                          <button
+                            type="button"
+                            className="secondary-button skill-rings-resume-btn"
+                            onClick={() => resumeSkillPractice(skill)}
+                            disabled={isSkillBusy}
+                          >
+                            {tr('Вернуться к тренировке', 'Zum Training zurueck')}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {ringSkills.length === 0 && (
+                  <div className="webapp-muted">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      </>
+    </PerfProfiler>
+  );
+});
+
 function AppInner() {
   const telegramApp = useMemo(() => window.Telegram?.WebApp, []);
   const [appMode, setAppMode] = useState(() => detectAppMode());
@@ -3464,6 +4137,9 @@ function AppInner() {
   const skillTrainingStorageKey = useMemo(() => {
     return `skill_training_sessions_${stableWebappUserId}_${getLocalDateKey()}`;
   }, [stableWebappUserId]);
+  const weeklyPlanSnapshotStorageKey = useMemo(() => {
+    return `weekly_plan_snapshot_${stableWebappUserId}`;
+  }, [stableWebappUserId]);
   const skillTrainingLegacyStorageKeys = useMemo(() => {
     const dateKey = getLocalDateKey();
     const candidates = [
@@ -4665,6 +5341,46 @@ function AppInner() {
     }
   }, [appendToSrsPrefetchQueue, fetchWithTimeout, initData]);
 
+  const buildWeeklyPlanDraftFromPlan = useCallback((plan) => ({
+    translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
+    learned_words_goal: String(Number(plan?.plan?.learned_words_goal || 0)),
+    agent_minutes_goal: String(Number(plan?.plan?.agent_minutes_goal || 0)),
+    reading_minutes_goal: String(Number(plan?.plan?.reading_minutes_goal || 0)),
+  }), []);
+
+  const persistWeeklyPlanSnapshot = useCallback((plan) => {
+    if (!isWebAppMode || !plan) return;
+    const payload = {
+      saved_at: new Date().toISOString(),
+      plan,
+      draft: buildWeeklyPlanDraftFromPlan(plan),
+    };
+    safeStorageSet(weeklyPlanSnapshotStorageKey, JSON.stringify(payload));
+  }, [buildWeeklyPlanDraftFromPlan, isWebAppMode, weeklyPlanSnapshotStorageKey]);
+
+  const readWeeklyPlanSnapshot = useCallback(() => {
+    if (!isWebAppMode) return null;
+    const raw = safeStorageGet(weeklyPlanSnapshotStorageKey);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      const plan = parsed?.plan && typeof parsed.plan === 'object' ? parsed.plan : null;
+      const draft = parsed?.draft && typeof parsed.draft === 'object' ? parsed.draft : null;
+      const startDate = String(plan?.week?.start_date || '').trim();
+      const endDate = String(plan?.week?.end_date || '').trim();
+      const todayKey = getLocalDateKey();
+      if (!plan || !startDate || !endDate || todayKey < startDate || todayKey > endDate) {
+        return null;
+      }
+      return {
+        plan,
+        draft: draft || buildWeeklyPlanDraftFromPlan(plan),
+      };
+    } catch (_error) {
+      return null;
+    }
+  }, [isWebAppMode, weeklyPlanSnapshotStorageKey]);
+
   const loadTodayPlan = async () => {
     if (!initData) return;
     try {
@@ -4739,12 +5455,8 @@ function AppInner() {
         metrics: data?.metrics || {},
       };
       setWeeklyPlan(plan);
-      setWeeklyPlanDraft({
-        translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
-        learned_words_goal: String(Number(plan?.plan?.learned_words_goal || 0)),
-        agent_minutes_goal: String(Number(plan?.plan?.agent_minutes_goal || 0)),
-        reading_minutes_goal: String(Number(plan?.plan?.reading_minutes_goal || 0)),
-      });
+      setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(plan));
+      persistWeeklyPlanSnapshot(plan);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -4881,12 +5593,8 @@ function AppInner() {
         metrics: data?.metrics || {},
       };
       setWeeklyPlan(plan);
-      setWeeklyPlanDraft({
-        translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
-        learned_words_goal: String(Number(plan?.plan?.learned_words_goal || 0)),
-        agent_minutes_goal: String(Number(plan?.plan?.agent_minutes_goal || 0)),
-        reading_minutes_goal: String(Number(plan?.plan?.reading_minutes_goal || 0)),
-      });
+      setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(plan));
+      persistWeeklyPlanSnapshot(plan);
       setWeeklyPlanCollapsed(true);
       setWeeklyMetricExpanded({
         translations: false,
@@ -6175,6 +6883,7 @@ function AppInner() {
         const nextPair = `${data.profile.native_language || 'ru'}-${data.profile.learning_language || 'de'}`;
         const pairChanged = prevPair !== nextPair || Boolean(data.reset_sessions);
         if (pairChanged) {
+          safeStorageRemove(weeklyPlanSnapshotStorageKey);
           setSrsCard(null);
           setSrsState(null);
           setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
@@ -7397,48 +8106,6 @@ function AppInner() {
       : tr('Субтитры: не загружены', 'Untertitel: Nicht geladen');
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
-  const uniqueSkills = (() => {
-    const flat = (Array.isArray(skillReport?.groups) ? skillReport.groups : [])
-      .flatMap((group) => (Array.isArray(group?.skills) ? group.skills : []));
-    const byId = new Map();
-    for (const skill of flat) {
-      const id = String(skill?.skill_id || '').trim();
-      if (!id || byId.has(id)) continue;
-      byId.set(id, skill);
-    }
-    return Array.from(byId.values());
-  })();
-  const skilledWithData = uniqueSkills.filter((item) => Boolean(item?.has_data) && item?.mastery !== null && item?.mastery !== undefined);
-  const weakestSkills = [...skilledWithData]
-    .sort((a, b) => (Number(a?.mastery || 0) - Number(b?.mastery || 0)) || (Number(b?.errors_7d || 0) - Number(a?.errors_7d || 0)))
-    .slice(0, 3)
-    .map((item) => ({ ...item, ring_type: 'weak' }));
-  const strongestSkills = [...skilledWithData]
-    .sort((a, b) => (Number(b?.mastery || 0) - Number(a?.mastery || 0)) || (Number(a?.errors_7d || 0) - Number(b?.errors_7d || 0)))
-    .filter((item) => !weakestSkills.some((weak) => String(weak?.skill_id || '') === String(item?.skill_id || '')))
-    .slice(0, 3)
-    .map((item) => ({ ...item, ring_type: 'best' }));
-  const ringSkills = [...weakestSkills, ...strongestSkills];
-  const skillTrainingStatusMap = useMemo(
-    () => (skillReport?.skill_training_status && typeof skillReport.skill_training_status === 'object'
-      ? skillReport.skill_training_status
-      : {}),
-    [skillReport]
-  );
-  const getSkillTrainingStatus = useCallback((skillId) => {
-    const normalized = String(skillId || '').trim();
-    if (!normalized) return null;
-    const value = skillTrainingStatusMap[normalized];
-    if (!value || typeof value !== 'object') return null;
-    return {
-      state: String(value?.state || '').trim().toLowerCase(),
-      is_complete: Boolean(value?.is_complete),
-      opened_count: Number(value?.opened_count || 0),
-      required_count: Number(value?.required_count || 0),
-      practice_submitted: Boolean(value?.practice_submitted),
-    };
-  }, [skillTrainingStatusMap]);
-  const ringPalette = ['#ff5d7a', '#ff9d57', '#ffd84d', '#46dca0', '#53c7ff', '#7c9dff'];
   const economicsActionMap = useMemo(() => {
     const rows = Array.isArray(economicsSummary?.breakdown?.by_action_type)
       ? economicsSummary.breakdown.by_action_type
@@ -7472,13 +8139,15 @@ function AppInner() {
     },
   ]), [economicsActionMap, uiLang]);
   const livekitStatusColor = String(economicsSummary?.livekit_status?.color || '').toLowerCase();
-  const ringSize = 264;
-  const ringCenter = ringSize / 2;
-  const ringStartRadius = 118;
-  const ringStep = 14;
-  const weeklyMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0
-    ? planAnalyticsMetrics
+  const weeklyPlanUsesDeferredAnalytics = planAnalyticsPeriod !== 'week';
+  const hasPlanAnalyticsMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0;
+  const weeklyMetrics = weeklyPlanUsesDeferredAnalytics
+    ? (hasPlanAnalyticsMetrics ? planAnalyticsMetrics : {})
     : (weeklyPlan?.metrics || {});
+  const hasWeeklyPlanSnapshot = Boolean(
+    weeklyPlan?.week
+    || (weeklyPlan?.metrics && Object.keys(weeklyPlan.metrics).length > 0)
+  );
   const weeklyMetricRows = [
     {
       key: 'translations',
@@ -7505,18 +8174,37 @@ function AppInner() {
       data: weeklyMetrics.reading_minutes || {},
     },
   ];
-  const weeklyWeekLabel = planAnalyticsRange?.start_date && planAnalyticsRange?.end_date
-    ? `${planAnalyticsRange.start_date} — ${planAnalyticsRange.end_date}`
-    : (weeklyPlan?.week?.start_date && weeklyPlan?.week?.end_date
-      ? `${weeklyPlan.week.start_date} — ${weeklyPlan.week.end_date}`
-      : '');
+  const hasWeeklyMetricRows = weeklyMetricRows.some((item) => Object.keys(item.data || {}).length > 0);
+  const canRenderWeeklyMetrics = weeklyPlanUsesDeferredAnalytics
+    ? hasPlanAnalyticsMetrics && !planAnalyticsError
+    : hasWeeklyMetricRows;
+  const showWeeklyPlanSkeleton = !weeklyPlanError && !canRenderWeeklyMetrics;
+  const weeklyWeekLabel = weeklyPlanUsesDeferredAnalytics
+    ? (
+      planAnalyticsRange?.start_date && planAnalyticsRange?.end_date
+        ? `${planAnalyticsRange.start_date} — ${planAnalyticsRange.end_date}`
+        : ''
+    )
+    : (
+      weeklyPlan?.week?.start_date && weeklyPlan?.week?.end_date
+        ? `${weeklyPlan.week.start_date} — ${weeklyPlan.week.end_date}`
+        : ''
+    );
   const periodDaysElapsed = Math.max(
     0,
-    Number(planAnalyticsRange?.days_elapsed ?? weeklyPlan?.week?.days_elapsed ?? 0) || 0
+    Number(
+      weeklyPlanUsesDeferredAnalytics
+        ? (planAnalyticsRange?.days_elapsed ?? 0)
+        : (weeklyPlan?.week?.days_elapsed ?? 0)
+    ) || 0
   );
   const periodDaysTotal = Math.max(
     1,
-    Number(planAnalyticsRange?.days_total ?? weeklyPlan?.week?.days_total ?? 7) || 1
+    Number(
+      weeklyPlanUsesDeferredAnalytics
+        ? (planAnalyticsRange?.days_total ?? 7)
+        : (weeklyPlan?.week?.days_total ?? 7)
+    ) || 1
   );
   const expectedProgressPercent = Math.max(0, Math.min(100, (periodDaysElapsed / periodDaysTotal) * 100));
   const planPeriodLabel = {
@@ -7553,6 +8241,12 @@ function AppInner() {
     const uid = webappUser?.id ? String(webappUser.id) : 'anon';
     return `weekly_metric_expanded_${uid}`;
   }, [webappUser]);
+  const homeSkillTrainingStatusMap = useMemo(
+    () => (skillReport?.skill_training_status && typeof skillReport.skill_training_status === 'object'
+      ? skillReport.skill_training_status
+      : {}),
+    [skillReport]
+  );
 
   const toggleSection = (key) => {
     if (key === 'economics' && !canViewEconomics) return;
@@ -9393,6 +10087,7 @@ function AppInner() {
         if (pairKey) {
           startupLoadedLanguagePairRef.current = pairKey;
         }
+        void loadWeeklyPlan();
         await loadTodayPlan();
         if (startupSequenceTokenRef.current !== sequenceToken) return;
         startupPhase2TimerRef.current = window.setTimeout(() => {
@@ -9421,6 +10116,16 @@ function AppInner() {
       }
     };
   }, [isWebAppMode, initData]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || weeklyPlan) {
+      return;
+    }
+    const snapshot = readWeeklyPlanSnapshot();
+    if (!snapshot?.plan) return;
+    setWeeklyPlan(snapshot.plan);
+    setWeeklyPlanDraft(snapshot.draft || buildWeeklyPlanDraftFromPlan(snapshot.plan));
+  }, [buildWeeklyPlanDraftFromPlan, initData, isWebAppMode, readWeeklyPlanSnapshot, weeklyPlan]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready || !languageProfile?.has_profile) {
@@ -9568,9 +10273,7 @@ function AppInner() {
       });
       return;
     }
-    if (!startupPhase2Ready) return;
-    void loadWeeklyPlan();
-  }, [isWebAppMode, initData, startupPhase2Ready]);
+  }, [isWebAppMode, initData]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready) {
@@ -9583,8 +10286,9 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready) return;
+    if (planAnalyticsPeriod === 'week' && hasWeeklyPlanSnapshot) return;
     void loadPlanAnalytics(planAnalyticsPeriod);
-  }, [planAnalyticsPeriod, isWebAppMode, initData, startupPhase3Ready]);
+  }, [planAnalyticsPeriod, isWebAppMode, initData, startupPhase3Ready, hasWeeklyPlanSnapshot]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -9610,7 +10314,9 @@ function AppInner() {
         void loadStarterDictionaryStatus();
       }
       void loadReaderLibrary();
-      void loadPlanAnalytics(planAnalyticsPeriod);
+      if (planAnalyticsPeriod !== 'week') {
+        void loadPlanAnalytics(planAnalyticsPeriod);
+      }
     }
   }, [
     initData,
@@ -15648,6 +16354,20 @@ function AppInner() {
   const renderExplanationContentStable = useStableCallback(renderExplanationContent);
   const handleFinishTranslationStable = useStableCallback(handleFinishTranslation);
   const handleLoadDailyHistoryStable = useStableCallback(handleLoadDailyHistory);
+  const saveWeeklyPlanStable = useStableCallback(saveWeeklyPlan);
+  const regenerateTodayPlanStable = useStableCallback(regenerateTodayPlan);
+  const loadTodayPlanStable = useStableCallback(loadTodayPlan);
+  const sendTodayReminderTestStable = useStableCallback(sendTodayReminderTest);
+  const startTodayTaskStable = useStableCallback(startTodayTask);
+  const submitTodayVideoFeedbackStable = useStableCallback(submitTodayVideoFeedback);
+  const getTodayItemElapsedSecondsStable = useStableCallback(getTodayItemElapsedSeconds);
+  const getTodayTranslationProgressStable = useStableCallback(getTodayTranslationProgress);
+  const getTodayItemProgressPercentStable = useStableCallback(getTodayItemProgressPercent);
+  const formatCompactTimerStable = useStableCallback(formatCompactTimer);
+  const getTodayItemTitleStable = useStableCallback(getTodayItemTitle);
+  const loadSkillReportStable = useStableCallback(loadSkillReport);
+  const startSkillPracticeStable = useStableCallback(startSkillPractice);
+  const resumeSkillPracticeStable = useStableCallback(resumeSkillPractice);
 
   const buildAnalyticsScopeContextPayload = () => {
     const unsafeChat = telegramApp?.initDataUnsafe?.chat || {};
@@ -17316,461 +18036,51 @@ function AppInner() {
             )}
 
             {isHomeScreen && initData && (
-              <section className="weekly-plan-panel">
-                <div className="weekly-plan-head">
-                  <div>
-                    <h2>{tr('План на неделю', 'Wochenplan')}</h2>
-                    <p>{tr('Личные цели и факт с прогнозом до конца недели', 'Persoenliche Ziele mit Ist-Werten und Prognose bis Wochenende')}</p>
-                  </div>
-                  <div className="weekly-plan-head-actions">
-                    <label className="weekly-plan-period-select">
-                      <span>{tr('Период', 'Zeitraum')}</span>
-                      <select
-                        value={planAnalyticsPeriod}
-                        onChange={(event) => setPlanAnalyticsPeriod(event.target.value)}
-                        disabled={planAnalyticsLoading}
-                      >
-                        <option value="week">{tr('Неделя', 'Woche')}</option>
-                        <option value="month">{tr('Месяц', 'Monat')}</option>
-                        <option value="quarter">{tr('Квартал', 'Quartal')}</option>
-                        <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
-                        <option value="year">{tr('Год', 'Jahr')}</option>
-                      </select>
-                    </label>
-                    {weeklyWeekLabel && (
-                      <span className="weekly-plan-period">{planPeriodLabel}: {weeklyWeekLabel}</span>
-                    )}
-                    <button
-                      type="button"
-                      className="secondary-button weekly-plan-collapse-btn"
-                      onClick={() => setWeeklyPlanCollapsed((prev) => !prev)}
-                    >
-                      {weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
-                    </button>
-                  </div>
-                </div>
-
-                {!weeklyPlanCollapsed && (
-                <div className="weekly-plan-form">
-                  <label className="webapp-field">
-                    <span>{tr('Количество переводов', 'Anzahl Uebersetzungen')}</span>
-                    <input
-                      type="number"
-                      min="0"
-                      inputMode="numeric"
-                      value={weeklyPlanDraft.translations_goal}
-                      onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, translations_goal: event.target.value }))}
-                      disabled={weeklyPlanSaving}
-                      placeholder="0"
-                    />
-                  </label>
-                  <label className="webapp-field">
-                    <span>{tr('Количество выученных слов', 'Anzahl gelernter Woerter')}</span>
-                    <input
-                      type="number"
-                      min="0"
-                      inputMode="numeric"
-                      value={weeklyPlanDraft.learned_words_goal}
-                      onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, learned_words_goal: event.target.value }))}
-                      disabled={weeklyPlanSaving}
-                      placeholder="0"
-                    />
-                  </label>
-                  <label className="webapp-field">
-                    <span>{tr('Минуты разговора с агентом', 'Gesprächsminuten mit Assistent')}</span>
-                    <input
-                      type="number"
-                      min="0"
-                      inputMode="numeric"
-                      value={weeklyPlanDraft.agent_minutes_goal}
-                      onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, agent_minutes_goal: event.target.value }))}
-                      disabled={weeklyPlanSaving}
-                      placeholder="0"
-                    />
-                  </label>
-                  <label className="webapp-field">
-                    <span>{tr('Минуты чтения', 'Leseminuten')}</span>
-                    <input
-                      type="number"
-                      min="0"
-                      inputMode="numeric"
-                      value={weeklyPlanDraft.reading_minutes_goal}
-                      onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, reading_minutes_goal: event.target.value }))}
-                      disabled={weeklyPlanSaving}
-                      placeholder="0"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="primary-button weekly-plan-save-btn"
-                    onClick={saveWeeklyPlan}
-                    disabled={weeklyPlanSaving || weeklyPlanLoading}
-                  >
-                    {weeklyPlanSaving ? tr('Сохраняем...', 'Speichern...') : tr('Сохранить план', 'Plan speichern')}
-                  </button>
-                </div>
-                )}
-
-                {weeklyPlanLoading && <div className="webapp-muted">{tr('Считаем недельные показатели...', 'Wochenwerte werden berechnet...')}</div>}
-                {weeklyPlanError && <div className="webapp-error">{weeklyPlanError}</div>}
-                {planAnalyticsLoading && <div className="webapp-muted">{tr('Считаем показатели плана...', 'Planwerte werden berechnet...')}</div>}
-                {planAnalyticsError && <div className="webapp-error">{planAnalyticsError}</div>}
-
-                {!weeklyPlanLoading && !weeklyPlanError && !planAnalyticsLoading && !planAnalyticsError && (
-                  <div className="weekly-plan-metrics">
-                    {weeklyMetricRows.map((item) => {
-                      const goal = Number(item.data?.goal || 0);
-                      const actual = Number(item.data?.actual || 0);
-                      const forecast = Number(item.data?.forecast || 0);
-                      const completion = Number(item.data?.completion_percent || 0);
-                      const completionClamped = Math.max(0, Math.min(100, completion));
-                      const ringExpected = expectedProgressPercent;
-                      const forecastDelta = Number(item.data?.forecast_delta_vs_goal || 0);
-                      const deficit = Math.max(0, ringExpected - completionClamped);
-                      const ahead = Math.max(0, completionClamped - ringExpected);
-                      const expectedPart = Math.min(completionClamped, ringExpected);
-                      const remainder = Math.max(0, 100 - Math.max(completionClamped, ringExpected));
-                      let ringGradient = '';
-                      if (deficit > 0.01) {
-                        ringGradient = `conic-gradient(#7bf1b3 0% ${expectedPart}%, #ff6b6b ${expectedPart}% ${ringExpected}%, rgba(94, 117, 159, 0.35) ${ringExpected}% 100%)`;
-                      } else if (ahead > 0.01) {
-                        ringGradient = `conic-gradient(#7bf1b3 0% ${ringExpected}%, #60a5fa ${ringExpected}% ${completionClamped}%, rgba(94, 117, 159, 0.35) ${completionClamped}% 100%)`;
-                      } else {
-                        ringGradient = `conic-gradient(#7bf1b3 0% ${completionClamped}%, rgba(94, 117, 159, 0.35) ${completionClamped}% 100%)`;
-                      }
-                      const completionRingStyle = {
-                        background: `radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), ${ringGradient}`,
-                      };
-                      const forecastClass = forecastDelta >= 0 ? 'is-good' : 'is-bad';
-                      const expanded = Boolean(weeklyMetricExpanded[item.key]);
-                      return (
-                        <article className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`} key={item.key}>
-                          <div className="weekly-plan-metric-top">
-                            <div>
-                              <h4>{item.title}</h4>
-                              <p>{tr('План/Факт/Прогноз', 'Plan/Ist/Prognose')}</p>
-                            </div>
-                            <div className="weekly-plan-metric-actions">
-                              <div className="weekly-plan-progress-ring" style={completionRingStyle} title={`${tr('Факт', 'Ist')}: ${Math.round(completionClamped)}% • ${tr('Должно быть к текущему дню', 'Soll bis heute sein')}: ${Math.round(ringExpected)}%`}>
-                                <span>{Math.round(completionClamped)}%</span>
-                              </div>
-                              <button
-                                type="button"
-                                className="secondary-button weekly-plan-card-toggle"
-                                onClick={() => setWeeklyMetricExpanded((prev) => ({ ...prev, [item.key]: !prev[item.key] }))}
-                              >
-                                {expanded ? tr('Свернуть', 'Einklappen') : tr('Развернуть', 'Aufklappen')}
-                              </button>
-                            </div>
-                          </div>
-                          {expanded ? (
-                          <div className="weekly-plan-values">
-                            <div>
-                              <span>{tr('План', 'Plan')}</span>
-                              <strong>{formatWeeklyValue(goal)} {item.unit}</strong>
-                            </div>
-                            <div>
-                              <span>{tr('Факт', 'Ist')}</span>
-                              <strong>{formatWeeklyValue(actual)} {item.unit}</strong>
-                            </div>
-                            <div>
-                              <span>{tr('Прогноз', 'Prognose')}</span>
-                              <strong>{formatWeeklyValue(forecast, 1)} {item.unit}</strong>
-                            </div>
-                            <div className={forecastClass}>
-                              <span>{tr('Отклонение прогноза', 'Abweichung Prognose')}</span>
-                              <strong>{forecastDelta >= 0 ? '+' : ''}{formatWeeklyValue(forecastDelta, 1)} {item.unit}</strong>
-                            </div>
-                          </div>
-                          ) : (
-                            <div className="weekly-plan-values-compact">
-                              <span>{tr('Факт', 'Ist')}: <strong>{formatWeeklyValue(actual)} {item.unit}</strong></span>
-                              <span>{tr('План', 'Plan')}: <strong>{formatWeeklyValue(goal)} {item.unit}</strong></span>
-                            </div>
-                          )}
-                        </article>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-            )}
-
-            {isHomeScreen && initData && (
-              <section className="today-plan-panel">
-                <div className="today-plan-head">
-                  <div className="today-plan-title-wrap">
-                    <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
-                    <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persoenlicher Plan fuer heute')}</p>
-                  </div>
-                  <span className="today-plan-total">
-                    {tr('Всего', 'Gesamt')}: {todayPlan?.total_minutes || 0} {tr('мин', 'Min')}
-                  </span>
-                </div>
-                <div className="today-plan-toolbar">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={regenerateTodayPlan}
-                    disabled={todayPlanLoading}
-                  >
-                    {todayPlanLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить план', 'Plan aktualisieren')}
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => { void loadTodayPlan(); }}
-                    disabled={todayPlanLoading}
-                  >
-                    {todayPlanLoading ? tr('Загружаем...', 'Laden...') : tr('Показать план', 'Plan zeigen')}
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-button today-plan-mail-check-btn"
-                    onClick={sendTodayReminderTest}
-                    disabled={todayTestSending}
-                  >
-                    {todayTestSending ? tr('Отправка...', 'Senden...') : tr('Проверить личку', 'Privat testen')}
-                  </button>
-                </div>
-                {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
-                {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
-                {!todayPlanLoading && !todayPlanError && (!todayPlan?.items || todayPlan.items.length === 0) && (
-                  <div className="webapp-muted">{tr('План на сегодня пуст.', 'Tagesplan ist leer.')}</div>
-                )}
-                {!todayPlanLoading && !todayPlanError && Array.isArray(todayPlan?.items) && todayPlan.items.length > 0 && (
-                  <div className="today-plan-items">
-                    {todayPlan.items.map((item) => {
-                      const loadingAction = todayItemLoading[item.id];
-                      const taskType = String(item?.task_type || '').toLowerCase();
-                      const isTranslationTask = taskType === 'translation';
-                      const isVideoTask = taskType === 'video' || taskType === 'youtube';
-                      const elapsedSeconds = getTodayItemElapsedSeconds(item, todayTimerNowMs);
-                      const progressPercent = getTodayItemProgressPercent(item, todayTimerNowMs);
-                      const translationProgress = isTranslationTask ? getTodayTranslationProgress(item) : null;
-                      const doneByProgress = progressPercent >= 100;
-                      const done = String(item?.status || '').toLowerCase() === 'done' || doneByProgress;
-                      const itemStatusClass = done ? 'done' : (item.status || 'todo');
-                      const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
-                      const videoTopic = String(payload?.sub_category || payload?.skill_title || payload?.main_category || '').trim();
-                      const videoLikes = Number(payload?.video_likes || 0);
-                      const videoDislikes = Number(payload?.video_dislikes || 0);
-                      const videoScore = Number(payload?.video_score || 0);
-                      const userVote = Number(payload?.video_user_vote || 0);
-                      const progressBadgeTitle = done
-                        ? tr('Задача выполнена', 'Aufgabe erledigt')
-                        : (
-                          isTranslationTask
-                            ? `${translationProgress?.completedCount || 0}/${translationProgress?.targetCount || 0}`
-                            : `${Math.round(progressPercent)}%`
-                        );
-                      const progressBadgeText = done
-                        ? '✅'
-                        : (
-                          isTranslationTask
-                            ? `⭕ ${translationProgress?.completedCount || 0}/${translationProgress?.targetCount || 0}`
-                            : `⭕ ${Math.round(progressPercent)}%`
-                        );
-                      return (
-                        <div className={`today-plan-item is-${itemStatusClass}`} key={item.id}>
-                          <div className="today-plan-item-main">
-                            <div className="today-plan-item-title">{getTodayItemTitle(item)}</div>
-                            <div className="today-plan-item-meta">
-                              {!isVideoTask && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
-                              <span>{done ? 'DONE' : String(item.status || 'todo').toUpperCase()}</span>
-                              <span>⏱ {formatCompactTimer(elapsedSeconds)}</span>
-                            </div>
-                            {isVideoTask && (
-                              <div className="today-video-hint">
-                                <div className="today-video-topic-line">
-                                  <span>{tr('Тема для тренировки:', 'Thema fuer Training:')}</span>{' '}
-                                  <span className="today-video-topic-value">{videoTopic || tr('не определена', 'nicht definiert')}</span>
-                                </div>
-                                {tr(
-                                  'Если видео полезно по теме - поставьте 👍. Если не по теме - 👎.',
-                                  'Wenn das Video zum Thema passt - 👍. Wenn nicht - 👎.'
-                                )}
-                                {' '}
-                                <span>{tr('Рейтинг', 'Bewertung')}: {videoLikes}/{videoDislikes} ({videoScore >= 0 ? '+' : ''}{videoScore})</span>
-                              </div>
-                            )}
-                          </div>
-                          <div className={`today-plan-item-actions ${isVideoTask ? 'is-video-task' : ''}`}>
-                            <button
-                              type="button"
-                              className={`secondary-button ${isVideoTask ? 'today-video-start-btn' : ''}`}
-                              onClick={() => startTodayTask(item)}
-                              disabled={Boolean(loadingAction) || (!isVideoTask && done)}
-                            >
-                              {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
-                            </button>
-                            <div className={`today-task-progress-badge ${isVideoTask ? 'today-video-progress-badge' : ''} ${done ? 'is-done' : ''}`} title={progressBadgeTitle}>
-                              {progressBadgeText}
-                            </div>
-                            {isVideoTask && (
-                              <>
-                                <button
-                                  type="button"
-                                  className={`secondary-button today-video-vote ${userVote === 1 ? 'is-active' : ''}`}
-                                  onClick={() => submitTodayVideoFeedback(item, 'like')}
-                                  disabled={Boolean(loadingAction)}
-                                  title={tr('Лайк: видео полезно по теме', 'Like: Video passt zum Thema')}
-                                >
-                                  {loadingAction === 'vote_like' ? '…' : '👍'}
-                                </button>
-                                <button
-                                  type="button"
-                                  className={`secondary-button today-video-vote ${userVote === -1 ? 'is-active is-negative' : ''}`}
-                                  onClick={() => submitTodayVideoFeedback(item, 'dislike')}
-                                  disabled={Boolean(loadingAction)}
-                                  title={tr('Дизлайк: видео не по теме', 'Dislike: Video passt nicht zum Thema')}
-                                >
-                                  {loadingAction === 'vote_dislike' ? '…' : '👎'}
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-            )}
-
-            {isHomeScreen && initData && (
-              <section className="skill-report-panel">
-                <div className="skill-report-head">
-                  <h3>{tr('Карта навыков', 'Skill-Ringe')}</h3>
-                  <div className="skill-report-actions">
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={loadSkillReport}
-                      disabled={skillReportLoading}
-                    >
-                      {skillReportLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
-                    </button>
-                  </div>
-                </div>
-                {skillReportLoading && <div className="webapp-muted">{tr('Загружаем прогресс...', 'Fortschritt wird geladen...')}</div>}
-                {skillReportError && <div className="webapp-error">{skillReportError}</div>}
-                {!skillReportLoading && !skillReportError && (
-                  <div className="skill-rings-layout">
-                    <div className="skill-rings-canvas">
-                      <svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`} role="img" aria-label="Skill rings">
-                        {ringSkills.map((skill, index) => {
-                          const radius = ringStartRadius - index * ringStep;
-                          const circumference = 2 * Math.PI * radius;
-                          const progress = Math.max(0, Math.min(1, Number(skill?.mastery || 0) / 100));
-                          const offset = circumference * (1 - progress);
-                          const color = ringPalette[index % ringPalette.length];
-                          return (
-                            <g key={skill.skill_id}>
-                              <circle
-                                cx={ringCenter}
-                                cy={ringCenter}
-                                r={radius}
-                                fill="none"
-                                stroke="rgba(143, 167, 206, 0.22)"
-                                strokeWidth="10"
-                              />
-                              <circle
-                                cx={ringCenter}
-                                cy={ringCenter}
-                                r={radius}
-                                fill="none"
-                                stroke={color}
-                                strokeWidth="10"
-                                strokeLinecap="round"
-                                strokeDasharray={`${circumference} ${circumference}`}
-                                strokeDashoffset={offset}
-                                transform={`rotate(-90 ${ringCenter} ${ringCenter})`}
-                              />
-                            </g>
-                          );
-                        })}
-                      </svg>
-                      <div className="skill-rings-center">
-                        <div className="skill-rings-center-title">{tr('Фокус', 'Fokus')}</div>
-                        <div className="skill-rings-center-value">{ringSkills.length}</div>
-                        <div className="skill-rings-center-sub">{tr('3 слабых + 3 сильных', '3 schwache + 3 starke')}</div>
-                      </div>
-                    </div>
-                    <div className="skill-rings-legend">
-                      {ringSkills.map((skill, index) => {
-                        const color = ringPalette[index % ringPalette.length];
-                        const trainingStatus = getSkillTrainingStatus(skill?.skill_id);
-                        const isSkillComplete = Boolean(trainingStatus?.is_complete);
-                        const showSkillInProgress = Boolean(trainingStatus && !isSkillComplete);
-                        const storedTrainingSnapshot = getStoredSkillTrainingSnapshot(skill?.skill_id);
-                        const canResumeSkillTraining = Boolean(storedTrainingSnapshot);
-                        const isSkillBusy = Boolean(skillPracticeLoading[String(skill.skill_id || '')]);
-                        return (
-                          <div
-                            className={`skill-rings-legend-item ${skill.ring_type === 'weak' ? 'is-weak' : 'is-strong'}`}
-                            key={`legend-${skill.skill_id}`}
-                          >
-                            <span className="skill-rings-dot" style={{ backgroundColor: color }} />
-                            <div className="skill-rings-text">
-                              <div className="skill-rings-name">
-                                {skill.name}
-                                {isSkillComplete && (
-                                  <span className="skill-train-status-badge is-complete">✅ {tr('Готово', 'Fertig')}</span>
-                                )}
-                                {showSkillInProgress && (
-                                  <span className="skill-train-status-badge is-progress">
-                                    {tr('в процессе', 'in Arbeit')}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="skill-rings-meta">
-                                <span>{skill.ring_type === 'weak' ? tr('Слабый', 'Schwach') : tr('Сильный', 'Stark')}</span>
-                                <span>
-                                  {tr('Оценка', 'Score')}: {skill?.mastery === null || skill?.mastery === undefined
-                                    ? tr('нет данных', 'keine Daten')
-                                    : `${Math.round(Number(skill.mastery || 0))}%`}
-                                </span>
-                                <span>{tr('Ошибки 7д', 'Fehler 7T')}: {Number(skill.errors_7d || 0)}</span>
-                                {trainingStatus && (
-                                  <span>
-                                    {tr('Ссылки', 'Links')}: {Math.max(0, Number(trainingStatus.opened_count || 0))}/{Math.max(0, Number(trainingStatus.required_count || 0))}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                            <div className="skill-rings-actions">
-                              <button
-                                type="button"
-                                className="secondary-button skill-rings-train-btn"
-                                onClick={() => startSkillPractice(skill, { forceRefresh: false })}
-                                disabled={isSkillBusy}
-                              >
-                                {isSkillBusy
-                                  ? tr('Запуск...', 'Start...')
-                                  : tr('Прокачать', 'Trainieren')}
-                              </button>
-                              {canResumeSkillTraining && (
-                                <button
-                                  type="button"
-                                  className="secondary-button skill-rings-resume-btn"
-                                  onClick={() => resumeSkillPractice(skill)}
-                                  disabled={isSkillBusy}
-                                >
-                                  {tr('Вернуться к тренировке', 'Zum Training zurueck')}
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {ringSkills.length === 0 && (
-                        <div className="webapp-muted">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </section>
+              <HomeScreenSection
+                tr={tr}
+                planAnalyticsPeriod={planAnalyticsPeriod}
+                setPlanAnalyticsPeriod={setPlanAnalyticsPeriod}
+                planAnalyticsLoading={planAnalyticsLoading}
+                weeklyPlan={weeklyPlan}
+                weeklyPlanCollapsed={weeklyPlanCollapsed}
+                setWeeklyPlanCollapsed={setWeeklyPlanCollapsed}
+                weeklyPlanDraft={weeklyPlanDraft}
+                setWeeklyPlanDraft={setWeeklyPlanDraft}
+                weeklyPlanSaving={weeklyPlanSaving}
+                weeklyPlanLoading={weeklyPlanLoading}
+                weeklyPlanError={weeklyPlanError}
+                planAnalyticsMetrics={planAnalyticsMetrics}
+                planAnalyticsRange={planAnalyticsRange}
+                planAnalyticsError={planAnalyticsError}
+                weeklyMetricExpanded={weeklyMetricExpanded}
+                setWeeklyMetricExpanded={setWeeklyMetricExpanded}
+                saveWeeklyPlan={saveWeeklyPlanStable}
+                todayPlan={todayPlan}
+                todayPlanLoading={todayPlanLoading}
+                todayPlanError={todayPlanError}
+                todayItemLoading={todayItemLoading}
+                todayTimerNowMs={todayTimerNowMs}
+                regenerateTodayPlan={regenerateTodayPlanStable}
+                loadTodayPlan={loadTodayPlanStable}
+                sendTodayReminderTest={sendTodayReminderTestStable}
+                todayTestSending={todayTestSending}
+                startTodayTask={startTodayTaskStable}
+                submitTodayVideoFeedback={submitTodayVideoFeedbackStable}
+                getTodayItemElapsedSeconds={getTodayItemElapsedSecondsStable}
+                getTodayItemProgressPercent={getTodayItemProgressPercentStable}
+                getTodayTranslationProgress={getTodayTranslationProgressStable}
+                getTodayItemTitle={getTodayItemTitleStable}
+                formatCompactTimer={formatCompactTimerStable}
+                skillReport={skillReport}
+                skillReportLoading={skillReportLoading}
+                skillReportError={skillReportError}
+                skillPracticeLoading={skillPracticeLoading}
+                loadSkillReport={loadSkillReportStable}
+                startSkillPractice={startSkillPracticeStable}
+                resumeSkillPractice={resumeSkillPracticeStable}
+                skillTrainingStatusMap={homeSkillTrainingStatusMap}
+                getStoredSkillTrainingSnapshot={getStoredSkillTrainingSnapshot}
+              />
             )}
 
             {!flashcardsOnly && isSectionVisible('guide') && (
