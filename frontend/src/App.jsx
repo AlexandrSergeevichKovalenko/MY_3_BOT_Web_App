@@ -108,6 +108,348 @@ class ErrorBoundary extends React.Component {
   }
 }
 
+const APP_PERF_QUERY_KEY = 'perf_profile';
+const APP_PERF_SCENARIO_QUERY_KEY = 'perf_scenario';
+
+function isAppPerfEnabled() {
+  if (typeof window === 'undefined') return false;
+  try {
+    return new URLSearchParams(window.location.search).get(APP_PERF_QUERY_KEY) === '1';
+  } catch (_error) {
+    return false;
+  }
+}
+
+function getAppPerfScenario() {
+  if (typeof window === 'undefined') return '';
+  try {
+    return String(new URLSearchParams(window.location.search).get(APP_PERF_SCENARIO_QUERY_KEY) || 'startup').trim().toLowerCase();
+  } catch (_error) {
+    return 'startup';
+  }
+}
+
+function getAppPerfNow() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function getAppPerfTargetLabel(target) {
+  if (!target) return 'unknown';
+  if (typeof window !== 'undefined' && target === window) return 'window';
+  if (typeof document !== 'undefined' && target === document) return 'document';
+  if (typeof window !== 'undefined' && target === window.visualViewport) return 'visualViewport';
+  if (target?.constructor?.name) return target.constructor.name;
+  return 'unknown';
+}
+
+function summarizeAppPerfBy(entries, getKey) {
+  return entries.reduce((acc, entry) => {
+    const key = String(getKey(entry) || 'unknown');
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function diffAppPerfSnapshot(previous, next) {
+  const prev = previous && typeof previous === 'object' ? previous : {};
+  const curr = next && typeof next === 'object' ? next : {};
+  const keys = Array.from(new Set([...Object.keys(prev), ...Object.keys(curr)]));
+  return keys.filter((key) => prev[key] !== curr[key]);
+}
+
+function createAppPerfRuntime() {
+  if (typeof window === 'undefined' || !isAppPerfEnabled()) {
+    return null;
+  }
+  if (window.__deutschFlowAppPerf) {
+    return window.__deutschFlowAppPerf;
+  }
+  const originalFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
+  const originalSetTimeout = window.setTimeout.bind(window);
+  const originalClearTimeout = window.clearTimeout.bind(window);
+  const originalSetInterval = window.setInterval.bind(window);
+  const originalClearInterval = window.clearInterval.bind(window);
+  const originalRequestAnimationFrame = typeof window.requestAnimationFrame === 'function'
+    ? window.requestAnimationFrame.bind(window)
+    : null;
+  const originalCancelAnimationFrame = typeof window.cancelAnimationFrame === 'function'
+    ? window.cancelAnimationFrame.bind(window)
+    : null;
+  const originalAddEventListener = typeof EventTarget !== 'undefined'
+    ? EventTarget.prototype.addEventListener
+    : null;
+  const originalRemoveEventListener = typeof EventTarget !== 'undefined'
+    ? EventTarget.prototype.removeEventListener
+    : null;
+  const storageProto = typeof Storage !== 'undefined' ? Storage.prototype : null;
+  const originalStorageGetItem = storageProto?.getItem || null;
+  const originalStorageSetItem = storageProto?.setItem || null;
+  const originalStorageRemoveItem = storageProto?.removeItem || null;
+  const runtime = {
+    enabled: true,
+    scenario: getAppPerfScenario(),
+    startedAtMs: getAppPerfNow(),
+    completedAtMs: null,
+    notes: [],
+    renderEvents: [],
+    profilerCommits: [],
+    actionWindows: [],
+    timers: [],
+    listeners: [],
+    fetches: [],
+    storage: [],
+    originalSetTimeout,
+    originalClearTimeout,
+    originalSetInterval,
+    originalClearInterval,
+    originalRequestAnimationFrame,
+    originalCancelAnimationFrame,
+    note(message, data = null) {
+      this.notes.push({ ts: getAppPerfNow(), message, data });
+      if (this.notes.length > 80) this.notes.shift();
+    },
+    beginAction(name, meta = null) {
+      const action = { name, meta, startedAt: getAppPerfNow(), endedAt: null };
+      this.actionWindows.push(action);
+      if (this.actionWindows.length > 40) this.actionWindows.shift();
+      return action;
+    },
+    endAction(name) {
+      for (let index = this.actionWindows.length - 1; index >= 0; index -= 1) {
+        const action = this.actionWindows[index];
+        if (action.name === name && action.endedAt == null) {
+          action.endedAt = getAppPerfNow();
+          return;
+        }
+      }
+    },
+    recordRender(id, snapshot, previousSnapshot) {
+      this.renderEvents.push({
+        ts: getAppPerfNow(),
+        id,
+        changedKeys: diffAppPerfSnapshot(previousSnapshot, snapshot),
+      });
+      if (this.renderEvents.length > 400) this.renderEvents.shift();
+    },
+    recordProfilerCommit(id, phase, actualDuration, baseDuration, startTime, commitTime) {
+      this.profilerCommits.push({
+        ts: getAppPerfNow(),
+        id,
+        phase,
+        actualDuration: Number(actualDuration || 0),
+        baseDuration: Number(baseDuration || 0),
+        startTime: Number(startTime || 0),
+        commitTime: Number(commitTime || 0),
+      });
+      if (this.profilerCommits.length > 400) this.profilerCommits.shift();
+    },
+    markComplete() {
+      this.completedAtMs = getAppPerfNow();
+    },
+    getSummary() {
+      const completedAtMs = this.completedAtMs || getAppPerfNow();
+      return {
+        enabled: true,
+        scenario: this.scenario,
+        startedAtMs: this.startedAtMs,
+        completedAtMs,
+        totalDurationMs: Math.max(0, completedAtMs - this.startedAtMs),
+        renderCounts: summarizeAppPerfBy(this.renderEvents, (entry) => entry.id),
+        profilerCommitCounts: summarizeAppPerfBy(this.profilerCommits, (entry) => entry.id),
+        hotCommits: [...this.profilerCommits].sort((a, b) => b.actualDuration - a.actualDuration).slice(0, 20),
+        recentRenderEvents: this.renderEvents.slice(-40),
+        actionSummaries: this.actionWindows.map((action) => {
+          const endedAt = action.endedAt || completedAtMs;
+          const renderEvents = this.renderEvents.filter((entry) => entry.ts >= action.startedAt && entry.ts <= endedAt);
+          const commits = this.profilerCommits.filter((entry) => entry.ts >= action.startedAt && entry.ts <= endedAt);
+          return {
+            name: action.name,
+            meta: action.meta,
+            durationMs: Math.max(0, endedAt - action.startedAt),
+            renderCount: renderEvents.length,
+            renderCountsById: summarizeAppPerfBy(renderEvents, (entry) => entry.id),
+            commitCountsById: summarizeAppPerfBy(commits, (entry) => entry.id),
+            hottestCommits: [...commits].sort((a, b) => b.actualDuration - a.actualDuration).slice(0, 8),
+          };
+        }),
+        timerStats: {
+          total: this.timers.length,
+          byKind: summarizeAppPerfBy(this.timers, (entry) => entry.kind),
+          byDelay: summarizeAppPerfBy(this.timers, (entry) => entry.delayLabel),
+          samples: this.timers.slice(0, 80),
+        },
+        listenerStats: {
+          total: this.listeners.length,
+          byEvent: summarizeAppPerfBy(this.listeners, (entry) => `${entry.target}:${entry.event}`),
+          samples: this.listeners.slice(0, 80),
+        },
+        fetchStats: {
+          total: this.fetches.length,
+          byUrl: summarizeAppPerfBy(this.fetches, (entry) => entry.url),
+          samples: this.fetches.slice(0, 80),
+        },
+        storageStats: {
+          total: this.storage.length,
+          writesByKey: summarizeAppPerfBy(this.storage.filter((entry) => entry.kind !== 'getItem'), (entry) => `${entry.kind}:${entry.key}`),
+          samples: this.storage.slice(0, 80),
+        },
+        notes: this.notes,
+      };
+    },
+    publish() {
+      if (typeof document === 'undefined') return;
+      let node = document.getElementById('app-perf-report-runtime');
+      if (!node) {
+        node = document.createElement('pre');
+        node.id = 'app-perf-report-runtime';
+        node.style.display = 'none';
+        document.body.appendChild(node);
+      }
+      node.textContent = JSON.stringify(this.getSummary());
+      document.documentElement.setAttribute('data-app-perf-ready', this.completedAtMs ? '1' : '0');
+      document.documentElement.setAttribute('data-app-perf-scenario', this.scenario);
+    },
+  };
+
+  if (originalFetch && !window.__deutschFlowPerfFetchPatched) {
+    window.fetch = async (...args) => {
+      const url = String(args[0] || '');
+      const startedAt = getAppPerfNow();
+      try {
+        const response = await originalFetch(...args);
+        runtime.fetches.push({
+          ts: startedAt,
+          url,
+          ok: Boolean(response?.ok),
+          status: Number(response?.status || 0),
+          durationMs: Number((getAppPerfNow() - startedAt).toFixed(2)),
+        });
+        if (runtime.fetches.length > 120) runtime.fetches.shift();
+        return response;
+      } catch (error) {
+        runtime.fetches.push({
+          ts: startedAt,
+          url,
+          ok: false,
+          status: 0,
+          error: String(error?.message || error || 'fetch error'),
+          durationMs: Number((getAppPerfNow() - startedAt).toFixed(2)),
+        });
+        if (runtime.fetches.length > 120) runtime.fetches.shift();
+        throw error;
+      }
+    };
+    window.__deutschFlowPerfFetchPatched = true;
+  }
+
+  if (!window.__deutschFlowPerfTimersPatched) {
+    window.setTimeout = (handler, timeout, ...args) => {
+      runtime.timers.push({ ts: getAppPerfNow(), kind: 'timeout', delayLabel: String(timeout ?? 0) });
+      if (runtime.timers.length > 160) runtime.timers.shift();
+      return originalSetTimeout(handler, timeout, ...args);
+    };
+    window.setInterval = (handler, timeout, ...args) => {
+      runtime.timers.push({ ts: getAppPerfNow(), kind: 'interval', delayLabel: String(timeout ?? 0) });
+      if (runtime.timers.length > 160) runtime.timers.shift();
+      return originalSetInterval(handler, timeout, ...args);
+    };
+    if (originalRequestAnimationFrame) {
+      window.requestAnimationFrame = (callback) => {
+        runtime.timers.push({ ts: getAppPerfNow(), kind: 'raf', delayLabel: 'frame' });
+        if (runtime.timers.length > 160) runtime.timers.shift();
+        return originalRequestAnimationFrame(callback);
+      };
+    }
+    window.__deutschFlowPerfTimersPatched = true;
+  }
+
+  if (originalAddEventListener && !window.__deutschFlowPerfListenersPatched) {
+    EventTarget.prototype.addEventListener = function patchedAddEventListener(type, listener, options) {
+      runtime.listeners.push({
+        ts: getAppPerfNow(),
+        kind: 'add',
+        target: getAppPerfTargetLabel(this),
+        event: String(type || ''),
+      });
+      if (runtime.listeners.length > 200) runtime.listeners.shift();
+      return originalAddEventListener.call(this, type, listener, options);
+    };
+    EventTarget.prototype.removeEventListener = function patchedRemoveEventListener(type, listener, options) {
+      runtime.listeners.push({
+        ts: getAppPerfNow(),
+        kind: 'remove',
+        target: getAppPerfTargetLabel(this),
+        event: String(type || ''),
+      });
+      if (runtime.listeners.length > 200) runtime.listeners.shift();
+      return originalRemoveEventListener.call(this, type, listener, options);
+    };
+    window.__deutschFlowPerfListenersPatched = true;
+  }
+
+  if (storageProto && originalStorageGetItem && !window.__deutschFlowPerfStoragePatched) {
+    storageProto.getItem = function patchedGetItem(key) {
+      runtime.storage.push({ ts: getAppPerfNow(), kind: 'getItem', key: String(key || '') });
+      if (runtime.storage.length > 200) runtime.storage.shift();
+      return originalStorageGetItem.call(this, key);
+    };
+    storageProto.setItem = function patchedSetItem(key, value) {
+      runtime.storage.push({
+        ts: getAppPerfNow(),
+        kind: 'setItem',
+        key: String(key || ''),
+        size: String(value || '').length,
+      });
+      if (runtime.storage.length > 200) runtime.storage.shift();
+      return originalStorageSetItem.call(this, key, value);
+    };
+    storageProto.removeItem = function patchedRemoveItem(key) {
+      runtime.storage.push({ ts: getAppPerfNow(), kind: 'removeItem', key: String(key || '') });
+      if (runtime.storage.length > 200) runtime.storage.shift();
+      return originalStorageRemoveItem.call(this, key);
+    };
+    window.__deutschFlowPerfStoragePatched = true;
+  }
+
+  runtime.note('perf_runtime_initialized', { scenario: runtime.scenario });
+  window.__deutschFlowAppPerf = runtime;
+  return runtime;
+}
+
+function getAppPerfRuntime() {
+  if (typeof window === 'undefined') return null;
+  return createAppPerfRuntime();
+}
+
+function useAppPerfRenderProbe(id, snapshot) {
+  const previousSnapshotRef = useRef(null);
+  const runtime = getAppPerfRuntime();
+  if (runtime) {
+    runtime.recordRender(id, snapshot, previousSnapshotRef.current);
+  }
+  previousSnapshotRef.current = snapshot;
+}
+
+function PerfProfiler({ id, children }) {
+  const runtime = getAppPerfRuntime();
+  if (!runtime) {
+    return children;
+  }
+  return (
+    <React.Profiler
+      id={id}
+      onRender={(profilerId, phase, actualDuration, baseDuration, startTime, commitTime) => {
+        runtime.recordProfilerCommit(profilerId, phase, actualDuration, baseDuration, startTime, commitTime);
+      }}
+    >
+      {children}
+    </React.Profiler>
+  );
+}
+
 const TranslationDraftField = React.memo(function TranslationDraftField({
   sentenceId,
   sentenceNumber,
@@ -129,6 +471,12 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   const commitTimeoutRef = useRef(null);
   const androidPersistTimeoutRef = useRef(null);
   const valueRef = useRef(String(initialValue || ''));
+  useAppPerfRenderProbe('TranslationDraftField', {
+    sentenceId: Number(sentenceId || 0),
+    initialValueLength: String(initialValue || '').length,
+    isAndroidClient: Boolean(isAndroidClient),
+    androidExperimentVariant: String(androidExperimentVariant || ''),
+  });
 
   const commitDelayMs = isAndroidClient ? 1200 : 240;
   const androidPersistDelayMs = 900;
@@ -1121,6 +1469,270 @@ function AppInner() {
     androidTranslationDraftDebugConfig.variant,
     flushTranslationDraftAndroidDebugSummary,
   ]);
+  useAppPerfRenderProbe('AppInner', {
+    selectedSectionsKey: Array.from(selectedSections).sort().join('|'),
+    flashcardsOnly: Boolean(flashcardsOnly),
+    browserAuthLoading: Boolean(browserAuthLoading),
+    browserAuthError: Boolean(browserAuthError),
+    sentencesLength: sentences.length,
+    resultsLength: results.length,
+    translationDraftCount: Object.keys(translationDrafts || {}).length,
+    translationCheckActive: Boolean(translationCheckProgress?.active),
+    dictionaryWordLength: String(dictionaryWord || '').length,
+    dictionaryLoading: Boolean(dictionaryLoading),
+    dictionaryHasResult: Boolean(dictionaryResult),
+    youtubeId: String(youtubeId || ''),
+    youtubeTranscriptLength: youtubeTranscript.length,
+    youtubePlayerReady: Boolean(youtubePlayerReady),
+    youtubeCurrentTimeBucket: Math.floor(Number(youtubeCurrentTime || 0)),
+    youtubeTranslationEnabled: Boolean(youtubeTranslationEnabled),
+    youtubeOverlayEnabled: Boolean(youtubeOverlayEnabled),
+    youtubeAppFullscreen: Boolean(youtubeAppFullscreen),
+    readerHasContent: Boolean(readerContent),
+    readerDocumentCount: readerDocuments.length,
+    readerCurrentPage: Number(readerCurrentPage || 0),
+    readerLiveSeconds: Number(readerLiveSeconds || 0),
+    readerTimerPaused: Boolean(readerTimerPaused),
+    readerImmersive: Boolean(readerImmersive),
+    flashcardsVisible: Boolean(flashcardsVisible),
+    flashcardActiveMode: String(flashcardActiveMode || ''),
+    flashcardSessionActive: Boolean(flashcardSessionActive),
+    flashcardsLength: flashcards.length,
+    flashcardIndex: Number(flashcardIndex || 0),
+    srsCardId: Number(srsCard?.id || srsCard?.entry_id || 0),
+    srsRevealAnswer: Boolean(srsRevealAnswer),
+    srsRevealElapsedSec: Number(srsRevealElapsedSec || 0),
+    todayPlanPresent: Boolean(todayPlan),
+    todayTimerNowSec: Math.floor(Number(todayTimerNowMs || 0) / 1000),
+    weeklySummaryModalOpen: Boolean(weeklySummaryModalOpen),
+    analyticsLoading: Boolean(analyticsLoading),
+    analyticsHasSummary: Boolean(analyticsSummary),
+    supportLoading: Boolean(supportLoading),
+    supportDraftLength: String(supportDraft || '').length,
+    supportMessagesLength: supportMessages.length,
+  });
+  useEffect(() => {
+    const perfRuntime = getAppPerfRuntime();
+    if (!perfRuntime || perfRuntime.scenarioBootstrapped || !isWebAppMode) {
+      return undefined;
+    }
+    perfRuntime.scenarioBootstrapped = true;
+    const timers = [];
+    const later = (ms, fn) => {
+      const timerId = perfRuntime.originalSetTimeout(fn, ms);
+      timers.push(timerId);
+      return timerId;
+    };
+    const endActionLater = (name, delayMs) => {
+      later(delayMs, () => perfRuntime.endAction(name));
+    };
+    const runAction = (startedAtMs, name, fn, durationMs = 700, meta = null) => {
+      later(startedAtMs, () => {
+        perfRuntime.beginAction(name, meta);
+        fn();
+        endActionLater(name, durationMs);
+      });
+    };
+
+    perfRuntime.beginAction('startup');
+    endActionLater('startup', 1400);
+
+    if (!initData) {
+      perfRuntime.note('perf_harness_seeded_for_browser_mode');
+      setDictionaryWord('Haus');
+      setDictionaryResult({
+        translation_target: 'house',
+        translation_de: 'Haus',
+        part_of_speech: 'noun',
+        article: 'das',
+        usage_examples: ['Das Haus ist klein. -> The house is small.'],
+        provider: 'mock',
+      });
+      setYoutubeTranscript([
+        { start: 0, text: 'Guten Morgen zusammen.' },
+        { start: 2, text: 'Heute sprechen wir ueber Frontend-Performance.' },
+      ]);
+      setYoutubeTranslations({
+        0: 'Доброе утро всем.',
+        1: 'Сегодня мы говорим о производительности фронтенда.',
+      });
+      setYoutubeTranslationEnabled(true);
+      setReaderDocuments([
+        {
+          id: 1,
+          title: 'Perf Reader Document',
+          source_type: 'text',
+          target_lang: 'de',
+          progress_percent: 42,
+          is_archived: false,
+        },
+      ]);
+      setSupportMessages([
+        {
+          id: 'perf-user-1',
+          from_role: 'user',
+          message_text: 'Profiling support timeline render cost.',
+          created_at: new Date().toISOString(),
+        },
+        {
+          id: 'perf-admin-1',
+          from_role: 'admin',
+          message_text: 'Support replied with a short answer.',
+          created_at: new Date().toISOString(),
+        },
+      ]);
+      setSupportFailedMessages([]);
+      setAnalyticsSummary({
+        total_translations: 28,
+        success_rate: 71,
+        avg_score: 83,
+        avg_time_min: 2.9,
+        missed_days: 1,
+        missed_sentences: 3,
+        final_score: 84,
+      });
+      setAnalyticsPoints([
+        { period_start: 'Mon', successful_translations: 4, unsuccessful_translations: 1, avg_score: 81, avg_time_min: 2.7 },
+        { period_start: 'Tue', successful_translations: 5, unsuccessful_translations: 2, avg_score: 79, avg_time_min: 3.1 },
+        { period_start: 'Wed', successful_translations: 6, unsuccessful_translations: 1, avg_score: 88, avg_time_min: 2.4 },
+      ]);
+      setAnalyticsCompare([
+        { label: 'You', final_score: 84 },
+        { label: 'Group', final_score: 76 },
+      ]);
+      setAnalyticsRank(2);
+      setWeeklySummaryHeroFacts({
+        hasPlan: true,
+        hasActivity: true,
+        planCompletedPercent: 64,
+        strongestKeys: ['translations', 'agent_minutes'],
+        weakestKeys: ['reading_minutes'],
+        trendDeltaPercent: 12,
+      });
+      setWeeklySummaryCurrentMetrics({
+        translations: { actual: 18, goal: 28, completion_percent: 64 },
+        learned_words: { actual: 34, goal: 45, completion_percent: 76 },
+        agent_minutes: { actual: 42, goal: 60, completion_percent: 70 },
+        reading_minutes: { actual: 24, goal: 50, completion_percent: 48 },
+      });
+      setWeeklySummaryPreviousMetrics({
+        translations: { actual: 14 },
+        learned_words: { actual: 29 },
+        agent_minutes: { actual: 31 },
+        reading_minutes: { actual: 28 },
+      });
+      setWeeklySummarySocialSignal({ text: 'Top 20%' });
+    }
+
+    if (perfRuntime.scenario === 'idle' || perfRuntime.scenario === 'startup') {
+      later(1800, () => perfRuntime.beginAction('idle_window'));
+      later(16800, () => perfRuntime.endAction('idle_window'));
+      later(17500, () => {
+        perfRuntime.markComplete();
+        perfRuntime.publish();
+      });
+      return undefined;
+    }
+
+    if (perfRuntime.scenario === 'section-switch') {
+      runAction(1800, 'open_translations', () => {
+        setFlashcardsOnly(false);
+        setFlashcardActiveMode(null);
+        setSelectedSections(new Set(['translations']));
+      }, 650);
+      runAction(2800, 'open_dictionary_result', () => {
+        setSelectedSections(new Set(['dictionary']));
+      }, 700);
+      runAction(3900, 'open_youtube', () => {
+        setSelectedSections(new Set(['youtube']));
+      }, 700);
+      runAction(5000, 'open_reader', () => {
+        setSelectedSections(new Set(['reader']));
+      }, 700);
+      runAction(6100, 'open_flashcards_fsrs', () => {
+        setSelectedSections(new Set(['flashcards']));
+        setFlashcardsVisible(true);
+        setFlashcardsOnly(true);
+        setFlashcardActiveMode('fsrs');
+      }, 850);
+      runAction(7300, 'open_analytics', () => {
+        setFlashcardsOnly(false);
+        setFlashcardActiveMode(null);
+        setSelectedSections(new Set(['analytics']));
+      }, 900);
+      runAction(8500, 'open_weekly_summary_modal', () => {
+        setWeeklySummaryModalOpen(true);
+      }, 900);
+      runAction(9700, 'open_support', () => {
+        setWeeklySummaryModalOpen(false);
+        setSelectedSections(new Set(['support']));
+      }, 900);
+      runAction(10900, 'return_home', () => {
+        setFlashcardsOnly(false);
+        setFlashcardActiveMode(null);
+        setWeeklySummaryModalOpen(false);
+        setSelectedSections(new Set());
+      }, 650);
+      later(11800, () => {
+        perfRuntime.markComplete();
+        perfRuntime.publish();
+      });
+      return undefined;
+    }
+
+    if (perfRuntime.scenario === 'translation-typing') {
+      runAction(900, 'open_translations', () => {
+        setFlashcardsOnly(false);
+        setFlashcardActiveMode(null);
+        setSelectedSections(new Set(['translations']));
+        setSentences([
+          {
+            id_for_mistake_table: 1001,
+            unique_id: 1,
+            sentence: 'Ich lerne Deutsch seit zwei Jahren.',
+          },
+        ]);
+        setTranslationDrafts({ 1001: '' });
+        setResults([]);
+        setWebappError('');
+        setFinishMessage('');
+      }, 900);
+      later(2200, () => {
+        const target = document.querySelector('[data-translation-draft-field="true"]');
+        if (!target) {
+          perfRuntime.note('translation_field_missing');
+          perfRuntime.markComplete();
+          perfRuntime.publish();
+          return;
+        }
+        const text = 'Ich lerne Deutsch sehr gern.';
+        let index = 0;
+        perfRuntime.beginAction('typing_translation_draft');
+        const typeNext = () => {
+          if (index >= text.length) {
+            target.dispatchEvent(new Event('blur', { bubbles: true }));
+            perfRuntime.endAction('typing_translation_draft');
+            perfRuntime.markComplete();
+            perfRuntime.publish();
+            return;
+          }
+          target.focus();
+          target.value = text.slice(0, index + 1);
+          target.dispatchEvent(new Event('input', { bubbles: true }));
+          index += 1;
+          later(85, typeNext);
+        };
+        typeNext();
+      });
+      return undefined;
+    }
+
+    later(7000, () => {
+      perfRuntime.markComplete();
+      perfRuntime.publish();
+    });
+    return undefined;
+  }, [initData, isWebAppMode]);
   const registerTranslationDraftValueAccessor = useCallback((sentenceId, accessor) => {
     const key = String(sentenceId || '').trim();
     if (!key || typeof accessor !== 'function') {
@@ -14781,6 +15393,7 @@ function AppInner() {
     }
     return (
       <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''}`}>
+        <pre id="app-perf-report" style={{ display: 'none' }} />
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
             <div className="webapp-brand">
@@ -15306,15 +15919,16 @@ function AppInner() {
             )}
 
             {weeklySummaryVisitConfig && !onboardingOpen && (
-              <WeeklySummaryModal
-                isOpen={weeklySummaryModalOpen}
-                title={weeklySummaryVisitConfig.title}
-                subtitle={weeklySummaryVisitConfig.subtitle}
-                closeLabel={tr('Закрыть weekly summary', 'Weekly Summary schliessen')}
-                openAnalyticsLabel={tr('Открыть аналитику', 'Analytik oeffnen')}
-                onClose={dismissWeeklySummaryModal}
-                onOpenAnalytics={openAnalyticsFromWeeklySummary}
-              >
+              <PerfProfiler id="modal.weeklySummary">
+                <WeeklySummaryModal
+                  isOpen={weeklySummaryModalOpen}
+                  title={weeklySummaryVisitConfig.title}
+                  subtitle={weeklySummaryVisitConfig.subtitle}
+                  closeLabel={tr('Закрыть weekly summary', 'Weekly Summary schliessen')}
+                  openAnalyticsLabel={tr('Открыть аналитику', 'Analytik oeffnen')}
+                  onClose={dismissWeeklySummaryModal}
+                  onOpenAnalytics={openAnalyticsFromWeeklySummary}
+                >
                 <section className="weekly-summary-hero" aria-live="polite">
                   <div className="weekly-summary-hero-label">
                     {tr('Краткий итог', 'Kurzfazit')}
@@ -15451,7 +16065,8 @@ function AppInner() {
                     </div>
                   )}
                 </section>
-              </WeeklySummaryModal>
+                </WeeklySummaryModal>
+              </PerfProfiler>
             )}
 
             {showHero && (
@@ -16710,7 +17325,8 @@ function AppInner() {
             )}
 
             {!flashcardsOnly && isSectionVisible('translations') && (
-              <section className="webapp-section webapp-section-translations" ref={translationsRef}>
+              <PerfProfiler id="section.translations">
+                <section className="webapp-section webapp-section-translations" ref={translationsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo translations-title-row">
                   <div className="translations-title-main">
                     <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
@@ -17182,13 +17798,15 @@ function AppInner() {
                     )}
                   </section>
                 )}
-              </section>
+                </section>
+              </PerfProfiler>
             )}
 
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
                 {isSectionVisible('youtube') && (
-                  <section className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`} ref={youtubeRef}>
+                  <PerfProfiler id="section.youtube">
+                    <section className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`} ref={youtubeRef}>
                     <div className="webapp-local-section-head youtube-player-first-head">
                       <div className="youtube-desktop-command-bar">
                         <div className="youtube-desktop-command-row youtube-desktop-command-row-top">
@@ -17743,11 +18361,13 @@ function AppInner() {
                         </div>
                       </div>
                     )}
-                  </section>
+                    </section>
+                  </PerfProfiler>
                 )}
 
                 {isSectionVisible('dictionary') && (
-                  <section className="webapp-dictionary" ref={dictionaryRef}>
+                  <PerfProfiler id="section.dictionary">
+                    <section className="webapp-dictionary" ref={dictionaryRef}>
                     <div className="webapp-local-section-head">
                       <h3>{tr('Словарь', 'Woerterbuch')}</h3>
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
@@ -18097,13 +18717,15 @@ function AppInner() {
                         </div>
                       </div>
                     )}
-                  </section>
+                    </section>
+                  </PerfProfiler>
                 )}
               </div>
             )}
 
             {!flashcardsOnly && isSectionVisible('reader') && (
-              <section className={`webapp-section webapp-reader ${readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : ''} ${readerHasContent && readerImmersive && !readerArchiveOpen && readerTopbarCollapsed ? 'is-topbar-collapsed' : ''}`} ref={readerRef}>
+              <PerfProfiler id="section.reader">
+                <section className={`webapp-section webapp-reader ${readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : ''} ${readerHasContent && readerImmersive && !readerArchiveOpen && readerTopbarCollapsed ? 'is-topbar-collapsed' : ''}`} ref={readerRef}>
                 {(() => {
                   const showLibraryMode = !readerHasContent || readerArchiveOpen || !readerImmersive;
                   const searchRaw = String(readerLibrarySearch || '').trim().toLowerCase();
@@ -18523,7 +19145,8 @@ function AppInner() {
                     </>
                   );
                 })()}
-              </section>
+                </section>
+              </PerfProfiler>
             )}
 
             {!flashcardsOnly && isSectionVisible('movies') && !moviesCollapsed && (
@@ -18595,7 +19218,8 @@ function AppInner() {
             )}
 
             {isSectionVisible('flashcards') && (
-              <section className="webapp-flashcards" ref={flashcardsRef}>
+              <PerfProfiler id="section.flashcards">
+                <section className="webapp-flashcards" ref={flashcardsRef}>
                 {flashcardActiveMode && !flashcardsOnly && (isFocusedSection('flashcards') || Boolean(getTodayTaskForSection('flashcards'))) && (
                   <div className="section-inline-actions section-inline-actions-task">
                     {isFocusedSection('flashcards') && (
@@ -18652,7 +19276,8 @@ function AppInner() {
                     )}
 
                     {flashcardsOnly && flashcardActiveMode === 'fsrs' && (
-                      <div className="flashcard-mode-screen">
+                      <PerfProfiler id="subsection.fsrs">
+                        <div className="flashcard-mode-screen">
                         <div className="flashcard-mode-topbar">
                           <button type="button" className="secondary-button" onClick={() => void exitFlashcardsTraining()}>
                             {tr('Назад', 'Zurueck')}
@@ -18798,7 +19423,8 @@ function AppInner() {
                             );
                           })()}
                         </div>
-                      </div>
+                        </div>
+                      </PerfProfiler>
                     )}
 
                     {flashcardsOnly && (flashcardActiveMode === 'quiz' || flashcardActiveMode === 'blocks' || flashcardActiveMode === 'sentence') && (
@@ -19439,7 +20065,8 @@ function AppInner() {
                     )}
                   </div>
                 )}
-              </section>
+                </section>
+              </PerfProfiler>
             )}
 
             {!flashcardsOnly && isSectionVisible('assistant') && (
@@ -19516,7 +20143,8 @@ function AppInner() {
             )}
 
             {!flashcardsOnly && isSectionVisible('support') && (
-              <section className="webapp-section support-section" ref={supportRef}>
+              <PerfProfiler id="section.support">
+                <section className="webapp-section support-section" ref={supportRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Техподдержка', 'Support')}</h2>
                   <p>{tr('Напишите вопрос администратору прямо здесь.', 'Schreibe deine Frage direkt an den Administrator.')}</p>
@@ -19637,11 +20265,13 @@ function AppInner() {
                     </button>
                   </form>
                 </div>
-              </section>
+                </section>
+              </PerfProfiler>
             )}
 
             {!flashcardsOnly && isSectionVisible('analytics') && (
-              <section className="webapp-section webapp-analytics" ref={analyticsRef}>
+              <PerfProfiler id="section.analytics">
+                <section className="webapp-section webapp-analytics" ref={analyticsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Аналитика', 'Analytik')}</h2>
                   <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {getActiveLanguagePairLabel()}</p>
@@ -19753,7 +20383,8 @@ function AppInner() {
                 <div className="analytics-chart" ref={analyticsTrendRef} />
                 <div className="webapp-muted analytics-compare-hint">{analyticsCompareInsight}</div>
                 <div className="analytics-chart analytics-compare" ref={analyticsCompareRef} />
-              </section>
+                </section>
+              </PerfProfiler>
             )}
 
             {canViewEconomics && !flashcardsOnly && isSectionVisible('economics') && (
