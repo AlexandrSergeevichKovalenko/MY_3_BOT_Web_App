@@ -6,6 +6,7 @@ import json
 import psycopg2
 import datetime
 import calendar
+import time as pytime
 from datetime import datetime, time, date, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update, Poll
@@ -2252,7 +2253,7 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
     if action == "addcustom":
         pending_tts_budget_custom[int(admin.id)] = {
             "provider": "google_tts",
-            "started_at": time.time(),
+            "started_at": pytime.time(),
         }
         await query.answer("Жду число в сообщении", show_alert=False)
         if query.message:
@@ -2266,7 +2267,7 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
     if action == "translateaddcustom":
         pending_tts_budget_custom[int(admin.id)] = {
             "provider": "google_translate",
-            "started_at": time.time(),
+            "started_at": pytime.time(),
         }
         await query.answer("Жду число в сообщении", show_alert=False)
         if query.message:
@@ -2803,7 +2804,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
         if pending_budget and update.effective_chat and update.effective_chat.type == "private":
             started_at = float((pending_budget or {}).get("started_at") or 0.0)
             provider = str((pending_budget or {}).get("provider") or "google_tts").strip().lower()
-            if started_at > 0 and (time.time() - started_at) > TTS_BUDGET_CUSTOM_TTL_SECONDS:
+            if started_at > 0 and (pytime.time() - started_at) > TTS_BUDGET_CUSTOM_TTL_SECONDS:
                 pending_tts_budget_custom.pop(int(user_id), None)
                 await update.message.reply_text(
                     "Ожидание custom лимита истекло. Нажмите `➕ Add custom` ещё раз.",
@@ -4805,7 +4806,7 @@ async def handle_quiz_ask_callback(update: Update, context: CallbackContext) -> 
 
     pending_quiz_question_input[int(user.id)] = {
         "request_key": request_key,
-        "started_at": time.time(),
+        "started_at": pytime.time(),
     }
     try:
         await query.answer("Жду ваш вопрос")
@@ -8437,7 +8438,7 @@ def _is_quiz_question_payload_expired(payload: dict | None) -> bool:
     started_at = float((payload or {}).get("started_at") or 0.0)
     if started_at <= 0:
         return True
-    return (time.time() - started_at) > QUIZ_QUESTION_TTL_SECONDS
+    return (pytime.time() - started_at) > QUIZ_QUESTION_TTL_SECONDS
 
 
 def _truncate_telegram_reply_text(text: str, max_chars: int = QUIZ_QUESTION_REPLY_MAX_CHARS) -> str:
@@ -8480,7 +8481,7 @@ def _store_pending_quiz_question_request(
         "target_text": str(target_text or "").strip(),
         "source_lang": str(source_lang or "").strip().lower(),
         "target_lang": str(target_lang or "").strip().lower(),
-        "started_at": time.time(),
+        "started_at": pytime.time(),
     }
     if len(pending_quiz_question_requests) > 500:
         oldest_key = next(iter(pending_quiz_question_requests))
@@ -8507,7 +8508,7 @@ def _store_pending_quiz_question_save_request(
         "target_text": str(target_text or "").strip(),
         "source_lang": str(source_lang or "").strip().lower(),
         "target_lang": str(target_lang or "").strip().lower(),
-        "started_at": time.time(),
+        "started_at": pytime.time(),
         "saved": False,
     }
     if len(pending_quiz_question_save_requests) > 500:
