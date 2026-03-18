@@ -16207,7 +16207,7 @@ function AppInner() {
               </div>
             )}
 
-            {weeklySummaryVisitConfig && !onboardingOpen && (
+            {weeklySummaryVisitConfig && !onboardingOpen && weeklySummaryModalOpen && (
               <PerfProfiler id="modal.weeklySummary">
                 <WeeklySummaryModal
                   isOpen={weeklySummaryModalOpen}
