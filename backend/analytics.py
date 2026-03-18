@@ -587,8 +587,8 @@ def fetch_user_summary(
         ),
         active_range AS (
             SELECT
-                COALESCE(first_activity.first_activity_date, CURRENT_DATE) AS active_start,
-                CURRENT_DATE AS active_end
+                GREATEST(%s::date, COALESCE(first_activity.first_activity_date, %s::date)) AS active_start,
+                LEAST(%s::date, CURRENT_DATE) AS active_end
             FROM first_activity
         ),
         translated_days AS (
@@ -598,7 +598,7 @@ def fetch_user_summary(
             WHERE t.user_id = %s
               AND COALESCE(t.source_lang, 'ru') = %s
               AND COALESCE(t.target_lang, 'de') = %s
-              AND ds.date <= CURRENT_DATE
+              AND ds.date BETWEEN %s AND %s
         ),
         missed_days AS (
             SELECT COUNT(*) AS missed_days
@@ -646,9 +646,14 @@ def fetch_user_summary(
                     user_id,
                     user_id,
                     user_id,
+                    start_date,
+                    start_date,
+                    end_date,
                     user_id,
                     source_lang,
                     target_lang,
+                    start_date,
+                    end_date,
                 ),
             )
             columns = [desc[0] for desc in cursor.description]
@@ -767,8 +772,8 @@ def fetch_scope_summary(
         ),
         active_range AS (
             SELECT
-                COALESCE(first_activity.first_activity_date, CURRENT_DATE) AS active_start,
-                CURRENT_DATE AS active_end
+                GREATEST(%s::date, COALESCE(first_activity.first_activity_date, %s::date)) AS active_start,
+                LEAST(%s::date, CURRENT_DATE) AS active_end
             FROM first_activity
         ),
         translated_days AS (
@@ -778,7 +783,7 @@ def fetch_scope_summary(
             WHERE t.user_id = ANY(%s)
               AND COALESCE(t.source_lang, 'ru') = %s
               AND COALESCE(t.target_lang, 'de') = %s
-              AND ds.date <= CURRENT_DATE
+              AND ds.date BETWEEN %s AND %s
         ),
         missed_days AS (
             SELECT COUNT(*) AS missed_days
@@ -826,9 +831,14 @@ def fetch_scope_summary(
                     normalized_user_ids,
                     normalized_user_ids,
                     normalized_user_ids,
+                    start_date,
+                    start_date,
+                    end_date,
                     normalized_user_ids,
                     source_lang,
                     target_lang,
+                    start_date,
+                    end_date,
                 ),
             )
             columns = [desc[0] for desc in cursor.description]
