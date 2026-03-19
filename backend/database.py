@@ -16083,6 +16083,58 @@ def get_latest_daily_sentences(user_id: int, limit: int = 7) -> list[dict]:
             ]
 
 
+def close_stale_open_translation_sessions_for_user(
+    *,
+    user_id: int,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_user_progress up
+                SET
+                    active_seconds = COALESCE(up.active_seconds, 0)
+                        + CASE
+                            WHEN COALESCE(up.active_running, FALSE) = TRUE
+                             AND up.active_started_at IS NOT NULL
+                                THEN GREATEST(
+                                    0,
+                                    EXTRACT(EPOCH FROM (NOW() - up.active_started_at))::BIGINT
+                                )
+                            ELSE 0
+                        END,
+                    active_started_at = NULL,
+                    active_running = FALSE,
+                    end_time = NOW(),
+                    completed = TRUE
+                WHERE up.user_id = %s
+                  AND up.completed = FALSE
+                  AND EXISTS (
+                    SELECT 1
+                    FROM bt_3_daily_sentences ds
+                    WHERE ds.user_id = up.user_id
+                      AND ds.session_id = up.session_id
+                      AND COALESCE(ds.source_lang, 'ru') = %s
+                      AND COALESCE(ds.target_lang, 'de') = %s
+                      AND ds.date < CURRENT_DATE
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM bt_3_daily_sentences ds
+                    WHERE ds.user_id = up.user_id
+                      AND ds.session_id = up.session_id
+                      AND COALESCE(ds.source_lang, 'ru') = %s
+                      AND COALESCE(ds.target_lang, 'de') = %s
+                      AND ds.date >= CURRENT_DATE
+                  );
+                """,
+                (int(user_id), source_lang, target_lang, source_lang, target_lang),
+            )
+            return int(cursor.rowcount or 0)
+
+
 def get_pending_daily_sentences(
     user_id: int,
     limit: int = 7,
@@ -16094,6 +16146,11 @@ def get_pending_daily_sentences(
     except Exception:
         safe_limit = 7
     safe_limit = max(1, min(safe_limit, 7))
+    close_stale_open_translation_sessions_for_user(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -16107,6 +16164,7 @@ def get_pending_daily_sentences(
                     FROM bt_3_daily_sentences ds
                     WHERE ds.user_id = up.user_id
                       AND ds.session_id = up.session_id
+                      AND ds.date = CURRENT_DATE
                       AND COALESCE(ds.source_lang, 'ru') = %s
                       AND COALESCE(ds.target_lang, 'de') = %s
                   )
@@ -16131,6 +16189,7 @@ def get_pending_daily_sentences(
                     AND COALESCE(tr.target_lang, 'de') = %s
                 WHERE ds.user_id = %s
                   AND ds.session_id = %s
+                  AND ds.date = CURRENT_DATE
                   AND COALESCE(ds.source_lang, 'ru') = %s
                   AND COALESCE(ds.target_lang, 'de') = %s
                   AND tr.id IS NULL

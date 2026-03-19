@@ -361,6 +361,7 @@ from backend.database import (
     update_translation_check_item_result,
     finalize_translation_check_item,
     refresh_translation_check_session_counters,
+    close_stale_open_translation_sessions_for_user,
     FLASHCARD_RECENT_SEEN_HOURS,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
@@ -12920,6 +12921,11 @@ def _load_user_translation_sentence_map(
 ) -> tuple[str | None, dict[int, dict[str, Any]]]:
     normalized_source_lang = source_lang or "ru"
     normalized_target_lang = target_lang or "de"
+    close_stale_open_translation_sessions_for_user(
+        user_id=int(user_id),
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+    )
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -12933,6 +12939,7 @@ def _load_user_translation_sentence_map(
                     FROM bt_3_daily_sentences ds
                     WHERE ds.user_id = up.user_id
                       AND ds.session_id = up.session_id
+                      AND ds.date = CURRENT_DATE
                       AND COALESCE(ds.source_lang, 'ru') = %s
                       AND COALESCE(ds.target_lang, 'de') = %s
                   )
@@ -12953,6 +12960,7 @@ def _load_user_translation_sentence_map(
                 SELECT session_id
                 FROM bt_3_daily_sentences
                 WHERE user_id = %s
+                  AND date = CURRENT_DATE
                   AND COALESCE(source_lang, 'ru') = %s
                   AND COALESCE(target_lang, 'de') = %s
                 ORDER BY id DESC
@@ -22823,6 +22831,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                     )
                     SELECT
                         dm.user_id,
+                        dm.mistake_sentence_id,
                         latest_tr.username,
                         latest_tr.translation_id,
                         latest_tr.feedback,
@@ -22874,6 +22883,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                     )
                     SELECT
                         dm.user_id,
+                        dm.mistake_sentence_id,
                         latest_tr.username,
                         latest_tr.translation_id,
                         latest_tr.feedback,
@@ -22913,10 +22923,18 @@ def _dispatch_daily_audio(target_date: date) -> dict:
 
     daily_by_user_pair: dict[tuple[int, str, str], list[dict]] = {}
     daily_names: dict[int, str] = {}
-    for user_id, username, _translation_id, feedback, user_translation, audio_grammar_opt_in, _sentence, _unique_id, _session_id, source_lang, target_lang in daily_rows:
+    daily_seen_sentence_ids: dict[tuple[int, str, str], set[int]] = {}
+    for user_id, mistake_sentence_id, username, _translation_id, feedback, user_translation, audio_grammar_opt_in, _sentence, _unique_id, _session_id, source_lang, target_lang in daily_rows:
         user_id = int(user_id)
         src = str(source_lang or "ru").strip().lower() or "ru"
         tgt = str(target_lang or "de").strip().lower() or "de"
+        daily_key = (user_id, src, tgt)
+        normalized_mistake_sentence_id = int(mistake_sentence_id or 0)
+        if normalized_mistake_sentence_id > 0:
+            seen_ids = daily_seen_sentence_ids.setdefault(daily_key, set())
+            if normalized_mistake_sentence_id in seen_ids:
+                continue
+            seen_ids.add(normalized_mistake_sentence_id)
         display = (username or "").strip()
         if display:
             daily_names[user_id] = display
@@ -22925,7 +22943,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         de_correct = (correct or user_translation or "").strip()
         if not ru_original or not de_correct:
             continue
-        daily_by_user_pair.setdefault((user_id, src, tgt), []).append(
+        daily_by_user_pair.setdefault(daily_key, []).append(
             {
                 "source_text": ru_original,
                 "target_text": de_correct,

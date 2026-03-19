@@ -876,16 +876,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 {tr('Система предлагает потренировать это слабое место по вашим последним ошибкам.', 'Das System empfiehlt diesen Fokus basierend auf deinen letzten Fehlern.')}
               </p>
             )}
-            {todayTranslationRecommendation.examples.length > 0 && (
-              <div className="today-translation-recommendation-card__examples">
-                <span>{tr('Недавние примеры', 'Letzte Beispiele')}</span>
-                {todayTranslationRecommendation.examples.map((example, index) => (
-                  <div key={`today_translation_recommendation_example_${index}`} className="today-translation-recommendation-card__example">
-                    {example}
-                  </div>
-                ))}
-              </div>
-            )}
             <div className="today-translation-recommendation-card__actions">
               <button
                 type="button"
@@ -11694,7 +11684,7 @@ function AppInner() {
           topic: selectedTopic,
           custom_focus: isCustomTopic(selectedTopic) ? customTopicInput.trim() : '',
           level: selectedLevel,
-          force_new_session: false,
+          force_new_session: true,
         }),
       });
       if (!response.ok) {

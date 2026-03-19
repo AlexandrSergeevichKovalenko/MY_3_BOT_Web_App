@@ -5038,8 +5038,32 @@ async def handle_quiz_ask_callback(update: Update, context: CallbackContext) -> 
         "• в чём разница с похожим вариантом\n"
         "• дайте ещё 2 примера\n"
         "• почему здесь именно такая форма\n\n"
-        "Если передумали, напишите: отмена"
+        "Если передумали, нажмите кнопку ниже или напишите: отмена",
+        reply_markup=_build_quiz_question_prompt_keyboard(),
     )
+
+
+async def handle_quiz_question_cancel_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    user = query.from_user
+    if not user:
+        await query.answer("Не удалось определить пользователя.", show_alert=True)
+        return
+
+    pending_question = pending_quiz_question_input.get(int(user.id))
+    if not pending_question:
+        await query.answer("Активного вопроса уже нет.", show_alert=False)
+        return
+
+    pending_quiz_question_input.pop(int(user.id), None)
+    try:
+        await query.answer("Вопрос отменён")
+    except Exception:
+        pass
+    await query.message.reply_text("Ок, отменил вопрос.")
 
 
 async def handle_quiz_question_save_callback(update: Update, context: CallbackContext) -> None:
@@ -8764,6 +8788,12 @@ def _build_quiz_question_answer_keyboard(*, request_key: str, save_key: str | No
     return InlineKeyboardMarkup(rows)
 
 
+def _build_quiz_question_prompt_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Отмена", callback_data="quizaskcancel")]
+    ])
+
+
 def _normalize_quiz_question_llm_response(
     raw_payload: dict,
     *,
@@ -10230,6 +10260,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_tts_prewarm_quota_callback, pattern=r"^ttsprewarmquota:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
+    application.add_handler(CallbackQueryHandler(handle_quiz_question_cancel_callback, pattern=r"^quizaskcancel$"))
     application.add_handler(CallbackQueryHandler(handle_quiz_ask_callback, pattern=r"^quizask:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_question_save_callback, pattern=r"^quizqsave:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_feel_callback, pattern=r"^quizfeel:"))

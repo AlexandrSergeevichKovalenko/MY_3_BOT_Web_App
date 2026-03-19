@@ -29,6 +29,7 @@ from backend.database import (
     get_db_connection,
     get_db_connection_context,
     apply_skill_events_for_error,
+    close_stale_open_translation_sessions_for_user,
     get_skill_mapping_for_error,
     update_translation_check_item_result,
     delete_translation_draft_state,
@@ -191,6 +192,39 @@ def _get_latest_pending_session_id(
     )
     row = cursor.fetchone()
     return row[0] if row else None
+
+
+def _close_user_progress_session(
+    cursor,
+    *,
+    user_id: int,
+    session_id: str | int | None,
+) -> None:
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id:
+        return
+    cursor.execute(
+        """
+        UPDATE bt_3_user_progress
+        SET
+            active_seconds = COALESCE(active_seconds, 0)
+                + CASE
+                    WHEN COALESCE(active_running, FALSE) = TRUE
+                     AND active_started_at IS NOT NULL
+                        THEN GREATEST(
+                            0,
+                            EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
+                        )
+                    ELSE 0
+                END,
+            active_started_at = NULL,
+            active_running = FALSE,
+            end_time = NOW(),
+            completed = TRUE
+        WHERE user_id = %s AND session_id = %s;
+        """,
+        (user_id, normalized_session_id),
+    )
 
 
 def correct_numbering(sentences: list[str]) -> list[str]:
@@ -652,6 +686,7 @@ def get_story_history_webapp(user_id: int, limit: int = 10) -> list[dict[str, An
 
 
 def get_active_session_type(user_id: int) -> dict[str, Any]:
+    close_stale_open_translation_sessions_for_user(user_id=int(user_id))
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -737,6 +772,11 @@ async def start_story_session_webapp(
     source_lang: str = "ru",
     target_lang: str = "de",
 ) -> dict[str, Any]:
+    close_stale_open_translation_sessions_for_user(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -2250,6 +2290,11 @@ async def start_translation_session_webapp(
     tested_skill_profile_seed: dict[str, Any] | None = None,
     grammar_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    close_stale_open_translation_sessions_for_user(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -2285,60 +2330,51 @@ async def start_translation_session_webapp(
                 conn.commit()
                 active_session_id = recovered_session_id
         if active_session_id:
-            # Keep blocking only when there are still pending sentences in this
-            # active session for the same language pair.
-            cursor.execute(
-                """
-                SELECT COUNT(*)
-                FROM bt_3_daily_sentences ds
-                LEFT JOIN bt_3_translations tr
-                  ON tr.user_id = ds.user_id
-                 AND tr.sentence_id = ds.id
-                 AND tr.session_id = ds.session_id
-                 AND COALESCE(tr.source_lang, 'ru') = %s
-                 AND COALESCE(tr.target_lang, 'de') = %s
-                WHERE ds.user_id = %s
-                  AND ds.session_id = %s
-                  AND COALESCE(ds.source_lang, 'ru') = %s
-                  AND COALESCE(ds.target_lang, 'de') = %s
-                  AND tr.id IS NULL;
-                """,
-                (
-                    source_lang,
-                    target_lang,
-                    user_id,
-                    active_session_id,
-                    source_lang,
-                    target_lang,
-                ),
-            )
-            row = cursor.fetchone()
-            pending_count = int(row[0] or 0) if row else 0
-            if pending_count > 0:
-                return {"session_id": active_session_id, "created": False, "blocked": True}
+            if force_new_session:
+                _close_user_progress_session(
+                    cursor,
+                    user_id=int(user_id),
+                    session_id=active_session_id,
+                )
+                conn.commit()
+                active_session_id = None
             else:
-                # Auto-close stale empty session and allow creating a fresh one.
+                # Keep blocking only when there are still pending sentences in this
+                # active session for the same language pair.
                 cursor.execute(
                     """
-                    UPDATE bt_3_user_progress
-                    SET
-                        active_seconds = COALESCE(active_seconds, 0)
-                            + CASE
-                                WHEN COALESCE(active_running, FALSE) = TRUE
-                                 AND active_started_at IS NOT NULL
-                                    THEN GREATEST(
-                                        0,
-                                        EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
-                                    )
-                                ELSE 0
-                            END,
-                        active_started_at = NULL,
-                        active_running = FALSE,
-                        end_time = NOW(),
-                        completed = TRUE
-                    WHERE user_id = %s AND session_id = %s;
+                    SELECT COUNT(*)
+                    FROM bt_3_daily_sentences ds
+                    LEFT JOIN bt_3_translations tr
+                      ON tr.user_id = ds.user_id
+                     AND tr.sentence_id = ds.id
+                     AND tr.session_id = ds.session_id
+                     AND COALESCE(tr.source_lang, 'ru') = %s
+                     AND COALESCE(tr.target_lang, 'de') = %s
+                    WHERE ds.user_id = %s
+                      AND ds.session_id = %s
+                      AND COALESCE(ds.source_lang, 'ru') = %s
+                      AND COALESCE(ds.target_lang, 'de') = %s
+                      AND tr.id IS NULL;
                     """,
-                    (user_id, active_session_id),
+                    (
+                        source_lang,
+                        target_lang,
+                        user_id,
+                        active_session_id,
+                        source_lang,
+                        target_lang,
+                    ),
+                )
+                row = cursor.fetchone()
+                pending_count = int(row[0] or 0) if row else 0
+                if pending_count > 0:
+                    return {"session_id": active_session_id, "created": False, "blocked": True}
+                # Auto-close stale empty session and allow creating a fresh one.
+                _close_user_progress_session(
+                    cursor,
+                    user_id=int(user_id),
+                    session_id=active_session_id,
                 )
                 conn.commit()
 
