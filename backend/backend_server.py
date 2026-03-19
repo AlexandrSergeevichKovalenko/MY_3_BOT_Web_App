@@ -9234,21 +9234,44 @@ def _get_effective_tts_prewarm_per_user_max_char_limit(base_limit: int | None = 
     return max(resolved_base_limit, int(TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT))
 
 
-def _get_latest_personalized_tts_prewarm_meta(*, lookback_hours: int | None = None) -> dict[str, Any]:
+def _get_latest_personalized_tts_prewarm_event(*, lookback_hours: int | None = None) -> dict[str, Any]:
     effective_lookback_hours = max(
         1,
         int(lookback_hours or TTS_PREWARM_QUOTA_CONTROL_LOOKBACK_HOURS or 72),
     )
     events = _get_tts_admin_monitor_window(effective_lookback_hours * 60 * 60)
-    latest_meta: dict[str, Any] = {}
+    latest_event: dict[str, Any] = {}
     for item in events:
         if item.get("kind") != "prewarm_run" or item.get("status") != "ok":
             continue
         meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
         if str(meta.get("planner_mode") or "").strip().lower() != "personalized_fsrs":
             continue
-        latest_meta = dict(meta)
-    return latest_meta
+        latest_event = dict(item)
+    return latest_event
+
+
+def _get_latest_personalized_tts_prewarm_meta(*, lookback_hours: int | None = None) -> dict[str, Any]:
+    event = _get_latest_personalized_tts_prewarm_event(lookback_hours=lookback_hours)
+    meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+    return dict(meta)
+
+
+def _format_tts_prewarm_monitor_timestamp(ts_value: Any) -> str:
+    try:
+        safe_ts = float(ts_value)
+    except Exception:
+        return "unknown"
+    if safe_ts <= 0:
+        return "unknown"
+    try:
+        local_dt = datetime.fromtimestamp(safe_ts, tz=ZoneInfo(TTS_PREWARM_QUOTA_CONTROL_TZ))
+        return local_dt.strftime("%Y-%m-%d %H:%M %Z")
+    except Exception:
+        try:
+            return datetime.fromtimestamp(safe_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        except Exception:
+            return "unknown"
 
 
 def _build_tts_prewarm_quota_control_reply_markup_dict(current_limit: int | None = None) -> dict[str, Any]:
@@ -9281,32 +9304,61 @@ def _build_tts_prewarm_quota_control_reply_markup_dict(current_limit: int | None
 
 def _build_tts_prewarm_quota_control_text() -> str:
     current_limit = _get_effective_tts_prewarm_per_user_char_limit()
-    latest_meta = _get_latest_personalized_tts_prewarm_meta()
+    latest_event = _get_latest_personalized_tts_prewarm_event()
+    latest_meta = latest_event.get("meta") if isinstance(latest_event.get("meta"), dict) else {}
     if latest_meta:
         base_limit = int(latest_meta.get("per_user_char_limit") or current_limit)
+        users_with_prediction = int(latest_meta.get("users_with_prediction") or 0)
+        last_run_label = _format_tts_prewarm_monitor_timestamp(latest_event.get("ts"))
+        sample_note = (
+            "Note: only a few users were in this run, so p90/p95 are almost the same as the heaviest user."
+            if 0 < users_with_prediction <= 5
+            else None
+        )
         lines = [
             "🎛 TTS prewarm quota control",
             "",
-            f"Current per-user char limit: {current_limit}",
+            f"Current setting for the NEXT run: {current_limit} chars per user",
             f"Allowed range: {int(TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN)}-{int(TTS_PREWARM_PER_USER_CHAR_LIMIT_MAX)}",
             "",
-            "Latest successful personalized prewarm:",
-            f"Users with prediction: {int(latest_meta.get('users_with_prediction') or 0)}",
-            f"Base quota fit ({int(latest_meta.get('per_user_item_limit') or TTS_PREWARM_PER_USER_ITEM_LIMIT)} texts / {base_limit} chars): {int(latest_meta.get('base_quota_fit_pct') or 0)}%",
+            "Important:",
+            "The numbers below are from the LAST successful personalized prewarm run.",
+            "They do not recalculate instantly when you press +100/-100. The new limit affects the next run.",
+            "",
+            f"Last successful run: {last_run_label}",
+            f"That run used base quota: {int(latest_meta.get('per_user_item_limit') or TTS_PREWARM_PER_USER_ITEM_LIMIT)} texts / {base_limit} chars per user",
+            "",
+            f"Users with prediction: {users_with_prediction}",
+            "How many users had at least one likely upcoming text that night.",
+            "",
+            f"Base quota fit: {int(latest_meta.get('base_quota_fit_pct') or 0)}%",
+            "Share of predicted users fully covered by the base per-user limit, before redistribution.",
+            "",
             f"Final fit after redistribution: {int(latest_meta.get('final_quota_fit_pct') or 0)}%",
-            "Predicted chars p50/p90/p95 per user: "
+            "Share of predicted users fully covered after unused budget from lighter users was redistributed.",
+            "",
+            "Predicted chars per user p50/p90/p95: "
             f"{int(latest_meta.get('predicted_chars_per_user_p50') or 0)}/"
             f"{int(latest_meta.get('predicted_chars_per_user_p90') or 0)}/"
             f"{int(latest_meta.get('predicted_chars_per_user_p95') or 0)}",
-            "Assigned chars p50/p90/p95 per user: "
+            "Demand before limits. p50 = typical user, p90 = heavy user, p95 = almost the heaviest user.",
+            "",
+            "Assigned chars per user p50/p90/p95: "
             f"{int(latest_meta.get('assigned_chars_per_user_p50') or 0)}/"
             f"{int(latest_meta.get('assigned_chars_per_user_p90') or 0)}/"
             f"{int(latest_meta.get('assigned_chars_per_user_p95') or 0)}",
+            "What actually got allocated after limits and redistribution.",
+            "",
             f"Predicted total texts/chars: {int(latest_meta.get('predicted_items') or 0)}/{int(latest_meta.get('predicted_chars') or 0)}",
+            "Total demand before limits.",
+            "",
             f"Assigned total texts/chars: {int(latest_meta.get('assigned_items') or 0)}/{int(latest_meta.get('assigned_chars') or 0)}",
+            "Total volume that actually went into the nightly plan.",
             "",
             "Use the buttons below to add or subtract chars from the nightly per-user quota.",
         ]
+        if sample_note:
+            lines.extend(["", sample_note])
         return "\n".join(lines)
 
     return (
