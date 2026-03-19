@@ -10,6 +10,12 @@ from backend.database import get_db_connection_context, build_translation_sessio
 
 ALLOWED_PERIODS = {"day", "week", "month", "quarter", "half-year", "year", "all"}
 ALLOWED_GRANULARITY = {"day", "week", "month", "quarter", "half-year", "year"}
+FINAL_SCORE_FORMULA_EXPRESSION = "avg_score - avg_time_min*0.5 - missed_days*0.5"
+FINAL_SCORE_FORMULA_COMPONENTS = (
+    {"key": "avg_score", "weight": 1.0, "direction": "add"},
+    {"key": "avg_time_min", "weight": 0.5, "direction": "subtract"},
+    {"key": "missed_days", "weight": 0.5, "direction": "subtract"},
+)
 
 
 @dataclass(frozen=True)
@@ -166,9 +172,26 @@ def _period_start_expr(column: str, granularity: str) -> str:
     return f"date_trunc('{granularity}', {column})"
 
 
-def _calculate_final_score(avg_score: float, avg_time_min: float, missed: int) -> float:
-    raw_score = avg_score - avg_time_min * 1 - missed * 20
-    return round(max(0.0, raw_score), 2)
+def _build_final_score_formula_payload() -> dict[str, Any]:
+    return {
+        "expression": FINAL_SCORE_FORMULA_EXPRESSION,
+        "components": [dict(item) for item in FINAL_SCORE_FORMULA_COMPONENTS],
+        "bounded": False,
+        "round_digits": 2,
+    }
+
+
+def _calculate_final_score(
+    avg_score: float,
+    avg_time_min: float,
+    missed_days: int,
+) -> float:
+    raw_score = (
+        avg_score
+        - avg_time_min * 0.5
+        - missed_days * 0.5
+    )
+    return round(raw_score, 2)
 
 
 def _post_process_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -200,7 +223,12 @@ def _post_process_row(row: dict[str, Any]) -> dict[str, Any]:
         "success_rate": success_rate,
         "completion_rate": completion_rate,
         "avg_score": round(avg_score, 2),
-        "final_score": _calculate_final_score(avg_score, avg_time, missed),
+        "final_score_formula": _build_final_score_formula_payload(),
+        "final_score": _calculate_final_score(
+            avg_score=avg_score,
+            avg_time_min=avg_time,
+            missed_days=missed_days,
+        ),
     }
 
 

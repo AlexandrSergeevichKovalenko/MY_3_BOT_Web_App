@@ -23307,7 +23307,7 @@ def _run_translation_session_fill(
     grammar_focus: dict[str, Any] | None,
 ) -> None:
     try:
-        asyncio.run(
+        result = asyncio.run(
             fill_translation_session_webapp(
                 user_id=int(user_id),
                 username=username,
@@ -23319,6 +23319,26 @@ def _run_translation_session_fill(
                 grammar_focus=grammar_focus,
             )
         )
+        if isinstance(result, dict):
+            ready_count = int(result.get("ready_count") or 0)
+            expected_total = int(result.get("expected_total") or 0)
+            if expected_total > 0 and ready_count < expected_total:
+                logging.warning(
+                    "translation session background fill completed under target: user_id=%s session_id=%s ready_count=%s expected_total=%s diagnostics=%s",
+                    int(user_id),
+                    int(session_id),
+                    ready_count,
+                    expected_total,
+                    result.get("round_diagnostics"),
+                )
+            else:
+                logging.info(
+                    "translation session background fill completed: user_id=%s session_id=%s ready_count=%s expected_total=%s",
+                    int(user_id),
+                    int(session_id),
+                    ready_count,
+                    expected_total,
+                )
     except Exception as exc:
         logging.error(
             "Translation session background fill failed: user_id=%s session_id=%s error=%s",

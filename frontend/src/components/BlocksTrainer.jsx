@@ -133,6 +133,19 @@ export default function BlocksTrainer({
   const isFinished = status !== 'idle';
   const tileWidthPx = type === 'WORD' ? 60 : TILE_WIDTH;
   const isWordMode = type === 'WORD';
+  const wordSlotSizing = useMemo(() => {
+    const tokenCount = targetTokens.length;
+    if (tokenCount >= 12) {
+      return { minWidth: 22, minHeight: 34, fontSize: 18 };
+    }
+    if (tokenCount >= 10) {
+      return { minWidth: 24, minHeight: 36, fontSize: 20 };
+    }
+    if (tokenCount >= 8) {
+      return { minWidth: 28, minHeight: 40, fontSize: 22 };
+    }
+    return { minWidth: 34, minHeight: 46, fontSize: 24 };
+  }, [targetTokens.length]);
   const syncSlotRects = () => {
     const containerRect = containerRef.current?.getBoundingClientRect();
     if (!containerRect) return;
@@ -736,6 +749,11 @@ export default function BlocksTrainer({
             isWordMode ? 'is-word' : '',
           ].filter(Boolean).join(' ')}
           ref={slotsRowRef}
+          style={isWordMode ? {
+            '--word-slot-min-width': `${wordSlotSizing.minWidth}px`,
+            '--word-slot-min-height': `${wordSlotSizing.minHeight}px`,
+            '--word-slot-font-size': `${wordSlotSizing.fontSize}px`,
+          } : undefined}
         >
           {targetTokens.map((_token, idx) => {
             const tileId = slots[idx];

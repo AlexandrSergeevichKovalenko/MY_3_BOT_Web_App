@@ -8729,10 +8729,14 @@ body {
 }
 
 .blocks-target.is-word .blocks-slot {
-  min-width: clamp(22px, 5.7vw, 28px);
-  min-height: clamp(30px, 7.4vw, 36px);
-  padding: 0 clamp(4px, 1.1vw, 8px);
-  font-size: clamp(15px, 3.9vw, 20px);
+  min-width: var(--word-slot-min-width, 28px);
+  min-height: var(--word-slot-min-height, 40px);
+  padding: 0 4px;
+  font-size: var(--word-slot-font-size, 22px);
+}
+
+.blocks-target.is-word .blocks-slot.is-filled {
+  font-size: var(--word-slot-font-size, 22px);
 }
 
 .blocks-slot {
@@ -9157,10 +9161,14 @@ body {
   }
 
   .blocks-target.is-word .blocks-slot {
-    min-height: 28px;
-    min-width: 20px;
-    padding: 0 4px;
-    font-size: 14px;
+    min-height: var(--word-slot-min-height, 36px);
+    min-width: var(--word-slot-min-width, 24px);
+    padding: 0 3px;
+    font-size: var(--word-slot-font-size, 20px);
+  }
+
+  .blocks-target.is-word .blocks-slot.is-filled {
+    font-size: var(--word-slot-font-size, 20px);
   }
 
   .blocks-slot.is-filled {

@@ -2304,6 +2304,69 @@ def _normalize_sentence_text_key(sentence: str) -> str:
     return " ".join(str(sentence or "").strip().split()).lower()
 
 
+def _get_session_sentence_keys_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    session_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> set[str]:
+    cursor.execute(
+        """
+        SELECT sentence
+        FROM bt_3_daily_sentences
+        WHERE user_id = %s
+          AND session_id = %s
+          AND COALESCE(source_lang, 'ru') = %s
+          AND COALESCE(target_lang, 'de') = %s;
+        """,
+        (int(user_id), int(session_id), source_lang, target_lang),
+    )
+    return {
+        _normalize_sentence_text_key(row[0])
+        for row in (cursor.fetchall() or [])
+        if row and row[0]
+    }
+
+
+def _summarize_sentence_entry_batch(
+    sentence_entries: list[dict[str, Any]],
+    *,
+    existing_sentence_keys: set[str],
+    limit: int,
+) -> dict[str, int]:
+    normalized_entries = _normalize_sentence_entries(sentence_entries)
+    seen_keys = set(existing_sentence_keys or set())
+    safe_limit = max(1, int(limit or 7))
+    duplicate_existing = 0
+    insertable = 0
+    overflow = 0
+
+    for entry in normalized_entries:
+        sentence_key = _normalize_sentence_text_key(entry.get("sentence") or "")
+        if not sentence_key:
+            continue
+        if sentence_key in seen_keys:
+            duplicate_existing += 1
+            continue
+        if len(seen_keys) >= safe_limit:
+            overflow += 1
+            continue
+        seen_keys.add(sentence_key)
+        insertable += 1
+
+    return {
+        "raw_count": len(sentence_entries or []),
+        "normalized_count": len(normalized_entries),
+        "dropped_during_normalization": max(0, len(sentence_entries or []) - len(normalized_entries)),
+        "duplicate_existing": duplicate_existing,
+        "insertable": insertable,
+        "overflow": overflow,
+        "remaining_slots": max(0, safe_limit - len(existing_sentence_keys or set())),
+    }
+
+
 def _insert_sentence_entries_into_session_with_cursor(
     cursor,
     *,
@@ -2463,6 +2526,7 @@ async def fill_translation_session_webapp(
     conn = get_db_connection()
     cursor = conn.cursor()
     advisory_lock_acquired = False
+    round_diagnostics: list[dict[str, Any]] = []
     try:
         cursor.execute("SELECT pg_try_advisory_lock(%s);", (int(session_id),))
         lock_row = cursor.fetchone()
@@ -2495,6 +2559,13 @@ async def fill_translation_session_webapp(
             if current_count >= int(target_count):
                 break
 
+            existing_sentence_keys = _get_session_sentence_keys_with_cursor(
+                cursor,
+                user_id=int(user_id),
+                session_id=int(session_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
             if _is_legacy_ru_de_pair(source_lang, target_lang):
                 candidate_entries = await get_original_sentences_webapp(
                     cursor,
@@ -2533,6 +2604,11 @@ async def fill_translation_session_webapp(
                 )
                 candidate_entries = _normalize_sentence_entries(generated_entries)
 
+            batch_summary = _summarize_sentence_entry_batch(
+                candidate_entries,
+                existing_sentence_keys=existing_sentence_keys,
+                limit=int(target_count),
+            )
             inserted_items = _insert_sentence_entries_into_session_with_cursor(
                 cursor,
                 user_id=int(user_id),
@@ -2542,8 +2618,50 @@ async def fill_translation_session_webapp(
                 sentence_entries=candidate_entries,
                 limit=int(target_count),
             )
+            round_info = {
+                "round": int(_round + 1),
+                "before_count": int(current_count),
+                "candidate_raw_count": int(batch_summary["raw_count"]),
+                "candidate_normalized_count": int(batch_summary["normalized_count"]),
+                "candidate_dropped_during_normalization": int(batch_summary["dropped_during_normalization"]),
+                "candidate_duplicate_existing": int(batch_summary["duplicate_existing"]),
+                "candidate_insertable": int(batch_summary["insertable"]),
+                "candidate_overflow": int(batch_summary["overflow"]),
+                "remaining_slots": int(batch_summary["remaining_slots"]),
+                "inserted_count": int(len(inserted_items)),
+            }
+            round_diagnostics.append(round_info)
+            logging.info(
+                "translation fill round: user_id=%s session_id=%s round=%s before_count=%s candidate_raw=%s normalized=%s "
+                "dropped_norm=%s duplicate_existing=%s insertable=%s overflow=%s inserted=%s target=%s",
+                int(user_id),
+                int(session_id),
+                round_info["round"],
+                round_info["before_count"],
+                round_info["candidate_raw_count"],
+                round_info["candidate_normalized_count"],
+                round_info["candidate_dropped_during_normalization"],
+                round_info["candidate_duplicate_existing"],
+                round_info["candidate_insertable"],
+                round_info["candidate_overflow"],
+                round_info["inserted_count"],
+                int(target_count),
+            )
             if not inserted_items:
-                break
+                logging.warning(
+                    "translation fill stopped without inserts: user_id=%s session_id=%s round=%s before_count=%s target=%s "
+                    "candidate_raw=%s normalized=%s duplicate_existing=%s insertable=%s",
+                    int(user_id),
+                    int(session_id),
+                    round_info["round"],
+                    round_info["before_count"],
+                    int(target_count),
+                    round_info["candidate_raw_count"],
+                    round_info["candidate_normalized_count"],
+                    round_info["candidate_duplicate_existing"],
+                    round_info["candidate_insertable"],
+                )
+                continue
             total_inserted += len(inserted_items)
             conn.commit()
 
@@ -2560,11 +2678,21 @@ async def fill_translation_session_webapp(
         )
         count_row = cursor.fetchone()
         current_count = int(count_row[0] or 0) if count_row else 0
+        if current_count < int(target_count):
+            logging.warning(
+                "translation session underfilled after background fill: user_id=%s session_id=%s ready_count=%s expected_total=%s diagnostics=%s",
+                int(user_id),
+                int(session_id),
+                int(current_count),
+                int(target_count),
+                round_diagnostics,
+            )
         return {
             "session_id": int(session_id),
             "filled": int(total_inserted),
             "ready_count": int(current_count),
             "expected_total": int(target_count),
+            "round_diagnostics": round_diagnostics,
         }
     finally:
         if advisory_lock_acquired:
@@ -2739,6 +2867,31 @@ async def start_translation_session_webapp(
         )
         conn.commit()
         ready_count = len(inserted_items)
+        immediate_batch_summary = _summarize_sentence_entry_batch(
+            immediate_entries,
+            existing_sentence_keys=set(),
+            limit=7,
+        )
+        logging.info(
+            "translation session seeded: user_id=%s session_id=%s seed_raw=%s seed_normalized=%s seed_dropped_norm=%s "
+            "seed_insertable=%s inserted=%s expected_total=%s",
+            int(user_id),
+            int(session_id),
+            int(immediate_batch_summary["raw_count"]),
+            int(immediate_batch_summary["normalized_count"]),
+            int(immediate_batch_summary["dropped_during_normalization"]),
+            int(immediate_batch_summary["insertable"]),
+            int(ready_count),
+            7,
+        )
+        if ready_count < 7:
+            logging.warning(
+                "translation session requires background fill: user_id=%s session_id=%s seeded_ready_count=%s expected_total=%s",
+                int(user_id),
+                int(session_id),
+                int(ready_count),
+                7,
+            )
         return {
             "session_id": int(session_id),
             "created": True,

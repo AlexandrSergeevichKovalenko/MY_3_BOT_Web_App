@@ -8311,6 +8311,7 @@ function AppInner() {
   const analyticsCompareInsight = useMemo(() => {
     const items = Array.isArray(analyticsCompare) ? analyticsCompare : [];
     const scopeKey = String(analyticsScopeKey || '').trim().toLowerCase();
+    const hasNonZeroFinalScore = items.some((item) => Number(item?.final_score || 0) !== 0);
     const maxFinalScore = items.reduce((maxValue, item) => Math.max(maxValue, Number(item?.final_score || 0)), 0);
     if (scopeKey === 'personal') {
       return tr(
@@ -8324,10 +8325,16 @@ function AppInner() {
         'Fuer die gewaehlte Gruppe gibt es aktuell noch zu wenige Teilnehmende oder Daten fuer einen Vergleich.'
       );
     }
-    if (maxFinalScore <= 0) {
+    if (!hasNonZeroFinalScore) {
       return tr(
         'Сравнение есть, но итоговые баллы сейчас равны 0, поэтому столбцы почти не видны.',
         'Der Vergleich ist vorhanden, aber die Gesamtscores liegen aktuell bei 0, deshalb sind die Balken fast unsichtbar.'
+      );
+    }
+    if (maxFinalScore <= 0) {
+      return tr(
+        'Сравнение есть, но итоговые баллы в этом периоде сейчас отрицательные, поэтому часть столбцов уходит влево от нуля.',
+        'Der Vergleich ist vorhanden, aber die Gesamtscores sind in diesem Zeitraum aktuell negativ, deshalb laufen einige Balken links von der Nullachse.'
       );
     }
     return tr(
@@ -8335,6 +8342,19 @@ function AppInner() {
       'Das untere Diagramm zeigt den Vergleich der Teilnehmenden nach Gesamtscore fuer den gewaehlten Zeitraum.'
     );
   }, [analyticsCompare, analyticsScopeKey, tr]);
+  const analyticsFinalScoreFormulaText = useMemo(() => {
+    const formula = analyticsSummary?.final_score_formula;
+    if (formula?.expression) {
+      return tr(
+        'Формула итогового результата: средний балл - среднее время на перевод × 0.5 - дни без практики × 0.5. Значение не ограничивается ни снизу, ни сверху: итог может быть отрицательным или выше 100.',
+        'Formel fuer den Gesamtscore: Durchschnittsbewertung - durchschnittliche Zeit pro Uebersetzung × 0.5 - Tage ohne Praxis × 0.5. Der Wert ist weder nach unten noch nach oben begrenzt: Er kann negativ sein oder ueber 100 liegen.'
+      );
+    }
+    return tr(
+      'Формула итогового результата: средний балл - среднее время на перевод × 0.5 - дни без практики × 0.5. Значение не ограничивается ни снизу, ни сверху: итог может быть отрицательным или выше 100.',
+      'Formel fuer den Gesamtscore: Durchschnittsbewertung - durchschnittliche Zeit pro Uebersetzung × 0.5 - Tage ohne Praxis × 0.5. Der Wert ist weder nach unten noch nach oben begrenzt: Er kann negativ sein oder ueber 100 liegen.'
+    );
+  }, [analyticsSummary, tr]);
   const readerVisibleText = useMemo(() => {
     if (readerPageCount > 0) {
       return String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '');
@@ -8511,6 +8531,7 @@ function AppInner() {
     const successRate = Number(analyticsSummary.success_rate ?? 0);
     const completionRate = Number(analyticsSummary.completion_rate ?? 0);
     const avgScore = Number(analyticsSummary.avg_score ?? 0);
+    const totalTimeMin = Math.round(Number(analyticsSummary.total_time_min ?? 0) * 10) / 10;
     const avgTimeMin = Number(analyticsSummary.avg_time_min ?? 0);
     const missedSentences = Number(analyticsSummary.missed_sentences ?? 0);
     const missedDays = Number(analyticsSummary.missed_days ?? 0);
@@ -8527,21 +8548,30 @@ function AppInner() {
             hint: tr('Сколько предложений вы реально закрыли за период.', 'Wie viele Saetze du im Zeitraum wirklich abgeschlossen hast.'),
           },
           {
+            key: 'assigned',
+            label: tr('Назначено предложений', 'Zugewiesene Saetze'),
+            value: `${assignedSentences}`,
+            hint: tr(
+              'Сколько предложений было запланировано на выбранный период аналитики.',
+              'Wie viele Saetze fuer den gewaehlten Analysezeitraum geplant waren.'
+            ),
+          },
+          {
             key: 'completion',
             label: tr('Закрыто по плану', 'Vom Plan erledigt'),
             value: `${completionRate}%`,
             hint: assignedSentences > 0
               ? tr(
-                `${coveredSentences} из ${assignedSentences} назначенных предложений.`,
-                `${coveredSentences} von ${assignedSentences} zugewiesenen Saetzen.`
+                `${coveredSentences} из ${assignedSentences} запланированных предложений.`,
+                `${coveredSentences} von ${assignedSentences} geplanten Saetzen.`
               )
-              : tr('Назначенных предложений в этом периоде не было.', 'In diesem Zeitraum gab es keine zugewiesenen Saetze.'),
+              : tr('Запланированных предложений в этом периоде не было.', 'In diesem Zeitraum gab es keine geplanten Saetze.'),
           },
           {
             key: 'missed',
             label: tr('Пропущено заданий', 'Verpasste Aufgaben'),
             value: `${missedSentences}`,
-            hint: tr('Сколько назначенных предложений осталось незакрытыми.', 'Wie viele zugewiesene Saetze offen geblieben sind.'),
+            hint: tr('Сколько запланированных предложений осталось незакрытыми.', 'Wie viele geplante Saetze offen geblieben sind.'),
           },
         ],
       },
@@ -8562,10 +8592,19 @@ function AppInner() {
             hint: tr('Средний балл ваших ответов по шкале до 100.', 'Durchschnittspunktzahl deiner Antworten auf einer Skala bis 100.'),
           },
           {
+            key: 'total-time',
+            label: tr('Общее время на переводы', 'Gesamtzeit fuer Uebersetzungen'),
+            value: `${totalTimeMin} ${tr('мин', 'Min')}`,
+            hint: tr(
+              'Сколько минут суммарно ушло на переводы за выбранный период.',
+              'Wie viele Minuten insgesamt fuer Uebersetzungen im gewaehlten Zeitraum draufgegangen sind.'
+            ),
+          },
+          {
             key: 'final-score',
             label: tr('Общий результат', 'Gesamtergebnis'),
             value: `${finalScore}`,
-            hint: tr('Итоговый показатель с учётом качества, скорости и пропусков.', 'Gesamtwert mit Qualitaet, Tempo und Auslassungen.'),
+            hint: analyticsFinalScoreFormulaText,
           },
         ],
       },
@@ -8588,7 +8627,7 @@ function AppInner() {
         ],
       },
     ];
-  }, [analyticsSummary, tr]);
+  }, [analyticsFinalScoreFormulaText, analyticsSummary, tr]);
   const weeklyPlanUsesDeferredAnalytics = planAnalyticsPeriod !== 'week';
   const hasPlanAnalyticsMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0;
   const weeklyMetrics = weeklyPlanUsesDeferredAnalytics
@@ -22457,6 +22496,9 @@ function AppInner() {
                       </div>
                     ))}
                   </div>
+                )}
+                {analyticsSummary && (
+                  <div className="webapp-muted analytics-compare-hint">{analyticsFinalScoreFormulaText}</div>
                 )}
 
                 {weeklyPlan && (
