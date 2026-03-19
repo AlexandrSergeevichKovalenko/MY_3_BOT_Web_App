@@ -13609,6 +13609,7 @@ def upsert_billing_fixed_cost(
     currency_value = _normalize_billing_currency(currency)
     allocation_value = _normalize_allocation_method(allocation_method_default)
     metadata_value = metadata if isinstance(metadata, dict) else {}
+    metadata_payload = Json(metadata_value)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -13642,7 +13643,7 @@ def upsert_billing_fixed_cost(
                     period_start,
                     period_end,
                     allocation_value,
-                    metadata_value,
+                    metadata_payload,
                 ),
             )
             row = cursor.fetchone()

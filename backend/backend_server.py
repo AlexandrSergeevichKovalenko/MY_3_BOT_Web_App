@@ -440,6 +440,7 @@ _TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY = 3
 _OBSERVABILITY_LOCK = threading.Lock()
 _TTS_URL_POLL_ATTEMPTS: dict[str, int] = {}
 _TRANSLATION_CHECK_STATUS_POLLS: dict[int, int] = {}
+_BILLING_EVENT_SKIP_COUNTS: dict[str, int] = {}
 _TRANSLATION_CHECK_ACCEPTED_AT_MS: dict[int, int] = {}
 
 _audio_scheduler = None
@@ -1585,6 +1586,30 @@ def _log_flow_observation(flow: str, stage: str, **fields: Any) -> None:
         logging.info("obs %s", json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str))
     except Exception:
         logging.info("obs flow=%s stage=%s fields=%s", event.get("flow"), event.get("stage"), fields)
+
+
+def _log_billing_skip_warning(*, provider: str, action_type: str, units_type: str, exc: Exception) -> None:
+    key = "|".join([
+        str(provider or "").strip().lower(),
+        str(action_type or "").strip().lower(),
+        str(units_type or "").strip().lower(),
+        exc.__class__.__name__,
+    ])
+    with _OBSERVABILITY_LOCK:
+        next_count = int(_BILLING_EVENT_SKIP_COUNTS.get(key) or 0) + 1
+        _BILLING_EVENT_SKIP_COUNTS[key] = next_count
+        if len(_BILLING_EVENT_SKIP_COUNTS) > 5000:
+            _BILLING_EVENT_SKIP_COUNTS.clear()
+    should_log = next_count <= 3 or next_count in {10, 25, 50, 100} or next_count % 500 == 0
+    if should_log:
+        logging.warning(
+            "billing event skipped: provider=%s action=%s units_type=%s count=%s error=%s",
+            str(provider or "").strip().lower() or "n/a",
+            str(action_type or "").strip().lower() or "n/a",
+            str(units_type or "").strip().lower() or "n/a",
+            next_count,
+            exc,
+        )
 
 
 def _increment_tts_url_poll_attempt(cache_key: str) -> int:
@@ -6211,7 +6236,12 @@ def _billing_log_event_safe(
                 requested_units=0.0,
             )
     except Exception as exc:
-        logging.debug("billing event skipped: %s", exc)
+        _log_billing_skip_warning(
+            provider=provider,
+            action_type=action_type,
+            units_type=units_type,
+            exc=exc,
+        )
 
 
 def _billing_log_openai_usage(

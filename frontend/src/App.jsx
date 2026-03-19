@@ -8461,6 +8461,8 @@ function AppInner() {
     if (!economicsProvider || economicsProvider === 'all') return rows;
     return rows.filter((item) => String(item?.provider || '').trim().toLowerCase() === economicsProvider);
   }, [economicsSummary, economicsProvider]);
+  const economicsLedgerEventsCount = Number(economicsSummary?.totals?.events_count || 0);
+  const economicsLedgerIsEmpty = !!economicsSummary && economicsLedgerEventsCount === 0;
   const selectedEconomicsProviderLabel = economicsProvider === 'all'
     ? tr('Все провайдеры', 'Alle Provider')
     : formatEconomicsProviderLabel(economicsProvider);
@@ -22026,12 +22028,29 @@ function AppInner() {
                       <span>{tr('Охват', 'Abdeckung')}: {tr('все пользователи и системные события', 'alle Nutzer und Systemevents')}</span>
                     </div>
 
+                    {economicsLedgerIsEmpty && (
+                      <div className="webapp-muted analytics-scope-hint is-warning">
+                        {tr(
+                          'В billing ledger пока нет записанных событий. Нули ниже означают отсутствие billing-данных в базе, а не обязательно нулевое реальное использование.',
+                          'Im Billing-Ledger sind aktuell keine Events gespeichert. Die Nullen unten bedeuten fehlende Billing-Daten in der Datenbank, nicht zwingend echten Null-Verbrauch.',
+                        )}
+                      </div>
+                    )}
+
                     {economicsBudgetRows.length > 0 && (
-                      <div className="analytics-cards economics-voice-cards">
+                      <>
+                        <div className="webapp-muted analytics-scope-hint">
+                          {tr(
+                            'Ниже показан free-tier budget текущего месяца по провайдеру, а не суммарный usage за выбранный период.',
+                            'Unten steht das Freikontingent des aktuellen Monats je Provider, nicht der gesamte Usage fuer den gewaehlten Zeitraum.',
+                          )}
+                        </div>
+                        <div className="analytics-cards economics-voice-cards">
                         {economicsBudgetRows.map((row) => {
                           const usedUnits = Number(row?.used_units || 0);
                           const limitUnits = row?.effective_limit_units == null ? null : Number(row.effective_limit_units || 0);
                           const usageRatio = Number(row?.usage_ratio || 0);
+                          const budgetMonth = String(row?.period_month || '').slice(0, 7);
                           const livekitTone = String(row?.metadata?.color || '').trim().toLowerCase();
                           const cardTone =
                             row?.provider === 'livekit'
@@ -22049,6 +22068,9 @@ function AppInner() {
                                 {limitUnits != null ? ` / ${limitUnits.toFixed(2)}` : ''}
                               </strong>
                               <small className="webapp-muted">
+                                {tr('free tier', 'Freikontingent')}
+                                {budgetMonth ? ` • ${budgetMonth}` : ''}
+                                {' • '}
                                 {formatEconomicsUnitsLabel(row?.units_type || row?.unit, uiLang)}
                                 {Number.isFinite(usageRatio) && usageRatio > 0
                                   ? ` • ${Math.round(usageRatio * 100)}%`
@@ -22057,7 +22079,8 @@ function AppInner() {
                             </div>
                           );
                         })}
-                      </div>
+                        </div>
+                      </>
                     )}
 
                     <div className="economics-breakdown-grid">
