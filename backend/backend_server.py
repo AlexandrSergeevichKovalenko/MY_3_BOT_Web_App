@@ -296,7 +296,7 @@ from backend.database import (
     get_effective_billing_price_snapshot,
     log_billing_event,
     upsert_billing_fixed_cost,
-    get_user_billing_summary,
+    get_global_billing_summary,
     list_billing_plans,
     get_billing_plan,
     get_or_create_user_subscription,
@@ -15341,14 +15341,13 @@ def get_economics_summary():
     period = str(request.args.get("period") or "month").strip().lower()
     if period == "half_year":
         period = "half-year"
-    if period not in {"week", "month", "quarter", "half-year", "year", "all"}:
-        return jsonify({"error": "period must be one of: week, month, quarter, half-year, year, all"}), 400
-    allocation = str(request.args.get("allocation") or BILLING_ALLOCATION_DEFAULT or "weighted").strip().lower()
-    if allocation not in {"equal", "weighted"}:
-        return jsonify({"error": "allocation must be one of: equal, weighted"}), 400
+    if period not in {"day", "week", "month", "quarter", "half-year", "year", "all"}:
+        return jsonify({"error": "period must be one of: day, week, month, quarter, half-year, year, all"}), 400
+    provider = str(request.args.get("provider") or "").strip().lower()
+    if provider in {"", "all", "*"}:
+        provider = ""
     sync_fixed = str(request.args.get("sync_fixed") or "1").strip().lower() in {"1", "true", "yes", "on"}
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     sync_result = None
     if sync_fixed:
         try:
@@ -15358,18 +15357,30 @@ def get_economics_summary():
             sync_result = {"error": str(exc)}
 
     try:
-        summary = get_user_billing_summary(
-            user_id=int(user_id),
+        summary = get_global_billing_summary(
             period=period,
-            allocation_method=allocation,
-            source_lang=source_lang,
-            target_lang=target_lang,
+            provider=provider or None,
             currency=BILLING_CURRENCY_DEFAULT,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка расчёта экономики: {exc}"}), 500
 
     try:
+        provider_budget_rows = []
+        google_tts_budget = get_google_tts_monthly_budget_status(tz="Europe/Vienna")
+        if google_tts_budget:
+            provider_budget_rows.append({
+                "provider": "google_tts",
+                "label": "Google TTS",
+                **google_tts_budget,
+            })
+        google_translate_budget = get_google_translate_monthly_budget_status(tz="Europe/Vienna")
+        if google_translate_budget:
+            provider_budget_rows.append({
+                "provider": "google_translate",
+                "label": "Google Translate",
+                **google_translate_budget,
+            })
         livekit_free_minutes_month = max(0.0, _billing_env_float("LIVEKIT_FREE_MINUTES_MONTH"))
         livekit_price_per_minute = max(0.0, _billing_env_float("LIVEKIT_PRICE_PER_MINUTE_USD"))
         month_start, month_end = _billing_month_bounds()
@@ -15379,20 +15390,19 @@ def get_economics_summary():
                     """
                     SELECT COALESCE(SUM(units_value), 0)
                     FROM bt_3_billing_events
-                    WHERE user_id = %s
-                      AND action_type = 'livekit_room_minutes'
+                    WHERE action_type = 'livekit_room_minutes'
                       AND provider = 'livekit'
                       AND units_type = 'audio_minutes'
                       AND currency = %s
                       AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s;
                     """,
-                    (int(user_id), BILLING_CURRENCY_DEFAULT, month_start, month_end),
+                    (BILLING_CURRENCY_DEFAULT, month_start, month_end),
                 )
-                user_month_minutes = float((cursor.fetchone() or [0])[0] or 0.0)
+                month_minutes = float((cursor.fetchone() or [0])[0] or 0.0)
         livekit_color = "green"
         livekit_ratio = None
         if livekit_free_minutes_month > 0:
-            livekit_ratio = user_month_minutes / livekit_free_minutes_month
+            livekit_ratio = month_minutes / livekit_free_minutes_month
             if livekit_ratio >= 1.0:
                 livekit_color = "red"
             elif livekit_ratio >= 0.8:
@@ -15401,23 +15411,39 @@ def get_economics_summary():
                 livekit_color = "green"
         else:
             # No free tier configured: any usage is effectively paid.
-            livekit_color = "red" if user_month_minutes > 0 else "green"
-        summary["livekit_status"] = {
+            livekit_color = "red" if month_minutes > 0 else "green"
+        livekit_status = {
             "color": livekit_color,
             "free_minutes_month": round(livekit_free_minutes_month, 3),
-            "user_month_minutes": round(user_month_minutes, 3),
+            "month_minutes": round(month_minutes, 3),
             "ratio_to_free_tier": round(livekit_ratio, 4) if livekit_ratio is not None else None,
             "price_per_minute": round(livekit_price_per_minute, 8),
             "month_start": month_start.isoformat(),
             "month_end": month_end.isoformat(),
         }
+        provider_budget_rows.append({
+            "provider": "livekit",
+            "label": "LiveKit",
+            "unit": "audio_minutes",
+            "units_type": "audio_minutes",
+            "used_units": round(month_minutes, 3),
+            "remaining_units": max(0.0, round(livekit_free_minutes_month - month_minutes, 3)) if livekit_free_minutes_month > 0 else None,
+            "usage_ratio": round(livekit_ratio, 4) if livekit_ratio is not None else None,
+            "effective_limit_units": round(livekit_free_minutes_month, 3) if livekit_free_minutes_month > 0 else None,
+            "period_month": month_start.isoformat(),
+            "metadata": {
+                "color": livekit_color,
+                "price_per_minute": round(livekit_price_per_minute, 8),
+            },
+        })
+        summary["provider_budgets"] = provider_budget_rows
+        summary["livekit_status"] = livekit_status
     except Exception as exc:
         logging.warning("LiveKit status compute failed: %s", exc)
 
     return jsonify(
         {
             "ok": True,
-            "language_pair": _build_language_pair_payload(source_lang, target_lang),
             "summary": summary,
             "fixed_cost_sync": sync_result,
         }

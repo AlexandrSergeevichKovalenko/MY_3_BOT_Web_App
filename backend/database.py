@@ -14181,6 +14181,402 @@ def get_user_billing_summary(
     }
 
 
+def _get_billing_all_time_bounds(currency: str = "USD") -> tuple[date, date]:
+    currency_value = _normalize_billing_currency(currency)
+    today = date.today()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH dates AS (
+                    SELECT
+                        MIN((event_time AT TIME ZONE 'UTC')::date) AS min_date,
+                        MAX((event_time AT TIME ZONE 'UTC')::date) AS max_date
+                    FROM bt_3_billing_events
+                    WHERE currency = %s
+                    UNION ALL
+                    SELECT
+                        MIN(period_start) AS min_date,
+                        MAX(period_end) AS max_date
+                    FROM bt_3_billing_fixed_costs
+                    WHERE currency = %s
+                )
+                SELECT MIN(min_date), MAX(max_date)
+                FROM dates;
+                """,
+                (currency_value, currency_value),
+            )
+            row = cursor.fetchone() or (None, None)
+    return (row[0] or today, row[1] or today)
+
+
+def get_global_billing_summary(
+    *,
+    period: str = "month",
+    provider: str | None = None,
+    currency: str = "USD",
+    as_of_date: date | None = None,
+) -> dict:
+    currency_value = _normalize_billing_currency(currency)
+    normalized_period = str(period or "month").strip().lower() or "month"
+    if normalized_period == "half_year":
+        normalized_period = "half-year"
+    if normalized_period == "all":
+        period_start, period_end = _get_billing_all_time_bounds(currency_value)
+    else:
+        period_start, period_end = _billing_period_bounds(normalized_period, as_of_date)
+
+    provider_value = str(provider or "").strip().lower() or None
+    event_provider_sql = " AND provider = %s" if provider_value else ""
+    fixed_provider_sql = " AND COALESCE(provider, '') = %s" if provider_value else ""
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            totals_params = [currency_value, period_start, period_end]
+            if provider_value:
+                totals_params.append(provider_value)
+            cursor.execute(
+                f"""
+                SELECT
+                    COALESCE(SUM(cost_amount), 0) AS total_cost,
+                    COALESCE(SUM(units_value), 0) AS total_units,
+                    COUNT(*) AS events_count,
+                    COALESCE(SUM(CASE WHEN status = 'final' THEN cost_amount ELSE 0 END), 0) AS final_cost,
+                    COALESCE(SUM(CASE WHEN status = 'estimated' THEN cost_amount ELSE 0 END), 0) AS estimated_cost,
+                    COALESCE(SUM(CASE WHEN COALESCE(metadata->>'pricing_state', '') = 'missing_snapshot' THEN units_value ELSE 0 END), 0) AS unpriced_units,
+                    COALESCE(SUM(CASE WHEN COALESCE(metadata->>'pricing_state', '') = 'missing_snapshot' THEN 1 ELSE 0 END), 0) AS unpriced_events
+                FROM bt_3_billing_events
+                WHERE currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  {event_provider_sql};
+                """,
+                totals_params,
+            )
+            totals_row = cursor.fetchone() or (0, 0, 0, 0, 0, 0, 0)
+            variable_cost_total = float(totals_row[0] or 0.0)
+            units_total = float(totals_row[1] or 0.0)
+            events_count = int(totals_row[2] or 0)
+            final_cost = float(totals_row[3] or 0.0)
+            estimated_cost = float(totals_row[4] or 0.0)
+            unpriced_units = float(totals_row[5] or 0.0)
+            unpriced_events = int(totals_row[6] or 0)
+
+            fixed_params = [currency_value, period_start, period_end]
+            if provider_value:
+                fixed_params.append(provider_value)
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(amount), 0)
+                FROM bt_3_billing_fixed_costs
+                WHERE currency = %s
+                  AND period_end >= %s
+                  AND period_start <= %s
+                  {fixed_provider_sql};
+                """,
+                fixed_params,
+            )
+            fixed_cost_total = float((cursor.fetchone() or [0])[0] or 0.0)
+
+            active_users_params = [currency_value, period_start, period_end]
+            if provider_value:
+                active_users_params.append(provider_value)
+            cursor.execute(
+                f"""
+                SELECT COUNT(DISTINCT user_id)
+                FROM bt_3_billing_events
+                WHERE user_id IS NOT NULL
+                  AND currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  {event_provider_sql};
+                """,
+                active_users_params,
+            )
+            active_users = int((cursor.fetchone() or [0])[0] or 0)
+
+            provider_rows: list[dict] = []
+            provider_units_map: dict[str, list[dict]] = {}
+            if not provider_value:
+                cursor.execute(
+                    """
+                    SELECT provider, SUM(cost_amount) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
+                    FROM bt_3_billing_events
+                    WHERE currency = %s
+                      AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                    GROUP BY provider
+                    ORDER BY cost_total DESC, units_total DESC;
+                    """,
+                    (currency_value, period_start, period_end),
+                )
+                provider_rows = [
+                    {
+                        "provider": str(row[0] or ""),
+                        "variable_cost": float(row[1] or 0.0),
+                        "units": float(row[2] or 0.0),
+                        "events": int(row[3] or 0),
+                    }
+                    for row in (cursor.fetchall() or [])
+                ]
+                cursor.execute(
+                    """
+                    SELECT provider, units_type, SUM(units_value) AS units_total
+                    FROM bt_3_billing_events
+                    WHERE currency = %s
+                      AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                    GROUP BY provider, units_type
+                    ORDER BY provider ASC, units_total DESC;
+                    """,
+                    (currency_value, period_start, period_end),
+                )
+                for row in (cursor.fetchall() or []):
+                    provider_key = str(row[0] or "")
+                    provider_units_map.setdefault(provider_key, []).append({
+                        "units_type": str(row[1] or ""),
+                        "units": float(row[2] or 0.0),
+                    })
+                cursor.execute(
+                    """
+                    SELECT COALESCE(provider, '') AS provider, SUM(amount) AS fixed_total
+                    FROM bt_3_billing_fixed_costs
+                    WHERE currency = %s
+                      AND period_end >= %s
+                      AND period_start <= %s
+                    GROUP BY COALESCE(provider, '')
+                    ORDER BY fixed_total DESC;
+                    """,
+                    (currency_value, period_start, period_end),
+                )
+                fixed_by_provider = {
+                    str(row[0] or ""): float(row[1] or 0.0)
+                    for row in (cursor.fetchall() or [])
+                }
+                provider_map = {str(item.get("provider") or ""): item for item in provider_rows}
+                for provider_key, fixed_total in fixed_by_provider.items():
+                    existing = provider_map.get(provider_key)
+                    if existing:
+                        existing["fixed_cost"] = fixed_total
+                    else:
+                        provider_map[provider_key] = {
+                            "provider": provider_key,
+                            "variable_cost": 0.0,
+                            "fixed_cost": fixed_total,
+                            "units": 0.0,
+                            "events": 0,
+                        }
+                provider_rows = list(provider_map.values())
+                for item in provider_rows:
+                    variable_cost = float(item.get("variable_cost") or 0.0)
+                    fixed_cost = float(item.get("fixed_cost") or 0.0)
+                    provider_key = str(item.get("provider") or "")
+                    item["fixed_cost"] = round(fixed_cost, 6)
+                    item["total_cost"] = round(variable_cost + fixed_cost, 6)
+                    item["units_by_type"] = provider_units_map.get(provider_key, [])
+                provider_rows.sort(
+                    key=lambda item: (
+                        -float(item.get("total_cost") or 0.0),
+                        -float(item.get("units") or 0.0),
+                        str(item.get("provider") or ""),
+                    )
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT units_type, SUM(units_value) AS units_total
+                    FROM bt_3_billing_events
+                    WHERE currency = %s
+                      AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                      AND provider = %s
+                    GROUP BY units_type
+                    ORDER BY units_total DESC;
+                    """,
+                    (currency_value, period_start, period_end, provider_value),
+                )
+                provider_units_map[provider_value] = [
+                    {
+                        "units_type": str(row[0] or ""),
+                        "units": float(row[1] or 0.0),
+                    }
+                    for row in (cursor.fetchall() or [])
+                ]
+                provider_rows = [{
+                    "provider": provider_value,
+                    "variable_cost": round(variable_cost_total, 6),
+                    "fixed_cost": round(fixed_cost_total, 6),
+                    "total_cost": round(variable_cost_total + fixed_cost_total, 6),
+                    "units": round(units_total, 6),
+                    "events": events_count,
+                    "units_by_type": provider_units_map.get(provider_value, []),
+                }]
+
+            actions_params = [currency_value, period_start, period_end]
+            if provider_value:
+                actions_params.append(provider_value)
+            cursor.execute(
+                f"""
+                SELECT action_type, SUM(cost_amount) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
+                FROM bt_3_billing_events
+                WHERE currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  {event_provider_sql}
+                GROUP BY action_type
+                ORDER BY cost_total DESC, units_total DESC
+                LIMIT 24;
+                """,
+                actions_params,
+            )
+            actions = [
+                {
+                    "action_type": str(row[0] or ""),
+                    "cost": float(row[1] or 0.0),
+                    "units": float(row[2] or 0.0),
+                    "events": int(row[3] or 0),
+                }
+                for row in (cursor.fetchall() or [])
+            ]
+
+            models_params = [currency_value, period_start, period_end]
+            if provider_value:
+                models_params.append(provider_value)
+            cursor.execute(
+                f"""
+                SELECT
+                    COALESCE(metadata->>'model', '') AS model,
+                    SUM(cost_amount) AS cost_total,
+                    COUNT(*) AS events_count,
+                    COALESCE(SUM(CASE WHEN units_type = 'tokens_in' THEN units_value ELSE 0 END), 0) AS tokens_in_total,
+                    COALESCE(SUM(CASE WHEN units_type = 'tokens_out' THEN units_value ELSE 0 END), 0) AS tokens_out_total
+                FROM bt_3_billing_events
+                WHERE currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  AND COALESCE(metadata->>'model', '') <> ''
+                  {event_provider_sql}
+                GROUP BY COALESCE(metadata->>'model', '')
+                ORDER BY cost_total DESC, events_count DESC
+                LIMIT 16;
+                """,
+                models_params,
+            )
+            models = [
+                {
+                    "model": str(row[0] or ""),
+                    "cost": float(row[1] or 0.0),
+                    "events": int(row[2] or 0),
+                    "tokens_in": float(row[3] or 0.0),
+                    "tokens_out": float(row[4] or 0.0),
+                }
+                for row in (cursor.fetchall() or [])
+            ]
+
+            units_params = [currency_value, period_start, period_end]
+            if provider_value:
+                units_params.append(provider_value)
+            cursor.execute(
+                f"""
+                SELECT units_type, SUM(units_value) AS units_total, SUM(cost_amount) AS cost_total, COUNT(*) AS events_count
+                FROM bt_3_billing_events
+                WHERE currency = %s
+                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  {event_provider_sql}
+                GROUP BY units_type
+                ORDER BY cost_total DESC, units_total DESC
+                LIMIT 20;
+                """,
+                units_params,
+            )
+            units_by_type = [
+                {
+                    "units_type": str(row[0] or ""),
+                    "units": float(row[1] or 0.0),
+                    "cost": float(row[2] or 0.0),
+                    "events": int(row[3] or 0),
+                }
+                for row in (cursor.fetchall() or [])
+            ]
+
+            fixed_items_params = [currency_value, period_start, period_end]
+            if provider_value:
+                fixed_items_params.append(provider_value)
+            cursor.execute(
+                f"""
+                SELECT category, provider, amount, period_start, period_end, allocation_method_default
+                FROM bt_3_billing_fixed_costs
+                WHERE currency = %s
+                  AND period_end >= %s
+                  AND period_start <= %s
+                  {fixed_provider_sql}
+                ORDER BY period_start DESC, category ASC;
+                """,
+                fixed_items_params,
+            )
+            fixed_items = [
+                {
+                    "category": str(row[0] or ""),
+                    "provider": str(row[1] or ""),
+                    "amount": float(row[2] or 0.0),
+                    "period_start": row[3].isoformat() if row[3] else None,
+                    "period_end": row[4].isoformat() if row[4] else None,
+                    "allocation_method_default": str(row[5] or "equal"),
+                }
+                for row in (cursor.fetchall() or [])
+            ]
+
+            cursor.execute(
+                """
+                SELECT provider
+                FROM (
+                    SELECT DISTINCT provider
+                    FROM bt_3_billing_events
+                    WHERE COALESCE(provider, '') <> ''
+                    UNION
+                    SELECT DISTINCT provider
+                    FROM bt_3_billing_fixed_costs
+                    WHERE COALESCE(provider, '') <> ''
+                ) catalog
+                ORDER BY provider ASC;
+                """
+            )
+            provider_catalog = [
+                str(row[0] or "")
+                for row in (cursor.fetchall() or [])
+                if str(row[0] or "").strip()
+            ]
+
+    total_cost = variable_cost_total + fixed_cost_total
+    avg_cost_per_event = total_cost / events_count if events_count > 0 else 0.0
+    avg_cost_per_active_user = total_cost / active_users if active_users > 0 else 0.0
+    return {
+        "scope": "global",
+        "period": normalized_period,
+        "range": {
+            "start_date": period_start.isoformat(),
+            "end_date": period_end.isoformat(),
+        },
+        "currency": currency_value,
+        "provider_filter": provider_value or "all",
+        "providers": provider_catalog,
+        "totals": {
+            "variable_cost_total": round(variable_cost_total, 6),
+            "fixed_cost_total": round(fixed_cost_total, 6),
+            "total_cost": round(total_cost, 6),
+            "final_cost": round(final_cost, 6),
+            "estimated_cost": round(estimated_cost, 6),
+            "unpriced_events": unpriced_events,
+            "unpriced_units": round(unpriced_units, 6),
+            "events_count": events_count,
+            "units_total": round(units_total, 6),
+            "active_users": active_users,
+            "avg_cost_per_event": round(avg_cost_per_event, 6),
+            "avg_cost_per_active_user": round(avg_cost_per_active_user, 6),
+        },
+        "breakdown": {
+            "by_provider": provider_rows,
+            "by_action_type": actions,
+            "by_model": models,
+            "by_units_type": units_by_type,
+            "fixed_costs": fixed_items,
+        },
+    }
+
+
 def list_billing_plans(*, include_inactive: bool = False) -> list[dict]:
     where_sql = "" if include_inactive else "WHERE is_active = TRUE"
     with get_db_connection_context() as conn:

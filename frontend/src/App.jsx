@@ -26,6 +26,86 @@ const ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY = 'translation_draft_debug';
 const ANDROID_TRANSLATION_DRAFT_VARIANT_QUERY_KEY = 'translation_draft_variant';
 const ANDROID_TRANSLATION_DRAFT_VARIANTS = new Set(['a', 'b', 'c', 'd', 'e']);
 const DEFAULT_ANDROID_TRANSLATION_DRAFT_VARIANT = 'd';
+const ECONOMICS_PERIOD_STORAGE_KEY = 'dds_economics_period_v2';
+const ECONOMICS_PROVIDER_STORAGE_KEY = 'dds_economics_provider_v2';
+const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
+
+function readStoredEconomicsPeriod() {
+  if (typeof window === 'undefined') return 'month';
+  try {
+    const raw = String(window.localStorage.getItem(ECONOMICS_PERIOD_STORAGE_KEY) || '').trim().toLowerCase();
+    return ECONOMICS_PERIOD_OPTIONS.has(raw) ? raw : 'month';
+  } catch (_error) {
+    return 'month';
+  }
+}
+
+function readStoredEconomicsProvider() {
+  if (typeof window === 'undefined') return 'all';
+  try {
+    const raw = String(window.localStorage.getItem(ECONOMICS_PROVIDER_STORAGE_KEY) || '').trim().toLowerCase();
+    return raw || 'all';
+  } catch (_error) {
+    return 'all';
+  }
+}
+
+function writeStoredValue(key, value) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, String(value || ''));
+  } catch (_error) {
+    // ignore storage failures
+  }
+}
+
+function formatEconomicsProviderLabel(provider) {
+  const value = String(provider || '').trim().toLowerCase();
+  const labels = {
+    all: 'All Providers',
+    openai: 'OpenAI',
+    google_tts: 'Google TTS',
+    google_translate: 'Google Translate',
+    deepl_free: 'DeepL',
+    azure_translator: 'Azure Translator',
+    livekit: 'LiveKit',
+    cloudflare_r2_class_a: 'Cloudflare R2 Class A',
+    cloudflare_r2_class_b: 'Cloudflare R2 Class B',
+    cloudflare_r2_storage: 'Cloudflare R2 Storage',
+    youtube_api: 'YouTube API',
+    youtube_proxy: 'YouTube Proxy',
+    perplexity: 'Perplexity',
+    stripe: 'Stripe',
+    agent_tts: 'Agent TTS',
+    offline_tts: 'Offline TTS',
+    app_internal: 'App Internal',
+    libretranslate: 'LibreTranslate',
+    mymemory: 'MyMemory',
+    argos_offline: 'Argos Offline',
+  };
+  if (labels[value]) return labels[value];
+  if (!value) return 'Unassigned';
+  return value
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function formatEconomicsUnitsLabel(unitsType, uiLang) {
+  const value = String(unitsType || '').trim().toLowerCase();
+  const map = {
+    tokens_in: uiLang === 'de' ? 'Input-Tokens' : 'tokens in',
+    tokens_out: uiLang === 'de' ? 'Output-Tokens' : 'tokens out',
+    chars: uiLang === 'de' ? 'Zeichen' : 'chars',
+    requests: uiLang === 'de' ? 'Anfragen' : 'requests',
+    audio_minutes: uiLang === 'de' ? 'Audiominuten' : 'audio min',
+    youtube_quota_units: uiLang === 'de' ? 'YouTube-Quota' : 'yt quota',
+    operations: uiLang === 'de' ? 'Operationen' : 'ops',
+    mb_month: uiLang === 'de' ? 'MB/Monat' : 'MB/month',
+  };
+  return map[value] || value || 'units';
+}
 
 function isEditableElement(element) {
   if (!element || typeof element !== 'object') return false;
@@ -2548,8 +2628,8 @@ function AppInner() {
   const [analyticsScopeLoading, setAnalyticsScopeLoading] = useState(false);
   const [analyticsScopeSaving, setAnalyticsScopeSaving] = useState(false);
   const [analyticsScopeError, setAnalyticsScopeError] = useState('');
-  const [economicsPeriod, setEconomicsPeriod] = useState('month');
-  const [economicsAllocation, setEconomicsAllocation] = useState('weighted');
+  const [economicsPeriod, setEconomicsPeriod] = useState(() => readStoredEconomicsPeriod());
+  const [economicsProvider, setEconomicsProvider] = useState(() => readStoredEconomicsProvider());
   const [economicsLoading, setEconomicsLoading] = useState(false);
   const [economicsError, setEconomicsError] = useState('');
   const [economicsSummary, setEconomicsSummary] = useState(null);
@@ -8334,39 +8414,56 @@ function AppInner() {
       : tr('Субтитры: не загружены', 'Untertitel: Nicht geladen');
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
-  const economicsActionMap = useMemo(() => {
-    const rows = Array.isArray(economicsSummary?.breakdown?.by_action_type)
-      ? economicsSummary.breakdown.by_action_type
-      : [];
-    const map = new Map();
-    rows.forEach((item) => {
-      const key = String(item?.action_type || '').trim();
-      if (!key) return;
-      map.set(key, item);
+  const economicsProviderOptions = useMemo(() => {
+    const knownOrder = [
+      'openai',
+      'google_tts',
+      'google_translate',
+      'deepl_free',
+      'azure_translator',
+      'livekit',
+      'cloudflare_r2_storage',
+      'cloudflare_r2_class_a',
+      'cloudflare_r2_class_b',
+      'youtube_api',
+      'youtube_proxy',
+      'perplexity',
+      'stripe',
+      'agent_tts',
+      'offline_tts',
+      'app_internal',
+      'libretranslate',
+      'mymemory',
+      'argos_offline',
+    ];
+    const orderMap = new Map(knownOrder.map((item, index) => [item, index]));
+    const dynamicProviders = Array.isArray(economicsSummary?.providers) ? economicsSummary.providers : [];
+    const merged = new Set([
+      'all',
+      ...knownOrder,
+      ...dynamicProviders.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean),
+    ]);
+    if (economicsProvider && economicsProvider !== 'all') {
+      merged.add(String(economicsProvider).trim().toLowerCase());
+    }
+    return Array.from(merged).sort((a, b) => {
+      if (a === 'all') return -1;
+      if (b === 'all') return 1;
+      const orderA = orderMap.has(a) ? orderMap.get(a) : 10_000;
+      const orderB = orderMap.has(b) ? orderMap.get(b) : 10_000;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.localeCompare(b);
     });
-    return map;
-  }, [economicsSummary]);
-  const economicsVoiceRows = useMemo(() => ([
-    {
-      key: 'voice_stt_whisper',
-      title: 'Whisper STT',
-      item: economicsActionMap.get('voice_stt_whisper'),
-      unit: tr('мин', 'Min'),
-    },
-    {
-      key: 'voice_tts_agent',
-      title: 'Agent TTS',
-      item: economicsActionMap.get('voice_tts_agent'),
-      unit: tr('мин', 'Min'),
-    },
-    {
-      key: 'livekit_room_minutes',
-      title: 'LiveKit',
-      item: economicsActionMap.get('livekit_room_minutes'),
-      unit: tr('мин', 'Min'),
-    },
-  ]), [economicsActionMap, uiLang]);
-  const livekitStatusColor = String(economicsSummary?.livekit_status?.color || '').toLowerCase();
+  }, [economicsSummary, economicsProvider]);
+  const economicsBudgetRows = useMemo(() => {
+    const rows = Array.isArray(economicsSummary?.provider_budgets) ? economicsSummary.provider_budgets : [];
+    if (!rows.length) return [];
+    if (!economicsProvider || economicsProvider === 'all') return rows;
+    return rows.filter((item) => String(item?.provider || '').trim().toLowerCase() === economicsProvider);
+  }, [economicsSummary, economicsProvider]);
+  const selectedEconomicsProviderLabel = economicsProvider === 'all'
+    ? tr('Все провайдеры', 'Alle Provider')
+    : formatEconomicsProviderLabel(economicsProvider);
   const weeklyPlanUsesDeferredAnalytics = planAnalyticsPeriod !== 'week';
   const hasPlanAnalyticsMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0;
   const weeklyMetrics = weeklyPlanUsesDeferredAnalytics
@@ -17176,18 +17273,18 @@ function AppInner() {
     }
   };
 
-  const loadEconomics = async (overridePeriod, overrideAllocation) => {
+  const loadEconomics = async (overridePeriod, overrideProvider) => {
     if (!initData) {
       setEconomicsError(initDataMissingMsg);
       return;
     }
     const period = overridePeriod || economicsPeriod;
-    const allocation = overrideAllocation || economicsAllocation;
+    const provider = overrideProvider || economicsProvider || 'all';
     setEconomicsLoading(true);
     setEconomicsError('');
     try {
       const response = await fetch(
-        `/api/economics/summary?initData=${encodeURIComponent(initData)}&period=${encodeURIComponent(period)}&allocation=${encodeURIComponent(allocation)}&sync_fixed=1`,
+        `/api/economics/summary?initData=${encodeURIComponent(initData)}&period=${encodeURIComponent(period)}&provider=${encodeURIComponent(provider)}&sync_fixed=1`,
       );
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки экономики', 'Fehler beim Laden der Kosten'));
@@ -17345,7 +17442,15 @@ function AppInner() {
     if (canViewEconomics && !flashcardsOnly && isSectionVisible('economics')) {
       loadEconomics();
     }
-  }, [initData, isWebAppMode, canViewEconomics, economicsPeriod, economicsAllocation, selectedSections, flashcardsOnly]);
+  }, [initData, isWebAppMode, canViewEconomics, economicsPeriod, economicsProvider, selectedSections, flashcardsOnly]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_PERIOD_STORAGE_KEY, economicsPeriod);
+  }, [economicsPeriod]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_PROVIDER_STORAGE_KEY, economicsProvider);
+  }, [economicsProvider]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -21841,13 +21946,14 @@ function AppInner() {
               <section className="webapp-section webapp-economics" ref={economicsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Экономика', 'Kosten')}</h2>
-                  <p className="webapp-muted">{tr('Учёт переменных и фиксированных затрат по пользователю.', 'Tracking von variablen und fixen Kosten pro Nutzer.')}</p>
+                  <p className="webapp-muted">{tr('Глобальная экономика приложения: расходы, провайдеры, usage и модели по всему продукту.', 'Globale App-Oekonomie: Kosten, Provider, Usage und Modelle fuer das gesamte Produkt.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="analytics-controls economics-controls">
                   <label className="webapp-field">
                     <span>{tr('Период', 'Zeitraum')}</span>
                     <select value={economicsPeriod} onChange={(event) => setEconomicsPeriod(event.target.value)}>
+                      <option value="day">{tr('День', 'Tag')}</option>
                       <option value="week">{tr('Неделя', 'Woche')}</option>
                       <option value="month">{tr('Месяц', 'Monat')}</option>
                       <option value="quarter">{tr('Квартал', 'Quartal')}</option>
@@ -21857,16 +21963,21 @@ function AppInner() {
                     </select>
                   </label>
                   <label className="webapp-field">
-                    <span>{tr('Аллокация fixed', 'Fixed-Allokation')}</span>
-                    <select value={economicsAllocation} onChange={(event) => setEconomicsAllocation(event.target.value)}>
-                      <option value="weighted">{tr('По весу активности', 'Gewichtet')}</option>
-                      <option value="equal">{tr('Поровну на активных', 'Gleich verteilt')}</option>
+                    <span>{tr('Провайдер', 'Provider')}</span>
+                    <select value={economicsProvider} onChange={(event) => setEconomicsProvider(event.target.value)}>
+                      {economicsProviderOptions.map((providerKey) => (
+                        <option key={`economics-provider-${providerKey}`} value={providerKey}>
+                          {providerKey === 'all'
+                            ? tr('Все провайдеры', 'Alle Provider')
+                            : formatEconomicsProviderLabel(providerKey)}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={() => loadEconomics(economicsPeriod, economicsAllocation)}
+                    onClick={() => loadEconomics(economicsPeriod, economicsProvider)}
                     disabled={economicsLoading}
                   >
                     {economicsLoading ? tr('Считаем...', 'Berechnen...') : tr('Обновить', 'Aktualisieren')}
@@ -21881,71 +21992,96 @@ function AppInner() {
                     <div className="analytics-cards economics-cards">
                       <div className="analytics-card">
                         <span>{tr('Переменные', 'Variabel')}</span>
-                        <strong>{Number(economicsSummary?.totals?.user_variable_cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                        <strong>{Number(economicsSummary?.totals?.variable_cost_total || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
                       </div>
                       <div className="analytics-card">
-                        <span>{tr('Fixed (аллокация)', 'Fixed (allokiert)')}</span>
-                        <strong>{Number(economicsSummary?.totals?.user_fixed_allocated_cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                        <span>{tr('Fixed', 'Fixed')}</span>
+                        <strong>{Number(economicsSummary?.totals?.fixed_cost_total || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
                       </div>
                       <div className="analytics-card">
                         <span>{tr('Итого', 'Gesamt')}</span>
-                        <strong>{Number(economicsSummary?.totals?.user_total_cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                        <strong>{Number(economicsSummary?.totals?.total_cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
                       </div>
                       <div className="analytics-card">
                         <span>{tr('События', 'Ereignisse')}</span>
-                        <strong>{Number(economicsSummary?.totals?.user_events_count || 0)}</strong>
+                        <strong>{Number(economicsSummary?.totals?.events_count || 0)}</strong>
                       </div>
                       <div className="analytics-card">
                         <span>{tr('Без цены (events)', 'Ohne Preis (Events)')}</span>
-                        <strong>{Number(economicsSummary?.totals?.user_unpriced_events || 0)}</strong>
+                        <strong>{Number(economicsSummary?.totals?.unpriced_events || 0)}</strong>
                       </div>
                       <div className="analytics-card">
                         <span>{tr('Ср. цена события', 'Ø Kosten/Ereignis')}</span>
-                        <strong>{Number(economicsSummary?.totals?.avg_cost_per_user_event || 0).toFixed(4)} {economicsSummary?.currency || 'USD'}</strong>
+                        <strong>{Number(economicsSummary?.totals?.avg_cost_per_event || 0).toFixed(4)} {economicsSummary?.currency || 'USD'}</strong>
                       </div>
                       <div className="analytics-card">
                         <span>{tr('Активных пользователей', 'Aktive Nutzer')}</span>
-                        <strong>{Number(economicsSummary?.totals?.period_active_users || 0)}</strong>
+                        <strong>{Number(economicsSummary?.totals?.active_users || 0)}</strong>
                       </div>
                     </div>
 
                     <div className="economics-meta-row">
                       <span>{tr('Диапазон', 'Zeitraum')}: {economicsSummary?.range?.start_date} — {economicsSummary?.range?.end_date}</span>
-                      <span>{tr('Метод аллокации', 'Allokation')}: {economicsSummary?.allocation_method === 'weighted' ? tr('взвешенный', 'gewichtet') : tr('равный', 'gleich')}</span>
+                      <span>{tr('Фильтр провайдера', 'Provider-Filter')}: {selectedEconomicsProviderLabel}</span>
+                      <span>{tr('Охват', 'Abdeckung')}: {tr('все пользователи и системные события', 'alle Nutzer und Systemevents')}</span>
                     </div>
 
-                    <div className="analytics-cards economics-voice-cards">
-                      {economicsVoiceRows.map((row) => {
-                        const cost = Number(row?.item?.cost || 0);
-                        const units = Number(row?.item?.units || 0);
-                        const cardTone =
-                          row.key === 'livekit_room_minutes'
-                            ? `is-${livekitStatusColor || 'green'}`
-                            : (cost > 0 ? 'is-red' : 'is-green');
-                        return (
-                          <div className={`analytics-card economics-voice-card ${cardTone}`} key={`voice-cost-${row.key}`}>
-                            <span>{row.title}</span>
-                            <strong>{cost.toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
-                            <small className="webapp-muted">
-                              {units.toFixed(2)} {row.unit}
-                              {row.key === 'livekit_room_minutes' && economicsSummary?.livekit_status?.free_minutes_month > 0 ? (
-                                ` • ${Number(economicsSummary.livekit_status.user_month_minutes || 0).toFixed(1)} / `
-                                + `${Number(economicsSummary.livekit_status.free_minutes_month).toFixed(1)} ${tr('мин', 'Min')}`
-                                + ` (${Math.round(Number(economicsSummary.livekit_status.ratio_to_free_tier || 0) * 100)}%)`
-                              ) : ''}
-                            </small>
-                          </div>
-                        );
-                      })}
-                    </div>
+                    {economicsBudgetRows.length > 0 && (
+                      <div className="analytics-cards economics-voice-cards">
+                        {economicsBudgetRows.map((row) => {
+                          const usedUnits = Number(row?.used_units || 0);
+                          const limitUnits = row?.effective_limit_units == null ? null : Number(row.effective_limit_units || 0);
+                          const usageRatio = Number(row?.usage_ratio || 0);
+                          const livekitTone = String(row?.metadata?.color || '').trim().toLowerCase();
+                          const cardTone =
+                            row?.provider === 'livekit'
+                              ? `is-${livekitTone || 'green'}`
+                              : usageRatio >= 1
+                                ? 'is-red'
+                                : usageRatio >= 0.8
+                                  ? 'is-yellow'
+                                  : 'is-green';
+                          return (
+                            <div className={`analytics-card economics-voice-card ${cardTone}`} key={`provider-budget-${row.provider}`}>
+                              <span>{formatEconomicsProviderLabel(row?.provider || row?.label || '')}</span>
+                              <strong>
+                                {usedUnits.toFixed(2)}
+                                {limitUnits != null ? ` / ${limitUnits.toFixed(2)}` : ''}
+                              </strong>
+                              <small className="webapp-muted">
+                                {formatEconomicsUnitsLabel(row?.units_type || row?.unit, uiLang)}
+                                {Number.isFinite(usageRatio) && usageRatio > 0
+                                  ? ` • ${Math.round(usageRatio * 100)}%`
+                                  : ''}
+                              </small>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
 
                     <div className="economics-breakdown-grid">
                       <div className="economics-breakdown-card">
                         <h4>{tr('По провайдерам', 'Nach Providern')}</h4>
-                        {(economicsSummary?.breakdown?.by_provider || []).slice(0, 8).map((item) => (
-                          <div className="economics-breakdown-row" key={`provider-${item.provider}`}>
-                            <span>{item.provider || 'n/a'}</span>
-                            <strong>{Number(item.cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                        {(economicsSummary?.breakdown?.by_provider || []).slice(0, 10).map((item) => (
+                          <div className="economics-breakdown-row economics-breakdown-row-rich" key={`provider-${item.provider}`}>
+                            <div className="economics-breakdown-copy">
+                              <span>{formatEconomicsProviderLabel(item.provider || 'n/a')}</span>
+                              <small>
+                                {Number(item.events || 0)} {tr('events', 'Events')}
+                                {Array.isArray(item.units_by_type) && item.units_by_type.length > 0
+                                  ? ` • ${item.units_by_type.slice(0, 2).map((unitRow) => (
+                                    `${Number(unitRow.units || 0).toFixed(2)} ${formatEconomicsUnitsLabel(unitRow.units_type, uiLang)}`
+                                  )).join(' • ')}`
+                                  : ''}
+                              </small>
+                            </div>
+                            <div className="economics-breakdown-value">
+                              <strong>{Number(item.total_cost || item.cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                              {Number(item.fixed_cost || 0) > 0 && (
+                                <small>{tr('fixed', 'fixed')}: {Number(item.fixed_cost || 0).toFixed(3)}</small>
+                              )}
+                            </div>
                           </div>
                         ))}
                         {(!economicsSummary?.breakdown?.by_provider || economicsSummary.breakdown.by_provider.length === 0) && (
@@ -21954,13 +22090,59 @@ function AppInner() {
                       </div>
                       <div className="economics-breakdown-card">
                         <h4>{tr('По действиям', 'Nach Aktionen')}</h4>
-                        {(economicsSummary?.breakdown?.by_action_type || []).slice(0, 8).map((item) => (
-                          <div className="economics-breakdown-row" key={`action-${item.action_type}`}>
-                            <span>{item.action_type || 'n/a'}</span>
-                            <strong>{Number(item.cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                        {(economicsSummary?.breakdown?.by_action_type || []).slice(0, 10).map((item) => (
+                          <div className="economics-breakdown-row economics-breakdown-row-rich" key={`action-${item.action_type}`}>
+                            <div className="economics-breakdown-copy">
+                              <span>{item.action_type || 'n/a'}</span>
+                              <small>{Number(item.events || 0)} {tr('events', 'Events')}</small>
+                            </div>
+                            <div className="economics-breakdown-value">
+                              <strong>{Number(item.cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                              <small>{Number(item.units || 0).toFixed(2)} {tr('units', 'Units')}</small>
+                            </div>
                           </div>
                         ))}
                         {(!economicsSummary?.breakdown?.by_action_type || economicsSummary.breakdown.by_action_type.length === 0) && (
+                          <div className="webapp-muted">{tr('Пока нет данных.', 'Noch keine Daten.')}</div>
+                        )}
+                      </div>
+                      <div className="economics-breakdown-card">
+                        <h4>{tr('По моделям', 'Nach Modellen')}</h4>
+                        {(economicsSummary?.breakdown?.by_model || []).slice(0, 10).map((item) => (
+                          <div className="economics-breakdown-row economics-breakdown-row-rich" key={`model-${item.model}`}>
+                            <div className="economics-breakdown-copy">
+                              <span>{item.model || 'n/a'}</span>
+                              <small>
+                                {Number(item.tokens_in || 0).toFixed(0)} {formatEconomicsUnitsLabel('tokens_in', uiLang)}
+                                {' • '}
+                                {Number(item.tokens_out || 0).toFixed(0)} {formatEconomicsUnitsLabel('tokens_out', uiLang)}
+                              </small>
+                            </div>
+                            <div className="economics-breakdown-value">
+                              <strong>{Number(item.cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                              <small>{Number(item.events || 0)} {tr('events', 'Events')}</small>
+                            </div>
+                          </div>
+                        ))}
+                        {(!economicsSummary?.breakdown?.by_model || economicsSummary.breakdown.by_model.length === 0) && (
+                          <div className="webapp-muted">{tr('Пока нет данных.', 'Noch keine Daten.')}</div>
+                        )}
+                      </div>
+                      <div className="economics-breakdown-card">
+                        <h4>{tr('По типу units', 'Nach Unit-Typ')}</h4>
+                        {(economicsSummary?.breakdown?.by_units_type || []).slice(0, 10).map((item) => (
+                          <div className="economics-breakdown-row economics-breakdown-row-rich" key={`units-${item.units_type}`}>
+                            <div className="economics-breakdown-copy">
+                              <span>{formatEconomicsUnitsLabel(item.units_type, uiLang)}</span>
+                              <small>{Number(item.events || 0)} {tr('events', 'Events')}</small>
+                            </div>
+                            <div className="economics-breakdown-value">
+                              <strong>{Number(item.cost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                              <small>{Number(item.units || 0).toFixed(2)}</small>
+                            </div>
+                          </div>
+                        ))}
+                        {(!economicsSummary?.breakdown?.by_units_type || economicsSummary.breakdown.by_units_type.length === 0) && (
                           <div className="webapp-muted">{tr('Пока нет данных.', 'Noch keine Daten.')}</div>
                         )}
                       </div>

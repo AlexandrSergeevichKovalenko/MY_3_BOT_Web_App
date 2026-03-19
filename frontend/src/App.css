@@ -2939,9 +2939,41 @@ body {
 .economics-breakdown-row {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 10px;
   font-size: 13px;
   color: rgba(226, 232, 240, 0.85);
+}
+
+.economics-breakdown-row-rich {
+  align-items: start;
+}
+
+.economics-breakdown-copy,
+.economics-breakdown-value {
+  display: grid;
+  gap: 3px;
+}
+
+.economics-breakdown-copy {
+  min-width: 0;
+}
+
+.economics-breakdown-copy span,
+.economics-breakdown-value strong {
+  color: #f8fafc;
+}
+
+.economics-breakdown-copy small,
+.economics-breakdown-value small {
+  color: rgba(226, 232, 240, 0.68);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.economics-breakdown-value {
+  justify-items: end;
+  text-align: right;
 }
 
 .voice-assistant-section {
@@ -16683,6 +16715,13 @@ body {
   background: #9b8061;
 }
 
+.webapp-page.is-theme-light .skill-train-status-badge.is-progress {
+  color: #6f3f00;
+  background: rgba(245, 158, 11, 0.3);
+  border: 1px solid rgba(180, 104, 0, 0.42);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+}
+
 .webapp-page.is-theme-light .skill-training-section .theory-focus-line {
   border-color: #d2c2aa;
   background: #fff8ee;
@@ -17052,6 +17091,16 @@ body {
 
 .webapp-page.is-theme-light .economics-breakdown-row {
   color: #2f271f;
+}
+
+.webapp-page.is-theme-light .economics-breakdown-copy span,
+.webapp-page.is-theme-light .economics-breakdown-value strong {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .economics-breakdown-copy small,
+.webapp-page.is-theme-light .economics-breakdown-value small {
+  color: #6b5a48;
 }
 
 .webapp-page.is-theme-light .billing-info-accordion__item-highlight-pro {
