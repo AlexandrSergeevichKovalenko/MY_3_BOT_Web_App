@@ -8598,7 +8598,7 @@ body {
 
 .blocks-trainer {
   display: grid;
-  gap: 14px;
+  gap: 16px;
   color: var(--bb-text);
   padding: 14px;
   border-radius: var(--bb-radius-card);
@@ -8608,6 +8608,11 @@ body {
     radial-gradient(90% 90% at 84% 90%, rgba(22, 53, 123, 0.22), transparent 74%),
     linear-gradient(180deg, rgba(11, 23, 52, 0.95), rgba(9, 18, 43, 0.98));
   box-shadow: inset 0 1px 0 rgba(177, 198, 243, 0.1), 0 16px 28px rgba(1, 7, 24, 0.56);
+}
+
+.blocks-section {
+  display: grid;
+  gap: 8px;
 }
 
 .blocks-head {
@@ -8647,90 +8652,74 @@ body {
 }
 
 .blocks-target {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(40px, 1fr);
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
-  min-height: 74px;
-  padding: 10px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, rgba(10, 19, 45, 0.96), rgba(7, 16, 38, 0.99));
-  border: 1px solid rgba(113, 140, 194, 0.35);
-  box-shadow: inset 0 1px 0 rgba(171, 196, 246, 0.08), 0 8px 18px rgba(2, 8, 24, 0.5);
-  overflow-x: auto;
+  align-content: center;
+  gap: 6px;
+  min-height: 60px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(10, 19, 45, 0.72), rgba(8, 17, 39, 0.82));
+  border: 1px solid rgba(113, 140, 194, 0.28);
+  box-shadow: inset 0 1px 0 rgba(171, 196, 246, 0.05);
+  overflow: hidden;
 }
 
 .blocks-target.is-word {
-  gap: 6px;
-  padding: 8px;
+  gap: 4px;
+  padding: 10px;
 }
 
 .blocks-target.is-word .blocks-slot {
-  min-width: 34px;
-  min-height: 46px;
-  padding: 0 6px;
-  font-size: 16px;
-}
-
-.blocks-target.is-word .blocks-slot.is-filled {
-  font-size: 24px;
-}
-
-.blocks-target.is-word-wrap {
-  grid-auto-flow: row;
-  grid-auto-columns: unset;
-  grid-template-columns: repeat(var(--blocks-word-cols, 4), minmax(0, 1fr));
-  grid-auto-rows: minmax(42px, auto);
-  min-height: 108px;
-  overflow-x: hidden;
-}
-
-.blocks-target.is-word-wrap .blocks-slot {
-  min-width: 0;
-  width: 100%;
+  min-width: clamp(22px, 5.7vw, 28px);
+  min-height: clamp(30px, 7.4vw, 36px);
+  padding: 0 clamp(4px, 1.1vw, 8px);
+  font-size: clamp(15px, 3.9vw, 20px);
 }
 
 .blocks-slot {
-  min-width: 40px;
-  min-height: 52px;
-  border-radius: 8px;
-  border: 1px solid rgba(120, 146, 198, 0.34);
-  background: linear-gradient(180deg, rgba(12, 24, 53, 0.95), rgba(7, 16, 38, 0.98));
+  min-width: 28px;
+  min-height: 36px;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 146, 198, 0.22);
+  background: rgba(15, 30, 67, 0.34);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 8px;
-  color: rgba(147, 169, 214, 0.78);
-  font-size: 18px;
+  padding: 0 10px;
+  color: rgba(147, 169, 214, 0.64);
+  font-size: 15px;
   font-weight: 700;
   cursor: pointer;
-  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease, transform 120ms ease;
+  white-space: nowrap;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease, transform 120ms ease, color 140ms ease;
 }
 
 .blocks-slot:hover {
-  border-color: rgba(86, 134, 235, 0.52);
+  border-color: rgba(86, 134, 235, 0.4);
 }
 
 .blocks-slot.is-filled {
-  border-style: solid;
   color: #eef4ff;
-  background: linear-gradient(180deg, rgba(21, 43, 90, 0.96), rgba(11, 24, 58, 0.98));
-  font-size: 28px;
+  background: rgba(48, 91, 190, 0.2);
+  border-color: rgba(113, 160, 255, 0.3);
+  font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.01em;
-  text-shadow: 0 1px 8px rgba(3, 9, 28, 0.58);
+  text-shadow: none;
 }
 
 .blocks-slot.is-selected {
-  border-color: rgba(79, 140, 255, 0.86);
-  background: linear-gradient(180deg, rgba(36, 89, 199, 0.96), rgba(24, 61, 147, 0.98));
-  box-shadow: 0 0 0 2px rgba(63, 121, 233, 0.28);
+  border-color: rgba(79, 140, 255, 0.78);
+  background: rgba(43, 88, 190, 0.28);
+  box-shadow: 0 0 0 2px rgba(63, 121, 233, 0.18);
 }
 
 .blocks-slot.is-hovered {
-  border-color: rgba(87, 142, 246, 0.74);
-  box-shadow: 0 0 0 2px rgba(87, 142, 246, 0.2);
+  border-color: rgba(87, 142, 246, 0.6);
+  box-shadow: 0 0 0 2px rgba(87, 142, 246, 0.14);
 }
 
 .blocks-slot.is-snapping {
@@ -8739,9 +8728,9 @@ body {
 
 .blocks-playground {
   position: relative;
-  min-height: 236px;
-  max-height: min(47vh, 360px);
-  border-radius: 12px;
+  min-height: 96px;
+  max-height: min(38vh, 320px);
+  border-radius: 14px;
   background: linear-gradient(180deg, rgba(8, 18, 43, 0.98), rgba(7, 15, 36, 0.99));
   border: 1px solid rgba(111, 138, 191, 0.34);
   box-shadow: inset 0 1px 0 rgba(168, 192, 242, 0.06);
@@ -8749,6 +8738,11 @@ body {
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
+}
+
+.blocks-playground.is-empty {
+  min-height: 18px;
+  overflow: hidden;
 }
 
 .blocks-playground.is-dragging {
@@ -9070,12 +9064,12 @@ body {
   }
 
   .blocks-trainer {
-    gap: 10px;
+    gap: 12px;
     padding: 10px;
   }
 
   .blocks-playground {
-    min-height: 208px;
+    min-height: 88px;
   }
 
   .blocks-tile {
@@ -9095,9 +9089,10 @@ body {
   }
 
   .blocks-slot {
-    min-height: 42px;
-    min-width: 34px;
-    font-size: 14px;
+    min-height: 32px;
+    min-width: 24px;
+    padding: 0 8px;
+    font-size: 13px;
   }
 
   .blocks-target.is-word {
@@ -9106,22 +9101,14 @@ body {
   }
 
   .blocks-target.is-word .blocks-slot {
-    min-height: 40px;
-    min-width: 30px;
+    min-height: 28px;
+    min-width: 20px;
     padding: 0 4px;
-    font-size: 13px;
-  }
-
-  .blocks-target.is-word .blocks-slot.is-filled {
-    font-size: 20px;
-  }
-
-  .blocks-target.is-word-wrap {
-    min-height: 96px;
+    font-size: 14px;
   }
 
   .blocks-slot.is-filled {
-    font-size: 22px;
+    font-size: 14px;
   }
 
   .blocks-footer .primary-button,

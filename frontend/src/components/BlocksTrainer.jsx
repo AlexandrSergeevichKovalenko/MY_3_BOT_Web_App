@@ -39,8 +39,6 @@ const AUTO_NEXT_DELAY_OK_MS = 1100;
 const AUTO_NEXT_DELAY_FAIL_MS = 4500;
 const TILE_WIDTH = 76;
 const TILE_HEIGHT = 62;
-const WORD_WRAP_THRESHOLD = 7;
-
 const GERMAN_ARTICLES = new Set([
   'der', 'die', 'das', 'den', 'dem', 'des',
   'ein', 'eine', 'einen', 'einem', 'einer', 'eines',
@@ -123,7 +121,7 @@ export default function BlocksTrainer({
   const [status, setStatus] = useState('idle'); // idle|correct|wrong|timeout
   const [hintsUsed, setHintsUsed] = useState(0);
   const [timeLeftMs, setTimeLeftMs] = useState(timerMs);
-  const [playgroundHeight, setPlaygroundHeight] = useState(270);
+  const [playgroundHeight, setPlaygroundHeight] = useState(112);
   const [selectedSlotIndex, setSelectedSlotIndex] = useState(null);
   const [dragTileId, setDragTileId] = useState(null);
   const [hoverSlotIndex, setHoverSlotIndex] = useState(null);
@@ -135,9 +133,6 @@ export default function BlocksTrainer({
   const isFinished = status !== 'idle';
   const tileWidthPx = type === 'WORD' ? 60 : TILE_WIDTH;
   const isWordMode = type === 'WORD';
-  const shouldWrapWordSlots = isWordMode && targetTokens.length >= WORD_WRAP_THRESHOLD;
-  const wordWrapColumns = shouldWrapWordSlots ? Math.ceil(targetTokens.length / 2) : targetTokens.length;
-
   const syncSlotRects = () => {
     const containerRect = containerRef.current?.getBoundingClientRect();
     if (!containerRect) return;
@@ -172,8 +167,11 @@ export default function BlocksTrainer({
     const occupiedSet = new Set(currentSlots.filter(Boolean));
     const visibleCount = tileItems.filter((item) => !occupiedSet.has(item.id)).length;
     const rows = Math.max(1, Math.ceil(visibleCount / cols));
-    const targetHeight = Math.max(214, topBase + rows * (TILE_HEIGHT + gapY) + 12);
-    const boundedHeight = Math.min(targetHeight, 360);
+    const minPlaygroundHeight = visibleCount > 0 ? 96 : 18;
+    const targetHeight = visibleCount > 0
+      ? Math.max(minPlaygroundHeight, topBase + rows * (TILE_HEIGHT + gapY) + 12)
+      : minPlaygroundHeight;
+    const boundedHeight = Math.min(targetHeight, 320);
     setPlaygroundHeight(boundedHeight);
     const cellCoords = [];
     for (let r = 0; r < rows; r += 1) {
@@ -262,7 +260,7 @@ export default function BlocksTrainer({
     setStatus('idle');
     setHintsUsed(0);
     setTimeLeftMs(timerMs);
-    setPlaygroundHeight(270);
+    setPlaygroundHeight(112);
     setSelectedSlotIndex(null);
     setDragTileId(null);
     setHoverSlotIndex(null);
@@ -706,6 +704,7 @@ export default function BlocksTrainer({
   }, [status, slotRects, targetTokens.length]);
 
   const displayAnswer = type === 'PHRASE' ? targetTokens.join(' ') : targetTokens.join('');
+  const visibleTiles = tiles.filter((tile) => tile.slotIndex === null);
   const timerSeconds = timeLeftMs === null ? null : Math.ceil(timeLeftMs / 1000);
   const text = {
     promptFallback: labels.promptFallback || 'Соберите ответ',
@@ -721,98 +720,106 @@ export default function BlocksTrainer({
 
   return (
     <div className={`blocks-trainer ${status !== 'idle' ? `is-${status}` : ''}`}>
-      <div className="blocks-head">
-        <div className="blocks-prompt">{prompt || text.promptFallback}</div>
-        {timerSeconds !== null && (
-          <div className={`blocks-timer ${timerSeconds <= 3 ? 'is-danger' : ''}`}>{timerSeconds}s</div>
-        )}
+      <div className="blocks-section blocks-section-task">
+        <div className="blocks-head">
+          <div className="blocks-prompt">{prompt || text.promptFallback}</div>
+          {timerSeconds !== null && (
+            <div className={`blocks-timer ${timerSeconds <= 3 ? 'is-danger' : ''}`}>{timerSeconds}s</div>
+          )}
+        </div>
       </div>
 
-      <div
-        className={[
-          'blocks-target',
-          isWordMode ? 'is-word' : '',
-          shouldWrapWordSlots ? 'is-word-wrap' : '',
-        ].filter(Boolean).join(' ')}
-        ref={slotsRowRef}
-        style={shouldWrapWordSlots ? { '--blocks-word-cols': wordWrapColumns } : undefined}
-      >
-        {targetTokens.map((_token, idx) => {
-          const tileId = slots[idx];
-          const placed = tiles.find((item) => item.id === tileId);
-          return (
+      <div className="blocks-section blocks-section-result">
+        <div
+          className={[
+            'blocks-target',
+            isWordMode ? 'is-word' : '',
+          ].filter(Boolean).join(' ')}
+          ref={slotsRowRef}
+        >
+          {targetTokens.map((_token, idx) => {
+            const tileId = slots[idx];
+            const placed = tiles.find((item) => item.id === tileId);
+            return (
+              <div
+                key={`slot-${idx}`}
+                ref={(el) => { slotRefs.current[idx] = el; }}
+                className={[
+                  'blocks-slot',
+                  placed ? 'is-filled' : '',
+                  selectedSlotIndex === idx ? 'is-selected' : '',
+                  hoverSlotIndex === idx ? 'is-hovered' : '',
+                  snapSlotIndex === idx ? 'is-snapping' : '',
+                ].filter(Boolean).join(' ')}
+                role="button"
+                tabIndex={0}
+                onClick={() => onSlotClick(idx)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSlotClick(idx);
+                  }
+                }}
+              >
+                {placed ? placed.text : (type === 'WORD' ? '•' : '...')}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="blocks-section blocks-section-pool">
+        <div
+          className={[
+            'blocks-playground',
+            dragTileId ? 'is-dragging' : '',
+            visibleTiles.length === 0 ? 'is-empty' : '',
+          ].filter(Boolean).join(' ')}
+          ref={containerRef}
+          style={{ height: `${playgroundHeight}px` }}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        >
+          {flyTokens.map((fly) => (
             <div
-              key={`slot-${idx}`}
-              ref={(el) => { slotRefs.current[idx] = el; }}
-              className={[
-                'blocks-slot',
-                placed ? 'is-filled' : '',
-                selectedSlotIndex === idx ? 'is-selected' : '',
-                hoverSlotIndex === idx ? 'is-hovered' : '',
-                snapSlotIndex === idx ? 'is-snapping' : '',
-              ].filter(Boolean).join(' ')}
-              role="button"
-              tabIndex={0}
-              onClick={() => onSlotClick(idx)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  onSlotClick(idx);
-                }
+              key={fly.id}
+              className={`blocks-fly-token ${fly.active ? 'is-active' : ''}`}
+              style={{
+                '--from-x': `${fly.fromX}px`,
+                '--from-y': `${fly.fromY}px`,
+                '--to-x': `${fly.toX}px`,
+                '--to-y': `${fly.toY}px`,
+                width: type === 'WORD' ? '60px' : undefined,
+                fontSize: type === 'WORD' ? '22px' : undefined,
               }}
             >
-              {placed ? placed.text : (type === 'WORD' ? '•' : '...')}
+              {fly.text}
             </div>
-          );
-        })}
-      </div>
-
-      <div
-        className={`blocks-playground ${dragTileId ? 'is-dragging' : ''}`}
-        ref={containerRef}
-        style={{ height: `${playgroundHeight}px` }}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-      >
-        {flyTokens.map((fly) => (
-          <div
-            key={fly.id}
-            className={`blocks-fly-token ${fly.active ? 'is-active' : ''}`}
-            style={{
-              '--from-x': `${fly.fromX}px`,
-              '--from-y': `${fly.fromY}px`,
-              '--to-x': `${fly.toX}px`,
-              '--to-y': `${fly.toY}px`,
-              width: type === 'WORD' ? '60px' : undefined,
-              fontSize: type === 'WORD' ? '22px' : undefined,
-            }}
-          >
-            {fly.text}
-          </div>
-        ))}
-        {tiles.filter((tile) => tile.slotIndex === null).map((tile) => (
-          <button
-            key={tile.id}
-            type="button"
-            className={[
-              'blocks-tile',
-              `color-${tile.targetIndex % 6}`,
-              `shape-${tile.targetIndex % 5}`,
-              dragTileId === tile.id ? 'is-dragging' : '',
-              tileMotionMap[tile.id] === 'return' ? 'is-returning' : '',
-            ].filter(Boolean).join(' ')}
-            style={{
-              transform: `translate3d(${tile.x}px, ${tile.y}px, 0) rotate(${dragTileId === tile.id ? tile.angle * 0.25 : tile.angle}deg)`,
-              width: type === 'WORD' ? '60px' : undefined,
-              fontSize: type === 'WORD' ? '22px' : undefined,
-            }}
-            onPointerDown={(event) => onTilePointerDown(event, tile)}
-            disabled={isFinished}
-          >
-            {tile.text}
-          </button>
-        ))}
+          ))}
+          {visibleTiles.map((tile) => (
+            <button
+              key={tile.id}
+              type="button"
+              className={[
+                'blocks-tile',
+                `color-${tile.targetIndex % 6}`,
+                `shape-${tile.targetIndex % 5}`,
+                dragTileId === tile.id ? 'is-dragging' : '',
+                tileMotionMap[tile.id] === 'return' ? 'is-returning' : '',
+              ].filter(Boolean).join(' ')}
+              style={{
+                transform: `translate3d(${tile.x}px, ${tile.y}px, 0) rotate(${dragTileId === tile.id ? tile.angle * 0.25 : tile.angle}deg)`,
+                width: type === 'WORD' ? '60px' : undefined,
+                fontSize: type === 'WORD' ? '22px' : undefined,
+              }}
+              onPointerDown={(event) => onTilePointerDown(event, tile)}
+              disabled={isFinished}
+            >
+              {tile.text}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="blocks-footer">
