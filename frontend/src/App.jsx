@@ -2953,7 +2953,11 @@ function AppInner() {
       setSupportFailedMessages([]);
       setAnalyticsSummary({
         total_translations: 28,
+        covered_sentences: 28,
+        assigned_sentences: 31,
+        translation_attempts: 36,
         success_rate: 71,
+        completion_rate: 90.3,
         avg_score: 83,
         avg_time_min: 2.9,
         missed_days: 1,
@@ -17140,8 +17144,10 @@ function AppInner() {
             <strong>${item.username}</strong><br/>
             ${tr('Итоговый балл', 'Gesamtscore')}: ${item.final_score}<br/>
             ${tr('Успех', 'Erfolg')}: ${item.success_rate}%<br/>
+            ${tr('Выполнение', 'Erfuellung')}: ${Number(item.completion_rate ?? 0)}% (${item.covered_sentences ?? item.total_translations ?? 0}/${item.assigned_sentences ?? 0})<br/>
             ${tr('Ср. балл', 'Durchschnitt')}: ${item.avg_score}<br/>
-            ${tr('Переводы', 'Uebersetzungen')}: ${item.total_translations}<br/>
+            ${tr('Переведено', 'Uebersetzt')}: ${item.total_translations}<br/>
+            ${tr('Попытки', 'Versuche')}: ${item.translation_attempts ?? item.total_translations ?? 0}<br/>
             ${tr('Пропущено', 'Verpasst')}: ${item.missed_sentences}<br/>
             ${tr('Пропущено дней', 'Verpasste Tage')}: ${item.missed_days ?? 0}
           `;
@@ -21367,6 +21373,10 @@ function AppInner() {
                     <div className="analytics-card">
                       <span>{tr('Переводы', 'Uebersetzungen')}</span>
                       <strong>{analyticsSummary.total_translations}</strong>
+                    </div>
+                    <div className="analytics-card">
+                      <span>{tr('Выполнение', 'Erfuellung')}</span>
+                      <strong>{analyticsSummary.completion_rate ?? 0}%</strong>
                     </div>
                     <div className="analytics-card">
                       <span>{tr('Успех', 'Erfolg')}</span>

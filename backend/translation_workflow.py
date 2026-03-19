@@ -1069,6 +1069,7 @@ async def submit_story_translation_webapp(
                 INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
                 user_translation, score, feedback, source_lang, target_lang)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, sentence_id, session_id) DO NOTHING
                 RETURNING id;
                 """,
                 (
@@ -4520,13 +4521,12 @@ async def check_user_translation_webapp_item(
 
             cursor.execute(
                 """
-                SELECT id, score
+                SELECT id, score, user_translation, feedback
                 FROM bt_3_translations
                 WHERE user_id = %s
                   AND sentence_id = %s
                   AND COALESCE(source_lang, 'ru') = %s
                   AND COALESCE(target_lang, 'de') = %s
-                  AND timestamp::date = CURRENT_DATE
                 ORDER BY timestamp DESC, id DESC
                 LIMIT 1;
                 """,
@@ -4534,12 +4534,29 @@ async def check_user_translation_webapp_item(
             )
             existing_translation = cursor.fetchone()
 
-    latest_score = int(existing_translation[1] or 0) if existing_translation else None
-    if existing_translation and latest_score >= 85:
-        return {
+    if existing_translation:
+        result_item = {
+            "translation_id": int(existing_translation[0]),
+            "audio_grammar_opt_in": False,
             "sentence_number": sentence_number,
-            "error": "Это предложение уже закрыто (балл 85+).",
-        }, None
+            "score": int(existing_translation[1] or 0),
+            "original_text": original_text,
+            "user_translation": str(existing_translation[2] or "").strip(),
+            "correct_translation": None,
+            "feedback": str(existing_translation[3] or "").strip(),
+        }
+        if checkpoint_item_id is not None:
+            update_translation_check_item_result(
+                item_id=int(checkpoint_item_id),
+                status="running",
+                result_json=result_item,
+                result_text=str(result_item.get("feedback") or "").strip() or None,
+                error_text=None,
+                webapp_check_id=result_item.get("translation_id"),
+                started=True,
+                finished=False,
+            )
+        return result_item, None
 
     try:
         feedback, categories, subcategories, score, correct_translation = await check_translation(
@@ -4557,6 +4574,11 @@ async def check_user_translation_webapp_item(
         }, None
 
     score_value = int(score) if score and str(score).isdigit() else 0
+    translation_id = None
+    stored_user_translation = user_translation
+    stored_score_value = score_value
+    stored_feedback = feedback
+    inserted_new_row = False
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -4564,7 +4586,8 @@ async def check_user_translation_webapp_item(
                 INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
                 user_translation, score, feedback, source_lang, target_lang)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id;
+                ON CONFLICT (user_id, sentence_id, session_id) DO NOTHING
+                RETURNING id, user_translation, score, feedback;
                 """,
                 (
                     user_id,
@@ -4580,33 +4603,57 @@ async def check_user_translation_webapp_item(
                 ),
             )
             created_translation = cursor.fetchone()
-            translation_id = int(created_translation[0]) if created_translation and created_translation[0] else None
+            if created_translation:
+                inserted_new_row = True
+                translation_id = int(created_translation[0]) if created_translation[0] is not None else None
+                stored_user_translation = str(created_translation[1] or "").strip() or user_translation
+                stored_score_value = int(created_translation[2] or 0)
+                stored_feedback = str(created_translation[3] or "").strip() or feedback
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, user_translation, score, feedback
+                    FROM bt_3_translations
+                    WHERE user_id = %s
+                      AND sentence_id = %s
+                      AND session_id = %s
+                    LIMIT 1;
+                    """,
+                    (user_id, sentence_pk_id, source_session_id),
+                )
+                existing_row = cursor.fetchone()
+                if existing_row:
+                    translation_id = int(existing_row[0]) if existing_row[0] is not None else None
+                    stored_user_translation = str(existing_row[1] or "").strip() or user_translation
+                    stored_score_value = int(existing_row[2] or 0)
+                    stored_feedback = str(existing_row[3] or "").strip() or feedback
 
     result_item = {
         "translation_id": translation_id,
         "audio_grammar_opt_in": False,
         "sentence_number": sentence_number,
-        "score": score_value,
+        "score": stored_score_value,
         "original_text": original_text,
-        "user_translation": user_translation,
+        "user_translation": stored_user_translation,
         "correct_translation": correct_translation,
-        "feedback": feedback,
+        "feedback": stored_feedback,
     }
-    deferred_payload = {
-        "user_id": int(user_id),
-        "original_text": original_text,
-        "user_translation": user_translation,
-        "sentence_pk_id": int(sentence_pk_id),
-        "session_id": int(source_session_id) if source_session_id is not None else None,
-        "sentence_id_for_mistake": int(sentence_id_for_mistake),
-        "score_value": score_value,
-        "correct_translation": correct_translation,
-        "categories": list(categories or []),
-        "subcategories": list(subcategories or []),
-        "source_lang": normalized_source_lang,
-        "target_lang": normalized_target_lang,
-    }
-    await apply_translation_result_side_effects(**deferred_payload)
+    if inserted_new_row:
+        deferred_payload = {
+            "user_id": int(user_id),
+            "original_text": original_text,
+            "user_translation": user_translation,
+            "sentence_pk_id": int(sentence_pk_id),
+            "session_id": int(source_session_id) if source_session_id is not None else None,
+            "sentence_id_for_mistake": int(sentence_id_for_mistake),
+            "score_value": score_value,
+            "correct_translation": correct_translation,
+            "categories": list(categories or []),
+            "subcategories": list(subcategories or []),
+            "source_lang": normalized_source_lang,
+            "target_lang": normalized_target_lang,
+        }
+        await apply_translation_result_side_effects(**deferred_payload)
     if checkpoint_item_id is not None:
         update_translation_check_item_result(
             item_id=int(checkpoint_item_id),

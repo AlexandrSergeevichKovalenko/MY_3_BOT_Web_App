@@ -357,6 +357,7 @@ from backend.database import (
     get_translation_check_session,
     list_translation_check_items,
     get_latest_translation_check_session,
+    get_latest_translation_check_session_with_items,
     update_translation_check_session_status,
     update_translation_check_item_result,
     finalize_translation_check_item,
@@ -9715,6 +9716,30 @@ def _prettify_grammar_explanation_text(text: str) -> str:
     return "\n".join(rendered).strip()
 
 
+def _fallback_grammar_explanation_text(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    cleaned = re.sub(r"```[a-zA-Z]*", "", raw).replace("```", "")
+    cleaned = re.sub(r"</?[^>\n]+>", "", cleaned)
+    lines = [re.sub(r"\s+", " ", str(line or "")).strip() for line in cleaned.splitlines()]
+    rendered: list[str] = []
+    for line in lines:
+        if not line:
+            if rendered and rendered[-1] != "":
+                rendered.append("")
+            continue
+        rendered.append(line)
+    return "\n".join(rendered).strip()
+
+
+def _render_private_grammar_explanation_text(text: str) -> str:
+    pretty_text = _prettify_grammar_explanation_text(text)
+    if pretty_text:
+        return pretty_text
+    return _fallback_grammar_explanation_text(text)
+
+
 def _build_private_grammar_message(
     *,
     sentence_number: int | None,
@@ -9729,13 +9754,22 @@ def _build_private_grammar_message(
     title = "🧠 Грамматический разбор"
     if sentence_number is not None and int(sentence_number) > 0:
         title = f"{title} · Satz {int(sentence_number)}"
-    pretty_explanation = _prettify_grammar_explanation_text(explanation_text)
+    pretty_explanation = _render_private_grammar_explanation_text(explanation_text) or "—"
+    explanation_lines = pretty_explanation.splitlines()
+    if explanation_lines:
+        first_line = explanation_lines[0].strip() or "—"
+        rest_lines = explanation_lines[1:]
+        explanation_block = f"Разбор: {first_line}"
+        if rest_lines:
+            explanation_block = f"{explanation_block}\n" + "\n".join(rest_lines)
+    else:
+        explanation_block = "Разбор: —"
     return (
         f"{title}\n"
         f"Пара: {src} → {tgt}\n\n"
         f"Исходное предложение:\n{(original_text or '—').strip()}\n\n"
         f"Корректный вариант:\n{(correct_translation or '—').strip()}\n\n"
-        f"Разбор:\n{pretty_explanation or '—'}"
+        f"{explanation_block}"
     )
 
 
@@ -13090,6 +13124,58 @@ def _build_translation_check_payload(
     }
 
 
+def _translation_check_item_signature(items: list[dict[str, Any]] | None) -> list[tuple[int, int, str]]:
+    signature: list[tuple[int, int, str]] = []
+    for index, item in enumerate(items or []):
+        if not isinstance(item, dict):
+            continue
+        raw_mistake_id = item.get("sentence_id_for_mistake_table")
+        if raw_mistake_id is None:
+            raw_mistake_id = item.get("id_for_mistake_table")
+        try:
+            mistake_id = int(raw_mistake_id)
+        except Exception:
+            continue
+        user_translation = str(
+            item.get("user_translation")
+            or item.get("translation")
+            or ""
+        ).strip()
+        if not mistake_id or not user_translation:
+            continue
+        try:
+            item_order = int(item.get("item_order", index))
+        except Exception:
+            item_order = index
+        signature.append((item_order, mistake_id, user_translation))
+    return signature
+
+
+def _get_matching_active_translation_check_session(
+    *,
+    user_id: int,
+    source_session_id: str | None,
+    source_lang: str,
+    target_lang: str,
+    normalized_items: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    session, items = get_latest_translation_check_session_with_items(
+        user_id=int(user_id),
+        only_active=True,
+    )
+    if not session:
+        return None, []
+    if str(session.get("source_session_id") or "").strip() != str(source_session_id or "").strip():
+        return None, []
+    if str(session.get("source_lang") or "").strip().lower() != str(source_lang or "").strip().lower():
+        return None, []
+    if str(session.get("target_lang") or "").strip().lower() != str(target_lang or "").strip().lower():
+        return None, []
+    if _translation_check_item_signature(items) != _translation_check_item_signature(normalized_items):
+        return None, []
+    return session, items
+
+
 def _queue_private_grammar_explanation_for_result(
     *,
     user_id: int,
@@ -13756,6 +13842,47 @@ def start_webapp_translation_check():
             http_status=400,
         )
         return jsonify({"error": "Нет валидных предложений для проверки."}), 400
+
+    existing_session, existing_items = _get_matching_active_translation_check_session(
+        user_id=int(user_id),
+        source_session_id=source_session_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        normalized_items=normalized_items,
+    )
+    if existing_session:
+        session_id = int(existing_session["id"])
+        correlation_id = _build_observability_correlation_id(
+            payload=payload,
+            fallback_seed=f"session-{session_id}",
+            prefix="translation_check",
+        )
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            session_id=session_id,
+            check_id=session_id,
+            source_session_id=source_session_id,
+            items_requested=len(translations),
+            items_normalized=len(normalized_items),
+            items_total=len(existing_items),
+            db_lookup_duration_ms=map_load_duration_ms,
+            normalize_duration_ms=normalize_duration_ms,
+            final_status="reused",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+        )
+        return jsonify(
+            _build_translation_check_payload(
+                session=existing_session,
+                items=existing_items,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        )
 
     create_session_started_perf = time.perf_counter()
     session = create_translation_check_session(

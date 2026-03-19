@@ -172,26 +172,33 @@ def _calculate_final_score(avg_score: float, avg_time_min: float, missed: int) -
 
 
 def _post_process_row(row: dict[str, Any]) -> dict[str, Any]:
-    total = int(row.get("total_translations") or 0)
+    attempts = int(row.get("translation_attempts") or row.get("total_translations") or 0)
+    covered = int(row.get("covered_sentences") or 0)
+    if covered <= 0 and attempts > 0 and row.get("covered_sentences") is None:
+        covered = attempts
     success = int(row.get("successful_translations") or 0)
     total_time = float(row.get("total_time_min") or 0)
     assigned = int(row.get("assigned_sentences") or 0)
     avg_score = float(row.get("avg_score") or 0)
-    avg_time = round(total_time / total, 2) if total > 0 else 0.0
-    missed = max(0, assigned - total)
+    avg_time = round(total_time / covered, 2) if covered > 0 else 0.0
+    missed = max(0, assigned - covered)
     missed_days = int(row.get("missed_days") or 0)
-    success_rate = round((success / total) * 100, 1) if total > 0 else 0.0
+    success_rate = round((success / covered) * 100, 1) if covered > 0 else 0.0
+    completion_rate = round((covered / assigned) * 100, 1) if assigned > 0 else 0.0
     return {
         **row,
-        "total_translations": total,
+        "translation_attempts": attempts,
+        "covered_sentences": covered,
+        "total_translations": covered,
         "successful_translations": success,
-        "unsuccessful_translations": max(0, total - success),
+        "unsuccessful_translations": max(0, covered - success),
         "total_time_min": round(total_time, 2),
         "avg_time_min": avg_time,
         "assigned_sentences": assigned,
         "missed_sentences": missed,
         "missed_days": missed_days,
         "success_rate": success_rate,
+        "completion_rate": completion_rate,
         "avg_score": round(avg_score, 2),
         "final_score": _calculate_final_score(avg_score, avg_time, missed),
     }
@@ -213,16 +220,12 @@ def fetch_user_timeseries(
     sql = f"""
         WITH base AS (
             SELECT
-                t.user_id,
-                t.id_for_mistake_table,
+                t.id AS translation_id,
+                ds.id AS assigned_sentence_id,
                 t.score,
                 t.timestamp,
                 t.session_id,
-                {period_expr_t} AS period_start,
-                ROW_NUMBER() OVER (
-                    PARTITION BY t.user_id, t.id_for_mistake_table
-                    ORDER BY t.timestamp
-                ) AS attempt_index
+                {period_expr_t} AS period_start
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
             WHERE t.user_id = %s
@@ -230,24 +233,45 @@ def fetch_user_timeseries(
               AND COALESCE(t.target_lang, 'de') = %s
               AND ds.date BETWEEN %s AND %s
         ),
-        filtered AS (
+        ranked AS (
             SELECT *,
-                CASE
-                    WHEN attempt_index = 1 THEN (score >= 80)
-                    ELSE (score >= 85)
-                END AS is_success
+                ROW_NUMBER() OVER (
+                    PARTITION BY assigned_sentence_id
+                    ORDER BY timestamp, translation_id
+                ) AS attempt_index,
+                ROW_NUMBER() OVER (
+                    PARTITION BY assigned_sentence_id
+                    ORDER BY timestamp DESC, translation_id DESC
+                ) AS reverse_attempt_index
             FROM base
+        ),
+        sentence_attempts AS (
+            SELECT
+                period_start::date AS period_start,
+                assigned_sentence_id,
+                COUNT(*) AS translation_attempts,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN score END) AS last_score,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN attempt_index END) AS final_attempt_index
+            FROM ranked
+            GROUP BY period_start::date, assigned_sentence_id
         ),
         translations_agg AS (
             SELECT
-                period_start::date AS period_start,
-                COUNT(*) AS total_translations,
-                SUM(CASE WHEN is_success THEN 1 ELSE 0 END) AS successful_translations,
-                SUM(CASE WHEN is_success AND attempt_index = 1 THEN 1 ELSE 0 END) AS success_on_1st_attempt,
-                SUM(CASE WHEN is_success AND attempt_index = 2 THEN 1 ELSE 0 END) AS success_on_2nd_attempt,
-                SUM(CASE WHEN is_success AND attempt_index >= 3 THEN 1 ELSE 0 END) AS success_on_3plus_attempt,
-                AVG(score) AS avg_score
-            FROM filtered
+                period_start,
+                SUM(translation_attempts) AS translation_attempts,
+                COUNT(*) AS covered_sentences,
+                SUM(
+                    CASE
+                        WHEN final_attempt_index = 1 AND last_score >= 80 THEN 1
+                        WHEN final_attempt_index > 1 AND last_score >= 85 THEN 1
+                        ELSE 0
+                    END
+                ) AS successful_translations,
+                SUM(CASE WHEN final_attempt_index = 1 AND last_score >= 80 THEN 1 ELSE 0 END) AS success_on_1st_attempt,
+                SUM(CASE WHEN final_attempt_index = 2 AND last_score >= 85 THEN 1 ELSE 0 END) AS success_on_2nd_attempt,
+                SUM(CASE WHEN final_attempt_index >= 3 AND last_score >= 85 THEN 1 ELSE 0 END) AS success_on_3plus_attempt,
+                AVG(last_score) AS avg_score
+            FROM sentence_attempts
             GROUP BY period_start
         ),
         time_agg AS (
@@ -275,7 +299,7 @@ def fetch_user_timeseries(
         assigned_agg AS (
             SELECT
                 {period_expr_ds}::date AS period_start,
-                COUNT(DISTINCT id_for_mistake_table) AS assigned_sentences
+                COUNT(*) AS assigned_sentences
             FROM bt_3_daily_sentences ds
             WHERE ds.user_id = %s
                 AND COALESCE(ds.source_lang, 'ru') = %s
@@ -285,7 +309,8 @@ def fetch_user_timeseries(
         )
         SELECT
             COALESCE(t.period_start, time_agg.period_start, assigned_agg.period_start) AS period_start,
-            COALESCE(t.total_translations, 0) AS total_translations,
+            COALESCE(t.translation_attempts, 0) AS translation_attempts,
+            COALESCE(t.covered_sentences, 0) AS covered_sentences,
             COALESCE(t.successful_translations, 0) AS successful_translations,
             COALESCE(t.success_on_1st_attempt, 0) AS success_on_1st_attempt,
             COALESCE(t.success_on_2nd_attempt, 0) AS success_on_2nd_attempt,
@@ -366,16 +391,12 @@ def fetch_scope_timeseries(
     sql = f"""
         WITH base AS (
             SELECT
-                t.user_id,
-                t.id_for_mistake_table,
+                t.id AS translation_id,
+                ds.id AS assigned_sentence_id,
                 t.score,
                 t.timestamp,
                 t.session_id,
-                {period_expr_t} AS period_start,
-                ROW_NUMBER() OVER (
-                    PARTITION BY t.user_id, t.id_for_mistake_table
-                    ORDER BY t.timestamp
-                ) AS attempt_index
+                {period_expr_t} AS period_start
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
             WHERE t.user_id = ANY(%s)
@@ -383,24 +404,45 @@ def fetch_scope_timeseries(
               AND COALESCE(t.target_lang, 'de') = %s
               AND ds.date BETWEEN %s AND %s
         ),
-        filtered AS (
+        ranked AS (
             SELECT *,
-                CASE
-                    WHEN attempt_index = 1 THEN (score >= 80)
-                    ELSE (score >= 85)
-                END AS is_success
+                ROW_NUMBER() OVER (
+                    PARTITION BY assigned_sentence_id
+                    ORDER BY timestamp, translation_id
+                ) AS attempt_index,
+                ROW_NUMBER() OVER (
+                    PARTITION BY assigned_sentence_id
+                    ORDER BY timestamp DESC, translation_id DESC
+                ) AS reverse_attempt_index
             FROM base
+        ),
+        sentence_attempts AS (
+            SELECT
+                period_start::date AS period_start,
+                assigned_sentence_id,
+                COUNT(*) AS translation_attempts,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN score END) AS last_score,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN attempt_index END) AS final_attempt_index
+            FROM ranked
+            GROUP BY period_start::date, assigned_sentence_id
         ),
         translations_agg AS (
             SELECT
-                period_start::date AS period_start,
-                COUNT(*) AS total_translations,
-                SUM(CASE WHEN is_success THEN 1 ELSE 0 END) AS successful_translations,
-                SUM(CASE WHEN is_success AND attempt_index = 1 THEN 1 ELSE 0 END) AS success_on_1st_attempt,
-                SUM(CASE WHEN is_success AND attempt_index = 2 THEN 1 ELSE 0 END) AS success_on_2nd_attempt,
-                SUM(CASE WHEN is_success AND attempt_index >= 3 THEN 1 ELSE 0 END) AS success_on_3plus_attempt,
-                AVG(score) AS avg_score
-            FROM filtered
+                period_start,
+                SUM(translation_attempts) AS translation_attempts,
+                COUNT(*) AS covered_sentences,
+                SUM(
+                    CASE
+                        WHEN final_attempt_index = 1 AND last_score >= 80 THEN 1
+                        WHEN final_attempt_index > 1 AND last_score >= 85 THEN 1
+                        ELSE 0
+                    END
+                ) AS successful_translations,
+                SUM(CASE WHEN final_attempt_index = 1 AND last_score >= 80 THEN 1 ELSE 0 END) AS success_on_1st_attempt,
+                SUM(CASE WHEN final_attempt_index = 2 AND last_score >= 85 THEN 1 ELSE 0 END) AS success_on_2nd_attempt,
+                SUM(CASE WHEN final_attempt_index >= 3 AND last_score >= 85 THEN 1 ELSE 0 END) AS success_on_3plus_attempt,
+                AVG(last_score) AS avg_score
+            FROM sentence_attempts
             GROUP BY period_start
         ),
         time_agg AS (
@@ -428,7 +470,7 @@ def fetch_scope_timeseries(
         assigned_agg AS (
             SELECT
                 {period_expr_ds}::date AS period_start,
-                COUNT(DISTINCT (ds.user_id, ds.id_for_mistake_table)) AS assigned_sentences
+                COUNT(*) AS assigned_sentences
             FROM bt_3_daily_sentences ds
             WHERE ds.user_id = ANY(%s)
                 AND COALESCE(ds.source_lang, 'ru') = %s
@@ -438,7 +480,8 @@ def fetch_scope_timeseries(
         )
         SELECT
             COALESCE(t.period_start, time_agg.period_start, assigned_agg.period_start) AS period_start,
-            COALESCE(t.total_translations, 0) AS total_translations,
+            COALESCE(t.translation_attempts, 0) AS translation_attempts,
+            COALESCE(t.covered_sentences, 0) AS covered_sentences,
             COALESCE(t.successful_translations, 0) AS successful_translations,
             COALESCE(t.success_on_1st_attempt, 0) AS success_on_1st_attempt,
             COALESCE(t.success_on_2nd_attempt, 0) AS success_on_2nd_attempt,
@@ -500,14 +543,11 @@ def fetch_user_summary(
     sql = f"""
         WITH base AS (
             SELECT
-                t.user_id,
-                t.id_for_mistake_table,
+                t.id AS translation_id,
+                ds.id AS assigned_sentence_id,
                 t.score,
                 t.timestamp,
-                ROW_NUMBER() OVER (
-                    PARTITION BY t.user_id, t.id_for_mistake_table
-                    ORDER BY t.timestamp
-                ) AS attempt_index
+                t.session_id
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
             WHERE t.user_id = %s
@@ -515,20 +555,40 @@ def fetch_user_summary(
               AND COALESCE(t.target_lang, 'de') = %s
               AND ds.date BETWEEN %s AND %s
         ),
-        filtered AS (
+        ranked AS (
             SELECT *,
-                CASE
-                    WHEN attempt_index = 1 THEN (score >= 80)
-                    ELSE (score >= 85)
-                END AS is_success
+                ROW_NUMBER() OVER (
+                    PARTITION BY assigned_sentence_id
+                    ORDER BY timestamp, translation_id
+                ) AS attempt_index,
+                ROW_NUMBER() OVER (
+                    PARTITION BY assigned_sentence_id
+                    ORDER BY timestamp DESC, translation_id DESC
+                ) AS reverse_attempt_index
             FROM base
+        ),
+        sentence_attempts AS (
+            SELECT
+                assigned_sentence_id,
+                COUNT(*) AS translation_attempts,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN score END) AS last_score,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN attempt_index END) AS final_attempt_index
+            FROM ranked
+            GROUP BY assigned_sentence_id
         ),
         translations_agg AS (
             SELECT
-                COUNT(*) AS total_translations,
-                SUM(CASE WHEN is_success THEN 1 ELSE 0 END) AS successful_translations,
-                AVG(score) AS avg_score
-            FROM filtered
+                SUM(translation_attempts) AS translation_attempts,
+                COUNT(*) AS covered_sentences,
+                SUM(
+                    CASE
+                        WHEN final_attempt_index = 1 AND last_score >= 80 THEN 1
+                        WHEN final_attempt_index > 1 AND last_score >= 85 THEN 1
+                        ELSE 0
+                    END
+                ) AS successful_translations,
+                AVG(last_score) AS avg_score
+            FROM sentence_attempts
         ),
         time_agg AS (
             WITH pair_sessions AS (
@@ -552,7 +612,7 @@ def fetch_user_summary(
         ),
         assigned_agg AS (
             SELECT
-                COUNT(DISTINCT id_for_mistake_table) AS assigned_sentences
+                COUNT(*) AS assigned_sentences
             FROM bt_3_daily_sentences ds
             WHERE user_id = %s
               AND COALESCE(ds.source_lang, 'ru') = %s
@@ -609,7 +669,8 @@ def fetch_user_summary(
             WHERE t.date IS NULL
         )
         SELECT
-            COALESCE(translations_agg.total_translations, 0) AS total_translations,
+            COALESCE(translations_agg.translation_attempts, 0) AS translation_attempts,
+            COALESCE(translations_agg.covered_sentences, 0) AS covered_sentences,
             COALESCE(translations_agg.successful_translations, 0) AS successful_translations,
             COALESCE(translations_agg.avg_score, 0) AS avg_score,
             COALESCE(time_agg.total_time_min, 0) AS total_time_min,
@@ -685,14 +746,12 @@ def fetch_scope_summary(
     sql = f"""
         WITH base AS (
             SELECT
-                t.user_id,
-                t.id_for_mistake_table,
+                t.id AS translation_id,
+                ds.id AS assigned_sentence_id,
                 t.score,
                 t.timestamp,
-                ROW_NUMBER() OVER (
-                    PARTITION BY t.user_id, t.id_for_mistake_table
-                    ORDER BY t.timestamp
-                ) AS attempt_index
+                t.user_id,
+                t.session_id
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
             WHERE t.user_id = ANY(%s)
@@ -700,20 +759,41 @@ def fetch_scope_summary(
               AND COALESCE(t.target_lang, 'de') = %s
               AND ds.date BETWEEN %s AND %s
         ),
-        filtered AS (
+        ranked AS (
             SELECT *,
-                CASE
-                    WHEN attempt_index = 1 THEN (score >= 80)
-                    ELSE (score >= 85)
-                END AS is_success
+                ROW_NUMBER() OVER (
+                    PARTITION BY assigned_sentence_id
+                    ORDER BY timestamp, translation_id
+                ) AS attempt_index,
+                ROW_NUMBER() OVER (
+                    PARTITION BY assigned_sentence_id
+                    ORDER BY timestamp DESC, translation_id DESC
+                ) AS reverse_attempt_index
             FROM base
+        ),
+        sentence_attempts AS (
+            SELECT
+                assigned_sentence_id,
+                COUNT(*) AS translation_attempts,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN user_id END) AS user_id,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN score END) AS last_score,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN attempt_index END) AS final_attempt_index
+            FROM ranked
+            GROUP BY assigned_sentence_id
         ),
         translations_agg AS (
             SELECT
-                COUNT(*) AS total_translations,
-                SUM(CASE WHEN is_success THEN 1 ELSE 0 END) AS successful_translations,
-                AVG(score) AS avg_score
-            FROM filtered
+                SUM(translation_attempts) AS translation_attempts,
+                COUNT(*) AS covered_sentences,
+                SUM(
+                    CASE
+                        WHEN final_attempt_index = 1 AND last_score >= 80 THEN 1
+                        WHEN final_attempt_index > 1 AND last_score >= 85 THEN 1
+                        ELSE 0
+                    END
+                ) AS successful_translations,
+                AVG(last_score) AS avg_score
+            FROM sentence_attempts
         ),
         time_agg AS (
             WITH pair_sessions AS (
@@ -737,7 +817,7 @@ def fetch_scope_summary(
         ),
         assigned_agg AS (
             SELECT
-                COUNT(DISTINCT (ds.user_id, ds.id_for_mistake_table)) AS assigned_sentences
+                COUNT(*) AS assigned_sentences
             FROM bt_3_daily_sentences ds
             WHERE ds.user_id = ANY(%s)
               AND COALESCE(ds.source_lang, 'ru') = %s
@@ -794,7 +874,8 @@ def fetch_scope_summary(
             WHERE t.date IS NULL
         )
         SELECT
-            COALESCE(translations_agg.total_translations, 0) AS total_translations,
+            COALESCE(translations_agg.translation_attempts, 0) AS translation_attempts,
+            COALESCE(translations_agg.covered_sentences, 0) AS covered_sentences,
             COALESCE(translations_agg.successful_translations, 0) AS successful_translations,
             COALESCE(translations_agg.avg_score, 0) AS avg_score,
             COALESCE(time_agg.total_time_min, 0) AS total_time_min,
@@ -867,13 +948,11 @@ def fetch_comparison_leaderboard(
         WITH base AS (
             SELECT
                 t.user_id,
-                t.id_for_mistake_table,
+                t.id AS translation_id,
+                ds.id AS assigned_sentence_id,
                 t.score,
                 t.timestamp,
-                ROW_NUMBER() OVER (
-                    PARTITION BY t.user_id, t.id_for_mistake_table
-                    ORDER BY t.timestamp
-                ) AS attempt_index
+                t.session_id
             FROM bt_3_translations t
             JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
             WHERE ds.date BETWEEN %s AND %s
@@ -881,21 +960,42 @@ def fetch_comparison_leaderboard(
               AND COALESCE(t.target_lang, 'de') = %s
               {base_user_filter}
         ),
-        filtered AS (
+        ranked AS (
             SELECT *,
-                CASE
-                    WHEN attempt_index = 1 THEN (score >= 80)
-                    ELSE (score >= 85)
-                END AS is_success
+                ROW_NUMBER() OVER (
+                    PARTITION BY assigned_sentence_id
+                    ORDER BY timestamp, translation_id
+                ) AS attempt_index,
+                ROW_NUMBER() OVER (
+                    PARTITION BY assigned_sentence_id
+                    ORDER BY timestamp DESC, translation_id DESC
+                ) AS reverse_attempt_index
             FROM base
+        ),
+        sentence_attempts AS (
+            SELECT
+                user_id,
+                assigned_sentence_id,
+                COUNT(*) AS translation_attempts,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN score END) AS last_score,
+                MAX(CASE WHEN reverse_attempt_index = 1 THEN attempt_index END) AS final_attempt_index
+            FROM ranked
+            GROUP BY user_id, assigned_sentence_id
         ),
         translations_agg AS (
             SELECT
                 user_id,
-                COUNT(*) AS total_translations,
-                SUM(CASE WHEN is_success THEN 1 ELSE 0 END) AS successful_translations,
-                AVG(score) AS avg_score
-            FROM filtered
+                SUM(translation_attempts) AS translation_attempts,
+                COUNT(*) AS covered_sentences,
+                SUM(
+                    CASE
+                        WHEN final_attempt_index = 1 AND last_score >= 80 THEN 1
+                        WHEN final_attempt_index > 1 AND last_score >= 85 THEN 1
+                        ELSE 0
+                    END
+                ) AS successful_translations,
+                AVG(last_score) AS avg_score
+            FROM sentence_attempts
             GROUP BY user_id
         ),
         time_agg AS (
@@ -922,7 +1022,7 @@ def fetch_comparison_leaderboard(
         assigned_agg AS (
             SELECT
                 user_id,
-                COUNT(DISTINCT id_for_mistake_table) AS assigned_sentences
+                COUNT(*) AS assigned_sentences
             FROM bt_3_daily_sentences ds
             WHERE date BETWEEN %s AND %s
               AND COALESCE(ds.source_lang, 'ru') = %s
@@ -932,6 +1032,10 @@ def fetch_comparison_leaderboard(
         ),
         users_in_scope AS (
             SELECT user_id FROM translations_agg
+            UNION
+            SELECT user_id FROM assigned_agg
+            UNION
+            SELECT user_id FROM time_agg
         ),
         first_activity AS (
             SELECT
@@ -1002,20 +1106,22 @@ def fetch_comparison_leaderboard(
             ORDER BY user_id, start_time DESC
         )
         SELECT
-            t.user_id,
+            u.user_id,
             COALESCE(latest_name.username, 'Unknown') AS username,
-            COALESCE(t.total_translations, 0) AS total_translations,
+            COALESCE(t.translation_attempts, 0) AS translation_attempts,
+            COALESCE(t.covered_sentences, 0) AS covered_sentences,
             COALESCE(t.successful_translations, 0) AS successful_translations,
             COALESCE(t.avg_score, 0) AS avg_score,
             COALESCE(time_agg.total_time_min, 0) AS total_time_min,
             COALESCE(assigned_agg.assigned_sentences, 0) AS assigned_sentences,
             COALESCE(missed_days.missed_days, 0) AS missed_days
-        FROM translations_agg t
-        LEFT JOIN time_agg ON time_agg.user_id = t.user_id
-        LEFT JOIN assigned_agg ON assigned_agg.user_id = t.user_id
-        LEFT JOIN missed_days ON missed_days.user_id = t.user_id
-        LEFT JOIN latest_name ON latest_name.user_id = t.user_id
-        ORDER BY t.user_id;
+        FROM users_in_scope u
+        LEFT JOIN translations_agg t ON t.user_id = u.user_id
+        LEFT JOIN time_agg ON time_agg.user_id = u.user_id
+        LEFT JOIN assigned_agg ON assigned_agg.user_id = u.user_id
+        LEFT JOIN missed_days ON missed_days.user_id = u.user_id
+        LEFT JOIN latest_name ON latest_name.user_id = u.user_id
+        ORDER BY u.user_id;
     """
 
     params: list[Any] = [

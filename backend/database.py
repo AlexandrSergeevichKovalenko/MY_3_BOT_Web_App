@@ -2479,6 +2479,19 @@ def ensure_webapp_tables() -> None:
                         WHERE audio_grammar_opt_in IS NULL;
                         ALTER TABLE bt_3_translations ALTER COLUMN audio_grammar_opt_in SET DEFAULT FALSE;
                         ALTER TABLE bt_3_translations ALTER COLUMN audio_grammar_opt_in SET NOT NULL;
+                        DELETE FROM bt_3_translations older
+                        USING bt_3_translations newer
+                        WHERE older.user_id = newer.user_id
+                          AND older.sentence_id = newer.sentence_id
+                          AND older.session_id = newer.session_id
+                          AND older.session_id IS NOT NULL
+                          AND (
+                              older.timestamp < newer.timestamp
+                              OR (older.timestamp = newer.timestamp AND older.id < newer.id)
+                          );
+                        CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_translations_user_sentence_session
+                        ON bt_3_translations (user_id, sentence_id, session_id)
+                        WHERE session_id IS NOT NULL;
                         CREATE INDEX IF NOT EXISTS idx_bt_3_translations_user_lang_ts
                         ON bt_3_translations (user_id, source_lang, target_lang, timestamp DESC);
                         CREATE INDEX IF NOT EXISTS idx_bt_3_translations_user_audio_grammar
