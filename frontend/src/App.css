@@ -12305,53 +12305,115 @@ body {
 .reader-immersive-dock {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: nowrap;
   overflow-x: auto;
-  padding-bottom: 2px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  padding-bottom: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.32);
+  box-shadow: none;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
 }
 
 .reader-immersive-dock > * {
   flex: 0 0 auto;
 }
 
-.reader-immersive-dock .section-home-back,
-.reader-immersive-dock .secondary-button,
-.reader-immersive-dock .reader-bookmark-btn {
-  min-height: 34px;
-  border-radius: 14px;
+.reader-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e5e7eb;
+  box-shadow: none;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    opacity 160ms ease;
 }
 
-.reader-immersive-dock .section-home-back,
-.reader-immersive-dock .secondary-button {
-  padding: 0 10px;
+.reader-immersive-dock .reader-toolbar-btn,
+.reader-topbar-peek .reader-toolbar-btn {
+  min-height: 36px;
 }
 
-.reader-immersive-dock .reader-bookmark-btn {
-  min-width: 34px;
-  padding: 0 8px;
+.reader-toolbar-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(203, 213, 225, 0.28);
+}
+
+.reader-toolbar-btn:active {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(203, 213, 225, 0.3);
+}
+
+.reader-toolbar-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.reader-toolbar-btn-icon {
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.reader-toolbar-btn-icon svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+.reader-toolbar-btn-label {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.reader-toolbar-btn-icon-only {
+  width: 36px;
+  min-width: 36px;
+  padding: 0;
+}
+
+.reader-immersive-dock .reader-toolbar-btn-back {
+  padding-inline: 11px 13px;
 }
 
 .reader-immersive-dock .reader-topbar-collapse-btn {
-  min-width: 34px;
+  min-width: 36px;
   margin-left: auto;
 }
 
 .reader-topbar-toggle-chip {
   min-width: 0;
-  min-height: 30px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  line-height: 1;
-  white-space: nowrap;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 12px;
 }
 
 .reader-immersive-dock .reader-topbar-toggle-chip {
   margin-left: auto;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(15, 23, 42, 0.08)), var(--yt-bg-card-alt, rgba(255, 255, 255, 0.72));
 }
 
 .reader-topbar-peek {
@@ -12370,17 +12432,19 @@ body {
 .reader-bookmark-btn {
   min-width: 36px;
   min-height: 36px;
-  padding: 0 10px;
-  border-radius: 16px;
-  border: 1px solid #dc2626;
-  background: transparent;
-  color: #dc2626;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(218, 119, 98, 0.34);
+  background: rgba(139, 41, 20, 0.08);
+  color: #efb4a5;
   box-shadow: none;
 }
 
 .reader-bookmark-btn.is-active {
   box-shadow: none;
-  background: rgba(220, 38, 38, 0.1);
+  background: rgba(202, 87, 60, 0.18);
+  border-color: rgba(233, 133, 112, 0.45);
+  color: #ffe1d8;
 }
 
 .reader-timer-pill {
@@ -12611,21 +12675,19 @@ body {
   }
 
   .webapp-reader.is-immersive .reader-immersive-dock {
-    gap: 10px;
+    gap: 6px;
     flex-wrap: wrap;
     overflow: visible;
     padding-bottom: 0;
   }
 
-  .webapp-reader.is-immersive .reader-immersive-dock .section-home-back,
-  .webapp-reader.is-immersive .reader-immersive-dock .secondary-button,
-  .webapp-reader.is-immersive .reader-immersive-dock .reader-bookmark-btn {
-    min-height: 38px;
-    border-radius: 14px;
+  .webapp-reader.is-immersive .reader-immersive-dock .reader-toolbar-btn {
+    min-height: 37px;
+    border-radius: 12px;
   }
 
   .webapp-reader.is-immersive .reader-immersive-dock .reader-topbar-toggle-chip {
-    min-height: 34px;
+    min-height: 37px;
     padding: 0 12px;
   }
 }
@@ -12731,6 +12793,7 @@ body {
 
   .reader-immersive-dock {
     justify-content: flex-start;
+    width: 100%;
   }
 
   .webapp-reader.is-immersive .reader-article {
@@ -12778,6 +12841,17 @@ body {
   .reader-bookmark-btn,
   .reader-timer-pill {
     min-height: 32px;
+  }
+
+  .reader-toolbar-btn {
+    gap: 7px;
+    padding: 0 10px;
+    font-size: 10.5px;
+  }
+
+  .reader-toolbar-btn-icon-only {
+    width: 32px;
+    min-width: 32px;
   }
 
   .reader-topbar-toggle-chip {
@@ -16985,6 +17059,50 @@ body {
 
 .webapp-page.is-theme-light .reader-bookmark-btn.is-active {
   background: rgba(180, 74, 53, 0.14);
+}
+
+.webapp-page.is-theme-light .reader-immersive-dock {
+  border-color: rgba(156, 126, 91, 0.24);
+  background: rgba(250, 243, 232, 0.82);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.webapp-page.is-theme-light .reader-immersive-dock .reader-toolbar-btn,
+.webapp-page.is-theme-light .reader-topbar-peek .reader-toolbar-btn {
+  border-color: rgba(149, 118, 84, 0.24);
+  background: rgba(255, 251, 244, 0.96);
+  color: #2a241d;
+}
+
+.webapp-page.is-theme-light .reader-immersive-dock .reader-toolbar-btn:hover,
+.webapp-page.is-theme-light .reader-topbar-peek .reader-toolbar-btn:hover {
+  background: rgba(245, 235, 220, 0.98);
+  border-color: rgba(137, 108, 76, 0.32);
+}
+
+.webapp-page.is-theme-light .reader-immersive-dock .reader-toolbar-btn:active,
+.webapp-page.is-theme-light .reader-topbar-peek .reader-toolbar-btn:active {
+  background: rgba(239, 227, 209, 0.98);
+  border-color: rgba(129, 100, 71, 0.34);
+}
+
+.webapp-page.is-theme-light .reader-immersive-dock .reader-toolbar-btn.is-active {
+  background: rgba(233, 222, 206, 0.98);
+  border-color: rgba(129, 101, 74, 0.38);
+  color: #17120d;
+}
+
+.webapp-page.is-theme-light .reader-immersive-dock .reader-bookmark-btn {
+  border-color: rgba(171, 109, 90, 0.34);
+  background: rgba(181, 115, 93, 0.08);
+  color: #8f5646;
+}
+
+.webapp-page.is-theme-light .reader-immersive-dock .reader-bookmark-btn.is-active {
+  background: rgba(181, 111, 88, 0.14);
+  border-color: rgba(158, 88, 70, 0.44);
+  color: #7d4033;
 }
 
 .webapp-page.is-theme-light .reader-settings-sheet-backdrop {

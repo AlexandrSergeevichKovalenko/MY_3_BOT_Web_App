@@ -20993,7 +20993,7 @@ function AppInner() {
                         <div className="reader-immersive-dock">
                           <button
                             type="button"
-                            className="section-home-back"
+                            className="section-home-back reader-toolbar-btn reader-toolbar-btn-back"
                             onClick={() => {
                               setReaderArchiveOpen(true);
                               setReaderImmersive(false);
@@ -21001,11 +21001,24 @@ function AppInner() {
                               setReaderSettingsOpen(false);
                             }}
                           >
-                            {tr('← Архив', '← Archiv')}
+                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                              <svg viewBox="0 0 18 18" fill="none">
+                                <path
+                                  d="M10.75 4.25 6 9l4.75 4.75M6.6 9h6.15"
+                                  stroke="currentColor"
+                                  strokeWidth="1.75"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span className="reader-toolbar-btn-label">
+                              {tr('Архив', 'Archiv')}
+                            </span>
                           </button>
                           <button
                             type="button"
-                            className={`reader-bookmark-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
+                            className={`reader-bookmark-btn reader-toolbar-btn reader-toolbar-btn-icon-only ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
                             onClick={() => {
                               const mark = computeReaderProgressPercent();
                               setReaderBookmarkPercent(mark);
@@ -21014,12 +21027,23 @@ function AppInner() {
                               }
                             }}
                             disabled={!readerContent || !readerDocumentId}
+                            aria-label={tr('Поставить закладку', 'Lesezeichen setzen')}
+                            title={tr('Поставить закладку', 'Lesezeichen setzen')}
                           >
-                            🔖
+                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                              <svg viewBox="0 0 18 18" fill="none">
+                                <path
+                                  d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z"
+                                  stroke="currentColor"
+                                  strokeWidth="1.6"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
                           </button>
                           <button
                             type="button"
-                            className={`secondary-button ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
+                            className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
                             onClick={() => {
                               const nextMode = readerReadingMode === 'vertical' ? 'horizontal' : 'vertical';
                               setReaderReadingMode(nextMode);
@@ -21029,20 +21053,54 @@ function AppInner() {
                             }}
                             disabled={!readerContent}
                             title={tr('Направление прокрутки', 'Scroll-Richtung')}
+                            aria-label={tr('Направление прокрутки', 'Scroll-Richtung')}
                           >
-                            {readerReadingMode === 'vertical' ? '↕︎' : '↔︎'}
+                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                              {readerReadingMode === 'vertical' ? (
+                                <svg viewBox="0 0 18 18" fill="none">
+                                  <path
+                                    d="M9 3.5v11M9 3.5 6.9 5.6M9 3.5l2.1 2.1M9 14.5l-2.1-2.1M9 14.5l2.1-2.1"
+                                    stroke="currentColor"
+                                    strokeWidth="1.7"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              ) : (
+                                <svg viewBox="0 0 18 18" fill="none">
+                                  <path
+                                    d="M3.5 9h11M3.5 9l2.1-2.1M3.5 9l2.1 2.1M14.5 9l-2.1-2.1M14.5 9l-2.1 2.1"
+                                    stroke="currentColor"
+                                    strokeWidth="1.7"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              )}
+                            </span>
                           </button>
                           <button
                             type="button"
-                            className="secondary-button"
+                            className="secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only"
                             onClick={() => setReaderSettingsOpen(true)}
                             title={tr('Настройки чтения', 'Leseeinstellungen')}
+                            aria-label={tr('Настройки чтения', 'Leseeinstellungen')}
                           >
-                            ⋯
+                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                              <svg viewBox="0 0 18 18" fill="none">
+                                <path
+                                  d="M4.25 5.25h9.5M6.5 5.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.5 3.75h-8M10.75 9a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm3 3.75h-9.5M8.75 12.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z"
+                                  stroke="currentColor"
+                                  strokeWidth="1.55"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
                           </button>
                           <button
                             type="button"
-                            className="secondary-button reader-topbar-collapse-btn reader-topbar-toggle-chip"
+                            className="secondary-button reader-topbar-collapse-btn reader-topbar-toggle-chip reader-toolbar-btn"
                             onClick={() => {
                               const next = !readerTopbarCollapsed;
                               setReaderTopbarCollapsed(next);
@@ -21054,7 +21112,20 @@ function AppInner() {
                               ? tr('Развернуть панель', 'Leiste aufklappen')
                               : tr('Свернуть панель', 'Leiste einklappen')}
                           >
-                            {tr('Свернуть', 'Einklappen')}
+                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                              <svg viewBox="0 0 18 18" fill="none">
+                                <path
+                                  d="M4.5 11.25 9 6.75l4.5 4.5"
+                                  stroke="currentColor"
+                                  strokeWidth="1.7"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span className="reader-toolbar-btn-label">
+                              {tr('Свернуть', 'Einklappen')}
+                            </span>
                           </button>
                         </div>
                       </div>
@@ -21064,11 +21135,24 @@ function AppInner() {
                         <div className="reader-topbar-peek">
                           <button
                             type="button"
-                            className="secondary-button reader-topbar-peek-btn reader-topbar-toggle-chip"
+                            className="secondary-button reader-topbar-peek-btn reader-topbar-toggle-chip reader-toolbar-btn"
                             onClick={() => setReaderTopbarCollapsed(false)}
                             title={tr('Показать панель чтения', 'Leseleiste anzeigen')}
                           >
-                            {tr('Развернуть', 'Aufklappen')}
+                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                              <svg viewBox="0 0 18 18" fill="none">
+                                <path
+                                  d="M4.5 6.75 9 11.25l4.5-4.5"
+                                  stroke="currentColor"
+                                  strokeWidth="1.7"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span className="reader-toolbar-btn-label">
+                              {tr('Развернуть', 'Aufklappen')}
+                            </span>
                           </button>
                         </div>
                       )}
