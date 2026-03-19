@@ -1340,6 +1340,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   setWeeklyMetricExpanded,
   saveWeeklyPlan,
   todayPlan,
+  todayPlanLoadedOnce,
   todayPlanLoading,
   todayPlanError,
   todayItemLoading,
@@ -1356,6 +1357,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   getTodayItemTitle,
   formatCompactTimer,
   skillReport,
+  skillReportLoadedOnce,
   skillReportLoading,
   skillReportError,
   skillPracticeLoading,
@@ -1388,6 +1390,16 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   const hasWeeklyPlanSnapshot = Boolean(
     weeklyPlan?.week
     || (weeklyPlan?.metrics && Object.keys(weeklyPlan.metrics).length > 0)
+  );
+  const hasTodayPlanItems = Array.isArray(todayPlan?.items) && todayPlan.items.length > 0;
+  const hasTodayPlanSnapshot = Boolean(
+    todayPlan?.date
+    || Number(todayPlan?.total_minutes || 0) > 0
+    || hasTodayPlanItems
+  );
+  const showTodayPlanSkeleton = (
+    (!todayPlanLoadedOnce && !todayPlanError)
+    || (todayPlanLoading && !hasTodayPlanSnapshot)
   );
   const weeklyMetricRows = useMemo(() => ([
     {
@@ -1492,6 +1504,15 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
       .map((item) => ({ ...item, ring_type: 'best' }));
     return [...weakestSkills, ...strongestSkills];
   }, [uniqueSkills]);
+  const hasSkillReportSnapshot = Boolean(
+    (Array.isArray(skillReport?.groups) && skillReport.groups.length > 0)
+    || Number(skillReport?.total_skills || 0) > 0
+    || ringSkills.length > 0
+  );
+  const showSkillReportSkeleton = (
+    (!skillReportLoadedOnce && !skillReportError)
+    || (skillReportLoading && !hasSkillReportSnapshot)
+  );
   const getSkillTrainingStatus = useCallback((skillId) => {
     const normalized = String(skillId || '').trim();
     if (!normalized) return null;
@@ -1752,12 +1773,39 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
               {todayTestSending ? tr('Отправка...', 'Senden...') : tr('Проверить личку', 'Privat testen')}
             </button>
           </div>
-          {todayPlanLoading && <div className="webapp-muted">{tr('Загружаем план...', 'Plan wird geladen...')}</div>}
+          {showTodayPlanSkeleton && (
+            <div className="today-plan-skeleton" aria-hidden="true">
+              <div className="today-plan-skeleton-toolbar">
+                <span className="home-panel-skeleton home-panel-skeleton-pill" />
+                <span className="home-panel-skeleton home-panel-skeleton-pill" />
+                <span className="home-panel-skeleton home-panel-skeleton-pill is-compact" />
+              </div>
+              {[0, 1, 2].map((index) => (
+                <div className="today-plan-skeleton-card" key={`today-plan-skeleton-${index}`}>
+                  <div className="today-plan-skeleton-main">
+                    <span className="home-panel-skeleton home-panel-skeleton-line is-title" />
+                    <div className="today-plan-skeleton-meta">
+                      <span className="home-panel-skeleton home-panel-skeleton-line is-meta" />
+                      <span className="home-panel-skeleton home-panel-skeleton-line is-meta is-short" />
+                      <span className="home-panel-skeleton home-panel-skeleton-line is-meta is-short" />
+                    </div>
+                  </div>
+                  <div className="today-plan-skeleton-actions">
+                    <span className="home-panel-skeleton home-panel-skeleton-pill is-compact" />
+                    <span className="home-panel-skeleton home-panel-skeleton-pill is-badge" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {todayPlanLoading && hasTodayPlanSnapshot && (
+            <div className="webapp-muted">{tr('Обновляем план в фоне...', 'Plan wird im Hintergrund aktualisiert...')}</div>
+          )}
           {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
-          {!todayPlanLoading && !todayPlanError && (!todayPlan?.items || todayPlan.items.length === 0) && (
+          {!showTodayPlanSkeleton && !todayPlanLoading && !todayPlanError && !hasTodayPlanItems && (
             <div className="webapp-muted">{tr('План на сегодня пуст.', 'Tagesplan ist leer.')}</div>
           )}
-          {!todayPlanLoading && !todayPlanError && Array.isArray(todayPlan?.items) && todayPlan.items.length > 0 && (
+          {!showTodayPlanSkeleton && !todayPlanError && hasTodayPlanItems && (
             <div className="today-plan-items">
               {todayPlan.items.map((item) => {
                 const loadingAction = todayItemLoading[item.id];
@@ -1870,9 +1918,44 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
               </button>
             </div>
           </div>
-          {skillReportLoading && <div className="webapp-muted">{tr('Загружаем прогресс...', 'Fortschritt wird geladen...')}</div>}
+          {showSkillReportSkeleton && (
+            <div className="skill-rings-layout skill-rings-layout-skeleton" aria-hidden="true">
+              <div className="skill-rings-canvas skill-rings-canvas-skeleton">
+                <div className="skill-rings-canvas-placeholder">
+                  <span className="skill-rings-circle-skeleton is-outer" />
+                  <span className="skill-rings-circle-skeleton is-middle" />
+                  <span className="skill-rings-circle-skeleton is-inner" />
+                </div>
+                <div className="skill-rings-center">
+                  <span className="home-panel-skeleton home-panel-skeleton-line is-label" />
+                  <span className="home-panel-skeleton home-panel-skeleton-line is-value" />
+                  <span className="home-panel-skeleton home-panel-skeleton-line is-subtle" />
+                </div>
+              </div>
+              <div className="skill-rings-legend">
+                {[0, 1, 2, 3].map((index) => (
+                  <div className="skill-rings-legend-item skill-rings-legend-item-skeleton" key={`skill-rings-skeleton-${index}`}>
+                    <span className="home-panel-skeleton skill-rings-dot-skeleton" />
+                    <div className="skill-rings-text">
+                      <span className="home-panel-skeleton home-panel-skeleton-line is-title" />
+                      <div className="skill-rings-meta">
+                        <span className="home-panel-skeleton home-panel-skeleton-line is-meta" />
+                        <span className="home-panel-skeleton home-panel-skeleton-line is-meta is-short" />
+                      </div>
+                    </div>
+                    <div className="skill-rings-actions">
+                      <span className="home-panel-skeleton home-panel-skeleton-pill" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {skillReportLoading && hasSkillReportSnapshot && (
+            <div className="webapp-muted">{tr('Обновляем карту навыков...', 'Skill-Karte wird aktualisiert...')}</div>
+          )}
           {skillReportError && <div className="webapp-error">{skillReportError}</div>}
-          {!skillReportLoading && !skillReportError && (
+          {!showSkillReportSkeleton && !skillReportError && (
             <div className="skill-rings-layout">
               <div className="skill-rings-canvas">
                 <svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`} role="img" aria-label="Skill rings">
@@ -2210,6 +2293,7 @@ function AppInner() {
   const [srsPreview, setSrsPreview] = useState(null);
   const [srsPrefetchQueue, setSrsPrefetchQueue] = useState([]);
   const [todayPlan, setTodayPlan] = useState(null);
+  const [todayPlanLoadedOnce, setTodayPlanLoadedOnce] = useState(false);
   const [todayPlanLoading, setTodayPlanLoading] = useState(false);
   const [todayPlanError, setTodayPlanError] = useState('');
   const [todayTranslationRecommendation, setTodayTranslationRecommendation] = useState(null);
@@ -2228,6 +2312,7 @@ function AppInner() {
   const [translationAudioGrammarOptIn, setTranslationAudioGrammarOptIn] = useState({});
   const [translationAudioGrammarSaving, setTranslationAudioGrammarSaving] = useState({});
   const [skillReport, setSkillReport] = useState(null);
+  const [skillReportLoadedOnce, setSkillReportLoadedOnce] = useState(false);
   const [skillReportLoading, setSkillReportLoading] = useState(false);
   const [skillReportError, setSkillReportError] = useState('');
   const [skillPracticeLoading, setSkillPracticeLoading] = useState({});
@@ -5404,6 +5489,7 @@ function AppInner() {
       );
       setTodayPlanError(friendly);
     } finally {
+      setTodayPlanLoadedOnce(true);
       setTodayPlanLoading(false);
     }
   };
@@ -5435,6 +5521,7 @@ function AppInner() {
       );
       setSkillReportError(friendly);
     } finally {
+      setSkillReportLoadedOnce(true);
       setSkillReportLoading(false);
     }
   };
@@ -10038,6 +10125,8 @@ function AppInner() {
       startupPhase3TimerRef.current = null;
     }
     startupLoadedLanguagePairRef.current = '';
+    setTodayPlanLoadedOnce(false);
+    setSkillReportLoadedOnce(false);
     setStartupPhase2Ready(false);
     setStartupPhase3Ready(false);
     setStarterDictionaryOffer(null);
@@ -10088,16 +10177,16 @@ function AppInner() {
           startupLoadedLanguagePairRef.current = pairKey;
         }
         void loadWeeklyPlan();
-        await loadTodayPlan();
-        if (startupSequenceTokenRef.current !== sequenceToken) return;
         startupPhase2TimerRef.current = window.setTimeout(() => {
           if (startupSequenceTokenRef.current !== sequenceToken) return;
           setStartupPhase2Ready(true);
-          startupPhase3TimerRef.current = window.setTimeout(() => {
-            if (startupSequenceTokenRef.current !== sequenceToken) return;
-            setStartupPhase3Ready(true);
-          }, 600);
         }, 0);
+        await loadTodayPlan();
+        if (startupSequenceTokenRef.current !== sequenceToken) return;
+        startupPhase3TimerRef.current = window.setTimeout(() => {
+          if (startupSequenceTokenRef.current !== sequenceToken) return;
+          setStartupPhase3Ready(true);
+        }, 600);
       })();
     }, 120);
 
@@ -10143,6 +10232,7 @@ function AppInner() {
   useEffect(() => {
     if (!isWebAppMode || !initData) {
       setTodayPlan(null);
+      setTodayPlanLoadedOnce(false);
       setTodayPlanError('');
       return;
     }
@@ -10151,6 +10241,7 @@ function AppInner() {
   useEffect(() => {
     if (!isWebAppMode || !initData) {
       setSkillReport(null);
+      setSkillReportLoadedOnce(false);
       setSkillReportError('');
       return;
     }
@@ -18056,6 +18147,7 @@ function AppInner() {
                 setWeeklyMetricExpanded={setWeeklyMetricExpanded}
                 saveWeeklyPlan={saveWeeklyPlanStable}
                 todayPlan={todayPlan}
+                todayPlanLoadedOnce={todayPlanLoadedOnce}
                 todayPlanLoading={todayPlanLoading}
                 todayPlanError={todayPlanError}
                 todayItemLoading={todayItemLoading}
@@ -18072,6 +18164,7 @@ function AppInner() {
                 getTodayItemTitle={getTodayItemTitleStable}
                 formatCompactTimer={formatCompactTimerStable}
                 skillReport={skillReport}
+                skillReportLoadedOnce={skillReportLoadedOnce}
                 skillReportLoading={skillReportLoading}
                 skillReportError={skillReportError}
                 skillPracticeLoading={skillPracticeLoading}
