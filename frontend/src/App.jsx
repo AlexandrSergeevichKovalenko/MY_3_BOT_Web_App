@@ -799,6 +799,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
   isStoryResultMode,
   handleTranslationSubmit,
   sentences,
+  hasActiveRegularTranslationSession,
+  translationProgressiveFill,
   translationDrafts,
   isAndroidTelegramClient,
   androidTranslationDraftDebugConfig,
@@ -840,6 +842,27 @@ const TranslationsSection = React.memo(function TranslationsSection({
   activeLanguagePairLabel,
   historyItems,
 }) {
+  const progressiveReadyCount = Math.max(
+    sentences.length,
+    Number(translationProgressiveFill?.readyCount || 0),
+  );
+  const progressiveExpectedTotal = Math.max(
+    progressiveReadyCount || 0,
+    Number(translationProgressiveFill?.expectedTotal || 7),
+  );
+  const translationProgressiveFillActive = Boolean(
+    !isStorySession
+    && hasActiveRegularTranslationSession
+    && translationProgressiveFill?.active
+    && progressiveReadyCount < progressiveExpectedTotal
+  );
+  const showPreparingTranslationEmptyState = Boolean(
+    !isStorySession
+    && !hasActiveTranslationSentences
+    && hasActiveRegularTranslationSession
+    && (translationProgressiveFillActive || webappLoading)
+  );
+
   return (
     <PerfProfiler id="section.translations">
       <section className="webapp-section webapp-section-translations" ref={translationsRef}>
@@ -1013,9 +1036,25 @@ const TranslationsSection = React.memo(function TranslationsSection({
         {!isStoryResultMode && (
           <form className="webapp-form translation-form" onSubmit={handleTranslationSubmit}>
             <section className="webapp-translation-list">
+              {translationProgressiveFillActive && hasActiveTranslationSentences && (
+                <p className="webapp-muted translation-empty-state">
+                  {tr(
+                    `Подгружаем ещё предложения... ${progressiveReadyCount}/${progressiveExpectedTotal}`,
+                    `Weitere Saetze werden geladen... ${progressiveReadyCount}/${progressiveExpectedTotal}`
+                  )}
+                </p>
+              )}
               {sentences.length === 0 ? (
                 <p className="webapp-muted translation-empty-state">
-                  {tr('Нет активных предложений. Нажмите «🚀 Начать перевод», чтобы получить новые.', 'Keine aktiven Saetze. Druecke «🚀 Uebersetzung starten», um neue zu laden.')}
+                  {showPreparingTranslationEmptyState
+                    ? tr(
+                        `Подготавливаем предложения... ${progressiveReadyCount}/${progressiveExpectedTotal}`,
+                        `Saetze werden vorbereitet... ${progressiveReadyCount}/${progressiveExpectedTotal}`
+                      )
+                    : tr(
+                        'Нет активных предложений. Нажмите «🚀 Начать перевод», чтобы получить новые.',
+                        'Keine aktiven Saetze. Druecke «🚀 Uebersetzung starten», um neue zu laden.'
+                      )}
                 </p>
               ) : (
                 sentences.map((item, index) => {
@@ -1250,7 +1289,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
         )}
 
         <div className="webapp-actions webapp-actions-footer">
-          {sentences.length === 0 && !webappLoading && (
+          {sentences.length === 0 && !webappLoading && !showPreparingTranslationEmptyState && (
             <div className="webapp-muted">
               {tr('Если сессия зависла, можно завершить её вручную.', 'Wenn die Session haengt, kann sie manuell beendet werden.')}
             </div>
@@ -1388,7 +1427,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
     || hasTodayPlanItems
   );
   const showTodayPlanSkeleton = (
-    (!todayPlanLoadedOnce && !todayPlanError)
+    (!todayPlanLoadedOnce && !todayPlanError && !hasTodayPlanSnapshot)
     || (todayPlanLoading && !hasTodayPlanSnapshot)
   );
   const weeklyMetricRows = useMemo(() => ([
@@ -1500,7 +1539,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
     || ringSkills.length > 0
   );
   const showSkillReportSkeleton = (
-    (!skillReportLoadedOnce && !skillReportError)
+    (!skillReportLoadedOnce && !skillReportError && !hasSkillReportSnapshot)
     || (skillReportLoading && !hasSkillReportSnapshot)
   );
   const getSkillTrainingStatus = useCallback((skillId) => {
@@ -2147,6 +2186,12 @@ function AppInner() {
   const [dictionaryError, setDictionaryError] = useState('');
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
   const [dictionaryLookupMode, setDictionaryLookupMode] = useState('');
+  const [dictionaryLookupProgress, setDictionaryLookupProgress] = useState({
+    lookupId: null,
+    status: 'idle',
+    saveLocked: false,
+    error: '',
+  });
   const [dictionarySaved, setDictionarySaved] = useState('');
   const [dictionaryDirection, setDictionaryDirection] = useState('ru-de');
   const [dictionaryLanguagePair, setDictionaryLanguagePair] = useState(null);
@@ -2459,6 +2504,12 @@ function AppInner() {
   const [storyResult, setStoryResult] = useState(null);
   const [sessionType, setSessionType] = useState('none');
   const [translationSessionId, setTranslationSessionId] = useState(null);
+  const [translationProgressiveFill, setTranslationProgressiveFill] = useState({
+    active: false,
+    sessionId: null,
+    readyCount: 0,
+    expectedTotal: 7,
+  });
   const [pageVisible, setPageVisible] = useState(() => (typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'));
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
@@ -2543,7 +2594,8 @@ function AppInner() {
   const isStorySession = sessionType === 'story' || isStoryTopic(selectedTopic);
   const isStoryResultMode = Boolean(storyResult && isStorySession);
   const hasActiveTranslationSentences = sentences.length > 0;
-  const showTranslationStartConfigurator = !hasActiveTranslationSentences;
+  const hasActiveRegularTranslationSession = sessionType === 'regular' && Boolean(String(translationSessionId || '').trim());
+  const showTranslationStartConfigurator = !(hasActiveTranslationSentences || hasActiveRegularTranslationSession);
   const selectedTopicIsStoryTopic = isStoryTopic(selectedTopic);
   const selectedTopicIsCustomTopic = isCustomTopic(selectedTopic);
   const BLOCKS_SINGLE_WORD_MAX_LEN = 10;
@@ -2607,9 +2659,11 @@ function AppInner() {
   const ttsLastRef = useRef({ key: '', ts: 0 });
   const ttsCurrentAudioRef = useRef(null);
   const ttsPlaybackSeqRef = useRef(0);
+  const dictionaryLookupPollTokenRef = useRef(0);
   const translationActivityRunningRef = useRef(false);
   const translationActivityInFlightRef = useRef(false);
   const translationActivitySessionRef = useRef('');
+  const translationSessionIdRef = useRef('');
   const audioContextRef = useRef(null);
   const positiveAudioRef = useRef(null);
   const negativeAudioRef = useRef(null);
@@ -2657,6 +2711,7 @@ function AppInner() {
   const translationCheckUnmountedRef = useRef(false);
   const translationSubmitInFlightRef = useRef(false);
   const translationStartInFlightRef = useRef(false);
+  const translationProgressiveFillPollTokenRef = useRef(0);
   const translationFinishInFlightRef = useRef(false);
   const translationDraftsRef = useRef({});
   const translationDraftFieldAccessorsRef = useRef(new Map());
@@ -4213,12 +4268,19 @@ function AppInner() {
     return 'anon';
   }, [initData, telegramApp, webappUser?.id]);
   const canViewEconomics = stableWebappUserId === '117649764';
+  const currentLocalDateKey = getLocalDateKey();
   const skillTrainingStorageKey = useMemo(() => {
     return `skill_training_sessions_${stableWebappUserId}_${getLocalDateKey()}`;
   }, [stableWebappUserId]);
   const weeklyPlanSnapshotStorageKey = useMemo(() => {
     return `weekly_plan_snapshot_${stableWebappUserId}`;
   }, [stableWebappUserId]);
+  const todayPlanSnapshotStorageKey = useMemo(() => {
+    return `today_plan_snapshot_${stableWebappUserId}_${currentLocalDateKey}`;
+  }, [currentLocalDateKey, stableWebappUserId]);
+  const skillReportSnapshotStorageKey = useMemo(() => {
+    return `skill_report_snapshot_${stableWebappUserId}_${currentLocalDateKey}`;
+  }, [currentLocalDateKey, stableWebappUserId]);
   const skillTrainingLegacyStorageKeys = useMemo(() => {
     const dateKey = getLocalDateKey();
     const candidates = [
@@ -5460,6 +5522,87 @@ function AppInner() {
     }
   }, [isWebAppMode, weeklyPlanSnapshotStorageKey]);
 
+  const normalizeTodayPlanSnapshot = useCallback((payload) => {
+    if (!payload || typeof payload !== 'object') return null;
+    return {
+      date: payload?.date || null,
+      total_minutes: Number(payload?.total_minutes || 0),
+      items: Array.isArray(payload?.items) ? payload.items : [],
+    };
+  }, []);
+
+  const persistTodayPlanSnapshot = useCallback((plan) => {
+    if (!isWebAppMode || !plan) return;
+    const normalized = normalizeTodayPlanSnapshot(plan);
+    if (!normalized) return;
+    safeStorageSet(todayPlanSnapshotStorageKey, JSON.stringify({
+      saved_at: new Date().toISOString(),
+      date_key: currentLocalDateKey,
+      plan: normalized,
+    }));
+  }, [currentLocalDateKey, isWebAppMode, normalizeTodayPlanSnapshot, todayPlanSnapshotStorageKey]);
+
+  const readTodayPlanSnapshot = useCallback(() => {
+    if (!isWebAppMode) return null;
+    const raw = safeStorageGet(todayPlanSnapshotStorageKey);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      const snapshotDateKey = String(parsed?.date_key || '').trim();
+      if (snapshotDateKey && snapshotDateKey !== currentLocalDateKey) {
+        return null;
+      }
+      const plan = normalizeTodayPlanSnapshot(parsed?.plan);
+      if (!plan) return null;
+      if (String(plan?.date || '').trim() && String(plan.date).trim() !== currentLocalDateKey) {
+        return null;
+      }
+      return plan;
+    } catch (_error) {
+      return null;
+    }
+  }, [currentLocalDateKey, isWebAppMode, normalizeTodayPlanSnapshot, todayPlanSnapshotStorageKey]);
+
+  const normalizeSkillReportSnapshot = useCallback((payload) => {
+    if (!payload || typeof payload !== 'object') return null;
+    return {
+      updated_at: payload?.updated_at || null,
+      top_weak: Array.isArray(payload?.top_weak) ? payload.top_weak : [],
+      groups: Array.isArray(payload?.groups) ? payload.groups : [],
+      total_skills: Number(payload?.total_skills || 0),
+      skill_training_status: payload?.skill_training_status && typeof payload.skill_training_status === 'object'
+        ? payload.skill_training_status
+        : {},
+    };
+  }, []);
+
+  const persistSkillReportSnapshot = useCallback((report) => {
+    if (!isWebAppMode || !report) return;
+    const normalized = normalizeSkillReportSnapshot(report);
+    if (!normalized) return;
+    safeStorageSet(skillReportSnapshotStorageKey, JSON.stringify({
+      saved_at: new Date().toISOString(),
+      date_key: currentLocalDateKey,
+      report: normalized,
+    }));
+  }, [currentLocalDateKey, isWebAppMode, normalizeSkillReportSnapshot, skillReportSnapshotStorageKey]);
+
+  const readSkillReportSnapshot = useCallback(() => {
+    if (!isWebAppMode) return null;
+    const raw = safeStorageGet(skillReportSnapshotStorageKey);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      const snapshotDateKey = String(parsed?.date_key || '').trim();
+      if (snapshotDateKey && snapshotDateKey !== currentLocalDateKey) {
+        return null;
+      }
+      return normalizeSkillReportSnapshot(parsed?.report);
+    } catch (_error) {
+      return null;
+    }
+  }, [currentLocalDateKey, isWebAppMode, normalizeSkillReportSnapshot, skillReportSnapshotStorageKey]);
+
   const loadTodayPlan = async () => {
     if (!initData) return;
     try {
@@ -5470,11 +5613,13 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка загрузки плана на сегодня', 'Fehler beim Laden des Tagesplans'));
       }
       const data = await response.json();
-      setTodayPlan({
+      const nextPlan = {
         date: data?.date || null,
         total_minutes: data?.total_minutes || 0,
         items: Array.isArray(data?.items) ? data.items : [],
-      });
+      };
+      setTodayPlan(nextPlan);
+      persistTodayPlanSnapshot(nextPlan);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -5498,7 +5643,7 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка загрузки отчета по навыкам', 'Fehler beim Laden des Skills-Reports'));
       }
       const data = await response.json();
-      setSkillReport({
+      const nextReport = {
         updated_at: data?.updated_at || null,
         top_weak: Array.isArray(data?.top_weak) ? data.top_weak : [],
         groups: Array.isArray(data?.groups) ? data.groups : [],
@@ -5506,7 +5651,9 @@ function AppInner() {
         skill_training_status: data?.skill_training_status && typeof data.skill_training_status === 'object'
           ? data.skill_training_status
           : {},
-      });
+      };
+      setSkillReport(nextReport);
+      persistSkillReportSnapshot(nextReport);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -10151,6 +10298,17 @@ function AppInner() {
 
     startupPhase1TimerRef.current = window.setTimeout(() => {
       void (async () => {
+        startupPhase2TimerRef.current = window.setTimeout(() => {
+          if (startupSequenceTokenRef.current !== sequenceToken) return;
+          setStartupPhase2Ready(true);
+        }, 0);
+        void loadWeeklyPlan();
+        void loadTodayPlan();
+        startupPhase3TimerRef.current = window.setTimeout(() => {
+          if (startupSequenceTokenRef.current !== sequenceToken) return;
+          setStartupPhase3Ready(true);
+        }, 600);
+
         let profile = null;
         let profileWaitTimerId = null;
         try {
@@ -10170,17 +10328,6 @@ function AppInner() {
         if (pairKey) {
           startupLoadedLanguagePairRef.current = pairKey;
         }
-        void loadWeeklyPlan();
-        startupPhase2TimerRef.current = window.setTimeout(() => {
-          if (startupSequenceTokenRef.current !== sequenceToken) return;
-          setStartupPhase2Ready(true);
-        }, 0);
-        await loadTodayPlan();
-        if (startupSequenceTokenRef.current !== sequenceToken) return;
-        startupPhase3TimerRef.current = window.setTimeout(() => {
-          if (startupSequenceTokenRef.current !== sequenceToken) return;
-          setStartupPhase3Ready(true);
-        }, 600);
       })();
     }, 120);
 
@@ -10209,6 +10356,26 @@ function AppInner() {
     setWeeklyPlan(snapshot.plan);
     setWeeklyPlanDraft(snapshot.draft || buildWeeklyPlanDraftFromPlan(snapshot.plan));
   }, [buildWeeklyPlanDraftFromPlan, initData, isWebAppMode, readWeeklyPlanSnapshot, weeklyPlan]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || todayPlan) {
+      return;
+    }
+    const snapshot = readTodayPlanSnapshot();
+    if (!snapshot) return;
+    setTodayPlan(snapshot);
+    setTodayPlanLoadedOnce(true);
+  }, [initData, isWebAppMode, readTodayPlanSnapshot, todayPlan]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || skillReport) {
+      return;
+    }
+    const snapshot = readSkillReportSnapshot();
+    if (!snapshot) return;
+    setSkillReport(snapshot);
+    setSkillReportLoadedOnce(true);
+  }, [initData, isWebAppMode, readSkillReportSnapshot, skillReport]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready || !languageProfile?.has_profile) {
@@ -10960,12 +11127,14 @@ function AppInner() {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [blocksFinishConfirmOpen]);
 
-  const loadSentences = async () => {
+  const loadSentences = async (options = {}) => {
     if (!initData) {
-      return;
+      return null;
     }
     try {
-      setFinishMessage('');
+      if (!options?.preserveFinishMessage) {
+        setFinishMessage('');
+      }
       const response = await fetch('/api/webapp/sentences', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -10976,12 +11145,57 @@ function AppInner() {
       }
       const data = await response.json();
       setSentences(data.items || []);
-      setResults([]);
-      setTranslationAudioGrammarOptIn({});
-      setTranslationAudioGrammarSaving({});
-      setFinishStatus('idle');
+      if (!options?.preserveResults) {
+        setResults([]);
+        setTranslationAudioGrammarOptIn({});
+        setTranslationAudioGrammarSaving({});
+        setFinishStatus('idle');
+      }
+      return data;
     } catch (error) {
-      setWebappError(`${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Saetze')}: ${error.message}`);
+      if (!options?.suppressError) {
+        setWebappError(`${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Saetze')}: ${error.message}`);
+      }
+      return null;
+    }
+  };
+
+  const pollTranslationProgressiveFill = async ({ sessionId, expectedTotal = 7, pollToken }) => {
+    let attempts = 0;
+    while (translationProgressiveFillPollTokenRef.current === pollToken) {
+      if (attempts > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, 850));
+      }
+      attempts += 1;
+      const data = await loadSentences({
+        preserveResults: true,
+        preserveFinishMessage: true,
+        suppressError: true,
+      });
+      if (translationProgressiveFillPollTokenRef.current !== pollToken) {
+        return;
+      }
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const readyCount = Number(data?.ready_count || items.length || 0);
+      if (translationSessionIdRef.current !== String(sessionId || '').trim()) {
+        setTranslationProgressiveFill({
+          active: false,
+          sessionId: null,
+          readyCount: 0,
+          expectedTotal: 7,
+        });
+        return;
+      }
+      const shouldContinue = readyCount < expectedTotal && attempts < 24;
+      setTranslationProgressiveFill({
+        active: shouldContinue,
+        sessionId: String(sessionId || '').trim() || null,
+        readyCount,
+        expectedTotal,
+      });
+      if (!shouldContinue) {
+        return;
+      }
     }
   };
 
@@ -11216,6 +11430,7 @@ function AppInner() {
     return () => {
       translationCheckUnmountedRef.current = true;
       translationCheckPollTokenRef.current += 1;
+      translationProgressiveFillPollTokenRef.current += 1;
     };
   }, []);
 
@@ -11245,6 +11460,7 @@ function AppInner() {
 
   useEffect(() => {
     const normalizedSessionId = String(translationSessionId || '').trim();
+    translationSessionIdRef.current = normalizedSessionId;
     if (translationActivitySessionRef.current !== normalizedSessionId) {
       translationActivitySessionRef.current = normalizedSessionId;
       translationActivityRunningRef.current = false;
@@ -11253,7 +11469,21 @@ function AppInner() {
     if (!normalizedSessionId) {
       translationActivityRunningRef.current = false;
     }
-  }, [translationSessionId]);
+    if (!normalizedSessionId || sessionType !== 'regular') {
+      translationProgressiveFillPollTokenRef.current += 1;
+      setTranslationProgressiveFill((prev) => {
+        if (!prev.active && !prev.sessionId && prev.readyCount === 0 && prev.expectedTotal === 7) {
+          return prev;
+        }
+        return {
+          active: false,
+          sessionId: null,
+          readyCount: 0,
+          expectedTotal: 7,
+        };
+      });
+    }
+  }, [sessionType, translationSessionId]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -11674,6 +11904,13 @@ function AppInner() {
       return;
     }
     translationStartInFlightRef.current = true;
+    translationProgressiveFillPollTokenRef.current += 1;
+    setTranslationProgressiveFill({
+      active: false,
+      sessionId: null,
+      readyCount: 0,
+      expectedTotal: 7,
+    });
     setWebappLoading(true);
     setWebappError('');
     setFinishMessage('');
@@ -11696,11 +11933,39 @@ function AppInner() {
       }
       const data = await response.json();
       setTodayTranslationRecommendation(null);
+      const nextSessionType = String(data?.type || 'regular').trim() || 'regular';
+      const nextSessionId = nextSessionType === 'regular' ? String(data?.session_id || '').trim() || null : null;
+      const nextItems = Array.isArray(data?.items) ? data.items : [];
+      const expectedTotal = Math.max(1, Number(data?.expected_total || 7));
+      const readyCount = Number(data?.ready_count || nextItems.length || 0);
+      const generationInProgress = Boolean(data?.generation_in_progress) && readyCount < expectedTotal;
+      setSessionType(nextSessionType);
+      translationSessionIdRef.current = nextSessionId || '';
+      setTranslationSessionId(nextSessionId);
+      setSentences(nextItems);
+      setResults([]);
+      setTranslationAudioGrammarOptIn({});
+      setTranslationAudioGrammarSaving({});
+      setExplanations({});
+      setExplanationLoading({});
+      setTranslationProgressiveFill({
+        active: generationInProgress,
+        sessionId: nextSessionId,
+        readyCount,
+        expectedTotal,
+      });
       if (data.blocked) {
         setFinishMessage(tr('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.', 'Es gibt eine aktive Session. Beende die aktuelle Uebersetzung, um ein neues Set zu erhalten.'));
       }
-      await loadSessionInfo();
-      await loadSentences();
+      if (generationInProgress && nextSessionId) {
+        const pollToken = translationProgressiveFillPollTokenRef.current + 1;
+        translationProgressiveFillPollTokenRef.current = pollToken;
+        void pollTranslationProgressiveFill({
+          sessionId: nextSessionId,
+          expectedTotal,
+          pollToken,
+        });
+      }
     } catch (error) {
       setWebappError(`${tr('Ошибка старта', 'Startfehler')}: ${error.message}`);
     } finally {
@@ -11763,6 +12028,13 @@ function AppInner() {
       return;
     }
     setWebappLoading(true);
+    translationProgressiveFillPollTokenRef.current += 1;
+    setTranslationProgressiveFill({
+      active: false,
+      sessionId: null,
+      readyCount: 0,
+      expectedTotal: 7,
+    });
     setWebappError('');
     setFinishMessage('');
     setFinishStatus('idle');
@@ -11826,6 +12098,13 @@ function AppInner() {
       return;
     }
     setWebappLoading(true);
+    translationProgressiveFillPollTokenRef.current += 1;
+    setTranslationProgressiveFill({
+      active: false,
+      sessionId: null,
+      readyCount: 0,
+      expectedTotal: 7,
+    });
     setWebappError('');
     setFinishMessage('');
     setTranslationCheckProgress({ active: false, done: 0, total: 0 });
@@ -14784,6 +15063,13 @@ function AppInner() {
       return;
     }
     translationFinishInFlightRef.current = true;
+    translationProgressiveFillPollTokenRef.current += 1;
+    setTranslationProgressiveFill({
+      active: false,
+      sessionId: null,
+      readyCount: 0,
+      expectedTotal: 7,
+    });
     setWebappLoading(true);
     setWebappError('');
     setFinishMessage('');
@@ -14821,6 +15107,7 @@ function AppInner() {
       recordTranslationDraftAndroidDebugEvent('draft.state_update.clear_session', { focusedOnly: false, flush: true });
       setTranslationDrafts({});
       setSessionType('none');
+      translationSessionIdRef.current = '';
       setTranslationSessionId(null);
       setStoryGuess('');
       setStoryResult(null);
@@ -15367,6 +15654,13 @@ function AppInner() {
     }
     setDictionaryLoading(true);
     setDictionaryLookupMode('gpt');
+    dictionaryLookupPollTokenRef.current += 1;
+    setDictionaryLookupProgress({
+      lookupId: null,
+      status: 'idle',
+      saveLocked: false,
+      error: '',
+    });
     setDictionaryError('');
     setDictionaryResult(null);
     setDictionarySaved('');
@@ -15400,6 +15694,88 @@ function AppInner() {
       setDictionaryResult(data.item || null);
       setDictionaryDirection(data.direction || resolveDictionaryDirection(data.item));
       setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
+      const nextLookupId = String(data.lookup_id || '').trim() || null;
+      const nextLookupStatus = String(data.lookup_status || 'ready').trim().toLowerCase() || 'ready';
+      const saveLocked = Boolean(data.save_locked ?? (nextLookupStatus !== 'ready'));
+      setDictionaryLookupProgress({
+        lookupId: nextLookupId,
+        status: nextLookupStatus,
+        saveLocked,
+        error: '',
+      });
+      if (nextLookupId && nextLookupStatus !== 'ready') {
+        const pollToken = dictionaryLookupPollTokenRef.current + 1;
+        dictionaryLookupPollTokenRef.current = pollToken;
+        const pollStatus = async () => {
+          let attempts = 0;
+          while (dictionaryLookupPollTokenRef.current === pollToken) {
+            if (attempts > 0) {
+              await new Promise((resolve) => window.setTimeout(resolve, 900));
+            }
+            attempts += 1;
+            try {
+              const statusResponse = await fetch('/api/webapp/dictionary/status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  initData,
+                  lookup_id: nextLookupId,
+                }),
+              });
+              if (!statusResponse.ok) {
+                throw new Error(await readApiError(statusResponse, 'Ошибка статуса словаря', 'Woerterbuch-Statusfehler'));
+              }
+              const statusData = await statusResponse.json();
+              if (dictionaryLookupPollTokenRef.current !== pollToken) {
+                return;
+              }
+              const statusValue = String(statusData.status || 'enriching').trim().toLowerCase() || 'enriching';
+              const statusLookupId = String(statusData.lookup_id || nextLookupId).trim() || nextLookupId;
+              const statusSaveLocked = Boolean(statusData.save_locked ?? (statusValue !== 'ready'));
+              setDictionaryLookupProgress({
+                lookupId: statusLookupId,
+                status: statusValue,
+                saveLocked: statusSaveLocked,
+                error: String(statusData.error || '').trim(),
+              });
+              if (statusValue === 'ready') {
+                if (statusData.item) {
+                  setDictionaryResult(statusData.item || null);
+                }
+                if (statusData.direction) {
+                  setDictionaryDirection(statusData.direction || resolveDictionaryDirection(statusData.item));
+                }
+                if (statusData.language_pair) {
+                  setDictionaryLanguagePair(resolveLanguagePairForUI(statusData.language_pair));
+                }
+                return;
+              }
+              if (statusValue === 'failed') {
+                const failureMessage = String(statusData.error || tr('Не удалось догрузить полный GPT-разбор.', 'Vollstaendige GPT-Analyse konnte nicht nachgeladen werden.')).trim();
+                setDictionaryError(failureMessage);
+                return;
+              }
+              if (attempts >= 18) {
+                setDictionaryLookupProgress((prev) => ({
+                  ...prev,
+                  error: tr('GPT-разбор всё ещё уточняется. Попробуйте открыть слово позже.', 'GPT-Analyse wird noch geladen. Versuche es spaeter erneut.'),
+                }));
+                return;
+              }
+            } catch (statusError) {
+              if (dictionaryLookupPollTokenRef.current !== pollToken) {
+                return;
+              }
+              setDictionaryLookupProgress((prev) => ({
+                ...prev,
+                error: String(statusError?.message || tr('Ошибка статуса словаря', 'Woerterbuch-Statusfehler')),
+              }));
+              return;
+            }
+          }
+        };
+        void pollStatus();
+      }
     } catch (error) {
       setDictionaryError(`${tr('Ошибка словаря', 'Woerterbuchfehler')}: ${error.message}`);
     } finally {
@@ -15420,6 +15796,13 @@ function AppInner() {
     }
     setDictionaryLoading(true);
     setDictionaryLookupMode('quick');
+    dictionaryLookupPollTokenRef.current += 1;
+    setDictionaryLookupProgress({
+      lookupId: null,
+      status: 'ready',
+      saveLocked: false,
+      error: '',
+    });
     setDictionaryError('');
     setDictionaryResult(null);
     setDictionarySaved('');
@@ -15474,6 +15857,10 @@ function AppInner() {
     }
     if (!dictionaryResult) {
       setDictionaryError(tr('Сначала выполните перевод в словаре.', 'Fuehre zuerst eine Uebersetzung im Woerterbuch aus.'));
+      return;
+    }
+    if (dictionaryLookupProgress.saveLocked) {
+      setDictionaryError(tr('Сначала дождитесь полного GPT-разбора, потом можно сохранять.', 'Warte zuerst auf die vollstaendige GPT-Analyse, dann kannst du speichern.'));
       return;
     }
     setCollocationsVisible(true);
@@ -16495,6 +16882,12 @@ function AppInner() {
       scope_chat_id: null,
     };
   };
+
+  useEffect(() => {
+    return () => {
+      dictionaryLookupPollTokenRef.current += 1;
+    };
+  }, []);
 
   const normalizeAnalyticsScopeKeyFromPayload = (payload) => {
     const data = payload && typeof payload === 'object' ? payload : {};
@@ -18786,6 +19179,8 @@ function AppInner() {
                 isStoryResultMode={isStoryResultMode}
                 handleTranslationSubmit={handleTranslationSubmitStable}
                 sentences={sentences}
+                hasActiveRegularTranslationSession={hasActiveRegularTranslationSession}
+                translationProgressiveFill={translationProgressiveFill}
                 translationDrafts={translationDrafts}
                 isAndroidTelegramClient={isAndroidTelegramClient}
                 androidTranslationDraftDebugConfig={androidTranslationDraftDebugConfig}
@@ -19672,14 +20067,26 @@ function AppInner() {
                             </ul>
                           </div>
                         )}
+                        {dictionaryLookupProgress.status === 'enriching' && (
+                          <div className="webapp-muted">
+                            {tr('Уточняем полный GPT-разбор... Сохранение станет доступно сразу после догрузки.', 'Die vollstaendige GPT-Analyse wird noch geladen... Speichern wird direkt danach verfuegbar.')}
+                          </div>
+                        )}
+                        {dictionaryLookupProgress.error && dictionaryLookupProgress.status !== 'failed' && (
+                          <div className="webapp-muted">
+                            {dictionaryLookupProgress.error}
+                          </div>
+                        )}
                         <div className="dictionary-result-actions">
                           <button
                             className="secondary-button dictionary-save-button"
                             type="button"
                             onClick={handleDictionarySave}
-                            disabled={dictionaryLoading || !dictionaryResult}
+                            disabled={dictionaryLoading || !dictionaryResult || dictionaryLookupProgress.saveLocked}
                           >
-                            {tr('Добавить слово в словарь', 'Wort zum Woerterbuch hinzufuegen')}
+                            {dictionaryLookupProgress.saveLocked
+                              ? tr('Ждём полный GPT-разбор...', 'Warte auf die volle GPT-Analyse...')
+                              : tr('Добавить слово в словарь', 'Wort zum Woerterbuch hinzufuegen')}
                           </button>
                           <button
                             className="secondary-button dictionary-share-button"

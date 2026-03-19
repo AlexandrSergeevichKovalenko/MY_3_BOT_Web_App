@@ -38,6 +38,8 @@ _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
     "dictionary_assistant_de",
     "dictionary_assistant_multilang",
+    "dictionary_assistant_multilang_core_fast",
+    "dictionary_enrichment_multilang",
     "dictionary_assistant_multilang_reader",
     "dictionary_collocations",
     "dictionary_collocations_multilang",
@@ -112,9 +114,17 @@ DICTIONARY_RESPONSES_TIMEOUT_SECONDS = max(
     2.0,
     float(str(os.getenv("DICTIONARY_RESPONSES_TIMEOUT_SECONDS") or "14").strip() or "14"),
 )
+DICTIONARY_CORE_RESPONSES_TIMEOUT_SECONDS = max(
+    2.0,
+    float(str(os.getenv("DICTIONARY_CORE_RESPONSES_TIMEOUT_SECONDS") or "7").strip() or "7"),
+)
 DICTIONARY_RESPONSES_MAX_RETRIES = max(
     1,
     min(3, int(str(os.getenv("DICTIONARY_RESPONSES_MAX_RETRIES") or "2").strip() or "2")),
+)
+DICTIONARY_CORE_RESPONSES_MAX_RETRIES = max(
+    1,
+    min(2, int(str(os.getenv("DICTIONARY_CORE_RESPONSES_MAX_RETRIES") or "1").strip() or "1")),
 )
 DICTIONARY_QUICK_TRANSLATE_FALLBACK_ENABLED = _env_flag("DICTIONARY_QUICK_TRANSLATE_FALLBACK_ENABLED", False)
 LLM_ALLOW_ASSISTANTS_FALLBACK = _env_flag("LLM_ALLOW_ASSISTANTS_FALLBACK", True)
@@ -1913,6 +1923,55 @@ Rules:
 - Etymology, usage_note and memory_tip must help learner FEEL structure and origin.
 - If information is unknown, use null.
 """,
+"dictionary_assistant_multilang_core_fast": """
+You are a multilingual dictionary assistant optimized for FAST first-response cards.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "word": "<user input>"
+}
+
+Task:
+- Detect whether "word" belongs to source_language or target_language.
+- Translate to the opposite language.
+- Return only the minimum fields needed for a useful learner dictionary card.
+- Prefer speed, correctness, and compactness over richness.
+- If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
+- Never collapse sentence input to a single word/lemma.
+- Detect obvious typos only when confidence is high and normalize the lookup form.
+
+Return STRICT JSON with keys:
+{
+  "detected_language": "source" | "target",
+  "word_source": "<normalized word/phrase in source_language>",
+  "word_target": "<normalized word/phrase in target_language>",
+  "translations": [
+    {"value": "...", "context": "...", "is_primary": true}
+  ],
+  "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
+  "article": "<language-appropriate article or null>",
+  "forms": {
+    "plural": string|null,
+    "praeteritum": string|null,
+    "perfekt": string|null
+  },
+  "usage_examples": [
+    {"source": "...", "target": "..."}
+  ],
+  "raw_text": "<optional very short practical note>"
+}
+
+Rules:
+- Output ONLY JSON.
+- Keep everything compact.
+- Return at most 2 translation variants.
+- Return at most 1 usage example.
+- Do not include etymology, memory tips, long notes, collocations, prefixes, pronunciation, or extended grammar commentary here.
+- For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
+- If information is unknown, use null.
+""",
 "dictionary_assistant_multilang_reader": """
 You are a multilingual dictionary assistant for reading popups.
 
@@ -2015,6 +2074,87 @@ Reader-focused rules:
 - raw_text:
   - use only for one very short practical note if truly needed.
   - otherwise return null.
+- If information is unknown, use null.
+""",
+"dictionary_enrichment_multilang": """
+You enrich an already created multilingual dictionary card.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "word": "<original user input>",
+  "core_result": {
+    "detected_language": "source|target",
+    "word_source": "...",
+    "word_target": "...",
+    "part_of_speech": "...",
+    "article": "..."
+  }
+}
+
+Task:
+- Keep the core translation intact unless it is clearly wrong.
+- Add the richer learner dictionary data that is useful after the first quick response.
+- Be practical and concise, but richer than the core card.
+
+Return STRICT JSON with keys:
+{
+  "word_source": "string|null",
+  "word_target": "string|null",
+  "translations": [
+    {"value": "...", "context": "...", "is_primary": true}
+  ],
+  "etymology_note": "string|null",
+  "usage_note": "string|null",
+  "real_life_usage": "string|null",
+  "register_note": "string|null",
+  "memory_tip": "string|null",
+  "expression_note": "string|null",
+  "part_of_speech_note": "string|null",
+  "is_separable": true,
+  "common_collocations": ["...", "..."],
+  "government_patterns": [
+    {
+      "pattern": "...",
+      "preposition": "...",
+      "case": "...",
+      "example_source": "...",
+      "example_target": "..."
+    }
+  ],
+  "pronunciation": {
+    "ipa": "string|null",
+    "stress": "string|null",
+    "audio_text": "string|null"
+  },
+  "forms": {
+    "plural": string|null,
+    "genitive": string|null,
+    "present_3sg": string|null,
+    "praeteritum": string|null,
+    "perfekt": string|null,
+    "comparative": string|null,
+    "superlative": string|null,
+    "konjunktiv1": string|null,
+    "konjunktiv2": string|null
+  },
+  "usage_examples": [
+    {"source": "...", "target": "..."},
+    {"source": "...", "target": "..."}
+  ],
+  "save_worthy_options": [
+    {"source": "...", "target": "...", "kind": "base|collocation|phrase"}
+  ],
+  "raw_text": "<optional short note>"
+}
+
+Rules:
+- Output ONLY JSON.
+- Do not return huge essays.
+- Keep examples natural and worth saving.
+- Return up to 3 useful usage examples.
+- Return up to 3 save_worthy_options whenever possible.
 - If information is unknown, use null.
 """,
 "translate_subtitles_ru": """
@@ -3445,16 +3585,29 @@ async def run_dictionary_lookup_multilang(
     *,
     task_name: str = "dictionary_assistant_multilang",
     system_instruction_key: str = "dictionary_assistant_multilang",
+    responses_timeout_seconds: float | None = None,
+    max_retries: int | None = None,
+    allow_quick_translate_fallback: bool | None = None,
+    extra_payload: dict | None = None,
 ) -> dict:
     payload = {
         "source_language": (source_lang or "").strip().lower(),
         "target_language": (target_lang or "").strip().lower(),
         "word": (word or "").strip(),
     }
+    if isinstance(extra_payload, dict):
+        payload.update(extra_payload)
     quick_target = ""
     content = ""
     last_error: Exception | None = None
-    for attempt in range(1, DICTIONARY_RESPONSES_MAX_RETRIES + 1):
+    safe_timeout = max(2.0, float(responses_timeout_seconds or DICTIONARY_RESPONSES_TIMEOUT_SECONDS))
+    safe_retries = max(1, int(max_retries or DICTIONARY_RESPONSES_MAX_RETRIES))
+    quick_translate_fallback_enabled = (
+        DICTIONARY_QUICK_TRANSLATE_FALLBACK_ENABLED
+        if allow_quick_translate_fallback is None
+        else bool(allow_quick_translate_fallback)
+    )
+    for attempt in range(1, safe_retries + 1):
         attempt_started_at = time.monotonic()
         try:
             content = await llm_execute(
@@ -3462,7 +3615,7 @@ async def run_dictionary_lookup_multilang(
                 system_instruction_key=system_instruction_key,
                 user_message=json.dumps(payload, ensure_ascii=False),
                 poll_interval_seconds=1.0,
-                responses_timeout_seconds=DICTIONARY_RESPONSES_TIMEOUT_SECONDS,
+                responses_timeout_seconds=safe_timeout,
                 responses_only=DICTIONARY_RESPONSES_ONLY,
                 allow_assistants_fallback=DICTIONARY_ALLOW_ASSISTANTS_FALLBACK,
             )
@@ -3475,17 +3628,17 @@ async def run_dictionary_lookup_multilang(
                 "%s attempt %s/%s failed (%s) in %sms (responses_timeout=%ss): %r",
                 task_name,
                 attempt,
-                DICTIONARY_RESPONSES_MAX_RETRIES,
+                safe_retries,
                 type(exc).__name__,
                 elapsed_ms,
-                DICTIONARY_RESPONSES_TIMEOUT_SECONDS,
+                safe_timeout,
                 exc,
             )
-            if attempt < DICTIONARY_RESPONSES_MAX_RETRIES:
+            if attempt < safe_retries:
                 await asyncio.sleep(0.35 * attempt)
 
     if last_error is not None:
-        if not DICTIONARY_QUICK_TRANSLATE_FALLBACK_ENABLED:
+        if not quick_translate_fallback_enabled:
             raise last_error
         logging.warning(
             "%s failed after retries, fallback to quick subtitles translate: %s",
@@ -3499,7 +3652,7 @@ async def run_dictionary_lookup_multilang(
                     source_lang=(source_lang or "").strip().lower(),
                     target_lang=(target_lang or "").strip().lower(),
                 ),
-                timeout=max(2.0, float(DICTIONARY_RESPONSES_TIMEOUT_SECONDS)),
+                timeout=max(2.0, safe_timeout),
             )
             if isinstance(translated, list) and translated:
                 quick_target = str(translated[0] or "").strip()
@@ -3569,6 +3722,42 @@ async def run_dictionary_lookup_multilang_reader(
         target_lang=target_lang,
         task_name="dictionary_assistant_multilang_reader",
         system_instruction_key="dictionary_assistant_multilang_reader",
+    )
+
+
+async def run_dictionary_lookup_multilang_core_fast(
+    word: str,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    return await run_dictionary_lookup_multilang(
+        word=word,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        task_name="dictionary_assistant_multilang_core_fast",
+        system_instruction_key="dictionary_assistant_multilang_core_fast",
+        responses_timeout_seconds=DICTIONARY_CORE_RESPONSES_TIMEOUT_SECONDS,
+        max_retries=DICTIONARY_CORE_RESPONSES_MAX_RETRIES,
+        allow_quick_translate_fallback=False,
+    )
+
+
+async def run_dictionary_enrichment_multilang(
+    word: str,
+    source_lang: str,
+    target_lang: str,
+    core_result: dict | None = None,
+) -> dict:
+    return await run_dictionary_lookup_multilang(
+        word=word,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        task_name="dictionary_enrichment_multilang",
+        system_instruction_key="dictionary_enrichment_multilang",
+        allow_quick_translate_fallback=False,
+        extra_payload={
+            "core_result": core_result if isinstance(core_result, dict) else {},
+        },
     )
 
 

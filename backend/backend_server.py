@@ -170,7 +170,9 @@ from backend.openai_manager import (
     run_check_translation_multilang,
     run_dictionary_lookup,
     run_dictionary_lookup_de,
+    run_dictionary_enrichment_multilang,
     run_dictionary_lookup_multilang,
+    run_dictionary_lookup_multilang_core_fast,
     run_dictionary_lookup_multilang_reader,
     run_dictionary_collocations,
     run_dictionary_collocations_multilang,
@@ -375,6 +377,7 @@ from backend.grammar_focuses import WEBAPP_TOPICS, resolve_webapp_focus, recomme
 from backend.translation_workflow import (
     build_user_daily_summary,
     check_user_translation_webapp_item,
+    fill_translation_session_webapp,
     finalize_open_translation_sessions,
     finish_translation_webapp,
     get_db_connection as get_translation_workflow_db_connection,
@@ -431,6 +434,8 @@ _YT_REQUEST_JITTER_MAX = 1.9
 _YT_OEMBED_CACHE: dict[str, dict] = {}
 _TRANSLATION_CHECK_RUNNERS: set[int] = set()
 _TRANSLATION_CHECK_RUNNERS_LOCK = threading.Lock()
+_TRANSLATION_SESSION_FILL_RUNNERS: set[int] = set()
+_TRANSLATION_SESSION_FILL_RUNNERS_LOCK = threading.Lock()
 _TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY = 3
 _OBSERVABILITY_LOCK = threading.Lock()
 _TTS_URL_POLL_ATTEMPTS: dict[str, int] = {}
@@ -684,6 +689,10 @@ _DICTIONARY_LOOKUP_CACHE_LOCK = threading.Lock()
 _DICTIONARY_LOOKUP_CACHE: dict[str, dict] = {}
 _DICTIONARY_LOOKUP_INFLIGHT_LOCK = threading.Lock()
 _DICTIONARY_LOOKUP_INFLIGHT: dict[str, dict[str, Any]] = {}
+_DICTIONARY_ENRICHMENT_LOCK = threading.Lock()
+_DICTIONARY_ENRICHMENT_JOBS: dict[str, dict[str, Any]] = {}
+_DICTIONARY_ENRICHMENT_CACHE_TO_LOOKUP_ID: dict[str, str] = {}
+_DICTIONARY_ENRICHMENT_JOB_TTL_SEC = 1800.0
 
 if STRIPE_SECRET_KEY and stripe is not None:
     stripe.api_key = STRIPE_SECRET_KEY
@@ -2155,6 +2164,244 @@ def _release_dictionary_lookup_inflight_slot(cache_key: str, event: threading.Ev
         if existing and existing.get("event") is event:
             event.set()
             _DICTIONARY_LOOKUP_INFLIGHT.pop(cache_key, None)
+
+
+def _prune_dictionary_enrichment_jobs_locked(now_ts: float | None = None) -> None:
+    safe_now = float(now_ts or time.time())
+    expired_lookup_ids = [
+        lookup_id
+        for lookup_id, job in _DICTIONARY_ENRICHMENT_JOBS.items()
+        if safe_now >= float(job.get("expires_at") or 0.0)
+    ]
+    if not expired_lookup_ids:
+        return
+    expired_lookup_id_set = set(expired_lookup_ids)
+    for lookup_id in expired_lookup_ids:
+        _DICTIONARY_ENRICHMENT_JOBS.pop(lookup_id, None)
+    expired_cache_keys = [
+        cache_key
+        for cache_key, lookup_id in _DICTIONARY_ENRICHMENT_CACHE_TO_LOOKUP_ID.items()
+        if lookup_id in expired_lookup_id_set
+    ]
+    for cache_key in expired_cache_keys:
+        _DICTIONARY_ENRICHMENT_CACHE_TO_LOOKUP_ID.pop(cache_key, None)
+
+
+def _clone_dictionary_enrichment_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(job, dict):
+        return None
+    return copy.deepcopy(job)
+
+
+def _get_dictionary_enrichment_job_by_lookup_id(lookup_id: str) -> dict[str, Any] | None:
+    normalized_lookup_id = str(lookup_id or "").strip()
+    if not normalized_lookup_id:
+        return None
+    with _DICTIONARY_ENRICHMENT_LOCK:
+        _prune_dictionary_enrichment_jobs_locked()
+        return _clone_dictionary_enrichment_job(_DICTIONARY_ENRICHMENT_JOBS.get(normalized_lookup_id))
+
+
+def _get_dictionary_enrichment_job_for_cache_keys(*cache_keys: str) -> dict[str, Any] | None:
+    normalized_keys = [str(item or "").strip() for item in cache_keys if str(item or "").strip()]
+    if not normalized_keys:
+        return None
+    with _DICTIONARY_ENRICHMENT_LOCK:
+        _prune_dictionary_enrichment_jobs_locked()
+        for cache_key in normalized_keys:
+            lookup_id = _DICTIONARY_ENRICHMENT_CACHE_TO_LOOKUP_ID.get(cache_key)
+            if not lookup_id:
+                continue
+            job = _DICTIONARY_ENRICHMENT_JOBS.get(lookup_id)
+            if isinstance(job, dict):
+                return _clone_dictionary_enrichment_job(job)
+    return None
+
+
+def _create_dictionary_enrichment_job(
+    *,
+    lookup_id: str,
+    user_id: int,
+    cache_key: str,
+    cache_key_shared: str,
+    normalized_word: str,
+    lookup_lang: str,
+    source_lang: str,
+    target_lang: str,
+    query_source_lang: str,
+    query_target_lang: str,
+    word: str,
+    direction: str,
+    core_item: dict[str, Any],
+    core_raw: dict[str, Any],
+) -> dict[str, Any]:
+    now_ts = time.time()
+    job = {
+        "lookup_id": str(lookup_id),
+        "user_id": int(user_id),
+        "cache_key": str(cache_key or "").strip(),
+        "cache_key_shared": str(cache_key_shared or "").strip(),
+        "normalized_word": str(normalized_word or "").strip(),
+        "lookup_lang": str(lookup_lang or "").strip().lower(),
+        "source_lang": str(source_lang or "").strip().lower(),
+        "target_lang": str(target_lang or "").strip().lower(),
+        "query_source_lang": str(query_source_lang or "").strip().lower(),
+        "query_target_lang": str(query_target_lang or "").strip().lower(),
+        "word": str(word or "").strip(),
+        "direction": str(direction or "").strip().lower(),
+        "status": "enriching",
+        "core_item": copy.deepcopy(core_item if isinstance(core_item, dict) else {}),
+        "core_raw": copy.deepcopy(core_raw if isinstance(core_raw, dict) else {}),
+        "item": None,
+        "error": "",
+        "created_at": now_ts,
+        "updated_at": now_ts,
+        "expires_at": now_ts + _DICTIONARY_ENRICHMENT_JOB_TTL_SEC,
+    }
+    with _DICTIONARY_ENRICHMENT_LOCK:
+        _prune_dictionary_enrichment_jobs_locked(now_ts)
+        _DICTIONARY_ENRICHMENT_JOBS[str(lookup_id)] = job
+        if job["cache_key"]:
+            _DICTIONARY_ENRICHMENT_CACHE_TO_LOOKUP_ID[job["cache_key"]] = str(lookup_id)
+        if job["cache_key_shared"]:
+            _DICTIONARY_ENRICHMENT_CACHE_TO_LOOKUP_ID[job["cache_key_shared"]] = str(lookup_id)
+        return _clone_dictionary_enrichment_job(job) or {}
+
+
+def _update_dictionary_enrichment_job(
+    lookup_id: str,
+    *,
+    status: str | None = None,
+    item: dict[str, Any] | None = None,
+    direction: str | None = None,
+    error: str | None = None,
+) -> None:
+    normalized_lookup_id = str(lookup_id or "").strip()
+    if not normalized_lookup_id:
+        return
+    with _DICTIONARY_ENRICHMENT_LOCK:
+        _prune_dictionary_enrichment_jobs_locked()
+        job = _DICTIONARY_ENRICHMENT_JOBS.get(normalized_lookup_id)
+        if not isinstance(job, dict):
+            return
+        if status:
+            job["status"] = str(status).strip().lower()
+        if isinstance(item, dict):
+            job["item"] = copy.deepcopy(item)
+        if direction is not None:
+            job["direction"] = str(direction or "").strip().lower()
+        if error is not None:
+            job["error"] = str(error or "").strip()
+        job["updated_at"] = time.time()
+        job["expires_at"] = job["updated_at"] + _DICTIONARY_ENRICHMENT_JOB_TTL_SEC
+
+
+def _resolve_dictionary_query_languages(
+    *,
+    word: str,
+    source_lang: str,
+    target_lang: str,
+    lookup_lang: str,
+) -> tuple[str, str]:
+    query_source_lang = source_lang
+    query_target_lang = target_lang
+    if lookup_lang and lookup_lang == target_lang:
+        query_source_lang = target_lang
+        query_target_lang = source_lang
+    elif lookup_lang and lookup_lang == source_lang:
+        query_source_lang = source_lang
+        query_target_lang = target_lang
+    elif _is_legacy_ru_de_pair(source_lang, target_lang):
+        is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in str(word or ""))
+        query_source_lang = "ru" if is_ru else "de"
+        query_target_lang = "de" if is_ru else "ru"
+    return query_source_lang, query_target_lang
+
+
+def _resolve_dictionary_direction(
+    *,
+    detected: str,
+    lookup_lang: str,
+    query_source_lang: str,
+    query_target_lang: str,
+) -> str:
+    if lookup_lang and lookup_lang in {query_source_lang, query_target_lang}:
+        return f"{query_source_lang}-{query_target_lang}"
+    return (
+        f"{query_source_lang}-{query_target_lang}"
+        if str(detected or "").strip().lower() != "target"
+        else f"{query_target_lang}-{query_source_lang}"
+    )
+
+
+def _build_dictionary_result_from_raw(
+    *,
+    raw: dict[str, Any],
+    query_word: str,
+    source_lang: str,
+    target_lang: str,
+    query_source_lang: str,
+    query_target_lang: str,
+    lookup_lang: str,
+) -> tuple[dict[str, Any], str, str, str, str]:
+    result, detected, source_value, target_value = _build_multilang_dictionary_result(
+        raw=raw if isinstance(raw, dict) else {},
+        query_word=query_word,
+        source_lang=query_source_lang,
+        target_lang=query_target_lang,
+    )
+    direction = _resolve_dictionary_direction(
+        detected=detected,
+        lookup_lang=lookup_lang,
+        query_source_lang=query_source_lang,
+        query_target_lang=query_target_lang,
+    )
+    decorated = _decorate_dictionary_item(
+        result if isinstance(result, dict) else {},
+        source_lang=source_lang,
+        target_lang=target_lang,
+        direction=direction,
+    )
+    return decorated, direction, detected, source_value, target_value
+
+
+def _merge_dictionary_raw_payloads(
+    core_raw: dict[str, Any] | None,
+    enrichment_raw: dict[str, Any] | None,
+) -> dict[str, Any]:
+    merged = copy.deepcopy(core_raw if isinstance(core_raw, dict) else {})
+    enrich = enrichment_raw if isinstance(enrichment_raw, dict) else {}
+    list_keys = {
+        "translations",
+        "usage_examples",
+        "common_collocations",
+        "government_patterns",
+        "save_worthy_options",
+    }
+    dict_keys = {
+        "forms",
+        "pronunciation",
+        "meanings",
+    }
+    for key, value in enrich.items():
+        if key in list_keys:
+            if isinstance(value, list) and value:
+                merged[key] = copy.deepcopy(value)
+            continue
+        if key in dict_keys:
+            if isinstance(value, dict) and value:
+                base = merged.get(key) if isinstance(merged.get(key), dict) else {}
+                next_value = copy.deepcopy(base)
+                for nested_key, nested_value in value.items():
+                    if nested_value in (None, "", [], {}):
+                        continue
+                    next_value[nested_key] = copy.deepcopy(nested_value)
+                merged[key] = next_value
+            continue
+        if value in (None, "", [], {}):
+            continue
+        merged[key] = copy.deepcopy(value)
+    return merged
 
 
 def _require_stripe_config(*, require_webhook_secret: bool = False) -> str | None:
@@ -8134,6 +8381,285 @@ def _force_translate_text(
     except Exception:
         return ""
     return ""
+
+
+def _run_dictionary_core_lookup_sync(
+    *,
+    word: str,
+    source_lang: str,
+    target_lang: str,
+    query_source_lang: str,
+    query_target_lang: str,
+    lookup_lang: str,
+) -> dict[str, Any]:
+    raw = asyncio.run(
+        run_dictionary_lookup_multilang_core_fast(
+            word=word,
+            source_lang=query_source_lang,
+            target_lang=query_target_lang,
+        )
+    )
+    usage = get_last_llm_usage(reset=True)
+    gateway_path = str((usage or {}).get("gateway") or "unknown")
+    item, direction, detected, source_value, target_value = _build_dictionary_result_from_raw(
+        raw=raw if isinstance(raw, dict) else {},
+        query_word=word,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        query_source_lang=query_source_lang,
+        query_target_lang=query_target_lang,
+        lookup_lang=lookup_lang,
+    )
+    return {
+        "raw": raw if isinstance(raw, dict) else {},
+        "item": item,
+        "direction": direction,
+        "detected": detected,
+        "source_value": source_value,
+        "target_value": target_value,
+        "usage": usage,
+        "gateway_path": gateway_path,
+    }
+
+
+def _run_dictionary_full_lookup_sync(
+    *,
+    word: str,
+    source_lang: str,
+    target_lang: str,
+    query_source_lang: str,
+    query_target_lang: str,
+    lookup_lang: str,
+    user_id: int | None = None,
+) -> dict[str, Any]:
+    llm_calls_total = 0
+    fallback_reverse_used = False
+    fallback_forced_used = False
+    gateway_path = "unknown"
+    usage_main = None
+
+    try:
+        raw = asyncio.run(
+            run_dictionary_lookup_multilang(
+                word=word,
+                source_lang=query_source_lang,
+                target_lang=query_target_lang,
+            )
+        )
+        llm_calls_total += 1
+        usage_main = get_last_llm_usage(reset=True)
+        gateway_path = str((usage_main or {}).get("gateway") or "unknown")
+        item, direction, detected, source_value, target_value = _build_dictionary_result_from_raw(
+            raw=raw if isinstance(raw, dict) else {},
+            query_word=word,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            query_source_lang=query_source_lang,
+            query_target_lang=query_target_lang,
+            lookup_lang=lookup_lang,
+        )
+    except Exception:
+        forced_target = _force_translate_text(
+            text=word,
+            source_lang=query_source_lang,
+            target_lang=query_target_lang,
+        )
+        if not forced_target:
+            raise
+        fallback_forced_used = True
+        gateway_path = "quick_fallback"
+        direction = f"{query_source_lang}-{query_target_lang}"
+        detected = "source"
+        source_value = str(word or "").strip()
+        target_value = str(forced_target or "").strip()
+        item = _decorate_dictionary_item(
+            {
+                "word_ru": source_value,
+                "translation_de": target_value,
+                "word_de": target_value,
+                "translation_ru": source_value,
+                "source_text": source_value,
+                "target_text": target_value,
+                "part_of_speech": "",
+                "article": "",
+                "forms": {},
+                "usage_examples": [],
+                "quick_mode": True,
+            },
+            source_lang=source_lang,
+            target_lang=target_lang,
+            direction=direction,
+        )
+        raw = {
+            "detected_language": "source",
+            "word_source": source_value,
+            "word_target": target_value,
+        }
+
+    if not source_value or source_value.casefold() == target_value.casefold():
+        if DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK:
+            reverse_raw = asyncio.run(
+                run_dictionary_lookup_multilang(
+                    word=word,
+                    source_lang=query_target_lang,
+                    target_lang=query_source_lang,
+                )
+            )
+            llm_calls_total += 1
+            fallback_reverse_used = True
+            usage_reverse = get_last_llm_usage(reset=True)
+            if user_id is not None:
+                _billing_log_openai_usage(
+                    user_id=int(user_id),
+                    action_type="dictionary_lookup_fallback",
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    usage=usage_reverse,
+                    seed=f"dict_lookup_fallback:{user_id}:{word}:{direction}:{time.time_ns()}",
+                    metadata={"word": word, "direction": direction},
+                )
+            reverse_target = str((reverse_raw or {}).get("word_target") or "").strip()
+            if reverse_target and reverse_target.casefold() != source_value.casefold():
+                item["target_text"] = reverse_target
+                item["translation_de"] = reverse_target
+                item["word_de"] = reverse_target
+                target_value = reverse_target
+        if not target_value or target_value.casefold() == source_value.casefold():
+            forced = _force_translate_text(
+                text=word,
+                source_lang=query_source_lang,
+                target_lang=query_target_lang,
+            )
+            if forced and forced.casefold() != source_value.casefold():
+                fallback_forced_used = True
+                item["target_text"] = forced
+                item["translation_de"] = forced
+                item["word_de"] = forced
+                target_value = forced
+
+    if lookup_lang and lookup_lang == query_source_lang:
+        current_target = str(item.get("target_text") or "").strip()
+        current_source = str(item.get("source_text") or word).strip()
+        if not current_target or current_target.casefold() == current_source.casefold():
+            forced_target = _force_translate_text(
+                text=word,
+                source_lang=query_source_lang,
+                target_lang=query_target_lang,
+            )
+            if forced_target and forced_target.casefold() != current_source.casefold():
+                fallback_forced_used = True
+                item["target_text"] = forced_target
+                item["translation_de"] = forced_target
+                item["word_de"] = forced_target
+                target_value = forced_target
+
+    return {
+        "raw": raw if isinstance(raw, dict) else {},
+        "item": item,
+        "direction": direction,
+        "detected": detected,
+        "source_value": source_value,
+        "target_value": target_value,
+        "usage": usage_main,
+        "gateway_path": gateway_path,
+        "llm_calls_total": llm_calls_total,
+        "fallback_reverse_used": fallback_reverse_used,
+        "fallback_forced_used": fallback_forced_used,
+    }
+
+
+def _run_dictionary_enrichment_job(lookup_id: str) -> None:
+    job = _get_dictionary_enrichment_job_by_lookup_id(lookup_id)
+    if not isinstance(job, dict):
+        return
+    try:
+        core_raw = job.get("core_raw") if isinstance(job.get("core_raw"), dict) else {}
+        enrichment_raw = asyncio.run(
+            run_dictionary_enrichment_multilang(
+                word=str(job.get("word") or ""),
+                source_lang=str(job.get("query_source_lang") or ""),
+                target_lang=str(job.get("query_target_lang") or ""),
+                core_result=core_raw,
+            )
+        )
+        usage_enrichment = get_last_llm_usage(reset=True)
+        merged_raw = _merge_dictionary_raw_payloads(core_raw, enrichment_raw if isinstance(enrichment_raw, dict) else {})
+        final_item, final_direction, _detected, _source_value, _target_value = _build_dictionary_result_from_raw(
+            raw=merged_raw,
+            query_word=str(job.get("word") or ""),
+            source_lang=str(job.get("source_lang") or ""),
+            target_lang=str(job.get("target_lang") or ""),
+            query_source_lang=str(job.get("query_source_lang") or ""),
+            query_target_lang=str(job.get("query_target_lang") or ""),
+            lookup_lang=str(job.get("lookup_lang") or ""),
+        )
+        cache_payload = {
+            "item": final_item,
+            "direction": final_direction,
+            "lookup_status": "ready",
+            "enrichment_pending": False,
+        }
+        _set_cached_dictionary_lookup_all(
+            cache_key=str(job.get("cache_key") or ""),
+            payload=cache_payload,
+            source_lang=str(job.get("source_lang") or ""),
+            target_lang=str(job.get("target_lang") or ""),
+            query_source_lang=str(job.get("query_source_lang") or ""),
+            query_target_lang=str(job.get("query_target_lang") or ""),
+            lookup_lang=str(job.get("lookup_lang") or ""),
+            normalized_word=str(job.get("normalized_word") or ""),
+        )
+        cache_key_shared = str(job.get("cache_key_shared") or "").strip()
+        if DICTIONARY_SHARED_CACHE_ENABLED and cache_key_shared:
+            _set_cached_dictionary_lookup_all(
+                cache_key=cache_key_shared,
+                payload=cache_payload,
+                source_lang=str(job.get("source_lang") or ""),
+                target_lang=str(job.get("target_lang") or ""),
+                query_source_lang=str(job.get("query_source_lang") or ""),
+                query_target_lang=str(job.get("query_target_lang") or ""),
+                lookup_lang=str(job.get("lookup_lang") or ""),
+                normalized_word=str(job.get("normalized_word") or ""),
+            )
+        _update_dictionary_enrichment_job(
+            lookup_id,
+            status="ready",
+            item=final_item,
+            direction=final_direction,
+            error="",
+        )
+        user_id = int(job.get("user_id") or 0) if job.get("user_id") is not None else 0
+        if user_id > 0:
+            _billing_log_openai_usage(
+                user_id=user_id,
+                action_type="dictionary_lookup_enrichment",
+                source_lang=str(job.get("source_lang") or ""),
+                target_lang=str(job.get("target_lang") or ""),
+                usage=usage_enrichment,
+                seed=f"dict_lookup_enrichment:{user_id}:{job.get('word')}:{time.time_ns()}",
+                metadata={
+                    "word": str(job.get("word") or ""),
+                    "lookup_id": str(lookup_id),
+                },
+            )
+    except Exception as exc:
+        logging.warning("Dictionary enrichment failed lookup_id=%s: %s", lookup_id, exc, exc_info=True)
+        _update_dictionary_enrichment_job(
+            lookup_id,
+            status="failed",
+            error=str(exc),
+        )
+
+
+def _start_dictionary_enrichment_runner(
+    *,
+    lookup_id: str,
+) -> None:
+    threading.Thread(
+        target=_run_dictionary_enrichment_job,
+        args=(str(lookup_id),),
+        daemon=True,
+    ).start()
 
 
 def _mobile_b64encode(data: bytes) -> str:
@@ -15915,22 +16441,17 @@ def lookup_webapp_dictionary():
     coalesce_owner = False
     coalesce_event: threading.Event | None = None
     usage_main = None
+    direction = ""
+    result: dict[str, Any] = {}
+    query_source_lang = source_lang
+    query_target_lang = target_lang
     try:
-        # Unified multilang lookup for all language pairs (including legacy RU<->DE)
-        # to keep inline popup translation stable in reader/overlay modes.
-        query_source_lang = source_lang
-        query_target_lang = target_lang
-        if lookup_lang and lookup_lang == target_lang:
-            query_source_lang = target_lang
-            query_target_lang = source_lang
-        elif lookup_lang and lookup_lang == source_lang:
-            query_source_lang = source_lang
-            query_target_lang = target_lang
-        elif _is_legacy_ru_de_pair(source_lang, target_lang):
-            # Legacy fallback without explicit hint: infer by alphabet.
-            is_ru = any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in word_ru)
-            query_source_lang = "ru" if is_ru else "de"
-            query_target_lang = "de" if is_ru else "ru"
+        query_source_lang, query_target_lang = _resolve_dictionary_query_languages(
+            word=word_ru,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            lookup_lang=lookup_lang,
+        )
 
         cache_key = _build_dictionary_lookup_cache_key(
             user_id=user_id_for_log,
@@ -15986,123 +16507,148 @@ def lookup_webapp_dictionary():
                         "ok": True,
                         "item": cached_item,
                         "direction": cached_direction,
+                        "lookup_status": "ready",
+                        "enrichment_pending": False,
+                        "save_locked": False,
+                        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                    }
+                )
+
+        active_job = _get_dictionary_enrichment_job_for_cache_keys(cache_key, cache_key_shared)
+        if isinstance(active_job, dict):
+            active_status = str(active_job.get("status") or "").strip().lower()
+            active_lookup_id = str(active_job.get("lookup_id") or "").strip()
+            active_direction = str(active_job.get("direction") or "").strip().lower()
+            if active_status == "ready" and isinstance(active_job.get("item"), dict) and active_direction:
+                mark("cache_hit")
+                _log_dictionary_profile()
+                return jsonify(
+                    {
+                        "ok": True,
+                        "item": active_job.get("item"),
+                        "direction": active_direction,
+                        "lookup_id": active_lookup_id,
+                        "lookup_status": "ready",
+                        "enrichment_pending": False,
+                        "save_locked": False,
+                        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                    }
+                )
+            if active_status == "enriching" and isinstance(active_job.get("core_item"), dict) and active_direction:
+                mark("cache_hit")
+                _log_dictionary_profile()
+                return jsonify(
+                    {
+                        "ok": True,
+                        "item": active_job.get("core_item"),
+                        "direction": active_direction,
+                        "lookup_id": active_lookup_id,
+                        "lookup_status": "enriching",
+                        "enrichment_pending": True,
+                        "save_locked": True,
                         "language_pair": _build_language_pair_payload(source_lang, target_lang),
                     }
                 )
 
         try:
-            raw = asyncio.run(
-                run_dictionary_lookup_multilang(
-                    word=word_ru,
-                    source_lang=query_source_lang,
-                    target_lang=query_target_lang,
-                )
+            core_payload = _run_dictionary_core_lookup_sync(
+                word=word_ru,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                query_source_lang=query_source_lang,
+                query_target_lang=query_target_lang,
+                lookup_lang=lookup_lang,
             )
-            llm_calls_total += 1
+            llm_calls_total = 1
             mark("llm_main")
-            usage_main = get_last_llm_usage(reset=True)
-            gateway_path = str((usage_main or {}).get("gateway") or "unknown")
-            result, detected, source_value, target_value = _build_multilang_dictionary_result(
-                raw=raw,
-                query_word=word_ru,
-                source_lang=query_source_lang,
-                target_lang=query_target_lang,
+            usage_main = core_payload.get("usage")
+            gateway_path = str(core_payload.get("gateway_path") or "unknown")
+            result = core_payload.get("item") if isinstance(core_payload.get("item"), dict) else {}
+            direction = str(core_payload.get("direction") or "").strip().lower()
+            lookup_id = f"dict_{int(time.time() * 1000)}_{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()[:10]}"
+            _create_dictionary_enrichment_job(
+                lookup_id=lookup_id,
+                user_id=int(user_id),
+                cache_key=cache_key,
+                cache_key_shared=cache_key_shared,
+                normalized_word=normalized_word,
+                lookup_lang=lookup_lang,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                query_source_lang=query_source_lang,
+                query_target_lang=query_target_lang,
+                word=word_ru,
+                direction=direction,
+                core_item=result,
+                core_raw=core_payload.get("raw") if isinstance(core_payload.get("raw"), dict) else {},
             )
-            if lookup_lang and lookup_lang in {query_source_lang, query_target_lang}:
-                # Hard-fix direction from explicit UI language hint to avoid
-                # wrong reversals when model mis-detects the query language.
-                direction = f"{query_source_lang}-{query_target_lang}"
-            else:
-                direction = (
-                    f"{query_source_lang}-{query_target_lang}"
-                    if detected != "target"
-                    else f"{query_target_lang}-{query_source_lang}"
-                )
+            mark("decorate")
+            _start_dictionary_enrichment_runner(lookup_id=lookup_id)
+            _billing_log_event_safe(
+                user_id=int(user_id),
+                action_type="dictionary_lookup",
+                provider="openai",
+                units_type="requests",
+                units_value=1.0,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                idempotency_seed=f"dict_lookup:{user_id}:{source_lang}:{target_lang}:{word_ru.lower()}:{direction}:{time.time_ns()}",
+                status="estimated",
+                metadata={
+                    "word": word_ru,
+                    "direction": direction,
+                    "lookup_lang": lookup_lang or None,
+                    "lookup_status": "enriching",
+                },
+            )
+            _billing_log_openai_usage(
+                user_id=int(user_id),
+                action_type="dictionary_lookup",
+                source_lang=source_lang,
+                target_lang=target_lang,
+                usage=usage_main,
+                seed=f"dict_lookup_tokens:{user_id}:{word_ru}:{direction}:{time.time_ns()}",
+                metadata={
+                    "word": word_ru,
+                    "direction": direction,
+                    "lookup_lang": lookup_lang or None,
+                    "lookup_status": "enriching",
+                },
+            )
+            response = jsonify(
+                {
+                    "ok": True,
+                    "item": result,
+                    "direction": direction,
+                    "lookup_id": lookup_id,
+                    "lookup_status": "enriching",
+                    "enrichment_pending": True,
+                    "save_locked": True,
+                    "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                }
+            )
+            _log_dictionary_profile()
+            return response
         except Exception:
-            forced_target = _force_translate_text(
-                text=word_ru,
-                source_lang=query_source_lang,
-                target_lang=query_target_lang,
+            full_payload = _run_dictionary_full_lookup_sync(
+                word=word_ru,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                query_source_lang=query_source_lang,
+                query_target_lang=query_target_lang,
+                lookup_lang=lookup_lang,
+                user_id=int(user_id),
             )
-            if not forced_target:
-                raise
-            fallback_forced_used = True
+            llm_calls_total = int(full_payload.get("llm_calls_total") or 1)
+            fallback_reverse_used = bool(full_payload.get("fallback_reverse_used"))
+            fallback_forced_used = bool(full_payload.get("fallback_forced_used"))
+            gateway_path = str(full_payload.get("gateway_path") or "unknown")
+            usage_main = full_payload.get("usage")
+            result = full_payload.get("item") if isinstance(full_payload.get("item"), dict) else {}
+            direction = str(full_payload.get("direction") or "").strip().lower()
             mark("llm_main")
-            gateway_path = "quick_fallback"
-            direction = f"{query_source_lang}-{query_target_lang}"
-            source_value = str(word_ru or "").strip()
-            target_value = str(forced_target or "").strip()
-            result = {
-                "word_ru": source_value,
-                "translation_de": target_value,
-                "word_de": target_value,
-                "translation_ru": source_value,
-                "source_text": source_value,
-                "target_text": target_value,
-                "part_of_speech": "",
-                "article": "",
-                "forms": {},
-                "usage_examples": [],
-                "quick_mode": True,
-            }
-
-        # Fallback for cases where model returns identical source/target.
-        if not source_value or source_value.casefold() == target_value.casefold():
-            if DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK:
-                reverse_raw = asyncio.run(
-                    run_dictionary_lookup_multilang(
-                        word=word_ru,
-                        source_lang=query_target_lang,
-                        target_lang=query_source_lang,
-                    )
-                )
-                llm_calls_total += 1
-                fallback_reverse_used = True
+            if fallback_reverse_used:
                 mark("llm_fallback")
-                usage_reverse = get_last_llm_usage(reset=True)
-                _billing_log_openai_usage(
-                    user_id=int(user_id),
-                    action_type="dictionary_lookup_fallback",
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    usage=usage_reverse,
-                    seed=f"dict_lookup_fallback:{user_id}:{word_ru}:{direction}:{time.time_ns()}",
-                    metadata={"word": word_ru, "direction": direction},
-                )
-                reverse_target = str(reverse_raw.get("word_target") or "").strip()
-                if reverse_target and reverse_target.casefold() != source_value.casefold():
-                    result["target_text"] = reverse_target
-                    result["translation_de"] = reverse_target
-                    result["word_de"] = reverse_target
-                    target_value = reverse_target
-            if not target_value or target_value.casefold() == source_value.casefold():
-                forced = _force_translate_text(
-                    text=word_ru,
-                    source_lang=query_source_lang,
-                    target_lang=query_target_lang,
-                )
-                if forced and forced.casefold() != source_value.casefold():
-                    fallback_forced_used = True
-                    result["target_text"] = forced
-                    result["translation_de"] = forced
-                    result["word_de"] = forced
-                    target_value = forced
-        # If explicit lookup language is provided and selected word is from
-        # query_source_lang, ensure target side is truly translated.
-        if lookup_lang and lookup_lang == query_source_lang:
-            current_target = str(result.get("target_text") or "").strip()
-            current_source = str(result.get("source_text") or word_ru).strip()
-            if not current_target or current_target.casefold() == current_source.casefold():
-                forced_target = _force_translate_text(
-                    text=word_ru,
-                    source_lang=query_source_lang,
-                    target_lang=query_target_lang,
-                )
-                if forced_target and forced_target.casefold() != current_source.casefold():
-                    result["target_text"] = forced_target
-                    result["translation_de"] = forced_target
-                    result["word_de"] = forced_target
-                    target_value = forced_target
     except Exception as exc:
         _log_dictionary_profile(error_text=str(exc))
         return jsonify({"error": f"Ошибка запроса словаря: {exc}"}), 500
@@ -16110,16 +16656,12 @@ def lookup_webapp_dictionary():
         if coalesce_owner:
             _release_dictionary_lookup_inflight_slot(coalesce_key, coalesce_event)
 
-    result = _decorate_dictionary_item(
-        result if isinstance(result, dict) else {},
-        source_lang=source_lang,
-        target_lang=target_lang,
-        direction=direction,
-    )
     mark("decorate")
     cache_payload = {
         "item": result,
         "direction": direction,
+        "lookup_status": "ready",
+        "enrichment_pending": False,
     }
     _set_cached_dictionary_lookup_all(
         cache_key=cache_key,
@@ -16176,11 +16718,64 @@ def lookup_webapp_dictionary():
             "ok": True,
             "item": result,
             "direction": direction,
+            "lookup_status": "ready",
+            "enrichment_pending": False,
+            "save_locked": False,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
     _log_dictionary_profile()
     return response
+
+
+@app.route("/api/webapp/dictionary/status", methods=["POST"])
+def get_webapp_dictionary_lookup_status():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    lookup_id = str(payload.get("lookup_id") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not lookup_id:
+        return jsonify({"error": "lookup_id обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    job = _get_dictionary_enrichment_job_by_lookup_id(lookup_id)
+    if not isinstance(job, dict):
+        return jsonify({"error": "lookup_id не найден"}), 404
+    if int(job.get("user_id") or 0) != int(user_id):
+        return jsonify({"error": "lookup_id не принадлежит пользователю"}), 403
+
+    source_lang = str(job.get("source_lang") or "").strip().lower()
+    target_lang = str(job.get("target_lang") or "").strip().lower()
+    status = str(job.get("status") or "enriching").strip().lower() or "enriching"
+    item = None
+    if status == "ready" and isinstance(job.get("item"), dict):
+        item = job.get("item")
+    elif isinstance(job.get("core_item"), dict):
+        item = job.get("core_item")
+
+    return jsonify(
+        {
+            "ok": True,
+            "lookup_id": lookup_id,
+            "status": status,
+            "item": item,
+            "direction": str(job.get("direction") or "").strip().lower(),
+            "error": str(job.get("error") or "").strip() or None,
+            "enrichment_pending": status == "enriching",
+            "save_locked": status != "ready",
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 @app.route("/api/mobile/dictionary/lookup", methods=["POST"])
@@ -22585,9 +23180,79 @@ def get_webapp_sentences():
         {
             "ok": True,
             "items": deduped,
+            "ready_count": len(deduped),
+            "expected_total": 7,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
+
+
+def _run_translation_session_fill(
+    *,
+    user_id: int,
+    username: str | None,
+    session_id: int,
+    topic: str,
+    level: str | None,
+    source_lang: str,
+    target_lang: str,
+    grammar_focus: dict[str, Any] | None,
+) -> None:
+    try:
+        asyncio.run(
+            fill_translation_session_webapp(
+                user_id=int(user_id),
+                username=username,
+                session_id=int(session_id),
+                topic=topic,
+                level=level,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                grammar_focus=grammar_focus,
+            )
+        )
+    except Exception as exc:
+        logging.error(
+            "Translation session background fill failed: user_id=%s session_id=%s error=%s",
+            user_id,
+            session_id,
+            exc,
+            exc_info=True,
+        )
+    finally:
+        with _TRANSLATION_SESSION_FILL_RUNNERS_LOCK:
+            _TRANSLATION_SESSION_FILL_RUNNERS.discard(int(session_id))
+
+
+def _start_translation_session_fill_runner(
+    *,
+    user_id: int,
+    username: str | None,
+    session_id: int,
+    topic: str,
+    level: str | None,
+    source_lang: str,
+    target_lang: str,
+    grammar_focus: dict[str, Any] | None,
+) -> None:
+    with _TRANSLATION_SESSION_FILL_RUNNERS_LOCK:
+        if int(session_id) in _TRANSLATION_SESSION_FILL_RUNNERS:
+            return
+        _TRANSLATION_SESSION_FILL_RUNNERS.add(int(session_id))
+    threading.Thread(
+        target=_run_translation_session_fill,
+        kwargs={
+            "user_id": int(user_id),
+            "username": username,
+            "session_id": int(session_id),
+            "topic": topic,
+            "level": level,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "grammar_focus": grammar_focus,
+        },
+        daemon=True,
+    ).start()
 
 
 @app.route("/api/webapp/topics", methods=["GET"])
@@ -22642,10 +23307,40 @@ def start_webapp_translation():
     if isinstance(result, dict) and result.get("error"):
         return jsonify({"error": result["error"]}), 500
 
+    ready_items = get_pending_daily_sentences(
+        user_id=user_id,
+        limit=7,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    deduped_items = _dedupe_sentences(ready_items)
+    session_id = int(result.get("session_id") or 0) if isinstance(result, dict) and result.get("session_id") else None
+    ready_count = len(deduped_items)
+    expected_total = int(result.get("expected_total") or 7) if isinstance(result, dict) else 7
+    remaining_count = max(0, expected_total - ready_count)
+    generation_started = bool(session_id and remaining_count > 0 and not bool(result.get("blocked")))
+    if generation_started and session_id is not None:
+        _start_translation_session_fill_runner(
+            user_id=int(user_id),
+            username=username,
+            session_id=int(session_id),
+            topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
+            level=level,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            grammar_focus=resolved_focus,
+        )
+
     return jsonify(
         {
             "ok": True,
             **result,
+            "type": "regular",
+            "items": deduped_items,
+            "ready_count": ready_count,
+            "expected_total": expected_total,
+            "remaining_count": remaining_count,
+            "generation_in_progress": generation_started,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
