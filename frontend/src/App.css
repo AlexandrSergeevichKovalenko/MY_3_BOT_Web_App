@@ -2550,6 +2550,24 @@ body {
   gap: 12px;
 }
 
+.analytics-card-groups {
+  display: grid;
+  gap: 14px;
+}
+
+.analytics-card-group {
+  display: grid;
+  gap: 10px;
+}
+
+.analytics-card-group-title {
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .analytics-card {
   background: rgba(15, 23, 42, 0.7);
   border: 1px solid rgba(148, 163, 184, 0.18);
@@ -2568,6 +2586,12 @@ body {
 
 .analytics-card strong {
   font-size: 20px;
+}
+
+.analytics-card small {
+  color: rgba(226, 232, 240, 0.64);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .analytics-goals-grid {
@@ -11915,6 +11939,8 @@ body {
   display: grid;
   gap: 24px;
   min-width: 0;
+  box-sizing: border-box;
+  padding: 2px 4px 6px;
 }
 
 .reader-topbar {
@@ -12625,6 +12651,11 @@ body {
   .reader-library-grid {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+
+  .reader-library-mode {
+    gap: 14px;
+    padding: 2px 2px 4px;
   }
 
   .reader-library-card {
@@ -17047,6 +17078,14 @@ body {
 
 .webapp-page.is-theme-light .analytics-card strong {
   color: #17120d;
+}
+
+.webapp-page.is-theme-light .analytics-card-group-title {
+  color: #4a3a2a;
+}
+
+.webapp-page.is-theme-light .analytics-card small {
+  color: rgba(74, 58, 42, 0.76);
 }
 
 .webapp-page.is-theme-light .analytics-goal-card {

@@ -2353,6 +2353,7 @@ function AppInner() {
   const [readerLibrarySearch, setReaderLibrarySearch] = useState('');
   const [readerFontSize, setReaderFontSize] = useState(18);
   const [readerFontWeight, setReaderFontWeight] = useState(500);
+  const [readerDragSelectionMeta, setReaderDragSelectionMeta] = useState(null);
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
   const [selectionType, setSelectionType] = useState('');
@@ -2779,6 +2780,17 @@ function AppInner() {
   const readerLastInteractionAtRef = useRef(0);
   const readerSwipeStartRef = useRef(null);
   const readerPageNavLockRef = useRef(false);
+  const readerDragSelectionMetaRef = useRef(null);
+  const readerPhraseGestureRef = useRef({
+    active: false,
+    sentenceId: '',
+    anchorIndex: -1,
+    currentIndex: -1,
+    moved: false,
+    startX: 0,
+    startY: 0,
+  });
+  const readerSuppressStructuredClickRef = useRef(0);
   const todayTimerCompletionLockRef = useRef(new Set());
   const globalTimerAutoPauseInFlightRef = useRef(false);
   const globalTimerAutoResumeInFlightRef = useRef(false);
@@ -2799,6 +2811,15 @@ function AppInner() {
   const translationDraftStorageTimeoutRef = useRef(null);
   const translationDraftHydrationKeyRef = useRef('');
   const translationDraftSentenceIdsRef = useRef(new Set());
+  const sectionRouteHistoryRef = useRef([]);
+  const sectionRouteCurrentRef = useRef('');
+  const sectionRouteBackNavigationRef = useRef(false);
+  const edgeSwipeBackGestureRef = useRef({
+    active: false,
+    startX: 0,
+    startY: 0,
+    startedAt: 0,
+  });
   const translationDraftAndroidDebugRef = useRef({
     counters: {},
     timings: {},
@@ -8354,14 +8375,24 @@ function AppInner() {
     });
     return map;
   }, [readerSentencesModel]);
-  const selectedSentenceIds = useMemo(
-    () => new Set(Array.isArray(selectedMeta?.sids) ? selectedMeta.sids : []),
-    [selectedMeta]
-  );
-  const selectedWordIds = useMemo(
-    () => new Set(Array.isArray(selectedMeta?.wids) ? selectedMeta.wids : []),
-    [selectedMeta]
-  );
+  const selectedSentenceIds = useMemo(() => {
+    const ids = new Set(Array.isArray(selectedMeta?.sids) ? selectedMeta.sids : []);
+    if (Array.isArray(readerDragSelectionMeta?.sids)) {
+      readerDragSelectionMeta.sids.forEach((sid) => {
+        if (sid) ids.add(sid);
+      });
+    }
+    return ids;
+  }, [selectedMeta, readerDragSelectionMeta]);
+  const selectedWordIds = useMemo(() => {
+    const ids = new Set(Array.isArray(selectedMeta?.wids) ? selectedMeta.wids : []);
+    if (Array.isArray(readerDragSelectionMeta?.wids)) {
+      readerDragSelectionMeta.wids.forEach((wid) => {
+        if (wid) ids.add(wid);
+      });
+    }
+    return ids;
+  }, [selectedMeta, readerDragSelectionMeta]);
   const readerBookmarkPage = readerPageCount > 0
     ? Math.max(1, Math.min(readerPageCount, Math.round((Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0))) / 100) * readerPageCount) || 1))
     : 0;
@@ -8414,6 +8445,13 @@ function AppInner() {
       : tr('Субтитры: не загружены', 'Untertitel: Nicht geladen');
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
+  const currentSingleSectionRouteKey = useMemo(() => {
+    if (flashcardsOnly || menuMultiSelect) return '';
+    const keys = Array.from(selectedSections).filter(Boolean);
+    if (keys.length === 0) return 'home';
+    if (keys.length === 1) return String(keys[0]);
+    return '';
+  }, [flashcardsOnly, menuMultiSelect, selectedSections]);
   const economicsProviderOptions = useMemo(() => {
     const knownOrder = [
       'openai',
@@ -8466,6 +8504,91 @@ function AppInner() {
   const selectedEconomicsProviderLabel = economicsProvider === 'all'
     ? tr('Все провайдеры', 'Alle Provider')
     : formatEconomicsProviderLabel(economicsProvider);
+  const analyticsCardGroups = useMemo(() => {
+    if (!analyticsSummary) return [];
+    const coveredSentences = Number(analyticsSummary.covered_sentences ?? analyticsSummary.total_translations ?? 0);
+    const assignedSentences = Number(analyticsSummary.assigned_sentences ?? 0);
+    const successRate = Number(analyticsSummary.success_rate ?? 0);
+    const completionRate = Number(analyticsSummary.completion_rate ?? 0);
+    const avgScore = Number(analyticsSummary.avg_score ?? 0);
+    const avgTimeMin = Number(analyticsSummary.avg_time_min ?? 0);
+    const missedSentences = Number(analyticsSummary.missed_sentences ?? 0);
+    const missedDays = Number(analyticsSummary.missed_days ?? 0);
+    const finalScore = Number(analyticsSummary.final_score ?? 0);
+    return [
+      {
+        key: 'volume',
+        title: tr('Что сделано', 'Was erledigt wurde'),
+        items: [
+          {
+            key: 'translations',
+            label: tr('Переведено предложений', 'Uebersetzte Saetze'),
+            value: `${coveredSentences}`,
+            hint: tr('Сколько предложений вы реально закрыли за период.', 'Wie viele Saetze du im Zeitraum wirklich abgeschlossen hast.'),
+          },
+          {
+            key: 'completion',
+            label: tr('Закрыто по плану', 'Vom Plan erledigt'),
+            value: `${completionRate}%`,
+            hint: assignedSentences > 0
+              ? tr(
+                `${coveredSentences} из ${assignedSentences} назначенных предложений.`,
+                `${coveredSentences} von ${assignedSentences} zugewiesenen Saetzen.`
+              )
+              : tr('Назначенных предложений в этом периоде не было.', 'In diesem Zeitraum gab es keine zugewiesenen Saetze.'),
+          },
+          {
+            key: 'missed',
+            label: tr('Пропущено заданий', 'Verpasste Aufgaben'),
+            value: `${missedSentences}`,
+            hint: tr('Сколько назначенных предложений осталось незакрытыми.', 'Wie viele zugewiesene Saetze offen geblieben sind.'),
+          },
+        ],
+      },
+      {
+        key: 'quality',
+        title: tr('Качество ответов', 'Qualitaet der Antworten'),
+        items: [
+          {
+            key: 'success',
+            label: tr('Удачных переводов', 'Gute Uebersetzungen'),
+            value: `${successRate}%`,
+            hint: tr('Доля переводов, которые прошли успешно.', 'Anteil der Uebersetzungen, die erfolgreich waren.'),
+          },
+          {
+            key: 'avg-score',
+            label: tr('Средняя оценка ответа', 'Durchschnittliche Bewertung'),
+            value: `${avgScore}`,
+            hint: tr('Средний балл ваших ответов по шкале до 100.', 'Durchschnittspunktzahl deiner Antworten auf einer Skala bis 100.'),
+          },
+          {
+            key: 'final-score',
+            label: tr('Общий результат', 'Gesamtergebnis'),
+            value: `${finalScore}`,
+            hint: tr('Итоговый показатель с учётом качества, скорости и пропусков.', 'Gesamtwert mit Qualitaet, Tempo und Auslassungen.'),
+          },
+        ],
+      },
+      {
+        key: 'rhythm',
+        title: tr('Регулярность', 'Regelmaessigkeit'),
+        items: [
+          {
+            key: 'avg-time',
+            label: tr('Среднее время на перевод', 'Durchschnittszeit pro Uebersetzung'),
+            value: `${avgTimeMin} ${tr('мин', 'Min')}`,
+            hint: tr('Сколько в среднем уходило времени на одно выполненное предложение.', 'Wie viel Zeit du im Schnitt pro erledigtem Satz gebraucht hast.'),
+          },
+          {
+            key: 'missed-days',
+            label: tr('Дней без практики', 'Tage ohne Praxis'),
+            value: `${missedDays}`,
+            hint: tr('Сколько активных дней прошло без переводов.', 'Wie viele aktive Tage ohne Uebersetzungen vergangen sind.'),
+          },
+        ],
+      },
+    ];
+  }, [analyticsSummary, tr]);
   const weeklyPlanUsesDeferredAnalytics = planAnalyticsPeriod !== 'week';
   const hasPlanAnalyticsMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0;
   const weeklyMetrics = weeklyPlanUsesDeferredAnalytics
@@ -8663,6 +8786,47 @@ function AppInner() {
     const backRef = getSectionRefByKey(backKey);
     openSingleSectionAndScroll(backKey, backRef);
   };
+
+  const goBackToPreviousSection = useCallback(() => {
+    if (flashcardsOnly || menuMultiSelect || menuOpen || readerImmersive || youtubeAppFullscreen || youtubeLearningMode) {
+      return false;
+    }
+    const currentRoute = String(currentSingleSectionRouteKey || '').trim();
+    if (!currentRoute) {
+      return false;
+    }
+    const history = sectionRouteHistoryRef.current;
+    let previousRoute = '';
+    while (history.length > 0) {
+      const candidate = String(history.pop() || '').trim();
+      if (candidate && candidate !== currentRoute) {
+        previousRoute = candidate;
+        break;
+      }
+    }
+    if (!previousRoute) {
+      return false;
+    }
+    sectionRouteBackNavigationRef.current = true;
+    if (previousRoute === 'home') {
+      goHomeScreen();
+      return true;
+    }
+    if (previousRoute === 'youtube') {
+      const backCandidate = currentRoute !== 'home' && currentRoute !== 'youtube' ? currentRoute : '';
+      setYoutubeBackSection(backCandidate);
+    }
+    openSingleSectionAndScroll(previousRoute, getSectionRefByKey(previousRoute));
+    return true;
+  }, [
+    currentSingleSectionRouteKey,
+    flashcardsOnly,
+    menuMultiSelect,
+    menuOpen,
+    readerImmersive,
+    youtubeAppFullscreen,
+    youtubeLearningMode,
+  ]);
 
   const jumpToDictionaryFromSentence = useCallback(() => {
     setLastLookupScrollY(window.scrollY);
@@ -13616,8 +13780,65 @@ function AppInner() {
     node.scrollTop = (safe / 100) * max;
   }
 
+  const resetReaderPhraseGesture = () => {
+    readerPhraseGestureRef.current = {
+      active: false,
+      sentenceId: '',
+      anchorIndex: -1,
+      currentIndex: -1,
+      moved: false,
+      startX: 0,
+      startY: 0,
+    };
+    readerDragSelectionMetaRef.current = null;
+    setReaderDragSelectionMeta(null);
+  };
+
+  const getReaderSentenceWords = (sentenceId) => {
+    const sentence = readerSentenceMap.get(String(sentenceId || '').trim());
+    if (!sentence) return [];
+    return sentence.tokens.filter((token) => token.kind === 'word' && token.wid);
+  };
+
+  const getReaderWordIndexInSentence = (sentenceId, wordId) => {
+    const words = getReaderSentenceWords(sentenceId);
+    return words.findIndex((token) => String(token.wid || '') === String(wordId || ''));
+  };
+
+  const buildReaderPhraseSelection = (sentenceId, firstIndex, lastIndex) => {
+    const sentence = readerSentenceMap.get(String(sentenceId || '').trim());
+    if (!sentence) return null;
+    const words = getReaderSentenceWords(sentenceId);
+    if (!words.length) return null;
+    const from = Math.max(0, Math.min(words.length - 1, Math.min(firstIndex, lastIndex)));
+    const to = Math.max(0, Math.min(words.length - 1, Math.max(firstIndex, lastIndex)));
+    const selectedWords = words.slice(from, to + 1);
+    if (!selectedWords.length) return null;
+    const start = Number(selectedWords[0]?.start || 0);
+    const end = Number(selectedWords[selectedWords.length - 1]?.end || start);
+    const relativeStart = Math.max(0, start - Number(sentence.start || 0));
+    const relativeEnd = Math.max(relativeStart, end - Number(sentence.start || 0));
+    const text = normalizeSelectionText(String(sentence.text || '').slice(relativeStart, relativeEnd));
+    if (!text) return null;
+    return {
+      text,
+      sids: [sentence.sid],
+      wids: selectedWords.map((token) => String(token.wid || '')).filter(Boolean),
+      start,
+      end,
+    };
+  };
+
+  const getReaderWordElementByPoint = (clientX, clientY) => {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY) || typeof document === 'undefined') return null;
+    const target = document.elementFromPoint(clientX, clientY);
+    if (!(target instanceof Element)) return null;
+    return target.closest('[data-wid][data-sid]');
+  };
+
   const handleReaderStructuredClick = (event) => {
     markReaderInteraction();
+    if (Date.now() - Number(readerSuppressStructuredClickRef.current || 0) < 420) return;
     const root = readerArticleRef.current;
     if (!root) return;
     const target = event?.target;
@@ -13703,6 +13924,63 @@ function AppInner() {
     });
     if (!sentenceIds.length) return;
 
+    if (sentenceIds.length === 1 && wordIds.length > 0) {
+      const sid = sentenceIds[0];
+      const sentenceWords = getReaderSentenceWords(sid);
+      const firstWordIndex = getReaderWordIndexInSentence(sid, wordIds[0]);
+      const lastWordIndex = getReaderWordIndexInSentence(sid, wordIds[wordIds.length - 1]);
+      if (firstWordIndex >= 0 && lastWordIndex >= 0) {
+        if (wordIds.length === 1) {
+          const wordId = wordIds[0];
+          const metaWord = readerWordMap.get(wordId);
+          if (metaWord) {
+            handleSelection(event, metaWord.value, {
+              compact: true,
+              inlineLookup: true,
+              lookupLang: getNormalizeLookupLang(),
+              selectionType: 'word',
+              selectedMeta: {
+                sids: [sid],
+                wids: [wordId],
+                start: Number(metaWord.start || 0),
+                end: Number(metaWord.end || 0),
+              },
+            });
+            try {
+              selection.removeAllRanges();
+            } catch (_clearWordError) {
+              // ignore cleanup errors
+            }
+            return;
+          }
+        }
+
+        if (wordIds.length < sentenceWords.length) {
+          const phraseMeta = buildReaderPhraseSelection(sid, firstWordIndex, lastWordIndex);
+          if (phraseMeta) {
+            handleSelection(event, phraseMeta.text, {
+              compact: true,
+              inlineLookup: true,
+              lookupLang: getNormalizeLookupLang(),
+              selectionType: 'phrase',
+              selectedMeta: {
+                sids: phraseMeta.sids,
+                wids: phraseMeta.wids,
+                start: Number(phraseMeta.start || 0),
+                end: Number(phraseMeta.end || 0),
+              },
+            });
+            try {
+              selection.removeAllRanges();
+            } catch (_clearPhraseError) {
+              // ignore cleanup errors
+            }
+            return;
+          }
+        }
+      }
+    }
+
     const selectedSentences = readerSentencesModel.filter((sentence) => sentenceIdSet.has(sentence.sid));
     if (!selectedSentences.length) return;
     const selectedText = selectedSentences.map((sentence) => String(sentence.text || '')).join('');
@@ -13730,6 +14008,63 @@ function AppInner() {
     }
   };
 
+  const handleReaderWordTouchStart = (event) => {
+    const touch = event?.touches?.[0];
+    const target = event?.target;
+    if (!touch || !(target instanceof Element)) {
+      resetReaderPhraseGesture();
+      return;
+    }
+    const wordEl = target.closest('[data-wid][data-sid]');
+    if (!wordEl) {
+      resetReaderPhraseGesture();
+      return;
+    }
+    const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+    const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+    const anchorIndex = getReaderWordIndexInSentence(sid, wid);
+    if (!sid || anchorIndex < 0) {
+      resetReaderPhraseGesture();
+      return;
+    }
+    readerPhraseGestureRef.current = {
+      active: true,
+      sentenceId: sid,
+      anchorIndex,
+      currentIndex: anchorIndex,
+      moved: false,
+      startX: touch.clientX,
+      startY: touch.clientY,
+    };
+    readerDragSelectionMetaRef.current = null;
+    setReaderDragSelectionMeta(null);
+  };
+
+  const handleReaderArticleTouchMove = (event) => {
+    const gesture = readerPhraseGestureRef.current;
+    if (!gesture?.active) return;
+    const touch = event?.touches?.[0];
+    if (!touch) return;
+    const dx = touch.clientX - Number(gesture.startX || 0);
+    const dy = touch.clientY - Number(gesture.startY || 0);
+    if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
+    const wordEl = getReaderWordElementByPoint(touch.clientX, touch.clientY);
+    if (!wordEl) return;
+    const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+    const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+    if (!sid || sid !== gesture.sentenceId) return;
+    const currentIndex = getReaderWordIndexInSentence(sid, wid);
+    if (currentIndex < 0 || currentIndex === gesture.currentIndex) return;
+    const nextMeta = buildReaderPhraseSelection(sid, gesture.anchorIndex, currentIndex);
+    readerPhraseGestureRef.current = {
+      ...gesture,
+      currentIndex,
+      moved: Math.abs(currentIndex - gesture.anchorIndex) >= 1,
+    };
+    readerDragSelectionMetaRef.current = nextMeta;
+    setReaderDragSelectionMeta(nextMeta);
+  };
+
   const handleReaderArticleMouseUp = (event) => {
     markReaderInteraction();
     handleReaderStructuredSelectionEnd(event);
@@ -13737,8 +14072,36 @@ function AppInner() {
 
   const handleReaderArticleTouchEnd = (event) => {
     markReaderInteraction();
+    const gesture = readerPhraseGestureRef.current;
+    const previewMeta = readerDragSelectionMetaRef.current;
+    const touch = event?.changedTouches?.[0];
+    if (gesture?.active && gesture.moved && previewMeta?.wids?.length >= 2) {
+      const selectionEvent = touch
+        ? { clientX: touch.clientX, clientY: touch.clientY }
+        : event;
+      handleSelection(selectionEvent, previewMeta.text, {
+        compact: true,
+        inlineLookup: true,
+        lookupLang: getNormalizeLookupLang(),
+        selectionType: 'phrase',
+        selectedMeta: {
+          sids: Array.isArray(previewMeta.sids) ? previewMeta.sids : [],
+          wids: Array.isArray(previewMeta.wids) ? previewMeta.wids : [],
+          start: Number(previewMeta.start || 0),
+          end: Number(previewMeta.end || 0),
+        },
+      });
+      readerSuppressStructuredClickRef.current = Date.now();
+      resetReaderPhraseGesture();
+      return;
+    }
+    resetReaderPhraseGesture();
     handleReaderPageTouchEnd(event);
     handleReaderStructuredSelectionEnd(event);
+  };
+
+  const handleReaderArticleTouchCancel = () => {
+    resetReaderPhraseGesture();
   };
 
   const renderReaderStructuredText = () => (
@@ -13762,6 +14125,7 @@ function AppInner() {
                   data-sid={sentence.sid}
                   data-start={token.start}
                   data-end={token.end}
+                  onTouchStart={handleReaderWordTouchStart}
                 >
                   {token.value}
                 </span>
@@ -17496,6 +17860,114 @@ function AppInner() {
   }, [billingPlanDetailsOpenFor]);
 
   useEffect(() => {
+    const routeKey = String(currentSingleSectionRouteKey || '').trim();
+    if (!routeKey) {
+      return;
+    }
+    const previousRoute = String(sectionRouteCurrentRef.current || '').trim();
+    if (!previousRoute) {
+      sectionRouteCurrentRef.current = routeKey;
+      return;
+    }
+    if (previousRoute === routeKey) {
+      return;
+    }
+    if (sectionRouteBackNavigationRef.current) {
+      sectionRouteBackNavigationRef.current = false;
+      sectionRouteCurrentRef.current = routeKey;
+      return;
+    }
+    const history = sectionRouteHistoryRef.current;
+    if (history[history.length - 1] !== previousRoute) {
+      history.push(previousRoute);
+      if (history.length > 24) {
+        history.splice(0, history.length - 24);
+      }
+    }
+    sectionRouteCurrentRef.current = routeKey;
+  }, [currentSingleSectionRouteKey]);
+
+  const goBackToPreviousSectionStable = useStableCallback(goBackToPreviousSection);
+
+  useEffect(() => {
+    if (!isWebAppMode) return undefined;
+    const EDGE_START_PX = 28;
+    const MIN_SWIPE_X_PX = 72;
+    const MAX_SWIPE_Y_PX = 48;
+    const MAX_SWIPE_DURATION_MS = 700;
+    const shouldIgnoreGestureTarget = (target) => {
+      if (!(target instanceof Element)) return false;
+      return Boolean(target.closest('input, textarea, select, button, a, [role="button"], [data-no-edge-swipe]'));
+    };
+    const resetGesture = () => {
+      edgeSwipeBackGestureRef.current = {
+        active: false,
+        startX: 0,
+        startY: 0,
+        startedAt: 0,
+      };
+    };
+    const onTouchStart = (event) => {
+      const touch = event.touches?.[0];
+      if (!touch) {
+        resetGesture();
+        return;
+      }
+      if (shouldIgnoreGestureTarget(event.target)) {
+        resetGesture();
+        return;
+      }
+      if (touch.clientX > EDGE_START_PX) {
+        resetGesture();
+        return;
+      }
+      edgeSwipeBackGestureRef.current = {
+        active: true,
+        startX: Number(touch.clientX || 0),
+        startY: Number(touch.clientY || 0),
+        startedAt: Date.now(),
+      };
+    };
+    const onTouchMove = (event) => {
+      const gesture = edgeSwipeBackGestureRef.current;
+      if (!gesture.active) return;
+      const touch = event.touches?.[0];
+      if (!touch) {
+        resetGesture();
+        return;
+      }
+      const deltaX = Number(touch.clientX || 0) - gesture.startX;
+      const deltaY = Number(touch.clientY || 0) - gesture.startY;
+      if (deltaX < -12 || Math.abs(deltaY) > Math.max(72, Math.abs(deltaX) * 0.9)) {
+        resetGesture();
+      }
+    };
+    const onTouchEnd = (event) => {
+      const gesture = edgeSwipeBackGestureRef.current;
+      if (!gesture.active) return;
+      const touch = event.changedTouches?.[0];
+      const deltaX = Number(touch?.clientX || 0) - gesture.startX;
+      const deltaY = Number(touch?.clientY || 0) - gesture.startY;
+      const durationMs = Date.now() - gesture.startedAt;
+      resetGesture();
+      if (deltaX < MIN_SWIPE_X_PX) return;
+      if (Math.abs(deltaY) > MAX_SWIPE_Y_PX) return;
+      if (durationMs > MAX_SWIPE_DURATION_MS) return;
+      void goBackToPreviousSectionStable();
+    };
+    window.addEventListener('touchstart', onTouchStart, { passive: true });
+    window.addEventListener('touchmove', onTouchMove, { passive: true });
+    window.addEventListener('touchend', onTouchEnd, { passive: true });
+    window.addEventListener('touchcancel', resetGesture, { passive: true });
+    return () => {
+      window.removeEventListener('touchstart', onTouchStart);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', resetGesture);
+    };
+  }, [goBackToPreviousSectionStable, isWebAppMode]);
+
+  useEffect(() => {
     if (!analyticsTrendRef.current) {
       return;
     }
@@ -17537,10 +18009,10 @@ function AppInner() {
           const timeValue = avgTime[index] ?? 0;
           return `
             <strong>${labels[index] || ''}</strong><br/>
-            ${tr('Успешно', 'Erfolgreich')}: ${map[tr('Успешно', 'Erfolgreich')] ?? 0}<br/>
-            ${tr('Ошибки', 'Fehler')}: ${map[tr('Нужно доработать', 'Verbessern')] ?? 0}<br/>
-            ${tr('Ср. балл', 'Durchschnitt')}: ${map[tr('Средний балл', 'Durchschnitt')] ?? 0}<br/>
-            ${tr('Ср. время', 'Durchschn. Zeit')}: ${timeValue} ${tr('мин', 'Min')}
+            ${tr('Удачных переводов', 'Gute Uebersetzungen')}: ${map[tr('Успешно', 'Erfolgreich')] ?? 0}<br/>
+            ${tr('Нужно исправить', 'Zu verbessern')}: ${map[tr('Нужно доработать', 'Verbessern')] ?? 0}<br/>
+            ${tr('Средняя оценка', 'Durchschnittliche Bewertung')}: ${map[tr('Средний балл', 'Durchschnitt')] ?? 0}<br/>
+            ${tr('Среднее время', 'Durchschnittszeit')}: ${timeValue} ${tr('мин', 'Min')}
           `;
         },
       },
@@ -17642,14 +18114,14 @@ function AppInner() {
           if (!item) return '';
           return `
             <strong>${item.username}</strong><br/>
-            ${tr('Итоговый балл', 'Gesamtscore')}: ${item.final_score}<br/>
-            ${tr('Успех', 'Erfolg')}: ${item.success_rate}%<br/>
-            ${tr('Выполнение', 'Erfuellung')}: ${Number(item.completion_rate ?? 0)}% (${item.covered_sentences ?? item.total_translations ?? 0}/${item.assigned_sentences ?? 0})<br/>
-            ${tr('Ср. балл', 'Durchschnitt')}: ${item.avg_score}<br/>
+            ${tr('Общий результат', 'Gesamtergebnis')}: ${item.final_score}<br/>
+            ${tr('Удачных переводов', 'Gute Uebersetzungen')}: ${item.success_rate}%<br/>
+            ${tr('Закрыто по плану', 'Vom Plan erledigt')}: ${Number(item.completion_rate ?? 0)}% (${item.covered_sentences ?? item.total_translations ?? 0}/${item.assigned_sentences ?? 0})<br/>
+            ${tr('Средняя оценка', 'Durchschnittliche Bewertung')}: ${item.avg_score}<br/>
             ${tr('Переведено', 'Uebersetzt')}: ${item.total_translations}<br/>
             ${tr('Попытки', 'Versuche')}: ${item.translation_attempts ?? item.total_translations ?? 0}<br/>
-            ${tr('Пропущено', 'Verpasst')}: ${item.missed_sentences}<br/>
-            ${tr('Пропущено дней', 'Verpasste Tage')}: ${item.missed_days ?? 0}
+            ${tr('Пропущено заданий', 'Verpasste Aufgaben')}: ${item.missed_sentences}<br/>
+            ${tr('Дней без практики', 'Tage ohne Praxis')}: ${item.missed_days ?? 0}
           `;
         },
       },
@@ -20609,7 +21081,9 @@ function AppInner() {
                           onMouseUp={handleReaderArticleMouseUp}
                           onWheel={handleReaderPageWheel}
                           onTouchStart={handleReaderPageTouchStart}
+                          onTouchMove={handleReaderArticleTouchMove}
                           onTouchEnd={handleReaderArticleTouchEnd}
+                          onTouchCancel={handleReaderArticleTouchCancel}
                         >
                           {readerPageCount > 0 ? (
                             <div className="reader-pages-layout">
@@ -21883,39 +22357,21 @@ function AppInner() {
                 {analyticsError && <div className="webapp-error">{analyticsError}</div>}
 
                 {analyticsSummary && (
-                  <div className="analytics-cards">
-                    <div className="analytics-card">
-                      <span>{tr('Переводы', 'Uebersetzungen')}</span>
-                      <strong>{analyticsSummary.total_translations}</strong>
-                    </div>
-                    <div className="analytics-card">
-                      <span>{tr('Выполнение', 'Erfuellung')}</span>
-                      <strong>{analyticsSummary.completion_rate ?? 0}%</strong>
-                    </div>
-                    <div className="analytics-card">
-                      <span>{tr('Успех', 'Erfolg')}</span>
-                      <strong>{analyticsSummary.success_rate}%</strong>
-                    </div>
-                    <div className="analytics-card">
-                      <span>{tr('Средний балл', 'Durchschnitt')}</span>
-                      <strong>{analyticsSummary.avg_score}</strong>
-                    </div>
-                    <div className="analytics-card">
-                      <span>{tr('Среднее время', 'Durchschnittszeit')}</span>
-                      <strong>{analyticsSummary.avg_time_min} {tr('мин', 'Min')}</strong>
-                    </div>
-                    <div className="analytics-card">
-                      <span>{tr('Пропущено дней', 'Verpasste Tage')}</span>
-                      <strong>{analyticsSummary.missed_days}</strong>
-                    </div>
-                    <div className="analytics-card">
-                      <span>{tr('Пропущено', 'Verpasst')}</span>
-                      <strong>{analyticsSummary.missed_sentences}</strong>
-                    </div>
-                    <div className="analytics-card">
-                      <span>{tr('Итоговый балл', 'Gesamtscore')}</span>
-                      <strong>{analyticsSummary.final_score}</strong>
-                    </div>
+                  <div className="analytics-card-groups">
+                    {analyticsCardGroups.map((group) => (
+                      <div className="analytics-card-group" key={`analytics-group-${group.key}`}>
+                        <div className="analytics-card-group-title">{group.title}</div>
+                        <div className="analytics-cards">
+                          {group.items.map((item) => (
+                            <div className="analytics-card" key={`analytics-card-${group.key}-${item.key}`}>
+                              <span>{item.label}</span>
+                              <strong>{item.value}</strong>
+                              <small>{item.hint}</small>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
 
