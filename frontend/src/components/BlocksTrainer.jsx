@@ -170,21 +170,23 @@ export default function BlocksTrainer({
 
     const leftPad = 10;
     const rightPad = 10;
-    const topBase = 8;
+    const topBase = type === 'WORD' ? 6 : 8;
     const usableWidth = Math.max(containerRect.width - leftPad - rightPad, 220);
     const desiredTileWidth = tileWidthPx;
-    const baseCols = type === 'WORD' ? 4 : 3;
+    const baseCols = type === 'WORD' ? 5 : 3;
     const cols = Math.max(2, Math.min(baseCols, Math.floor(usableWidth / (desiredTileWidth + 8))));
-    const gapX = Math.max(8, Math.floor((usableWidth - cols * desiredTileWidth) / Math.max(cols - 1, 1)));
-    const gapY = 10;
+    const gapX = type === 'WORD'
+      ? Math.max(4, Math.floor((usableWidth - cols * desiredTileWidth) / Math.max(cols - 1, 1)))
+      : Math.max(8, Math.floor((usableWidth - cols * desiredTileWidth) / Math.max(cols - 1, 1)));
+    const gapY = type === 'WORD' ? 8 : 10;
     const occupiedSet = new Set(currentSlots.filter(Boolean));
     const visibleCount = tileItems.filter((item) => !occupiedSet.has(item.id)).length;
     const rows = Math.max(1, Math.ceil(visibleCount / cols));
-    const minPlaygroundHeight = visibleCount > 0 ? 96 : 18;
+    const minPlaygroundHeight = visibleCount > 0 ? (type === 'WORD' ? 78 : 96) : 18;
     const targetHeight = visibleCount > 0
       ? Math.max(minPlaygroundHeight, topBase + rows * (TILE_HEIGHT + gapY) + 12)
       : minPlaygroundHeight;
-    const boundedHeight = Math.min(targetHeight, 320);
+    const boundedHeight = Math.min(targetHeight, type === 'WORD' ? 220 : 320);
     setPlaygroundHeight(boundedHeight);
     const cellCoords = [];
     for (let r = 0; r < rows; r += 1) {
@@ -735,7 +737,9 @@ export default function BlocksTrainer({
     <div className={`blocks-trainer ${status !== 'idle' ? `is-${status}` : ''}`}>
       <div className="blocks-section blocks-section-task">
         <div className="blocks-head">
-          <div className="blocks-prompt">{prompt || text.promptFallback}</div>
+          <div className="blocks-prompt-wrap">
+            <div className="blocks-prompt">{prompt || text.promptFallback}</div>
+          </div>
           {timerSeconds !== null && (
             <div className={`blocks-timer ${timerSeconds <= 3 ? 'is-danger' : ''}`}>{timerSeconds}s</div>
           )}
@@ -863,9 +867,19 @@ export default function BlocksTrainer({
 
       {isFinished && (
         <div className={`blocks-result ${status === 'correct' ? 'ok' : 'bad'}`}>
-          <div>{status === 'correct' ? text.correct : status === 'timeout' ? text.timeout : text.wrong}</div>
-          <div>{text.correctAnswer}: {displayAnswer}</div>
-          <div>{text.hintsUsed}: {hintsUsed}</div>
+          <div className="blocks-result-head">
+            <div className="blocks-result-badge">
+              {status === 'correct' ? text.correct : status === 'timeout' ? text.timeout : text.wrong}
+            </div>
+            <div className="blocks-result-meta">
+              <span className="blocks-result-meta-label">{text.hintsUsed}</span>
+              <strong>{hintsUsed}</strong>
+            </div>
+          </div>
+          <div className="blocks-result-answer">
+            <div className="blocks-result-label">{text.correctAnswer}</div>
+            <div className="blocks-result-value">{displayAnswer}</div>
+          </div>
         </div>
       )}
     </div>

@@ -14211,6 +14211,109 @@ def _get_billing_all_time_bounds(currency: str = "USD") -> tuple[date, date]:
     return (row[0] or today, row[1] or today)
 
 
+def _get_product_active_users_count(
+    cursor,
+    *,
+    period_start: date,
+    period_end: date,
+    provider: str | None = None,
+) -> int:
+    provider_value = str(provider or "").strip().lower() or None
+
+    translation_providers = {"google_translate", "deepl_free", "azure_translator"}
+    voice_providers = {"livekit", "openai", "agent_tts"}
+    reader_providers = {
+        "google_tts",
+        "cloudflare_r2_class_a",
+        "cloudflare_r2_class_b",
+        "cloudflare_r2_storage",
+        "offline_tts",
+        "app_internal",
+    }
+
+    def _count_from_union(union_sql: str, params: tuple | list) -> int:
+        cursor.execute(
+            f"""
+            SELECT COUNT(DISTINCT user_id)
+            FROM (
+                {union_sql}
+            ) AS product_users
+            WHERE user_id IS NOT NULL;
+            """,
+            params,
+        )
+        return int((cursor.fetchone() or [0])[0] or 0)
+
+    translation_activity_union = """
+        SELECT user_id
+        FROM bt_3_translations
+        WHERE user_id IS NOT NULL
+          AND timestamp::date BETWEEN %s AND %s
+        UNION
+        SELECT user_id
+        FROM bt_3_webapp_checks
+        WHERE user_id IS NOT NULL
+          AND created_at::date BETWEEN %s AND %s
+        UNION
+        SELECT user_id
+        FROM bt_3_translation_check_sessions
+        WHERE user_id IS NOT NULL
+          AND created_at::date BETWEEN %s AND %s
+    """
+
+    voice_activity_union = """
+        SELECT user_id
+        FROM bt_3_agent_voice_sessions
+        WHERE user_id IS NOT NULL
+          AND COALESCE(ended_at, started_at, created_at)::date BETWEEN %s AND %s
+    """
+
+    reader_activity_union = """
+        SELECT user_id
+        FROM bt_3_reader_sessions
+        WHERE user_id IS NOT NULL
+          AND COALESCE(ended_at, started_at, created_at)::date BETWEEN %s AND %s
+        UNION
+        SELECT user_id
+        FROM bt_3_reader_library
+        WHERE user_id IS NOT NULL
+          AND COALESCE(updated_at, created_at)::date BETWEEN %s AND %s
+    """
+
+    if provider_value in translation_providers:
+        return _count_from_union(
+            translation_activity_union,
+            (period_start, period_end, period_start, period_end, period_start, period_end),
+        )
+    if provider_value in voice_providers:
+        return _count_from_union(
+            voice_activity_union,
+            (period_start, period_end),
+        )
+    if provider_value in reader_providers:
+        return _count_from_union(
+            reader_activity_union,
+            (period_start, period_end, period_start, period_end),
+        )
+
+    return _count_from_union(
+        f"""
+        {translation_activity_union}
+        UNION
+        {voice_activity_union}
+        UNION
+        {reader_activity_union}
+        """,
+        (
+            period_start, period_end,
+            period_start, period_end,
+            period_start, period_end,
+            period_start, period_end,
+            period_start, period_end,
+        ),
+    )
+
+
 def get_global_billing_summary(
     *,
     period: str = "month",
@@ -14278,21 +14381,12 @@ def get_global_billing_summary(
             )
             fixed_cost_total = float((cursor.fetchone() or [0])[0] or 0.0)
 
-            active_users_params = [currency_value, period_start, period_end]
-            if provider_value:
-                active_users_params.append(provider_value)
-            cursor.execute(
-                f"""
-                SELECT COUNT(DISTINCT user_id)
-                FROM bt_3_billing_events
-                WHERE user_id IS NOT NULL
-                  AND currency = %s
-                  AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
-                  {event_provider_sql};
-                """,
-                active_users_params,
+            active_users = _get_product_active_users_count(
+                cursor,
+                period_start=period_start,
+                period_end=period_end,
+                provider=provider_value,
             )
-            active_users = int((cursor.fetchone() or [0])[0] or 0)
 
             provider_rows: list[dict] = []
             provider_units_map: dict[str, list[dict]] = {}

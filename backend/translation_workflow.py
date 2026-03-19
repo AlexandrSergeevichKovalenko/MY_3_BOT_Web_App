@@ -1069,7 +1069,7 @@ async def submit_story_translation_webapp(
                 INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
                 user_translation, score, feedback, source_lang, target_lang)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (user_id, sentence_id, session_id) DO NOTHING
+                ON CONFLICT (user_id, sentence_id, session_id) WHERE session_id IS NOT NULL DO NOTHING
                 RETURNING id;
                 """,
                 (
@@ -4934,7 +4934,7 @@ async def check_user_translation_webapp_item(
                 INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
                 user_translation, score, feedback, source_lang, target_lang)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (user_id, sentence_id, session_id) DO NOTHING
+                ON CONFLICT (user_id, sentence_id, session_id) WHERE session_id IS NOT NULL DO NOTHING
                 RETURNING id, user_translation, score, feedback;
                 """,
                 (
