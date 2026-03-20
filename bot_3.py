@@ -3247,9 +3247,14 @@ async def handle_user_message(update: Update, context: CallbackContext):
                         "previous_answer": prev_answer,
                     }
             llm_response = await run_language_learning_private_question(llm_payload)
-            is_language_question = bool(llm_response.get("is_language_question"))
-            answer = str(llm_response.get("answer") or "").strip()
-            suggested_rephrase = str(llm_response.get("suggested_rephrase") or "").strip()
+            normalized_tutor = _normalize_language_tutor_llm_response(
+                llm_response,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            is_language_question = bool(normalized_tutor.get("is_language_question"))
+            answer = str(normalized_tutor.get("answer") or "").strip()
+            suggested_rephrase = str(normalized_tutor.get("suggested_rephrase") or "").strip()
             if not answer:
                 answer = _language_tutor_default_refusal() if not is_language_question else "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
             if not is_language_question and suggested_rephrase:
@@ -3260,10 +3265,22 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 "is_language_question": bool(is_language_question),
                 "updated_at": pytime.time(),
             }
+            save_key = None
+            if normalized_tutor["save_source_text"] and normalized_tutor["save_target_text"]:
+                save_key = _store_pending_quiz_question_save_request(
+                    user_id=int(user_id),
+                    request_key=f"langgpt:{int(user_id)}",
+                    source_text=normalized_tutor["save_source_text"],
+                    target_text=normalized_tutor["save_target_text"],
+                    source_lang=normalized_tutor["source_lang"],
+                    target_lang=normalized_tutor["target_lang"],
+                    continue_callback_data="langgpt:continue",
+                    continue_button_text="❓ Задать вопрос",
+                )
             await update.message.reply_text(
                 _truncate_telegram_reply_text(answer, max_chars=3000),
                 disable_web_page_preview=True,
-                reply_markup=_build_language_tutor_continue_keyboard(),
+                reply_markup=_build_language_tutor_answer_keyboard(save_key=save_key),
             )
         except Exception:
             logging.exception("❌ Ошибка language tutor answer user_id=%s", user_id)
@@ -5583,9 +5600,14 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
     pending_quiz_question_save_requests[save_key] = payload
     try:
         if query.message:
-            request_key = str(payload.get("request_key") or "").strip()
+            continue_callback_data = str(payload.get("continue_callback_data") or "").strip() or "langgpt:continue"
+            continue_button_text = str(payload.get("continue_button_text") or "").strip() or "❓ Задать вопрос"
             await query.message.edit_reply_markup(
-                reply_markup=_build_quiz_question_answer_keyboard(request_key=request_key, save_key=None)
+                reply_markup=_build_followup_answer_keyboard(
+                    continue_callback_data=continue_callback_data,
+                    continue_button_text=continue_button_text,
+                    save_key=None,
+                )
             )
     except Exception:
         logging.debug("Failed to update quiz question save keyboard", exc_info=True)
@@ -9316,10 +9338,18 @@ def _store_pending_quiz_question_save_request(
     target_text: str,
     source_lang: str,
     target_lang: str,
+    continue_callback_data: str | None = None,
+    continue_button_text: str | None = None,
 ) -> str:
     save_key = hashlib.sha1(
         f"quizqsave:{user_id}:{request_key}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
     ).hexdigest()[:20]
+    resolved_continue_callback = str(continue_callback_data or "").strip() or (
+        f"quizask:{str(request_key or '').strip()}"
+        if str(request_key or "").strip()
+        else "langgpt:continue"
+    )
+    resolved_continue_button_text = str(continue_button_text or "").strip() or "❓ Ещё вопрос"
     pending_quiz_question_save_requests[save_key] = {
         "user_id": int(user_id),
         "request_key": str(request_key or "").strip(),
@@ -9327,6 +9357,8 @@ def _store_pending_quiz_question_save_request(
         "target_text": str(target_text or "").strip(),
         "source_lang": str(source_lang or "").strip().lower(),
         "target_lang": str(target_lang or "").strip().lower(),
+        "continue_callback_data": resolved_continue_callback,
+        "continue_button_text": resolved_continue_button_text,
         "started_at": pytime.time(),
         "saved": False,
     }
@@ -9334,6 +9366,19 @@ def _store_pending_quiz_question_save_request(
         oldest_key = next(iter(pending_quiz_question_save_requests))
         pending_quiz_question_save_requests.pop(oldest_key, None)
     return save_key
+
+
+def _build_followup_answer_keyboard(
+    *,
+    continue_callback_data: str,
+    continue_button_text: str,
+    save_key: str | None = None,
+) -> InlineKeyboardMarkup:
+    rows = []
+    if save_key:
+        rows.append([InlineKeyboardButton("💾 Сохранить эту фразу", callback_data=f"quizqsave:{save_key}")])
+    rows.append([InlineKeyboardButton(str(continue_button_text or "❓ Ещё вопрос"), callback_data=str(continue_callback_data or "langgpt:continue"))])
+    return InlineKeyboardMarkup(rows)
 
 
 def _build_quiz_result_keyboard(
@@ -9355,11 +9400,19 @@ def _build_quiz_result_keyboard(
 
 
 def _build_quiz_question_answer_keyboard(*, request_key: str, save_key: str | None = None) -> InlineKeyboardMarkup:
-    rows = []
-    if save_key:
-        rows.append([InlineKeyboardButton("💾 Сохранить эту фразу", callback_data=f"quizqsave:{save_key}")])
-    rows.append([InlineKeyboardButton("❓ Ещё вопрос", callback_data=f"quizask:{request_key}")])
-    return InlineKeyboardMarkup(rows)
+    return _build_followup_answer_keyboard(
+        continue_callback_data=f"quizask:{request_key}",
+        continue_button_text="❓ Ещё вопрос",
+        save_key=save_key,
+    )
+
+
+def _build_language_tutor_answer_keyboard(*, save_key: str | None = None) -> InlineKeyboardMarkup:
+    return _build_followup_answer_keyboard(
+        continue_callback_data="langgpt:continue",
+        continue_button_text="❓ Задать вопрос",
+        save_key=save_key,
+    )
 
 
 def _build_quiz_question_prompt_keyboard() -> InlineKeyboardMarkup:
@@ -9414,6 +9467,42 @@ def _build_quiz_question_reply_message(normalized: dict) -> str:
         f"Перевод: {save_target_text}"
     )
     return _truncate_telegram_reply_text(combined)
+
+
+def _normalize_language_tutor_llm_response(
+    raw_payload: dict,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
+    is_language_question = bool(payload.get("is_language_question"))
+    answer = _truncate_telegram_reply_text(str(payload.get("answer") or "").strip(), max_chars=3000)
+    suggested_rephrase = str(payload.get("suggested_rephrase") or "").strip()
+    save_source_text = str(payload.get("save_source_text") or "").strip()
+    save_target_text = str(payload.get("save_target_text") or "").strip()
+    if len(save_source_text) > 180:
+        save_source_text = save_source_text[:177].rstrip() + "..."
+    if len(save_target_text) > 220:
+        save_target_text = save_target_text[:217].rstrip() + "..."
+    if save_source_text and not _text_matches_language_side(save_source_text, source_lang):
+        save_source_text = ""
+        save_target_text = ""
+    if save_target_text and not _text_matches_language_side(save_target_text, target_lang):
+        save_source_text = ""
+        save_target_text = ""
+    if not save_source_text or not save_target_text:
+        save_source_text = ""
+        save_target_text = ""
+    return {
+        "is_language_question": is_language_question,
+        "answer": answer,
+        "suggested_rephrase": suggested_rephrase,
+        "save_source_text": save_source_text,
+        "save_target_text": save_target_text,
+        "source_lang": str(source_lang or "").strip().lower(),
+        "target_lang": str(target_lang or "").strip().lower(),
+    }
 
 
 async def _send_quiz_result_private(

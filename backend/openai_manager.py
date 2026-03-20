@@ -970,7 +970,9 @@ Return STRICT JSON only with this schema:
 {
   "is_language_question": true,
   "answer": "...",
-  "suggested_rephrase": "..."
+  "suggested_rephrase": "...",
+  "save_source_text": "...",
+  "save_target_text": "..."
 }
 
 Rules:
@@ -978,11 +980,19 @@ Rules:
 - For off-topic questions, do not answer the off-topic content even partially.
 - For off-topic questions, answer briefly that you only answer language-learning questions.
 - For off-topic questions, suggested_rephrase must contain one short valid example question.
+- For off-topic questions, return empty strings for save_source_text and save_target_text.
 - For on-topic questions, answer directly, practically, and concisely.
 - If conversation_context is present and the learner asks a short follow-up like "why?", "and examples?", "what is the difference?", use the previous exchange to resolve references.
 - Use conversation_context only to continue the same language-learning discussion; do not invent missing facts beyond the previous exchange.
 - Use short examples when useful.
 - Answer in the same language as the learner question when reasonable; otherwise use source_language.
+- save_source_text must be ONE useful phrase/example in source_language that is worth saving to the learner's dictionary.
+- save_target_text must be the direct translation of save_source_text in target_language.
+- For on-topic questions, prefer returning a non-empty save_source_text/save_target_text pair whenever you can extract at least one practical phrase, pattern, or mini-example from the answer.
+- save_source_text should usually be at most 140 characters.
+- save_target_text should usually be at most 180 characters.
+- If there is no good save candidate, return empty strings for save_source_text and save_target_text.
+- Never swap source and target languages.
 - Do not use markdown tables.
 - Output ONLY valid JSON. No markdown fences. No extra commentary.
 """,
