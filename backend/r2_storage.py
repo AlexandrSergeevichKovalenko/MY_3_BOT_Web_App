@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from collections import defaultdict
 from functools import lru_cache
 from typing import Any
 from urllib.parse import quote
@@ -138,3 +139,52 @@ def r2_delete_object(object_key: str) -> bool:
         if code in {"404", "NoSuchKey", "NotFound"}:
             return False
         raise
+
+
+def r2_bucket_usage_summary(
+    *,
+    prefix_depth: int = 1,
+    min_prefix_bytes: int = 0,
+    max_prefixes: int = 50,
+) -> dict[str, Any]:
+    cfg = load_r2_config_from_env()
+    client = _r2_client()
+    paginator = client.get_paginator("list_objects_v2")
+    depth = max(1, int(prefix_depth or 1))
+    min_bytes = max(0, int(min_prefix_bytes or 0))
+    limit = max(1, int(max_prefixes or 50))
+    total_objects = 0
+    total_bytes = 0
+    by_prefix: dict[str, dict[str, int]] = defaultdict(lambda: {"objects": 0, "bytes": 0})
+
+    for page in paginator.paginate(Bucket=cfg.bucket_name):
+        for obj in page.get("Contents") or []:
+            key = str(obj.get("Key") or "").strip()
+            if not key:
+                continue
+            size_bytes = int(obj.get("Size") or 0)
+            total_objects += 1
+            total_bytes += size_bytes
+            key_parts = [part for part in key.split("/") if part]
+            prefix = "/".join(key_parts[:depth]) if key_parts else "(root)"
+            entry = by_prefix[prefix]
+            entry["objects"] += 1
+            entry["bytes"] += size_bytes
+
+    prefixes = [
+        {
+            "prefix": prefix,
+            "objects": int(values.get("objects") or 0),
+            "bytes": int(values.get("bytes") or 0),
+        }
+        for prefix, values in by_prefix.items()
+        if int(values.get("bytes") or 0) >= min_bytes
+    ]
+    prefixes.sort(key=lambda item: (-int(item["bytes"]), item["prefix"]))
+    return {
+        "bucket_name": cfg.bucket_name,
+        "total_objects": total_objects,
+        "total_bytes": total_bytes,
+        "prefix_depth": depth,
+        "prefixes": prefixes[:limit],
+    }

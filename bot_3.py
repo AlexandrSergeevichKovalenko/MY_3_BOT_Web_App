@@ -46,6 +46,7 @@ from backend.backend_server import (
     _sanitize_focus_topic,
     get_or_create_tts_clip,
     chunk_sentence_llm_de,
+    schedule_user_paid_subscription_cancel_at_period_end,
 )
 import os
 from pathlib import Path
@@ -85,6 +86,14 @@ from backend.database import (
     is_telegram_user_allowed,
     allow_telegram_user,
     revoke_telegram_user,
+    schedule_telegram_user_removal,
+    cancel_telegram_user_removal,
+    get_user_removal_request,
+    list_user_removal_queue,
+    list_due_user_removals_for_admin_confirmation,
+    mark_user_removal_admin_notified,
+    update_user_removal_billing_cancel_snapshot,
+    purge_telegram_user_personal_data,
     list_allowed_telegram_users,
     create_access_request,
     resolve_access_request,
@@ -174,6 +183,12 @@ SYSTEM_MESSAGE_CLEANUP_TZ = (os.getenv("SYSTEM_MESSAGE_CLEANUP_TZ") or os.getenv
 SYSTEM_MESSAGE_CLEANUP_HOUR = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "23").strip())
 SYSTEM_MESSAGE_CLEANUP_MINUTE = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MINUTE") or "59").strip())
 SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK") or "2").strip())
+USER_REMOVAL_REVIEW_TZ = (os.getenv("USER_REMOVAL_REVIEW_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+USER_REMOVAL_REVIEW_MINUTE = max(0, min(59, int((os.getenv("USER_REMOVAL_REVIEW_MINUTE") or "17").strip() or "17")))
+USER_REMOVAL_WEEKLY_REPORT_TZ = (os.getenv("USER_REMOVAL_WEEKLY_REPORT_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+USER_REMOVAL_WEEKLY_REPORT_DAY = (os.getenv("USER_REMOVAL_WEEKLY_REPORT_DAY") or "sun").strip().lower() or "sun"
+USER_REMOVAL_WEEKLY_REPORT_HOUR = max(0, min(23, int((os.getenv("USER_REMOVAL_WEEKLY_REPORT_HOUR") or "9").strip() or "9")))
+USER_REMOVAL_WEEKLY_REPORT_MINUTE = max(0, min(59, int((os.getenv("USER_REMOVAL_WEEKLY_REPORT_MINUTE") or "12").strip() or "12")))
 SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES = [
     item.strip().lower()
     for item in (os.getenv("SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES") or "feel_word").split(",")
@@ -958,6 +973,202 @@ def _is_admin_user(user_id: int | None) -> bool:
     if not user_id:
         return False
     return int(user_id) in get_admin_telegram_ids()
+
+
+def _format_admin_datetime(value: str | None) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return "-"
+    try:
+        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+        return parsed.astimezone(ZoneInfo(USER_REMOVAL_REVIEW_TZ)).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return raw_value
+
+
+def _build_user_removal_confirmation_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🗑 Подтвердить удаление", callback_data=f"userpurge:confirm:{int(user_id)}"),
+            InlineKeyboardButton("✋ Не удалять", callback_data=f"userpurge:cancel:{int(user_id)}"),
+        ]
+    ])
+
+
+def _build_user_removal_admin_text(removal: dict[str, Any]) -> str:
+    user_id = int(removal.get("user_id") or 0)
+    username = str(removal.get("username") or "unknown")
+    revoked_at = _format_admin_datetime(removal.get("revoked_at"))
+    grace_until = _format_admin_datetime(removal.get("grace_until"))
+    reason = str(removal.get("reason") or "not specified")
+    return (
+        "🗑 Подтверждение purge пользователя\n"
+        f"User ID: {user_id}\n"
+        f"User: {username}\n"
+        f"Доступ отозван: {revoked_at}\n"
+        f"Grace period истёк: {grace_until}\n"
+        f"Причина: {reason}\n\n"
+        "После подтверждения бот удалит личные учебные данные пользователя "
+        "(переводы, ошибки, словарь, reader, SRS, настройки и служебное состояние).\n"
+        "Платёжные и финансовые записи в этом шаге не удаляются."
+    )
+
+
+def _format_subscription_cancel_result(result: dict[str, Any] | None) -> str:
+    payload = result or {}
+    stripe_status = str(payload.get("stripe_status") or "unknown")
+    scheduled_count = len(payload.get("scheduled_ids") or [])
+    already_scheduled_count = len(payload.get("already_scheduled_ids") or [])
+    failed_count = len(payload.get("failed_ids") or [])
+    effective_access_until = _format_admin_datetime(payload.get("effective_access_until"))
+    if stripe_status in {"no_local_subscription", "no_active_subscription"}:
+        return "Подписка: активной Stripe-подписки не найдено."
+    if stripe_status == "scheduled_for_period_end":
+        return (
+            f"Подписка: автоотмена поставлена на конец оплаченного периода, "
+            f"scheduled={scheduled_count}, доступ оплачен до {effective_access_until}."
+        )
+    if stripe_status == "already_scheduled_for_period_end":
+        return (
+            f"Подписка: автоотмена уже была поставлена ранее, "
+            f"scheduled={already_scheduled_count}, доступ оплачен до {effective_access_until}."
+        )
+    if stripe_status == "stripe_unavailable":
+        return "Подписка: Stripe недоступен в этом процессе, проверьте отмену отдельно."
+    if stripe_status in {"partial_failure", "schedule_failed", "list_failed"}:
+        return (
+            f"Подписка: не удалось гарантированно поставить автоотмену "
+            f"(scheduled={scheduled_count}, already={already_scheduled_count}, failed={failed_count}, status={stripe_status})."
+        )
+    return f"Подписка: статус {stripe_status}."
+
+
+def _format_subscription_cancel_digest_marker(result: dict[str, Any] | None) -> str:
+    payload = result or {}
+    stripe_status = str(payload.get("stripe_status") or "unknown")
+    effective_access_until_raw = str(payload.get("effective_access_until") or "").strip()
+    effective_access_until = _format_admin_datetime(effective_access_until_raw) if effective_access_until_raw else "-"
+    if stripe_status in {"scheduled_for_period_end", "already_scheduled_for_period_end"}:
+        return f"billing=active_until:{effective_access_until}"
+    if stripe_status in {"no_local_subscription", "no_active_subscription"}:
+        return "billing=no_active_sub"
+    if stripe_status == "stripe_unavailable":
+        return "billing=stripe_unavailable"
+    if stripe_status in {"partial_failure", "schedule_failed", "list_failed"}:
+        return f"billing=issue:{stripe_status}"
+    return f"billing={stripe_status}"
+
+
+def _build_pending_purges_report_text(items: list[dict[str, Any]], *, title: str) -> str:
+    if not items:
+        return f"{title}\n\nОчередь удаления сейчас пуста."
+    counts = Counter(str(item.get("status") or "unknown") for item in items)
+    lines = [
+        title,
+        "",
+        f"Всего в очереди: {len(items)}",
+        f"Ожидают подтверждения: {counts.get('awaiting_admin_confirmation', 0)}",
+        f"Ждут grace period: {counts.get('scheduled', 0)}",
+        "",
+    ]
+    for item in items:
+        user_id = int(item.get("user_id") or 0)
+        username = str(item.get("username") or "unknown")
+        status = str(item.get("status") or "unknown")
+        grace_until = _format_admin_datetime(item.get("grace_until"))
+        revoked_at = _format_admin_datetime(item.get("revoked_at"))
+        reason = str(item.get("reason") or "not specified")
+        billing_text = _format_subscription_cancel_digest_marker(item.get("billing_cancel_snapshot"))
+        lines.append(
+            f"- {user_id} ({username}) | status={status} | revoked={revoked_at} | grace_until={grace_until} | reason={reason} | {billing_text}"
+        )
+    return "\n".join(lines)
+
+
+async def _notify_admins_due_user_removals(context: CallbackContext) -> None:
+    admin_ids = get_admin_telegram_ids()
+    if not admin_ids:
+        logging.warning("⚠️ Нет admin ID в окружении, некуда отправить подтверждение purge.")
+        return
+    due_items = await asyncio.to_thread(list_due_user_removals_for_admin_confirmation, 20)
+    if not due_items:
+        return
+    for removal in due_items:
+        user_id = int(removal.get("user_id") or 0)
+        if user_id <= 0:
+            continue
+        text = _build_user_removal_admin_text(removal)
+        keyboard = _build_user_removal_confirmation_keyboard(user_id)
+        sent_refs: list[dict[str, Any]] = []
+        for admin_id in admin_ids:
+            try:
+                sent_message = await context.bot.send_message(
+                    chat_id=int(admin_id),
+                    text=text,
+                    reply_markup=keyboard,
+                )
+                sent_refs.append({
+                    "chat_id": int(admin_id),
+                    "message_id": int(sent_message.message_id),
+                })
+            except Exception as exc:
+                logging.warning("Не удалось отправить purge-confirmation администратору %s: %s", admin_id, exc)
+        if sent_refs:
+            await asyncio.to_thread(
+                mark_user_removal_admin_notified,
+                user_id=user_id,
+                notification_message_refs=sent_refs,
+            )
+            logging.info("✅ Отправлено подтверждение purge user_id=%s admins=%s", user_id, len(sent_refs))
+        else:
+            logging.warning("⚠️ Не удалось отправить ни одного purge-confirmation для user_id=%s", user_id)
+
+
+async def send_weekly_user_removal_digest(context: CallbackContext) -> None:
+    if not context or not context.bot:
+        return
+    admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+    if not admin_ids:
+        logging.warning("⚠️ Нет admin ID для weekly user removal digest.")
+        return
+    tz_name = USER_REMOVAL_WEEKLY_REPORT_TZ
+    try:
+        now_local = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        tz_name = "UTC"
+        now_local = datetime.now(timezone.utc)
+    run_period = f"{now_local.isocalendar().year}-W{int(now_local.isocalendar().week):02d}"
+    items = await asyncio.to_thread(
+        list_user_removal_queue,
+        statuses=("scheduled", "awaiting_admin_confirmation"),
+        limit=200,
+    )
+    message_text = _build_pending_purges_report_text(
+        items,
+        title=f"🗓 Еженедельный digest по очереди удаления\nWeek: {run_period}\nTimezone: {tz_name}",
+    )
+    for admin_id in admin_ids:
+        already_sent = await asyncio.to_thread(
+            has_admin_scheduler_run,
+            job_key="weekly_user_removal_digest",
+            run_period=run_period,
+            target_chat_id=int(admin_id),
+        )
+        if already_sent:
+            continue
+        try:
+            await context.bot.send_message(chat_id=int(admin_id), text=message_text)
+            await asyncio.to_thread(
+                mark_admin_scheduler_run,
+                job_key="weekly_user_removal_digest",
+                run_period=run_period,
+                target_chat_id=int(admin_id),
+                metadata={"tz": tz_name, "items": len(items)},
+            )
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить weekly user removal digest admin_id=%s: %s", admin_id, exc)
 
 
 _SUPPORT_USER_ID_RE = re.compile(r"Support User ID:\s*(\d+)", re.IGNORECASE)
@@ -1876,6 +2087,11 @@ async def allow_user_command(update: Update, context: CallbackContext):
         reviewed_by=int(sender.id),
         review_note="approved via /allow",
     )
+    cancel_telegram_user_removal(
+        user_id=target_id,
+        canceled_by=int(sender.id),
+        note="access restored via /allow",
+    )
     await update.effective_message.reply_text(f"✅ Доступ выдан пользователю {target_id}.")
     try:
         await context.bot.send_message(
@@ -1901,6 +2117,7 @@ async def deny_user_command(update: Update, context: CallbackContext):
     except ValueError:
         await update.effective_message.reply_text("❌ user_id должен быть числом.")
         return
+    username_hint = " ".join(context.args[1:]).strip() or None
 
     resolved = resolve_latest_pending_access_request_for_user(
         user_id=target_id,
@@ -1909,16 +2126,48 @@ async def deny_user_command(update: Update, context: CallbackContext):
         review_note="rejected via /deny",
     )
     removed = revoke_telegram_user(target_id)
-    if resolved:
+    scheduled_removal = None
+    billing_cancel_result = None
+    if removed:
+        billing_cancel_result = await asyncio.to_thread(schedule_user_paid_subscription_cancel_at_period_end, target_id)
+        scheduled_removal = schedule_telegram_user_removal(
+            user_id=target_id,
+            username=(resolved or {}).get("username") or username_hint,
+            scheduled_by=int(sender.id),
+            reason="revoked via /deny",
+        )
+        await asyncio.to_thread(
+            update_user_removal_billing_cancel_snapshot,
+            user_id=target_id,
+            billing_cancel_snapshot=billing_cancel_result,
+        )
+    if resolved and scheduled_removal:
+        grace_until = _format_admin_datetime(scheduled_removal.get("grace_until"))
+        await update.effective_message.reply_text(
+            f"🚫 Заявка отклонена для пользователя {target_id}.\n"
+            f"Purge поставлен в очередь. После {grace_until} бот запросит подтверждение у администратора.\n"
+            f"{_format_subscription_cancel_result(billing_cancel_result)}"
+        )
+    elif resolved:
         await update.effective_message.reply_text(f"🚫 Заявка отклонена для пользователя {target_id}.")
-    elif removed:
-        await update.effective_message.reply_text(f"🚫 Доступ отозван у пользователя {target_id}.")
+    elif removed and scheduled_removal:
+        grace_until = _format_admin_datetime(scheduled_removal.get("grace_until"))
+        await update.effective_message.reply_text(
+            f"🚫 Доступ отозван у пользователя {target_id}.\n"
+            f"Purge поставлен в очередь. После {grace_until} бот запросит подтверждение у администратора.\n"
+            f"{_format_subscription_cancel_result(billing_cancel_result)}"
+        )
     else:
         await update.effective_message.reply_text(f"ℹ️ Нет pending-заявки и пользователя {target_id} нет в whitelist.")
     try:
         await context.bot.send_message(
             chat_id=target_id,
-            text="❌ Заявка отклонена администратором.",
+            text=(
+                "❌ Заявка отклонена администратором."
+                if not scheduled_removal else
+                "🚫 Доступ к боту закрыт. Личные учебные данные поставлены в очередь на удаление, "
+                "но будут удалены только после отдельного подтверждения администратора после grace period."
+            ),
         )
     except Exception as exc:
         logging.info(f"Не удалось отправить уведомление пользователю {target_id}: {exc}")
@@ -1976,12 +2225,44 @@ async def handle_access_request_action(update: Update, context: CallbackContext)
             added_by=int(admin.id),
             note="approved via inline button",
         )
+        cancel_telegram_user_removal(
+            user_id=target_id,
+            canceled_by=int(admin.id),
+            note="access restored via inline button",
+        )
         admin_text = f"✅ Заявка #{request_id} одобрена. Пользователь {target_id} получил доступ."
         user_text = "✅ Ваша заявка одобрена. Доступ к боту и WebApp открыт."
     else:
-        revoke_telegram_user(target_id)
-        admin_text = f"❌ Заявка #{request_id} отклонена. Пользователь {target_id}."
-        user_text = "❌ Ваша заявка отклонена администратором."
+        removed = revoke_telegram_user(target_id)
+        scheduled_removal = None
+        billing_cancel_result = None
+        if removed:
+            billing_cancel_result = await asyncio.to_thread(schedule_user_paid_subscription_cancel_at_period_end, target_id)
+            scheduled_removal = schedule_telegram_user_removal(
+                user_id=target_id,
+                username=username,
+                scheduled_by=int(admin.id),
+                reason="revoked via access inline button",
+            )
+            await asyncio.to_thread(
+                update_user_removal_billing_cancel_snapshot,
+                user_id=target_id,
+                billing_cancel_snapshot=billing_cancel_result,
+            )
+        if scheduled_removal:
+            grace_until = _format_admin_datetime(scheduled_removal.get("grace_until"))
+            admin_text = (
+                f"❌ Заявка #{request_id} отклонена. Пользователь {target_id}. "
+                f"Purge будет вынесен на подтверждение после {grace_until}. "
+                f"{_format_subscription_cancel_result(billing_cancel_result)}"
+            )
+            user_text = (
+                "🚫 Доступ к боту закрыт. Личные учебные данные поставлены в очередь на удаление, "
+                "но будут удалены только после отдельного подтверждения администратора после grace period."
+            )
+        else:
+            admin_text = f"❌ Заявка #{request_id} отклонена. Пользователь {target_id}."
+            user_text = "❌ Ваша заявка отклонена администратором."
 
     await query.answer("Готово.")
     try:
@@ -1995,6 +2276,72 @@ async def handle_access_request_action(update: Update, context: CallbackContext)
         await context.bot.send_message(chat_id=target_id, text=user_text)
     except Exception as exc:
         logging.info(f"Не удалось отправить уведомление пользователю {target_id}: {exc}")
+
+
+async def handle_user_removal_action(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+
+    match = re.match(r"^userpurge:(confirm|cancel):(\d+)$", query.data or "")
+    if not match:
+        await query.answer("Некорректные данные кнопки.", show_alert=True)
+        return
+
+    action, user_id_raw = match.groups()
+    target_id = int(user_id_raw)
+    current = await asyncio.to_thread(get_user_removal_request, target_id)
+    if not current:
+        await query.answer("Очередь удаления для пользователя не найдена.", show_alert=True)
+        return
+    current_status = str(current.get("status") or "").strip().lower()
+    if current_status in {"purged", "canceled"}:
+        await query.answer(f"Запрос уже обработан ({current_status}).", show_alert=True)
+        return
+
+    if action == "cancel":
+        result = await asyncio.to_thread(
+            cancel_telegram_user_removal,
+            user_id=target_id,
+            canceled_by=int(admin.id),
+            note="purge canceled via inline button",
+        )
+        admin_text = (
+            f"✋ Purge отменён для пользователя {target_id}. "
+            "Доступ остаётся отозванным, данные пока сохраняются."
+        )
+    else:
+        result = await asyncio.to_thread(
+            purge_telegram_user_personal_data,
+            user_id=target_id,
+            approved_by=int(admin.id),
+            note="purge approved via inline button",
+        )
+        summary = (result or {}).get("purge_summary") or {}
+        total_deleted_rows = int(summary.get("total_deleted_rows") or 0)
+        admin_text = (
+            f"🗑 Purge подтверждён для пользователя {target_id}. "
+            f"Удалено строк: {total_deleted_rows}."
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="🗑 По решению администратора ваши личные учебные данные были удалены из приложения.",
+            )
+        except Exception as exc:
+            logging.info("Не удалось отправить уведомление о purge пользователю %s: %s", target_id, exc)
+
+    await query.answer("Готово.")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    if query.message:
+        await query.message.reply_text(admin_text)
 
 
 async def allowed_users_command(update: Update, context: CallbackContext):
@@ -2027,6 +2374,22 @@ async def pending_requests_command(update: Update, context: CallbackContext):
         await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
         return
     await _send_pending_requests_to_admin(context, chat_id=update.effective_message.chat_id)
+
+
+async def pending_purges_command(update: Update, context: CallbackContext):
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    items = await asyncio.to_thread(
+        list_user_removal_queue,
+        statuses=("scheduled", "awaiting_admin_confirmation"),
+        limit=200,
+    )
+    text = _build_pending_purges_report_text(items, title="🧾 Очередь удаления пользователей")
+    await update.effective_message.reply_text(text)
 
 
 async def mobile_token_command(update: Update, context: CallbackContext):
@@ -10913,6 +11276,7 @@ def main():
     application.add_handler(CommandHandler("deny", deny_user_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))
+    application.add_handler(CommandHandler("pending_purges", pending_purges_command))
     application.add_handler(CommandHandler("mobile_token", mobile_token_command))
     application.add_handler(CommandHandler("budgets", budgets_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
@@ -10928,6 +11292,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_explain_request, pattern=r"^explain:"))
     application.add_handler(CallbackQueryHandler(handle_pending_access_list, pattern=r"^access:pending:list$"))
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
+    application.add_handler(CallbackQueryHandler(handle_user_removal_action, pattern=r"^userpurge:(confirm|cancel):"))
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_tts_prewarm_quota_callback, pattern=r"^ttsprewarmquota:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
@@ -11087,6 +11452,28 @@ def main():
         "cron",
         hour=SYSTEM_MESSAGE_CLEANUP_HOUR,
         minute=SYSTEM_MESSAGE_CLEANUP_MINUTE,
+    )
+    try:
+        user_removal_review_timezone = ZoneInfo(USER_REMOVAL_REVIEW_TZ)
+    except Exception:
+        user_removal_review_timezone = ZoneInfo("UTC")
+    scheduler.add_job(
+        lambda: submit_async(_notify_admins_due_user_removals, CallbackContext(application=application)),
+        "cron",
+        minute=USER_REMOVAL_REVIEW_MINUTE,
+        timezone=user_removal_review_timezone,
+    )
+    try:
+        user_removal_weekly_timezone = ZoneInfo(USER_REMOVAL_WEEKLY_REPORT_TZ)
+    except Exception:
+        user_removal_weekly_timezone = ZoneInfo("UTC")
+    scheduler.add_job(
+        lambda: submit_async(send_weekly_user_removal_digest, CallbackContext(application=application)),
+        "cron",
+        day_of_week=USER_REMOVAL_WEEKLY_REPORT_DAY,
+        hour=USER_REMOVAL_WEEKLY_REPORT_HOUR,
+        minute=USER_REMOVAL_WEEKLY_REPORT_MINUTE,
+        timezone=user_removal_weekly_timezone,
     )
     budget_report_enabled = (os.getenv("BUDGET_REPORT_SCHEDULER_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
     if budget_report_enabled:

@@ -59,6 +59,7 @@ SUPPORTED_LEARNING_LANGUAGES = {"de", "en", "es", "it"}
 SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
 DEFAULT_NATIVE_LANGUAGE = "ru"
+USER_REMOVAL_GRACE_DAYS = max(1, int(os.getenv("USER_REMOVAL_GRACE_DAYS", "30")))
 SKILL_STATE_V2_RECENT_TAU_DAYS = 10.0
 SKILL_STATE_V2_CONFIDENCE_SPREAD = 12.0
 SKILL_STATE_V2_MASTERY_RECENT_WEIGHT = 28.0
@@ -1399,6 +1400,36 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_allowed_users_updated
                 ON bt_3_allowed_users (updated_at);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_user_removal_queue (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    grace_until TIMESTAMPTZ NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'scheduled',
+                    scheduled_by BIGINT,
+                    reason TEXT,
+                    notification_sent_at TIMESTAMPTZ,
+                    notification_message_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    decision_at TIMESTAMPTZ,
+                    decision_by BIGINT,
+                    decision_note TEXT,
+                    purged_at TIMESTAMPTZ,
+                    purge_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    billing_cancel_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (status IN ('scheduled', 'awaiting_admin_confirmation', 'canceled', 'purged'))
+                );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_user_removal_queue
+                ADD COLUMN IF NOT EXISTS billing_cancel_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_user_removal_queue_status_grace
+                ON bt_3_user_removal_queue (status, grace_until ASC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_user_language_profile (
@@ -4712,6 +4743,618 @@ def revoke_telegram_user(user_id: int) -> bool:
                 (int(user_id),),
             )
             return cursor.rowcount > 0
+
+
+def _serialize_user_removal_row(row) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "user_id": int(row[0]),
+        "username": row[1],
+        "revoked_at": row[2].isoformat() if row[2] else None,
+        "grace_until": row[3].isoformat() if row[3] else None,
+        "status": row[4],
+        "scheduled_by": row[5],
+        "reason": row[6],
+        "notification_sent_at": row[7].isoformat() if row[7] else None,
+        "notification_message_refs": row[8] if isinstance(row[8], list) else [],
+        "decision_at": row[9].isoformat() if row[9] else None,
+        "decision_by": row[10],
+        "decision_note": row[11],
+        "purged_at": row[12].isoformat() if row[12] else None,
+        "purge_summary": row[13] if isinstance(row[13], dict) else {},
+        "billing_cancel_snapshot": row[14] if isinstance(row[14], dict) else {},
+        "created_at": row[15].isoformat() if row[15] else None,
+        "updated_at": row[16].isoformat() if row[16] else None,
+    }
+
+
+def get_user_removal_request(user_id: int) -> dict[str, Any] | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    user_id,
+                    username,
+                    revoked_at,
+                    grace_until,
+                    status,
+                    scheduled_by,
+                    reason,
+                    notification_sent_at,
+                    notification_message_refs,
+                    decision_at,
+                    decision_by,
+                    decision_note,
+                    purged_at,
+                    purge_summary,
+                    billing_cancel_snapshot,
+                    created_at,
+                    updated_at
+                FROM bt_3_user_removal_queue
+                WHERE user_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return _serialize_user_removal_row(row)
+
+
+def schedule_telegram_user_removal(
+    *,
+    user_id: int,
+    username: str | None = None,
+    scheduled_by: int | None = None,
+    reason: str | None = None,
+    grace_days: int | None = None,
+) -> dict[str, Any]:
+    normalized_username = str(username or "").strip() or None
+    normalized_reason = str(reason or "").strip() or None
+    resolved_grace_days = max(1, int(grace_days or USER_REMOVAL_GRACE_DAYS))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_user_removal_queue (
+                    user_id,
+                    username,
+                    revoked_at,
+                    grace_until,
+                    status,
+                    scheduled_by,
+                    reason,
+                    notification_sent_at,
+                    notification_message_refs,
+                    decision_at,
+                    decision_by,
+                    decision_note,
+                    purged_at,
+                    purge_summary,
+                    billing_cancel_snapshot,
+                    updated_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    NOW(),
+                    NOW() + (%s * INTERVAL '1 day'),
+                    'scheduled',
+                    %s,
+                    %s,
+                    NULL,
+                    '[]'::jsonb,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    '{}'::jsonb,
+                    NOW()
+                )
+                ON CONFLICT (user_id) DO UPDATE
+                SET
+                    username = COALESCE(EXCLUDED.username, bt_3_user_removal_queue.username),
+                    revoked_at = NOW(),
+                    grace_until = EXCLUDED.grace_until,
+                    status = 'scheduled',
+                    scheduled_by = EXCLUDED.scheduled_by,
+                    reason = COALESCE(EXCLUDED.reason, bt_3_user_removal_queue.reason),
+                    notification_sent_at = NULL,
+                    notification_message_refs = '[]'::jsonb,
+                    decision_at = NULL,
+                    decision_by = NULL,
+                    decision_note = NULL,
+                    purged_at = NULL,
+                    purge_summary = '{}'::jsonb,
+                    billing_cancel_snapshot = '{}'::jsonb,
+                    updated_at = NOW()
+                RETURNING
+                    user_id,
+                    username,
+                    revoked_at,
+                    grace_until,
+                    status,
+                    scheduled_by,
+                    reason,
+                    notification_sent_at,
+                    notification_message_refs,
+                    decision_at,
+                    decision_by,
+                    decision_note,
+                    purged_at,
+                    purge_summary,
+                    billing_cancel_snapshot,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    int(user_id),
+                    normalized_username,
+                    resolved_grace_days,
+                    int(scheduled_by) if scheduled_by is not None else None,
+                    normalized_reason,
+                ),
+            )
+            row = cursor.fetchone()
+    result = _serialize_user_removal_row(row)
+    if not result:
+        raise RuntimeError("failed to schedule telegram user removal")
+    return result
+
+
+def cancel_telegram_user_removal(
+    *,
+    user_id: int,
+    canceled_by: int | None = None,
+    note: str | None = None,
+) -> dict[str, Any] | None:
+    normalized_note = str(note or "").strip() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_user_removal_queue
+                SET
+                    status = 'canceled',
+                    decision_at = NOW(),
+                    decision_by = %s,
+                    decision_note = %s,
+                    updated_at = NOW()
+                WHERE user_id = %s
+                  AND status IN ('scheduled', 'awaiting_admin_confirmation')
+                RETURNING
+                    user_id,
+                    username,
+                    revoked_at,
+                    grace_until,
+                    status,
+                    scheduled_by,
+                    reason,
+                    notification_sent_at,
+                    notification_message_refs,
+                    decision_at,
+                    decision_by,
+                    decision_note,
+                    purged_at,
+                    purge_summary,
+                    billing_cancel_snapshot,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    int(canceled_by) if canceled_by is not None else None,
+                    normalized_note,
+                    int(user_id),
+                ),
+            )
+            row = cursor.fetchone()
+    return _serialize_user_removal_row(row)
+
+
+def list_due_user_removals_for_admin_confirmation(limit: int = 20) -> list[dict[str, Any]]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    user_id,
+                    username,
+                    revoked_at,
+                    grace_until,
+                    status,
+                    scheduled_by,
+                    reason,
+                    notification_sent_at,
+                    notification_message_refs,
+                    decision_at,
+                    decision_by,
+                    decision_note,
+                    purged_at,
+                    purge_summary,
+                    billing_cancel_snapshot,
+                    created_at,
+                    updated_at
+                FROM bt_3_user_removal_queue
+                WHERE status = 'scheduled'
+                  AND grace_until <= NOW()
+                  AND notification_sent_at IS NULL
+                ORDER BY grace_until ASC, revoked_at ASC
+                LIMIT %s;
+                """,
+                (max(1, int(limit)),),
+            )
+            rows = cursor.fetchall()
+    return [_serialize_user_removal_row(row) for row in rows if row]
+
+
+def list_user_removal_queue(
+    *,
+    statuses: list[str] | tuple[str, ...] | set[str] | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    normalized_statuses = [
+        str(item or "").strip().lower()
+        for item in (statuses or [])
+        if str(item or "").strip()
+    ]
+    allowed_statuses = {"scheduled", "awaiting_admin_confirmation", "canceled", "purged"}
+    normalized_statuses = [item for item in normalized_statuses if item in allowed_statuses]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if normalized_statuses:
+                cursor.execute(
+                    """
+                    SELECT
+                        user_id,
+                        username,
+                        revoked_at,
+                        grace_until,
+                        status,
+                        scheduled_by,
+                        reason,
+                        notification_sent_at,
+                        notification_message_refs,
+                        decision_at,
+                        decision_by,
+                        decision_note,
+                        purged_at,
+                        purge_summary,
+                        billing_cancel_snapshot,
+                        created_at,
+                        updated_at
+                    FROM bt_3_user_removal_queue
+                    WHERE status = ANY(%s)
+                    ORDER BY
+                        CASE status
+                            WHEN 'awaiting_admin_confirmation' THEN 1
+                            WHEN 'scheduled' THEN 2
+                            WHEN 'canceled' THEN 3
+                            WHEN 'purged' THEN 4
+                            ELSE 9
+                        END ASC,
+                        grace_until ASC NULLS LAST,
+                        revoked_at DESC
+                    LIMIT %s;
+                    """,
+                    (normalized_statuses, max(1, int(limit))),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT
+                        user_id,
+                        username,
+                        revoked_at,
+                        grace_until,
+                        status,
+                        scheduled_by,
+                        reason,
+                        notification_sent_at,
+                        notification_message_refs,
+                        decision_at,
+                        decision_by,
+                        decision_note,
+                        purged_at,
+                        purge_summary,
+                        billing_cancel_snapshot,
+                        created_at,
+                        updated_at
+                    FROM bt_3_user_removal_queue
+                    ORDER BY
+                        CASE status
+                            WHEN 'awaiting_admin_confirmation' THEN 1
+                            WHEN 'scheduled' THEN 2
+                            WHEN 'canceled' THEN 3
+                            WHEN 'purged' THEN 4
+                            ELSE 9
+                        END ASC,
+                        grace_until ASC NULLS LAST,
+                        revoked_at DESC
+                    LIMIT %s;
+                    """,
+                    (max(1, int(limit)),),
+                )
+            rows = cursor.fetchall() or []
+    return [_serialize_user_removal_row(row) for row in rows if row]
+
+
+def mark_user_removal_admin_notified(
+    *,
+    user_id: int,
+    notification_message_refs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    refs_payload = notification_message_refs if isinstance(notification_message_refs, list) else []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_user_removal_queue
+                SET
+                    status = 'awaiting_admin_confirmation',
+                    notification_sent_at = NOW(),
+                    notification_message_refs = %s,
+                    updated_at = NOW()
+                WHERE user_id = %s
+                  AND status = 'scheduled'
+                RETURNING
+                    user_id,
+                    username,
+                    revoked_at,
+                    grace_until,
+                    status,
+                    scheduled_by,
+                    reason,
+                    notification_sent_at,
+                    notification_message_refs,
+                    decision_at,
+                    decision_by,
+                    decision_note,
+                    purged_at,
+                    purge_summary,
+                    billing_cancel_snapshot,
+                    created_at,
+                    updated_at;
+                """,
+                (Json(refs_payload), int(user_id)),
+            )
+            row = cursor.fetchone()
+    return _serialize_user_removal_row(row)
+
+
+def update_user_removal_billing_cancel_snapshot(
+    *,
+    user_id: int,
+    billing_cancel_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    payload = billing_cancel_snapshot if isinstance(billing_cancel_snapshot, dict) else {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_user_removal_queue
+                SET
+                    billing_cancel_snapshot = %s,
+                    updated_at = NOW()
+                WHERE user_id = %s
+                RETURNING
+                    user_id,
+                    username,
+                    revoked_at,
+                    grace_until,
+                    status,
+                    scheduled_by,
+                    reason,
+                    notification_sent_at,
+                    notification_message_refs,
+                    decision_at,
+                    decision_by,
+                    decision_note,
+                    purged_at,
+                    purge_summary,
+                    billing_cancel_snapshot,
+                    created_at,
+                    updated_at;
+                """,
+                (Json(payload), int(user_id)),
+            )
+            row = cursor.fetchone()
+    return _serialize_user_removal_row(row)
+
+
+def deactivate_user_subscription(
+    *,
+    user_id: int,
+    status: str = "canceled",
+    plan_code: str = "free",
+    clear_stripe_subscription_id: bool = False,
+) -> dict | None:
+    status_value = _normalize_subscription_status(status)
+    plan_code_value = str(plan_code or "free").strip().lower() or "free"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE user_subscriptions
+                SET
+                    plan_code = %s,
+                    status = %s,
+                    trial_ends_at = NULL,
+                    current_period_end = NULL,
+                    stripe_subscription_id = CASE
+                        WHEN %s THEN NULL
+                        ELSE stripe_subscription_id
+                    END,
+                    updated_at = NOW()
+                WHERE user_id = %s
+                RETURNING
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    current_period_end,
+                    stripe_customer_id,
+                    stripe_subscription_id,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    plan_code_value,
+                    status_value,
+                    bool(clear_stripe_subscription_id),
+                    int(user_id),
+                ),
+            )
+            row = cursor.fetchone()
+    return _subscription_row_to_dict(row) if row else None
+
+
+def purge_telegram_user_personal_data(
+    *,
+    user_id: int,
+    approved_by: int | None = None,
+    note: str | None = None,
+) -> dict[str, Any] | None:
+    normalized_note = str(note or "").strip() or None
+    delete_statements: list[tuple[str, str]] = [
+        ("daily_plan_items", """
+            DELETE FROM bt_3_daily_plan_items i
+            USING bt_3_daily_plans p
+            WHERE i.plan_id = p.id
+              AND p.user_id = %s;
+        """),
+        ("translation_check_sessions", "DELETE FROM bt_3_translation_check_sessions WHERE user_id = %s;"),
+        ("webapp_dictionary_queries", "DELETE FROM bt_3_webapp_dictionary_queries WHERE user_id = %s;"),
+        ("dictionary_folders", "DELETE FROM bt_3_dictionary_folders WHERE user_id = %s;"),
+        ("translation_draft_state", "DELETE FROM bt_3_translation_draft_state WHERE user_id = %s;"),
+        ("youtube_watch_state", "DELETE FROM bt_3_youtube_watch_state WHERE user_id = %s;"),
+        ("flashcard_feel_feedback_queue", "DELETE FROM bt_3_flashcard_feel_feedback_queue WHERE user_id = %s;"),
+        ("flashcard_seen", "DELETE FROM bt_3_flashcard_seen WHERE user_id = %s;"),
+        ("flashcard_stats", "DELETE FROM bt_3_flashcard_stats WHERE user_id = %s;"),
+        ("video_recommendation_votes", "DELETE FROM bt_3_video_recommendation_votes WHERE user_id = %s;"),
+        ("support_messages", "DELETE FROM bt_3_support_messages WHERE user_id = %s;"),
+        ("card_review_log", "DELETE FROM bt_3_card_review_log WHERE user_id = %s;"),
+        ("card_srs_state", "DELETE FROM bt_3_card_srs_state WHERE user_id = %s;"),
+        ("daily_plans", "DELETE FROM bt_3_daily_plans WHERE user_id = %s;"),
+        ("weekly_goals", "DELETE FROM bt_3_weekly_goals WHERE user_id = %s;"),
+        ("agent_voice_sessions", "DELETE FROM bt_3_agent_voice_sessions WHERE user_id = %s;"),
+        ("reader_sessions", "DELETE FROM bt_3_reader_sessions WHERE user_id = %s;"),
+        ("reader_library", "DELETE FROM bt_3_reader_library WHERE user_id = %s;"),
+        ("today_reminder_settings", "DELETE FROM bt_3_today_reminder_settings WHERE user_id = %s;"),
+        ("audio_grammar_settings", "DELETE FROM bt_3_audio_grammar_settings WHERE user_id = %s;"),
+        ("youtube_proxy_subtitles_access", "DELETE FROM bt_3_youtube_proxy_subtitles_access WHERE user_id = %s;"),
+        ("today_regenerate_limits", "DELETE FROM bt_3_today_regenerate_limits WHERE user_id = %s;"),
+        ("default_topics", "DELETE FROM bt_3_default_topics WHERE user_id = %s;"),
+        ("telegram_quiz_attempts", "DELETE FROM bt_3_telegram_quiz_attempts WHERE user_id = %s;"),
+        ("webapp_group_contexts", "DELETE FROM bt_3_webapp_group_contexts WHERE user_id = %s;"),
+        ("webapp_scope_state", "DELETE FROM bt_3_webapp_scope_state WHERE user_id = %s;"),
+        ("webapp_instance_leases", "DELETE FROM bt_3_webapp_instance_leases WHERE user_id = %s;"),
+        ("webapp_checks", "DELETE FROM bt_3_webapp_checks WHERE user_id = %s;"),
+        ("user_language_profile", "DELETE FROM bt_3_user_language_profile WHERE user_id = %s;"),
+        ("skill_state_v2_dirty", "DELETE FROM bt_3_skill_state_v2_dirty WHERE user_id = %s;"),
+        ("user_skill_state_v2", "DELETE FROM bt_3_user_skill_state_v2 WHERE user_id = %s;"),
+        ("user_skill_state", "DELETE FROM bt_3_user_skill_state WHERE user_id = %s;"),
+        ("daily_sentences", "DELETE FROM bt_3_daily_sentences WHERE user_id = %s;"),
+        ("detailed_mistakes", "DELETE FROM bt_3_detailed_mistakes WHERE user_id = %s;"),
+        ("attempts", "DELETE FROM bt_3_attempts WHERE user_id = %s;"),
+        ("successful_translations", "DELETE FROM bt_3_successful_translations WHERE user_id = %s;"),
+        ("translations", "DELETE FROM bt_3_translations WHERE user_id = %s;"),
+        ("messages", "DELETE FROM bt_3_messages WHERE user_id = %s;"),
+        ("conversation_errors", "DELETE FROM bt_3_conversation_errors WHERE user_id = %s;"),
+        ("bookmarks", "DELETE FROM bt_3_bookmarks WHERE user_id = %s;"),
+        ("user_progress", "DELETE FROM bt_3_user_progress WHERE user_id = %s;"),
+        ("translation_errors", "DELETE FROM bt_3_translation_errors WHERE user_id = %s;"),
+        ("access_allowed", "DELETE FROM bt_3_allowed_users WHERE user_id = %s;"),
+    ]
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    user_id,
+                    username,
+                    revoked_at,
+                    grace_until,
+                    status,
+                    scheduled_by,
+                    reason,
+                    notification_sent_at,
+                    notification_message_refs,
+                    decision_at,
+                    decision_by,
+                    decision_note,
+                    purged_at,
+                    purge_summary,
+                    billing_cancel_snapshot,
+                    created_at,
+                    updated_at
+                FROM bt_3_user_removal_queue
+                WHERE user_id = %s
+                FOR UPDATE;
+                """,
+                (int(user_id),),
+            )
+            existing_row = cursor.fetchone()
+            if not existing_row:
+                return None
+            existing = _serialize_user_removal_row(existing_row)
+            if not existing:
+                return None
+            if existing.get("status") == "purged":
+                return existing
+
+            purge_summary: dict[str, Any] = {}
+            total_deleted_rows = 0
+            for label, query in delete_statements:
+                cursor.execute(query, (int(user_id),))
+                deleted_rows = int(cursor.rowcount or 0)
+                purge_summary[label] = deleted_rows
+                total_deleted_rows += deleted_rows
+
+            purge_summary["total_deleted_rows"] = total_deleted_rows
+            purge_summary["grace_days"] = USER_REMOVAL_GRACE_DAYS
+
+            cursor.execute(
+                """
+                UPDATE bt_3_user_removal_queue
+                SET
+                    status = 'purged',
+                    decision_at = NOW(),
+                    decision_by = %s,
+                    decision_note = %s,
+                    purged_at = NOW(),
+                    purge_summary = %s,
+                    updated_at = NOW()
+                WHERE user_id = %s
+                RETURNING
+                    user_id,
+                    username,
+                    revoked_at,
+                    grace_until,
+                    status,
+                    scheduled_by,
+                    reason,
+                    notification_sent_at,
+                    notification_message_refs,
+                    decision_at,
+                    decision_by,
+                    decision_note,
+                    purged_at,
+                    purge_summary,
+                    billing_cancel_snapshot,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    int(approved_by) if approved_by is not None else None,
+                    normalized_note,
+                    Json(purge_summary),
+                    int(user_id),
+                ),
+            )
+            row = cursor.fetchone()
+    return _serialize_user_removal_row(row)
 
 
 def list_allowed_telegram_users(limit: int = 100) -> list[dict]:

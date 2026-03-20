@@ -303,6 +303,7 @@ from backend.database import (
     get_user_subscription,
     get_user_subscription_by_customer_id,
     get_user_subscription_by_stripe_subscription_id,
+    deactivate_user_subscription,
     bind_stripe_customer_to_user,
     set_subscription_from_stripe,
     try_mark_stripe_event_processed,
@@ -371,7 +372,7 @@ from backend.database import (
     build_translation_session_minutes_sql,
     sync_translation_session_activity,
 )
-from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url, r2_delete_object
+from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url, r2_delete_object, r2_bucket_usage_summary
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
 from backend.grammar_focuses import WEBAPP_TOPICS, resolve_webapp_focus, recommend_webapp_focus_for_error_pair
 from backend.translation_workflow import (
@@ -2686,6 +2687,97 @@ def _schedule_customer_active_subscriptions_for_period_end(
     result["cancel_scheduled_count"] = len(result["cancel_scheduled_ids"])
     result["already_scheduled_count"] = len(result["already_scheduled_ids"])
     result["failed_count"] = len(result["failed_ids"])
+    return result
+
+
+def schedule_user_paid_subscription_cancel_at_period_end(user_id: int) -> dict[str, Any]:
+    user_id_value = int(user_id)
+    result: dict[str, Any] = {
+        "user_id": user_id_value,
+        "subscription_found": False,
+        "local_status_before": None,
+        "local_plan_before": None,
+        "stripe_customer_id": None,
+        "stripe_subscription_id": None,
+        "active_candidate_ids": [],
+        "scheduled_ids": [],
+        "already_scheduled_ids": [],
+        "failed_ids": [],
+        "stripe_status": "noop",
+        "latest_period_end_ts": 0,
+        "effective_access_until": None,
+    }
+    subscription = get_user_subscription(user_id_value) or {}
+    if not subscription:
+        result["stripe_status"] = "no_local_subscription"
+        return result
+
+    result["subscription_found"] = True
+    result["local_status_before"] = str(subscription.get("status") or "")
+    result["local_plan_before"] = str(subscription.get("plan_code") or "")
+    stripe_customer_id = str(subscription.get("stripe_customer_id") or "").strip() or None
+    stripe_subscription_id = str(subscription.get("stripe_subscription_id") or "").strip() or None
+    result["stripe_customer_id"] = stripe_customer_id
+    result["stripe_subscription_id"] = stripe_subscription_id
+
+    if stripe is None or not STRIPE_SECRET_KEY:
+        result["stripe_status"] = "stripe_unavailable"
+        return result
+
+    if stripe_customer_id:
+        try:
+            schedule_result = _schedule_customer_active_subscriptions_for_period_end(
+                stripe_customer_id=stripe_customer_id,
+            )
+            result["scheduled_ids"] = list(schedule_result.get("cancel_scheduled_ids") or [])
+            result["already_scheduled_ids"] = list(schedule_result.get("already_scheduled_ids") or [])
+            result["failed_ids"] = list(schedule_result.get("failed_ids") or [])
+            result["latest_period_end_ts"] = int(schedule_result.get("latest_period_end_ts") or 0)
+            result["active_candidate_ids"] = result["scheduled_ids"] + result["already_scheduled_ids"] + result["failed_ids"]
+            if result["failed_ids"]:
+                result["stripe_status"] = "partial_failure" if (result["scheduled_ids"] or result["already_scheduled_ids"]) else "schedule_failed"
+            elif result["scheduled_ids"]:
+                result["stripe_status"] = "scheduled_for_period_end"
+            elif result["already_scheduled_ids"]:
+                result["stripe_status"] = "already_scheduled_for_period_end"
+            else:
+                result["stripe_status"] = "no_active_subscription"
+        except Exception:
+            result["stripe_status"] = "list_failed"
+            logging.warning("Failed to schedule cancel_at_period_end for user_id=%s customer=%s", user_id_value, stripe_customer_id, exc_info=True)
+    elif stripe_subscription_id:
+        result["active_candidate_ids"] = [stripe_subscription_id]
+        try:
+            subscription_obj = stripe.Subscription.retrieve(stripe_subscription_id)
+            result["latest_period_end_ts"] = _safe_int(_stripe_subscription_value(subscription_obj, "current_period_end", 0)) or 0
+            cancel_at_period_end = bool(_stripe_subscription_value(subscription_obj, "cancel_at_period_end", False))
+            status_value = str(_stripe_subscription_value(subscription_obj, "status", "") or "").strip().lower()
+            if status_value not in {"active", "trialing", "past_due", "unpaid"}:
+                result["stripe_status"] = "no_active_subscription"
+            elif cancel_at_period_end:
+                result["already_scheduled_ids"] = [stripe_subscription_id]
+                result["stripe_status"] = "already_scheduled_for_period_end"
+            else:
+                stripe.Subscription.modify(
+                    stripe_subscription_id,
+                    cancel_at_period_end=True,
+                    proration_behavior="none",
+                )
+                result["scheduled_ids"] = [stripe_subscription_id]
+                result["stripe_status"] = "scheduled_for_period_end"
+        except Exception:
+            result["failed_ids"] = [stripe_subscription_id]
+            result["stripe_status"] = "schedule_failed"
+            logging.warning("Failed to schedule cancel_at_period_end for user_id=%s sub_id=%s", user_id_value, stripe_subscription_id, exc_info=True)
+    else:
+        result["stripe_status"] = "no_active_subscription"
+
+    latest_period_end_ts = int(result.get("latest_period_end_ts") or 0)
+    if latest_period_end_ts > 0:
+        try:
+            result["effective_access_until"] = datetime.fromtimestamp(latest_period_end_ts, tz=timezone.utc).isoformat()
+        except Exception:
+            result["effective_access_until"] = None
     return result
 
 
@@ -26943,63 +27035,129 @@ def _get_youtube_oembed(video_id: str) -> dict:
     return data
 
 
-def _run_transcript_storage_report_job() -> None:
-    user_id = int((os.getenv("TRANSCRIPT_REPORT_USER_ID") or "117649764").strip())
+def _format_binary_size(num_bytes: int) -> str:
+    size = float(max(0, int(num_bytes or 0)))
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    unit_index = 0
+    while size >= 1024.0 and unit_index < len(units) - 1:
+        size /= 1024.0
+        unit_index += 1
+    if unit_index == 0:
+        return f"{int(size)} {units[unit_index]}"
+    return f"{size:.2f} {units[unit_index]}"
+
+
+def _run_database_table_sizes_report_job() -> None:
+    threshold_mb = max(1, int((os.getenv("DB_TABLE_SIZE_REPORT_MIN_MB") or "5").strip()))
+    threshold_bytes = int(threshold_mb * 1024 * 1024)
+    r2_enabled = (os.getenv("DB_TABLE_SIZE_REPORT_INCLUDE_R2") or "1").strip().lower() in ("1", "true", "yes", "on")
+    r2_threshold_mb = max(1, int((os.getenv("DB_TABLE_SIZE_REPORT_R2_MIN_MB") or str(threshold_mb)).strip()))
+    r2_threshold_bytes = int(r2_threshold_mb * 1024 * 1024)
+    r2_max_prefixes = max(1, int((os.getenv("DB_TABLE_SIZE_REPORT_R2_MAX_PREFIXES") or "25").strip()))
+    admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+    if not admin_ids:
+        logging.warning("⚠️ DB table size report skipped: no admin ids configured")
+        return
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT pg_total_relation_size('bt_3_youtube_transcripts') AS bytes,
-                           pg_size_pretty(pg_total_relation_size('bt_3_youtube_transcripts')::bigint) AS pretty,
-                           COUNT(*) AS rows
-                    FROM bt_3_youtube_transcripts;
+                    SELECT current_database();
                     """
                 )
-                row = cursor.fetchone() or (0, "0 bytes", 0)
-        size_bytes, size_pretty, rows = row
-
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cursor:
+                db_name_row = cursor.fetchone() or ("postgres",)
+                db_name = str(db_name_row[0] or "postgres")
                 cursor.execute(
                     """
-                    SELECT video_id,
-                           language,
-                           is_generated,
-                           updated_at,
-                           pg_column_size(t.*) AS row_bytes,
-                           pg_size_pretty(pg_column_size(t.*)::bigint) AS row_pretty,
-                           pg_column_size(items) AS items_bytes,
-                           pg_column_size(translations) AS translations_bytes
-                    FROM bt_3_youtube_transcripts t
-                    ORDER BY pg_column_size(t.*) DESC
-                    LIMIT 20;
-                    """
+                    SELECT
+                        ns.nspname AS schema_name,
+                        cls.relname AS table_name,
+                        pg_total_relation_size(cls.oid) AS total_bytes,
+                        pg_size_pretty(pg_total_relation_size(cls.oid)) AS total_pretty,
+                        pg_relation_size(cls.oid) AS table_bytes,
+                        pg_size_pretty(pg_relation_size(cls.oid)) AS table_pretty,
+                        COALESCE(pg_total_relation_size(cls.oid) - pg_relation_size(cls.oid), 0) AS extra_bytes,
+                        pg_size_pretty(COALESCE(pg_total_relation_size(cls.oid) - pg_relation_size(cls.oid), 0)) AS extra_pretty
+                    FROM pg_class cls
+                    JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                    WHERE cls.relkind IN ('r', 'm')
+                      AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
+                      AND pg_total_relation_size(cls.oid) >= %s
+                    ORDER BY pg_total_relation_size(cls.oid) DESC, ns.nspname ASC, cls.relname ASC;
+                    """,
+                    (threshold_bytes,),
                 )
-                top_rows = cursor.fetchall()
+                rows = cursor.fetchall() or []
+        report_blocks: list[str] = []
+        postgres_lines = [
+            "🗄 Отчёт по размеру таблиц Postgres",
+            f"База данных: {db_name}",
+            f"Порог: > {threshold_mb} MB",
+            "",
+        ]
+        if not rows:
+            postgres_lines.append("Таблиц выше порога сейчас нет.")
+        else:
+            for schema_name, table_name, total_bytes, total_pretty, table_bytes, table_pretty, extra_bytes, extra_pretty in rows:
+                postgres_lines.append(
+                    f"- {schema_name}.{table_name} | total={total_pretty} ({int(total_bytes)} B) | "
+                    f"table={table_pretty} | indexes_toast={extra_pretty}"
+                )
+        report_blocks.append("\n".join(postgres_lines))
 
-        header = (
-            "📊 Отчёт по кэшу субтитров\n"
-            "Таблица: bt_3_youtube_transcripts\n"
-            "Поля: video_id, items, language, is_generated, translations, updated_at\n"
-            f"Записей всего: {rows}\n"
-            f"Общий объём: {size_pretty} ({size_bytes} bytes)\n"
-            "\n"
-            "Топ-20 самых тяжёлых записей:"
+        if r2_enabled:
+            try:
+                r2_summary = r2_bucket_usage_summary(
+                    prefix_depth=1,
+                    min_prefix_bytes=r2_threshold_bytes,
+                    max_prefixes=r2_max_prefixes,
+                )
+                r2_lines = [
+                    "☁️ Отчёт по Cloudflare R2",
+                    f"Bucket: {r2_summary.get('bucket_name') or '-'}",
+                    (
+                        "Итого: "
+                        f"{_format_binary_size(int(r2_summary.get('total_bytes') or 0))} "
+                        f"в {int(r2_summary.get('total_objects') or 0)} objects"
+                    ),
+                    f"Порог для prefixes: > {r2_threshold_mb} MB",
+                    "",
+                ]
+                r2_prefixes = list(r2_summary.get("prefixes") or [])
+                if not r2_prefixes:
+                    r2_lines.append("Prefixes выше порога сейчас нет.")
+                else:
+                    for item in r2_prefixes:
+                        r2_lines.append(
+                            f"- {item.get('prefix') or '(root)'} | total={_format_binary_size(int(item.get('bytes') or 0))} "
+                            f"| objects={int(item.get('objects') or 0)}"
+                        )
+                report_blocks.append("\n".join(r2_lines))
+            except Exception as r2_exc:
+                logging.exception("❌ Cloudflare R2 size report failed")
+                report_blocks.append(
+                    "\n".join(
+                        [
+                            "☁️ Отчёт по Cloudflare R2",
+                            f"Не удалось получить usage: {r2_exc}",
+                        ]
+                    )
+                )
+
+        report_text = "\n\n".join(block for block in report_blocks if block)
+        for admin_id in admin_ids:
+            _send_private_message_chunks(int(admin_id), report_text)
+        logging.info(
+            "✅ DB table size report sent to admins=%s postgres_rows=%s postgres_threshold_mb=%s r2_enabled=%s r2_threshold_mb=%s",
+            len(admin_ids),
+            len(rows),
+            threshold_mb,
+            r2_enabled,
+            r2_threshold_mb,
         )
-
-        lines = [header]
-        for video_id, language, is_generated, updated_at, row_bytes, row_pretty, items_bytes, translations_bytes in top_rows:
-            lines.append(
-                f"- {video_id} | https://youtu.be/{video_id} | lang={language or '—'} | gen={is_generated} | "
-                f"updated={updated_at:%Y-%m-%d} | row={row_pretty} ({row_bytes}) | "
-                f"items={items_bytes}B | translations={translations_bytes}B"
-            )
-
-        _send_private_message_chunks(user_id, "\n".join(lines))
-        logging.info("✅ Transcript storage report sent to %s", user_id)
     except Exception:
-        logging.exception("❌ Transcript storage report failed")
+        logging.exception("❌ DB table size report failed")
 
 def _record_skill_state_v2_worker_metrics(
     *,
@@ -27274,19 +27432,28 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=1800,
         )
-    now = datetime.now(ZoneInfo(tz_name))
-    first_report = now.replace(hour=17, minute=0, second=0, microsecond=0)
-    if first_report <= now:
-        first_report = now + timedelta(minutes=1)
-    _audio_scheduler.add_job(
-        _run_transcript_storage_report_job,
-        "interval",
-        days=14,
-        start_date=first_report,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=3600,
-    )
+    db_table_size_report_enabled = (os.getenv("DB_TABLE_SIZE_REPORT_ENABLED") or "1").strip().lower()
+    if db_table_size_report_enabled in ("1", "true", "yes", "on"):
+        db_table_size_report_day_of_week = (os.getenv("DB_TABLE_SIZE_REPORT_DAY_OF_WEEK") or "tue,fri").strip() or "tue,fri"
+        db_table_size_report_hour = int((os.getenv("DB_TABLE_SIZE_REPORT_HOUR") or "17").strip())
+        db_table_size_report_minute = int((os.getenv("DB_TABLE_SIZE_REPORT_MINUTE") or "0").strip())
+        db_table_size_report_tz_name = (os.getenv("DB_TABLE_SIZE_REPORT_TZ") or tz_name or "UTC").strip() or "UTC"
+        try:
+            db_table_size_report_tz = ZoneInfo(db_table_size_report_tz_name)
+        except Exception:
+            logging.warning("⚠️ Invalid DB_TABLE_SIZE_REPORT_TZ: %s. Falling back to UTC", db_table_size_report_tz_name)
+            db_table_size_report_tz = ZoneInfo("UTC")
+        _audio_scheduler.add_job(
+            _run_database_table_sizes_report_job,
+            "cron",
+            day_of_week=db_table_size_report_day_of_week,
+            hour=db_table_size_report_hour,
+            minute=db_table_size_report_minute,
+            timezone=db_table_size_report_tz,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
     cleanup_enabled = (os.getenv("SYSTEM_MESSAGE_CLEANUP_ENABLED") or "1").strip().lower()
     if cleanup_enabled in ("1", "true", "yes", "on"):
         cleanup_hour = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "23").strip())

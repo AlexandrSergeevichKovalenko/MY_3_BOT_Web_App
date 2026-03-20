@@ -135,6 +135,35 @@ function buildDefaultAnalyticsCalendarRange() {
   };
 }
 
+function parseIsoDateParts(value) {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+  };
+}
+
+function formatAnalyticsCalendarDisplayDate(value, locale = 'ru-RU') {
+  const parts = parseIsoDateParts(value);
+  if (!parts) {
+    return '';
+  }
+  const safeDate = new Date(parts.year, parts.month - 1, parts.day);
+  if (Number.isNaN(safeDate.getTime())) {
+    return '';
+  }
+  return new Intl.DateTimeFormat(locale, {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(safeDate);
+}
+
 function isEditableElement(element) {
   if (!element || typeof element !== 'object') return false;
   const tagName = String(element.tagName || '').toUpperCase();
@@ -2880,12 +2909,7 @@ function AppInner() {
       return tr('Период не выбран', 'Zeitraum nicht gewaehlt');
     }
     const locale = uiLang === 'de' ? 'de-AT' : 'ru-RU';
-    const formatter = new Intl.DateTimeFormat(locale, {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    });
-    return `${formatter.format(new Date(analyticsCustomStartDate))} - ${formatter.format(new Date(analyticsCustomEndDate))}`;
+    return `${formatAnalyticsCalendarDisplayDate(analyticsCustomStartDate, locale)} - ${formatAnalyticsCalendarDisplayDate(analyticsCustomEndDate, locale)}`;
   }, [analyticsCalendarRangeValid, analyticsCustomEndDate, analyticsCustomStartDate, tr, uiLang]);
   const readerSessionStartingRef = useRef(false);
   const readerStateSaveTimeoutRef = useRef(null);
@@ -18078,11 +18102,18 @@ function AppInner() {
       if (!panel || panel.contains(event.target)) return;
       setAnalyticsCalendarOpen(false);
     };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setAnalyticsCalendarOpen(false);
+      }
+    };
     document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('touchstart', handlePointerDown, { passive: true });
+    document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
     };
   }, [analyticsCalendarOpen]);
 
@@ -22714,48 +22745,71 @@ function AppInner() {
                           {analyticsCalendarLabel}
                         </button>
                         {analyticsCalendarOpen && (
-                          <div className="analytics-calendar-popover">
-                            <label className="webapp-field analytics-calendar-field">
-                              <span>{tr('С даты', 'Von')}</span>
-                              <input
-                                type="date"
-                                value={analyticsCalendarDraftStartDate}
-                                max={analyticsCalendarDraftEndDate || undefined}
-                                onChange={(event) => setAnalyticsCalendarDraftStartDate(event.target.value)}
-                              />
-                            </label>
-                            <label className="webapp-field analytics-calendar-field">
-                              <span>{tr('По дату', 'Bis')}</span>
-                              <input
-                                type="date"
-                                value={analyticsCalendarDraftEndDate}
-                                min={analyticsCalendarDraftStartDate || undefined}
-                                onChange={(event) => setAnalyticsCalendarDraftEndDate(event.target.value)}
-                              />
-                            </label>
-                            {!analyticsCalendarDraftValid && (
-                              <div className="webapp-muted analytics-calendar-error">
-                                {tr('Выберите корректный диапазон дат.', 'Waehle einen gueltigen Datumsbereich.')}
+                          <>
+                            <button
+                              type="button"
+                              className="analytics-calendar-backdrop"
+                              aria-label={tr('Закрыть выбор диапазона дат', 'Datumsauswahl schliessen')}
+                              onClick={() => setAnalyticsCalendarOpen(false)}
+                            />
+                            <div className="analytics-calendar-popover" role="dialog" aria-modal="true">
+                              <div className="analytics-calendar-title">
+                                {tr('Диапазон дат', 'Datumsbereich')}
                               </div>
-                            )}
-                            <div className="analytics-calendar-actions">
-                              <button
-                                type="button"
-                                className="secondary-button"
-                                onClick={() => setAnalyticsCalendarOpen(false)}
-                              >
-                                {tr('Закрыть', 'Schliessen')}
-                              </button>
-                              <button
-                                type="button"
-                                className="primary-button"
-                                onClick={applyAnalyticsCalendarRange}
-                                disabled={!analyticsCalendarDraftValid}
-                              >
-                                {tr('Применить', 'Anwenden')}
-                              </button>
+                              <label className="webapp-field analytics-calendar-field">
+                                <span>{tr('С даты', 'Von')}</span>
+                                <div className="analytics-calendar-date-shell">
+                                  <span className={`analytics-calendar-date-value ${analyticsCalendarDraftStartDate ? '' : 'is-placeholder'}`}>
+                                    {formatAnalyticsCalendarDisplayDate(analyticsCalendarDraftStartDate, uiLang === 'de' ? 'de-AT' : 'ru-RU') || tr('Выберите дату', 'Datum waehlen')}
+                                  </span>
+                                  <input
+                                    className="analytics-calendar-native-input"
+                                    type="date"
+                                    value={analyticsCalendarDraftStartDate}
+                                    max={analyticsCalendarDraftEndDate || undefined}
+                                    onChange={(event) => setAnalyticsCalendarDraftStartDate(event.target.value)}
+                                  />
+                                </div>
+                              </label>
+                              <label className="webapp-field analytics-calendar-field">
+                                <span>{tr('По дату', 'Bis')}</span>
+                                <div className="analytics-calendar-date-shell">
+                                  <span className={`analytics-calendar-date-value ${analyticsCalendarDraftEndDate ? '' : 'is-placeholder'}`}>
+                                    {formatAnalyticsCalendarDisplayDate(analyticsCalendarDraftEndDate, uiLang === 'de' ? 'de-AT' : 'ru-RU') || tr('Выберите дату', 'Datum waehlen')}
+                                  </span>
+                                  <input
+                                    className="analytics-calendar-native-input"
+                                    type="date"
+                                    value={analyticsCalendarDraftEndDate}
+                                    min={analyticsCalendarDraftStartDate || undefined}
+                                    onChange={(event) => setAnalyticsCalendarDraftEndDate(event.target.value)}
+                                  />
+                                </div>
+                              </label>
+                              {!analyticsCalendarDraftValid && (
+                                <div className="webapp-muted analytics-calendar-error">
+                                  {tr('Выберите корректный диапазон дат.', 'Waehle einen gueltigen Datumsbereich.')}
+                                </div>
+                              )}
+                              <div className="analytics-calendar-actions">
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => setAnalyticsCalendarOpen(false)}
+                                >
+                                  {tr('Закрыть', 'Schliessen')}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="primary-button"
+                                  onClick={applyAnalyticsCalendarRange}
+                                  disabled={!analyticsCalendarDraftValid}
+                                >
+                                  {tr('Применить', 'Anwenden')}
+                                </button>
+                              </div>
                             </div>
-                          </div>
+                          </>
                         )}
                       </div>
                     )}
