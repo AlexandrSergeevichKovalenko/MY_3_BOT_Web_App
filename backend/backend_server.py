@@ -3602,85 +3602,6 @@ def _build_video_search_queries(
     return unique
 
 
-def _youtube_fallback_videos_from_local_sources(
-    *,
-    query: str,
-    target_lang: str,
-    max_results: int = 5,
-) -> list[dict]:
-    lang = _normalize_short_lang_code(target_lang, fallback="de")
-    safe_limit = max(1, min(int(max_results or 5), 12))
-    found: list[dict] = []
-    seen: set[str] = set()
-    query_tokens = re.findall(r"[A-Za-zА-Яа-яЁёÄÖÜäöüß]{3,}", str(query or "").lower())[:5]
-
-    try:
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cur:
-                sql = """
-                    SELECT video_id, COALESCE(video_title, '') AS title
-                    FROM bt_3_video_recommendations
-                    WHERE is_active = TRUE
-                      AND target_lang = %s
-                """
-                params: list[object] = [lang]
-                if query_tokens:
-                    token_filters: list[str] = []
-                    for token in query_tokens:
-                        like = f"%{token}%"
-                        token_filters.append(
-                            "(COALESCE(video_title, '') ILIKE %s OR COALESCE(search_query, '') ILIKE %s "
-                            "OR COALESCE(main_category, '') ILIKE %s OR COALESCE(sub_category, '') ILIKE %s)"
-                        )
-                        params.extend([like, like, like, like])
-                    sql += " AND (" + " OR ".join(token_filters) + ")"
-                sql += " ORDER BY score DESC, last_selected_at DESC NULLS LAST, updated_at DESC LIMIT %s"
-                params.append(safe_limit)
-                cur.execute(sql, tuple(params))
-                for video_id, title in cur.fetchall() or []:
-                    vid = str(video_id or "").strip()
-                    if not vid or vid in seen:
-                        continue
-                    seen.add(vid)
-                    found.append({"video_id": vid, "title": str(title or "").strip(), "views": 0})
-                    if len(found) >= safe_limit:
-                        return found
-
-                cur.execute(
-                    """
-                    SELECT video_id
-                    FROM bt_3_youtube_transcripts
-                    WHERE video_id IS NOT NULL
-                      AND video_id <> ''
-                    ORDER BY
-                      CASE WHEN COALESCE(language, '') = %s THEN 0 ELSE 1 END,
-                      updated_at DESC
-                    LIMIT %s
-                    """,
-                    (lang, max(10, safe_limit * 4)),
-                )
-                transcript_rows = cur.fetchall() or []
-    except Exception:
-        logging.exception("YT local fallback query failed")
-        return found
-
-    for (video_id,) in transcript_rows:
-        vid = str(video_id or "").strip()
-        if not vid or vid in seen:
-            continue
-        title = ""
-        try:
-            oembed = _get_youtube_oembed(vid) or {}
-            title = str(oembed.get("title") or "").strip()
-        except Exception:
-            title = ""
-        found.append({"video_id": vid, "title": title, "views": 0})
-        seen.add(vid)
-        if len(found) >= safe_limit:
-            break
-    return found
-
-
 def _youtube_search_videos(
     query: str,
     *,
@@ -3693,17 +3614,11 @@ def _youtube_search_videos(
     if not query:
         return []
     if not YOUTUBE_API_KEY:
-        local_fallback = _youtube_fallback_videos_from_local_sources(
-            query=query,
-            target_lang=target_lang,
-            max_results=max_results,
-        )
         logging.info(
-            "YT search skipped (no API key): query='%s' local_fallback=%s",
+            "YT search skipped (no API key): query='%s'",
             query,
-            len(local_fallback),
         )
-        return local_fallback
+        return []
     collected: list[dict] = []
     preferred_hits = 0
     fallback_hits = 0
@@ -3789,19 +3704,7 @@ def _youtube_search_videos(
     )
     if unique:
         return list(unique.values())
-
-    local_fallback = _youtube_fallback_videos_from_local_sources(
-        query=query,
-        target_lang=target_lang,
-        max_results=max_results,
-    )
-    if local_fallback:
-        logging.info(
-            "YT search fallback used: query='%s' local_fallback=%s",
-            query,
-            len(local_fallback),
-        )
-    return local_fallback
+    return []
 
 
 def _youtube_fill_view_counts(
@@ -4010,34 +3913,6 @@ def _pick_today_recommended_video(
             "views": int(best.get("views") or 0),
             "duration_seconds": int(best.get("duration_seconds") or 0),
         }
-    local_fallback = _youtube_fallback_videos_from_local_sources(
-        query=(queries[0] if queries else ""),
-        target_lang=target_lang,
-        max_results=5,
-    )
-    local_fallback = _youtube_fill_view_counts(
-        local_fallback,
-        billing_user_id=billing_user_id,
-        billing_source_lang=billing_source_lang,
-        billing_target_lang=billing_target_lang,
-    )
-    local_fallback = _filter_videos_for_today_task(
-        local_fallback,
-        min_seconds=MIN_RECOMMENDED_VIDEO_SECONDS,
-        target_lang=target_lang,
-    )
-    if local_fallback:
-        best = local_fallback[0]
-        video_id = str(best.get("video_id") or "").strip()
-        if video_id:
-            return {
-                "video_id": video_id,
-                "video_url": f"https://www.youtube.com/watch?v={video_id}",
-                "title": str(best.get("title") or "").strip(),
-                "query": queries[0] if queries else "local_fallback",
-                "views": int(best.get("views") or 0),
-                "duration_seconds": int(best.get("duration_seconds") or 0),
-            }
     return None
 
 
@@ -4079,7 +3954,7 @@ def _build_video_focus_candidate(
     }
 
 
-def _select_today_video_focus_candidate(
+def _build_today_video_focus_candidates(
     *,
     user_id: int,
     source_lang: str,
@@ -4090,7 +3965,7 @@ def _select_today_video_focus_candidate(
     lookback_days: int = 7,
     cooldown_days: int = 7,
     candidate_limit: int = 5,
-) -> dict | None:
+) -> list[dict]:
     recent_topics = list_recent_started_video_topics(
         user_id=int(user_id),
         lookback_days=max(1, int(cooldown_days or 7)),
@@ -4163,30 +4038,91 @@ def _select_today_video_focus_candidate(
         )
 
     if not candidates:
-        return _build_video_focus_candidate(
+        fallback_candidate = _build_video_focus_candidate(
             skill_id=(weakest_skill or {}).get("skill_id"),
             skill_title=(weakest_skill or {}).get("skill_title"),
             source="skill_only_fallback",
         )
+        candidates = [fallback_candidate] if fallback_candidate else []
 
+    if not candidates:
+        return []
+
+    ordered_candidates: list[dict] = []
+    recent_candidates: list[dict] = []
+    cooldown_applied = bool(recent_focuses)
     for candidate in candidates:
         identity = _normalize_video_focus_identity(
             candidate.get("skill_id"),
             candidate.get("main_category"),
             candidate.get("sub_category"),
         )
-        if identity not in recent_focuses:
-            return {
-                **candidate,
-                "cooldown_applied": bool(recent_focuses),
-                "cooldown_skipped_recent": False,
-            }
+        enriched = {
+            **candidate,
+            "cooldown_applied": cooldown_applied,
+            "cooldown_skipped_recent": identity in recent_focuses,
+        }
+        if identity in recent_focuses:
+            recent_candidates.append(enriched)
+        else:
+            ordered_candidates.append(enriched)
 
-    return {
-        **candidates[0],
-        "cooldown_applied": bool(recent_focuses),
-        "cooldown_skipped_recent": True,
-    }
+    return ordered_candidates + recent_candidates
+
+
+def _select_today_video_focus_candidate(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    weakest_skill: dict | None,
+    weak_topic: dict | None,
+    weak_sentences: list[str] | None,
+    lookback_days: int = 7,
+    cooldown_days: int = 7,
+    candidate_limit: int = 5,
+) -> dict | None:
+    candidates = _build_today_video_focus_candidates(
+        user_id=user_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        weakest_skill=weakest_skill,
+        weak_topic=weak_topic,
+        weak_sentences=weak_sentences,
+        lookback_days=lookback_days,
+        cooldown_days=cooldown_days,
+        candidate_limit=candidate_limit,
+    )
+    return candidates[0] if candidates else None
+
+
+def _pick_today_recommended_video_across_focus_candidates(
+    focus_candidates: list[dict] | None,
+    *,
+    target_lang: str,
+    billing_user_id: int | None = None,
+    billing_source_lang: str | None = None,
+    billing_target_lang: str | None = None,
+) -> tuple[dict | None, dict | None]:
+    prepared_candidates = [item for item in (focus_candidates or []) if isinstance(item, dict)]
+    if not prepared_candidates:
+        return None, None
+
+    selected_focus = prepared_candidates[0]
+    for candidate in prepared_candidates:
+        recommended_video = _pick_today_recommended_video(
+            candidate.get("main_category"),
+            candidate.get("sub_category"),
+            skill_title=candidate.get("skill_title"),
+            examples=(candidate.get("examples") if isinstance(candidate.get("examples"), list) else []),
+            target_lang=target_lang,
+            billing_user_id=billing_user_id,
+            billing_source_lang=billing_source_lang,
+            billing_target_lang=billing_target_lang,
+        )
+        if recommended_video:
+            return candidate, recommended_video
+    return selected_focus, None
 
 
 def _format_theory_mistake_examples(examples: list[dict] | None) -> list[str]:
@@ -6662,7 +6598,7 @@ def _build_today_plan_for_user(
 
     include_video = str(os.getenv("TODAY_PLAN_INCLUDE_VIDEO") or "0").strip().lower() in {"1", "true", "yes", "on"}
     if include_video:
-        video_focus = _select_today_video_focus_candidate(
+        video_focus_candidates = _build_today_video_focus_candidates(
             user_id=int(user_id),
             source_lang=source_lang,
             target_lang=target_lang,
@@ -6672,17 +6608,15 @@ def _build_today_plan_for_user(
             lookback_days=7,
             cooldown_days=int(os.getenv("TODAY_VIDEO_TOPIC_COOLDOWN_DAYS") or 7),
             candidate_limit=5,
-        ) or {}
-        recommended_video = _pick_today_recommended_video(
-            video_focus.get("main_category"),
-            video_focus.get("sub_category"),
-            skill_title=video_focus.get("skill_title"),
-            examples=(video_focus.get("examples") if isinstance(video_focus.get("examples"), list) else weak_sentences[:5]),
+        )
+        video_focus, recommended_video = _pick_today_recommended_video_across_focus_candidates(
+            video_focus_candidates,
             target_lang=target_lang,
             billing_user_id=int(user_id),
             billing_source_lang=source_lang,
             billing_target_lang=target_lang,
         )
+        video_focus = video_focus or {}
         items.append(
             {
                 "task_type": "video",
@@ -17586,6 +17520,7 @@ def recommend_today_video():
     resolved_skill = None
     weak_topic = None
     weak_sentences: list[str] = []
+    video_focus_candidates: list[dict] = []
 
     if not skill_id:
         try:
@@ -17646,7 +17581,7 @@ def recommend_today_video():
             weak_sentences = []
 
     if not explicit_focus_requested:
-        video_focus = _select_today_video_focus_candidate(
+        video_focus_candidates = _build_today_video_focus_candidates(
             user_id=int(user_id),
             source_lang=source_lang,
             target_lang=target_lang,
@@ -17660,7 +17595,8 @@ def recommend_today_video():
             lookback_days=lookback_days,
             cooldown_days=int(os.getenv("TODAY_VIDEO_TOPIC_COOLDOWN_DAYS") or 7),
             candidate_limit=5,
-        ) or {}
+        )
+        video_focus = video_focus_candidates[0] if video_focus_candidates else {}
         if video_focus:
             skill_id = str(video_focus.get("skill_id") or skill_id).strip()
             skill_title = str(video_focus.get("skill_title") or skill_title).strip()
@@ -17716,16 +17652,32 @@ def recommend_today_video():
             recommended_video["score"] = int(cached_candidate.get("score") or 0)
 
     if not recommended_video:
-        recommended_video = _pick_today_recommended_video(
-            main_category or None,
-            sub_category or None,
-            skill_title=skill_title or None,
-            examples=examples_payload[:5],
-            target_lang=target_lang,
-            billing_user_id=int(user_id),
-            billing_source_lang=source_lang,
-            billing_target_lang=target_lang,
-        )
+        if explicit_focus_requested:
+            recommended_video = _pick_today_recommended_video(
+                main_category or None,
+                sub_category or None,
+                skill_title=skill_title or None,
+                examples=examples_payload[:5],
+                target_lang=target_lang,
+                billing_user_id=int(user_id),
+                billing_source_lang=source_lang,
+                billing_target_lang=target_lang,
+            )
+        else:
+            selected_focus, recommended_video = _pick_today_recommended_video_across_focus_candidates(
+                video_focus_candidates,
+                target_lang=target_lang,
+                billing_user_id=int(user_id),
+                billing_source_lang=source_lang,
+                billing_target_lang=target_lang,
+            )
+            if selected_focus:
+                skill_id = str(selected_focus.get("skill_id") or skill_id).strip()
+                skill_title = str(selected_focus.get("skill_title") or skill_title).strip()
+                main_category = str(selected_focus.get("main_category") or main_category).strip()
+                sub_category = str(selected_focus.get("sub_category") or sub_category).strip()
+                if isinstance(selected_focus.get("examples"), list) and selected_focus.get("examples"):
+                    examples_payload = selected_focus.get("examples")
         if not recommended_video:
             logging.warning(
                 "YT recommendation not found: user_id=%s skill_id=%s skill_title='%s' main='%s' sub='%s'",

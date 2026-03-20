@@ -894,6 +894,10 @@ Input JSON:
   "target_language": "de|en|es|it|ru",
   "source_text": "...",
   "target_text": "...",
+  "studied_language": "de|en|es|it|ru",
+  "studied_text": "...",
+  "translation_language": "de|en|es|it|ru",
+  "translation_text": "...",
   "learner_question": "..."
 }
 
@@ -907,6 +911,12 @@ Return STRICT JSON only with this schema:
 Rules:
 - reply_text must be written in target_language.
 - Answer the learner's question directly and practically.
+- studied_text is the main expression the learner is studying.
+- translation_text is only the gloss/translation of studied_text.
+- If the learner asks anaphoric questions like "what does this word mean?", "what is the origin of this word?", "when do they say this?", assume "this word/this phrase" refers to studied_text, not translation_text.
+- Do not switch the focus to translation_text unless the learner explicitly asks about the translation/native-language gloss.
+- For etymology, usage, nuance, register, grammar, and pronunciation questions, center the answer on studied_text first and mention translation_text only as support.
+- If useful, explicitly name studied_text in the first sentence so there is no ambiguity.
 - Keep reply_text compact and Telegram-friendly: ideally 500-1200 characters, hard maximum 1600.
 - Use short paragraphs or short bullet-style lines separated by \\n, but keep it plain text.
 - If useful, you may include 1-2 short examples in source_language with immediate target_language translation.

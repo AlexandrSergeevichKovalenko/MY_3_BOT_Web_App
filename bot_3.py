@@ -121,6 +121,7 @@ from backend.database import (
     upsert_active_quiz,
     get_active_quiz,
     delete_active_quiz,
+    list_top_weak_topics,
 )
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
 from load_data_from_db import load_data_for_analytics 
@@ -1162,6 +1163,46 @@ def _resolve_quiz_speech_payload(payload: dict) -> tuple[str, str]:
     if target_text and target_lang:
         return target_lang, target_text
     return "", ""
+
+
+def _resolve_quiz_followup_focus_payload(payload: dict, *, user_id: int) -> dict:
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    source_text = str(payload.get("source_text") or "").strip()
+    target_text = str(payload.get("target_text") or "").strip()
+
+    _profile_source_lang, profile_target_lang = _language_tutor_pair_for_user(int(user_id))
+
+    studied_language = ""
+    studied_text = ""
+    translation_language = ""
+    translation_text = ""
+
+    if source_lang == profile_target_lang and source_text:
+        studied_language, studied_text = source_lang, source_text
+        translation_language, translation_text = target_lang, target_text
+    elif target_lang == profile_target_lang and target_text:
+        studied_language, studied_text = target_lang, target_text
+        translation_language, translation_text = source_lang, source_text
+    elif source_lang == "de" and source_text:
+        studied_language, studied_text = source_lang, source_text
+        translation_language, translation_text = target_lang, target_text
+    elif target_lang == "de" and target_text:
+        studied_language, studied_text = target_lang, target_text
+        translation_language, translation_text = source_lang, source_text
+    elif source_text and source_lang:
+        studied_language, studied_text = source_lang, source_text
+        translation_language, translation_text = target_lang, target_text
+    elif target_text and target_lang:
+        studied_language, studied_text = target_lang, target_text
+        translation_language, translation_text = source_lang, source_text
+
+    return {
+        "studied_language": studied_language,
+        "studied_text": studied_text,
+        "translation_language": translation_language,
+        "translation_text": translation_text,
+    }
 
 
 async def _synthesize_telegram_tts_voice(lang: str, text: str) -> tuple[io.BytesIO, str]:
@@ -3110,11 +3151,16 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
         await update.message.reply_text("⏳ Думаю над ответом...")
         try:
+            focus_payload = _resolve_quiz_followup_focus_payload(request_payload, user_id=int(user_id))
             llm_payload = {
                 "source_language": str(request_payload.get("source_lang") or "").strip().lower(),
                 "target_language": str(request_payload.get("target_lang") or "").strip().lower(),
                 "source_text": str(request_payload.get("source_text") or "").strip(),
                 "target_text": str(request_payload.get("target_text") or "").strip(),
+                "studied_language": str(focus_payload.get("studied_language") or "").strip().lower(),
+                "studied_text": str(focus_payload.get("studied_text") or "").strip(),
+                "translation_language": str(focus_payload.get("translation_language") or "").strip().lower(),
+                "translation_text": str(focus_payload.get("translation_text") or "").strip(),
                 "learner_question": text,
             }
             llm_response = await run_quiz_followup_question(llm_payload)
@@ -7484,6 +7530,78 @@ def search_youtube_videous(
     return preferred_videos
 
 
+_WEEKLY_RECOMMENDATION_EXCLUDED_SUBCATEGORY_KEYS = {
+    "unclassified mistake",
+    "unclassified mistakes",
+    "неизвестно",
+    "unknown",
+    "unknown mistake",
+    "unknown mistakes",
+}
+_WEEKLY_RECOMMENDATION_EXCLUDED_CATEGORY_KEYS = {
+    "неизвестно",
+    "unknown",
+    "unknown mistake",
+    "unknown mistakes",
+}
+
+
+def _normalize_weekly_recommendation_label(value) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _exclude_weekly_recommendation_topic(main_category, sub_category) -> bool:
+    main = _normalize_weekly_recommendation_label(main_category)
+    sub = _normalize_weekly_recommendation_label(sub_category)
+    if sub in _WEEKLY_RECOMMENDATION_EXCLUDED_SUBCATEGORY_KEYS:
+        return True
+    if main in _WEEKLY_RECOMMENDATION_EXCLUDED_CATEGORY_KEYS:
+        return True
+    if main in {"other mistake", "other mistakes"} and not sub:
+        return True
+    return False
+
+
+def _get_weekly_recommendation_topics(
+    user_id: int,
+    *,
+    lookback_days: int = 7,
+    target_lang: str = "de",
+) -> list[dict]:
+    try:
+        rows = list_top_weak_topics(
+            user_id=int(user_id),
+            lookback_days=max(1, int(lookback_days or 7)),
+            source_lang="ru",
+            target_lang=target_lang,
+            limit=10,
+        )
+    except Exception:
+        rows = []
+
+    topics: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        main_category = str(row.get("main_category") or "").strip()
+        sub_category = str(row.get("sub_category") or "").strip()
+        if _exclude_weekly_recommendation_topic(main_category, sub_category):
+            continue
+        identity = (main_category.lower(), sub_category.lower())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        topics.append(
+            {
+                "main_category": main_category,
+                "sub_category": sub_category,
+                "mistakes": int(row.get("mistakes") or 0),
+            }
+        )
+    return topics
+
+
 #📌 this function will filter and rate mistakes
 async def rate_mistakes(user_id):
     with get_db_connection() as conn:
@@ -7500,63 +7618,64 @@ async def rate_mistakes(user_id):
 
             # ✅ 2. Select and calculate all mistakes KPI within a week
             cursor.execute("""
-                WITH user_mistakes AS (
-                    SELECT COUNT(*) AS mistakes_week
-                    FROM bt_3_detailed_mistakes
-                    WHERE user_id = %s
-                    AND added_data >= NOW() - INTERVAL '6 days'
-                ),
-                top_category AS (
-                    SELECT main_category
-                    FROM bt_3_detailed_mistakes
-                    WHERE user_id = %s
-                    AND added_data >= NOW() - INTERVAL '6 days'
-                    GROUP BY main_category
-                    ORDER BY COUNT(*) DESC
-                    LIMIT 1
-                ),
-                number_of_topcategory_mist AS (
-                    SELECT main_category, COUNT(*) AS number_of_top_category_mistakes
-                    FROM bt_3_detailed_mistakes
-                    WHERE user_id = %s
-                    AND added_data >= NOW() - INTERVAL '6 days'
-                    AND main_category = (SELECT main_category FROM top_category)
-                    GROUP BY main_category
-                    ORDER BY COUNT(*) DESC
-                    LIMIT 1
-                ),
-                top_two_subcategories AS (
-                    SELECT sub_category, 
-                        COUNT(*) AS count,
-                        ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS subcategory_rank
-                    FROM bt_3_detailed_mistakes 
-                    WHERE user_id = %s
-                    AND added_data >= NOW() - INTERVAL '6 days'
-                    AND main_category = (SELECT main_category FROM top_category)
-                    GROUP BY sub_category
-                    ORDER BY COUNT(*) DESC
-                    LIMIT 2
-                )
-                -- ✅ FINAL QUERY WITH LEFT JOIN TO AVOID EMPTY RESULTS
-                SELECT 
-                    COALESCE((SELECT mistakes_week FROM user_mistakes), 0) AS mistakes_week,
-                    COALESCE(ntc.main_category, 'неизвестно') AS top_mistake_category,
-                    COALESCE(ntc.number_of_top_category_mistakes, 0) AS number_of_top_category_mistakes,
-                    COALESCE(MAX(CASE WHEN tts.subcategory_rank = 1 THEN tts.sub_category END), 'неизвестно') AS top_subcategory_1,
-                    COALESCE(MAX(CASE WHEN tts.subcategory_rank = 2 THEN tts.sub_category END), 'неизвестно') AS top_subcategory_2
-                FROM number_of_topcategory_mist ntc
-                LEFT JOIN top_two_subcategories tts ON TRUE
-                GROUP BY ntc.main_category, ntc.number_of_top_category_mistakes;
-            """, (user_id, user_id, user_id, user_id))
+                SELECT COUNT(*) AS mistakes_week
+                FROM bt_3_detailed_mistakes
+                WHERE user_id = %s
+                AND added_data >= NOW() - INTERVAL '6 days'
+            """, (user_id,))
+            mistakes_row = cursor.fetchone()
+            mistakes_week = mistakes_row[0] if isinstance(mistakes_row, tuple) else mistakes_row or 0
 
-            # ✅ ОБРАБАТЫВАЕМ СЛУЧАЙ, КОГДА ВОЗВРАЩАЕТСЯ МЕНЬШЕ ДАННЫХ
-            result = cursor.fetchone()
-            if result is not None:
-                # Распаковываем все значения с защитой от отсутствия данных
-                mistakes_week, top_mistake_category, number_of_top_category_mistakes, top_mistake_subcategory_1, top_mistake_subcategory_2 = result
-            else:
-                # Если нет данных — возвращаем пустые значения
-                mistakes_week, top_mistake_category, number_of_top_category_mistakes, top_mistake_subcategory_1, top_mistake_subcategory_2 = 0, 'неизвестно', 0, 'неизвестно', 'неизвестно'
+            cursor.execute("""
+                SELECT
+                    COALESCE(NULLIF(TRIM(main_category), ''), 'неизвестно') AS main_category,
+                    COALESCE(NULLIF(TRIM(sub_category), ''), 'неизвестно') AS sub_category,
+                    COUNT(*) AS mistakes_count
+                FROM bt_3_detailed_mistakes
+                WHERE user_id = %s
+                  AND added_data >= NOW() - INTERVAL '6 days'
+                GROUP BY 1, 2
+                ORDER BY mistakes_count DESC, main_category ASC, sub_category ASC;
+            """, (user_id,))
+            grouped_rows = cursor.fetchall() or []
+
+            filtered_rows = []
+            for row in grouped_rows:
+                if not row:
+                    continue
+                main_category = str(row[0] or "").strip() or "неизвестно"
+                sub_category = str(row[1] or "").strip() or "неизвестно"
+                mistakes_count = int(row[2] or 0)
+                if _exclude_weekly_recommendation_topic(main_category, sub_category):
+                    continue
+                filtered_rows.append((main_category, sub_category, mistakes_count))
+
+            top_mistake_category = "неизвестно"
+            number_of_top_category_mistakes = 0
+            top_mistake_subcategory_1 = ""
+            top_mistake_subcategory_2 = ""
+
+            if filtered_rows:
+                category_totals = {}
+                for main_category, _, mistakes_count in filtered_rows:
+                    category_totals[main_category] = category_totals.get(main_category, 0) + mistakes_count
+
+                top_mistake_category, number_of_top_category_mistakes = sorted(
+                    category_totals.items(),
+                    key=lambda item: (-int(item[1]), str(item[0]).lower()),
+                )[0]
+
+                top_subcategories = [
+                    (sub_category, mistakes_count)
+                    for main_category, sub_category, mistakes_count in filtered_rows
+                    if main_category == top_mistake_category
+                ]
+                top_subcategories.sort(key=lambda item: (-int(item[1]), str(item[0]).lower()))
+
+                if top_subcategories:
+                    top_mistake_subcategory_1 = str(top_subcategories[0][0] or "").strip()
+                if len(top_subcategories) > 1:
+                    top_mistake_subcategory_2 = str(top_subcategories[1][0] or "").strip()
 
 
     return total_sentences, mistakes_week, top_mistake_category, number_of_top_category_mistakes, top_mistake_subcategory_1, top_mistake_subcategory_2
@@ -7880,37 +7999,60 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
                     result = cursor.fetchone()
                     username = result[0] if result else "Unknown User"
 
-            user_message = f"""
-            - **Категория ошибки:** {top_mistake_category}
-            - **Первая подкатегория:** {top_mistake_subcategory_1}
-            - **Вторая подкатегория:** {top_mistake_subcategory_2}
-            """
-            topic = str(top_mistake_category or "").strip() or "Deutsch Grammatik"
-
-            for attempt in range(5):
-                try:
-                    topic = await llm_execute(
-                        task_name=task_name,
-                        system_instruction_key=system_instruction_key,
-                        user_message=user_message,
-                        poll_interval_seconds=1.0,
-                    )
-                    print(f"📌 Определена тема: {topic}")
-                    break
-                except openai.RateLimitError:
-                    wait_time = (attempt + 1) * 5
-                    print(f"⚠️ OpenAI API перегружен. Ждём {wait_time} сек...")
-                    await asyncio.sleep(wait_time)
-                except Exception as e:
-                    print(f"⚠️ Ошибка OpenAI: {e}")
-                    continue
-
-            video_data = search_youtube_videous(
-                topic,
-                main_category=top_mistake_category,
-                sub_category=top_mistake_subcategory_1,
+            ranked_topics = _get_weekly_recommendation_topics(
+                safe_user_id,
+                lookback_days=7,
                 target_lang="de",
             )
+            if not ranked_topics and (top_mistake_category or top_mistake_subcategory_1):
+                ranked_topics = [
+                    {
+                        "main_category": str(top_mistake_category or "").strip(),
+                        "sub_category": str(top_mistake_subcategory_1 or "").strip(),
+                        "mistakes": int(number_of_top_category_mistakes or 0),
+                    }
+                ]
+
+            video_data = []
+            selected_video_topic = None
+            for topic_row in ranked_topics:
+                candidate_main_category = str(topic_row.get("main_category") or "").strip()
+                candidate_sub_category = str(topic_row.get("sub_category") or "").strip()
+                user_message = f"""
+                - **Категория ошибки:** {candidate_main_category}
+                - **Первая подкатегория:** {candidate_sub_category}
+                - **Вторая подкатегория:** 
+                """
+                topic = candidate_sub_category or candidate_main_category or "Deutsch Grammatik"
+
+                for attempt in range(5):
+                    try:
+                        topic = await llm_execute(
+                            task_name=task_name,
+                            system_instruction_key=system_instruction_key,
+                            user_message=user_message,
+                            poll_interval_seconds=1.0,
+                        )
+                        print(f"📌 Определена тема: {topic}")
+                        break
+                    except openai.RateLimitError:
+                        wait_time = (attempt + 1) * 5
+                        print(f"⚠️ OpenAI API перегружен. Ждём {wait_time} сек...")
+                        await asyncio.sleep(wait_time)
+                    except Exception as e:
+                        print(f"⚠️ Ошибка OpenAI: {e}")
+                        continue
+
+                candidate_video_data = search_youtube_videous(
+                    topic,
+                    main_category=candidate_main_category,
+                    sub_category=candidate_sub_category,
+                    target_lang="de",
+                )
+                if isinstance(candidate_video_data, list) and candidate_video_data:
+                    video_data = candidate_video_data
+                    selected_video_topic = topic_row
+                    break
 
             if not isinstance(video_data, list):
                 print(f"❌ ОШИБКА: search_youtube_videous вернула {type(video_data)} вместо списка!")
@@ -7934,6 +8076,17 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
                 recommendations += f"📜 *Основные ошибки в подкатегории:*\n {top_mistake_subcategory_1}\n\n"
             if top_mistake_subcategory_2:
                 recommendations += f"📜 *Вторые по частоте ошибки в подкатегории:*\n {top_mistake_subcategory_2}\n\n"
+            if selected_video_topic:
+                selected_video_main = str(selected_video_topic.get("main_category") or "").strip()
+                selected_video_sub = str(selected_video_topic.get("sub_category") or "").strip()
+                if (
+                    selected_video_main and
+                    (
+                        selected_video_main != str(top_mistake_category or "").strip()
+                        or selected_video_sub != str(top_mistake_subcategory_1 or "").strip()
+                    )
+                ):
+                    recommendations += f"🎯 *Видео подобрано по теме:*\n {selected_video_sub or selected_video_main}\n\n"
 
             recommendations += "🟢 *Рекомендую посмотреть:*\n\n"
             recommendations = escape_html_with_bold(recommendations)
