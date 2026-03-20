@@ -23601,6 +23601,7 @@ def get_webapp_topics():
 
 @app.route("/api/webapp/start", methods=["POST"])
 def start_webapp_translation():
+    started_at = time.perf_counter()
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     topic = (payload.get("topic") or "Random sentences").strip()
@@ -23628,6 +23629,7 @@ def start_webapp_translation():
         return jsonify({"error": "custom_focus обязателен для пользовательского грамматического фокуса"}), 400
 
     try:
+        workflow_started_at = time.perf_counter()
         result = asyncio.run(
             start_translation_session_webapp(
                 user_id=user_id,
@@ -23640,6 +23642,7 @@ def start_webapp_translation():
                 grammar_focus=resolved_focus,
             )
         )
+        workflow_elapsed_ms = int((time.perf_counter() - workflow_started_at) * 1000)
     except Exception as exc:
         return jsonify({"error": f"Ошибка запуска сессии: {exc}"}), 500
 
@@ -23669,6 +23672,23 @@ def start_webapp_translation():
             target_lang=target_lang,
             grammar_focus=resolved_focus,
         )
+
+    total_elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    logging.info(
+        "webapp translation start completed: user_id=%s session_id=%s ready_count=%s expected_total=%s remaining_count=%s "
+        "generation_in_progress=%s workflow_ms=%s total_ms=%s focus_kind=%s focus_key=%s level=%s",
+        int(user_id),
+        int(session_id or 0),
+        int(ready_count),
+        int(expected_total),
+        int(remaining_count),
+        bool(generation_started),
+        int(workflow_elapsed_ms),
+        int(total_elapsed_ms),
+        str(resolved_focus.get("kind") or "").strip(),
+        str(resolved_focus.get("key") or "").strip(),
+        str(level or "").strip().lower(),
+    )
 
     return jsonify(
         {

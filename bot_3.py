@@ -354,37 +354,30 @@ class TrackingExtBot(ExtBot):
         return await self._track_single(msg, "text")
 
     async def send_photo(self, *args, **kwargs):
-        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_photo(*args, **kwargs)
         return await self._track_single(msg, "photo")
 
     async def send_audio(self, *args, **kwargs):
-        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_audio(*args, **kwargs)
         return await self._track_single(msg, "audio")
 
     async def send_voice(self, *args, **kwargs):
-        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_voice(*args, **kwargs)
         return await self._track_single(msg, "voice")
 
     async def send_document(self, *args, **kwargs):
-        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_document(*args, **kwargs)
         return await self._track_single(msg, "document")
 
     async def send_video(self, *args, **kwargs):
-        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_video(*args, **kwargs)
         return await self._track_single(msg, "video")
 
     async def send_video_note(self, *args, **kwargs):
-        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_video_note(*args, **kwargs)
         return await self._track_single(msg, "video_note")
 
     async def send_animation(self, *args, **kwargs):
-        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_animation(*args, **kwargs)
         return await self._track_single(msg, "animation")
 
@@ -1146,22 +1139,29 @@ def _resolve_quiz_speech_payload(payload: dict) -> tuple[str, str]:
     return "", ""
 
 
-async def _synthesize_telegram_tts_audio(lang: str, text: str) -> tuple[io.BytesIO, str]:
+async def _synthesize_telegram_tts_voice(lang: str, text: str) -> tuple[io.BytesIO, str]:
     normalized_lang = str(lang or "").strip().lower() or "de"
     normalized_text = re.sub(r"\s+", " ", str(text or "").strip())
     if not normalized_text:
         raise ValueError("empty_tts_text")
     audio_segment = await asyncio.to_thread(get_or_create_tts_clip, normalized_lang, normalized_text, 0.95)
-    audio_bytes = await asyncio.to_thread(_audiosegment_to_mp3_bytes, audio_segment)
-    audio_buffer = io.BytesIO(audio_bytes)
-    audio_buffer.name = f"listen_{normalized_lang}.mp3"
-    audio_buffer.seek(0)
-    return audio_buffer, normalized_text
+    voice_bytes = await asyncio.to_thread(_audiosegment_to_ogg_opus_bytes, audio_segment)
+    voice_buffer = io.BytesIO(voice_bytes)
+    voice_buffer.name = f"listen_{normalized_lang}.ogg"
+    voice_buffer.seek(0)
+    return voice_buffer, normalized_text
 
 
 def _audiosegment_to_mp3_bytes(audio_segment: AudioSegment) -> bytes:
     buf = io.BytesIO()
     audio_segment.export(buf, format="mp3", bitrate="192k")
+    buf.seek(0)
+    return buf.read()
+
+
+def _audiosegment_to_ogg_opus_bytes(audio_segment: AudioSegment) -> bytes:
+    buf = io.BytesIO()
+    audio_segment.export(buf, format="ogg", codec="libopus", bitrate="64k")
     buf.seek(0)
     return buf.read()
 
@@ -5164,11 +5164,10 @@ async def handle_dictionary_speak_callback(update: Update, context: CallbackCont
         except Exception:
             pass
 
-        audio_buffer, normalized_text = await _synthesize_telegram_tts_audio(speak_lang, speak_text)
-        await context.bot.send_audio(
+        voice_buffer, _normalized_text = await _synthesize_telegram_tts_voice(speak_lang, speak_text)
+        await context.bot.send_voice(
             chat_id=int(query.message.chat_id),
-            audio=audio_buffer,
-            caption=f"🔊 {normalized_text}",
+            voice=voice_buffer,
             reply_to_message_id=int(query.message.message_id),
             language_tutor_button=False,
         )
@@ -5322,11 +5321,10 @@ async def handle_quiz_speak_callback(update: Update, context: CallbackContext) -
         except Exception:
             pass
 
-        audio_buffer, normalized_text = await _synthesize_telegram_tts_audio(speak_lang, speak_text)
-        await context.bot.send_audio(
+        voice_buffer, _normalized_text = await _synthesize_telegram_tts_voice(speak_lang, speak_text)
+        await context.bot.send_voice(
             chat_id=int(query.message.chat_id),
-            audio=audio_buffer,
-            caption=f"🔊 {normalized_text}",
+            voice=voice_buffer,
             reply_to_message_id=int(query.message.message_id),
             language_tutor_button=False,
         )

@@ -14218,7 +14218,7 @@ def _get_billing_all_time_bounds(currency: str = "USD") -> tuple[date, date]:
                 (currency_value, currency_value),
             )
             row = cursor.fetchone() or (None, None)
-    return (row[0] or today, row[1] or today)
+    return (_row_get(row, 0, today) or today, _row_get(row, 1, today) or today)
 
 
 def _get_product_active_users_count(
@@ -14252,7 +14252,7 @@ def _get_product_active_users_count(
             """,
             params,
         )
-        return int((cursor.fetchone() or [0])[0] or 0)
+        return int(_row_get(cursor.fetchone(), 0, 0) or 0)
 
     translation_activity_union = """
         SELECT user_id
@@ -14367,13 +14367,13 @@ def get_global_billing_summary(
                 totals_params,
             )
             totals_row = cursor.fetchone() or (0, 0, 0, 0, 0, 0, 0)
-            variable_cost_total = float(totals_row[0] or 0.0)
-            units_total = float(totals_row[1] or 0.0)
-            events_count = int(totals_row[2] or 0)
-            final_cost = float(totals_row[3] or 0.0)
-            estimated_cost = float(totals_row[4] or 0.0)
-            unpriced_units = float(totals_row[5] or 0.0)
-            unpriced_events = int(totals_row[6] or 0)
+            variable_cost_total = float(_row_get(totals_row, 0, 0.0) or 0.0)
+            units_total = float(_row_get(totals_row, 1, 0.0) or 0.0)
+            events_count = int(_row_get(totals_row, 2, 0) or 0)
+            final_cost = float(_row_get(totals_row, 3, 0.0) or 0.0)
+            estimated_cost = float(_row_get(totals_row, 4, 0.0) or 0.0)
+            unpriced_units = float(_row_get(totals_row, 5, 0.0) or 0.0)
+            unpriced_events = int(_row_get(totals_row, 6, 0) or 0)
 
             fixed_params = [currency_value, period_start, period_end]
             if provider_value:
@@ -14389,7 +14389,7 @@ def get_global_billing_summary(
                 """,
                 fixed_params,
             )
-            fixed_cost_total = float((cursor.fetchone() or [0])[0] or 0.0)
+            fixed_cost_total = float(_row_get(cursor.fetchone(), 0, 0.0) or 0.0)
 
             active_users = _get_product_active_users_count(
                 cursor,

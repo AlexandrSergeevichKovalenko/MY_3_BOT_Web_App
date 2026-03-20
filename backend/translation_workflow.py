@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import json
+import time
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -1285,6 +1286,7 @@ def _load_skill_mastery_memberships_with_cursor(
     *,
     target_lang: str,
     skill_ids: list[str],
+    cache: dict[tuple[str, str], dict[str, Any] | None] | None = None,
 ) -> dict[str, dict[str, Any]]:
     normalized_skill_ids = [
         str(skill_id or "").strip()
@@ -1293,6 +1295,20 @@ def _load_skill_mastery_memberships_with_cursor(
     ]
     if not normalized_skill_ids:
         return {}
+    normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+    result: dict[str, dict[str, Any]] = {}
+    missing_skill_ids: list[str] = []
+    if cache is not None:
+        for skill_id in normalized_skill_ids:
+            cached = cache.get((normalized_target_lang, skill_id))
+            if cached is None:
+                missing_skill_ids.append(skill_id)
+            elif cached:
+                result[skill_id] = dict(cached)
+    else:
+        missing_skill_ids = list(normalized_skill_ids)
+    if not missing_skill_ids:
+        return result
     cursor.execute(
         """
         SELECT
@@ -1306,10 +1322,10 @@ def _load_skill_mastery_memberships_with_cursor(
         WHERE language_code = %s
           AND diagnostic_skill_id = ANY(%s);
         """,
-        (str(target_lang or "de").strip().lower() or "de", normalized_skill_ids),
+        (normalized_target_lang, missing_skill_ids),
     )
     rows = cursor.fetchall() or []
-    return {
+    loaded = {
         str(row[0] or "").strip(): {
             "mastery_group_id": str(row[1] or "").strip(),
             "is_mastery_leaf": bool(row[2]),
@@ -1320,6 +1336,11 @@ def _load_skill_mastery_memberships_with_cursor(
         for row in rows
         if str(row[0] or "").strip()
     }
+    if cache is not None:
+        for skill_id in missing_skill_ids:
+            cache[(normalized_target_lang, skill_id)] = dict(loaded.get(skill_id) or {})
+    result.update(loaded)
+    return result
 
 
 def _list_mastery_leaf_skill_ids_for_groups_with_cursor(
@@ -1327,6 +1348,7 @@ def _list_mastery_leaf_skill_ids_for_groups_with_cursor(
     *,
     target_lang: str,
     mastery_group_ids: list[str],
+    cache: dict[tuple[str, str], list[str]] | None = None,
 ) -> dict[str, list[str]]:
     normalized_group_ids = [
         str(group_id or "").strip()
@@ -1335,6 +1357,20 @@ def _list_mastery_leaf_skill_ids_for_groups_with_cursor(
     ]
     if not normalized_group_ids:
         return {}
+    normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+    grouped: dict[str, list[str]] = {}
+    missing_group_ids: list[str] = []
+    if cache is not None:
+        for group_id in normalized_group_ids:
+            cached = cache.get((normalized_target_lang, group_id))
+            if cached is None:
+                missing_group_ids.append(group_id)
+            else:
+                grouped[group_id] = list(cached)
+    else:
+        missing_group_ids = list(normalized_group_ids)
+    if not missing_group_ids:
+        return grouped
     cursor.execute(
         """
         SELECT mastery_group_id, diagnostic_skill_id
@@ -1345,16 +1381,18 @@ def _list_mastery_leaf_skill_ids_for_groups_with_cursor(
           AND COALESCE(is_diagnostic_only, FALSE) = FALSE
         ORDER BY mastery_group_id ASC, sort_order ASC, diagnostic_skill_id ASC;
         """,
-        (str(target_lang or "de").strip().lower() or "de", normalized_group_ids),
+        (normalized_target_lang, missing_group_ids),
     )
     rows = cursor.fetchall() or []
-    grouped: dict[str, list[str]] = {}
     for mastery_group_id, diagnostic_skill_id in rows:
         group_id = str(mastery_group_id or "").strip()
         skill_id = str(diagnostic_skill_id or "").strip()
         if not group_id or not skill_id:
             continue
         grouped.setdefault(group_id, []).append(skill_id)
+    if cache is not None:
+        for group_id in missing_group_ids:
+            cache[(normalized_target_lang, group_id)] = list(grouped.get(group_id) or [])
     return grouped
 
 
@@ -2174,7 +2212,10 @@ async def get_original_sentences_webapp(
     target_lang: str = "de",
     generation_profile_seed: dict[str, Any] | None = None,
     grammar_focus: dict[str, Any] | None = None,
+    target_count: int = 7,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    target_total = max(1, int(target_count or 7))
     level_key = _normalize_level(level)
     resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
     focus_kind = str(resolved_focus.get("kind") or "").strip().lower()
@@ -2190,6 +2231,7 @@ async def get_original_sentences_webapp(
         authored_mastery_leaves_only=(str(target_lang or "").strip().lower() == "de"),
     )
 
+    seed_diagnostics: dict[str, Any] = {}
     sentence_entries = _collect_seed_sentence_entries_with_cursor(
         cursor,
         user_id=int(user_id),
@@ -2198,9 +2240,14 @@ async def get_original_sentences_webapp(
         target_lang=target_lang,
         resolved_focus=resolved_focus,
         recent_sentence_keys=recent_sentence_keys,
+        target_count=target_total,
+        diagnostics=seed_diagnostics,
     )
-    num_sentences = 7 - len(sentence_entries)
+    num_sentences = target_total - len(sentence_entries)
+    llm_elapsed_ms = 0
+    llm_calls = 0
     if num_sentences > 0:
+        llm_started_at = time.perf_counter()
         generated_entries = await _generate_legacy_sentence_entries_with_profiles(
             topic=topic,
             level=level,
@@ -2218,7 +2265,7 @@ async def get_original_sentences_webapp(
                     if str(item.get("sentence") or "").strip()
                 }
             ),
-        )
+            )
         if generated_entries and focus_kind == "preset":
             _upsert_shared_sentence_pool_entries_with_cursor(
                 cursor,
@@ -2229,9 +2276,12 @@ async def get_original_sentences_webapp(
                 entries=generated_entries,
             )
         sentence_entries = _normalize_sentence_entries(sentence_entries + generated_entries)
+        llm_elapsed_ms += int((time.perf_counter() - llm_started_at) * 1000)
+        llm_calls += 1
     attempts = 0
-    while len(sentence_entries) < 7 and attempts < 3:
-        needed = 7 - len(sentence_entries)
+    while len(sentence_entries) < target_total and attempts < 3:
+        needed = target_total - len(sentence_entries)
+        llm_started_at = time.perf_counter()
         extra_entries = await _generate_legacy_sentence_entries_with_profiles(
             topic=topic,
             level=level,
@@ -2262,8 +2312,19 @@ async def get_original_sentences_webapp(
                 entries=extra_entries,
             )
         sentence_entries = _normalize_sentence_entries(sentence_entries + extra_entries)
+        llm_elapsed_ms += int((time.perf_counter() - llm_started_at) * 1000)
+        llm_calls += 1
         attempts += 1
-    return sentence_entries[:7]
+    if diagnostics is not None:
+        diagnostics.update(seed_diagnostics)
+        diagnostics.update(
+            {
+                "llm_ms": int(llm_elapsed_ms),
+                "llm_calls": int(llm_calls),
+                "result_count": int(len(sentence_entries)),
+            }
+        )
+    return sentence_entries[:target_total]
 
 
 def _collect_seed_sentence_entries_with_cursor(
@@ -2275,9 +2336,17 @@ def _collect_seed_sentence_entries_with_cursor(
     target_lang: str,
     resolved_focus: dict[str, Any],
     recent_sentence_keys: set[str] | None = None,
+    target_count: int = 7,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    started_at = time.perf_counter()
+    target_total = max(1, int(target_count or 7))
     focus_kind = str(resolved_focus.get("kind") or "").strip().lower()
     blocked_sentence_keys = set(recent_sentence_keys or set())
+    remediation_skill_seed_cache: dict[tuple[str, str], dict[str, str] | None] = {}
+    remediation_membership_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
+    remediation_leaf_cache: dict[tuple[str, str], list[str]] = {}
+    personal_rows_scanned = 0
 
     sentence_entries: list[dict[str, Any]] = []
     if focus_kind not in {"preset", "custom"}:
@@ -2286,7 +2355,7 @@ def _collect_seed_sentence_entries_with_cursor(
             sentence
             for sentence in _filter_sentences_for_level([row[0] for row in cursor.fetchall()], level_key)
             if _normalize_sentence_text_key(sentence) not in blocked_sentence_keys
-        ][:1]
+        ][:min(1, target_total)]
         sentence_entries = [{"sentence": str(sentence or "").strip(), "tested_skill_profile": []} for sentence in rows if str(sentence or "").strip()]
 
     already_given_sentence_ids = set()
@@ -2297,6 +2366,7 @@ def _collect_seed_sentence_entries_with_cursor(
         if str(item.get("sentence") or "").strip()
     )
     if focus_kind != "custom":
+        personal_started_at = time.perf_counter()
         cursor.execute(
             """
             SELECT
@@ -2310,7 +2380,9 @@ def _collect_seed_sentence_entries_with_cursor(
             """,
             (user_id,),
         )
-        for sentence, sentence_id, main_category, sub_category in cursor.fetchall() or []:
+        detailed_rows = cursor.fetchall() or []
+        personal_rows_scanned = len(detailed_rows)
+        for sentence, sentence_id, main_category, sub_category in detailed_rows:
             normalized_sentence = " ".join(str(sentence or "").strip().split())
             sentence_key = _normalize_sentence_text_key(normalized_sentence)
             if focus_kind == "preset" and not focus_matches_error_pair(resolved_focus, main_category, sub_category):
@@ -2330,15 +2402,23 @@ def _collect_seed_sentence_entries_with_cursor(
                         target_lang=target_lang,
                         source_lang=source_lang,
                         sentence_text=normalized_sentence,
+                        skill_seed_cache=remediation_skill_seed_cache,
+                        membership_cache=remediation_membership_cache,
+                        leaf_cache=remediation_leaf_cache,
                     ),
                 }
             )
             seen_sentence_keys.add(sentence_key)
-            if len([item for item in sentence_entries if item.get("tested_skill_profile")]) >= 5:
+            if len([item for item in sentence_entries if item.get("tested_skill_profile")]) >= min(5, target_total):
                 break
+        personal_elapsed_ms = int((time.perf_counter() - personal_started_at) * 1000)
+    else:
+        personal_elapsed_ms = 0
 
-    num_sentences = 7 - len(sentence_entries)
+    num_sentences = target_total - len(sentence_entries)
+    personal_ready_count = len(sentence_entries)
     if num_sentences > 0 and focus_kind == "preset":
+        pool_started_at = time.perf_counter()
         pooled_entries = _fetch_shared_sentence_pool_entries_with_cursor(
             cursor,
             focus=resolved_focus,
@@ -2360,7 +2440,22 @@ def _collect_seed_sentence_entries_with_cursor(
                     excluded_sentence_keys=seen_sentence_keys,
                 )
             )
-    return sentence_entries[:7]
+        pool_elapsed_ms = int((time.perf_counter() - pool_started_at) * 1000)
+    else:
+        pool_elapsed_ms = 0
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "seed_total_ms": int((time.perf_counter() - started_at) * 1000),
+                "personal_ms": int(personal_elapsed_ms),
+                "pool_ms": int(pool_elapsed_ms),
+                "personal_rows_scanned": int(personal_rows_scanned),
+                "personal_added": int(personal_ready_count),
+                "pool_added": max(0, int(len(sentence_entries) - personal_ready_count)),
+                "seed_ready_count": int(len(sentence_entries)),
+            }
+        )
+    return sentence_entries[:target_total]
 
 
 def _normalize_sentence_text_key(sentence: str) -> str:
@@ -2685,6 +2780,9 @@ async def fill_translation_session_webapp(
             current_count = int(count_row[0] or 0) if count_row else 0
             if current_count >= int(target_count):
                 break
+            missing_count = max(0, int(target_count) - int(current_count))
+            if missing_count <= 0:
+                break
 
             existing_sentence_keys = _get_session_sentence_keys_with_cursor(
                 cursor,
@@ -2694,6 +2792,7 @@ async def fill_translation_session_webapp(
                 target_lang=target_lang,
             )
             if _is_legacy_ru_de_pair(source_lang, target_lang):
+                generation_diagnostics: dict[str, Any] = {}
                 candidate_entries = await get_original_sentences_webapp(
                     cursor,
                     user_id=int(user_id),
@@ -2703,8 +2802,11 @@ async def fill_translation_session_webapp(
                     target_lang=target_lang,
                     generation_profile_seed=tested_skill_profile_seed,
                     grammar_focus=grammar_focus,
+                    target_count=missing_count,
+                    diagnostics=generation_diagnostics,
                 )
             else:
+                generation_diagnostics = {}
                 skill_catalog = _load_skill_catalog_with_cursor(
                     cursor,
                     target_lang=target_lang,
@@ -2719,13 +2821,13 @@ async def fill_translation_session_webapp(
                             "target_language": (target_lang or "").strip().lower(),
                             "level": (level or "b1").strip().lower(),
                             "topic": (topic or "General").strip(),
-                            "count": int(max(1, int(target_count))),
+                            "count": int(max(1, int(missing_count))),
                             "skill_catalog": skill_catalog,
                             "focus_hint": tested_skill_profile_seed if isinstance(tested_skill_profile_seed, dict) else None,
                         },
                         ensure_ascii=False,
                     ),
-                    target_count=int(max(1, int(target_count))),
+                    target_count=int(max(1, int(missing_count))),
                     level=level,
                     valid_skill_ids={str(item.get("skill_id") or "").strip() for item in skill_catalog if str(item.get("skill_id") or "").strip()},
                 )
@@ -2755,12 +2857,18 @@ async def fill_translation_session_webapp(
                 "candidate_insertable": int(batch_summary["insertable"]),
                 "candidate_overflow": int(batch_summary["overflow"]),
                 "remaining_slots": int(batch_summary["remaining_slots"]),
+                "requested_count": int(missing_count),
+                "personal_ms": int(generation_diagnostics.get("personal_ms") or 0),
+                "pool_ms": int(generation_diagnostics.get("pool_ms") or 0),
+                "llm_ms": int(generation_diagnostics.get("llm_ms") or 0),
+                "llm_calls": int(generation_diagnostics.get("llm_calls") or 0),
                 "inserted_count": int(len(inserted_items)),
             }
             round_diagnostics.append(round_info)
             logging.info(
                 "translation fill round: user_id=%s session_id=%s round=%s before_count=%s candidate_raw=%s normalized=%s "
-                "dropped_norm=%s duplicate_existing=%s insertable=%s overflow=%s inserted=%s target=%s",
+                "dropped_norm=%s duplicate_existing=%s insertable=%s overflow=%s inserted=%s target=%s requested=%s "
+                "personal_ms=%s pool_ms=%s llm_ms=%s llm_calls=%s",
                 int(user_id),
                 int(session_id),
                 round_info["round"],
@@ -2773,6 +2881,11 @@ async def fill_translation_session_webapp(
                 round_info["candidate_overflow"],
                 round_info["inserted_count"],
                 int(target_count),
+                round_info["requested_count"],
+                round_info["personal_ms"],
+                round_info["pool_ms"],
+                round_info["llm_ms"],
+                round_info["llm_calls"],
             )
             if not inserted_items:
                 logging.warning(
@@ -2971,6 +3084,8 @@ async def start_translation_session_webapp(
         )
 
         immediate_entries: list[dict[str, Any]] = []
+        seed_started_at = time.perf_counter()
+        seed_diagnostics: dict[str, Any] = {}
         if _is_legacy_ru_de_pair(source_lang, target_lang):
             level_key = _normalize_level(level)
             resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
@@ -2981,6 +3096,8 @@ async def start_translation_session_webapp(
                 source_lang=source_lang,
                 target_lang=target_lang,
                 resolved_focus=resolved_focus,
+                target_count=7,
+                diagnostics=seed_diagnostics,
             )
 
         inserted_items = _insert_sentence_entries_into_session_with_cursor(
@@ -3001,7 +3118,8 @@ async def start_translation_session_webapp(
         )
         logging.info(
             "translation session seeded: user_id=%s session_id=%s seed_raw=%s seed_normalized=%s seed_dropped_norm=%s "
-            "seed_insertable=%s inserted=%s expected_total=%s",
+            "seed_insertable=%s inserted=%s expected_total=%s seed_ms=%s personal_ms=%s pool_ms=%s "
+            "personal_rows_scanned=%s personal_added=%s pool_added=%s",
             int(user_id),
             int(session_id),
             int(immediate_batch_summary["raw_count"]),
@@ -3010,6 +3128,12 @@ async def start_translation_session_webapp(
             int(immediate_batch_summary["insertable"]),
             int(ready_count),
             7,
+            int((time.perf_counter() - seed_started_at) * 1000),
+            int(seed_diagnostics.get("personal_ms") or 0),
+            int(seed_diagnostics.get("pool_ms") or 0),
+            int(seed_diagnostics.get("personal_rows_scanned") or 0),
+            int(seed_diagnostics.get("personal_added") or 0),
+            int(seed_diagnostics.get("pool_added") or 0),
         )
         if ready_count < 7:
             logging.warning(
@@ -3523,30 +3647,77 @@ def _retention_state_label(*, was_in_mistakes: bool, score_value: int) -> str:
     return "new_pass" if score >= 80 else "new_fail_store"
 
 
-def _load_skill_seed_with_cursor(cursor, *, skill_id: str, target_lang: str) -> dict[str, str] | None:
+def _load_skill_seeds_map_with_cursor(
+    cursor,
+    *,
+    skill_ids: list[str],
+    target_lang: str,
+    cache: dict[tuple[str, str], dict[str, str] | None] | None = None,
+) -> dict[str, dict[str, str]]:
+    normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+    normalized_skill_ids = [
+        str(skill_id or "").strip()
+        for skill_id in list(skill_ids or [])
+        if str(skill_id or "").strip()
+    ]
+    if not normalized_skill_ids:
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    missing_skill_ids: list[str] = []
+    if cache is not None:
+        for skill_id in normalized_skill_ids:
+            cached = cache.get((normalized_target_lang, skill_id))
+            if cached is None:
+                missing_skill_ids.append(skill_id)
+            elif cached:
+                result[skill_id] = dict(cached)
+    else:
+        missing_skill_ids = list(normalized_skill_ids)
+    if missing_skill_ids:
+        cursor.execute(
+            """
+            SELECT skill_id, title, category
+            FROM bt_3_skills
+            WHERE skill_id = ANY(%s)
+              AND language_code = %s
+              AND COALESCE(is_active, TRUE) = TRUE;
+            """,
+            (missing_skill_ids, normalized_target_lang),
+        )
+        loaded = {
+            str(row[0] or "").strip(): {
+                "skill_id": str(row[0] or ""),
+                "title": str(row[1] or ""),
+                "category": str(row[2] or ""),
+            }
+            for row in (cursor.fetchall() or [])
+            if str(row[0] or "").strip()
+        }
+        if cache is not None:
+            for skill_id in missing_skill_ids:
+                cache[(normalized_target_lang, skill_id)] = dict(loaded.get(skill_id) or {})
+        result.update(loaded)
+    return result
+
+
+def _load_skill_seed_with_cursor(
+    cursor,
+    *,
+    skill_id: str,
+    target_lang: str,
+    cache: dict[tuple[str, str], dict[str, str] | None] | None = None,
+) -> dict[str, str] | None:
     normalized_skill_id = str(skill_id or "").strip()
     normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
     if not normalized_skill_id:
         return None
-    cursor.execute(
-        """
-        SELECT skill_id, title, category
-        FROM bt_3_skills
-        WHERE skill_id = %s
-          AND language_code = %s
-          AND COALESCE(is_active, TRUE) = TRUE
-        LIMIT 1;
-        """,
-        (normalized_skill_id, normalized_target_lang),
+    loaded = _load_skill_seeds_map_with_cursor(
+        cursor,
+        skill_ids=[normalized_skill_id],
+        target_lang=normalized_target_lang,
+        cache=cache,
     )
-    row = cursor.fetchone()
-    if not row:
-        return None
-    return {
-        "skill_id": str(row[0] or ""),
-        "title": str(row[1] or ""),
-        "category": str(row[2] or ""),
-    }
+    return loaded.get(normalized_skill_id)
 
 
 def _list_related_skill_ids_with_cursor(
@@ -3710,6 +3881,9 @@ def _build_remediation_profile_with_cursor(
     target_lang: str,
     source_lang: str = "ru",
     sentence_text: str | None = None,
+    skill_seed_cache: dict[tuple[str, str], dict[str, str] | None] | None = None,
+    membership_cache: dict[tuple[str, str], dict[str, Any] | None] | None = None,
+    leaf_cache: dict[tuple[str, str], list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     if not user_id or not sentence_id_for_mistake:
         return []
@@ -3733,6 +3907,8 @@ def _build_remediation_profile_with_cursor(
         return []
 
     aggregated_skill_weights: dict[str, float] = {}
+    mapped_pairs: list[tuple[list[dict[str, Any]], float]] = []
+    candidate_skill_ids: set[str] = set()
     for main_category, sub_category, total_mistakes in rows:
         mapped = get_skill_mapping_for_error(
             str(main_category or "").strip(),
@@ -3740,16 +3916,23 @@ def _build_remediation_profile_with_cursor(
             language_code=target_lang or "de",
         )
         pair_weight = max(1.0, float(total_mistakes or 1))
+        mapped_pairs.append((mapped, pair_weight))
         for item in mapped:
             skill_id = str(item.get("skill_id") or "").strip()
             if not skill_id:
                 continue
-            skill_seed = _load_skill_seed_with_cursor(
-                cursor,
-                skill_id=skill_id,
-                target_lang=target_lang,
-            )
-            if not skill_seed:
+            candidate_skill_ids.add(skill_id)
+
+    available_skill_seeds = _load_skill_seeds_map_with_cursor(
+        cursor,
+        skill_ids=list(candidate_skill_ids),
+        target_lang=target_lang,
+        cache=skill_seed_cache,
+    )
+    for mapped, pair_weight in mapped_pairs:
+        for item in mapped:
+            skill_id = str(item.get("skill_id") or "").strip()
+            if not skill_id or skill_id not in available_skill_seeds:
                 continue
             aggregated_skill_weights[skill_id] = aggregated_skill_weights.get(skill_id, 0.0) + pair_weight * max(float(item.get("weight") or 1.0), 0.1)
 
@@ -3760,12 +3943,14 @@ def _build_remediation_profile_with_cursor(
         target_lang=target_lang or "de",
     )
     anchor_skill_weights, has_structural_anchor = _collect_sentence_anchor_skill_weights(resolved_sentence_text)
+    anchor_skill_seeds = _load_skill_seeds_map_with_cursor(
+        cursor,
+        skill_ids=list(anchor_skill_weights.keys()),
+        target_lang=target_lang,
+        cache=skill_seed_cache,
+    )
     for skill_id, bonus in anchor_skill_weights.items():
-        if not _load_skill_seed_with_cursor(
-            cursor,
-            skill_id=skill_id,
-            target_lang=target_lang,
-        ):
+        if skill_id not in anchor_skill_seeds:
             continue
         aggregated_skill_weights[skill_id] = aggregated_skill_weights.get(skill_id, 0.0) + float(bonus)
 
@@ -3780,6 +3965,7 @@ def _build_remediation_profile_with_cursor(
         cursor,
         target_lang=target_lang,
         skill_ids=list(aggregated_skill_weights.keys()),
+        cache=membership_cache,
     )
     leaf_candidates_by_group = _list_mastery_leaf_skill_ids_for_groups_with_cursor(
         cursor,
@@ -3789,6 +3975,7 @@ def _build_remediation_profile_with_cursor(
             for membership in memberships.values()
             if str(membership.get("mastery_group_id") or "").strip()
         ],
+        cache=leaf_cache,
     )
 
     promoted_leaf_scores: dict[str, float] = {}

@@ -3912,12 +3912,20 @@ function AppInner() {
           ? normalized.toFixed(meta.digits)
           : String(Math.round(normalized));
       };
+      const delta = currentValue - previousValue;
+      const deltaLabel = delta > 0
+        ? `+${formatValue(delta)}`
+        : delta < 0
+          ? `-${formatValue(Math.abs(delta))}`
+          : '0';
       return {
         key: meta.key,
         title: meta.title,
         unit: meta.unit,
         currentLabel: formatValue(currentValue),
         previousLabel: formatValue(previousValue),
+        deltaLabel,
+        deltaClass: delta > 0 ? 'is-positive' : delta < 0 ? 'is-negative' : 'is-neutral',
         currentWidth: currentValue > 0 ? `${Math.max(6, Math.round((currentValue / scaleMax) * 100))}%` : '0%',
         previousWidth: previousValue > 0 ? `${Math.max(6, Math.round((previousValue / scaleMax) * 100))}%` : '0%',
       };
@@ -19025,11 +19033,21 @@ function AppInner() {
                     <div className="weekly-summary-kpi-grid">
                       {weeklySummaryKpiCards.map((card) => (
                         <article key={`weekly-summary-kpi-${card.key}`} className="weekly-summary-kpi-card">
-                          <span>{card.title}</span>
-                          <strong>{card.actualLabel} / {card.previousLabel}</strong>
-                          <small className={`weekly-summary-kpi-delta ${card.deltaClass}`}>
-                            {card.deltaLabel} {tr('vs прошлый период', 'vs letzter Zeitraum')}
-                          </small>
+                          <div className="weekly-summary-kpi-card-head">
+                            <span className="weekly-summary-kpi-title">{card.title}</span>
+                            <small className={`weekly-summary-kpi-delta ${card.deltaClass}`}>
+                              {card.deltaLabel}
+                            </small>
+                          </div>
+                          <div className="weekly-summary-kpi-primary">
+                            <strong>{card.actualLabel}</strong>
+                            <span>{card.unit}</span>
+                          </div>
+                          <div className="weekly-summary-kpi-secondary">
+                            <span>{tr('Было', 'Vorher')}</span>
+                            <strong>{card.previousLabel}</strong>
+                            <span>{card.unit}</span>
+                          </div>
                         </article>
                       ))}
                     </div>
@@ -19047,48 +19065,45 @@ function AppInner() {
                     <div className="weekly-summary-kpi-empty">{weeklySummaryHeroError}</div>
                   ) : (
                     <div className="weekly-summary-compare-rows">
+                      <div className="weekly-summary-compare-legend" aria-hidden="true">
+                        <span className="weekly-summary-compare-legend-item">
+                          <span className="weekly-summary-compare-dot is-current" />
+                          {tr('Текущий период', 'Aktueller Zeitraum')}
+                        </span>
+                        <span className="weekly-summary-compare-legend-item">
+                          <span className="weekly-summary-compare-dot is-previous" />
+                          {tr('Прошлый период', 'Letzter Zeitraum')}
+                        </span>
+                      </div>
                       {weeklySummaryComparisonRows.map((row) => (
                         <div key={`weekly-summary-compare-${row.key}`} className="weekly-summary-compare-row">
                           <div className="weekly-summary-compare-topline">
-                            <span className="weekly-summary-compare-title">{row.title}</span>
-                            <span className="weekly-summary-compare-values">
-                              {row.currentLabel} / {row.previousLabel} {row.unit}
-                            </span>
-                          </div>
-                          <div className="weekly-summary-compare-bars" aria-hidden="true">
-                            <div className="weekly-summary-compare-bar-row">
-                              <div className="weekly-summary-compare-bar-meta">
-                                <span className="weekly-summary-compare-bar-label">
-                                  <span className="weekly-summary-compare-dot is-current" />
-                                  {tr('Сейчас', 'Aktuell')}
-                                </span>
-                                <span className="weekly-summary-compare-bar-value">
-                                  {row.currentLabel} {row.unit}
-                                </span>
-                              </div>
-                              <div className="weekly-summary-compare-track">
-                                <div
-                                  className="weekly-summary-compare-fill is-current"
-                                  style={{ width: row.currentWidth }}
-                                />
+                            <div className="weekly-summary-compare-copy">
+                              <span className="weekly-summary-compare-title">{row.title}</span>
+                              <div className="weekly-summary-compare-value-group">
+                                <strong>{row.currentLabel}</strong>
+                                <span>{row.unit}</span>
                               </div>
                             </div>
-                            <div className="weekly-summary-compare-bar-row">
-                              <div className="weekly-summary-compare-bar-meta">
-                                <span className="weekly-summary-compare-bar-label">
-                                  <span className="weekly-summary-compare-dot is-previous" />
-                                  {tr('Прошлый период', 'Letzter Zeitraum')}
-                                </span>
-                                <span className="weekly-summary-compare-bar-value">
-                                  {row.previousLabel} {row.unit}
-                                </span>
-                              </div>
-                              <div className="weekly-summary-compare-track">
-                                <div
-                                  className="weekly-summary-compare-fill is-previous"
-                                  style={{ width: row.previousWidth }}
-                                />
-                              </div>
+                            <div className="weekly-summary-compare-values">
+                              <small className={`weekly-summary-kpi-delta ${row.deltaClass}`}>{row.deltaLabel}</small>
+                              <span>{tr('Было', 'Vorher')} {row.previousLabel} {row.unit}</span>
+                            </div>
+                          </div>
+                          <div className="weekly-summary-compare-bars" aria-hidden="true">
+                            <div className="weekly-summary-compare-track">
+                              <div
+                                className="weekly-summary-compare-fill is-previous"
+                                style={{ width: row.previousWidth }}
+                              />
+                              <div
+                                className="weekly-summary-compare-fill is-current"
+                                style={{ width: row.currentWidth }}
+                              />
+                              <span
+                                className="weekly-summary-compare-marker"
+                                style={{ left: row.previousWidth }}
+                              />
                             </div>
                           </div>
                         </div>

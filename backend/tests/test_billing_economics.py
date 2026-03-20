@@ -151,6 +151,34 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(summary["breakdown"]["by_model"][0]["tokens_in"], 0.0)
         self.assertEqual(summary["breakdown"]["fixed_costs"][0]["amount"], 0.0)
 
+    def test_global_summary_tolerates_short_totals_row(self):
+        cursor = _DummyCursor([
+            (None, None),
+            (0,),
+            (0,),
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+        ])
+
+        with patch("backend.database.get_db_connection_context", _db_context(cursor)):
+            with patch("backend.database._get_product_active_users_count", return_value=0):
+                summary = get_global_billing_summary(
+                    period="all",
+                    provider=None,
+                    currency="USD",
+                    as_of_date=date(2026, 3, 20),
+                )
+
+        self.assertEqual(summary["totals"]["variable_cost_total"], 0.0)
+        self.assertEqual(summary["totals"]["events_count"], 0)
+        self.assertEqual(summary["totals"]["unpriced_events"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
