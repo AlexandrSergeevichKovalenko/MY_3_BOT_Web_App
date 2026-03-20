@@ -1,13 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  LiveKitRoom,
-  ControlBar,
-  ConnectionStateToast,
-  RoomAudioRenderer,
-} from '@livekit/components-react';
-import '@livekit/components-styles';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
-import * as echarts from 'echarts';
 import BlocksTrainer from './components/BlocksTrainer';
 import WeeklySummaryModal from './components/WeeklySummaryModal';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -16,6 +8,8 @@ import { detectAppMode } from './utils/appMode';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
+const loadLiveKitRuntime = () => import('./components/LiveKitRuntime');
+const LazyLiveKitRuntime = lazy(loadLiveKitRuntime);
 const SINGLE_INSTANCE_LOCK_KEY = 'dds_single_instance_lock_v1';
 const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
 const SINGLE_INSTANCE_STALE_MS = 5000;
@@ -3732,6 +3726,7 @@ function AppInner() {
   const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
   const [youtubeSearchResults, setYoutubeSearchResults] = useState([]);
   const [youtubeSearchError, setYoutubeSearchError] = useState('');
+  const [youtubeRecommendationLoading, setYoutubeRecommendationLoading] = useState(false);
   const [videoExpanded, setVideoExpanded] = useState(false);
   const [youtubeTranscript, setYoutubeTranscript] = useState([]);
   const [youtubeTranscriptError, setYoutubeTranscriptError] = useState('');
@@ -8071,6 +8066,114 @@ function AppInner() {
 
   const startTodayTask = async (item) => {
     if (!item?.id) return;
+    const initialTaskType = String(item?.task_type || '').toLowerCase();
+    if (initialTaskType === 'video' || initialTaskType === 'youtube') {
+      const initialPayload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+      const initialVideoUrl = String(initialPayload.video_url || '').trim();
+      const initialVideoId = String(initialPayload.video_id || '').trim();
+      const backCandidate = Array.from(selectedSections).find((key) => key && key !== 'youtube') || '';
+
+      setYoutubeBackSection(backCandidate);
+      setYoutubeForceShowPanel(false);
+      setYoutubeSearchResults([]);
+      setYoutubeSearchError('');
+      setYoutubeError('');
+      setYoutubeRecommendationLoading(true);
+      if (initialVideoUrl) {
+        setYoutubeInput(initialVideoUrl);
+      } else if (initialVideoId) {
+        setYoutubeInput(`https://youtu.be/${initialVideoId}`);
+      } else {
+        setYoutubeInput('');
+      }
+      openSingleSectionAndScroll('youtube', youtubeRef);
+
+      void (async () => {
+        try {
+          const startedItem = await updateTodayItemStatus(item.id, 'start');
+          const effectiveItem = startedItem || item;
+          await syncTodayItemTimer(effectiveItem, 'start', {
+            elapsedSeconds: getTodayItemElapsedSeconds(effectiveItem, Date.now()),
+            running: false,
+          });
+
+          const payload = effectiveItem?.payload && typeof effectiveItem.payload === 'object' ? effectiveItem.payload : {};
+          let videoUrl = String(payload.video_url || initialVideoUrl).trim();
+          let videoId = String(payload.video_id || initialVideoId).trim();
+          let videoTitle = String(payload.video_title || '').trim();
+
+          if (!videoUrl && !videoId && initData) {
+            const response = await fetch('/api/today/video/recommend', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                initData,
+                item_id: effectiveItem.id,
+                skill_id: payload.skill_id || null,
+                skill_title: payload.skill_title || null,
+                main_category: payload.main_category || null,
+                sub_category: payload.sub_category || null,
+                examples: Array.isArray(payload.examples) ? payload.examples.slice(0, 5) : [],
+                lookback_days: payload.lookback_days || 7,
+              }),
+            });
+            if (response.ok) {
+              const data = await response.json();
+              const recommended = data?.video && typeof data.video === 'object' ? data.video : {};
+              const updatedItem = data?.updated_item && typeof data.updated_item === 'object' ? data.updated_item : null;
+              videoUrl = String(recommended.video_url || videoUrl).trim();
+              videoId = String(recommended.video_id || videoId).trim();
+              videoTitle = String(recommended.title || videoTitle).trim();
+              setTodayPlan((prev) => {
+                if (!prev || !Array.isArray(prev.items)) return prev;
+                return {
+                  ...prev,
+                  items: prev.items.map((planItem) => {
+                    if (planItem.id !== effectiveItem.id) return planItem;
+                    if (updatedItem) {
+                      return { ...planItem, ...updatedItem };
+                    }
+                    const planPayload = planItem?.payload && typeof planItem.payload === 'object' ? planItem.payload : {};
+                    return {
+                      ...planItem,
+                      payload: {
+                        ...planPayload,
+                        video_url: videoUrl || planPayload.video_url || null,
+                        video_id: videoId || planPayload.video_id || null,
+                        video_title: videoTitle || planPayload.video_title || null,
+                      },
+                    };
+                  }),
+                };
+              });
+            }
+          }
+
+          if (videoUrl) {
+            setYoutubeError('');
+            setYoutubeInput(videoUrl);
+          } else if (videoId) {
+            setYoutubeError('');
+            setYoutubeInput(`https://youtu.be/${videoId}`);
+          } else {
+            setYoutubeError(tr('Видео по текущему слабому навыку не найдено. Попробуйте обновить план.', 'Kein passendes Video fuer den aktuellen schwachen Skill gefunden. Bitte Plan aktualisieren.'));
+          }
+        } catch (error) {
+          console.warn('today video recommendation failed', error);
+          if (!initialVideoUrl && !initialVideoId) {
+            setYoutubeError(normalizeNetworkErrorMessage(
+              error,
+              'Не удалось подобрать видео по текущей теме.',
+              'Passendes Video zum aktuellen Thema konnte nicht geladen werden.'
+            ));
+          }
+        } finally {
+          setYoutubeRecommendationLoading(false);
+        }
+      })();
+      return;
+    }
+
     const startedItem = await updateTodayItemStatus(item.id, 'start');
     const effectiveItem = startedItem || item;
     const taskType = String(effectiveItem?.task_type || '').toLowerCase();
@@ -8097,74 +8200,6 @@ function AppInner() {
       openSingleSectionAndScroll('theory', theoryRef);
       prepareTodayTheory(effectiveItem);
       return;
-    }
-    if (taskType === 'video' || taskType === 'youtube') {
-      const payload = effectiveItem?.payload && typeof effectiveItem.payload === 'object' ? effectiveItem.payload : {};
-      let videoUrl = String(payload.video_url || '').trim();
-      let videoId = String(payload.video_id || '').trim();
-      let videoTitle = String(payload.video_title || '').trim();
-      try {
-        if (initData) {
-          const response = await fetch('/api/today/video/recommend', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              initData,
-              item_id: effectiveItem.id,
-              skill_id: payload.skill_id || null,
-              skill_title: payload.skill_title || null,
-              main_category: payload.main_category || null,
-              sub_category: payload.sub_category || null,
-              examples: Array.isArray(payload.examples) ? payload.examples.slice(0, 5) : [],
-              lookback_days: payload.lookback_days || 7,
-            }),
-          });
-          if (response.ok) {
-            const data = await response.json();
-            const recommended = data?.video && typeof data.video === 'object' ? data.video : {};
-            const updatedItem = data?.updated_item && typeof data.updated_item === 'object' ? data.updated_item : null;
-            videoUrl = String(recommended.video_url || videoUrl).trim();
-            videoId = String(recommended.video_id || videoId).trim();
-            videoTitle = String(recommended.title || videoTitle).trim();
-            setTodayPlan((prev) => {
-              if (!prev || !Array.isArray(prev.items)) return prev;
-              return {
-                ...prev,
-                items: prev.items.map((planItem) => {
-                  if (planItem.id !== effectiveItem.id) return planItem;
-                  if (updatedItem) {
-                    return { ...planItem, ...updatedItem };
-                  }
-                  const planPayload = planItem?.payload && typeof planItem.payload === 'object' ? planItem.payload : {};
-                  return {
-                    ...planItem,
-                    payload: {
-                      ...planPayload,
-                      video_url: videoUrl || planPayload.video_url || null,
-                      video_id: videoId || planPayload.video_id || null,
-                      video_title: videoTitle || planPayload.video_title || null,
-                    },
-                  };
-                }),
-              };
-            });
-          }
-        }
-      } catch (error) {
-        console.warn('today video recommendation failed', error);
-      }
-      if (videoUrl) {
-        setYoutubeError('');
-        setYoutubeInput(videoUrl);
-      } else if (videoId) {
-        setYoutubeError('');
-        setYoutubeInput(`https://youtu.be/${videoId}`);
-      } else {
-        setYoutubeError(tr('Видео по текущему слабому навыку не найдено. Попробуйте обновить план.', 'Kein passendes Video fuer den aktuellen schwachen Skill gefunden. Bitte Plan aktualisieren.'));
-      }
-      const backCandidate = Array.from(selectedSections).find((key) => key && key !== 'youtube') || '';
-      setYoutubeBackSection(backCandidate);
-      openSingleSectionAndScroll('youtube', youtubeRef);
     }
   };
 
@@ -8789,6 +8824,7 @@ function AppInner() {
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
   const isGuideScreen = !flashcardsOnly && selectedSections.size === 1 && selectedSections.has('guide');
   const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
+  /* Legacy guide/onboarding copy removed from runtime path.
   const _legacyOnboardingSlides = useMemo(() => ([
     {
       eyebrow: tr('Шаг 1 из 6', 'Schritt 1 von 6'),
@@ -9716,8 +9752,16 @@ function AppInner() {
       },
     ];
   }, [uiLang]);
-  const onboardingSlides = useMemo(() => buildOnboardingSlides(uiLang), [uiLang]);
-  const guideStepItems = useMemo(() => buildGuideStepItems(uiLang), [uiLang]);
+  */
+  const shouldPrepareGuideContent = onboardingOpen || selectedSections.has('guide');
+  const onboardingSlides = useMemo(
+    () => (shouldPrepareGuideContent ? buildOnboardingSlides(uiLang) : []),
+    [shouldPrepareGuideContent, uiLang],
+  );
+  const guideStepItems = useMemo(
+    () => (shouldPrepareGuideContent ? buildGuideStepItems(uiLang) : []),
+    [shouldPrepareGuideContent, uiLang],
+  );
   const isYoutubeSelectionMenu = String(selectionType || '').startsWith('youtube_');
   const isTranslationResultSelectionMenu = String(selectionType || '').startsWith('translation_result_');
   const isInlineSelectionMenu = isYoutubeSelectionMenu || isTranslationResultSelectionMenu;
@@ -9975,6 +10019,9 @@ function AppInner() {
     : youtubeSubtitlesReady
       ? tr('Субтитры: готово', 'Untertitel: Bereit')
       : tr('Субтитры: не загружены', 'Untertitel: Nicht geladen');
+  const youtubeRecommendationStatusLabel = youtubeRecommendationLoading
+    ? tr('Подбираем видео по вашей теме...', 'Wir suchen ein passendes Video fuer dein Thema...')
+    : '';
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
   const currentSingleSectionRouteKey = useMemo(() => {
@@ -12447,6 +12494,14 @@ function AppInner() {
       setAssistantToken(null);
     }
   }, [flashcardsOnly, selectedSections]);
+
+  useEffect(() => {
+    if (appMode === 'lesson' || selectedSections.has('assistant') || assistantToken || token) {
+      void loadLiveKitRuntime().catch(() => {
+        // ignore lazy prefetch failures
+      });
+    }
+  }, [appMode, assistantToken, selectedSections, token]);
 
   useEffect(() => {
     const shouldTrackReader = Boolean(readerTrackingVisible && !readerTimerPaused);
@@ -19646,7 +19701,8 @@ function AppInner() {
     if (!analyticsTrendRef.current) {
       return;
     }
-    const chart = echarts.init(analyticsTrendRef.current);
+    let disposed = false;
+    let chart = null;
     const isLightTheme = themeMode === 'light';
     const chartTextColor = isLightTheme ? '#5a4a39' : '#c7d2f1';
     const chartLegendColor = isLightTheme ? '#2f271f' : '#dbe7ff';
@@ -19661,7 +19717,7 @@ function AppInner() {
     const avgScore = analyticsPoints.map((item) => item.avg_score || 0);
     const avgTime = analyticsPoints.map((item) => item.avg_time_min || 0);
 
-    chart.setOption({
+    const option = {
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
@@ -19749,10 +19805,24 @@ function AppInner() {
           lineStyle: { width: 3 },
         },
       ],
+    };
+
+    (async () => {
+      const echartsModule = await import('echarts');
+      if (disposed || !analyticsTrendRef.current) {
+        return;
+      }
+      chart = echartsModule.init(analyticsTrendRef.current);
+      chart.setOption(option);
+    })().catch(() => {
+      // analytics cards remain usable without chart bootstrap
     });
 
     return () => {
-      chart.dispose();
+      disposed = true;
+      if (chart) {
+        chart.dispose();
+      }
     };
   }, [analyticsPoints, analyticsPeriod, themeMode]);
 
@@ -19760,7 +19830,8 @@ function AppInner() {
     if (!analyticsCompareRef.current) {
       return;
     }
-    const chart = echarts.init(analyticsCompareRef.current);
+    let disposed = false;
+    let chart = null;
     const isLightTheme = themeMode === 'light';
     const chartTextColor = isLightTheme ? '#5a4a39' : '#c7d2f1';
     const chartSplitLineColor = isLightTheme ? 'rgba(130, 101, 67, 0.18)' : 'rgba(255,255,255,0.08)';
@@ -19776,7 +19847,7 @@ function AppInner() {
       },
     }));
 
-    chart.setOption({
+    const option = {
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'item',
@@ -19829,10 +19900,24 @@ function AppInner() {
           },
         },
       ],
+    };
+
+    (async () => {
+      const echartsModule = await import('echarts');
+      if (disposed || !analyticsCompareRef.current) {
+        return;
+      }
+      chart = echartsModule.init(analyticsCompareRef.current);
+      chart.setOption(option);
+    })().catch(() => {
+      // comparison list still works even if chart import fails
     });
 
     return () => {
-      chart.dispose();
+      disposed = true;
+      if (chart) {
+        chart.dispose();
+      }
     };
   }, [analyticsCompare, webappUser, themeMode]);
 
@@ -21523,6 +21608,9 @@ function AppInner() {
                             </button>
                           </div>
                           <div className="youtube-desktop-status-chips" aria-live="polite">
+                            {youtubeRecommendationLoading && (
+                              <span className="youtube-status-chip is-loading">{youtubeRecommendationStatusLabel}</span>
+                            )}
                             <span className={`youtube-status-chip ${youtubeSubtitleStatusClass}`}>{youtubeSubtitleStatusLabel}</span>
                             <span className={`youtube-status-chip ${youtubeTranslationEnabled ? 'is-ready' : 'is-empty'}`}>
                               {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
@@ -21736,8 +21824,12 @@ function AppInner() {
                           />
                           {!youtubeId && (
                             <div className="youtube-player-placeholder">
-                              <strong>{tr('Плеер YouTube', 'YouTube Player')}</strong>
-                              <span>{tr('Выберите видео, чтобы начать обучение.', 'Waehle ein Video, um zu starten.')}</span>
+                              <strong>{youtubeRecommendationLoading ? tr('Подбираем видео', 'Video wird vorbereitet') : tr('Плеер YouTube', 'YouTube Player')}</strong>
+                              <span>
+                                {youtubeRecommendationLoading
+                                  ? tr('Секция уже открыта. Подождите пару секунд, пока подтянется рекомендация.', 'Der Bereich ist bereits offen. Bitte kurz warten, waehrend die Empfehlung geladen wird.')
+                                  : tr('Выберите видео, чтобы начать обучение.', 'Waehle ein Video, um zu starten.')}
+                              </span>
                             </div>
                           )}
                           {!youtubePlayerReady && youtubeId && (
@@ -21794,6 +21886,9 @@ function AppInner() {
                       </div>
                     </div>
                     {(youtubeOverlayEnabled || !youtubeSubtitlesReady) && renderYoutubeSentenceJumpBar()}
+                    {youtubeRecommendationLoading && (
+                      <div className="youtube-recommendation-note">{youtubeRecommendationStatusLabel}</div>
+                    )}
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
                     {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
                     {youtubeSearchExpanded && (
@@ -23905,48 +24000,56 @@ function AppInner() {
                   </div>
                 ) : (
                   <div className={`voice-assistant-room-wrap ${isLightTheme ? 'is-theme-light' : ''}`} data-lk-theme="default">
-                    <LiveKitRoom
-                      serverUrl={livekitUrl}
-                      token={assistantToken}
-                      connect={true}
-                      audio={true}
-                      video={false}
-                      onConnected={() => {
-                        setAssistantError('');
-                        startAssistantSessionTracking();
-                      }}
-                      onDisconnected={() => {
-                        const sid = assistantSessionId;
-                        if (sid) {
-                          stopAssistantSessionTracking(sid);
-                        }
-                        setAssistantToken(null);
-                      }}
-                      onError={(e) => setAssistantError(`LiveKit error: ${e?.message || e}`)}
-                      className={`voice-assistant-room ${isLightTheme ? 'is-theme-light' : ''}`}
-                    >
-                      <div className="voice-assistant-room-head">
-                        <div>
-                          <span className="pill">{tr('Учитель онлайн', 'Lehrer online')}</span>
-                          <h3>{tr('Живая практика немецкого', 'Live-Deutschpraxis')}</h3>
-                        </div>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={disconnectAssistant}
-                        >
-                          {tr('Отключить', 'Trennen')}
-                        </button>
+                    <Suspense fallback={(
+                      <div className="webapp-muted">
+                        {tr('Загружаем голосовую практику...', 'Sprachpraxis wird geladen...')}
                       </div>
-                      <p className="voice-assistant-hint">
-                        {tr('Нажмите на микрофон в панели управления и начинайте диалог.', 'Druecke auf das Mikrofon im Steuerfeld und starte den Dialog.')}
-                      </p>
-                      <div className="voice-assistant-controls">
-                        <ControlBar />
-                      </div>
-                      <RoomAudioRenderer />
-                      <ConnectionStateToast />
-                    </LiveKitRoom>
+                    )}>
+                      <LazyLiveKitRuntime
+                        serverUrl={livekitUrl}
+                        token={assistantToken}
+                        connect={true}
+                        audio={true}
+                        video={false}
+                        onConnected={() => {
+                          setAssistantError('');
+                          startAssistantSessionTracking();
+                        }}
+                        onDisconnected={() => {
+                          const sid = assistantSessionId;
+                          if (sid) {
+                            stopAssistantSessionTracking(sid);
+                          }
+                          setAssistantToken(null);
+                        }}
+                        onError={(e) => setAssistantError(`LiveKit error: ${e?.message || e}`)}
+                        className={`voice-assistant-room ${isLightTheme ? 'is-theme-light' : ''}`}
+                      >
+                        {({ ControlBar }) => (
+                          <>
+                            <div className="voice-assistant-room-head">
+                              <div>
+                                <span className="pill">{tr('Учитель онлайн', 'Lehrer online')}</span>
+                                <h3>{tr('Живая практика немецкого', 'Live-Deutschpraxis')}</h3>
+                              </div>
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={disconnectAssistant}
+                              >
+                                {tr('Отключить', 'Trennen')}
+                              </button>
+                            </div>
+                            <p className="voice-assistant-hint">
+                              {tr('Нажмите на микрофон в панели управления и начинайте диалог.', 'Druecke auf das Mikrofon im Steuerfeld und starte den Dialog.')}
+                            </p>
+                            <div className="voice-assistant-controls">
+                              <ControlBar />
+                            </div>
+                          </>
+                        )}
+                      </LazyLiveKitRuntime>
+                    </Suspense>
                   </div>
                 )}
               </section>
@@ -25014,60 +25117,70 @@ if (!token) {
   }
 
   return (
-    <LiveKitRoom
-      serverUrl={livekitUrl}
-      token={token}
-      connect={true}
-      audio={true}
-      video={false}
-      onDisconnected={() => setToken(null)}
-      onError={(e) => console.error("LiveKit error:", e)}
-      className={`lesson-page lesson-room ${isLightTheme ? 'is-theme-light' : 'is-theme-dark'}`}
-      data-lk-theme="default"
-    >
-      <div className="lesson-bg" aria-hidden="true" />
-      <div className="lesson-shell">
-        <header className="lesson-header">
-          <div>
-            <span className="pill">{tr('Учитель онлайн', 'Lehrer online')}</span>
-            <h1>{tr('Живая практика немецкого', 'Live-Deutschpraxis')}</h1>
-            <p>{tr('Говорите свободно, а помощник ведет диалог, исправляет и поддерживает.', 'Sprich frei, der Assistent fuehrt den Dialog, korrigiert und unterstuetzt dich.')}</p>
-          </div>
-          <div className="lesson-meta">
-            <span>{tr('Пользователь', 'Nutzer')}: {username}</span>
-            <span>ID: {telegramID}</span>
-          </div>
-        </header>
-
-        <main className="lesson-main">
-          <section className="lesson-hero">
-            <div className="lesson-illustration" aria-hidden="true">
-              <img src={heroMascotSrc} alt="" aria-hidden="true" className="lesson-hero-image" />
-            </div>
-            <div className="lesson-copy">
-              <h2>{tr('Сфокусируйтесь на голосе', 'Fokussiere dich auf die Stimme')}</h2>
-              <p>{tr('Нажмите на микрофон, чтобы включить речь, и нажмите выход, когда урок завершен.', 'Druecke auf das Mikrofon, um zu sprechen, und beende danach die Sitzung.')}</p>
-              <div className="lesson-tips">
-                <div className="tip">{tr('Четко формулируйте ответы, чтобы учитель слышал интонацию.', 'Formuliere klar, damit der Tutor die Intonation hoert.')}</div>
-                <div className="tip">{tr('Если нужно подумать, просто сделайте паузу — связь сохранится.', 'Wenn du nachdenken willst, pausier kurz - die Verbindung bleibt bestehen.')}</div>
-              </div>
-            </div>
-          </section>
-
-          <section className="lesson-controls">
-            <h3>{tr('Управление уроком', 'Unterrichtssteuerung')}</h3>
-            <p>{tr('Все основные действия собраны в центре: микрофон, выход и настройки.', 'Alle Hauptaktionen sind zentral: Mikrofon, Verlassen und Einstellungen.')}</p>
-            <div className="lesson-control-bar">
-              <ControlBar />
-            </div>
-            <div className="lesson-hint">{tr('Совет: держите окно открытым, чтобы учитель не прерывал сессию.', 'Tipp: Lass das Fenster offen, damit die Sitzung nicht unterbrochen wird.')}</div>
-          </section>
-        </main>
+    <Suspense fallback={(
+      <div className={`lesson-page lesson-login ${isLightTheme ? 'is-theme-light' : 'is-theme-dark'}`} data-lk-theme="default">
+        <div className="lesson-bg" aria-hidden="true" />
+        <div className="login-card">
+          <div className="webapp-muted">{tr('Загружаем голосовой урок...', 'Sprachunterricht wird geladen...')}</div>
+        </div>
       </div>
+    )}>
+      <LazyLiveKitRuntime
+        serverUrl={livekitUrl}
+        token={token}
+        connect={true}
+        audio={true}
+        video={false}
+        onDisconnected={() => setToken(null)}
+        onError={(e) => console.error("LiveKit error:", e)}
+        className={`lesson-page lesson-room ${isLightTheme ? 'is-theme-light' : 'is-theme-dark'}`}
+        dataLkTheme="default"
+      >
+        {({ ControlBar }) => (
+          <>
+            <div className="lesson-bg" aria-hidden="true" />
+            <div className="lesson-shell">
+              <header className="lesson-header">
+                <div>
+                  <span className="pill">{tr('Учитель онлайн', 'Lehrer online')}</span>
+                  <h1>{tr('Живая практика немецкого', 'Live-Deutschpraxis')}</h1>
+                  <p>{tr('Говорите свободно, а помощник ведет диалог, исправляет и поддерживает.', 'Sprich frei, der Assistent fuehrt den Dialog, korrigiert und unterstuetzt dich.')}</p>
+                </div>
+                <div className="lesson-meta">
+                  <span>{tr('Пользователь', 'Nutzer')}: {username}</span>
+                  <span>ID: {telegramID}</span>
+                </div>
+              </header>
 
-      <RoomAudioRenderer />
-      <ConnectionStateToast />
-    </LiveKitRoom>
+              <main className="lesson-main">
+                <section className="lesson-hero">
+                  <div className="lesson-illustration" aria-hidden="true">
+                    <img src={heroMascotSrc} alt="" aria-hidden="true" className="lesson-hero-image" />
+                  </div>
+                  <div className="lesson-copy">
+                    <h2>{tr('Сфокусируйтесь на голосе', 'Fokussiere dich auf die Stimme')}</h2>
+                    <p>{tr('Нажмите на микрофон, чтобы включить речь, и нажмите выход, когда урок завершен.', 'Druecke auf das Mikrofon, um zu sprechen, und beende danach die Sitzung.')}</p>
+                    <div className="lesson-tips">
+                      <div className="tip">{tr('Четко формулируйте ответы, чтобы учитель слышал интонацию.', 'Formuliere klar, damit der Tutor die Intonation hoert.')}</div>
+                      <div className="tip">{tr('Если нужно подумать, просто сделайте паузу — связь сохранится.', 'Wenn du nachdenken willst, pausier kurz - die Verbindung bleibt bestehen.')}</div>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="lesson-controls">
+                  <h3>{tr('Управление уроком', 'Unterrichtssteuerung')}</h3>
+                  <p>{tr('Все основные действия собраны в центре: микрофон, выход и настройки.', 'Alle Hauptaktionen sind zentral: Mikrofon, Verlassen und Einstellungen.')}</p>
+                  <div className="lesson-control-bar">
+                    <ControlBar />
+                  </div>
+                  <div className="lesson-hint">{tr('Совет: держите окно открытым, чтобы учитель не прерывал сессию.', 'Tipp: Lass das Fenster offen, damit die Sitzung nicht unterbrochen wird.')}</div>
+                </section>
+              </main>
+            </div>
+          </>
+        )}
+      </LazyLiveKitRuntime>
+    </Suspense>
   );
 }
 

@@ -5,9 +5,6 @@ import { detectAppMode } from './utils/appMode.js'
 import App from './App.jsx'
 import './theme.css'
 
-// Импортируем стили для компонентов LiveKit для красивого отображения
-import '@livekit/components-styles';
-
 const appMode = detectAppMode();
 const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
 const isWebappPath = typeof window !== 'undefined'

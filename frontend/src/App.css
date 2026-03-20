@@ -11598,6 +11598,16 @@ body {
   gap: 16px;
 }
 
+.youtube-recommendation-note {
+  border-radius: 16px;
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--yt-text-secondary);
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .webapp-video.youtube-player-first .webapp-video-player-shell {
   margin: 0;
 }
