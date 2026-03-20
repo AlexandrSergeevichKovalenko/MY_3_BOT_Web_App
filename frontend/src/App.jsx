@@ -7474,7 +7474,7 @@ function AppInner() {
       bullets: [
         tr('Голосовой ассистент нужен для разговорной практики.', 'Der Sprachassistent ist fuer muendliche Praxis da.'),
         tr('Skill-Training собирает теорию, видео и упражнения в одном месте.', 'Skill-Training kombiniert Theorie, Video und Uebungen an einem Ort.'),
-        tr('Даже 10–15 минут в день дают стабильный прогресс.', 'Schon 10 bis 15 Minuten pro Tag bringen stabilen Fortschritt.'),
+        tr('В личке с ботом после `/start` появляется кнопка «💬 Спросить у GPT» для быстрых вопросов по грамматике, переводу и словам.', 'Im Privat-Chat erscheint nach `/start` die Taste „💬 Спросить у GPT“ fuer schnelle Fragen zu Grammatik, Uebersetzung und Woertern.'),
       ],
     },
     {
@@ -7620,7 +7620,7 @@ function AppInner() {
                 'Standardmäßig werden bis zu 5 Sätze aus deiner persönlichen Fehlerdatenbank und die restlichen Sätze als neue Sätze kombiniert.',
                 'Ein Satz landet in der Fehlerdatenbank, wenn dein Ergebnis unter 80 Punkten bleibt.',
                 'Ein Satz wird aus der Fehlerdatenbank entfernt, wenn er bereits dort war und du ihn später mit 85 Punkten oder mehr korrekt schaffst.',
-                'Die Skill-Map arbeitet nach Fehlerkategorien: Fehler geben in der Regel minus 3 Punkte, korrekte Treffer plus 2 Punkte in der passenden Kategorie.',
+                'Die Skill-Map reagiert auf deine echten Fehler und richtigen Antworten. Entscheidend sind wiederkehrende Schwachstellen und stabile Fortschritte, nicht eine starre manuelle Formel.',
               ],
             },
           ],
@@ -7793,8 +7793,8 @@ function AppInner() {
               title: 'Wichtige Hinweise',
               items: [
                 'Nach Checkout oder Portal-Rückkehr immer kurz 1–3 Sekunden warten und den Abo-Bereich aktualisieren.',
-                'Wenn ein Klick auf Tarif nichts macht, zuerst prüfen: Plan ist in Stripe aktiv, Button ist nicht disabled, und es gibt keine Netzwerk-/InitData-Fehler.',
-                'Wenn du alle Tarife für bestehende Pro-Nutzer sichtbar halten willst, muss die Tarifliste immer aus `/api/billing/plans` geladen werden und nicht nur aus Stripe-Portal-UI.',
+                'Wenn ein Tarif nicht sofort reagiert, kurz warten, den Abo-Bereich aktualisieren und es noch einmal versuchen.',
+                'Auch mit aktivem Pro bleiben die anderen Tarife sichtbar, damit du Wechseloptionen direkt in der Mini App siehst.',
               ],
             },
           ],
@@ -7802,31 +7802,38 @@ function AppInner() {
         {
           key: 'bot_translator_share',
           number: '7',
-          title: 'Bot als Schnell-Übersetzer',
-          summary: 'Markiere Text in jeder App, teile ihn an den Bot und hole dir später die Auswertung an einem Ort.',
+          title: 'Privat-Chat mit dem Bot',
+          summary: 'Im Privat-Chat kannst du schnell übersetzen, GPT fragen, Audio anhören und Phrasen direkt speichern.',
           sections: [
             {
-              title: 'Was der Bot hier zusätzlich kann',
+              title: 'So bekommst du die Taste „💬 Спросить у GPT“',
               items: [
-                'Der Bot ist nicht nur Teil der Mini App, sondern auch ein direkter Übersetzer im Alltag.',
-                'Du kannst einzelne Wörter, Phrasen oder ganze Sätze aus jedem beliebigen Text markieren und an den Bot teilen.',
-                'Das funktioniert wie normales Weiterleiten an einen Freund: einfach „Teilen“ und den Bot auswählen.',
+                'Öffne den Bot im Privat-Chat und sende einmal `/start`.',
+                'Danach erscheint unten die Taste „💬 Спросить у GPT“.',
+                'Sie ist für schnelle Sprachfragen gedacht, wenn du ohne die Mini App sofort etwas klären willst.',
               ],
             },
             {
-              title: 'Wie der Ablauf praktisch ist',
+              title: 'Was du mit „💬 Спросить у GPT“ machen kannst',
               items: [
-                'Du kannst mehrere Phrasen nacheinander an den Bot schicken, ohne jedes Mal sofort alles zu bearbeiten.',
-                'Danach öffnest du den Bot einmal und wählst die Übersetzungsrichtung: zum Beispiel DE→RU, DE→EN oder RU→DE.',
-                'So bleibt es flexibel, falls du nicht immer in dieselbe Zielsprache übersetzen willst.',
+                'Du kannst nach Grammatik, Übersetzung, Artikeln, Zeiten, Nuancen und natürlichen Formulierungen fragen.',
+                'Wenn du gerade ein Wort oder eine Phrase bekommen hast, kannst du direkt nach Bedeutung, Gebrauch, Herkunft oder feinen Unterschieden fragen.',
+                'Nach der Antwort kannst du die Phrase speichern und sofort eine Rückfrage stellen.',
               ],
             },
             {
-              title: 'Was du als Ergebnis bekommst',
+              title: 'Audio und schnelle Hilfe im Privat-Chat',
               items: [
-                'Der Bot gibt dir die Übersetzung der Phrase oder des Satzes.',
-                'Zusätzlich zeigt er passende Begleit-Ausdrücke und nützliche Varianten zum Kontext.',
-                'Ein Teil dieser Varianten kann direkt in dein Wörterbuch übernommen werden, damit du sie später gezielt trainierst.',
+                'Im Privat-Chat bekommst du dort, wo es passt, auch anhoerbare Inhalte oder Audio-Erklaerungen und nicht nur Text.',
+                'So kannst du unterwegs schnell etwas klären, anhören, speichern und direkt weiterlernen.',
+              ],
+            },
+            {
+              title: 'Bot als Schnell-Übersetzer im Alltag',
+              items: [
+                'Du kannst Wörter, Phrasen oder ganze Sätze aus jeder App an den Bot teilen.',
+                'Das geht wie normales Weiterleiten an einen Freund: markieren, „Teilen“ drücken und den Bot auswählen.',
+                'Der Bot gibt dir die Übersetzung, zusätzliche Varianten und passende Formulierungen zum Kontext zurück.',
               ],
             },
           ],
@@ -7882,7 +7889,7 @@ function AppInner() {
               items: [
                 'Jeder Gruppen-Teilnehmer sollte den Bot einmal im Privat-Chat starten, sonst funktionieren einzelne Features bei manchen Nutzern unvollständig.',
                 'Nach Zahlung, Portal-Rückkehr oder Tarifwechsel immer kurz warten (1–3 Sekunden) und Status neu laden.',
-                'Wenn eine Funktion „still“ wirkt (kein Klick-Effekt), zuerst Netzwerk, initData und aktuellen Bereichskontext prüfen (Privat vs. Gruppe).',
+                'Wenn sich etwas ungewohnt verhält, schicke am besten kurz eine Nachricht an den Support oder einen Screenshot. So lässt sich das Problem am schnellsten klären.',
               ],
             },
           ],
@@ -8037,7 +8044,7 @@ function AppInner() {
               'Обычно набор собирается так: до 5 предложений из вашей личной базы ошибок и оставшиеся предложения как новые.',
               'Предложение попадает в базу ошибок, если результат за него ниже 80 баллов.',
               'Предложение удаляется из базы ошибок, если оно уже было там и позже вы перевели его на 85 баллов или выше.',
-              'Skill-карта работает по категориям ошибок: за ошибку категория обычно получает −3, а за успешный результат +2.',
+              'Skill-карта и skill-ring опираются на ваши реальные ошибки и удачные ответы. Важны повторяющиеся слабые места и стабильный прогресс, а не старая фиксированная формула.',
             ],
           },
         ],
@@ -8216,8 +8223,8 @@ function AppInner() {
             title: 'Что ещё важно пользователю',
             items: [
               'После оплаты/возврата из портала дайте системе 1–3 секунды и обновите блок подписки.',
-              'Если кнопка «Выбрать тариф» не реагирует, проверьте интернет, наличие initData и что тариф реально активен в `/api/billing/plans`.',
-              'Даже при активном Pro стоит показывать остальные тарифы в Mini App, иначе пользователь не узнает о доступных вариантах смены.',
+              'Если кнопка с тарифом не сработала сразу, просто подождите немного, обновите раздел и попробуйте ещё раз.',
+              'Даже если у вас уже активен Pro, остальные тарифы всё равно остаются видны в Mini App, чтобы можно было спокойно сравнить варианты и сменить план.',
             ],
           },
         ],
@@ -8225,31 +8232,38 @@ function AppInner() {
       {
         key: 'bot_translator_share',
         number: '7',
-        title: 'Бот как быстрый переводчик',
-        summary: 'Выделяйте текст где угодно, пересылайте боту и разбирайте всё в одном месте.',
+        title: 'Личка с ботом и «Спросить у GPT»',
+        summary: 'В личке можно быстро переводить, задавать вопросы GPT, слушать аудио и сразу сохранять полезные фразы.',
         sections: [
           {
-            title: 'Что умеет бот дополнительно',
+            title: 'Как получить кнопку «💬 Спросить у GPT»',
             items: [
-              'Сам бот работает не только как часть Mini App, но и как отдельный повседневный переводчик.',
-              'Вы можете выделить слово, фразу или целое предложение в любом приложении и переслать это боту.',
-              'Это делается так же, как обычная пересылка другу: нажали «Поделиться» и выбрали бота.',
+              'Откройте бота в личке и один раз отправьте команду `/start`.',
+              'После этого внизу появится кнопка «💬 Спросить у GPT».',
+              'Она нужна для быстрых языковых вопросов, когда вы хотите что-то уточнить без перехода в Mini App.',
             ],
           },
           {
-            title: 'Как это удобно использовать',
+            title: 'Что можно делать через «💬 Спросить у GPT»',
             items: [
-              'Можно отправить боту сразу несколько фраз подряд, а потом открыть его один раз и обработать всё вместе.',
-              'Дальше выберите направление перевода: например DE→RU, DE→EN или RU→DE.',
-              'Это важно, потому что перевод нужен не всегда только на русский: иногда удобнее сразу на английский или другой язык.',
+              'Можно спрашивать про грамматику, перевод, артикли, времена, естественные формулировки и разницу между похожими вариантами.',
+              'Если бот только что показал вам слово или фразу, можно сразу спросить про смысл, употребление, происхождение или оттенок значения.',
+              'После ответа можно сохранить фразу и тут же задать следующий уточняющий вопрос.',
             ],
           },
           {
-            title: 'Что вы получите на выходе',
+            title: 'Аудио и быстрые подсказки в личке',
             items: [
-              'Бот вернёт перевод фразы или предложения.',
-              'Дополнительно он покажет несколько полезных сопутствующих выражений и вариантов по контексту.',
-              'Часть этих вариантов можно сразу добавить в ваш словарь для дальнейшего изучения в карточках и FSRS.',
+              'В личке бот умеет не только писать, но и там, где это уместно, присылать или воспроизводить аудио-объяснения и озвучку.',
+              'Это удобно для быстрого цикла: спросили, послушали, сохранили полезную фразу и пошли дальше.',
+            ],
+          },
+          {
+            title: 'Бот как быстрый переводчик в повседневности',
+            items: [
+              'Можно выделить слово, фразу или целое предложение в любом приложении и переслать это боту.',
+              'Это делается как обычная пересылка другу: нажали «Поделиться» и выбрали бота.',
+              'В ответ бот вернёт перевод, полезные варианты по контексту и фразы, которые можно сразу забрать в словарь.',
             ],
           },
         ],
@@ -8305,7 +8319,7 @@ function AppInner() {
             items: [
               'Каждому участнику группы нужно хотя бы один раз открыть бота в личке, иначе часть функций у некоторых пользователей может работать неполно.',
               'После оплаты, возврата из Stripe Portal или смены тарифа дайте системе 1–3 секунды и обновите статус.',
-              'Если функция визуально не срабатывает, сначала проверьте сеть, initData и контекст запуска (личка или группа).',
+              'Если что-то ведёт себя странно или непонятно, просто напишите в «Поддержку» и по возможности приложите скриншот.',
             ],
           },
         ],
@@ -17770,22 +17784,6 @@ function AppInner() {
     setAnalyticsCalendarOpen(true);
   }, [ensureAnalyticsCalendarDraftRange]);
 
-  const applyAnalyticsCalendarRange = useCallback(() => {
-    if (!analyticsCalendarDraftValid) {
-      setAnalyticsError(tr('Выберите корректный диапазон дат для аналитики.', 'Waehle einen gueltigen Datumsbereich fuer die Analytik.'));
-      return;
-    }
-    setAnalyticsError('');
-    setAnalyticsCustomStartDate(analyticsCalendarDraftStartDate);
-    setAnalyticsCustomEndDate(analyticsCalendarDraftEndDate);
-    setAnalyticsCalendarOpen(false);
-  }, [
-    analyticsCalendarDraftEndDate,
-    analyticsCalendarDraftStartDate,
-    analyticsCalendarDraftValid,
-    tr,
-  ]);
-
   const loadAnalytics = async (overridePeriod, overrideScopeKey, overrideRange = null) => {
     if (!initData) {
       setAnalyticsError(initDataMissingMsg);
@@ -17875,6 +17873,29 @@ function AppInner() {
       setAnalyticsLoading(false);
     }
   };
+
+  const applyAnalyticsCalendarRange = useCallback(() => {
+    if (!analyticsCalendarDraftValid) {
+      setAnalyticsError(tr('Выберите корректный диапазон дат для аналитики.', 'Waehle einen gueltigen Datumsbereich fuer die Analytik.'));
+      return;
+    }
+    const nextRange = {
+      startDate: analyticsCalendarDraftStartDate,
+      endDate: analyticsCalendarDraftEndDate,
+    };
+    setAnalyticsError('');
+    setAnalyticsCustomStartDate(nextRange.startDate);
+    setAnalyticsCustomEndDate(nextRange.endDate);
+    setAnalyticsCalendarOpen(false);
+    loadAnalytics('calendar', analyticsScopeKey, nextRange);
+  }, [
+    analyticsCalendarDraftEndDate,
+    analyticsCalendarDraftStartDate,
+    analyticsCalendarDraftValid,
+    analyticsScopeKey,
+    loadAnalytics,
+    tr,
+  ]);
 
   const loadEconomics = async (overridePeriod, overrideProvider) => {
     if (!initData) {
@@ -18045,8 +18066,6 @@ function AppInner() {
     isWebAppMode,
     analyticsPeriod,
     analyticsScopeKey,
-    analyticsCustomEndDate,
-    analyticsCustomStartDate,
     analyticsCalendarRangeValid,
     selectedSections,
     flashcardsOnly,
@@ -22921,8 +22940,8 @@ function AppInner() {
                       <>
                         <div className="webapp-muted analytics-scope-hint">
                           {tr(
-                            'Ниже показан free-tier budget текущего месяца по провайдеру, а не суммарный usage за выбранный период.',
-                            'Unten steht das Freikontingent des aktuellen Monats je Provider, nicht der gesamte Usage fuer den gewaehlten Zeitraum.',
+                            'Ниже показано текущее quota/free-tier окно провайдера, а не суммарный usage за выбранный период.',
+                            'Unten steht das aktuelle Quota/Freikontingent-Fenster je Provider, nicht der gesamte Usage fuer den gewaehlten Zeitraum.',
                           )}
                         </div>
                         <div className="analytics-cards economics-voice-cards">
@@ -22930,7 +22949,8 @@ function AppInner() {
                           const usedUnits = Number(row?.used_units || 0);
                           const limitUnits = row?.effective_limit_units == null ? null : Number(row.effective_limit_units || 0);
                           const usageRatio = Number(row?.usage_ratio || 0);
-                          const budgetMonth = String(row?.period_month || '').slice(0, 7);
+                          const budgetKind = String(row?.metadata?.budget_kind || '').trim().toLowerCase();
+                          const budgetLabel = String(row?.period_label || '').trim() || String(row?.period_month || '').slice(0, 7);
                           const livekitTone = String(row?.metadata?.color || '').trim().toLowerCase();
                           const cardTone =
                             row?.provider === 'livekit'
@@ -22948,8 +22968,8 @@ function AppInner() {
                                 {limitUnits != null ? ` / ${limitUnits.toFixed(2)}` : ''}
                               </strong>
                               <small className="webapp-muted">
-                                {tr('free tier', 'Freikontingent')}
-                                {budgetMonth ? ` • ${budgetMonth}` : ''}
+                                {budgetKind === 'daily_quota' ? tr('daily quota', 'Tagesquote') : tr('free tier', 'Freikontingent')}
+                                {budgetLabel ? ` • ${budgetLabel}` : ''}
                                 {' • '}
                                 {formatEconomicsUnitsLabel(row?.units_type || row?.unit, uiLang)}
                                 {Number.isFinite(usageRatio) && usageRatio > 0

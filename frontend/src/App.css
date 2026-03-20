@@ -2663,11 +2663,13 @@ body {
   position: relative;
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .analytics-calendar-trigger {
   justify-content: flex-start;
   text-align: left;
+  min-width: 0;
 }
 
 .analytics-calendar-popover {
@@ -2676,6 +2678,7 @@ body {
   left: 0;
   z-index: 30;
   width: min(320px, calc(100vw - 48px));
+  max-width: calc(100vw - 48px);
   padding: 14px;
   border-radius: 18px;
   border: 1px solid rgba(94, 234, 212, 0.18);
@@ -2683,10 +2686,20 @@ body {
   box-shadow: 0 18px 36px rgba(2, 8, 22, 0.45);
   display: grid;
   gap: 12px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .analytics-calendar-field {
   gap: 6px;
+  min-width: 0;
+}
+
+.analytics-calendar-field input[type="date"] {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .analytics-calendar-error {

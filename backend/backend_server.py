@@ -5734,6 +5734,50 @@ def _billing_month_bounds(anchor_date: date | None = None) -> tuple[date, date]:
     return start, end
 
 
+def _get_youtube_daily_quota_status() -> dict | None:
+    quota_limit = int(_billing_env_float("YOUTUBE_API_DAILY_QUOTA_LIMIT") or 10000)
+    quota_limit = max(0, quota_limit)
+    quota_tz_name = str(os.getenv("YOUTUBE_API_QUOTA_RESET_TZ") or "America/Los_Angeles").strip() or "America/Los_Angeles"
+    try:
+        quota_tz = ZoneInfo(quota_tz_name)
+    except Exception:
+        quota_tz_name = "UTC"
+        quota_tz = timezone.utc
+    quota_day = datetime.now(timezone.utc).astimezone(quota_tz).date()
+    used_units = 0.0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(units_value), 0)
+                FROM bt_3_billing_events
+                WHERE provider = 'youtube_api'
+                  AND units_type = 'youtube_quota_units'
+                  AND currency = %s
+                  AND (event_time AT TIME ZONE %s)::date = %s;
+                """,
+                (BILLING_CURRENCY_DEFAULT, quota_tz_name, quota_day),
+            )
+            used_units = float((cursor.fetchone() or [0])[0] or 0.0)
+    usage_ratio = (used_units / quota_limit) if quota_limit > 0 else None
+    remaining_units = max(0.0, quota_limit - used_units) if quota_limit > 0 else None
+    return {
+        "provider": "youtube_api",
+        "label": "YouTube API",
+        "unit": "youtube_quota_units",
+        "units_type": "youtube_quota_units",
+        "used_units": round(used_units, 3),
+        "remaining_units": round(remaining_units, 3) if remaining_units is not None else None,
+        "usage_ratio": round(usage_ratio, 4) if usage_ratio is not None else None,
+        "effective_limit_units": quota_limit if quota_limit > 0 else None,
+        "period_label": quota_day.isoformat(),
+        "metadata": {
+            "budget_kind": "daily_quota",
+            "quota_tz": quota_tz_name,
+        },
+    }
+
+
 def _estimate_stripe_fee_usd(amount_minor: int) -> float:
     amount_usd = max(0.0, float(amount_minor or 0) / 100.0)
     if amount_usd <= 0:
@@ -6036,7 +6080,6 @@ def _sync_aux_price_snapshots_from_env() -> dict:
         ("CLOUDFLARE_R2_STORAGE_PRICE_PER_GB_MONTH_USD", "cloudflare_r2_storage", "r2_storage_mb_month", "mb_month", "per_gb_month_to_mb"),
         ("STRIPE_API_REQUEST_PRICE_USD", "stripe", "stripe_api_request", "requests", "per_request"),
         ("STRIPE_PRICE_PER_PAYMENT_USD", "stripe", "stripe_payment", "payments", "per_request"),
-        ("YOUTUBE_API_PRICE_PER_1000_UNITS_USD", "youtube_api", "youtube_api_quota", "youtube_quota_units", "per_1000_units"),
     ]
     created: list[dict] = []
     skipped: list[dict] = []
@@ -6132,7 +6175,6 @@ def _billing_log_event_safe(
             ("deepl_free", "chars"): ("deepl_free", "deepl_chars", "chars"),
             ("azure_translator", "chars"): ("azure_translator", "azure_translate_chars", "chars"),
             ("perplexity", "requests"): ("perplexity", "perplexity_search_request", "requests"),
-            ("youtube_api", "youtube_quota_units"): ("youtube_api", "youtube_api_quota", "youtube_quota_units"),
             ("cloudflare_r2_class_a", "operations"): ("cloudflare_r2_class_a", "r2_class_a_ops", "operations"),
             ("cloudflare_r2_class_b", "operations"): ("cloudflare_r2_class_b", "r2_class_b_ops", "operations"),
             ("cloudflare_r2_storage", "mb_month"): ("cloudflare_r2_storage", "r2_storage_mb_month", "mb_month"),
@@ -6335,12 +6377,6 @@ def _billing_log_youtube_quota_usage(
     if units <= 0:
         return
     meta = metadata if isinstance(metadata, dict) else {}
-    snapshot = get_effective_billing_price_snapshot(
-        provider="youtube_api",
-        sku="youtube_api_quota",
-        unit="youtube_quota_units",
-        currency=BILLING_CURRENCY_DEFAULT,
-    )
     seed = f"yt_quota:{user_id}:{action_type}:{endpoint}:{units}:{time.time_ns()}"
     try:
         logged = log_billing_event(
@@ -6352,14 +6388,11 @@ def _billing_log_youtube_quota_usage(
             provider="youtube_api",
             units_type="youtube_quota_units",
             units_value=units,
-            price_provider="youtube_api" if snapshot else None,
-            price_sku="youtube_api_quota" if snapshot else None,
-            price_unit="youtube_quota_units" if snapshot else None,
             currency=BILLING_CURRENCY_DEFAULT,
             status="estimated",
             metadata={
                 "endpoint": endpoint,
-                "pricing_state": "priced" if snapshot else "missing_snapshot",
+                "pricing_state": "quota_only",
                 **meta,
             },
         )
@@ -15601,6 +15634,9 @@ def get_economics_summary():
                 "label": "Google Translate",
                 **google_translate_budget,
             })
+        youtube_quota_status = _get_youtube_daily_quota_status()
+        if youtube_quota_status:
+            provider_budget_rows.append(youtube_quota_status)
         livekit_free_minutes_month = max(0.0, _billing_env_float("LIVEKIT_FREE_MINUTES_MONTH"))
         livekit_price_per_minute = max(0.0, _billing_env_float("LIVEKIT_PRICE_PER_MINUTE_USD"))
         month_start, month_end = _billing_month_bounds()

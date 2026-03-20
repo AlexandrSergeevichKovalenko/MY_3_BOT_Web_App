@@ -13999,11 +13999,11 @@ def get_user_billing_summary(
             cursor.execute(
                 f"""
                 SELECT
-                    COALESCE(SUM(cost_amount), 0) AS total_cost,
+                    COALESCE(SUM(CASE WHEN provider = 'youtube_api' THEN 0 ELSE cost_amount END), 0) AS total_cost,
                     COALESCE(SUM(units_value), 0) AS total_units,
                     COUNT(*) AS events_count,
-                    COALESCE(SUM(CASE WHEN status = 'final' THEN cost_amount ELSE 0 END), 0) AS final_cost,
-                    COALESCE(SUM(CASE WHEN status = 'estimated' THEN cost_amount ELSE 0 END), 0) AS estimated_cost,
+                    COALESCE(SUM(CASE WHEN status = 'final' AND provider <> 'youtube_api' THEN cost_amount ELSE 0 END), 0) AS final_cost,
+                    COALESCE(SUM(CASE WHEN status = 'estimated' AND provider <> 'youtube_api' THEN cost_amount ELSE 0 END), 0) AS estimated_cost,
                     COALESCE(SUM(CASE WHEN COALESCE(metadata->>'pricing_state', '') = 'missing_snapshot' THEN units_value ELSE 0 END), 0) AS unpriced_units,
                     COALESCE(SUM(CASE WHEN COALESCE(metadata->>'pricing_state', '') = 'missing_snapshot' THEN 1 ELSE 0 END), 0) AS unpriced_events
                 FROM bt_3_billing_events
@@ -14073,7 +14073,7 @@ def get_user_billing_summary(
 
             cursor.execute(
                 f"""
-                SELECT provider, SUM(cost_amount) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
+                SELECT provider, SUM(CASE WHEN provider = 'youtube_api' THEN 0 ELSE cost_amount END) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
                 FROM bt_3_billing_events
                 WHERE user_id = %s
                   AND currency = %s
@@ -14097,7 +14097,7 @@ def get_user_billing_summary(
 
             cursor.execute(
                 f"""
-                SELECT action_type, SUM(cost_amount) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
+                SELECT action_type, SUM(CASE WHEN provider = 'youtube_api' THEN 0 ELSE cost_amount END) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
                 FROM bt_3_billing_events
                 WHERE user_id = %s
                   AND currency = %s
@@ -14144,7 +14144,7 @@ def get_user_billing_summary(
 
             cursor.execute(
                 """
-                SELECT COALESCE(SUM(cost_amount), 0), COUNT(*)
+                SELECT COALESCE(SUM(CASE WHEN provider = 'youtube_api' THEN 0 ELSE cost_amount END), 0), COUNT(*)
                 FROM bt_3_billing_events
                 WHERE user_id IS NOT NULL
                   AND currency = %s
@@ -14360,11 +14360,11 @@ def get_global_billing_summary(
             cursor.execute(
                 f"""
                 SELECT
-                    COALESCE(SUM(cost_amount), 0) AS total_cost,
+                    COALESCE(SUM(CASE WHEN provider = 'youtube_api' THEN 0 ELSE cost_amount END), 0) AS total_cost,
                     COALESCE(SUM(units_value), 0) AS total_units,
                     COUNT(*) AS events_count,
-                    COALESCE(SUM(CASE WHEN status = 'final' THEN cost_amount ELSE 0 END), 0) AS final_cost,
-                    COALESCE(SUM(CASE WHEN status = 'estimated' THEN cost_amount ELSE 0 END), 0) AS estimated_cost,
+                    COALESCE(SUM(CASE WHEN status = 'final' AND provider <> 'youtube_api' THEN cost_amount ELSE 0 END), 0) AS final_cost,
+                    COALESCE(SUM(CASE WHEN status = 'estimated' AND provider <> 'youtube_api' THEN cost_amount ELSE 0 END), 0) AS estimated_cost,
                     COALESCE(SUM(CASE WHEN COALESCE(metadata->>'pricing_state', '') = 'missing_snapshot' THEN units_value ELSE 0 END), 0) AS unpriced_units,
                     COALESCE(SUM(CASE WHEN COALESCE(metadata->>'pricing_state', '') = 'missing_snapshot' THEN 1 ELSE 0 END), 0) AS unpriced_events
                 FROM bt_3_billing_events
@@ -14411,7 +14411,7 @@ def get_global_billing_summary(
             if not provider_value:
                 cursor.execute(
                     """
-                    SELECT provider, SUM(cost_amount) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
+                    SELECT provider, SUM(CASE WHEN provider = 'youtube_api' THEN 0 ELSE cost_amount END) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
                     FROM bt_3_billing_events
                     WHERE currency = %s
                       AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
@@ -14525,7 +14525,7 @@ def get_global_billing_summary(
                 actions_params.append(provider_value)
             cursor.execute(
                 f"""
-                SELECT action_type, SUM(cost_amount) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
+                SELECT action_type, SUM(CASE WHEN provider = 'youtube_api' THEN 0 ELSE cost_amount END) AS cost_total, SUM(units_value) AS units_total, COUNT(*) AS events_count
                 FROM bt_3_billing_events
                 WHERE currency = %s
                   AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
@@ -14553,7 +14553,7 @@ def get_global_billing_summary(
                 f"""
                 SELECT
                     COALESCE(metadata->>'model', '') AS model,
-                    SUM(cost_amount) AS cost_total,
+                    SUM(CASE WHEN provider = 'youtube_api' THEN 0 ELSE cost_amount END) AS cost_total,
                     COUNT(*) AS events_count,
                     COALESCE(SUM(CASE WHEN units_type = 'tokens_in' THEN units_value ELSE 0 END), 0) AS tokens_in_total,
                     COALESCE(SUM(CASE WHEN units_type = 'tokens_out' THEN units_value ELSE 0 END), 0) AS tokens_out_total
@@ -14584,7 +14584,7 @@ def get_global_billing_summary(
                 units_params.append(provider_value)
             cursor.execute(
                 f"""
-                SELECT units_type, SUM(units_value) AS units_total, SUM(cost_amount) AS cost_total, COUNT(*) AS events_count
+                SELECT units_type, SUM(units_value) AS units_total, SUM(CASE WHEN provider = 'youtube_api' THEN 0 ELSE cost_amount END) AS cost_total, COUNT(*) AS events_count
                 FROM bt_3_billing_events
                 WHERE currency = %s
                   AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
