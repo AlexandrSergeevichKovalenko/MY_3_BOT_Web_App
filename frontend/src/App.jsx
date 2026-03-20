@@ -17697,6 +17697,7 @@ function AppInner() {
       const data = await response.json();
       setEconomicsSummary(data?.summary || null);
     } catch (error) {
+      setEconomicsSummary(null);
       setEconomicsError(`${tr('Ошибка экономики', 'Kostenfehler')}: ${error.message}`);
     } finally {
       setEconomicsLoading(false);

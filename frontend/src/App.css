@@ -13937,8 +13937,8 @@ body {
 .skill-rings-canvas::before {
   content: "";
   position: absolute;
-  width: 80px;
-  height: 80px;
+  width: 68px;
+  height: 68px;
   border-radius: 50%;
   background: var(--home-bg-card-alt);
   z-index: 2;
@@ -13946,26 +13946,27 @@ body {
 
 .skill-rings-center {
   z-index: 3;
+  gap: 4px;
 }
 
 .skill-rings-center-title {
-  font-size: 26px;
+  font-size: 22px;
   line-height: 1.1;
   font-weight: 600;
   color: var(--home-text-title);
 }
 
 .skill-rings-center-value {
-  margin-top: 8px;
-  font-size: 34px;
+  margin-top: 2px;
+  font-size: 32px;
   line-height: 1.1;
   font-weight: 700;
   color: var(--home-text-primary);
 }
 
 .skill-rings-center-sub {
-  margin-top: 8px;
-  font-size: 12px;
+  margin-top: 2px;
+  font-size: 11px;
   line-height: 1.4;
   color: var(--home-text-subtle);
 }

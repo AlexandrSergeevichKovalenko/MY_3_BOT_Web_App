@@ -15445,6 +15445,12 @@ def get_economics_summary():
             currency=BILLING_CURRENCY_DEFAULT,
         )
     except Exception as exc:
+        logging.exception(
+            "economics summary failed: period=%s provider=%s currency=%s",
+            period,
+            provider or "all",
+            BILLING_CURRENCY_DEFAULT,
+        )
         return jsonify({"error": f"Ошибка расчёта экономики: {exc}"}), 500
 
     try:

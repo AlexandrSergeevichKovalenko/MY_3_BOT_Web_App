@@ -13257,23 +13257,32 @@ def _provider_budget_default_base_limit(provider: str) -> int:
     return 0
 
 
+def _row_get(row: Any, index: int, default: Any = None) -> Any:
+    if row is None:
+        return default
+    try:
+        return row[index]
+    except Exception:
+        return default
+
+
 def _provider_budget_row_to_dict(row) -> dict | None:
     if not row:
         return None
-    base_limit = int(row[2] or 0)
-    extra_limit = int(row[3] or 0)
+    base_limit = int(_row_get(row, 2, 0) or 0)
+    extra_limit = int(_row_get(row, 3, 0) or 0)
     return {
-        "provider": str(row[0] or ""),
-        "period_month": row[1].isoformat() if row[1] else None,
+        "provider": str(_row_get(row, 0, "") or ""),
+        "period_month": _row_get(row, 1).isoformat() if _row_get(row, 1) else None,
         "base_limit_units": base_limit,
         "extra_limit_units": extra_limit,
         "effective_limit_units": max(0, base_limit + extra_limit),
-        "is_blocked": bool(row[4]),
-        "block_reason": str(row[5] or "").strip() or None,
-        "notified_thresholds": row[6] if isinstance(row[6], dict) else {},
-        "metadata": row[7] if isinstance(row[7], dict) else {},
-        "created_at": row[8].isoformat() if row[8] else None,
-        "updated_at": row[9].isoformat() if row[9] else None,
+        "is_blocked": bool(_row_get(row, 4)),
+        "block_reason": str(_row_get(row, 5, "") or "").strip() or None,
+        "notified_thresholds": _row_get(row, 6, {}) if isinstance(_row_get(row, 6, {}), dict) else {},
+        "metadata": _row_get(row, 7, {}) if isinstance(_row_get(row, 7, {}), dict) else {},
+        "created_at": _row_get(row, 8).isoformat() if _row_get(row, 8) else None,
+        "updated_at": _row_get(row, 9).isoformat() if _row_get(row, 9) else None,
     }
 
 
@@ -13524,6 +13533,7 @@ def log_billing_event(
         resolved_cost = 0.0
     resolved_cost = max(0.0, float(resolved_cost))
     resolved_currency = _normalize_billing_currency(resolved_currency)
+    metadata_payload = Json(metadata_value)
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -13565,7 +13575,7 @@ def log_billing_event(
                     resolved_cost,
                     resolved_currency,
                     status_value,
-                    metadata_value,
+                    metadata_payload,
                     event_time_value,
                 ),
             )
@@ -14404,10 +14414,10 @@ def get_global_billing_summary(
                 )
                 provider_rows = [
                     {
-                        "provider": str(row[0] or ""),
-                        "variable_cost": float(row[1] or 0.0),
-                        "units": float(row[2] or 0.0),
-                        "events": int(row[3] or 0),
+                        "provider": str(_row_get(row, 0, "") or ""),
+                        "variable_cost": float(_row_get(row, 1, 0.0) or 0.0),
+                        "units": float(_row_get(row, 2, 0.0) or 0.0),
+                        "events": int(_row_get(row, 3, 0) or 0),
                     }
                     for row in (cursor.fetchall() or [])
                 ]
@@ -14423,10 +14433,10 @@ def get_global_billing_summary(
                     (currency_value, period_start, period_end),
                 )
                 for row in (cursor.fetchall() or []):
-                    provider_key = str(row[0] or "")
+                    provider_key = str(_row_get(row, 0, "") or "")
                     provider_units_map.setdefault(provider_key, []).append({
-                        "units_type": str(row[1] or ""),
-                        "units": float(row[2] or 0.0),
+                        "units_type": str(_row_get(row, 1, "") or ""),
+                        "units": float(_row_get(row, 2, 0.0) or 0.0),
                     })
                 cursor.execute(
                     """
@@ -14441,7 +14451,7 @@ def get_global_billing_summary(
                     (currency_value, period_start, period_end),
                 )
                 fixed_by_provider = {
-                    str(row[0] or ""): float(row[1] or 0.0)
+                    str(_row_get(row, 0, "") or ""): float(_row_get(row, 1, 0.0) or 0.0)
                     for row in (cursor.fetchall() or [])
                 }
                 provider_map = {str(item.get("provider") or ""): item for item in provider_rows}
@@ -14487,8 +14497,8 @@ def get_global_billing_summary(
                 )
                 provider_units_map[provider_value] = [
                     {
-                        "units_type": str(row[0] or ""),
-                        "units": float(row[1] or 0.0),
+                        "units_type": str(_row_get(row, 0, "") or ""),
+                        "units": float(_row_get(row, 1, 0.0) or 0.0),
                     }
                     for row in (cursor.fetchall() or [])
                 ]
@@ -14520,10 +14530,10 @@ def get_global_billing_summary(
             )
             actions = [
                 {
-                    "action_type": str(row[0] or ""),
-                    "cost": float(row[1] or 0.0),
-                    "units": float(row[2] or 0.0),
-                    "events": int(row[3] or 0),
+                    "action_type": str(_row_get(row, 0, "") or ""),
+                    "cost": float(_row_get(row, 1, 0.0) or 0.0),
+                    "units": float(_row_get(row, 2, 0.0) or 0.0),
+                    "events": int(_row_get(row, 3, 0) or 0),
                 }
                 for row in (cursor.fetchall() or [])
             ]
@@ -14552,11 +14562,11 @@ def get_global_billing_summary(
             )
             models = [
                 {
-                    "model": str(row[0] or ""),
-                    "cost": float(row[1] or 0.0),
-                    "events": int(row[2] or 0),
-                    "tokens_in": float(row[3] or 0.0),
-                    "tokens_out": float(row[4] or 0.0),
+                    "model": str(_row_get(row, 0, "") or ""),
+                    "cost": float(_row_get(row, 1, 0.0) or 0.0),
+                    "events": int(_row_get(row, 2, 0) or 0),
+                    "tokens_in": float(_row_get(row, 3, 0.0) or 0.0),
+                    "tokens_out": float(_row_get(row, 4, 0.0) or 0.0),
                 }
                 for row in (cursor.fetchall() or [])
             ]
@@ -14579,10 +14589,10 @@ def get_global_billing_summary(
             )
             units_by_type = [
                 {
-                    "units_type": str(row[0] or ""),
-                    "units": float(row[1] or 0.0),
-                    "cost": float(row[2] or 0.0),
-                    "events": int(row[3] or 0),
+                    "units_type": str(_row_get(row, 0, "") or ""),
+                    "units": float(_row_get(row, 1, 0.0) or 0.0),
+                    "cost": float(_row_get(row, 2, 0.0) or 0.0),
+                    "events": int(_row_get(row, 3, 0) or 0),
                 }
                 for row in (cursor.fetchall() or [])
             ]
@@ -14604,12 +14614,12 @@ def get_global_billing_summary(
             )
             fixed_items = [
                 {
-                    "category": str(row[0] or ""),
-                    "provider": str(row[1] or ""),
-                    "amount": float(row[2] or 0.0),
-                    "period_start": row[3].isoformat() if row[3] else None,
-                    "period_end": row[4].isoformat() if row[4] else None,
-                    "allocation_method_default": str(row[5] or "equal"),
+                    "category": str(_row_get(row, 0, "") or ""),
+                    "provider": str(_row_get(row, 1, "") or ""),
+                    "amount": float(_row_get(row, 2, 0.0) or 0.0),
+                    "period_start": _row_get(row, 3).isoformat() if _row_get(row, 3) else None,
+                    "period_end": _row_get(row, 4).isoformat() if _row_get(row, 4) else None,
+                    "allocation_method_default": str(_row_get(row, 5, "equal") or "equal"),
                 }
                 for row in (cursor.fetchall() or [])
             ]
@@ -14630,9 +14640,9 @@ def get_global_billing_summary(
                 """
             )
             provider_catalog = [
-                str(row[0] or "")
+                str(_row_get(row, 0, "") or "")
                 for row in (cursor.fetchall() or [])
-                if str(row[0] or "").strip()
+                if str(_row_get(row, 0, "") or "").strip()
             ]
 
     total_cost = variable_cost_total + fixed_cost_total
