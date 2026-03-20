@@ -2,6 +2,7 @@
 
 :root {
   color-scheme: light;
+  --app-height: 100dvh;
 }
 
 html,
@@ -12,6 +13,8 @@ body,
   overflow-x: hidden;
   width: 100%;
   max-width: 100%;
+  min-height: 100%;
+  background: #080b1a;
 }
 
 * {
@@ -384,6 +387,8 @@ body {
 
 .webapp-page {
   min-height: 100vh;
+  min-height: 100dvh;
+  min-height: var(--app-height, 100dvh);
   padding: 24px clamp(16px, 4vw, 48px);
   background: radial-gradient(circle at 20% 20%, rgba(93, 220, 255, 0.15), transparent 45%),
     radial-gradient(circle at 80% 10%, rgba(124, 92, 255, 0.15), transparent 55%),
@@ -429,8 +434,10 @@ body {
 .webapp-page.is-contained-scroll {
   height: 100vh;
   height: 100dvh;
+  height: var(--app-height, 100dvh);
   min-height: 100vh;
   min-height: 100dvh;
+  min-height: var(--app-height, 100dvh);
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior-y: auto;
@@ -466,6 +473,7 @@ body {
 
 .webapp-page.is-flashcards .webapp-main {
   min-height: 100vh;
+  min-height: var(--app-height, 100dvh);
   gap: 0;
 }
 
@@ -487,8 +495,14 @@ body {
 
 .webapp-page.is-reader-immersive .webapp-main {
   min-height: 100vh;
+  min-height: var(--app-height, 100dvh);
   padding: 0;
   gap: 0;
+}
+
+.webapp-page.is-telegram-tablet {
+  --telegram-tablet-top-safe-offset: calc(env(safe-area-inset-top, 0px) + 48px);
+  --telegram-tablet-inline-safe-offset: clamp(18px, 3vw, 34px);
 }
 
 .webapp-page.is-youtube-watch-focus .webapp-topbar {
@@ -2522,6 +2536,52 @@ body {
   flex-wrap: wrap;
   gap: 12px;
   align-items: flex-end;
+}
+
+.analytics-period-field {
+  position: relative;
+  min-width: 240px;
+}
+
+.analytics-calendar-wrap {
+  position: relative;
+  display: grid;
+  gap: 8px;
+}
+
+.analytics-calendar-trigger {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.analytics-calendar-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  width: min(320px, calc(100vw - 48px));
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(94, 234, 212, 0.18);
+  background: linear-gradient(145deg, rgba(17, 25, 49, 0.98), rgba(9, 15, 34, 0.98));
+  box-shadow: 0 18px 36px rgba(2, 8, 22, 0.45);
+  display: grid;
+  gap: 12px;
+}
+
+.analytics-calendar-field {
+  gap: 6px;
+}
+
+.analytics-calendar-error {
+  color: #ffd166;
+  font-size: 13px;
+}
+
+.analytics-calendar-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
 }
 
 .analytics-scope-field {
@@ -12081,6 +12141,7 @@ body {
 .webapp-reader.is-immersive {
   min-height: calc(100vh - 72px);
   min-height: calc(100dvh - 72px);
+  min-height: calc(var(--app-height, 100dvh) - 72px);
   background: transparent;
 }
 
@@ -12604,12 +12665,16 @@ body {
 .webapp-reader.is-immersive .reader-article {
   max-height: calc(100dvh - 146px);
   min-height: calc(100dvh - 146px);
+  max-height: calc(var(--app-height, 100dvh) - 146px);
+  min-height: calc(var(--app-height, 100dvh) - 146px);
   padding: 8px 0 16px;
 }
 
 .webapp-reader.is-immersive.is-topbar-collapsed .reader-article {
   max-height: calc(100dvh - 88px);
   min-height: calc(100dvh - 88px);
+  max-height: calc(var(--app-height, 100dvh) - 88px);
+  min-height: calc(var(--app-height, 100dvh) - 88px);
 }
 
 .reader-page-sheet {
@@ -12677,22 +12742,51 @@ body {
 }
 
 .webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-article {
-  padding: 10px 12px 18px;
+  padding: 10px 4px 14px;
+  max-height: calc(100dvh - 168px);
+  min-height: calc(100dvh - 168px);
+  max-height: calc(var(--app-height, 100dvh) - 168px);
+  min-height: calc(var(--app-height, 100dvh) - 168px);
 }
 
 .webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-page-sheet {
-  width: min(100%, calc(100vw - 24px));
+  width: min(100%, calc(100vw - 8px));
   max-width: none;
-  min-height: calc(100dvh - 200px);
-  height: calc(100dvh - 200px);
-  padding: clamp(26px, 3vw, 40px) clamp(20px, 3vw, 34px) 20px;
+  min-height: calc(100dvh - 168px);
+  height: calc(100dvh - 168px);
+  min-height: calc(var(--app-height, 100dvh) - 168px);
+  height: calc(var(--app-height, 100dvh) - 168px);
+  padding: clamp(24px, 2.8vw, 40px) clamp(18px, 2.4vw, 32px) 18px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-reader.is-immersive.is-topbar-collapsed .reader-article {
+  max-height: calc(100dvh - 104px);
+  min-height: calc(100dvh - 104px);
+  max-height: calc(var(--app-height, 100dvh) - 104px);
+  min-height: calc(var(--app-height, 100dvh) - 104px);
+}
+
+.webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-topbar {
+  top: var(--telegram-tablet-top-safe-offset);
+}
+
+.webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-immersive-topbar,
+.webapp-page.is-telegram-tablet .webapp-reader .reader-topbar-peek {
+  padding-left: var(--telegram-tablet-inline-safe-offset);
+  padding-right: var(--telegram-tablet-inline-safe-offset);
+}
+
+.webapp-page.is-telegram-tablet .webapp-reader .reader-topbar-peek {
+  top: var(--telegram-tablet-top-safe-offset);
 }
 
 @media (orientation: portrait) {
   .webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-page-sheet {
-    width: min(100%, calc(100vw - 16px));
-    min-height: calc(100dvh - 188px);
-    height: calc(100dvh - 188px);
+    width: min(100%, calc(100vw - 6px));
+    min-height: calc(100dvh - 156px);
+    height: calc(100dvh - 156px);
+    min-height: calc(var(--app-height, 100dvh) - 156px);
+    height: calc(var(--app-height, 100dvh) - 156px);
   }
 }
 
@@ -12814,6 +12908,10 @@ body {
 }
 
 @media (max-width: 900px) {
+  .webapp-page.is-telegram-tablet:not(.is-telegram-fullscreen):not(.is-reader-immersive) {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 46px);
+  }
+
   .reader-topbar {
     grid-template-columns: 1fr;
     gap: 12px;
@@ -13337,7 +13435,26 @@ body {
     min-height: 100dvh;
     max-height: 100dvh;
     border-radius: 0;
-    padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
+    padding:
+      calc(env(safe-area-inset-top, 0px) + 42px)
+      var(--telegram-tablet-inline-safe-offset)
+      calc(env(safe-area-inset-bottom, 0px) + 16px);
+  }
+
+  .webapp-page.is-telegram-tablet .webapp-topbar {
+    padding-top: 18px;
+    padding-left: var(--telegram-tablet-inline-safe-offset);
+    padding-right: var(--telegram-tablet-inline-safe-offset);
+  }
+
+  .webapp-page.is-telegram-tablet .topbar-row-main {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  .webapp-page.is-telegram-tablet .overlay-header {
+    padding-left: 6px;
+    padding-right: 6px;
   }
 }
 
@@ -15554,6 +15671,28 @@ body {
   display: none !important;
 }
 
+.webapp-page.is-telegram-tablet .webapp-flashcards {
+  width: 100%;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcards-panel,
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcard-mode-screen,
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcard-stage,
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcard-stage.is-session,
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcard-stage.is-preview {
+  width: 100%;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcard-mode-screen {
+  min-height: calc(var(--app-height, 100dvh) - 96px);
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcard-stage.is-session,
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcard-stage.is-preview {
+  padding-left: clamp(12px, 2vw, 20px);
+  padding-right: clamp(12px, 2vw, 20px);
+}
+
 .webapp-flashcards .flashcard-mode-menu,
 .webapp-flashcards .flashcard-mode-list,
 .webapp-flashcards .flashcard-summary-card,
@@ -15877,6 +16016,185 @@ body {
   background: var(--t-success) !important;
   color: #ffffff !important;
   border: none !important;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .fsrs-study-screen {
+  width: min(100%, 860px);
+  min-height: calc(var(--app-height, 100dvh) - 120px);
+  padding: 8px 14px 10px;
+  border-radius: 34px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .fsrs-study-header {
+  padding: 14px 16px 12px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .fsrs-study-title {
+  font-size: 30px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .fsrs-study-queue {
+  font-size: 15px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .fsrs-study-card {
+  min-height: min(72vh, 820px);
+  padding: 30px 28px;
+  border-radius: 28px;
+  gap: 22px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcard-quiz-layout {
+  width: min(100%, 860px);
+  padding: 8px 0 14px;
+  gap: 18px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .quiz-layout-head {
+  padding: 0 6px;
+  font-size: 18px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .quiz-layout-head .flashcard-counter {
+  font-size: 20px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .quiz-study-card {
+  min-height: min(72vh, 860px);
+  padding: 28px 26px 22px !important;
+  border-radius: 28px;
+  gap: 18px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .quiz-study-mode-title {
+  font-size: 28px !important;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .quiz-study-question,
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-prompt {
+  font-size: clamp(34px, 4vw, 46px) !important;
+  line-height: 1.18 !important;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .quiz-study-translation {
+  font-size: 22px !important;
+  line-height: 1.35;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .quiz-mascot-circle {
+  width: min(100%, 180px) !important;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .quiz-option {
+  min-height: 66px !important;
+  height: auto !important;
+  padding: 14px 16px 14px 18px !important;
+  font-size: 20px !important;
+  line-height: 1.2;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .quiz-continue-btn {
+  min-height: 62px;
+  font-size: 24px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcard-preview-card {
+  width: min(100%, 860px);
+  margin: 0 auto;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .flashcard.flashcard-blocks {
+  width: min(100%, 860px);
+  margin: 0 auto;
+  padding-top: 8px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-session-topline {
+  padding: 4px 6px 14px;
+  font-size: 18px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-session-topline .flashcard-counter {
+  font-size: 20px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-trainer {
+  gap: 18px;
+  padding: 24px 22px 20px;
+  border-radius: 28px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-head {
+  min-height: 56px;
+  padding: 2px 68px 0;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-timer {
+  min-width: 54px;
+  padding: 8px 12px;
+  font-size: 24px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-target {
+  min-height: 104px;
+  padding: 18px 16px 16px;
+  border-radius: 22px;
+  gap: 8px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-target.is-word {
+  gap: 5px;
+  padding: 18px 12px 16px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-playground {
+  min-height: 124px;
+  max-height: min(34vh, 320px);
+  border-radius: 22px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-slot {
+  min-width: 40px;
+  min-height: 50px;
+  padding: 0 10px;
+  font-size: 20px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-target.is-word .blocks-slot {
+  min-width: max(var(--word-slot-min-width, 34px), 34px);
+  min-height: max(var(--word-slot-min-height, 46px), 46px);
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-slot.is-filled,
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-target.is-word .blocks-slot.is-filled {
+  font-size: max(var(--word-slot-font-size, 22px), 22px);
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-tile,
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-fly-token {
+  width: 88px;
+  height: 70px;
+  font-size: 34px !important;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-footer {
+  gap: 12px;
+  padding-top: 12px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-footer .primary-button,
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-footer .secondary-button {
+  min-height: 60px;
+  font-size: 22px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-result {
+  padding: 18px;
+  border-radius: 22px;
+}
+
+.webapp-page.is-telegram-tablet .webapp-flashcards .blocks-result-value {
+  font-size: 30px;
 }
 
 .webapp-flashcards .quiz-option.is-wrong {
@@ -17301,6 +17619,16 @@ body {
 .webapp-page.is-theme-light .analytics-rank {
   background: rgba(207, 157, 99, 0.24);
   color: #6f4f2e;
+}
+
+.webapp-page.is-theme-light .analytics-calendar-popover {
+  border-color: rgba(171, 126, 72, 0.28);
+  background: linear-gradient(145deg, rgba(248, 239, 226, 0.99), rgba(242, 231, 212, 0.98));
+  box-shadow: 0 18px 36px rgba(105, 78, 47, 0.16);
+}
+
+.webapp-page.is-theme-light .analytics-calendar-error {
+  color: #9a5d18;
 }
 
 .webapp-page.is-theme-light .analytics-scope-hint.is-warning {

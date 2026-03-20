@@ -39,6 +39,7 @@ from backend.backend_server import (
     GoogleTTSBudgetBlockedError,
     _build_tts_prewarm_quota_control_text,
     _build_video_search_queries,
+    _get_user_language_pair,
     _youtube_search_videos,
     _youtube_fill_view_counts,
     _filter_videos_for_today_task,
@@ -65,6 +66,7 @@ from backend.openai_manager import (
     run_dictionary_collocations,
     run_dictionary_collocations_multilang,
     run_generate_word_quiz,
+    run_language_learning_private_question,
     run_quiz_followup_question,
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
@@ -155,8 +157,11 @@ pending_dictionary_save_options = {}
 pending_dictionary_lookup_requests = {}
 pending_dictionary_lookup_inflight = set()
 pending_feel_requests_inflight = set()
+pending_tts_listen_requests_inflight = set()
+pending_language_tutor_input = {}
 pending_tts_budget_custom = {}
 TTS_BUDGET_CUSTOM_TTL_SECONDS = 60 * 5
+LANGUAGE_TUTOR_INPUT_TTL_SECONDS = 60 * 20
 TTS_PREWARM_QUOTA_MIN = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN") or "200").strip() or "200")))
 TTS_PREWARM_QUOTA_MAX = max(
     TTS_PREWARM_QUOTA_MIN,
@@ -307,35 +312,79 @@ class TrackingExtBot(ExtBot):
         await _track_telegram_message_async(msg, message_type)
         return msg
 
+    @staticmethod
+    def _extract_chat_id(args, kwargs) -> int | None:
+        candidate = kwargs.get("chat_id")
+        if candidate is None and args:
+            candidate = args[0]
+        try:
+            return int(candidate)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _merge_language_tutor_button(reply_markup):
+        button = InlineKeyboardButton("Спросить у GPT", callback_data="langgpt:ask")
+        if reply_markup is None:
+            return InlineKeyboardMarkup([[button]])
+        if not isinstance(reply_markup, InlineKeyboardMarkup):
+            return reply_markup
+        rows = [list(row) for row in (reply_markup.inline_keyboard or [])]
+        for row in rows:
+            for item in row:
+                if getattr(item, "callback_data", "") == "langgpt:ask":
+                    return reply_markup
+        rows.append([button])
+        return InlineKeyboardMarkup(rows)
+
+    @classmethod
+    def _inject_language_tutor_button(cls, args, kwargs):
+        include_button = kwargs.pop("language_tutor_button", True)
+        if not include_button:
+            return args, kwargs
+        chat_id = cls._extract_chat_id(args, kwargs)
+        if chat_id is None or chat_id <= 0:
+            return args, kwargs
+        kwargs["reply_markup"] = cls._merge_language_tutor_button(kwargs.get("reply_markup"))
+        return args, kwargs
+
     async def send_message(self, *args, **kwargs):
+        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_message(*args, **kwargs)
         return await self._track_single(msg, "text")
 
     async def send_photo(self, *args, **kwargs):
+        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_photo(*args, **kwargs)
         return await self._track_single(msg, "photo")
 
     async def send_audio(self, *args, **kwargs):
+        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_audio(*args, **kwargs)
         return await self._track_single(msg, "audio")
 
     async def send_voice(self, *args, **kwargs):
+        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_voice(*args, **kwargs)
         return await self._track_single(msg, "voice")
 
     async def send_document(self, *args, **kwargs):
+        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_document(*args, **kwargs)
         return await self._track_single(msg, "document")
 
     async def send_video(self, *args, **kwargs):
+        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_video(*args, **kwargs)
         return await self._track_single(msg, "video")
 
     async def send_video_note(self, *args, **kwargs):
+        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_video_note(*args, **kwargs)
         return await self._track_single(msg, "video_note")
 
     async def send_animation(self, *args, **kwargs):
+        args, kwargs = self._inject_language_tutor_button(args, kwargs)
         msg = await super().send_animation(*args, **kwargs)
         return await self._track_single(msg, "animation")
 
@@ -1009,6 +1058,137 @@ def _display_user_name(user) -> str:
     last = (getattr(user, "last_name", None) or "").strip()
     full = " ".join(part for part in (first, last) if part).strip()
     return full or "unknown"
+
+
+def _language_tutor_default_refusal() -> str:
+    return (
+        "Я отвечаю только на вопросы по изучению языка.\n\n"
+        "Примеры подходящих вопросов:\n"
+        "• В чём разница между `weil` и `denn`?\n"
+        "• Почему здесь Akkusativ, а не Dativ?\n"
+        "• Как естественно перевести эту фразу на немецкий?"
+    )
+
+
+def _language_tutor_pair_for_user(user_id: int) -> tuple[str, str]:
+    try:
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        return str(source_lang or "ru").strip().lower() or "ru", str(target_lang or "de").strip().lower() or "de"
+    except Exception:
+        return "ru", "de"
+
+
+def _extract_lookup_primary_target_text(lookup: dict) -> str:
+    if not isinstance(lookup, dict):
+        return ""
+    direct = str(lookup.get("word_target") or "").strip()
+    if direct:
+        return direct
+    translations = lookup.get("translations") if isinstance(lookup.get("translations"), list) else []
+    for item in translations:
+        if not isinstance(item, dict):
+            continue
+        candidate = str(item.get("value") or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _resolve_dictionary_speech_payload(payload: dict, *, user_id: int) -> tuple[str, str]:
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    if (not source_lang or not target_lang) and "-" in str(payload.get("direction") or ""):
+        source_lang, target_lang = [x.strip().lower() for x in str(payload.get("direction")).split("-", 1)]
+
+    lookup = payload.get("lookup") if isinstance(payload.get("lookup"), dict) else {}
+    source_text = str(
+        lookup.get("word_source")
+        or payload.get("source_text")
+        or payload.get("original_query")
+        or ""
+    ).strip()
+    target_text = _extract_lookup_primary_target_text(lookup)
+    pronunciation = lookup.get("pronunciation") if isinstance(lookup.get("pronunciation"), dict) else {}
+    pronunciation_audio_text = str(pronunciation.get("audio_text") or "").strip()
+
+    _profile_source_lang, profile_target_lang = _language_tutor_pair_for_user(int(user_id))
+
+    chosen_lang = ""
+    chosen_text = ""
+    if source_lang == profile_target_lang and source_text:
+        chosen_lang, chosen_text = source_lang, source_text
+    elif target_lang == profile_target_lang and target_text:
+        chosen_lang, chosen_text = target_lang, target_text
+    elif source_lang == "de" and source_text:
+        chosen_lang, chosen_text = source_lang, source_text
+    elif target_lang == "de" and target_text:
+        chosen_lang, chosen_text = target_lang, target_text
+    elif target_text and target_lang:
+        chosen_lang, chosen_text = target_lang, target_text
+    elif source_text and source_lang:
+        chosen_lang, chosen_text = source_lang, source_text
+
+    if pronunciation_audio_text and chosen_lang in {"de", "en", "es", "it"}:
+        chosen_text = pronunciation_audio_text
+
+    return chosen_lang, chosen_text
+
+
+def _resolve_quiz_speech_payload(payload: dict) -> tuple[str, str]:
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    source_text = str(payload.get("source_text") or "").strip()
+    target_text = str(payload.get("target_text") or "").strip()
+    if source_text and source_lang:
+        return source_lang, source_text
+    if target_text and target_lang:
+        return target_lang, target_text
+    return "", ""
+
+
+async def _synthesize_telegram_tts_audio(lang: str, text: str) -> tuple[io.BytesIO, str]:
+    normalized_lang = str(lang or "").strip().lower() or "de"
+    normalized_text = re.sub(r"\s+", " ", str(text or "").strip())
+    if not normalized_text:
+        raise ValueError("empty_tts_text")
+    audio_segment = await asyncio.to_thread(get_or_create_tts_clip, normalized_lang, normalized_text, 0.95)
+    audio_bytes = await asyncio.to_thread(_audiosegment_to_mp3_bytes, audio_segment)
+    audio_buffer = io.BytesIO(audio_bytes)
+    audio_buffer.name = f"listen_{normalized_lang}.mp3"
+    audio_buffer.seek(0)
+    return audio_buffer, normalized_text
+
+
+def _audiosegment_to_mp3_bytes(audio_segment: AudioSegment) -> bytes:
+    buf = io.BytesIO()
+    audio_segment.export(buf, format="mp3", bitrate="192k")
+    buf.seek(0)
+    return buf.read()
+
+
+async def handle_language_tutor_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    await query.answer()
+    if not (query.message and query.message.chat and query.message.chat.type == "private"):
+        if query.message:
+            await query.message.reply_text("Эта кнопка работает только в личке с ботом.")
+        return
+    if not is_telegram_user_allowed(int(query.from_user.id)):
+        await query.message.reply_text("Сначала получите доступ к боту, потом сможете задавать вопросы.")
+        return
+
+    pending_language_tutor_input[int(query.from_user.id)] = {
+        "started_at": pytime.time(),
+    }
+    await query.message.reply_text(
+        "💬 Напишите одним сообщением ваш вопрос по языку.\n\n"
+        "Можно спрашивать про грамматику, перевод, слова, артикли, времена, оттенки смысла и естественные формулировки.\n\n"
+        "Нельзя: вопросы не про язык.\n"
+        "Для отмены напишите `cancel`.",
+        parse_mode="Markdown",
+    )
 
 
 async def _notify_admins_access_request(context: CallbackContext, user) -> None:
@@ -2936,6 +3116,51 @@ async def handle_user_message(update: Update, context: CallbackContext):
             pending_quiz_question_input.pop(user_id, None)
         return
 
+    pending_language_question = pending_language_tutor_input.get(user_id)
+    if pending_language_question:
+        if update.effective_chat and update.effective_chat.type != "private":
+            await update.message.reply_text("Вопрос для GPT отправьте в личку с ботом.")
+            return
+
+        started_at = float((pending_language_question or {}).get("started_at") or 0.0)
+        if started_at > 0 and (pytime.time() - started_at) > LANGUAGE_TUTOR_INPUT_TTL_SECONDS:
+            pending_language_tutor_input.pop(user_id, None)
+            await update.message.reply_text("Окно для вопроса истекло. Нажмите кнопку `Спросить у GPT` ещё раз.", parse_mode="Markdown")
+            return
+
+        lowered = str(text or "").strip().lower()
+        if lowered in {"cancel", "/cancel", "отмена"}:
+            pending_language_tutor_input.pop(user_id, None)
+            await update.message.reply_text("Ок, отменил вопрос.")
+            return
+
+        await update.message.reply_text("⏳ Думаю над ответом...")
+        try:
+            source_lang, target_lang = _language_tutor_pair_for_user(int(user_id))
+            llm_payload = {
+                "learner_question": text,
+                "source_language": source_lang,
+                "target_language": target_lang,
+            }
+            llm_response = await run_language_learning_private_question(llm_payload)
+            is_language_question = bool(llm_response.get("is_language_question"))
+            answer = str(llm_response.get("answer") or "").strip()
+            suggested_rephrase = str(llm_response.get("suggested_rephrase") or "").strip()
+            if not answer:
+                answer = _language_tutor_default_refusal() if not is_language_question else "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
+            if not is_language_question and suggested_rephrase:
+                answer = f"{answer}\n\nНапример:\n{suggested_rephrase}"
+            await update.message.reply_text(
+                _truncate_telegram_reply_text(answer, max_chars=3000),
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            logging.exception("❌ Ошибка language tutor answer user_id=%s", user_id)
+            await update.message.reply_text("Не удалось подготовить ответ. Попробуйте чуть позже.")
+        finally:
+            pending_language_tutor_input.pop(user_id, None)
+        return
+
     # Проверяем, является ли сообщение переводом (поддержка многострочных сообщений)
     pattern = re.compile(r"^(\d+)\.\s*([^\d\n]+(?:\n[^\d\n]+)*)", re.MULTILINE)
     translations = pattern.findall(text)
@@ -3968,6 +4193,7 @@ def _build_save_variant_keyboard(
     options: list[dict],
     selected: list[int] | None = None,
     feel_card_key: str | None = None,
+    speak_card_key: str | None = None,
     question_request_key: str | None = None,
 ) -> InlineKeyboardMarkup:
     selected_set = set(int(item) for item in (selected or []) if isinstance(item, int) or str(item).isdigit())
@@ -3977,6 +4203,8 @@ def _build_save_variant_keyboard(
         rows.append([InlineKeyboardButton(f"{mark} Вариант {idx}", callback_data=f"dictseltoggle:{option_key}:{idx-1}")])
     rows.append([InlineKeyboardButton("✅ Сохранить выбранные", callback_data=f"dictsaveconfirm:{option_key}")])
     rows.append([InlineKeyboardButton("☑️ Выбрать все", callback_data=f"dictselall:{option_key}")])
+    if speak_card_key:
+        rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"dictspeak:{speak_card_key}")])
     if feel_card_key:
         rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"dictfeel:{feel_card_key}")])
     if question_request_key:
@@ -4634,6 +4862,7 @@ async def _send_dictionary_lookup_result(
         options,
         selected=[],
         feel_card_key=card_key,
+        speak_card_key=card_key,
         question_request_key=question_request_key,
     )
     msg = await message.reply_text(
@@ -4896,6 +5125,60 @@ async def handle_dictionary_feel_callback(update: Update, context: CallbackConte
         pending_feel_requests_inflight.discard(inflight_key)
 
 
+async def handle_dictionary_speak_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+
+    card_key = parts[1].strip()
+    payload = pending_dictionary_cards.get(card_key)
+    if not payload:
+        await query.answer("Карточка устарела. Запросите перевод заново.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Кнопка доступна только автору карточки.", show_alert=True)
+        return
+
+    inflight_key = f"dictspeak:{int(user.id)}:{card_key}"
+    if inflight_key in pending_tts_listen_requests_inflight:
+        await query.answer("Озвучка уже готовится, подождите.", show_alert=True)
+        return
+    pending_tts_listen_requests_inflight.add(inflight_key)
+
+    try:
+        speak_lang, speak_text = _resolve_dictionary_speech_payload(payload, user_id=int(user.id))
+        if not speak_lang or not speak_text:
+            await query.answer("Не удалось определить фразу для озвучки.", show_alert=True)
+            return
+
+        try:
+            await query.answer("Готовлю озвучку…")
+        except Exception:
+            pass
+
+        audio_buffer, normalized_text = await _synthesize_telegram_tts_audio(speak_lang, speak_text)
+        await context.bot.send_audio(
+            chat_id=int(query.message.chat_id),
+            audio=audio_buffer,
+            caption=f"🔊 {normalized_text}",
+            reply_to_message_id=int(query.message.message_id),
+            language_tutor_button=False,
+        )
+    except Exception as exc:
+        logging.exception("❌ Ошибка dictspeak для user_id=%s card_key=%s: %s", int(user.id), card_key, exc)
+        await query.answer("Не удалось подготовить озвучку. Попробуйте позже.", show_alert=True)
+    finally:
+        pending_tts_listen_requests_inflight.discard(inflight_key)
+
+
 async def handle_quiz_feel_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query:
@@ -4998,6 +5281,60 @@ async def handle_quiz_feel_callback(update: Update, context: CallbackContext) ->
         await query.answer("Не удалось сделать разбор. Попробуйте позже.", show_alert=True)
     finally:
         pending_feel_requests_inflight.discard(inflight_key)
+
+
+async def handle_quiz_speak_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+
+    key = parts[1].strip()
+    payload = pending_quiz_feel_requests.get(key)
+    if not payload:
+        await query.answer("Кнопка устарела. Пройдите квиз ещё раз.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Кнопка доступна только автору результата.", show_alert=True)
+        return
+
+    inflight_key = f"quizspeak:{int(user.id)}:{key}"
+    if inflight_key in pending_tts_listen_requests_inflight:
+        await query.answer("Озвучка уже готовится, подождите.", show_alert=True)
+        return
+    pending_tts_listen_requests_inflight.add(inflight_key)
+
+    try:
+        speak_lang, speak_text = _resolve_quiz_speech_payload(payload)
+        if not speak_lang or not speak_text:
+            await query.answer("Не удалось определить фразу для озвучки.", show_alert=True)
+            return
+
+        try:
+            await query.answer("Готовлю озвучку…")
+        except Exception:
+            pass
+
+        audio_buffer, normalized_text = await _synthesize_telegram_tts_audio(speak_lang, speak_text)
+        await context.bot.send_audio(
+            chat_id=int(query.message.chat_id),
+            audio=audio_buffer,
+            caption=f"🔊 {normalized_text}",
+            reply_to_message_id=int(query.message.message_id),
+            language_tutor_button=False,
+        )
+    except Exception as exc:
+        logging.exception("❌ Ошибка quizspeak для user_id=%s key=%s: %s", int(user.id), key, exc)
+        await query.answer("Не удалось подготовить озвучку. Попробуйте позже.", show_alert=True)
+    finally:
+        pending_tts_listen_requests_inflight.discard(inflight_key)
 
 
 async def handle_quiz_ask_callback(update: Update, context: CallbackContext) -> None:
@@ -5274,6 +5611,7 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
         options,
         selected=[],
         feel_card_key=key,
+        speak_card_key=key,
         question_request_key=str(payload.get("question_request_key") or "").strip() or None,
     )
     try:
@@ -5472,6 +5810,7 @@ async def handle_dictionary_select_toggle_callback(update: Update, context: Call
         options,
         selected=payload["selected"],
         feel_card_key=str(payload.get("card_key") or "").strip() or None,
+        speak_card_key=str(payload.get("card_key") or "").strip() or None,
         question_request_key=str(payload.get("question_request_key") or "").strip() or None,
     )
     try:
@@ -5509,6 +5848,7 @@ async def handle_dictionary_select_all_callback(update: Update, context: Callbac
         options,
         selected=payload["selected"],
         feel_card_key=str(payload.get("card_key") or "").strip() or None,
+        speak_card_key=str(payload.get("card_key") or "").strip() or None,
         question_request_key=str(payload.get("question_request_key") or "").strip() or None,
     )
     try:
@@ -8769,8 +9109,15 @@ def _store_pending_quiz_question_save_request(
     return save_key
 
 
-def _build_quiz_result_keyboard(*, feel_key: str | None = None, question_key: str | None = None) -> InlineKeyboardMarkup | None:
+def _build_quiz_result_keyboard(
+    *,
+    feel_key: str | None = None,
+    question_key: str | None = None,
+    speak_key: str | None = None,
+) -> InlineKeyboardMarkup | None:
     rows = []
+    if speak_key:
+        rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"quizspeak:{speak_key}")])
     if feel_key:
         rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"quizfeel:{feel_key}")])
     if question_key:
@@ -8904,7 +9251,11 @@ async def _send_quiz_result_private(
         if len(pending_quiz_feel_requests) > 500:
             oldest_key = next(iter(pending_quiz_feel_requests))
             pending_quiz_feel_requests.pop(oldest_key, None)
-        fallback_reply_markup = _build_quiz_result_keyboard(feel_key=feel_key, question_key=None)
+        fallback_reply_markup = _build_quiz_result_keyboard(
+            feel_key=feel_key,
+            question_key=None,
+            speak_key=feel_key,
+        )
         reply_markup = fallback_reply_markup
         try:
             question_key = _store_pending_quiz_question_request(
@@ -8914,7 +9265,11 @@ async def _send_quiz_result_private(
                 source_lang="de",
                 target_lang="ru",
             )
-            reply_markup = _build_quiz_result_keyboard(feel_key=feel_key, question_key=question_key)
+            reply_markup = _build_quiz_result_keyboard(
+                feel_key=feel_key,
+                question_key=question_key,
+                speak_key=feel_key,
+            )
         except Exception:
             logging.exception("❌ Не удалось подготовить кнопку quiz follow-up user_id=%s", user_id)
             reply_markup = fallback_reply_markup
@@ -10263,7 +10618,9 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_quiz_question_cancel_callback, pattern=r"^quizaskcancel$"))
     application.add_handler(CallbackQueryHandler(handle_quiz_ask_callback, pattern=r"^quizask:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_question_save_callback, pattern=r"^quizqsave:"))
+    application.add_handler(CallbackQueryHandler(handle_quiz_speak_callback, pattern=r"^quizspeak:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_feel_callback, pattern=r"^quizfeel:"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_speak_callback, pattern=r"^dictspeak:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_feel_callback, pattern=r"^dictfeel:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_pair_callback, pattern=r"^dictpair:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_toggle_callback, pattern=r"^dictseltoggle:"))
@@ -10272,6 +10629,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_option_callback, pattern=r"^dictsaveopt:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
     application.add_handler(CallbackQueryHandler(handle_group_enrollment_callback, pattern=r"^groupenroll:confirm$"))
+    application.add_handler(CallbackQueryHandler(handle_language_tutor_callback, pattern=r"^langgpt:ask$"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_translation_from_text, block=False), group=1)  # ✅ Проверяем переводы

@@ -389,6 +389,7 @@ from backend.translation_workflow import (
     get_active_session_type,
 )
 from backend.analytics import (
+    _calculate_final_score,
     fetch_user_summary,
     fetch_user_timeseries,
     fetch_scope_summary,
@@ -10098,6 +10099,168 @@ def _build_private_analytics_chart_png(
     return buff.read()
 
 
+def _truncate_compare_chart_label(value: str, max_len: int = 22) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max(1, max_len - 3)].rstrip() + "..."
+
+
+def _resolve_compare_chart_label(row: dict[str, Any]) -> str:
+    username = str(row.get("username") or "").strip().lstrip("@")
+    if username:
+        return _truncate_compare_chart_label(username)
+    return f"user_{int(row.get('user_id') or 0)}"
+
+
+def _select_compare_chart_rows(
+    rows: list[dict[str, Any]],
+    *,
+    max_items: int = 8,
+    highlight_user_id: int | None = None,
+) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+
+    safe_max_items = max(1, int(max_items or 8))
+    normalized = sorted(
+        [dict(item) for item in rows if isinstance(item, dict)],
+        key=lambda item: (
+            float(item.get("final_score") or 0.0),
+            float(item.get("total_time_min") or item.get("total_minutes") or 0.0),
+            float(item.get("avg_score") or 0.0),
+            int(item.get("translated") or item.get("translations_count") or 0),
+        ),
+        reverse=True,
+    )
+    selected = list(normalized[:safe_max_items])
+    if not selected or highlight_user_id is None:
+        return selected
+
+    if any(int(item.get("user_id") or 0) == int(highlight_user_id) for item in selected):
+        return selected
+
+    highlight_item = next(
+        (item for item in normalized if int(item.get("user_id") or 0) == int(highlight_user_id)),
+        None,
+    )
+    if highlight_item is None:
+        return selected
+
+    if len(selected) >= safe_max_items:
+        selected = selected[:-1] + [dict(highlight_item)]
+    else:
+        selected.append(dict(highlight_item))
+    selected.sort(
+        key=lambda item: (
+            float(item.get("final_score") or 0.0),
+            float(item.get("total_time_min") or item.get("total_minutes") or 0.0),
+            float(item.get("avg_score") or 0.0),
+            int(item.get("translated") or item.get("translations_count") or 0),
+        ),
+        reverse=True,
+    )
+    return selected
+
+
+def _build_compare_leaderboard_chart_png(
+    *,
+    rows: list[dict[str, Any]],
+    title: str,
+    subtitle: str | None = None,
+    highlight_user_id: int | None = None,
+    max_items: int = 8,
+) -> bytes | None:
+    if plt is None:
+        return None
+
+    chart_rows = _select_compare_chart_rows(
+        rows,
+        max_items=max_items,
+        highlight_user_id=highlight_user_id,
+    )
+    if not chart_rows:
+        return None
+
+    labels = [_resolve_compare_chart_label(item) for item in chart_rows]
+    values = [float(item.get("final_score") or 0.0) for item in chart_rows]
+    if not values:
+        return None
+
+    highlight_id = None
+    if highlight_user_id is not None and any(int(item.get("user_id") or 0) == int(highlight_user_id) for item in chart_rows):
+        highlight_id = int(highlight_user_id)
+    elif chart_rows:
+        highlight_id = int(chart_rows[0].get("user_id") or 0)
+
+    row_count = len(chart_rows)
+    fig_height = max(4.6, min(8.8, 1.2 * row_count + 2.4))
+    fig, ax = plt.subplots(figsize=(10.8, fig_height), dpi=170)
+    outer_bg = "#efe2cd"
+    inner_bg = "#f8f1e5"
+    grid_color = "#d9cabb"
+    text_color = "#554636"
+    axis_color = "#8a7d70"
+    default_bar = "#5ddcff"
+    highlight_bar = "#ffd166"
+
+    fig.patch.set_facecolor(outer_bg)
+    ax.set_facecolor(inner_bg)
+
+    y_positions = list(range(row_count))
+    colors = [
+        highlight_bar if int(item.get("user_id") or 0) == int(highlight_id or 0) else default_bar
+        for item in chart_rows
+    ]
+    bars = ax.barh(y_positions, values, color=colors, height=0.55, edgecolor="none")
+
+    min_value = min(values)
+    max_value = max(values)
+    span = max(abs(min_value), abs(max_value), 1.0)
+    padding = max(8.0, span * 0.18)
+    left_limit = min(0.0, min_value - padding)
+    right_limit = max(0.0, max_value + padding)
+    if left_limit == right_limit:
+        right_limit = left_limit + 1.0
+
+    ax.set_xlim(left_limit, right_limit)
+    ax.set_ylim(-0.6, row_count - 0.4)
+    ax.axvline(0, color=axis_color, linewidth=1.5, alpha=0.9)
+    ax.grid(axis="x", color=grid_color, linestyle="-", linewidth=1, alpha=0.8)
+    ax.set_axisbelow(True)
+
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(labels, fontsize=15, color=text_color)
+    ax.tick_params(axis="y", length=0)
+    ax.tick_params(axis="x", colors=text_color, labelsize=13, length=0)
+    ax.invert_yaxis()
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    label_offset = max(1.4, (right_limit - left_limit) * 0.02)
+    for bar, value in zip(bars, values):
+        y_pos = bar.get_y() + bar.get_height() / 2.0
+        formatted = f"{value:.2f}"
+        if value >= 0:
+            x_pos = min(value + label_offset, right_limit - label_offset * 0.3)
+            ax.text(x_pos, y_pos, formatted, va="center", ha="left", fontsize=16, color=text_color, fontweight="medium")
+        else:
+            x_pos = max(value - label_offset, left_limit + label_offset * 0.3)
+            ax.text(x_pos, y_pos, formatted, va="center", ha="right", fontsize=16, color=text_color, fontweight="medium")
+
+    fig.text(0.055, 0.955, str(title or "").strip(), fontsize=20, fontweight="bold", color=text_color, ha="left", va="top")
+    if subtitle:
+        fig.text(0.055, 0.905, str(subtitle).strip(), fontsize=11.5, color="#7b6e62", ha="left", va="top")
+
+    fig.tight_layout(rect=[0.05, 0.07, 0.98, 0.9])
+    buff = BytesIO()
+    fig.savefig(buff, format="png", facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close(fig)
+    buff.seek(0)
+    return buff.read()
+
+
 def _send_group_audio(
     audio_bytes: bytes,
     filename: str,
@@ -15199,11 +15362,53 @@ def _resolve_analytics_scope_for_request(
     }
 
 
+def _resolve_webapp_analytics_bounds(
+    *,
+    period_value,
+    scope_user_ids: list[int],
+    start_date_raw=None,
+    end_date_raw=None,
+) -> tuple[str, date, date]:
+    raw_period = str(period_value or "week").strip().lower()
+    if raw_period == "half_year":
+        raw_period = "half-year"
+
+    start_date = _parse_iso_date(start_date_raw)
+    end_date = _parse_iso_date(end_date_raw)
+    if start_date_raw and not start_date:
+        raise ValueError("start_date must be an ISO date")
+    if end_date_raw and not end_date:
+        raise ValueError("end_date must be an ISO date")
+    if bool(start_date) ^ bool(end_date):
+        raise ValueError("start_date and end_date must be provided together")
+
+    if raw_period == "calendar":
+        if not start_date or not end_date:
+            raise ValueError("calendar period requires start_date and end_date")
+        if start_date > end_date:
+            raise ValueError("start_date must be before or equal to end_date")
+        return "calendar", start_date, end_date
+
+    normalized_period = _normalize_period(raw_period)
+    if start_date and end_date:
+        if start_date > end_date:
+            raise ValueError("start_date must be before or equal to end_date")
+        return normalized_period, start_date, end_date
+
+    if normalized_period == "all":
+        bounds = get_all_time_bounds_for_users(scope_user_ids)
+    else:
+        bounds = get_period_bounds(normalized_period)
+    return normalized_period, bounds.start_date, bounds.end_date
+
+
 @app.route("/api/webapp/analytics/summary", methods=["POST"])
 def get_webapp_analytics_summary():
     payload = request.get_json(silent=True) or {}
     init_data = _extract_request_init_data(payload)
     period = payload.get("period", "week")
+    start_date_raw = payload.get("start_date")
+    end_date_raw = payload.get("end_date")
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -15231,18 +15436,19 @@ def get_webapp_analytics_summary():
         return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
 
     try:
-        period = _normalize_period(period)
-        if period == "all":
-            bounds = get_all_time_bounds_for_users(scope_user_ids)
-        else:
-            bounds = get_period_bounds(period)
+        period, start_date, end_date = _resolve_webapp_analytics_bounds(
+            period_value=period,
+            scope_user_ids=scope_user_ids,
+            start_date_raw=start_date_raw,
+            end_date_raw=end_date_raw,
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
     summary = fetch_scope_summary(
         scope_user_ids,
-        bounds.start_date,
-        bounds.end_date,
+        start_date,
+        end_date,
         source_lang=source_lang,
         target_lang=target_lang,
     )
@@ -15251,8 +15457,8 @@ def get_webapp_analytics_summary():
             "ok": True,
             "period": {
                 "period": period,
-                "start_date": bounds.start_date.isoformat(),
-                "end_date": bounds.end_date.isoformat(),
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
             },
             "summary": summary,
             "scope": scope.get("effective_scope"),
@@ -15295,17 +15501,13 @@ def get_webapp_analytics_timeseries():
         logging.exception("analytics timeseries scope resolve failed for user_id=%s", user_id_int)
         return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
 
-    start_date = _parse_iso_date(start_date_raw)
-    end_date = _parse_iso_date(end_date_raw)
     try:
-        period = _normalize_period(period)
-        if not start_date or not end_date:
-            if period == "all":
-                bounds = get_all_time_bounds_for_users(scope_user_ids)
-            else:
-                bounds = get_period_bounds(period)
-            start_date = bounds.start_date
-            end_date = bounds.end_date
+        period, start_date, end_date = _resolve_webapp_analytics_bounds(
+            period_value=period,
+            scope_user_ids=scope_user_ids,
+            start_date_raw=start_date_raw,
+            end_date_raw=end_date_raw,
+        )
         granularity = _normalize_granularity(granularity)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -15368,17 +15570,13 @@ def get_webapp_analytics_compare():
         logging.exception("analytics compare scope resolve failed for user_id=%s", user_id_int)
         return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
 
-    start_date = _parse_iso_date(start_date_raw)
-    end_date = _parse_iso_date(end_date_raw)
     try:
-        period = _normalize_period(period)
-        if not start_date or not end_date:
-            if period == "all":
-                bounds = get_all_time_bounds_for_users(scope_user_ids)
-            else:
-                bounds = get_period_bounds(period)
-            start_date = bounds.start_date
-            end_date = bounds.end_date
+        period, start_date, end_date = _resolve_webapp_analytics_bounds(
+            period_value=period,
+            scope_user_ids=scope_user_ids,
+            start_date_raw=start_date_raw,
+            end_date_raw=end_date_raw,
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -24121,6 +24319,7 @@ def _dispatch_private_analytics(target_date: date) -> dict:
         if not is_telegram_user_allowed(user_id):
             continue
         try:
+            source_lang, target_lang, _profile = _get_user_language_pair(user_id)
             summary = fetch_user_summary(
                 user_id=user_id,
                 start_date=bounds.start_date,
@@ -24166,6 +24365,29 @@ def _dispatch_private_analytics(target_date: date) -> dict:
                         image_bytes=chart_png,
                         filename=f"analytics_{user_id}_{target_date.isoformat()}.png",
                         caption=f"📈 График прогресса за неделю\n{bounds.start_date} — {bounds.end_date}",
+                    )
+            if int(target_chat_id) >= 0:
+                compare_rows = fetch_comparison_leaderboard(
+                    bounds.start_date,
+                    bounds.end_date,
+                    limit=12,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    cohort_user_ids=[user_id],
+                )
+                compare_png = _build_compare_leaderboard_chart_png(
+                    rows=compare_rows,
+                    title="Сравнение по final score",
+                    subtitle=f"{source_lang.upper()} -> {target_lang.upper()} | {bounds.start_date} — {bounds.end_date}",
+                    highlight_user_id=user_id,
+                    max_items=8,
+                )
+                if compare_png:
+                    _send_private_photo(
+                        user_id=int(target_chat_id),
+                        image_bytes=compare_png,
+                        filename=f"analytics_compare_{user_id}_{target_date.isoformat()}.png",
+                        caption=f"📊 Сравнение по final score\n{bounds.start_date} — {bounds.end_date}",
                     )
             sent += 1
         except Exception as exc:
@@ -24441,7 +24663,29 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                WITH week_users AS (
+                WITH latest_translations AS (
+                    SELECT
+                        user_id,
+                        sentence_id,
+                        score,
+                        username
+                    FROM (
+                        SELECT
+                            t.user_id,
+                            t.sentence_id,
+                            t.score,
+                            t.username,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY t.user_id, t.sentence_id
+                                ORDER BY t.timestamp DESC, t.id DESC
+                            ) AS rn
+                        FROM bt_3_translations t
+                        JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                        WHERE ds.date BETWEEN %s AND %s
+                    ) ranked
+                    WHERE rn = 1
+                ),
+                week_users AS (
                     SELECT user_id
                     FROM (
                         SELECT DISTINCT p.user_id
@@ -24488,6 +24732,7 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                 translation_time AS (
                     SELECT
                         p.user_id,
+                        COALESCE(AVG({build_translation_session_minutes_sql('p')}), 0.0) AS avg_translation_minutes,
                         COALESCE(SUM({build_translation_session_minutes_sql('p')}), 0.0) AS translation_minutes
                     FROM bt_3_user_progress p
                     WHERE p.completed = TRUE
@@ -24572,20 +24817,32 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                       ) > %s
                     GROUP BY r.user_id
                 ),
-                score_base AS (
-                    SELECT
-                        t.user_id,
-                        t.score
-                    FROM bt_3_translations t
-                    JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
-                    WHERE ds.date BETWEEN %s AND %s
-                ),
                 score_agg AS (
                     SELECT
                         user_id,
                         COUNT(*) AS translations_count,
                         AVG(score) AS avg_score
-                    FROM score_base
+                    FROM latest_translations
+                    GROUP BY user_id
+                ),
+                daily_coverage AS (
+                    SELECT
+                        ds.user_id,
+                        ds.date,
+                        COUNT(DISTINCT ds.id) AS total_sentences,
+                        COUNT(DISTINCT lt.sentence_id) AS translated_sentences
+                    FROM bt_3_daily_sentences ds
+                    LEFT JOIN latest_translations lt
+                        ON lt.sentence_id = ds.id
+                       AND lt.user_id = ds.user_id
+                    WHERE ds.date BETWEEN %s AND %s
+                    GROUP BY ds.user_id, ds.date
+                ),
+                missed_agg AS (
+                    SELECT
+                        user_id,
+                        COALESCE(SUM(CASE WHEN translated_sentences < total_sentences THEN 1 ELSE 0 END), 0) AS missed_days
+                    FROM daily_coverage
                     GROUP BY user_id
                 ),
                 plan_days AS (
@@ -24610,11 +24867,13 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                     u.user_id,
                     COALESCE(NULLIF(n.username, ''), NULLIF(au.username, ''), '') AS username,
                     COALESCE(t.translation_minutes, 0.0) AS translation_minutes,
+                    COALESCE(t.avg_translation_minutes, 0.0) AS avg_translation_minutes,
                     COALESCE(a.agent_minutes, 0.0) AS agent_minutes,
                     COALESCE(r.reader_minutes, 0.0) AS reader_minutes,
                     COALESCE(s.avg_score, 0.0) AS avg_score,
                     COALESCE(s.translations_count, 0) AS translations_count,
-                    COALESCE(p.full_days_3plus, 0) AS full_days_3plus
+                    COALESCE(p.full_days_3plus, 0) AS full_days_3plus,
+                    COALESCE(m.missed_days, 0) AS missed_days
                 FROM week_users u
                 LEFT JOIN latest_name n ON n.user_id = u.user_id
                 LEFT JOIN bt_3_allowed_users au ON au.user_id = u.user_id
@@ -24623,9 +24882,12 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                 LEFT JOIN reader_time r ON r.user_id = u.user_id
                 LEFT JOIN score_agg s ON s.user_id = u.user_id
                 LEFT JOIN plan_agg p ON p.user_id = u.user_id
+                LEFT JOIN missed_agg m ON m.user_id = u.user_id
                 ORDER BY u.user_id ASC;
                 """,
                 (
+                    week_start,
+                    week_end,
                     week_start,
                     week_end,
                     week_start,
@@ -24657,11 +24919,13 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
         user_id = int(row[0] or 0)
         username = str(row[1] or "").strip()
         translation_minutes = max(0.0, float(row[2] or 0.0))
-        agent_minutes = max(0.0, float(row[3] or 0.0))
-        reader_minutes = max(0.0, float(row[4] or 0.0))
-        avg_score = max(0.0, float(row[5] or 0.0))
-        translations_count = max(0, int(row[6] or 0))
-        full_days_3plus = max(0, int(row[7] or 0))
+        avg_translation_minutes = max(0.0, float(row[3] or 0.0))
+        agent_minutes = max(0.0, float(row[4] or 0.0))
+        reader_minutes = max(0.0, float(row[5] or 0.0))
+        avg_score = max(0.0, float(row[6] or 0.0))
+        translations_count = max(0, int(row[7] or 0))
+        full_days_3plus = max(0, int(row[8] or 0))
+        missed_days = max(0, int(row[9] or 0))
         total_minutes = translation_minutes + agent_minutes + reader_minutes
         if total_minutes <= 0 and translations_count <= 0 and full_days_3plus <= 0:
             continue
@@ -24670,17 +24934,25 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                 "user_id": user_id,
                 "username": username,
                 "translation_minutes": round(translation_minutes, 1),
+                "avg_translation_minutes": round(avg_translation_minutes, 1),
                 "agent_minutes": round(agent_minutes, 1),
                 "reader_minutes": round(reader_minutes, 1),
                 "total_minutes": round(total_minutes, 1),
                 "avg_score": round(avg_score, 1),
                 "translations_count": translations_count,
                 "full_days_3plus": full_days_3plus,
+                "missed_days": missed_days,
+                "final_score": _calculate_final_score(
+                    avg_score=avg_score,
+                    avg_time_min=avg_translation_minutes,
+                    missed_days=missed_days,
+                ),
             }
         )
 
     normalized.sort(
         key=lambda item: (
+            float(item.get("final_score") or 0.0),
             float(item.get("total_minutes") or 0.0),
             float(item.get("avg_score") or 0.0),
             int(item.get("translations_count") or 0),
@@ -24697,9 +24969,9 @@ def _weekly_badges_payload(rows: list[dict]) -> dict:
         return {"leaderboard": [], "champion": None, "score_master": None, "streak_monsters": [], "growth_note": None}
     champion = rows[0]
     score_candidates = [
-        item for item in rows if int(item.get("translations_count") or 0) >= 5 and float(item.get("avg_score") or 0.0) > 0.0
+        item for item in rows if int(item.get("translations_count") or 0) >= 5 and float(item.get("final_score") or 0.0) != 0.0
     ]
-    score_master = max(score_candidates, key=lambda item: float(item.get("avg_score") or 0.0), default=None)
+    score_master = max(score_candidates, key=lambda item: float(item.get("final_score") or 0.0), default=None)
     streak_monsters = [item for item in rows if int(item.get("full_days_3plus") or 0) >= 5]
     growth_note = None
     if len(rows) >= 3:
@@ -24731,14 +25003,14 @@ def _format_weekly_badges_message(week_start: date, week_end: date, payload: dic
 
     lines = [
         f"🏁 Weekly leaderboard ({week_start.isoformat()} — {week_end.isoformat()})",
-        "Минуты = переводы + агент + читалка",
+        "Ranking по final score",
         "",
     ]
     for item in leaderboard[:5]:
         lines.append(
             f"{int(item.get('rank') or 0)}. {_format_weekly_user_label(item)}"
-            f" — {float(item.get('total_minutes') or 0.0):.1f} мин"
-            f" | score {float(item.get('avg_score') or 0.0):.1f}"
+            f" — final score {float(item.get('final_score') or 0.0):.1f}"
+            f" | {float(item.get('total_minutes') or 0.0):.1f} мин"
         )
     if not leaderboard:
         lines.append("Активных данных за неделю пока нет.")
@@ -24747,12 +25019,12 @@ def _format_weekly_badges_message(week_start: date, week_end: date, payload: dic
     if champion:
         lines.append(
             f"🥇 Champion der Woche: {_format_weekly_user_label(champion)}"
-            f" ({float(champion.get('total_minutes') or 0.0):.1f} мин)"
+            f" ({float(champion.get('final_score') or 0.0):.1f} final score)"
         )
     if score_master:
         lines.append(
-            f"🎯 Präzisionsmeister: {_format_weekly_user_label(score_master)}"
-            f" ({float(score_master.get('avg_score') or 0.0):.1f}/100, {int(score_master.get('translations_count') or 0)} переводов)"
+            f"🎯 Final-Score-Leader: {_format_weekly_user_label(score_master)}"
+            f" ({float(score_master.get('final_score') or 0.0):.1f}, {int(score_master.get('translations_count') or 0)} переводов)"
         )
     if streak_monsters:
         labels = ", ".join(_format_weekly_user_label(item) for item in streak_monsters[:3])
@@ -24803,6 +25075,7 @@ def _dispatch_weekly_group_badges(
             sorted_rows = sorted(
                 chat_rows,
                 key=lambda item: (
+                    float(item.get("final_score") or 0.0),
                     float(item.get("total_minutes") or 0.0),
                     float(item.get("avg_score") or 0.0),
                     int(item.get("translations_count") or 0),
@@ -25396,22 +25669,41 @@ def _fetch_group_daily_summary_rows(*, target_date: date, cohort_user_ids: list[
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
+                WITH latest_translations AS (
+                    SELECT
+                        user_id,
+                        sentence_id,
+                        score,
+                        username
+                    FROM (
+                        SELECT
+                            t.user_id,
+                            t.sentence_id,
+                            t.score,
+                            t.username,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY t.user_id, t.sentence_id
+                                ORDER BY t.timestamp DESC, t.id DESC
+                            ) AS rn
+                        FROM bt_3_translations t
+                        WHERE t.timestamp::date = %s
+                          AND t.user_id = ANY(%s)
+                    ) ranked
+                    WHERE rn = 1
+                )
                 SELECT
                     ds.user_id,
-                    COALESCE(NULLIF(BTRIM(MAX(t.username)), ''), NULLIF(BTRIM(MAX(au.username)), ''), '') AS username,
+                    COALESCE(NULLIF(BTRIM(MAX(lt.username)), ''), NULLIF(BTRIM(MAX(au.username)), ''), '') AS username,
                     COUNT(DISTINCT ds.id) AS total_sentences,
-                    COUNT(DISTINCT t.id) AS translated,
-                    COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id) AS missed,
+                    COUNT(DISTINCT lt.sentence_id) AS translated,
+                    COUNT(DISTINCT ds.id) - COUNT(DISTINCT lt.sentence_id) AS missed,
                     COALESCE(p.avg_time, 0) AS avg_time_minutes,
                     COALESCE(p.total_time, 0) AS total_time_minutes,
-                    COALESCE(AVG(t.score), 0) AS avg_score,
-                    COALESCE(AVG(t.score), 0)
-                        - COALESCE(p.avg_time, 0)
-                        - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) * 20) AS final_score
+                    COALESCE(AVG(lt.score), 0) AS avg_score
                 FROM bt_3_daily_sentences ds
-                LEFT JOIN bt_3_translations t
-                    ON ds.user_id = t.user_id
-                   AND ds.id = t.sentence_id
+                LEFT JOIN latest_translations lt
+                    ON ds.user_id = lt.user_id
+                   AND ds.id = lt.sentence_id
                 LEFT JOIN bt_3_allowed_users au
                     ON au.user_id = ds.user_id
                 LEFT JOIN (
@@ -25428,9 +25720,11 @@ def _fetch_group_daily_summary_rows(*, target_date: date, cohort_user_ids: list[
                 WHERE ds.date = %s
                   AND ds.user_id = ANY(%s)
                 GROUP BY ds.user_id, p.avg_time, p.total_time
-                ORDER BY final_score DESC, translated DESC, total_time_minutes DESC, ds.user_id ASC;
+                ORDER BY ds.user_id ASC;
                 """,
                 (
+                    target_date,
+                    normalized_user_ids,
                     target_date,
                     normalized_user_ids,
                     target_date,
@@ -25441,19 +25735,38 @@ def _fetch_group_daily_summary_rows(*, target_date: date, cohort_user_ids: list[
 
     result: list[dict[str, Any]] = []
     for row in rows:
+        missed = int(row[4] or 0)
+        avg_session_time_min = round(float(row[5] or 0.0), 1)
+        total_time_min = round(float(row[6] or 0.0), 1)
+        avg_score = round(float(row[7] or 0.0), 1)
+        missed_days = 1 if missed > 0 else 0
         result.append(
             {
                 "user_id": int(row[0] or 0),
                 "username": str(row[1] or "").strip(),
                 "total_sentences": int(row[2] or 0),
                 "translated": int(row[3] or 0),
-                "missed": int(row[4] or 0),
-                "avg_session_time_min": round(float(row[5] or 0.0), 1),
-                "total_time_min": round(float(row[6] or 0.0), 1),
-                "avg_score": round(float(row[7] or 0.0), 1),
-                "final_score": round(float(row[8] or 0.0), 1),
+                "missed": missed,
+                "missed_days": missed_days,
+                "avg_session_time_min": avg_session_time_min,
+                "total_time_min": total_time_min,
+                "avg_score": avg_score,
+                "final_score": _calculate_final_score(
+                    avg_score=avg_score,
+                    avg_time_min=avg_session_time_min,
+                    missed_days=missed_days,
+                ),
             }
         )
+    result.sort(
+        key=lambda item: (
+            float(item.get("final_score") or 0.0),
+            int(item.get("translated") or 0),
+            float(item.get("total_time_min") or 0.0),
+            -int(item.get("user_id") or 0),
+        ),
+        reverse=True,
+    )
     return result
 
 
@@ -25466,59 +25779,116 @@ def _fetch_group_weekly_summary_rows(*, week_start: date, week_end: date, cohort
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT
-                    t.user_id,
-                    COALESCE(NULLIF(BTRIM(MAX(t.username)), ''), NULLIF(BTRIM(MAX(au.username)), ''), '') AS username,
-                    COUNT(DISTINCT t.sentence_id) AS translated,
-                    COALESCE(AVG(t.score), 0) AS avg_score,
-                    COALESCE(p.avg_time, 0) AS avg_time_minutes,
-                    COALESCE(p.total_time, 0) AS total_time_minutes,
-                    GREATEST(
-                        0,
-                        (
-                            SELECT COUNT(*)
-                            FROM bt_3_daily_sentences ds
-                            WHERE ds.user_id = t.user_id
-                              AND ds.date BETWEEN %s AND %s
-                        ) - COUNT(DISTINCT t.sentence_id)
-                    ) AS missed,
-                    COALESCE(AVG(t.score), 0)
-                        - COALESCE(p.avg_time, 0)
-                        - (
-                            GREATEST(
-                                0,
-                                (
-                                    SELECT COUNT(*)
-                                    FROM bt_3_daily_sentences ds
-                                    WHERE ds.user_id = t.user_id
-                                      AND ds.date BETWEEN %s AND %s
-                                ) - COUNT(DISTINCT t.sentence_id)
-                            ) * 20
-                        ) AS final_score
-                FROM bt_3_translations t
-                LEFT JOIN bt_3_allowed_users au
-                    ON au.user_id = t.user_id
-                LEFT JOIN (
+                WITH latest_translations AS (
+                    SELECT
+                        user_id,
+                        sentence_id,
+                        score,
+                        username
+                    FROM (
+                        SELECT
+                            t.user_id,
+                            t.sentence_id,
+                            t.score,
+                            t.username,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY t.user_id, t.sentence_id
+                                ORDER BY t.timestamp DESC, t.id DESC
+                            ) AS rn
+                        FROM bt_3_translations t
+                        JOIN bt_3_daily_sentences ds ON ds.id = t.sentence_id
+                        WHERE ds.date BETWEEN %s AND %s
+                          AND t.user_id = ANY(%s)
+                    ) ranked
+                    WHERE rn = 1
+                ),
+                week_users AS (
+                    SELECT DISTINCT ds.user_id
+                    FROM bt_3_daily_sentences ds
+                    WHERE ds.date BETWEEN %s AND %s
+                      AND ds.user_id = ANY(%s)
+                ),
+                daily_coverage AS (
+                    SELECT
+                        ds.user_id,
+                        ds.date,
+                        COUNT(DISTINCT ds.id) AS total_sentences,
+                        COUNT(DISTINCT lt.sentence_id) AS translated_sentences
+                    FROM bt_3_daily_sentences ds
+                    LEFT JOIN latest_translations lt
+                        ON lt.sentence_id = ds.id
+                       AND lt.user_id = ds.user_id
+                    WHERE ds.date BETWEEN %s AND %s
+                      AND ds.user_id = ANY(%s)
+                    GROUP BY ds.user_id, ds.date
+                ),
+                missed_agg AS (
+                    SELECT
+                        user_id,
+                        COALESCE(SUM(total_sentences), 0) AS total_sentences,
+                        COALESCE(SUM(translated_sentences), 0) AS translated_sentences,
+                        COALESCE(SUM(GREATEST(total_sentences - translated_sentences, 0)), 0) AS missed_sentences,
+                        COALESCE(SUM(CASE WHEN translated_sentences < total_sentences THEN 1 ELSE 0 END), 0) AS missed_days
+                    FROM daily_coverage
+                    GROUP BY user_id
+                ),
+                progress_summary AS (
                     SELECT
                         user_id,
                         AVG({build_translation_session_minutes_sql('p')}) AS avg_time,
                         SUM({build_translation_session_minutes_sql('p')}) AS total_time
-                    FROM bt_3_user_progress
+                    FROM bt_3_user_progress p
                     WHERE completed = TRUE
                       AND start_time::date BETWEEN %s AND %s
                       AND user_id = ANY(%s)
                     GROUP BY user_id
-                ) p ON p.user_id = t.user_id
-                WHERE t.timestamp::date BETWEEN %s AND %s
-                  AND t.user_id = ANY(%s)
-                GROUP BY t.user_id, p.avg_time, p.total_time
-                ORDER BY final_score DESC, translated DESC, total_time_minutes DESC, t.user_id ASC;
+                ),
+                score_agg AS (
+                    SELECT
+                        user_id,
+                        COALESCE(AVG(score), 0) AS avg_score
+                    FROM latest_translations
+                    GROUP BY user_id
+                )
+                SELECT
+                    u.user_id,
+                    COALESCE(NULLIF(BTRIM(MAX(lt.username)), ''), NULLIF(BTRIM(MAX(au.username)), ''), '') AS username,
+                    COALESCE(m.translated_sentences, 0) AS translated,
+                    COALESCE(s.avg_score, 0) AS avg_score,
+                    COALESCE(p.avg_time, 0) AS avg_time_minutes,
+                    COALESCE(p.total_time, 0) AS total_time_minutes,
+                    COALESCE(m.missed_sentences, 0) AS missed,
+                    COALESCE(m.missed_days, 0) AS missed_days,
+                    COALESCE(m.total_sentences, 0) AS total_sentences
+                FROM week_users u
+                LEFT JOIN latest_translations lt
+                    ON lt.user_id = u.user_id
+                LEFT JOIN bt_3_allowed_users au
+                    ON au.user_id = u.user_id
+                LEFT JOIN progress_summary p
+                    ON p.user_id = u.user_id
+                LEFT JOIN score_agg s
+                    ON s.user_id = u.user_id
+                LEFT JOIN missed_agg m
+                    ON m.user_id = u.user_id
+                GROUP BY
+                    u.user_id,
+                    s.avg_score,
+                    p.avg_time,
+                    p.total_time,
+                    m.translated_sentences,
+                    m.missed_sentences,
+                    m.missed_days,
+                    m.total_sentences
+                ORDER BY u.user_id ASC;
                 """,
                 (
                     week_start,
                     week_end,
+                    normalized_user_ids,
                     week_start,
                     week_end,
+                    normalized_user_ids,
                     week_start,
                     week_end,
                     normalized_user_ids,
@@ -25531,18 +25901,40 @@ def _fetch_group_weekly_summary_rows(*, week_start: date, week_end: date, cohort
 
     result: list[dict[str, Any]] = []
     for row in rows:
+        translated = int(row[2] or 0)
+        avg_score = round(float(row[3] or 0.0), 1)
+        avg_session_time_min = round(float(row[4] or 0.0), 1)
+        total_time_min = round(float(row[5] or 0.0), 1)
+        missed = int(row[6] or 0)
+        missed_days = int(row[7] or 0)
+        total_sentences = int(row[8] or 0)
         result.append(
             {
                 "user_id": int(row[0] or 0),
                 "username": str(row[1] or "").strip(),
-                "translated": int(row[2] or 0),
-                "avg_score": round(float(row[3] or 0.0), 1),
-                "avg_session_time_min": round(float(row[4] or 0.0), 1),
-                "total_time_min": round(float(row[5] or 0.0), 1),
-                "missed": int(row[6] or 0),
-                "final_score": round(float(row[7] or 0.0), 1),
+                "total_sentences": total_sentences,
+                "translated": translated,
+                "avg_score": avg_score,
+                "avg_session_time_min": avg_session_time_min,
+                "total_time_min": total_time_min,
+                "missed": missed,
+                "missed_days": missed_days,
+                "final_score": _calculate_final_score(
+                    avg_score=avg_score,
+                    avg_time_min=avg_session_time_min,
+                    missed_days=missed_days,
+                ),
             }
         )
+    result.sort(
+        key=lambda item: (
+            float(item.get("final_score") or 0.0),
+            int(item.get("translated") or 0),
+            float(item.get("total_time_min") or 0.0),
+            -int(item.get("user_id") or 0),
+        ),
+        reverse=True,
+    )
     return result
 
 
@@ -25633,6 +26025,20 @@ def _dispatch_daily_group_summary(*, target_date: date, tz_name: str = TODAY_PLA
             labeled_rows = _apply_group_summary_labels(rows)
             text = _format_group_daily_summary_message(target_date=target_date, rows=labeled_rows)
             _send_group_message(text=text, chat_id=chat_id)
+            chart_png = _build_compare_leaderboard_chart_png(
+                rows=labeled_rows,
+                title="Итоги дня на текущий момент",
+                subtitle=target_date.isoformat(),
+                highlight_user_id=None,
+                max_items=8,
+            )
+            if chart_png:
+                _send_group_photo(
+                    image_bytes=chart_png,
+                    filename=f"group_daily_compare_{abs(chat_id)}_{target_date.isoformat()}.png",
+                    caption=f"📊 Диаграмма сравнения за день\n{target_date.isoformat()}",
+                    chat_id=chat_id,
+                )
             sent += 1
         except Exception as exc:
             errors.append(f"chat {chat_id}: {exc}")
@@ -25685,6 +26091,20 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
                 rows=labeled_rows,
             )
             _send_group_message(text=text, chat_id=chat_id)
+            chart_png = _build_compare_leaderboard_chart_png(
+                rows=labeled_rows,
+                title="Итоги недели на текущий момент",
+                subtitle=f"{bounds.start_date} — {bounds.end_date}",
+                highlight_user_id=None,
+                max_items=8,
+            )
+            if chart_png:
+                _send_group_photo(
+                    image_bytes=chart_png,
+                    filename=f"group_weekly_compare_{abs(chat_id)}_{bounds.end_date.isoformat()}.png",
+                    caption=f"📊 Диаграмма сравнения за неделю\n{bounds.start_date} — {bounds.end_date}",
+                    chat_id=chat_id,
+                )
             sent += 1
         except Exception as exc:
             errors.append(f"chat {chat_id}: {exc}")

@@ -25,6 +25,7 @@ from backend.openai_manager import (
     run_check_translation_story,
     run_check_story_guess_semantic,
 )
+from backend.analytics import _calculate_final_score
 from backend.database import (
     get_db_connection,
     get_db_connection_context,
@@ -5329,10 +5330,7 @@ def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
                     (COUNT(DISTINCT ds.id) - COUNT(DISTINCT lt.sentence_id)) AS missed,
                     COALESCE(progress_summary.avg_time, 0) AS avg_time_minutes,
                     COALESCE(progress_summary.total_time, 0) AS total_time_minutes,
-                    COALESCE(AVG(lt.score), 0) AS avg_score,
-                    COALESCE(AVG(lt.score), 0)
-                        - (COALESCE(progress_summary.avg_time, 0) * 1)
-                        - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT lt.sentence_id)) * 20) AS final_score
+                    COALESCE(AVG(lt.score), 0) AS avg_score
                 FROM bt_3_daily_sentences ds
                 LEFT JOIN latest_translations lt
                     ON ds.id = lt.sentence_id
@@ -5355,7 +5353,13 @@ def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
     if not row:
         return None
 
-    total_sentences, translated, missed, avg_minutes, total_minutes, avg_score, final_score = row
+    total_sentences, translated, missed, avg_minutes, total_minutes, avg_score = row
+    missed_days = 1 if int(missed or 0) > 0 else 0
+    final_score = _calculate_final_score(
+        avg_score=float(avg_score or 0.0),
+        avg_time_min=float(avg_minutes or 0.0),
+        missed_days=missed_days,
+    )
     display_name = username or f"user_{user_id}"
 
     return (

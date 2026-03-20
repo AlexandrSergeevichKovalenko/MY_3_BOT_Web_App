@@ -107,6 +107,34 @@ function formatEconomicsUnitsLabel(unitsType, uiLang) {
   return map[value] || value || 'units';
 }
 
+function formatDateInputValue(value) {
+  const date = value instanceof Date ? new Date(value) : new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  const yyyy = String(date.getFullYear());
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function addCalendarDays(value, days) {
+  const date = new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) {
+    return formatDateInputValue(new Date());
+  }
+  date.setDate(date.getDate() + Number(days || 0));
+  return formatDateInputValue(date);
+}
+
+function buildDefaultAnalyticsCalendarRange() {
+  const today = formatDateInputValue(new Date());
+  return {
+    startDate: addCalendarDays(today, -29),
+    endDate: today,
+  };
+}
+
 function isEditableElement(element) {
   if (!element || typeof element !== 'object') return false;
   const tagName = String(element.tagName || '').toUpperCase();
@@ -2248,6 +2276,63 @@ function AppInner() {
     return isAndroidTelegramClient || (isChromium && !isIOS);
   }, [isAndroidTelegramClient, isWebAppMode]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return undefined;
+
+    const rootStyle = document.documentElement?.style;
+    const viewport = window.visualViewport;
+    let frameId = null;
+
+    const applyViewportHeight = () => {
+      frameId = null;
+      const visualHeight = Number(viewport?.height || 0);
+      const innerHeight = Number(window.innerHeight || 0);
+      const clientHeight = Number(document.documentElement?.clientHeight || 0);
+      const nextHeight = Math.round(
+        visualHeight > 0
+          ? visualHeight
+          : Math.max(innerHeight, clientHeight, 0)
+      );
+      if (nextHeight > 0) {
+        rootStyle?.setProperty('--app-height', `${nextHeight}px`);
+      }
+    };
+
+    const requestViewportHeightUpdate = () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      frameId = window.requestAnimationFrame(applyViewportHeight);
+    };
+
+    requestViewportHeightUpdate();
+    window.addEventListener('resize', requestViewportHeightUpdate);
+    window.addEventListener('orientationchange', requestViewportHeightUpdate);
+    window.addEventListener('focus', requestViewportHeightUpdate);
+    document.addEventListener('visibilitychange', requestViewportHeightUpdate);
+    viewport?.addEventListener('resize', requestViewportHeightUpdate);
+    viewport?.addEventListener('scroll', requestViewportHeightUpdate);
+
+    if (typeof telegramApp?.onEvent === 'function') {
+      telegramApp.onEvent('viewportChanged', requestViewportHeightUpdate);
+    }
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      window.removeEventListener('resize', requestViewportHeightUpdate);
+      window.removeEventListener('orientationchange', requestViewportHeightUpdate);
+      window.removeEventListener('focus', requestViewportHeightUpdate);
+      document.removeEventListener('visibilitychange', requestViewportHeightUpdate);
+      viewport?.removeEventListener('resize', requestViewportHeightUpdate);
+      viewport?.removeEventListener('scroll', requestViewportHeightUpdate);
+      if (typeof telegramApp?.offEvent === 'function') {
+        telegramApp.offEvent('viewportChanged', requestViewportHeightUpdate);
+      }
+    };
+  }, [telegramApp]);
+
   const [browserAuthLoading, setBrowserAuthLoading] = useState(false);
   const [browserAuthError, setBrowserAuthError] = useState('');
   const [browserAuthBotUsername, setBrowserAuthBotUsername] = useState('');
@@ -2618,6 +2703,11 @@ function AppInner() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuMultiSelect, setMenuMultiSelect] = useState(false);
   const [analyticsPeriod, setAnalyticsPeriod] = useState('week');
+  const [analyticsCalendarOpen, setAnalyticsCalendarOpen] = useState(false);
+  const [analyticsCustomStartDate, setAnalyticsCustomStartDate] = useState('');
+  const [analyticsCustomEndDate, setAnalyticsCustomEndDate] = useState('');
+  const [analyticsCalendarDraftStartDate, setAnalyticsCalendarDraftStartDate] = useState('');
+  const [analyticsCalendarDraftEndDate, setAnalyticsCalendarDraftEndDate] = useState('');
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [analyticsError, setAnalyticsError] = useState('');
   const [analyticsSummary, setAnalyticsSummary] = useState(null);
@@ -2751,6 +2841,7 @@ function AppInner() {
   const timeoutAudioRef = useRef(null);
   const avatarInputRef = useRef(null);
   const analyticsRef = useRef(null);
+  const analyticsCalendarRef = useRef(null);
   const economicsRef = useRef(null);
   const billingRef = useRef(null);
   const assistantRef = useRef(null);
@@ -2773,6 +2864,29 @@ function AppInner() {
   const singleInstanceStopTtsRef = useRef(null);
   const singleInstancePauseTimersRef = useRef(null);
   const inlineToastTimeoutRef = useRef(null);
+
+  const analyticsCalendarRangeValid = Boolean(
+    analyticsCustomStartDate
+    && analyticsCustomEndDate
+    && analyticsCustomStartDate <= analyticsCustomEndDate
+  );
+  const analyticsCalendarDraftValid = Boolean(
+    analyticsCalendarDraftStartDate
+    && analyticsCalendarDraftEndDate
+    && analyticsCalendarDraftStartDate <= analyticsCalendarDraftEndDate
+  );
+  const analyticsCalendarLabel = useMemo(() => {
+    if (!analyticsCalendarRangeValid) {
+      return tr('Период не выбран', 'Zeitraum nicht gewaehlt');
+    }
+    const locale = uiLang === 'de' ? 'de-AT' : 'ru-RU';
+    const formatter = new Intl.DateTimeFormat(locale, {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+    return `${formatter.format(new Date(analyticsCustomStartDate))} - ${formatter.format(new Date(analyticsCustomEndDate))}`;
+  }, [analyticsCalendarRangeValid, analyticsCustomEndDate, analyticsCustomStartDate, tr, uiLang]);
   const readerSessionStartingRef = useRef(false);
   const readerStateSaveTimeoutRef = useRef(null);
   const readerTimerIntervalRef = useRef(null);
@@ -3659,7 +3773,8 @@ function AppInner() {
         : {};
       const actual = Math.max(0, Number(current.actual || 0));
       const goal = Math.max(0, Number(current.goal || 0));
-      const delta = actual - Math.max(0, Number(previous.actual || 0));
+      const previousActual = Math.max(0, Number(previous.actual || 0));
+      const delta = actual - previousActual;
       const completionPercent = goal > 0 ? Number(current.completion_percent || 0) : 0;
       const remaining = Math.max(0, goal - actual);
       return {
@@ -3667,9 +3782,12 @@ function AppInner() {
         title: meta.title,
         actual,
         goal,
+        previousActual,
         delta,
         completionPercent,
         remaining,
+        isBelowGoal: goal > 0 && actual < goal,
+        isBehindPrevious: delta < 0,
       };
     });
 
@@ -3678,11 +3796,16 @@ function AppInner() {
       .sort((a, b) => b.delta - a.delta)
       .slice(0, 2);
     const lagging = [...entries]
-      .filter((item) => item.goal > 0 || item.actual > 0)
+      .filter((item) => item.isBelowGoal || item.isBehindPrevious)
       .sort((a, b) => {
-        const aScore = a.goal > 0 ? a.completionPercent : a.delta;
-        const bScore = b.goal > 0 ? b.completionPercent : b.delta;
-        return aScore - bScore;
+        const aGoalSeverity = a.isBelowGoal ? Math.max(0, 100 - a.completionPercent) : 0;
+        const bGoalSeverity = b.isBelowGoal ? Math.max(0, 100 - b.completionPercent) : 0;
+        const aTrendSeverity = a.isBehindPrevious ? Math.abs(a.delta) : 0;
+        const bTrendSeverity = b.isBehindPrevious ? Math.abs(b.delta) : 0;
+        const severityDiff = (bGoalSeverity + bTrendSeverity) - (aGoalSeverity + aTrendSeverity);
+        if (severityDiff !== 0) return severityDiff;
+        if (a.isBelowGoal !== b.isBelowGoal) return a.isBelowGoal ? -1 : 1;
+        return a.delta - b.delta;
       })[0] || null;
 
     const improvedTitles = improved.map((item) => item.title);
@@ -17589,7 +17712,29 @@ function AppInner() {
     }
   };
 
-  const resolveAnalyticsGranularity = (periodValue) => {
+  const resolveAnalyticsGranularity = (periodValue, rangeOverride = null) => {
+    const resolvedRange = rangeOverride && typeof rangeOverride === 'object'
+      ? {
+        startDate: String(rangeOverride.startDate || '').trim(),
+        endDate: String(rangeOverride.endDate || '').trim(),
+      }
+      : {
+        startDate: analyticsCustomStartDate,
+        endDate: analyticsCustomEndDate,
+      };
+    if (
+      periodValue === 'calendar'
+      && resolvedRange.startDate
+      && resolvedRange.endDate
+      && resolvedRange.startDate <= resolvedRange.endDate
+    ) {
+      const start = new Date(resolvedRange.startDate);
+      const end = new Date(resolvedRange.endDate);
+      const diffDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
+      if (diffDays <= 31) return 'day';
+      if (diffDays <= 180) return 'week';
+      return 'month';
+    }
     switch (periodValue) {
       case 'day':
       case 'week':
@@ -17606,13 +17751,54 @@ function AppInner() {
     }
   };
 
-  const loadAnalytics = async (overridePeriod, overrideScopeKey) => {
+  const ensureAnalyticsCalendarDraftRange = useCallback(() => {
+    const fallback = buildDefaultAnalyticsCalendarRange();
+    setAnalyticsCalendarDraftStartDate(analyticsCustomStartDate || fallback.startDate);
+    setAnalyticsCalendarDraftEndDate(analyticsCustomEndDate || fallback.endDate);
+  }, [analyticsCustomEndDate, analyticsCustomStartDate]);
+
+  const openAnalyticsCalendar = useCallback(() => {
+    ensureAnalyticsCalendarDraftRange();
+    setAnalyticsCalendarOpen(true);
+  }, [ensureAnalyticsCalendarDraftRange]);
+
+  const applyAnalyticsCalendarRange = useCallback(() => {
+    if (!analyticsCalendarDraftValid) {
+      setAnalyticsError(tr('Выберите корректный диапазон дат для аналитики.', 'Waehle einen gueltigen Datumsbereich fuer die Analytik.'));
+      return;
+    }
+    setAnalyticsError('');
+    setAnalyticsCustomStartDate(analyticsCalendarDraftStartDate);
+    setAnalyticsCustomEndDate(analyticsCalendarDraftEndDate);
+    setAnalyticsCalendarOpen(false);
+  }, [
+    analyticsCalendarDraftEndDate,
+    analyticsCalendarDraftStartDate,
+    analyticsCalendarDraftValid,
+    tr,
+  ]);
+
+  const loadAnalytics = async (overridePeriod, overrideScopeKey, overrideRange = null) => {
     if (!initData) {
       setAnalyticsError(initDataMissingMsg);
       return;
     }
     const period = overridePeriod || analyticsPeriod;
-    const granularity = resolveAnalyticsGranularity(period);
+    const effectiveRange = overrideRange && typeof overrideRange === 'object'
+      ? {
+        startDate: String(overrideRange.startDate || '').trim(),
+        endDate: String(overrideRange.endDate || '').trim(),
+      }
+      : {
+        startDate: analyticsCustomStartDate,
+        endDate: analyticsCustomEndDate,
+      };
+    const useCalendarRange = period === 'calendar';
+    if (useCalendarRange && (!effectiveRange.startDate || !effectiveRange.endDate || effectiveRange.startDate > effectiveRange.endDate)) {
+      setAnalyticsError(tr('Выберите корректный диапазон дат для аналитики.', 'Waehle einen gueltigen Datumsbereich fuer die Analytik.'));
+      return;
+    }
+    const granularity = resolveAnalyticsGranularity(period, effectiveRange);
     const scope = parseAnalyticsScopeKey(overrideScopeKey || analyticsScopeKey);
     const scopeContext = buildAnalyticsScopeContextPayload();
     const payloadBase = {
@@ -17622,6 +17808,10 @@ function AppInner() {
       scope_kind: scope.scope_kind,
       scope_chat_id: scope.scope_chat_id,
     };
+    if (useCalendarRange) {
+      payloadBase.start_date = effectiveRange.startDate;
+      payloadBase.end_date = effectiveRange.endDate;
+    }
     if (Object.keys(scopeContext).length > 0) {
       payloadBase.scope_context = scopeContext;
     }
@@ -17837,9 +18027,37 @@ function AppInner() {
       return;
     }
     if (!flashcardsOnly && isSectionVisible('analytics')) {
+      if (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid) {
+        return;
+      }
       loadAnalytics(undefined, analyticsScopeKey);
     }
-  }, [initData, isWebAppMode, analyticsPeriod, analyticsScopeKey, selectedSections, flashcardsOnly]);
+  }, [
+    initData,
+    isWebAppMode,
+    analyticsPeriod,
+    analyticsScopeKey,
+    analyticsCustomEndDate,
+    analyticsCustomStartDate,
+    analyticsCalendarRangeValid,
+    selectedSections,
+    flashcardsOnly,
+  ]);
+
+  useEffect(() => {
+    if (!analyticsCalendarOpen) return undefined;
+    const handlePointerDown = (event) => {
+      const panel = analyticsCalendarRef.current;
+      if (!panel || panel.contains(event.target)) return;
+      setAnalyticsCalendarOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown, { passive: true });
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+    };
+  }, [analyticsCalendarOpen]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -22429,11 +22647,19 @@ function AppInner() {
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="analytics-controls">
-                  <label className="webapp-field">
+                  <label className="webapp-field analytics-period-field">
                     <span>{tr('Период', 'Zeitraum')}</span>
                     <select
                       value={analyticsPeriod}
-                      onChange={(event) => setAnalyticsPeriod(event.target.value)}
+                      onChange={(event) => {
+                        const nextValue = String(event.target.value || '').trim();
+                        setAnalyticsPeriod(nextValue);
+                        if (nextValue === 'calendar') {
+                          openAnalyticsCalendar();
+                          return;
+                        }
+                        setAnalyticsCalendarOpen(false);
+                      }}
                     >
                       <option value="day">{tr('День', 'Tag')}</option>
                       <option value="week">{tr('Неделя', 'Woche')}</option>
@@ -22442,7 +22668,63 @@ function AppInner() {
                       <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
                       <option value="year">{tr('Год', 'Jahr')}</option>
                       <option value="all">{tr('Все время', 'Gesamt')}</option>
+                      <option value="calendar">{tr('Календарь', 'Kalender')}</option>
                     </select>
+                    {analyticsPeriod === 'calendar' && (
+                      <div className="analytics-calendar-wrap" ref={analyticsCalendarRef}>
+                        <button
+                          type="button"
+                          className="secondary-button analytics-calendar-trigger"
+                          onClick={openAnalyticsCalendar}
+                        >
+                          {analyticsCalendarLabel}
+                        </button>
+                        {analyticsCalendarOpen && (
+                          <div className="analytics-calendar-popover">
+                            <label className="webapp-field analytics-calendar-field">
+                              <span>{tr('С даты', 'Von')}</span>
+                              <input
+                                type="date"
+                                value={analyticsCalendarDraftStartDate}
+                                max={analyticsCalendarDraftEndDate || undefined}
+                                onChange={(event) => setAnalyticsCalendarDraftStartDate(event.target.value)}
+                              />
+                            </label>
+                            <label className="webapp-field analytics-calendar-field">
+                              <span>{tr('По дату', 'Bis')}</span>
+                              <input
+                                type="date"
+                                value={analyticsCalendarDraftEndDate}
+                                min={analyticsCalendarDraftStartDate || undefined}
+                                onChange={(event) => setAnalyticsCalendarDraftEndDate(event.target.value)}
+                              />
+                            </label>
+                            {!analyticsCalendarDraftValid && (
+                              <div className="webapp-muted analytics-calendar-error">
+                                {tr('Выберите корректный диапазон дат.', 'Waehle einen gueltigen Datumsbereich.')}
+                              </div>
+                            )}
+                            <div className="analytics-calendar-actions">
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => setAnalyticsCalendarOpen(false)}
+                              >
+                                {tr('Закрыть', 'Schliessen')}
+                              </button>
+                              <button
+                                type="button"
+                                className="primary-button"
+                                onClick={applyAnalyticsCalendarRange}
+                                disabled={!analyticsCalendarDraftValid}
+                              >
+                                {tr('Применить', 'Anwenden')}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </label>
                   <label className="webapp-field analytics-scope-field">
                     <span>{tr('Режим участия', 'Teilnahme-Modus')}</span>
@@ -22462,7 +22744,7 @@ function AppInner() {
                     type="button"
                     className="secondary-button"
                     onClick={() => loadAnalytics(undefined, analyticsScopeKey)}
-                    disabled={analyticsLoading || analyticsScopeLoading || analyticsScopeSaving}
+                    disabled={analyticsLoading || analyticsScopeLoading || analyticsScopeSaving || (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid)}
                   >
                     {analyticsLoading ? tr('Считаем...', 'Berechnen...') : tr('Обновить', 'Aktualisieren')}
                   </button>
