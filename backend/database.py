@@ -14230,7 +14230,14 @@ def _get_product_active_users_count(
 ) -> int:
     provider_value = str(provider or "").strip().lower() or None
 
-    translation_providers = {"google_translate", "deepl_free", "azure_translator"}
+    translation_providers = {
+        "google_translate",
+        "deepl_free",
+        "azure_translator",
+        "mymemory",
+        "libretranslate",
+        "argos_offline",
+    }
     voice_providers = {"livekit", "openai", "agent_tts"}
     reader_providers = {
         "google_tts",
@@ -14315,6 +14322,7 @@ def _get_product_active_users_count(
         {reader_activity_union}
         """,
         (
+            period_start, period_end,
             period_start, period_end,
             period_start, period_end,
             period_start, period_end,

@@ -162,6 +162,7 @@ pending_language_tutor_input = {}
 pending_tts_budget_custom = {}
 TTS_BUDGET_CUSTOM_TTL_SECONDS = 60 * 5
 LANGUAGE_TUTOR_INPUT_TTL_SECONDS = 60 * 20
+LANGUAGE_TUTOR_BUTTON_TEXT = "💬 Спросить у GPT"
 TTS_PREWARM_QUOTA_MIN = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN") or "200").strip() or "200")))
 TTS_PREWARM_QUOTA_MAX = max(
     TTS_PREWARM_QUOTA_MIN,
@@ -313,88 +314,68 @@ class TrackingExtBot(ExtBot):
         return msg
 
     @staticmethod
-    def _extract_chat_id(args, kwargs) -> int | None:
-        candidate = kwargs.get("chat_id")
-        if candidate is None and args:
-            candidate = args[0]
-        try:
-            return int(candidate)
-        except Exception:
-            return None
-
-    @staticmethod
-    def _merge_language_tutor_button(reply_markup):
-        button = InlineKeyboardButton("Спросить у GPT", callback_data="langgpt:ask")
-        if reply_markup is None:
-            return InlineKeyboardMarkup([[button]])
-        if not isinstance(reply_markup, InlineKeyboardMarkup):
-            return reply_markup
-        rows = [list(row) for row in (reply_markup.inline_keyboard or [])]
-        for row in rows:
-            for item in row:
-                if getattr(item, "callback_data", "") == "langgpt:ask":
-                    return reply_markup
-        rows.append([button])
-        return InlineKeyboardMarkup(rows)
-
-    @classmethod
-    def _inject_language_tutor_button(cls, args, kwargs):
-        include_button = kwargs.pop("language_tutor_button", True)
-        if not include_button:
-            return args, kwargs
-        chat_id = cls._extract_chat_id(args, kwargs)
-        if chat_id is None or chat_id <= 0:
-            return args, kwargs
-        kwargs["reply_markup"] = cls._merge_language_tutor_button(kwargs.get("reply_markup"))
-        return args, kwargs
+    def _strip_internal_kwargs(kwargs):
+        kwargs.pop("language_tutor_button", None)
+        return kwargs
 
     async def send_message(self, *args, **kwargs):
-        args, kwargs = self._inject_language_tutor_button(args, kwargs)
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_message(*args, **kwargs)
         return await self._track_single(msg, "text")
 
     async def send_photo(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_photo(*args, **kwargs)
         return await self._track_single(msg, "photo")
 
     async def send_audio(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_audio(*args, **kwargs)
         return await self._track_single(msg, "audio")
 
     async def send_voice(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_voice(*args, **kwargs)
         return await self._track_single(msg, "voice")
 
     async def send_document(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_document(*args, **kwargs)
         return await self._track_single(msg, "document")
 
     async def send_video(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_video(*args, **kwargs)
         return await self._track_single(msg, "video")
 
     async def send_video_note(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_video_note(*args, **kwargs)
         return await self._track_single(msg, "video_note")
 
     async def send_animation(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_animation(*args, **kwargs)
         return await self._track_single(msg, "animation")
 
     async def send_sticker(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_sticker(*args, **kwargs)
         return await self._track_single(msg, "sticker")
 
     async def copy_message(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg_id = await super().copy_message(*args, **kwargs)
         # copy_message returns MessageId, not Message.
         return msg_id
 
     async def forward_message(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().forward_message(*args, **kwargs)
         return await self._track_single(msg, "forward")
 
     async def send_media_group(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         messages = await super().send_media_group(*args, **kwargs)
         if messages:
             for msg in messages:
@@ -402,6 +383,7 @@ class TrackingExtBot(ExtBot):
         return messages
 
     async def send_poll(self, *args, **kwargs):
+        kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_poll(*args, **kwargs)
         return await self._track_single(msg, "poll")
 
@@ -856,6 +838,9 @@ async def send_main_menu(update: Update, context: CallbackContext):
             "✅ Используйте mini app для переводов, аналитики, словаря и карточек.\n"
             f"Открыть: {webapp_url}",
             disable_web_page_preview=True,
+            reply_markup=_build_private_language_tutor_reply_keyboard()
+            if update.effective_chat and update.effective_chat.type == "private"
+            else None,
         )
         return
 
@@ -864,7 +849,8 @@ async def send_main_menu(update: Update, context: CallbackContext):
         ["🚀 Начать перевод", "✅ Завершить перевод"],
         ["📜 Проверить перевод", "🟡 Посмотреть свою статистику"],
         ["🎙 Начать урок", "👥 Групповой звонок"],
-        ["💬 Перейти в личку"]
+        ["💬 Перейти в личку"],
+        [LANGUAGE_TUTOR_BUTTON_TEXT],
     ]
     
     # создаем в словаре клю service_message_ids Список для хранения всех id Сообщений, Для того чтобы потом можно было их удалить после выполнения перевода
@@ -1071,6 +1057,45 @@ def _language_tutor_pair_for_user(user_id: int) -> tuple[str, str]:
         return "ru", "de"
 
 
+def _build_private_language_tutor_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[LANGUAGE_TUTOR_BUTTON_TEXT]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def _build_language_tutor_continue_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("❓ Задать вопрос", callback_data="langgpt:continue")]]
+    )
+
+
+async def _open_language_tutor_prompt(
+    message,
+    *,
+    user_id: int,
+    continue_from_last: bool = False,
+) -> None:
+    pending_language_tutor_input[int(user_id)] = {
+        "started_at": pytime.time(),
+        "continue_from_last": bool(continue_from_last),
+    }
+    prompt_suffix = (
+        "\n\nЯ учту контекст прошлого ответа."
+        if continue_from_last
+        else ""
+    )
+    await message.reply_text(
+        "💬 Напишите одним сообщением ваш вопрос по языку.\n\n"
+        "Можно спрашивать про грамматику, перевод, слова, артикли, времена, оттенки смысла и естественные формулировки.\n\n"
+        "Нельзя: вопросы не про язык.\n"
+        f"Для отмены напишите `cancel`.{prompt_suffix}",
+        parse_mode="Markdown",
+        reply_markup=_build_private_language_tutor_reply_keyboard(),
+    )
+
+
 def _extract_lookup_primary_target_text(lookup: dict) -> str:
     if not isinstance(lookup, dict):
         return ""
@@ -1179,15 +1204,11 @@ async def handle_language_tutor_callback(update: Update, context: CallbackContex
         await query.message.reply_text("Сначала получите доступ к боту, потом сможете задавать вопросы.")
         return
 
-    pending_language_tutor_input[int(query.from_user.id)] = {
-        "started_at": pytime.time(),
-    }
-    await query.message.reply_text(
-        "💬 Напишите одним сообщением ваш вопрос по языку.\n\n"
-        "Можно спрашивать про грамматику, перевод, слова, артикли, времена, оттенки смысла и естественные формулировки.\n\n"
-        "Нельзя: вопросы не про язык.\n"
-        "Для отмены напишите `cancel`.",
-        parse_mode="Markdown",
+    continue_from_last = str(query.data or "").strip() == "langgpt:continue"
+    await _open_language_tutor_prompt(
+        query.message,
+        user_id=int(query.from_user.id),
+        continue_from_last=continue_from_last,
     )
 
 
@@ -2555,6 +2576,15 @@ async def handle_button_click(update: Update, context: CallbackContext):
             )
         else:
             await update.message.reply_text("Не удалось получить имя бота.")
+    elif text == LANGUAGE_TUTOR_BUTTON_TEXT:
+        if update.effective_chat and update.effective_chat.type != "private":
+            await update.message.reply_text("Вопрос для GPT отправьте в личку с ботом.")
+            return
+        await _open_language_tutor_prompt(
+            update.message,
+            user_id=int(update.effective_user.id),
+            continue_from_last=False,
+        )
     
     elif text == "🎙 Начать урок":
         #frontend_url = "https://83df2cddf824.ngrok-free.app"
@@ -3125,16 +3155,34 @@ async def handle_user_message(update: Update, context: CallbackContext):
         started_at = float((pending_language_question or {}).get("started_at") or 0.0)
         if started_at > 0 and (pytime.time() - started_at) > LANGUAGE_TUTOR_INPUT_TTL_SECONDS:
             pending_language_tutor_input.pop(user_id, None)
-            await update.message.reply_text("Окно для вопроса истекло. Нажмите кнопку `Спросить у GPT` ещё раз.", parse_mode="Markdown")
+            await update.message.reply_text(
+                "Окно для вопроса истекло. Нажмите кнопку `Спросить у GPT` ещё раз.",
+                parse_mode="Markdown",
+                reply_markup=_build_private_language_tutor_reply_keyboard(),
+            )
+            return
+
+        if str(text or "").strip() == LANGUAGE_TUTOR_BUTTON_TEXT:
+            await _open_language_tutor_prompt(
+                update.message,
+                user_id=int(user_id),
+                continue_from_last=bool((pending_language_question or {}).get("continue_from_last")),
+            )
             return
 
         lowered = str(text or "").strip().lower()
         if lowered in {"cancel", "/cancel", "отмена"}:
             pending_language_tutor_input.pop(user_id, None)
-            await update.message.reply_text("Ок, отменил вопрос.")
+            await update.message.reply_text(
+                "Ок, отменил вопрос.",
+                reply_markup=_build_private_language_tutor_reply_keyboard(),
+            )
             return
 
-        await update.message.reply_text("⏳ Думаю над ответом...")
+        await update.message.reply_text(
+            "⏳ Думаю над ответом...",
+            reply_markup=_build_private_language_tutor_reply_keyboard(),
+        )
         try:
             source_lang, target_lang = _language_tutor_pair_for_user(int(user_id))
             llm_payload = {
@@ -3142,6 +3190,16 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 "source_language": source_lang,
                 "target_language": target_lang,
             }
+            continue_from_last = bool((pending_language_question or {}).get("continue_from_last"))
+            last_exchange = context.user_data.get("language_tutor_last_exchange")
+            if continue_from_last and isinstance(last_exchange, dict):
+                prev_question = str(last_exchange.get("question") or "").strip()
+                prev_answer = str(last_exchange.get("answer") or "").strip()
+                if prev_question and prev_answer:
+                    llm_payload["conversation_context"] = {
+                        "previous_question": prev_question,
+                        "previous_answer": prev_answer,
+                    }
             llm_response = await run_language_learning_private_question(llm_payload)
             is_language_question = bool(llm_response.get("is_language_question"))
             answer = str(llm_response.get("answer") or "").strip()
@@ -3150,13 +3208,23 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 answer = _language_tutor_default_refusal() if not is_language_question else "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
             if not is_language_question and suggested_rephrase:
                 answer = f"{answer}\n\nНапример:\n{suggested_rephrase}"
+            context.user_data["language_tutor_last_exchange"] = {
+                "question": str(text or "").strip(),
+                "answer": answer,
+                "is_language_question": bool(is_language_question),
+                "updated_at": pytime.time(),
+            }
             await update.message.reply_text(
                 _truncate_telegram_reply_text(answer, max_chars=3000),
                 disable_web_page_preview=True,
+                reply_markup=_build_language_tutor_continue_keyboard(),
             )
         except Exception:
             logging.exception("❌ Ошибка language tutor answer user_id=%s", user_id)
-            await update.message.reply_text("Не удалось подготовить ответ. Попробуйте чуть позже.")
+            await update.message.reply_text(
+                "Не удалось подготовить ответ. Попробуйте чуть позже.",
+                reply_markup=_build_private_language_tutor_reply_keyboard(),
+            )
         finally:
             pending_language_tutor_input.pop(user_id, None)
         return
@@ -3182,6 +3250,13 @@ async def handle_user_message(update: Update, context: CallbackContext):
             )
         add_service_msg_id(context, msg.message_id)
     else:
+        if update.effective_chat and update.effective_chat.type == "private" and text == LANGUAGE_TUTOR_BUTTON_TEXT:
+            await _open_language_tutor_prompt(
+                update.message,
+                user_id=int(user_id),
+                continue_from_last=False,
+            )
+            return
         if _is_menu_button_text(text):
             await handle_button_click(update, context)
             return
@@ -3202,6 +3277,7 @@ def _is_menu_button_text(text: str) -> bool:
         "📜 Проверить перевод",
         "💬 Перейти в личку",
         "🎙 Начать урок",
+        LANGUAGE_TUTOR_BUTTON_TEXT,
     }
 
 
@@ -10627,7 +10703,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_option_callback, pattern=r"^dictsaveopt:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
     application.add_handler(CallbackQueryHandler(handle_group_enrollment_callback, pattern=r"^groupenroll:confirm$"))
-    application.add_handler(CallbackQueryHandler(handle_language_tutor_callback, pattern=r"^langgpt:ask$"))
+    application.add_handler(CallbackQueryHandler(handle_language_tutor_callback, pattern=r"^langgpt:(ask|continue)$"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_translation_from_text, block=False), group=1)  # ✅ Проверяем переводы

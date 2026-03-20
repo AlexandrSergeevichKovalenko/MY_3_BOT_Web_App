@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from psycopg2.extras import Json
 
-from backend.database import get_global_billing_summary, log_billing_event
+from backend.database import _get_product_active_users_count, get_global_billing_summary, log_billing_event
 
 
 class _DummyCursor:
@@ -178,6 +178,40 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(summary["totals"]["variable_cost_total"], 0.0)
         self.assertEqual(summary["totals"]["events_count"], 0)
         self.assertEqual(summary["totals"]["unpriced_events"], 0)
+
+    def test_product_active_users_count_treats_mymemory_as_translation_provider(self):
+        cursor = _DummyCursor([
+            (7,),
+        ])
+
+        count = _get_product_active_users_count(
+            cursor,
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 3, 20),
+            provider="mymemory",
+        )
+
+        self.assertEqual(count, 7)
+        self.assertEqual(len(cursor.executed), 1)
+        _, params = cursor.executed[0]
+        self.assertEqual(len(params), 6)
+
+    def test_product_active_users_count_unknown_provider_uses_full_union_param_set(self):
+        cursor = _DummyCursor([
+            (3,),
+        ])
+
+        count = _get_product_active_users_count(
+            cursor,
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 3, 20),
+            provider="stripe",
+        )
+
+        self.assertEqual(count, 3)
+        self.assertEqual(len(cursor.executed), 1)
+        _, params = cursor.executed[0]
+        self.assertEqual(len(params), 12)
 
 
 if __name__ == "__main__":

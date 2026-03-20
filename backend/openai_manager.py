@@ -949,7 +949,11 @@ Input JSON:
 {
   "learner_question": "...",
   "source_language": "ru|en|de|es|it",
-  "target_language": "ru|en|de|es|it"
+  "target_language": "ru|en|de|es|it",
+  "conversation_context": {
+    "previous_question": "...",
+    "previous_answer": "..."
+  }
 }
 
 Return STRICT JSON only with this schema:
@@ -965,6 +969,8 @@ Rules:
 - For off-topic questions, answer briefly that you only answer language-learning questions.
 - For off-topic questions, suggested_rephrase must contain one short valid example question.
 - For on-topic questions, answer directly, practically, and concisely.
+- If conversation_context is present and the learner asks a short follow-up like "why?", "and examples?", "what is the difference?", use the previous exchange to resolve references.
+- Use conversation_context only to continue the same language-learning discussion; do not invent missing facts beyond the previous exchange.
 - Use short examples when useful.
 - Answer in the same language as the learner question when reasonable; otherwise use source_language.
 - Do not use markdown tables.
