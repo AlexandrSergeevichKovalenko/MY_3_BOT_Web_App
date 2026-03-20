@@ -363,6 +363,14 @@ def _filter_sentences_for_level(items: list[str], level: str | None) -> list[str
     return accepted
 
 
+def _get_recent_sentence_reuse_lookback_days() -> int:
+    raw_value = str(os.getenv("TRANSLATION_SENTENCE_RECENT_REUSE_LOOKBACK_DAYS") or "3").strip()
+    try:
+        return max(0, min(30, int(raw_value)))
+    except Exception:
+        return 3
+
+
 def _is_legacy_ru_de_pair(source_lang: str | None, target_lang: str | None) -> bool:
     return (source_lang or "").strip().lower() == "ru" and (target_lang or "").strip().lower() == "de"
 
@@ -2169,6 +2177,12 @@ async def get_original_sentences_webapp(
     level_key = _normalize_level(level)
     resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
     focus_kind = str(resolved_focus.get("kind") or "").strip().lower()
+    recent_sentence_keys = _get_recently_served_sentence_keys_with_cursor(
+        cursor,
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     skill_catalog = _load_skill_catalog_with_cursor(
         cursor,
         target_lang=target_lang,
@@ -2182,6 +2196,7 @@ async def get_original_sentences_webapp(
         source_lang=source_lang,
         target_lang=target_lang,
         resolved_focus=resolved_focus,
+        recent_sentence_keys=recent_sentence_keys,
     )
     num_sentences = 7 - len(sentence_entries)
     if num_sentences > 0:
@@ -2191,6 +2206,17 @@ async def get_original_sentences_webapp(
             target_count=num_sentences,
             skill_catalog=skill_catalog,
             focus_hint=generation_profile_seed,
+        )
+        generated_entries = _filter_sentence_entries_for_session(
+            generated_entries,
+            level=level_key,
+            excluded_sentence_keys=recent_sentence_keys.union(
+                {
+                    _normalize_sentence_text_key(str(item.get("sentence") or ""))
+                    for item in sentence_entries
+                    if str(item.get("sentence") or "").strip()
+                }
+            ),
         )
         if generated_entries and focus_kind == "preset":
             _upsert_shared_sentence_pool_entries_with_cursor(
@@ -2211,6 +2237,17 @@ async def get_original_sentences_webapp(
             target_count=needed,
             skill_catalog=skill_catalog,
             focus_hint=generation_profile_seed,
+        )
+        extra_entries = _filter_sentence_entries_for_session(
+            extra_entries,
+            level=level_key,
+            excluded_sentence_keys=recent_sentence_keys.union(
+                {
+                    _normalize_sentence_text_key(str(item.get("sentence") or ""))
+                    for item in sentence_entries
+                    if str(item.get("sentence") or "").strip()
+                }
+            ),
         )
         if not extra_entries:
             break
@@ -2236,17 +2273,28 @@ def _collect_seed_sentence_entries_with_cursor(
     source_lang: str,
     target_lang: str,
     resolved_focus: dict[str, Any],
+    recent_sentence_keys: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     focus_kind = str(resolved_focus.get("kind") or "").strip().lower()
+    blocked_sentence_keys = set(recent_sentence_keys or set())
 
     sentence_entries: list[dict[str, Any]] = []
     if focus_kind not in {"preset", "custom"}:
         cursor.execute("SELECT sentence FROM bt_3_sentences ORDER BY RANDOM() LIMIT 20;")
-        rows = _filter_sentences_for_level([row[0] for row in cursor.fetchall()], level_key)[:1]
+        rows = [
+            sentence
+            for sentence in _filter_sentences_for_level([row[0] for row in cursor.fetchall()], level_key)
+            if _normalize_sentence_text_key(sentence) not in blocked_sentence_keys
+        ][:1]
         sentence_entries = [{"sentence": str(sentence or "").strip(), "tested_skill_profile": []} for sentence in rows if str(sentence or "").strip()]
 
     already_given_sentence_ids = set()
-    unique_sentences = set()
+    seen_sentence_keys = set(blocked_sentence_keys)
+    seen_sentence_keys.update(
+        _normalize_sentence_text_key(str(item.get("sentence") or ""))
+        for item in sentence_entries
+        if str(item.get("sentence") or "").strip()
+    )
     if focus_kind != "custom":
         cursor.execute(
             """
@@ -2257,30 +2305,34 @@ def _collect_seed_sentence_entries_with_cursor(
                 COALESCE(NULLIF(sub_category, ''), 'Unclassified mistake') AS sub_category
             FROM bt_3_detailed_mistakes
             WHERE user_id = %s
-            ORDER BY mistake_count DESC, last_seen ASC;
+            ORDER BY mistake_count DESC, COALESCE(last_seen, added_data, NOW()) ASC;
             """,
             (user_id,),
         )
         for sentence, sentence_id, main_category, sub_category in cursor.fetchall() or []:
+            normalized_sentence = " ".join(str(sentence or "").strip().split())
+            sentence_key = _normalize_sentence_text_key(normalized_sentence)
             if focus_kind == "preset" and not focus_matches_error_pair(resolved_focus, main_category, sub_category):
                 continue
-            if not sentence_id or sentence_id in already_given_sentence_ids or sentence_id in unique_sentences:
+            if not normalized_sentence or not _sentence_fits_level(normalized_sentence, level_key):
                 continue
-            unique_sentences.add(sentence_id)
+            if not sentence_id or sentence_id in already_given_sentence_ids or sentence_key in seen_sentence_keys:
+                continue
             already_given_sentence_ids.add(sentence_id)
             sentence_entries.append(
                 {
-                    "sentence": str(sentence or "").strip(),
+                    "sentence": normalized_sentence,
                     "tested_skill_profile": _build_remediation_profile_with_cursor(
                         cursor,
                         user_id=int(user_id),
                         sentence_id_for_mistake=int(sentence_id),
                         target_lang=target_lang,
                         source_lang=source_lang,
-                        sentence_text=str(sentence or "").strip(),
+                        sentence_text=normalized_sentence,
                     ),
                 }
             )
+            seen_sentence_keys.add(sentence_key)
             if len([item for item in sentence_entries if item.get("tested_skill_profile")]) >= 5:
                 break
 
@@ -2292,16 +2344,90 @@ def _collect_seed_sentence_entries_with_cursor(
             level=level_key,
             source_lang=source_lang,
             target_lang=target_lang,
-            exclude_sentences={str(item.get("sentence") or "") for item in sentence_entries},
+            exclude_sentences=(
+                {str(item.get("sentence") or "") for item in sentence_entries}
+                | blocked_sentence_keys
+            ),
             limit=num_sentences,
         )
         if pooled_entries:
-            sentence_entries = _normalize_sentence_entries(sentence_entries + pooled_entries)
+            sentence_entries = _normalize_sentence_entries(
+                sentence_entries
+                + _filter_sentence_entries_for_session(
+                    pooled_entries,
+                    level=level_key,
+                    excluded_sentence_keys=seen_sentence_keys,
+                )
+            )
     return sentence_entries[:7]
 
 
 def _normalize_sentence_text_key(sentence: str) -> str:
     return " ".join(str(sentence or "").strip().split()).lower()
+
+
+def _get_recently_served_sentence_keys_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    limit: int = 50,
+) -> set[str]:
+    lookback_days = _get_recent_sentence_reuse_lookback_days()
+    if lookback_days <= 0:
+        return set()
+    safe_limit = max(1, int(limit or 50))
+    cursor.execute(
+        """
+        SELECT sentence
+        FROM bt_3_daily_sentences
+        WHERE user_id = %s
+          AND COALESCE(source_lang, 'ru') = %s
+          AND COALESCE(target_lang, 'de') = %s
+          AND date >= (CURRENT_DATE - (%s::int * INTERVAL '1 day'))::date
+        ORDER BY date DESC, unique_id DESC, id DESC
+        LIMIT %s;
+        """,
+        (
+            int(user_id),
+            str(source_lang or "").strip().lower() or "ru",
+            str(target_lang or "").strip().lower() or "de",
+            int(lookback_days),
+            safe_limit,
+        ),
+    )
+    rows = cursor.fetchall() or []
+    return {
+        _normalize_sentence_text_key(row[0])
+        for row in rows
+        if row and row[0] and _normalize_sentence_text_key(row[0])
+    }
+
+
+def _filter_sentence_entries_for_session(
+    sentence_entries: list[dict[str, Any]] | None,
+    *,
+    level: str | None,
+    excluded_sentence_keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    filtered_entries: list[dict[str, Any]] = []
+    seen_sentence_keys = set(excluded_sentence_keys or set())
+    for entry in _normalize_sentence_entries(list(sentence_entries or [])):
+        sentence = str(entry.get("sentence") or "").strip()
+        sentence_key = _normalize_sentence_text_key(sentence)
+        if not sentence or not sentence_key or sentence_key in seen_sentence_keys:
+            continue
+        if not _sentence_fits_level(sentence, level):
+            continue
+        filtered_entries.append(
+            {
+                "sentence": sentence,
+                "tested_skill_profile": list(entry.get("tested_skill_profile") or []),
+            }
+        )
+        seen_sentence_keys.add(sentence_key)
+    return filtered_entries
 
 
 def _get_session_sentence_keys_with_cursor(

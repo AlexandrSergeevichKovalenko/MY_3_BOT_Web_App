@@ -17223,18 +17223,24 @@ def start_today_translation_item(item_id: int):
     skill_title = str(task_payload.get("skill_title") or "").strip()
     sub_category = str(task_payload.get("sub_category") or "").strip()
     main_category = str(task_payload.get("main_category") or "").strip()
+    recommended_topic_label = str(task_payload.get("recommended_topic_label") or "").strip()
+    recommended_custom_focus = str(task_payload.get("recommended_custom_focus") or "").strip()
     topic_label = sub_category or skill_title or main_category or "Weak skill practice"
     if skill_title and sub_category:
         topic_label = f"{skill_title}: {sub_category}"
     elif skill_title and not sub_category:
         topic_label = skill_title
+    resolved_focus = resolve_webapp_focus(
+        recommended_topic_label or topic_label,
+        recommended_custom_focus,
+    )
 
     try:
         session = asyncio.run(
             start_translation_session_webapp(
                 user_id=int(user_id),
                 username=username,
-                topic=topic_label,
+                topic=str(resolved_focus.get("prompt_topic") or topic_label).strip() or topic_label,
                 level=level,
                 source_lang=source_lang,
                 target_lang=target_lang,
@@ -17249,6 +17255,7 @@ def start_today_translation_item(item_id: int):
                     if skill_id
                     else None
                 ),
+                grammar_focus=resolved_focus,
             )
         )
     except Exception as exc:

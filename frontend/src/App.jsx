@@ -11488,7 +11488,7 @@ function AppInner() {
         });
         return;
       }
-      const shouldContinue = readyCount < expectedTotal && attempts < 24;
+      const shouldContinue = readyCount < expectedTotal && attempts < 72;
       setTranslationProgressiveFill({
         active: shouldContinue,
         sessionId: String(sessionId || '').trim() || null,
