@@ -164,6 +164,1323 @@ function formatAnalyticsCalendarDisplayDate(value, locale = 'ru-RU') {
   }).format(safeDate);
 }
 
+const SKILL_CATEGORY_LOCALIZATION = {
+  'Verbs': { ru: 'Глаголы', de: 'Verben' },
+  'Tenses': { ru: 'Времена', de: 'Zeiten' },
+  'Prepositions': { ru: 'Предлоги', de: 'Praepositionen' },
+  'Conjunctions': { ru: 'Союзы', de: 'Konnektoren' },
+  'Word Order': { ru: 'Порядок слов', de: 'Wortstellung' },
+  'Cases': { ru: 'Падежи', de: 'Faelle' },
+  'Articles & Determiners': { ru: 'Артикли и определители', de: 'Artikel und Begleiter' },
+  'Pronouns': { ru: 'Местоимения', de: 'Pronomen' },
+  'Nouns': { ru: 'Существительные', de: 'Nomen' },
+  'Adjectives': { ru: 'Прилагательные', de: 'Adjektive' },
+  'Adverbs': { ru: 'Наречия', de: 'Adverbien' },
+  'Negation': { ru: 'Отрицание', de: 'Negation' },
+  'Particles': { ru: 'Частицы', de: 'Partikeln' },
+  'Moods': { ru: 'Наклонение', de: 'Modus' },
+  'Voice (Active/Passive)': { ru: 'Актив и пассив', de: 'Aktiv und Passiv' },
+  'Clauses & Sentence Types': { ru: 'Типы предложений', de: 'Satztypen' },
+  'Infinitive & Participles': { ru: 'Инфинитив и причастия', de: 'Infinitiv und Partizipien' },
+  'Orthography & Spelling': { ru: 'Орфография', de: 'Rechtschreibung' },
+  'Punctuation': { ru: 'Пунктуация', de: 'Zeichensetzung' },
+};
+
+const SKILL_SEGMENT_LOCALIZATION = {
+  'Gendered Articles': { ru: 'род и артикль', de: 'Genus und Artikel' },
+  'Pluralization': { ru: 'множественное число', de: 'Plural' },
+  'Compound Nouns': { ru: 'сложные существительные', de: 'Komposita' },
+  'Declension Errors': { ru: 'склонение существительных', de: 'Deklination' },
+  'Nominative': { ru: 'Nominativ', de: 'Nominativ' },
+  'Accusative': { ru: 'Akkusativ', de: 'Akkusativ' },
+  'Dative': { ru: 'Dativ', de: 'Dativ' },
+  'Genitive': { ru: 'Genitiv', de: 'Genitiv' },
+  'Akkusativ + Preposition': { ru: 'Akkusativ с предлогом', de: 'Akkusativ mit Praeposition' },
+  'Dative + Preposition': { ru: 'Dativ с предлогом', de: 'Dativ mit Praeposition' },
+  'Genitive + Preposition': { ru: 'Genitiv с предлогом', de: 'Genitiv mit Praeposition' },
+  'Placement': { ru: 'порядок глагола', de: 'Verbstellung' },
+  'Conjugation': { ru: 'спряжение', de: 'Konjugation' },
+  'Weak Verbs': { ru: 'слабые глаголы', de: 'schwache Verben' },
+  'Strong Verbs': { ru: 'сильные глаголы', de: 'starke Verben' },
+  'Mixed Verbs': { ru: 'смешанные глаголы', de: 'gemischte Verben' },
+  'Separable Verbs': { ru: 'отделяемые глаголы', de: 'trennbare Verben' },
+  'Reflexive Verbs': { ru: 'возвратные глаголы', de: 'reflexive Verben' },
+  'Incorrect Preposition Usage': { ru: 'выбор предлога', de: 'passende Praeposition' },
+  'Preposition Choice': { ru: 'выбор предлога', de: 'passende Praeposition' },
+  'Verb Placement in Main Clause': { ru: 'глагол в главном предложении', de: 'Verb im Hauptsatz' },
+  'Verb Placement in Subordinate Clause': { ru: 'глагол в придаточном', de: 'Verb im Nebensatz' },
+  'Verb-Second Rule (V2)': { ru: 'правило V2', de: 'V2-Regel' },
+  'Verb-Second Rule': { ru: 'правило V2', de: 'V2-Regel' },
+  'Word Order with Modal Verb': { ru: 'порядок слов с модальным глаголом', de: 'Wortstellung mit Modalverb' },
+  'Incorrect Order with Modal Verb': { ru: 'порядок слов с модальным глаголом', de: 'Wortstellung mit Modalverb' },
+  'Subordinate Clause Order': { ru: 'порядок слов в придаточном', de: 'Nebensatzstellung' },
+  'Incorrect Order in Subordinate Clause': { ru: 'порядок слов в придаточном', de: 'Nebensatzstellung' },
+  'Time, Manner, Place Order': { ru: 'порядок время-образ-место', de: 'Zeit-Art-Ort' },
+  'Future 1': { ru: 'Futur I', de: 'Futur I' },
+  'Future 1 (Futur I)': { ru: 'Futur I', de: 'Futur I' },
+  'Future 2': { ru: 'Futur II', de: 'Futur II' },
+  'Future 2 (Futur II)': { ru: 'Futur II', de: 'Futur II' },
+  'Present': { ru: 'Präsens', de: 'Praesens' },
+  'Present (Präsens)': { ru: 'Präsens', de: 'Praesens' },
+  'Past': { ru: 'прошедшее время', de: 'Vergangenheit' },
+  'Simple Past (Präteritum)': { ru: 'Präteritum', de: 'Praeteritum' },
+  'Simple Past': { ru: 'Präteritum', de: 'Praeteritum' },
+  'Present Perfect (Perfekt)': { ru: 'Perfekt', de: 'Perfekt' },
+  'Present Perfect': { ru: 'Perfekt', de: 'Perfekt' },
+  'Past Perfect (Plusquamperfekt)': { ru: 'Plusquamperfekt', de: 'Plusquamperfekt' },
+  'Past Perfect': { ru: 'Plusquamperfekt', de: 'Plusquamperfekt' },
+  'Future': { ru: 'будущее время', de: 'Futur' },
+  'Plusquamperfekt Passive': { ru: 'Passiv в Plusquamperfekt', de: 'Plusquamperfekt Passiv' },
+  'Futur 1 Passive': { ru: 'Passiv в Futur I', de: 'Futur I Passiv' },
+  'Futur 2 Passive': { ru: 'Passiv в Futur II', de: 'Futur II Passiv' },
+  'Endings': { ru: 'окончания прилагательных', de: 'Adjektivendungen' },
+  'Weak Declension': { ru: 'слабое склонение', de: 'schwache Deklination' },
+  'Strong Declension': { ru: 'сильное склонение', de: 'starke Deklination' },
+  'Mixed Declension': { ru: 'смешанное склонение', de: 'gemischte Deklination' },
+  'Comparative': { ru: 'сравнительная степень', de: 'Komparativ' },
+  'Superlative': { ru: 'превосходная степень', de: 'Superlativ' },
+  'Incorrect Adjective Case Agreement': { ru: 'согласование прилагательного', de: 'Kasuskongruenz beim Adjektiv' },
+  'Adverb Placement': { ru: 'место наречия', de: 'Stellung des Adverbs' },
+  'Multiple Adverbs': { ru: 'несколько наречий', de: 'mehrere Adverbien' },
+  'Multiple Adverbs (TEKAMOLO)': { ru: 'несколько наречий', de: 'mehrere Adverbien' },
+  'Incorrect Adverb Usage': { ru: 'употребление наречия', de: 'passendes Adverb' },
+  'Correlative Conjunctions (entweder...oder / sowohl...als auch)': { ru: 'парные союзы', de: 'paarige Konjunktionen' },
+  'Coordinating (und/aber/oder/denn)': { ru: 'сочинительные союзы', de: 'nebenordnende Konjunktionen' },
+  'Coordinating': { ru: 'сочинительные союзы', de: 'nebenordnende Konjunktionen' },
+  'Subordinating (weil/dass/ob/wenn...)': { ru: 'подчинительные союзы', de: 'unterordnende Konjunktionen' },
+  'Subordinating': { ru: 'подчинительные союзы', de: 'unterordnende Konjunktionen' },
+  'Conjunction Choice': { ru: 'выбор союза', de: 'passende Konjunktion' },
+  'Incorrect Use of Conjunctions': { ru: 'выбор союза', de: 'passende Konjunktion' },
+  'Modal Verbs': { ru: 'модальные глаголы', de: 'Modalverben' },
+  'Auxiliary Verbs': { ru: 'вспомогательные глаголы', de: 'Hilfsverben' },
+  'Auxiliary Verbs (sein/haben/werden)': { ru: 'вспомогательные глаголы', de: 'Hilfsverben' },
+  'Inseparable Prefix Verbs': { ru: 'глаголы с неотделяемой приставкой', de: 'untrennbare Verben' },
+  'Verb Valency & Complements': { ru: 'управление глагола', de: 'Verbvalenz und Ergaenzungen' },
+  'Verb Conjugation & Agreement': { ru: 'спряжение и согласование', de: 'Konjugation und Kongruenz' },
+  'nicht vs kein': { ru: 'nicht и kein', de: 'nicht und kein' },
+  'Negation Placement': { ru: 'место отрицания', de: 'Stellung der Negation' },
+  'Two-way': { ru: 'двусторонние предлоги', de: 'Wechselpraepositionen' },
+  'Accusative Prepositions': { ru: 'предлоги с Akkusativ', de: 'Praepositionen mit Akkusativ' },
+  'Dative Prepositions': { ru: 'предлоги с Dativ', de: 'Praepositionen mit Dativ' },
+  'Genitive Prepositions': { ru: 'предлоги с Genitiv', de: 'Praepositionen mit Genitiv' },
+  'Two-way Prepositions': { ru: 'двусторонние предлоги', de: 'Wechselpraepositionen' },
+  'Indicative': { ru: 'изъявительное наклонение', de: 'Indikativ' },
+  'Declarative': { ru: 'повествовательная форма', de: 'Aussagesatz' },
+  'Interrogative': { ru: 'вопросительная форма', de: 'Fragesatz' },
+  'Imperative': { ru: 'повелительное наклонение', de: 'Imperativ' },
+  'Subjunctive 1': { ru: 'Konjunktiv I', de: 'Konjunktiv I' },
+  'Subjunctive 1 (Konjunktiv I)': { ru: 'Konjunktiv I', de: 'Konjunktiv I' },
+  'Subjunctive 2': { ru: 'Konjunktiv II', de: 'Konjunktiv II' },
+  'Subjunctive 2 (Konjunktiv II)': { ru: 'Konjunktiv II', de: 'Konjunktiv II' },
+  'Standard': { ru: 'обычный порядок слов', de: 'Standardsatz' },
+  'Inverted': { ru: 'инверсия', de: 'Inversion' },
+  'Position of Negation': { ru: 'место отрицания', de: 'Stellung der Negation' },
+};
+
+const SKILL_ID_LOCALIZATION = {
+  'prepositions_usage': { ru: 'Предлоги: выбор предлога', de: 'Praepositionen: passende Praeposition' },
+  'verbs_placement_main': { ru: 'Глаголы: глагол в главном предложении', de: 'Verben: Verb im Hauptsatz' },
+  'verbs_placement_subordinate': { ru: 'Глаголы: глагол в придаточном', de: 'Verben: Verb im Nebensatz' },
+  'tenses_futur2': { ru: 'Времена: Futur II', de: 'Zeiten: Futur II' },
+  'de_conjunctions_correlative_conjunctions_entweder_oder_sowohl_als_auch': { ru: 'Союзы: парные союзы', de: 'Konnektoren: paarige Konjunktionen' },
+  'conj_usage': { ru: 'Союзы: выбор союза', de: 'Konnektoren: passende Konjunktion' },
+  'word_order_v2_rule': { ru: 'Порядок слов: правило V2', de: 'Wortstellung: V2-Regel' },
+  'word_order_subordinate_clause': { ru: 'Порядок слов: придаточное', de: 'Wortstellung: Nebensatz' },
+  'word_order_modal_structure': { ru: 'Порядок слов: модальный глагол', de: 'Wortstellung: Modalverb' },
+  'de_word_order_position_of_time_manner_place': { ru: 'Порядок слов: время-образ-место', de: 'Wortstellung: Zeit-Art-Ort' },
+  'verbs_modals': { ru: 'Глаголы: модальные', de: 'Verben: Modalverben' },
+  'verbs_auxiliaries': { ru: 'Глаголы: вспомогательные', de: 'Verben: Hilfsverben' },
+  'verbs_separable': { ru: 'Глаголы: отделяемые', de: 'Verben: trennbare Verben' },
+  'de_verbs_inseparable_prefix_verbs': { ru: 'Глаголы: неотделяемые приставки', de: 'Verben: untrennbare Praefixe' },
+  'verbs_conjugation': { ru: 'Глаголы: спряжение', de: 'Verben: Konjugation' },
+  'de_verbs_verb_valency_missing_object_complement': { ru: 'Глаголы: управление', de: 'Verben: Verbvalenz' },
+  'de_negation_nicht_vs_kein': { ru: 'Отрицание: nicht и kein', de: 'Negation: nicht und kein' },
+  'de_negation_negation_placement': { ru: 'Отрицание: место отрицания', de: 'Negation: Stellung' },
+};
+
+function getLocalizedSkillDisplayName(skillLike, uiLang = 'ru') {
+  const language = uiLang === 'de' ? 'de' : 'ru';
+  const skillId = String(skillLike?.skill_id || '').trim();
+  const rawName = String(skillLike?.name || skillLike?.title || skillLike?.skill_name || '').trim();
+  const rawGroup = String(skillLike?.group || skillLike?.category || '').trim();
+
+  if (skillId && SKILL_ID_LOCALIZATION[skillId]?.[language]) {
+    return SKILL_ID_LOCALIZATION[skillId][language];
+  }
+  if (rawName && SKILL_SEGMENT_LOCALIZATION[rawName]?.[language]) {
+    return SKILL_SEGMENT_LOCALIZATION[rawName][language];
+  }
+  if (rawName.includes(':')) {
+    const [left, ...restParts] = rawName.split(':');
+    const right = restParts.join(':').trim();
+    const localizedLeft = SKILL_CATEGORY_LOCALIZATION[String(left || '').trim()]?.[language] || String(left || '').trim();
+    const localizedRight = SKILL_SEGMENT_LOCALIZATION[right]?.[language] || right;
+    if (localizedLeft && localizedRight) {
+      return `${localizedLeft}: ${localizedRight}`;
+    }
+  }
+  if (rawGroup && rawName) {
+    const localizedGroup = SKILL_CATEGORY_LOCALIZATION[rawGroup]?.[language] || rawGroup;
+    const localizedName = SKILL_SEGMENT_LOCALIZATION[rawName]?.[language] || rawName;
+    if (localizedGroup && localizedName && localizedName !== rawName) {
+      return `${localizedGroup}: ${localizedName}`;
+    }
+  }
+  return rawName;
+}
+
+function getLocalizedSkillTopicLabel(topicLike, uiLang = 'ru') {
+  const language = uiLang === 'de' ? 'de' : 'ru';
+  const skillId = String(topicLike?.skill_id || '').trim();
+  const skillTitle = String(topicLike?.skill_title || topicLike?.skill_name || topicLike?.name || topicLike?.title || '').trim();
+  const subCategory = String(topicLike?.sub_category || topicLike?.error_subcategory || '').trim();
+  const mainCategory = String(topicLike?.main_category || topicLike?.error_category || topicLike?.group || topicLike?.category || '').trim();
+
+  if (skillId && SKILL_ID_LOCALIZATION[skillId]?.[language]) {
+    return SKILL_ID_LOCALIZATION[skillId][language];
+  }
+  if (skillTitle) {
+    const localizedSkillTitle = getLocalizedSkillDisplayName({
+      skill_id: skillId,
+      name: skillTitle,
+      group: mainCategory,
+    }, uiLang);
+    if (localizedSkillTitle) {
+      return localizedSkillTitle;
+    }
+  }
+  if (subCategory && mainCategory) {
+    const localizedMain = SKILL_CATEGORY_LOCALIZATION[mainCategory]?.[language] || mainCategory;
+    const localizedSub = SKILL_SEGMENT_LOCALIZATION[subCategory]?.[language] || subCategory;
+    return `${localizedMain}: ${localizedSub}`;
+  }
+  if (subCategory) {
+    return SKILL_SEGMENT_LOCALIZATION[subCategory]?.[language] || subCategory;
+  }
+  if (mainCategory) {
+    return SKILL_CATEGORY_LOCALIZATION[mainCategory]?.[language] || mainCategory;
+  }
+  return '';
+}
+
+function buildOnboardingSlides(uiLang = 'ru') {
+  if (uiLang === 'de') {
+    return [
+      {
+        eyebrow: 'Schritt 1 von 8',
+        title: 'Wofuer die App da ist',
+        body: 'DeutschFlow fuehrt dich vom ersten Einstieg bis zur taeglichen Routine: Uebersetzungen, Woerter, Videos, Lesen, Sprechpraxis und Analytik an einem Ort.',
+        bullets: [
+          'Oben stellst du Sprache der Oberflaeche, Theme und dein Sprachpaar ein.',
+          'Die stabilste und am tiefsten ausgebaute Lernlogik ist aktuell RU ↔ DE.',
+          'Das ? oben oeffnet jederzeit diesen Guide erneut.',
+        ],
+      },
+      {
+        eyebrow: 'Schritt 2 von 8',
+        title: 'Beginne mit Heute oder Uebersetzungen',
+        body: 'Nach dem Einstieg gehst du meist zuerst in den Tagesplan oder direkt in den Bereich Uebersetzungen. Dort startet dein Haupttraining.',
+        bullets: [
+          'Heute zeigt dir die naechsten sinnvollen Aufgaben in der richtigen Reihenfolge.',
+          'Uebersetzungen trainieren Grammatik, Satzbau und typische Fehler am schnellsten.',
+          'Das Hamburger-Menue links oben oeffnet alle Bereiche der App.',
+        ],
+      },
+      {
+        eyebrow: 'Schritt 3 von 8',
+        title: 'Nutze das Woerterbuch aktiv',
+        body: 'Unbekannte Woerter solltest du nicht nur nachschlagen, sondern sofort speichern, anhoeren und spaeter wiederholen.',
+        bullets: [
+          'Es gibt einen schnellen Lookup und eine tiefere GPT-Erklaerung.',
+          'Gespeicherte Woerter und Phrasen gehen spaeter in Karten und FSRS ein.',
+          'Du kannst fuer dein Material Ordner anlegen und ein PDF exportieren.',
+        ],
+      },
+      {
+        eyebrow: 'Schritt 4 von 8',
+        title: 'Wiederholen und automatisieren',
+        body: 'Karten, Quiz, Blocks und FSRS machen aus passivem Verstehen aktive Erinnerung.',
+        bullets: [
+          'FSRS plant Wiederholungen automatisch nach deinem echten Erinnern.',
+          'Quiz und Blocks sind kuerzer und spielerischer fuer Zwischendurch.',
+          'Neue und alte Karten werden sinnvoll gemischt statt chaotisch zufaellig gezeigt.',
+        ],
+      },
+      {
+        eyebrow: 'Schritt 5 von 8',
+        title: 'Gehe in echtes Deutsch',
+        body: 'Mit YouTube, Filmen und Reader wechselst du von Uebungssaetzen in echten Sprachkontext.',
+        bullets: [
+          'YouTube verbindet Video, Untertitel, Wort-Lookup und Speichern.',
+          'Filme sind dein schneller Katalog mit bereits vorbereiteten Untertiteln.',
+          'Im Reader liest du ruhig, hoerst Audio und sammelst Zeit fuer deine Ziele.',
+        ],
+      },
+      {
+        eyebrow: 'Schritt 6 von 8',
+        title: 'Trainiere aktiv mit Stimme',
+        body: 'Im Bereich Sprachpraxis sprichst du live mit dem Assistenten und trainierst freies Formulieren, Reaktion und Aussprache.',
+        bullets: [
+          'Mikrofon aktivieren, Assistent verbinden und direkt sprechen.',
+          'Die Minuten tauchen spaeter in Plan und Analytik auf.',
+          'Dieser Bereich ist fuer echte muendliche Routine gedacht, nicht nur fuer Theorie.',
+        ],
+      },
+      {
+        eyebrow: 'Schritt 7 von 8',
+        title: 'Bot privat und in der Gruppe',
+        body: 'Ein Teil des Systems lebt direkt in Telegram: Privat-Chat fuer schnelle Hilfe, Gruppe fuer Quiz, Zusammenfassungen und gemeinsame Dynamik.',
+        bullets: [
+          'Nach /start erscheint im Privat-Chat die Taste „💬 Спросить у GPT“.',
+          'Privat kommen je nach Route Plan, Erklaerungen, Audio und Analytik.',
+          'In Gruppen kommen bestaetigte Teilnehmer in Ranking und Gruppenstatistik.',
+        ],
+      },
+      {
+        eyebrow: 'Schritt 8 von 8',
+        title: 'Analytik, Skill-Training und Abo',
+        body: 'Wenn du verstehst, wo du stehst, und gezielt an Schwachstellen arbeitest, wird die App am staerksten.',
+        bullets: [
+          'Analytik zeigt dir Zeitraum, Vergleich, Ziele und Gruppenmodus.',
+          'Skill-Training baut aus einem schwachen Thema Theorie, Video und Praxis.',
+          'Im Bereich Abo verwaltest du Limits, Tarif und Stripe-Portal.',
+        ],
+      },
+    ];
+  }
+
+  return [
+    {
+      eyebrow: 'Шаг 1 из 8',
+      title: 'Для чего это приложение',
+      body: 'DeutschFlow ведет вас от первого входа до ежедневной рутины: переводы, слова, видео, чтение, разговорная практика и аналитика собраны в одном месте.',
+      bullets: [
+        'Вверху вы меняете язык интерфейса, тему и языковую пару.',
+        'Самая полная и стабильная логика обучения сейчас собрана вокруг пары RU ↔ DE.',
+        'Кнопка ? в шапке в любой момент снова открывает этот гид.',
+      ],
+    },
+    {
+      eyebrow: 'Шаг 2 из 8',
+      title: 'Начните с Сегодня или Переводов',
+      body: 'После входа обычно лучше идти либо в план на сегодня, либо сразу в раздел переводов. Именно там запускается основной учебный цикл.',
+      bullets: [
+        'Сегодня показывает, какие задачи сейчас полезнее делать по порядку.',
+        'Переводы быстрее всего прокачивают грамматику, порядок слов и типичные ошибки.',
+        'Гамбургер-меню слева сверху открывает все разделы приложения.',
+      ],
+    },
+    {
+      eyebrow: 'Шаг 3 из 8',
+      title: 'Работайте со словарем активно',
+      body: 'Незнакомые слова лучше не просто переводить, а сразу сохранять, слушать и затем повторять.',
+      bullets: [
+        'В словаре есть быстрый перевод и более глубокий GPT-разбор.',
+        'Сохраненные слова и фразы потом идут в карточки и FSRS.',
+        'Можно создавать папки под свои темы и выгружать словарь в PDF.',
+      ],
+    },
+    {
+      eyebrow: 'Шаг 4 из 8',
+      title: 'Повторяйте и автоматизируйте',
+      body: 'Карточки, quiz, blocks и FSRS превращают пассивное понимание слова в активное вспоминание.',
+      bullets: [
+        'FSRS сам рассчитывает интервалы повторения по вашему реальному ответу.',
+        'Quiz и Blocks подходят для коротких и более игровых сессий.',
+        'Новые и старые карточки смешиваются осмысленно, а не случайно.',
+      ],
+    },
+    {
+      eyebrow: 'Шаг 5 из 8',
+      title: 'Переходите к живому языку',
+      body: 'YouTube, фильмы и читалка переводят вас из учебных предложений в реальный языковой контекст.',
+      bullets: [
+        'YouTube объединяет видео, субтитры, быстрый lookup и сохранение слов.',
+        'Фильмы дают быстрый каталог видео, где субтитры уже подготовлены.',
+        'В читалке вы читаете спокойно, слушаете аудио и копите минуты в прогрессе.',
+      ],
+    },
+    {
+      eyebrow: 'Шаг 6 из 8',
+      title: 'Говорите вслух',
+      body: 'В разговорной практике вы общаетесь с ассистентом голосом и тренируете свободную речь, реакцию и произношение.',
+      bullets: [
+        'Подключите ассистента, дайте доступ к микрофону и начинайте диалог.',
+        'Минуты разговора потом видны в плане и аналитике.',
+        'Этот раздел нужен именно для живой устной практики, а не только для теории.',
+      ],
+    },
+    {
+      eyebrow: 'Шаг 7 из 8',
+      title: 'Используйте бота в личке и в группе',
+      body: 'Часть системы живет прямо в Telegram: личка нужна для быстрой помощи, группа для квизов, итогов и общего движения.',
+      bullets: [
+        'После /start в личке появляется кнопка «💬 Спросить у GPT».',
+        'В личку по вашему сценарию могут приходить план, объяснения, аудио и аналитика.',
+        'В группе в рейтинг и общую статистику попадают только подтвержденные участники.',
+      ],
+    },
+    {
+      eyebrow: 'Шаг 8 из 8',
+      title: 'Следите за аналитикой и слабыми местами',
+      body: 'Максимальная польза начинается тогда, когда вы понимаете свой прогресс и точечно дорабатываете слабые темы.',
+      bullets: [
+        'Аналитика показывает период, сравнение, цели и групповой режим.',
+        'Тренировка навыка собирает теорию, видео и практику под одну слабую тему.',
+        'В разделе Подписка вы управляете лимитами, тарифом и Stripe Portal.',
+      ],
+    },
+  ];
+}
+
+function buildGuideStepItems(uiLang = 'ru') {
+  if (uiLang === 'de') {
+    return [
+      {
+        key: 'start_overview',
+        accent: true,
+        title: 'Start und obere Leiste',
+        summary: 'Womit du beginnst, was die oberen Schalter bedeuten und worauf die App im Moment am staerksten optimiert ist.',
+        sections: [
+          {
+            title: 'Wofuer die App gedacht ist',
+            items: [
+              'DeutschFlow verbindet Uebersetzungen, Woerterbuch, Karten, Video, Lesen, Sprechpraxis und Analytik in einem Lernfluss.',
+              'Du kannst zwischen Telegram Mini App und Web wechseln, ohne deine Lernlogik zu verlieren.',
+              'Die tiefste und am vollstaendigsten ausgebaute Lernstrecke ist aktuell RU ↔ DE.',
+            ],
+          },
+          {
+            title: 'Was du oben in der App siehst',
+            items: [
+              'RU / DE schaltet nur die Sprache der Oberflaeche um.',
+              'DARK / LIGHT schaltet das Farbschema der App um.',
+              'Die Taste mit dem Sprachpaar oeffnet dein Lernprofil: Lernsprache und Muttersprache.',
+              'Das ? oeffnet diesen Guide jederzeit erneut.',
+            ],
+          },
+          {
+            title: 'Wie du sinnvoll startest',
+            items: [
+              'Lege zuerst Lernsprache und Muttersprache fest.',
+              'Gehe danach entweder in Heute fuer den gefuehrten Tagesplan oder direkt in Uebersetzungen.',
+              'Wenn du den Bot auch privat nutzt, sende dort einmal /start, damit die privaten Telegram-Funktionen sichtbar werden.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'subscription',
+        title: 'Abo',
+        summary: 'Hier siehst du Tarif, Limits und den Weg ins Stripe-Portal.',
+        sections: [
+          {
+            title: 'Was dieser Bereich zeigt',
+            items: [
+              'Dein aktueller Tarif, Status, heutiger Verbrauch und die verfuegbaren Plaene.',
+              'Du musst fuer einen Tarifwechsel nicht erst ausserhalb der App suchen.',
+              'Der Bereich ist dein zentraler Ort fuer Zugang und Limits.',
+            ],
+          },
+          {
+            title: 'Wie Tarifwechsel und Kuendigung funktionieren',
+            items: [
+              'Wenn du ein bezahltes Abo kuendigst, bleibt es bis zum Ende des bereits bezahlten Zeitraums aktiv.',
+              'Ein neuer bezahlter Tarif startet nicht mitten im laufenden Zyklus doppelt, sondern sauber zum naechsten Abrechnungszeitpunkt.',
+              'So verlierst du keinen bereits bezahlten Zeitraum und vermeidest Doppelbelastung.',
+            ],
+          },
+          {
+            title: 'Was du dort tippen kannst',
+            items: [
+              'Tarif waehlen, Limits lesen und das Stripe-Portal oeffnen.',
+              'Im Stripe-Portal verwaltest du Karte, Rechnungen, Kuendigung und Wiederaufnahme.',
+              'Nach Rueckkehr kurz aktualisieren, damit der Status sichtbar nachzieht.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'today',
+        title: 'Heute',
+        summary: 'Der Tagesplan zeigt dir die naechsten sinnvollen Aufgaben in einer klaren Reihenfolge.',
+        sections: [
+          {
+            title: 'Was du dort siehst',
+            items: [
+              'Eine kompakte Tagesroute mit Aufgaben wie Uebersetzung, Karten, Theorie, Video oder Sprechpraxis.',
+              'Den Status jeder Aufgabe: offen, in Arbeit oder erledigt.',
+              'Schnellen Zugang zu den wichtigsten Bereichen ohne im Menue zu suchen.',
+            ],
+          },
+          {
+            title: 'Wie der Plan entsteht',
+            items: [
+              'Der Plan nutzt deine Ziele, deine Aktivitaet und deine Schwaechen.',
+              'Dadurch bekommst du nicht jeden Tag dieselben Aufgaben, sondern die momentan sinnvollsten.',
+              'Wenn ein Bereich hinterherhaengt, wird er im Plan frueher sichtbar.',
+            ],
+          },
+          {
+            title: 'Welche Nachrichten dazu kommen koennen',
+            items: [
+              'Nach den aktuellen Standardzeiten kommt der Tagesplan morgens etwa um 07:00.',
+              'Am Abend kommt meist gegen 18:00 eine sanfte Erinnerung oder eine Glueckwunsch-Nachricht, wenn alles erledigt ist.',
+              'Diese Statusmeldungen sind mit dem Heute-Bildschirm synchron.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'translations',
+        title: 'Uebersetzungen',
+        summary: 'Das ist dein Haupttraining fuer Grammatik, Satzbau und systematische Fehlerarbeit.',
+        sections: [
+          {
+            title: 'Wie du startest',
+            items: [
+              'Waehle zuerst Grammatikfokus und Niveau. Im Story-Modus waehltst du statt normaler Saetze eine Geschichte.',
+              'Im normalen Modus besteht ein Standardsatz meist aus 7 Saetzen.',
+              'Wenn eine Empfehlung sichtbar ist, basiert sie auf deinen letzten Schwaechen.',
+            ],
+          },
+          {
+            title: 'Was du waehrend des Uebersetzens tun kannst',
+            items: [
+              'Ueber den kleinen Woerterbuch-Sprung neben einem Satz oeffnest du direkt den passenden Lookup.',
+              'Du kannst parallel im Woerterbuch arbeiten, ohne den eigentlichen Lernfluss zu verlieren.',
+              'Vor dem Pruefen kannst du aktivieren, dass textuelle Grammatikerklaerungen spaeter auch im Privat-Chat ankommen.',
+            ],
+          },
+          {
+            title: 'Was nach dem Pruefen passiert',
+            items: [
+              'Du siehst Score, Referenz, textuelle Erklaerung und kannst den korrekten Satz direkt anhoeren.',
+              'Fuer einzelne Ergebnisse kannst du zusaetzliche Erklaerungen nachladen.',
+              'Dein Satzsatz mischt persoenliche Fehlersaetze und neue Saetze: schwaechere Stellen kommen wieder, aber es bleibt nicht beim Endlos-Wiederholen derselben Sachen.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'youtube',
+        title: 'YouTube',
+        summary: 'Lerne direkt am echten Video: Untertitel, Wort-Lookup, Speichern und Fokusmodus an einem Ort.',
+        sections: [
+          {
+            title: 'So startest du',
+            items: [
+              'Du kannst einen YouTube-Link einfuegen oder direkt in der App suchen.',
+              'Nach dem Oeffnen startest du das Video und laedst die Untertitel.',
+              'Bei Bedarf schaltest du Overlay, Muttersprache und Vollbild ein.',
+            ],
+          },
+          {
+            title: 'Was beim Schauen moeglich ist',
+            items: [
+              'Ein Wort antippen: Video pausiert, die Erklaerung erscheint und du kannst das Wort speichern.',
+              'Wenn passende Daten da sind, siehst du Original und Uebersetzung parallel.',
+              'Der Bereich eignet sich fuer echte Sprachaufnahme statt isolierter Uebungssaetze.',
+            ],
+          },
+          {
+            title: 'Wenn Untertitel fehlen',
+            items: [
+              'Du kannst ein Transcript manuell einfuegen.',
+              'Mit Zeitmarken laeuft die Synchronisation deutlich besser.',
+              'So bleibst du nicht an einem einzelnen YouTube-Fehler haengen.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'movies',
+        title: 'Filme',
+        summary: 'Das ist dein schneller Katalog mit bereits gespeicherten Videos und verfuegbaren Untertiteln.',
+        sections: [
+          {
+            title: 'Wofuer dieser Bereich gut ist',
+            items: [
+              'Du musst nicht jedes Mal neu auf YouTube suchen.',
+              'Die App zeigt dir einen vorbereiteten Katalog mit Materialien, die schon in das Lernsystem passen.',
+              'Das spart Zeit, wenn du direkt mit Inhalt starten willst.',
+            ],
+          },
+          {
+            title: 'Wie du ihn benutzt',
+            items: [
+              'Nach Sprache filtern, passendes Video antippen und direkt in den YouTube-Bereich springen.',
+              'Das Video wird automatisch vorbereitet, damit du dort sofort mit Untertiteln weiterarbeitest.',
+              'Damit ist Filme der schnelle Einstieg, YouTube der eigentliche Arbeitsbereich.',
+            ],
+          },
+          {
+            title: 'Wann dieser Bereich besonders sinnvoll ist',
+            items: [
+              'Wenn du keine Zeit fuer Suche verschwenden willst.',
+              'Wenn du lieber mit kuratiertem Material lernst.',
+              'Wenn du nach dem Tagesplan einfach schnell ins passende Video springen willst.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'dictionary',
+        title: 'Woerterbuch',
+        summary: 'Hier uebersetzt, erklaerst, speicherst und organisierst du Woerter und Phrasen.',
+        sections: [
+          {
+            title: 'Welche zwei Lookup-Wege es gibt',
+            items: [
+              'Schnell: fuer den direkten Ueberblick.',
+              'Mit GPT: fuer tiefere Erklaerung, Formen, Beispiele und Nuancen.',
+              'Beides ist alltagstauglich, aber fuer verschiedene Tiefen gedacht.',
+            ],
+          },
+          {
+            title: 'Was du als Ergebnis bekommst',
+            items: [
+              'Uebersetzung, Wortart, Artikel, Formen, Beispiele und oft auch Varianten oder Praefixe.',
+              'Wo es sinnvoll ist, kannst du die Zielsprache direkt anhoeren.',
+              'So lernst du nicht nur die nackte Uebersetzung, sondern auch das Verhalten des Wortes.',
+            ],
+          },
+          {
+            title: 'Wie du speicherst und weiterarbeitest',
+            items: [
+              'Speichere Woerter und Phrasen direkt in einen Ordner.',
+              'Lege neue Ordner an, wenn du Themen sauber trennen willst.',
+              'Spaeter tauchen diese Inhalte in Karten, FSRS und weiteren Uebungen wieder auf.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'reader',
+        title: 'Reader',
+        summary: 'Lesen, Audio, Zeittracking und ruhiger Fokus fuer laengere Texte.',
+        sections: [
+          {
+            title: 'Wie du Material hinzufuegst',
+            items: [
+              'Text einfuegen, Link einfuegen oder eine Datei hochladen.',
+              'Danach liegt das Dokument in deiner Bibliothek und kann spaeter erneut geoeffnet werden.',
+              'Fuer laengeres Material ist das oft angenehmer als ein Chat-Fenster.',
+            ],
+          },
+          {
+            title: 'Was waehrend des Lesens moeglich ist',
+            items: [
+              'Woerter und Passagen antippen, um schneller zu verstehen.',
+              'Font, Scroll-Richtung, Fokusmodus und Leseansicht anpassen.',
+              'Der Timer laeuft mit und die Lesezeit geht in deinen Fortschritt ein.',
+            ],
+          },
+          {
+            title: 'Welche Zusatzfunktionen es gibt',
+            items: [
+              'Lesezeichen setzen, Fortschritt speichern und Dokumente archivieren.',
+              'Offline-Audio fuer ganze Dokumente oder grosse Abschnitte erstellen.',
+              'Der Reader ist fuer ruhiges Verstehen und tiefes Lesen gedacht, nicht nur fuer schnelle Suche.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'flashcards',
+        title: 'Karten',
+        summary: 'Hier automatisierst du gespeicherte Woerter und Phrasen ueber mehrere Trainingsarten.',
+        sections: [
+          {
+            title: 'Die Trainingsmodi',
+            items: [
+              'FSRS fuer intelligentes spaced repetition.',
+              'Quiz fuer schnelle Entscheidungen mit Antwortoptionen.',
+              'Blocks fuer aktives Zusammenbauen.',
+              'Sentence fuer Kontext-Ergaenzung.',
+            ],
+          },
+          {
+            title: 'Wie die Inhalte gebildet werden',
+            items: [
+              'Die Kernwarteschlange kommt aus deinem persoenlichen Material: gespeicherte Woerter und Phrasen.',
+              'In FSRS kommen zuerst faellige Wiederholungen und danach neue Karten.',
+              'Die Telegram-Quizze mischen nicht blind, sondern wechseln neue Inhalte mit Wiederholungen schwacher Karten ab.',
+            ],
+          },
+          {
+            title: 'Was du einstellen kannst',
+            items: [
+              'Set-Groesse, Ordner, Geschwindigkeit und automatischen oder manuellen Uebergang.',
+              'Je nach Modus kommen Timer oder Schwierigkeitsstufe dazu.',
+              'So kannst du denselben Wortschatz sehr kurz oder sehr gruendlich trainieren.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'assistant',
+        title: 'Sprachpraxis',
+        summary: 'Der Live-Assistent ist fuer echte muendliche Routine gedacht.',
+        sections: [
+          {
+            title: 'Wie du startest',
+            items: [
+              'Assistent verbinden und Mikrofon erlauben.',
+              'Danach startest du direkt den Dialog.',
+              'Du brauchst hier kein vorbereitetes Skript, sondern kannst frei sprechen.',
+            ],
+          },
+          {
+            title: 'Wofuer dieser Bereich gut ist',
+            items: [
+              'Aussprache, Spontanitaet, Reaktionsgeschwindigkeit und muendliche Sicherheit.',
+              'Kurze taegliche Sprachpraxis statt nur stiller Lektuere.',
+              'Der Bereich ergaenzt Uebersetzungen, ersetzt sie aber nicht.',
+            ],
+          },
+          {
+            title: 'Wie er in den Rest der App passt',
+            items: [
+              'Sprechminuten koennen in Ziele und Analytik einfliessen.',
+              'Du kannst diesen Block als eigene Aufgabe im Tagesplan wiedersehen.',
+              'So bleibt aktive Sprache ein fester Teil der Routine.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'support',
+        title: 'Support',
+        summary: 'Hier schreibst du direkt an den Entwickler, wenn etwas unklar oder kaputt ist.',
+        sections: [
+          {
+            title: 'Wann du diesen Bereich nutzt',
+            items: [
+              'Wenn ein Button nicht reagiert oder ein Bereich falsch aussieht.',
+              'Wenn du einen Ablauf nicht verstehst.',
+              'Wenn du eine Verbesserung oder einen Wunsch melden willst.',
+            ],
+          },
+          {
+            title: 'Wie du schneller Hilfe bekommst',
+            items: [
+              'Kurz beschreiben, wo genau du warst und was du getippt hast.',
+              'Wenn moeglich einen Screenshot mitsenden.',
+              'Dann laesst sich das Problem deutlich schneller verstehen und beheben.',
+            ],
+          },
+          {
+            title: 'Wichtig fuer normale Nutzung',
+            items: [
+              'Du musst keine technischen Begriffe kennen.',
+              'Schreibe einfach, was du gesehen hast und was du erwartet hast.',
+              'Der Bereich ist bewusst fuer normale Nutzer formuliert, nicht fuer Entwickler.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'analytics',
+        title: 'Analytik',
+        summary: 'Hier siehst du Zeitraum, Dynamik, Gruppenvergleich und deine Wochenziele.',
+        sections: [
+          {
+            title: 'Was du dort einstellen kannst',
+            items: [
+              'Einen Zeitraum oder einen eigenen Kalenderbereich.',
+              'Den Teilnahme-Modus: nur du selbst oder eine konkrete Gruppe.',
+              'Damit wechselst du zwischen persoenlicher und gemeinsamer Sicht.',
+            ],
+          },
+          {
+            title: 'Was du dort siehst',
+            items: [
+              'Wie viele Uebersetzungen du gemacht hast, wie viel geplant war und was offen geblieben ist.',
+              'Vergleiche, Charts und Rankings fuer den gewaehlten Zeitraum.',
+              'Ob du auf Kurs bist oder in einem Bereich abfaellst.',
+            ],
+          },
+          {
+            title: 'Welche regelmaessigen Nachrichten dazu kommen',
+            items: [
+              'Private Wochenanalytik kommt nach den aktuellen Standardzeiten meist abends gegen 19:30 mit Charts.',
+              'Gruppen-Tageszusammenfassungen kommen typischerweise spaet am Abend, Gruppen-Wochensummaries sonntags spaet am Abend.',
+              'Die Mini-App bleibt der Ort fuer die volle Detailsicht, Telegram fuer die kurze Zusammenfassung.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'skill_training',
+        title: 'Skill-Training',
+        summary: 'Ein fokussierter Block fuer genau ein schwaches Thema.',
+        sections: [
+          {
+            title: 'Was dieser Bereich macht',
+            items: [
+              'Er nimmt eine konkrete Schwaeche und baut daraus ein kompaktes Paket.',
+              'Du bekommst Theorie, oft ein passendes Video und danach Uebungssaetze.',
+              'Der Block ist fuer gezielte Reparatur, nicht fuer allgemeines Surfen.',
+            ],
+          },
+          {
+            title: 'Was du im Training siehst',
+            items: [
+              'Einen klar benannten Fokus in nutzerfreundlicher Sprache.',
+              'Die Kernerklaerung zum Thema.',
+              'Praxisaufgaben mit direktem Feedback.',
+            ],
+          },
+          {
+            title: 'Wann du ihn oeffnen solltest',
+            items: [
+              'Wenn ein schwacher Ring oder eine Empfehlung sichtbar ist.',
+              'Wenn du nicht breit, sondern punktgenau trainieren willst.',
+              'Wenn du ein Thema wirklich schliessen statt nur wiederholen willst.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'private_bot',
+        title: 'Privat-Chat mit dem Bot',
+        summary: 'Hier bekommst du schnelle Hilfe, private Nachrichten und direkten Zugriff auf GPT-Funktionen.',
+        sections: [
+          {
+            title: 'So aktivierst du ihn',
+            items: [
+              'Bot privat oeffnen und einmal /start senden.',
+              'Danach erscheint unten die Taste „💬 Спросить у GPT“.',
+              'Damit ist der schnelle Privatmodus fuer Sprache, Fragen und Speichern bereit.',
+            ],
+          },
+          {
+            title: 'Was du dort tun kannst',
+            items: [
+              'Ein Wort, eine Phrase oder einen ganzen Satz schicken und uebersetzen lassen.',
+              'Nach Grammatik, Bedeutung, Nuance, Herkunft oder natuerlicher Formulierung fragen.',
+              'Nach der Antwort eine Phrase speichern und direkt eine Rueckfrage stellen.',
+              'Dort, wo Audio sinnvoll ist, kann der Bot auch Vorlesen oder Audio-Erklaerungen liefern.',
+            ],
+          },
+          {
+            title: 'Welche Nachrichten privat ankommen koennen',
+            items: [
+              'Nach den aktuellen Standardzeiten: Tagesplan morgens, Erinnerungen im Tagesverlauf und Abend-Erinnerung gegen spaeteren Nachmittag oder Abend.',
+              'Audio-Fehlererklaerungen kommen typischerweise tagsueber und beziehen sich meist auf den letzten Lerntag.',
+              'Private Analytik und Charts kommen regelmaessig, waehrend die Mini-App die volle Detailansicht liefert.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'group_bot',
+        title: 'Gruppe mit dem Bot',
+        summary: 'So funktioniert gemeinsames Lernen, Ranking und Gruppenfluss in Telegram.',
+        sections: [
+          {
+            title: 'Wie du den Gruppenmodus richtig startest',
+            items: [
+              'Bot in eine Telegram-Gruppe einfuegen.',
+              'Die Teilnehmer bestaetigen ihre Teilnahme ueber die Gruppen-Nachricht.',
+              'Jeder Teilnehmer sollte den Bot zusaetzlich einmal privat starten.',
+            ],
+          },
+          {
+            title: 'Was in der Gruppe erscheinen kann',
+            items: [
+              'Quiz-Polls ueber den Tag verteilt. Nach den aktuellen Legacy-Standardslots meist zwischen 06:00 und 22:30 im 30-Minuten-Rhythmus.',
+              'Tageszusammenfassungen am Abend und Wochenzusammenfassungen am Sonntag spaet am Abend.',
+              'Je nach Routing auch Gruppenplan-Hinweise, Abschlussmeldungen und Audio fuer Fehler oder Story-Sessions.',
+            ],
+          },
+          {
+            title: 'Welches Prinzip dahintersteht',
+            items: [
+              'Ins Ranking gehen nur bestaetigte Teilnehmer ein.',
+              'Quizze wechseln zwischen neuen und schwachen Wiederholungsinhalten, statt immer nur neue Dinge zu schicken.',
+              'Die Gruppe ist fuer Motivation, Vergleich und Rhythmus gedacht; die tiefere Arbeit passiert weiter in der Mini-App und im Privat-Chat.',
+            ],
+          },
+        ],
+      },
+    ];
+  }
+
+  return [
+    {
+      key: 'start_overview',
+      accent: true,
+      title: 'Старт и верхняя панель',
+      summary: 'С чего начинать, что означают верхние переключатели и под какую языковую логику приложение сейчас настроено лучше всего.',
+      sections: [
+        {
+          title: 'Для чего нужно приложение',
+          items: [
+            'DeutschFlow связывает переводы, словарь, карточки, видео, чтение, разговорную практику и аналитику в один учебный поток.',
+            'Вы можете пользоваться приложением как в Telegram Mini App, так и через браузер, не теряя логику обучения.',
+            'Самая глубокая и полноценно собранная траектория сейчас это RU ↔ DE.',
+          ],
+        },
+        {
+          title: 'Что вы видите в верхней панели',
+          items: [
+            'RU / DE переключает только язык интерфейса.',
+            'DARK / LIGHT переключает цветовую тему приложения.',
+            'Кнопка с языковой парой открывает профиль обучения: какой язык вы изучаете и какой у вас родной.',
+            'Кнопка ? в любой момент снова открывает этот гид.',
+          ],
+        },
+        {
+          title: 'Как лучше начать',
+          items: [
+            'Сначала задайте язык изучения и родной язык.',
+            'Потом идите либо в Сегодня за готовым маршрутом, либо сразу в Переводы.',
+            'Если вы хотите использовать и личку с ботом, отправьте ему /start один раз.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'subscription',
+      title: 'Подписка',
+      summary: 'Здесь видны ваш тариф, лимиты и путь в Stripe Portal.',
+      sections: [
+        {
+          title: 'Что показывает этот раздел',
+          items: [
+            'Текущий тариф, статус, расход за сегодня и доступные планы.',
+            'Не нужно искать оплату где-то снаружи: основные действия видны прямо в Mini App.',
+            'Это центральная точка для управления доступом и лимитами.',
+          ],
+        },
+        {
+          title: 'Как работает смена тарифа и отмена',
+          items: [
+            'Если вы отменяете платную подписку, она продолжает работать до конца уже оплаченного периода.',
+            'Новый платный тариф не должен запускаться с двойным списанием посреди текущего цикла, а аккуратно стартует со следующего расчетного периода.',
+            'Так вы не теряете уже оплаченный доступ и не платите дважды за один и тот же промежуток.',
+          ],
+        },
+        {
+          title: 'Что можно нажать',
+          items: [
+            'Выбрать тариф, посмотреть лимиты и открыть Stripe Portal.',
+            'В Stripe Portal меняются карта, квитанции, отмена и возобновление подписки.',
+            'После возврата лучше коротко обновить раздел, чтобы статус подтянулся.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'today',
+      title: 'Сегодня',
+      summary: 'План на сегодня показывает следующую разумную последовательность действий.',
+      sections: [
+        {
+          title: 'Что вы там видите',
+          items: [
+            'Компактный маршрут дня: переводы, карточки, теория, видео или разговорная практика.',
+            'Статус каждой задачи: еще не начато, в процессе или закончено.',
+            'Быстрый вход в нужный раздел без долгого поиска по меню.',
+          ],
+        },
+        {
+          title: 'Как формируется план',
+          items: [
+            'План опирается на ваши цели, текущую активность и слабые места.',
+            'Поэтому задачи меняются не случайно, а под то, что сейчас полезнее делать именно вам.',
+            'Если какой-то блок проседает, он поднимается выше в плане.',
+          ],
+        },
+        {
+          title: 'Какие сообщения с ним связаны',
+          items: [
+            'По текущим стандартным настройкам план обычно приходит утром около 07:00.',
+            'Вечером примерно около 18:00 может приходить мягкое напоминание или поздравление, если все закрыто.',
+            'Эти сообщения синхронизированы с экраном Сегодня внутри приложения.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'translations',
+      title: 'Переводы',
+      summary: 'Это главный блок для тренировки грамматики, структуры предложения и системной работы над ошибками.',
+      sections: [
+        {
+          title: 'Как начать',
+          items: [
+            'Сначала выберите грамматический фокус и уровень. Если выбрана история, вместо обычных предложений будет story-режим.',
+            'В обычном режиме стандартный набор чаще всего состоит из 7 предложений.',
+            'Если наверху есть рекомендация на сегодня, она строится по вашим последним слабым местам.',
+          ],
+        },
+        {
+          title: 'Что можно делать во время перевода',
+          items: [
+            'Через маленький переход к словарю рядом с предложением можно открыть быстрый lookup именно в нужный момент.',
+            'Можно держать словарь рядом и не выпадать из основного учебного потока.',
+            'Перед проверкой можно включить отправку текстовых объяснений грамматики в личку.',
+          ],
+        },
+        {
+          title: 'Что происходит после проверки',
+          items: [
+            'Вы видите балл, эталон, текстовый разбор и можете сразу озвучить корректный вариант.',
+            'Для отдельных ответов можно запросить еще более глубокое объяснение.',
+            'Набор предложений смешивает ваши прошлые ошибки и новые предложения: слабые места возвращаются в работу, но система не зацикливается только на старом.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'youtube',
+      title: 'YouTube',
+      summary: 'Здесь вы учитесь прямо на реальном видео: субтитры, lookup, сохранение слов и focus-режим собраны в одном месте.',
+      sections: [
+        {
+          title: 'Как начать',
+          items: [
+            'Можно вставить ссылку на видео или выполнить поиск прямо в приложении.',
+            'После открытия видео нажмите Play и загрузите субтитры.',
+            'При необходимости включайте overlay, показ родного языка и разворот во весь экран.',
+          ],
+        },
+        {
+          title: 'Что можно делать во время просмотра',
+          items: [
+            'При нажатии на слово видео ставится на паузу, а вы получаете объяснение и возможность сохранить слово.',
+            'Если данные доступны, можно видеть оригинал и перевод параллельно.',
+            'Этот раздел нужен для перехода от учебных примеров к реальному языку.',
+          ],
+        },
+        {
+          title: 'Если субтитры не подтянулись автоматически',
+          items: [
+            'Можно вставить транскрипт вручную.',
+            'Лучше всего работает вариант с таймкодами.',
+            'Так вы не зависите полностью от того, удалось ли YouTube отдать субтитры автоматически.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'movies',
+      title: 'Фильмы',
+      summary: 'Это быстрый каталог уже сохраненных видео, где субтитры и учебный старт подготовлены заранее.',
+      sections: [
+        {
+          title: 'Для чего нужен этот раздел',
+          items: [
+            'Чтобы не искать каждый раз видео заново на YouTube.',
+            'Чтобы быстро входить в уже отобранный каталог материалов.',
+            'Чтобы сразу перейти к просмотру и работе с субтитрами.',
+          ],
+        },
+        {
+          title: 'Как им пользоваться',
+          items: [
+            'Отфильтруйте видео по языку, выберите нужное и нажмите на карточку.',
+            'После этого приложение само перебросит вас в раздел YouTube с уже выбранным видео.',
+            'То есть Фильмы это быстрый каталог, а YouTube это основной рабочий режим просмотра.',
+          ],
+        },
+        {
+          title: 'Когда раздел особенно удобен',
+          items: [
+            'Когда не хочется тратить время на поиск.',
+            'Когда хочется работать с уже подготовленным материалом.',
+            'Когда вы просто хотите быстро открыть видео из текущей учебной рутины.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'dictionary',
+      title: 'Словарь',
+      summary: 'Здесь вы переводите, разбираете, сохраняете и организуете слова и фразы.',
+      sections: [
+        {
+          title: 'Два режима lookup',
+          items: [
+            'Быстрый перевод нужен для мгновенного ответа.',
+            'GPT-разбор нужен для глубины: формы, примеры, нюансы, дополнительные подсказки.',
+            'Оба режима полезны, но под разную глубину задачи.',
+          ],
+        },
+        {
+          title: 'Что показывает результат',
+          items: [
+            'Перевод, часть речи, артикль, формы слова, примеры и иногда варианты или префиксы.',
+            'Там, где это уместно, можно сразу прослушать озвучку на языке обучения.',
+            'То есть вы учите не только голый перевод, но и поведение слова.',
+          ],
+        },
+        {
+          title: 'Как сохранять и использовать дальше',
+          items: [
+            'Сохраняйте слово или фразу сразу в нужную папку.',
+            'При желании создавайте свои папки под темы, поездки, работу, фильмы и так далее.',
+            'Позже именно это личное содержимое идет в карточки, FSRS и другие тренировки.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'reader',
+      title: 'Читалка',
+      summary: 'Раздел для спокойного чтения, аудио, учета времени и более глубокого погружения в текст.',
+      sections: [
+        {
+          title: 'Как добавить материал',
+          items: [
+            'Можно вставить текст, ссылку или загрузить файл.',
+            'После этого документ сохраняется в библиотеке и его можно открыть позже.',
+            'Для длинных текстов это гораздо удобнее, чем читать их как обычное сообщение в чате.',
+          ],
+        },
+        {
+          title: 'Что можно делать во время чтения',
+          items: [
+            'Нажимать на слова и фрагменты текста, чтобы быстрее разбираться в содержании.',
+            'Менять шрифт, направление прокрутки, режим чтения и фокусный вид.',
+            'Таймер чтения идет параллельно и учитывается в вашем прогрессе.',
+          ],
+        },
+        {
+          title: 'Какие есть дополнительные возможности',
+          items: [
+            'Закладки, сохранение прогресса, архив документов.',
+            'Оффлайн-аудио для всего документа или крупных частей.',
+            'Читалка нужна для спокойного понимания и глубокой работы с текстом, а не только для быстрого поиска слова.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'flashcards',
+      title: 'Карточки',
+      summary: 'Здесь автоматизируются сохраненные слова и фразы через несколько разных режимов тренировки.',
+      sections: [
+        {
+          title: 'Какие режимы есть',
+          items: [
+            'FSRS для умного интервального повторения.',
+            'Quiz для быстрых решений с вариантами ответа.',
+            'Blocks для активной сборки ответа.',
+            'Sentence для работы со словом в контексте.',
+          ],
+        },
+        {
+          title: 'Как формируется содержимое',
+          items: [
+            'Ядро очереди строится из вашего личного материала: сохраненных слов и фраз.',
+            'В FSRS сначала идут due-карточки, потом новые.',
+            'Telegram-квизы в течение дня не шлют все подряд, а чередуют новое и повтор слабых слов.',
+          ],
+        },
+        {
+          title: 'Что можно настроить',
+          items: [
+            'Размер набора, папку, скорость и автоматический или ручной переход.',
+            'В зависимости от режима появляются дополнительные параметры: таймер или сложность.',
+            'Так один и тот же словарь можно тренировать коротко, быстро или более глубоко.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'assistant',
+      title: 'Разговорная практика',
+      summary: 'Live-ассистент нужен для настоящей устной речи, а не только для чтения и письменных переводов.',
+      sections: [
+        {
+          title: 'Как начать',
+          items: [
+            'Подключите ассистента и разрешите доступ к микрофону.',
+            'После этого можно сразу начинать диалог.',
+            'Здесь не нужен готовый текст: вы говорите свободно.',
+          ],
+        },
+        {
+          title: 'Для чего нужен этот режим',
+          items: [
+            'Для произношения, спонтанной речи, скорости реакции и уверенности в разговоре.',
+            'Для короткой ежедневной устной практики вместо только тихого чтения или письма.',
+            'Этот блок дополняет переводы, а не заменяет их.',
+          ],
+        },
+        {
+          title: 'Как он связан с остальной системой',
+          items: [
+            'Минуты разговора могут учитываться в целях и аналитике.',
+            'Этот блок может появляться как отдельная задача в плане на сегодня.',
+            'Так живая речь становится регулярной частью учебной рутины.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'support',
+      title: 'Поддержка',
+      summary: 'Здесь вы пишете разработчику напрямую, если что-то непонятно или работает не так.',
+      sections: [
+        {
+          title: 'Когда сюда стоит писать',
+          items: [
+            'Если кнопка не срабатывает или блок выглядит неправильно.',
+            'Если вы не понимаете, как устроен какой-то сценарий.',
+            'Если хотите предложить улучшение или сообщить о баге.',
+          ],
+        },
+        {
+          title: 'Как быстрее получить помощь',
+          items: [
+            'Коротко напишите, в каком разделе вы были и что нажали.',
+            'По возможности приложите скриншот.',
+            'Так причину намного легче понять и быстрее исправить.',
+          ],
+        },
+        {
+          title: 'Важно для обычного пользователя',
+          items: [
+            'Вам не нужно знать технические термины.',
+            'Достаточно просто описать, что вы увидели и чего ожидали.',
+            'Раздел специально сделан под обычную человеческую формулировку, а не под язык программистов.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'analytics',
+      title: 'Аналитика',
+      summary: 'Здесь видны период, динамика, сравнение с группой и ваши недельные цели.',
+      sections: [
+        {
+          title: 'Что можно настроить',
+          items: [
+            'Период аналитики или свой календарный диапазон.',
+            'Режим участия: только вы или конкретная группа.',
+            'Так вы переключаетесь между личным и групповым взглядом на прогресс.',
+          ],
+        },
+        {
+          title: 'Что вы там увидите',
+          items: [
+            'Сколько переводов сделано, сколько было запланировано и что осталось не закрытым.',
+            'Сравнения, графики и рейтинги за выбранный период.',
+            'Где вы идете по плану, а где проседаете.',
+          ],
+        },
+        {
+          title: 'Какие регулярные сообщения с этим связаны',
+          items: [
+            'Личная недельная аналитика по текущим стандартным настройкам обычно приходит вечером около 19:30 вместе с графиками.',
+            'Групповые итоги дня обычно приходят поздно вечером, а недельные итоги в воскресенье поздно вечером.',
+            'Mini App нужна для полной детализации, Telegram для коротких регулярных сводок.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'skill_training',
+      title: 'Тренировка навыка',
+      summary: 'Это фокусный блок под одну конкретную слабую тему.',
+      sections: [
+        {
+          title: 'Что делает этот раздел',
+          items: [
+            'Берет одну слабую тему и собирает по ней компактный пакет.',
+            'Вы получаете теорию, нередко подходящее видео и затем практические предложения.',
+            'Этот раздел нужен не для общего просмотра всего подряд, а для точечного закрытия слабого места.',
+          ],
+        },
+        {
+          title: 'Что вы видите внутри',
+          items: [
+            'Четко названный фокус на понятном пользовательском языке.',
+            'Короткое ядро теории по теме.',
+            'Практику и затем обратную связь по вашим ответам.',
+          ],
+        },
+        {
+          title: 'Когда его стоит открывать',
+          items: [
+            'Когда видите слабое кольцо или рекомендацию на конкретный навык.',
+            'Когда хотите тренироваться не широко, а прицельно.',
+            'Когда нужно именно закрыть тему, а не просто снова ее увидеть.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'private_bot',
+      title: 'Личка с ботом',
+      summary: 'В личном чате вы получаете быструю помощь, приватные сообщения системы и прямой доступ к GPT-функциям.',
+      sections: [
+        {
+          title: 'Как ее активировать',
+          items: [
+            'Откройте бота в личке и один раз отправьте /start.',
+            'После этого внизу появится кнопка «💬 Спросить у GPT».',
+            'Так включается быстрый приватный режим для языка, вопросов и сохранения фраз.',
+          ],
+        },
+        {
+          title: 'Что можно делать в личке',
+          items: [
+            'Отправить слово, фразу или целое предложение и получить перевод.',
+            'Спросить про грамматику, значение, оттенок, происхождение слова или естественную формулировку.',
+            'После ответа сохранить полезную фразу и сразу задать следующий вопрос.',
+            'Там, где это уместно, бот может также присылать озвучку или аудио-объяснение.',
+          ],
+        },
+        {
+          title: 'Что туда может приходить автоматически',
+          items: [
+            'По текущим стандартным настройкам: план на день утром, напоминания в течение дня и вечернее напоминание ближе к концу дня.',
+            'Аудио-разбор ошибок обычно приходит днем и чаще всего опирается на ошибки предыдущего учебного дня.',
+            'Личная аналитика и графики приходят регулярно, а Mini App остается местом для полной детализации.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'group_bot',
+      title: 'Группа с ботом',
+      summary: 'Так работает совместное обучение, рейтинг и общий поток сообщений в Telegram-группе.',
+      sections: [
+        {
+          title: 'Как правильно запустить групповой режим',
+          items: [
+            'Добавьте бота в Telegram-группу.',
+            'Участники подтверждают участие через сообщение в группе.',
+            'Каждому участнику дополнительно лучше один раз открыть бота в личке.',
+          ],
+        },
+        {
+          title: 'Что может приходить в группу',
+          items: [
+            'Квизы в течение дня. По текущим legacy-настройкам обычно в промежутке 06:00-22:30 каждые 30 минут.',
+            'Итоги дня вечером и итоги недели в воскресенье поздно вечером.',
+            'В зависимости от маршрута доставки также могут приходить групповые планы, объявления о выполнении задач и аудио по ошибкам или историям.',
+          ],
+        },
+        {
+          title: 'Какой здесь общий принцип',
+          items: [
+            'В рейтинг попадают только подтвержденные участники.',
+            'Квизы чередуют новые и слабые повторные элементы, а не шлют только новое.',
+            'Группа нужна для мотивации, сравнения и ритма, а глубокая работа все равно происходит в Mini App и в личке.',
+          ],
+        },
+      ],
+    },
+  ];
+}
+
 function isEditableElement(element) {
   if (!element || typeof element !== 'object') return false;
   const tagName = String(element.tagName || '').toUpperCase();
@@ -1488,6 +2805,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
 
 const HomeScreenSection = React.memo(function HomeScreenSection({
   tr,
+  uiLang,
   planAnalyticsPeriod,
   setPlanAnalyticsPeriod,
   planAnalyticsLoading,
@@ -1657,6 +2975,10 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
     }
     return Array.from(byId.values());
   }, [skillReport?.groups]);
+  const getDisplaySkillName = useCallback(
+    (skillLike) => getLocalizedSkillDisplayName(skillLike, uiLang),
+    [uiLang],
+  );
   const ringSkills = useMemo(() => {
     const skilledWithData = uniqueSkills.filter((item) => Boolean(item?.has_data) && item?.mastery !== null && item?.mastery !== undefined);
     const weakestSkills = [...skilledWithData]
@@ -1985,7 +3307,12 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                 const done = String(item?.status || '').toLowerCase() === 'done' || doneByProgress;
                 const itemStatusClass = done ? 'done' : (item.status || 'todo');
                 const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
-                const videoTopic = String(payload?.sub_category || payload?.skill_title || payload?.main_category || '').trim();
+                const videoTopic = getLocalizedSkillTopicLabel({
+                  skill_id: payload?.skill_id,
+                  skill_title: payload?.skill_title,
+                  sub_category: payload?.sub_category,
+                  main_category: payload?.main_category,
+                }, uiLang);
                 const videoLikes = Number(payload?.video_likes || 0);
                 const videoDislikes = Number(payload?.video_dislikes || 0);
                 const videoScore = Number(payload?.video_score || 0);
@@ -2180,7 +3507,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                       <span className="skill-rings-dot" style={{ backgroundColor: color }} />
                       <div className="skill-rings-text">
                         <div className="skill-rings-name">
-                          {skill.name}
+                          {getDisplaySkillName(skill)}
                           {isSkillComplete && (
                             <span className="skill-train-status-badge is-complete">✅ {tr('Готово', 'Fertig')}</span>
                           )}
@@ -2656,11 +3983,25 @@ function AppInner() {
     const skillTitle = String(payload?.skill_title || '').trim();
     const subCategory = String(payload?.sub_category || '').trim();
     const mainCategory = String(payload?.main_category || '').trim();
+    const localizedTopicLabel = getLocalizedSkillTopicLabel({
+      skill_id: payload?.skill_id,
+      skill_title: skillTitle,
+      sub_category: subCategory,
+      main_category: mainCategory,
+    }, uiLang);
+    const localizedRecommendedTopicLabel = recommendedTopicLabel
+      ? getLocalizedSkillTopicLabel({
+        skill_id: payload?.skill_id,
+        skill_title: recommendedTopicLabel,
+        sub_category: recommendedTopicLabel,
+        main_category: mainCategory,
+      }, uiLang)
+      : '';
     return {
       itemId: Number(item?.id || 0),
-      title: skillTitle || subCategory || mainCategory || tr('Персональный фокус дня', 'Persoenlicher Fokus des Tages'),
-      reason: subCategory || mainCategory || skillTitle,
-      topicLabel: recommendedTopicLabel,
+      title: localizedTopicLabel || tr('Персональный фокус дня', 'Persoenlicher Fokus des Tages'),
+      reason: localizedTopicLabel,
+      topicLabel: localizedRecommendedTopicLabel || localizedTopicLabel,
       customFocus: recommendedCustomFocus,
       level: recommendedLevel,
       examples: reasonExamples
@@ -2669,7 +4010,7 @@ function AppInner() {
         .slice(0, 2),
       createdAt: Date.now(),
     };
-  }, [selectedLevel, tr]);
+  }, [selectedLevel, tr, uiLang]);
   const applyTodayTranslationRecommendation = useCallback(() => {
     if (!todayTranslationRecommendation) return;
     const recommendedLevel = String(todayTranslationRecommendation?.level || '').trim().toLowerCase();
@@ -2871,6 +4212,7 @@ function AppInner() {
   const avatarInputRef = useRef(null);
   const analyticsRef = useRef(null);
   const analyticsCalendarRef = useRef(null);
+  const analyticsPeriodSelectRef = useRef(null);
   const economicsRef = useRef(null);
   const billingRef = useRef(null);
   const assistantRef = useRef(null);
@@ -6900,6 +8242,12 @@ function AppInner() {
     const taskType = String(item?.task_type || '').toLowerCase();
     const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
     const mode = String(payload?.mode || '').toLowerCase();
+    const localizedTopic = getLocalizedSkillTopicLabel({
+      skill_id: payload?.skill_id,
+      skill_title: payload?.skill_title,
+      sub_category: payload?.sub_category,
+      main_category: payload?.main_category,
+    }, uiLang);
 
     if (taskType === 'cards') {
       if (mode === 'cards_new') return tr('Карточки: новые слова', 'Karten: neue Woerter');
@@ -6910,17 +8258,10 @@ function AppInner() {
       return tr(`Перевод: ${sentences} предложений`, `Uebersetzung: ${sentences} Saetze`);
     }
     if (taskType === 'theory') {
-      const topic = String(payload?.sub_category || payload?.skill_title || payload?.main_category || '').trim();
-      return topic ? tr(`Теория: ${topic}`, `Theorie: ${topic}`) : tr('Теория', 'Theorie');
+      return localizedTopic ? tr(`Теория: ${localizedTopic}`, `Theorie: ${localizedTopic}`) : tr('Теория', 'Theorie');
     }
     if (taskType === 'video' || taskType === 'youtube') {
-      const focusTopic = String(
-        payload?.sub_category
-        || payload?.skill_title
-        || payload?.main_category
-        || ''
-      ).trim();
-      if (focusTopic) {
+      if (localizedTopic) {
         return tr(`Видео`, `Video`);
       }
       return tr(`Видео`, `Video`);
@@ -7448,7 +8789,7 @@ function AppInner() {
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
   const isGuideScreen = !flashcardsOnly && selectedSections.size === 1 && selectedSections.has('guide');
   const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
-  const onboardingSlides = useMemo(() => ([
+  const _legacyOnboardingSlides = useMemo(() => ([
     {
       eyebrow: tr('Шаг 1 из 6', 'Schritt 1 von 6'),
       title: tr('Начните с переводов', 'Starte mit Uebersetzungen'),
@@ -7528,7 +8869,7 @@ function AppInner() {
       ],
     },
   ]), [tr]);
-  const guideStepItems = useMemo(() => {
+  const _legacyGuideStepItems = useMemo(() => {
     if (uiLang === 'de') {
       return [
         {
@@ -8375,6 +9716,8 @@ function AppInner() {
       },
     ];
   }, [uiLang]);
+  const onboardingSlides = useMemo(() => buildOnboardingSlides(uiLang), [uiLang]);
+  const guideStepItems = useMemo(() => buildGuideStepItems(uiLang), [uiLang]);
   const isYoutubeSelectionMenu = String(selectionType || '').startsWith('youtube_');
   const isTranslationResultSelectionMenu = String(selectionType || '').startsWith('translation_result_');
   const isInlineSelectionMenu = isYoutubeSelectionMenu || isTranslationResultSelectionMenu;
@@ -17805,6 +19148,14 @@ function AppInner() {
 
   const openAnalyticsCalendar = useCallback(() => {
     ensureAnalyticsCalendarDraftRange();
+    try {
+      analyticsPeriodSelectRef.current?.blur?.();
+      if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+    } catch (_error) {
+      // ignore focus cleanup issues on mobile clients
+    }
     setAnalyticsCalendarOpen(true);
   }, [ensureAnalyticsCalendarDraftRange]);
 
@@ -17911,6 +19262,14 @@ function AppInner() {
     setAnalyticsCustomStartDate(nextRange.startDate);
     setAnalyticsCustomEndDate(nextRange.endDate);
     setAnalyticsCalendarOpen(false);
+    try {
+      analyticsPeriodSelectRef.current?.blur?.();
+      if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+    } catch (_error) {
+      // ignore focus cleanup issues on mobile clients
+    }
     loadAnalytics('calendar', analyticsScopeKey, nextRange);
   }, [
     analyticsCalendarDraftEndDate,
@@ -18978,14 +20337,16 @@ function AppInner() {
                   </div>
                   <div className="onboarding-modal-body">
                     <img src={heroStickerSrc} alt="" aria-hidden="true" className="onboarding-mascot" />
-                    <p>{onboardingSlides[onboardingStep].body}</p>
-                    <div className="onboarding-bullets">
-                      {onboardingSlides[onboardingStep].bullets.map((item, index) => (
-                        <div key={`onboarding-bullet-${onboardingStep}-${index}`} className="onboarding-bullet">
-                          <span className="onboarding-bullet-mark">•</span>
-                          <span>{item}</span>
-                        </div>
-                      ))}
+                    <div className="onboarding-copy-block">
+                      <p>{onboardingSlides[onboardingStep].body}</p>
+                      <div className="onboarding-bullets">
+                        {onboardingSlides[onboardingStep].bullets.map((item, index) => (
+                          <div key={`onboarding-bullet-${onboardingStep}-${index}`} className="onboarding-bullet">
+                            <span className="onboarding-bullet-mark">•</span>
+                            <span>{item}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
                   <div className="onboarding-progress" aria-hidden="true">
@@ -19460,6 +20821,7 @@ function AppInner() {
                 skillReportError={skillReportError}
                 skillPracticeLoading={skillPracticeLoading}
                 loadSkillReport={loadSkillReportStable}
+                uiLang={uiLang}
                 startSkillPractice={startSkillPracticeStable}
                 resumeSkillPractice={resumeSkillPracticeStable}
                 skillTrainingStatusMap={homeSkillTrainingStatusMap}
@@ -19474,8 +20836,8 @@ function AppInner() {
                     <h2>{tr('Как пользоваться', 'So benutzt du DeutschFlow')}</h2>
                     <p className="guide-hero-subtitle">
                       {tr(
-                        'Короткий маршрут по приложению: с чего начать, куда нажимать и какой раздел за что отвечает.',
-                        'Kurzer Startpfad durch die App: womit du beginnst, wohin du tippst und welcher Bereich wofuer da ist.'
+                        'Полная карта приложения по порядку меню: что делает каждый раздел, что приходит в личку и что приходит в группу.',
+                        'Die vollstaendige Karte der App in Menue-Reihenfolge: was jeder Bereich macht, was privat ankommt und was in Gruppen erscheint.'
                       )}
                     </p>
                   </div>
@@ -19580,9 +20942,17 @@ function AppInner() {
                     <div className="skill-training-top-copy">
                       <h2>
                         {tr('Тренируем навык', 'Skill-Training')}: {String(
-                          skillTrainingData?.package?.focus?.skill_name
-                          || skillTrainingData?.skill?.title
-                          || tr('Навык', 'Skill')
+                          getLocalizedSkillTopicLabel(
+                            {
+                              skill_id: skillTrainingData?.package?.focus?.skill_id || skillTrainingData?.skill?.skill_id,
+                              skill_name: skillTrainingData?.package?.focus?.skill_name,
+                              title: skillTrainingData?.skill?.title,
+                              name: skillTrainingData?.skill?.name,
+                              main_category: skillTrainingData?.package?.focus?.error_category,
+                              sub_category: skillTrainingData?.package?.focus?.error_subcategory,
+                            },
+                            uiLang,
+                          ) || tr('Навык', 'Skill')
                         )}
                       </h2>
                     </div>
@@ -19626,10 +20996,12 @@ function AppInner() {
                   <div className="theory-card">
                     <div className="theory-focus-line">
                       <strong>{tr('Фокус', 'Fokus')}:</strong>{' '}
-                      {String(skillTrainingData?.package?.focus?.skill_name || '')}
-                      {skillTrainingData?.package?.focus?.error_subcategory
-                        ? ` • ${String(skillTrainingData.package.focus.error_subcategory)}`
-                        : ''}
+                      {String(getLocalizedSkillTopicLabel({
+                        skill_id: skillTrainingData?.package?.focus?.skill_id,
+                        skill_name: skillTrainingData?.package?.focus?.skill_name,
+                        main_category: skillTrainingData?.package?.focus?.error_category,
+                        sub_category: skillTrainingData?.package?.focus?.error_subcategory,
+                      }, uiLang) || '')}
                     </div>
 
                     <div className="theory-practice-block skill-training-theory-block">
@@ -19918,8 +21290,12 @@ function AppInner() {
                   <div className="theory-card">
                     <div className="theory-focus-line">
                       <strong>{tr('Фокус', 'Fokus')}:</strong>{' '}
-                      {String(theoryPackage?.focus?.skill_name || '')}
-                      {theoryPackage?.focus?.error_subcategory ? ` • ${String(theoryPackage.focus.error_subcategory)}` : ''}
+                      {String(getLocalizedSkillTopicLabel({
+                        skill_id: theoryPackage?.focus?.skill_id,
+                        skill_name: theoryPackage?.focus?.skill_name,
+                        main_category: theoryPackage?.focus?.error_category,
+                        sub_category: theoryPackage?.focus?.error_subcategory,
+                      }, uiLang) || '')}
                     </div>
                     <h3>{String(theoryPackage?.theory?.title || tr('Теория', 'Theorie'))}</h3>
                     {theoryPackage?.theory?.core_explanation && <p>{String(theoryPackage.theory.core_explanation)}</p>}
@@ -22715,10 +24091,16 @@ function AppInner() {
                   <label className="webapp-field analytics-period-field">
                     <span>{tr('Период', 'Zeitraum')}</span>
                     <select
+                      ref={analyticsPeriodSelectRef}
                       value={analyticsPeriod}
                       onChange={(event) => {
                         const nextValue = String(event.target.value || '').trim();
                         setAnalyticsPeriod(nextValue);
+                        try {
+                          event.target.blur();
+                        } catch (_error) {
+                          // ignore blur issues on native selects
+                        }
                         if (nextValue === 'calendar') {
                           openAnalyticsCalendar();
                           return;
@@ -22795,7 +24177,17 @@ function AppInner() {
                                 <button
                                   type="button"
                                   className="secondary-button"
-                                  onClick={() => setAnalyticsCalendarOpen(false)}
+                                  onClick={() => {
+                                    setAnalyticsCalendarOpen(false);
+                                    try {
+                                      analyticsPeriodSelectRef.current?.blur?.();
+                                      if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+                                        document.activeElement.blur();
+                                      }
+                                    } catch (_error) {
+                                      // ignore focus cleanup issues on mobile clients
+                                    }
+                                  }}
                                 >
                                   {tr('Закрыть', 'Schliessen')}
                                 </button>

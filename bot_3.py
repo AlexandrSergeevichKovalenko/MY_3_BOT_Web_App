@@ -8510,7 +8510,7 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
 
 
 async def force_finalize_sessions(context: CallbackContext = None):
-    """Завершает ВСЕ незавершённые сессии только за сегодняшний день в 23:59."""
+    """Legacy/manual helper for force-closing today's open sessions."""
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -11425,7 +11425,9 @@ def main():
     scheduler.add_job(lambda: submit_async(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="mon", hour=6, minute=5) 
     #scheduler.add_job(lambda: run_async_job(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="sun", hour=7, minute=7)
     
-    scheduler.add_job(lambda: submit_async(force_finalize_sessions, CallbackContext(application=application)), "cron", hour=21, minute=59)
+    # Legacy auto-close disabled.
+    # Session auto-close now lives in backend/backend_server.py and runs via
+    # TRANSLATION_SESSIONS_AUTO_CLOSE_* on TODAY_PLAN_TZ at 23:59 by default.
     
     scheduler.add_job(lambda: submit_async(send_daily_summary), "cron", hour=20, minute=52)
     scheduler.add_job(lambda: submit_async(send_weekly_summary), "cron", day_of_week="sun", hour=20, minute=55)

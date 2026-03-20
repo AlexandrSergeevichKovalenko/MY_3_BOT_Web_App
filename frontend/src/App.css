@@ -1080,14 +1080,17 @@ body {
   z-index: 1;
   width: min(760px, 100%);
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   gap: 16px;
   padding: 24px;
+  max-height: min(88vh, 860px);
   border-radius: var(--dmps-radius-screen);
   border: 1px solid var(--dmps-border);
   background: var(--dmps-panel);
   box-shadow: var(--dmps-shadow-card-strong);
   font-family: var(--dmps-font-family);
   color: var(--dmps-text-primary);
+  overflow: hidden;
 }
 
 .onboarding-modal-head {
@@ -1120,7 +1123,10 @@ body {
   display: grid;
   grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
   gap: 18px;
-  align-items: center;
+  align-items: start;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .onboarding-mascot {
@@ -1128,6 +1134,12 @@ body {
   max-width: 220px;
   justify-self: center;
   object-fit: contain;
+}
+
+.onboarding-copy-block {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
 }
 
 .onboarding-modal-body p {
@@ -1200,6 +1212,21 @@ body {
   font-family: inherit;
   font-size: 15px;
   font-weight: 500;
+}
+
+@media (max-width: 720px) {
+  .onboarding-modal {
+    padding: 18px;
+    max-height: min(90vh, 820px);
+  }
+
+  .onboarding-modal-body {
+    grid-template-columns: 1fr;
+  }
+
+  .onboarding-mascot {
+    max-width: 136px;
+  }
 }
 
 .weekly-summary-overlay {
@@ -2684,11 +2711,12 @@ body {
 .analytics-calendar-popover {
   position: fixed;
   left: 50%;
-  bottom: max(16px, env(safe-area-inset-bottom, 0px) + 8px);
-  transform: translateX(-50%);
+  top: 50%;
+  transform: translate(-50%, -50%);
   z-index: 45;
   width: min(360px, calc(100vw - 24px));
   max-width: calc(100vw - 24px);
+  max-height: min(78vh, 520px);
   padding: 16px;
   border-radius: 22px;
   border: 1px solid rgba(94, 234, 212, 0.18);
@@ -2697,7 +2725,7 @@ body {
   display: grid;
   gap: 12px;
   box-sizing: border-box;
-  overflow: visible;
+  overflow: auto;
 }
 
 .analytics-calendar-title {
@@ -2775,23 +2803,6 @@ body {
   background: rgba(255, 209, 102, 0.15);
   color: #ffd166;
   font-weight: 600;
-}
-
-@media (min-width: 861px) {
-  .analytics-calendar-backdrop {
-    display: none;
-  }
-
-  .analytics-calendar-popover {
-    position: absolute;
-    top: calc(100% + 8px);
-    left: 0;
-    bottom: auto;
-    transform: none;
-    z-index: 30;
-    width: min(360px, calc(100vw - 48px));
-    max-width: calc(100vw - 48px);
-  }
 }
 
 .analytics-cards {
