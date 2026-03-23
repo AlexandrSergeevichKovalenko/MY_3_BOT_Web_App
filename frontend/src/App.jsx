@@ -101,6 +101,15 @@ function formatEconomicsUnitsLabel(unitsType, uiLang) {
   return map[value] || value || 'units';
 }
 
+function formatEconomicsCompactNumber(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return '0';
+  if (Math.abs(numeric) >= 100) return numeric.toFixed(0);
+  if (Math.abs(numeric) >= 10) return numeric.toFixed(1);
+  if (Math.abs(numeric) >= 1) return numeric.toFixed(2);
+  return numeric.toFixed(3);
+}
+
 function formatDateInputValue(value) {
   const date = value instanceof Date ? new Date(value) : new Date(value || Date.now());
   if (Number.isNaN(date.getTime())) {
@@ -127,6 +136,26 @@ function buildDefaultAnalyticsCalendarRange() {
     startDate: addCalendarDays(today, -29),
     endDate: today,
   };
+}
+
+function beginAsyncGuard(ref) {
+  const nextToken = Number(ref?.current || 0) + 1;
+  ref.current = nextToken;
+  return nextToken;
+}
+
+function invalidateAsyncGuard(ref) {
+  return beginAsyncGuard(ref);
+}
+
+function invalidateAsyncGuards(...refs) {
+  refs.forEach((ref) => {
+    invalidateAsyncGuard(ref);
+  });
+}
+
+function isAsyncGuardCurrent(ref, token) {
+  return Number(ref?.current || 0) === Number(token || 0);
 }
 
 function parseIsoDateParts(value) {
@@ -261,6 +290,9 @@ const SKILL_SEGMENT_LOCALIZATION = {
   'Indicative': { ru: 'изъявительное наклонение', de: 'Indikativ' },
   'Declarative': { ru: 'повествовательная форма', de: 'Aussagesatz' },
   'Interrogative': { ru: 'вопросительная форма', de: 'Fragesatz' },
+  'Infinitive Clauses vs dass-clause': { ru: 'инфинитивный оборот или dass-придаточное', de: 'Infinitivkonstruktion oder dass-Satz' },
+  'Reported Speech (Indirekte Rede)': { ru: 'косвенная речь', de: 'indirekte Rede' },
+  'Concessive Clauses (obwohl)': { ru: 'уступительные придаточные с obwohl', de: 'Konzessivsaetze mit obwohl' },
   'Imperative': { ru: 'повелительное наклонение', de: 'Imperativ' },
   'Subjunctive 1': { ru: 'Konjunktiv I', de: 'Konjunktiv I' },
   'Subjunctive 1 (Konjunktiv I)': { ru: 'Konjunktiv I', de: 'Konjunktiv I' },
@@ -290,6 +322,9 @@ const SKILL_ID_LOCALIZATION = {
   'de_verbs_verb_valency_missing_object_complement': { ru: 'Глаголы: управление', de: 'Verben: Verbvalenz' },
   'de_negation_nicht_vs_kein': { ru: 'Отрицание: nicht и kein', de: 'Negation: nicht und kein' },
   'de_negation_negation_placement': { ru: 'Отрицание: место отрицания', de: 'Negation: Stellung' },
+  'de_clauses_sentence_types_infinitive_clauses_vs_dass_clause': { ru: 'Типы предложений: инфинитивный оборот или dass-придаточное', de: 'Satztypen: Infinitivkonstruktion oder dass-Satz' },
+  'de_moods_reported_speech_indirekte_rede': { ru: 'Наклонение: косвенная речь', de: 'Modus: indirekte Rede' },
+  'de_clauses_sentence_types_concessive_clauses_obwohl': { ru: 'Типы предложений: уступительные придаточные с obwohl', de: 'Satztypen: Konzessivsaetze mit obwohl' },
 };
 
 function getLocalizedSkillDisplayName(skillLike, uiLang = 'ru') {
@@ -2214,7 +2249,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
   heroStickerSrc,
   isFocusedTranslations,
   goHomeScreen,
-  renderTranslationsTaskHud,
   showTranslationStartConfigurator,
   todayTranslationRecommendation,
   customTopicLabel,
@@ -2324,7 +2358,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
             )}
           </div>
           <div className="translations-title-side">
-            {renderTranslationsTaskHud()}
             <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
           </div>
         </div>
@@ -2862,9 +2895,10 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   const ringStep = 14;
   const weeklyPlanUsesDeferredAnalytics = planAnalyticsPeriod !== 'week';
   const hasPlanAnalyticsMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0;
+  const useLivePlanAnalyticsMetrics = hasPlanAnalyticsMetrics && !planAnalyticsError;
   const weeklyMetrics = weeklyPlanUsesDeferredAnalytics
-    ? (hasPlanAnalyticsMetrics ? planAnalyticsMetrics : {})
-    : (weeklyPlan?.metrics || {});
+    ? (useLivePlanAnalyticsMetrics ? planAnalyticsMetrics : {})
+    : (useLivePlanAnalyticsMetrics ? planAnalyticsMetrics : (weeklyPlan?.metrics || {}));
   const hasWeeklyPlanSnapshot = Boolean(
     weeklyPlan?.week
     || (weeklyPlan?.metrics && Object.keys(weeklyPlan.metrics).length > 0)
@@ -2907,10 +2941,10 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   ]), [tr, weeklyMetrics]);
   const hasWeeklyMetricRows = weeklyMetricRows.some((item) => Object.keys(item.data || {}).length > 0);
   const canRenderWeeklyMetrics = weeklyPlanUsesDeferredAnalytics
-    ? hasPlanAnalyticsMetrics && !planAnalyticsError
-    : hasWeeklyMetricRows;
+    ? useLivePlanAnalyticsMetrics
+    : (useLivePlanAnalyticsMetrics || hasWeeklyMetricRows);
   const showWeeklyPlanSkeleton = !weeklyPlanError && !canRenderWeeklyMetrics;
-  const weeklyWeekLabel = weeklyPlanUsesDeferredAnalytics
+  const weeklyWeekLabel = (weeklyPlanUsesDeferredAnalytics || useLivePlanAnalyticsMetrics)
     ? (
       planAnalyticsRange?.start_date && planAnalyticsRange?.end_date
         ? `${planAnalyticsRange.start_date} — ${planAnalyticsRange.end_date}`
@@ -2924,7 +2958,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   const periodDaysElapsed = Math.max(
     0,
     Number(
-      weeklyPlanUsesDeferredAnalytics
+      (weeklyPlanUsesDeferredAnalytics || useLivePlanAnalyticsMetrics)
         ? (planAnalyticsRange?.days_elapsed ?? 0)
         : (weeklyPlan?.week?.days_elapsed ?? 0)
     ) || 0
@@ -2932,7 +2966,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   const periodDaysTotal = Math.max(
     1,
     Number(
-      weeklyPlanUsesDeferredAnalytics
+      (weeklyPlanUsesDeferredAnalytics || useLivePlanAnalyticsMetrics)
         ? (planAnalyticsRange?.days_total ?? 7)
         : (weeklyPlan?.week?.days_total ?? 7)
     ) || 1
@@ -3723,6 +3757,7 @@ function AppInner() {
   const [youtubeInput, setYoutubeInput] = useState('');
   const [youtubeId, setYoutubeId] = useState('');
   const [youtubeError, setYoutubeError] = useState('');
+  const [youtubeEmptyState, setYoutubeEmptyState] = useState(null);
   const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
   const [youtubeSearchResults, setYoutubeSearchResults] = useState([]);
   const [youtubeSearchError, setYoutubeSearchError] = useState('');
@@ -3825,6 +3860,7 @@ function AppInner() {
   const [flashcardsOnly, setFlashcardsOnly] = useState(false);
   const [flashcardsLoading, setFlashcardsLoading] = useState(false);
   const [flashcardsError, setFlashcardsError] = useState('');
+  const [flashcardsEmptyState, setFlashcardsEmptyState] = useState(null);
   const [flashcards, setFlashcards] = useState([]);
   const [flashcardPool, setFlashcardPool] = useState([]);
   const [flashcardIndex, setFlashcardIndex] = useState(0);
@@ -3955,6 +3991,25 @@ function AppInner() {
     }
     return rawValue;
   }, [topics]);
+  const resolveRecommendedTopicSelection = useCallback((topicLabel, fallbackCustomFocus = '') => {
+    const rawTopicLabel = String(topicLabel || '').trim();
+    const rawFallbackCustomFocus = String(fallbackCustomFocus || '').trim();
+    if (!rawTopicLabel) {
+      return null;
+    }
+    const normalizedTopic = normalizeSelectedTopicValue(rawTopicLabel);
+    const hasExactTopicMatch = topics.some((topic) => String(topic || '').trim() === normalizedTopic);
+    if (hasExactTopicMatch || normalizedTopic === CUSTOM_TOPIC || isStoryTopic(normalizedTopic)) {
+      return {
+        topic: normalizedTopic,
+        customFocus: '',
+      };
+    }
+    return {
+      topic: CUSTOM_TOPIC,
+      customFocus: rawFallbackCustomFocus || rawTopicLabel,
+    };
+  }, [normalizeSelectedTopicValue, topics]);
   const handleTopicChange = useCallback((event) => {
     setSelectedTopic(normalizeSelectedTopicValue(event?.target?.value));
   }, [normalizeSelectedTopicValue]);
@@ -3996,6 +4051,7 @@ function AppInner() {
       itemId: Number(item?.id || 0),
       title: localizedTopicLabel || tr('Персональный фокус дня', 'Persoenlicher Fokus des Tages'),
       reason: localizedTopicLabel,
+      presetTopicLabel: recommendedTopicLabel,
       topicLabel: localizedRecommendedTopicLabel || localizedTopicLabel,
       customFocus: recommendedCustomFocus,
       level: recommendedLevel,
@@ -4012,18 +4068,29 @@ function AppInner() {
     if (['a1', 'a2', 'b1', 'b2', 'c1', 'c2'].includes(recommendedLevel)) {
       setSelectedLevel(recommendedLevel);
     }
-    const recommendedTopicLabel = String(todayTranslationRecommendation?.topicLabel || '').trim();
+    const recommendedPresetTopicLabel = String(todayTranslationRecommendation?.presetTopicLabel || '').trim();
     const recommendedCustomFocus = String(todayTranslationRecommendation?.customFocus || '').trim();
-    if (recommendedTopicLabel && recommendedTopicLabel !== CUSTOM_TOPIC) {
-      setSelectedTopic(normalizeSelectedTopicValue(recommendedTopicLabel));
-      setCustomTopicInput('');
+    if (recommendedPresetTopicLabel && recommendedPresetTopicLabel !== CUSTOM_TOPIC) {
+      const resolvedSelection = resolveRecommendedTopicSelection(
+        recommendedPresetTopicLabel,
+        recommendedCustomFocus,
+      );
+      if (resolvedSelection) {
+        setSelectedTopic(resolvedSelection.topic);
+        setCustomTopicInput(resolvedSelection.customFocus);
+        return;
+      }
+    }
+    if (recommendedPresetTopicLabel === CUSTOM_TOPIC && recommendedCustomFocus) {
+      setSelectedTopic(CUSTOM_TOPIC);
+      setCustomTopicInput(recommendedCustomFocus);
       return;
     }
     if (recommendedCustomFocus) {
       setSelectedTopic(CUSTOM_TOPIC);
       setCustomTopicInput(recommendedCustomFocus);
     }
-  }, [todayTranslationRecommendation, normalizeSelectedTopicValue]);
+  }, [todayTranslationRecommendation, resolveRecommendedTopicSelection]);
   const [storyMode, setStoryMode] = useState('new');
   const [storyType, setStoryType] = useState('знаменитая личность');
   const [storyDifficulty, setStoryDifficulty] = useState('средний');
@@ -4068,6 +4135,7 @@ function AppInner() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuMultiSelect, setMenuMultiSelect] = useState(false);
   const [analyticsPeriod, setAnalyticsPeriod] = useState('week');
+  const [analyticsPeriodSelectVersion, setAnalyticsPeriodSelectVersion] = useState(0);
   const [analyticsCalendarOpen, setAnalyticsCalendarOpen] = useState(false);
   const [analyticsCustomStartDate, setAnalyticsCustomStartDate] = useState('');
   const [analyticsCustomEndDate, setAnalyticsCustomEndDate] = useState('');
@@ -4081,9 +4149,16 @@ function AppInner() {
   const [analyticsRank, setAnalyticsRank] = useState(null);
   const [analyticsScopeData, setAnalyticsScopeData] = useState(null);
   const [analyticsScopeKey, setAnalyticsScopeKey] = useState('personal');
+  const [analyticsBootstrapReady, setAnalyticsBootstrapReady] = useState(false);
   const [analyticsScopeLoading, setAnalyticsScopeLoading] = useState(false);
   const [analyticsScopeSaving, setAnalyticsScopeSaving] = useState(false);
   const [analyticsScopeError, setAnalyticsScopeError] = useState('');
+  const [progressResetInfo, setProgressResetInfo] = useState(null);
+  const [progressResetLoading, setProgressResetLoading] = useState(false);
+  const [progressResetSaving, setProgressResetSaving] = useState(false);
+  const [progressResetError, setProgressResetError] = useState('');
+  const [progressResetModalOpen, setProgressResetModalOpen] = useState(false);
+  const [progressResetDraftDate, setProgressResetDraftDate] = useState('');
   const [economicsPeriod, setEconomicsPeriod] = useState(() => readStoredEconomicsPeriod());
   const [economicsProvider, setEconomicsProvider] = useState(() => readStoredEconomicsProvider());
   const [economicsLoading, setEconomicsLoading] = useState(false);
@@ -4134,7 +4209,6 @@ function AppInner() {
   const showTranslationStartConfigurator = !(hasActiveTranslationSentences || hasActiveRegularTranslationSession);
   const selectedTopicIsStoryTopic = isStoryTopic(selectedTopic);
   const selectedTopicIsCustomTopic = isCustomTopic(selectedTopic);
-  const BLOCKS_SINGLE_WORD_MAX_LEN = 10;
   const FLASHCARDS_LOAD_DEDUP_WINDOW_MS = 900;
   const SRS_NEXT_DEDUP_WINDOW_MS = 900;
   const SRS_EASY_LOCK_AFTER_SEC = 5;
@@ -4205,6 +4279,7 @@ function AppInner() {
   const negativeAudioRef = useRef(null);
   const timeoutAudioRef = useRef(null);
   const avatarInputRef = useRef(null);
+  const starterDictionaryPollTokenRef = useRef(0);
   const analyticsRef = useRef(null);
   const analyticsCalendarRef = useRef(null);
   const analyticsPeriodSelectRef = useRef(null);
@@ -4216,6 +4291,8 @@ function AppInner() {
   const guideRef = useRef(null);
   const analyticsTrendRef = useRef(null);
   const analyticsCompareRef = useRef(null);
+  const analyticsCompareWordsRef = useRef(null);
+  const analyticsCompareErrorsRef = useRef(null);
   const selectionMenuRef = useRef(null);
   const telegramLoginWidgetRef = useRef(null);
   const youtubeAutoFolderCacheRef = useRef(new Map());
@@ -4230,6 +4307,13 @@ function AppInner() {
   const singleInstanceStopTtsRef = useRef(null);
   const singleInstancePauseTimersRef = useRef(null);
   const inlineToastTimeoutRef = useRef(null);
+  const browserAuthRequestIdRef = useRef(0);
+  const bootstrapRequestIdRef = useRef(0);
+  const todayPlanRequestIdRef = useRef(0);
+  const skillReportRequestIdRef = useRef(0);
+  const weeklyPlanRequestIdRef = useRef(0);
+  const languageProfileRequestIdRef = useRef(0);
+  const starterDictionaryStatusRequestIdRef = useRef(0);
 
   const analyticsCalendarRangeValid = Boolean(
     analyticsCustomStartDate
@@ -4248,7 +4332,18 @@ function AppInner() {
     const locale = uiLang === 'de' ? 'de-AT' : 'ru-RU';
     return `${formatAnalyticsCalendarDisplayDate(analyticsCustomStartDate, locale)} - ${formatAnalyticsCalendarDisplayDate(analyticsCustomEndDate, locale)}`;
   }, [analyticsCalendarRangeValid, analyticsCustomEndDate, analyticsCustomStartDate, tr, uiLang]);
+  const progressResetDateLabel = useMemo(() => {
+    const locale = uiLang === 'de' ? 'de-AT' : 'ru-RU';
+    const resetDate = String(progressResetInfo?.reset?.reset_date || '').trim();
+    if (!resetDate) {
+      return tr('Без точки отсчета', 'Ohne Neustart-Datum');
+    }
+    return formatAnalyticsCalendarDisplayDate(resetDate, locale) || resetDate;
+  }, [progressResetInfo, tr, uiLang]);
+  const progressResetMaxDate = String(progressResetInfo?.date_bounds?.max_date || '').trim();
   const readerSessionStartingRef = useRef(false);
+  const readerSessionPingInFlightRef = useRef(false);
+  const readerLastPingSecondRef = useRef(-1);
   const readerStateSaveTimeoutRef = useRef(null);
   const readerTimerIntervalRef = useRef(null);
   const readerIdleTimeoutRef = useRef(null);
@@ -4281,6 +4376,7 @@ function AppInner() {
   const translationProgressiveFillPollTokenRef = useRef(0);
   const translationFinishInFlightRef = useRef(false);
   const translationDraftsRef = useRef({});
+  const translationShownAckedRef = useRef(new Map());
   const translationDraftFieldAccessorsRef = useRef(new Map());
   const translationDraftSyncTimeoutRef = useRef(null);
   const translationDraftStorageTimeoutRef = useRef(null);
@@ -4385,6 +4481,10 @@ function AppInner() {
     const scopeKey = translationDraftScopeKey || 'nosession';
     return `webappDrafts_${stableId}_${scopeKey}`;
   }, [webappUser?.id, initData, translationDraftScopeKey]);
+  const activeTranslationSessionWarning = tr(
+    'У вас уже есть незавершённая сессия. Сначала завершите её кнопкой «Завершить» или переведите оставшиеся предложения. Все показанные, но не переведённые предложения ухудшат вашу статистику и итоговый балл.',
+    'Du hast bereits eine unvollstaendige Session. Beende sie zuerst mit „Abschliessen“ oder uebersetze die restlichen Saetze. Alle gezeigten, aber nicht uebersetzten Saetze verschlechtern deine Statistik und deinen Gesamtscore.'
+  );
   const flushTranslationDraftAndroidDebugSummary = useCallback((reason = 'timer') => {
     if (!androidTranslationDraftDebugConfig.enabled) {
       return;
@@ -4777,7 +4877,7 @@ function AppInner() {
         keepalive: Boolean(options?.keepalive),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка старта', 'Startfehler'));
       }
       return await response.json();
     } catch (error) {
@@ -5385,7 +5485,7 @@ function AppInner() {
       free: {
         title: tr('Лимиты тарифа Free', 'Limits des Free-Tarifs'),
         items: [
-          tr('Переводы: безлимитно.', 'Uebersetzungen: unbegrenzt.'),
+          tr('Переводы: 1 набор в день (7 предложений).', 'Uebersetzungen: 1 Set pro Tag (7 Saetze).'),
           tr('Читалка: 1 книга/документ в архиве (период хранения до 30 дней).', 'Reader: 1 Buch/Dokument im Archiv (Speicherzeit bis 30 Tage).'),
           tr('Чтобы добавить новую книгу, нужно удалить предыдущую.', 'Um ein neues Buch hinzuzufuegen, muss das vorherige geloescht werden.'),
           tr('Скачивание аудио из читалки: недоступно.', 'Audio-Export aus dem Reader: nicht verfuegbar.'),
@@ -5499,6 +5599,7 @@ function AppInner() {
       setWebappError(normalizedMessage || initDataExpiredMiniAppMsg);
       return;
     }
+    invalidateAsyncGuard(browserAuthRequestIdRef);
     safeStorageRemove('browser_init_data');
     setInitData('');
     setSessionId(null);
@@ -5655,6 +5756,12 @@ function AppInner() {
         const limit = Number(payload.limit || 0);
         const unit = String(payload.unit || '').trim();
         const resetAt = String(payload.reset_at || '');
+        if (feature === 'translation_daily_sets') {
+          return tr(
+            `В бесплатном режиме доступен 1 набор переводов в день: 7 предложений. Следующий набор будет доступен после сброса: ${resetAt}`,
+            `Im Free-Modus ist 1 Uebersetzungsset pro Tag verfuegbar: 7 Saetze. Das naechste Set ist nach dem Reset verfuegbar: ${resetAt}`
+          );
+        }
         return tr(
           `Лимит функции исчерпан (${feature}): ${used} / ${limit} ${unit}. Сброс: ${resetAt}`,
           `Funktionslimit erreicht (${feature}): ${used} / ${limit} ${unit}. Reset: ${resetAt}`
@@ -5829,6 +5936,53 @@ function AppInner() {
     }
     return response;
   }, [fetchWithTimeout]);
+  const isRetryablePostError = useCallback((error) => {
+    const name = String(error?.name || '').trim().toLowerCase();
+    const raw = String(error?.message || '').trim().toLowerCase();
+    if (name === 'aborterror' || name === 'timeouterror') {
+      return true;
+    }
+    return (
+      raw.includes('load failed')
+      || raw.includes('failed to fetch')
+      || raw.includes('networkerror')
+      || raw.includes('network request failed')
+      || raw.includes('timeout')
+      || raw.includes('timed out')
+      || raw.includes('application failed to respond')
+    );
+  }, []);
+  const postJsonWithRetry = useCallback(async (url, body, options = {}) => {
+    const timeoutMs = Math.max(1000, Number(options?.timeoutMs || 30000));
+    const maxAttempts = Math.max(1, Number(options?.maxAttempts || 2));
+    let lastResponse = null;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const response = await fetchWithTimeout(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body || {}),
+        }, timeoutMs);
+        lastResponse = response;
+        if (response.ok || response.status < 500 || attempt >= maxAttempts) {
+          return response;
+        }
+      } catch (error) {
+        lastError = error;
+        if (!isRetryablePostError(error) || attempt >= maxAttempts) {
+          throw error;
+        }
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, attempt === 1 ? 320 : 520));
+    }
+
+    if (lastResponse) {
+      return lastResponse;
+    }
+    throw lastError || new Error('Request failed');
+  }, [fetchWithTimeout, isRetryablePostError]);
   const learningLanguageOptions = [
     { value: 'de', label: tr('Немецкий', 'Deutsch') },
     { value: 'en', label: tr('Английский', 'Englisch') },
@@ -6114,6 +6268,7 @@ function AppInner() {
   }, []);
 
   const handleBrowserLogout = () => {
+    invalidateAsyncGuard(browserAuthRequestIdRef);
     safeStorageRemove('browser_init_data');
     setInitData('');
     setSessionId(null);
@@ -6128,6 +6283,7 @@ function AppInner() {
       setBrowserAuthError(tr('Не удалось получить данные Telegram Login.', 'Telegram-Login-Daten konnten nicht gelesen werden.'));
       return;
     }
+    const requestId = beginAsyncGuard(browserAuthRequestIdRef);
     try {
       setBrowserAuthLoading(true);
       setBrowserAuthError('');
@@ -6140,6 +6296,9 @@ function AppInner() {
         throw new Error(await response.text());
       }
       const data = await response.json();
+      if (!isAsyncGuardCurrent(browserAuthRequestIdRef, requestId)) {
+        return;
+      }
       if (!data?.initData) {
         throw new Error(tr('Сервер не вернул initData', 'Server hat initData nicht zurueckgegeben'));
       }
@@ -6150,9 +6309,14 @@ function AppInner() {
       }
       setWebappChatType(data.chat_type || 'browser');
     } catch (error) {
+      if (!isAsyncGuardCurrent(browserAuthRequestIdRef, requestId)) {
+        return;
+      }
       setBrowserAuthError(`${tr('Ошибка входа', 'Login-Fehler')}: ${error.message}`);
     } finally {
-      setBrowserAuthLoading(false);
+      if (isAsyncGuardCurrent(browserAuthRequestIdRef, requestId)) {
+        setBrowserAuthLoading(false);
+      }
     }
   };
 
@@ -7198,6 +7362,7 @@ function AppInner() {
 
   const loadTodayPlan = async () => {
     if (!initData) return;
+    const requestId = beginAsyncGuard(todayPlanRequestIdRef);
     try {
       setTodayPlanLoading(true);
       setTodayPlanError('');
@@ -7206,6 +7371,9 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка загрузки плана на сегодня', 'Fehler beim Laden des Tagesplans'));
       }
       const data = await response.json();
+      if (!isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
+        return;
+      }
       const nextPlan = {
         date: data?.date || null,
         total_minutes: data?.total_minutes || 0,
@@ -7219,15 +7387,21 @@ function AppInner() {
         'Не удалось загрузить задачи на сегодня.',
         'Tagesaufgaben konnten nicht geladen werden.'
       );
+      if (!isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
+        return;
+      }
       setTodayPlanError(friendly);
     } finally {
-      setTodayPlanLoadedOnce(true);
-      setTodayPlanLoading(false);
+      if (isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
+        setTodayPlanLoadedOnce(true);
+        setTodayPlanLoading(false);
+      }
     }
   };
 
   const loadSkillReport = async () => {
     if (!initData) return;
+    const requestId = beginAsyncGuard(skillReportRequestIdRef);
     try {
       setSkillReportLoading(true);
       setSkillReportError('');
@@ -7236,6 +7410,9 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка загрузки отчета по навыкам', 'Fehler beim Laden des Skills-Reports'));
       }
       const data = await response.json();
+      if (!isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
+        return;
+      }
       const nextReport = {
         updated_at: data?.updated_at || null,
         top_weak: Array.isArray(data?.top_weak) ? data.top_weak : [],
@@ -7253,15 +7430,21 @@ function AppInner() {
         'Не удалось загрузить прогресс навыков.',
         'Skill-Fortschritt konnte nicht geladen werden.'
       );
+      if (!isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
+        return;
+      }
       setSkillReportError(friendly);
     } finally {
-      setSkillReportLoadedOnce(true);
-      setSkillReportLoading(false);
+      if (isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
+        setSkillReportLoadedOnce(true);
+        setSkillReportLoading(false);
+      }
     }
   };
 
   const loadWeeklyPlan = async () => {
     if (!initData) return;
+    const requestId = beginAsyncGuard(weeklyPlanRequestIdRef);
     try {
       setWeeklyPlanLoading(true);
       setWeeklyPlanError('');
@@ -7270,6 +7453,9 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка загрузки недельного плана', 'Fehler beim Laden des Wochenplans'));
       }
       const data = await response.json();
+      if (!isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
+        return;
+      }
       const plan = {
         week: data?.week || null,
         plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
@@ -7284,9 +7470,14 @@ function AppInner() {
         'Не удалось загрузить недельный план.',
         'Wochenplan konnte nicht geladen werden.'
       );
+      if (!isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
+        return;
+      }
       setWeeklyPlanError(friendly);
     } finally {
-      setWeeklyPlanLoading(false);
+      if (isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
+        setWeeklyPlanLoading(false);
+      }
     }
   };
 
@@ -7600,6 +7791,7 @@ function AppInner() {
     const videoUrl = String(video?.video_url || '').trim();
     const videoId = String(video?.video_id || '').trim();
     if (!videoUrl && !videoId) return;
+    setYoutubeEmptyState(null);
     setYoutubeInput(videoUrl || `https://youtu.be/${videoId}`);
     setYoutubeForceShowPanel(true);
     setYoutubeBackSection('skill_training');
@@ -8067,6 +8259,114 @@ function AppInner() {
   const startTodayTask = async (item) => {
     if (!item?.id) return;
     const initialTaskType = String(item?.task_type || '').toLowerCase();
+    if (initialTaskType === 'translation') {
+      if (translationStartInFlightRef.current) {
+        return;
+      }
+      if (!initData) {
+        setWebappError(initDataMissingMsg);
+        return;
+      }
+      translationStartInFlightRef.current = true;
+      translationProgressiveFillPollTokenRef.current += 1;
+      setTranslationProgressiveFill({
+        active: false,
+        sessionId: null,
+        readyCount: 0,
+        expectedTotal: 7,
+      });
+      setTodayItemLoading((prev) => ({ ...prev, [item.id]: 'start' }));
+      setWebappLoading(true);
+      setWebappError('');
+      setTodayPlanError('');
+      setFinishMessage('');
+      setFinishStatus('idle');
+      setTranslationCheckProgress({ active: false, done: 0, total: 0 });
+      try {
+        const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+        const level = String(payload?.recommended_level || payload?.level || selectedLevel || 'b1').trim().toLowerCase() || 'b1';
+        const response = await fetch(`/api/today/items/${item.id}/translation/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            level,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(await readApiError(response, 'Ошибка запуска переводов по задаче дня', 'Fehler beim Start der Tages-Uebersetzungen'));
+        }
+        const data = await response.json();
+        const updatedItem = data?.item && typeof data.item === 'object' ? data.item : item;
+        setTodayPlan((prev) => {
+          if (!prev || !Array.isArray(prev.items)) return prev;
+          return {
+            ...prev,
+            items: prev.items.map((planItem) => (planItem.id === updatedItem.id ? { ...planItem, ...updatedItem } : planItem)),
+          };
+        });
+        await syncTodayItemTimer(updatedItem, 'start', {
+          elapsedSeconds: getTodayItemElapsedSeconds(updatedItem, Date.now()),
+          running: true,
+        });
+
+        const nextSessionType = String(data?.type || 'regular').trim() || 'regular';
+        const nextSessionId = nextSessionType === 'regular' ? String(data?.session_id || '').trim() || null : null;
+        const nextItems = Array.isArray(data?.items) ? data.items : [];
+        const expectedTotal = Math.max(1, Number(data?.expected_total || 7));
+        const readyCount = Number(data?.ready_count || nextItems.length || 0);
+        const generationInProgress = Boolean(data?.generation_in_progress) && readyCount < expectedTotal;
+
+        openSingleSectionAndScroll('translations', translationsRef);
+        setTodayTranslationRecommendation(buildTodayTranslationRecommendation(updatedItem));
+        setSessionType(nextSessionType);
+        translationSessionIdRef.current = nextSessionId || '';
+        setTranslationSessionId(nextSessionId);
+        setSentences(nextItems);
+        setResults([]);
+        setTranslationAudioGrammarOptIn({});
+        setTranslationAudioGrammarSaving({});
+        setExplanations({});
+        setExplanationLoading({});
+        setTranslationProgressiveFill({
+          active: generationInProgress,
+          sessionId: nextSessionId,
+          readyCount,
+          expectedTotal,
+        });
+        if (data?.blocked) {
+          setFinishMessage(activeTranslationSessionWarning);
+        }
+        if (generationInProgress && nextSessionId) {
+          const pollToken = translationProgressiveFillPollTokenRef.current + 1;
+          translationProgressiveFillPollTokenRef.current = pollToken;
+          void pollTranslationProgressiveFill({
+            sessionId: nextSessionId,
+            expectedTotal,
+            pollToken,
+          });
+        }
+        return;
+      } catch (error) {
+        const friendly = normalizeNetworkErrorMessage(
+          error,
+          'Не удалось запустить переводы по задаче дня.',
+          'Tages-Uebersetzungen konnten nicht gestartet werden.'
+        );
+        setTodayPlanError(friendly);
+        setWebappError(friendly);
+        return;
+      } finally {
+        translationStartInFlightRef.current = false;
+        setWebappLoading(false);
+        setTodayItemLoading((prev) => {
+          const next = { ...prev };
+          delete next[item.id];
+          return next;
+        });
+      }
+    }
+
     if (initialTaskType === 'video' || initialTaskType === 'youtube') {
       const initialPayload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
       const initialVideoUrl = String(initialPayload.video_url || '').trim();
@@ -8078,6 +8378,7 @@ function AppInner() {
       setYoutubeSearchResults([]);
       setYoutubeSearchError('');
       setYoutubeError('');
+      setYoutubeEmptyState(null);
       setYoutubeRecommendationLoading(true);
       if (initialVideoUrl) {
         setYoutubeInput(initialVideoUrl);
@@ -8101,6 +8402,7 @@ function AppInner() {
           let videoUrl = String(payload.video_url || initialVideoUrl).trim();
           let videoId = String(payload.video_id || initialVideoId).trim();
           let videoTitle = String(payload.video_title || '').trim();
+          let nextYoutubeEmptyState = null;
 
           if (!videoUrl && !videoId && initData) {
             const response = await fetch('/api/today/video/recommend', {
@@ -8120,10 +8422,14 @@ function AppInner() {
             if (response.ok) {
               const data = await response.json();
               const recommended = data?.video && typeof data.video === 'object' ? data.video : {};
+              const emptyReason = String(data?.empty_reason || '').trim().toLowerCase();
               const updatedItem = data?.updated_item && typeof data.updated_item === 'object' ? data.updated_item : null;
               videoUrl = String(recommended.video_url || videoUrl).trim();
               videoId = String(recommended.video_id || videoId).trim();
               videoTitle = String(recommended.title || videoTitle).trim();
+              if (!videoUrl && !videoId && emptyReason) {
+                nextYoutubeEmptyState = buildYoutubeEmptyState(emptyReason);
+              }
               setTodayPlan((prev) => {
                 if (!prev || !Array.isArray(prev.items)) return prev;
                 return {
@@ -8151,15 +8457,21 @@ function AppInner() {
 
           if (videoUrl) {
             setYoutubeError('');
+            setYoutubeEmptyState(null);
             setYoutubeInput(videoUrl);
           } else if (videoId) {
             setYoutubeError('');
+            setYoutubeEmptyState(null);
             setYoutubeInput(`https://youtu.be/${videoId}`);
+          } else if (nextYoutubeEmptyState) {
+            setYoutubeError('');
+            setYoutubeEmptyState(nextYoutubeEmptyState);
           } else {
             setYoutubeError(tr('Видео по текущему слабому навыку не найдено. Попробуйте обновить план.', 'Kein passendes Video fuer den aktuellen schwachen Skill gefunden. Bitte Plan aktualisieren.'));
           }
         } catch (error) {
           console.warn('today video recommendation failed', error);
+          setYoutubeEmptyState(null);
           if (!initialVideoUrl && !initialVideoId) {
             setYoutubeError(normalizeNetworkErrorMessage(
               error,
@@ -8590,6 +8902,11 @@ function AppInner() {
       last_imported_count: Math.max(0, Number(stateRaw.last_imported_count || 0) || 0),
       decided_at: String(stateRaw.decided_at || '').trim() || null,
       last_imported_at: String(stateRaw.last_imported_at || '').trim() || null,
+      import_status: String(stateRaw.import_status || 'idle').trim().toLowerCase() || 'idle',
+      active_job_id: String(stateRaw.active_job_id || '').trim() || null,
+      last_error: String(stateRaw.last_error || '').trim() || null,
+      import_started_at: String(stateRaw.import_started_at || '').trim() || null,
+      import_finished_at: String(stateRaw.import_finished_at || '').trim() || null,
       updated_at: String(stateRaw.updated_at || '').trim() || null,
     };
     return {
@@ -8610,8 +8927,72 @@ function AppInner() {
     };
   }, []);
 
+  const pollStarterDictionaryStatus = useCallback((initialDelayMs = 0) => {
+    if (!initData) return;
+    const pollToken = starterDictionaryPollTokenRef.current + 1;
+    starterDictionaryPollTokenRef.current = pollToken;
+    const run = async () => {
+      let attempts = 0;
+      while (starterDictionaryPollTokenRef.current === pollToken) {
+        if (attempts > 0 || initialDelayMs > 0) {
+          const delayMs = attempts === 0 ? initialDelayMs : 1500;
+          await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+        }
+        attempts += 1;
+        try {
+          const response = await fetch('/api/webapp/starter-dictionary/status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData }),
+          });
+          if (!response.ok) {
+            throw new Error(await readApiError(response, 'Ошибка статуса базового словаря', 'Fehler beim Basiswoerterbuch-Status'));
+          }
+          const data = await response.json();
+          if (starterDictionaryPollTokenRef.current !== pollToken) return;
+          const offer = normalizeStarterDictionaryOffer(data?.offer);
+          setStarterDictionaryOffer(offer);
+          setStarterDictionaryPromptOpen(Boolean(offer?.should_prompt));
+          const importStatus = String(offer?.state?.import_status || 'idle').trim().toLowerCase() || 'idle';
+          if (importStatus === 'running') {
+            setStarterDictionaryActionMessage(tr(
+              'Базовый словарь подключается в фоне. Можно продолжать пользоваться приложением.',
+              'Das Basiswoerterbuch wird im Hintergrund verbunden. Du kannst die App weiter benutzen.'
+            ));
+            continue;
+          }
+          if (importStatus === 'done') {
+            const inserted = Math.max(0, Number(offer?.state?.last_imported_count || 0) || 0);
+            const folderName = String(offer?.folder_name || '').trim();
+            const message = inserted > 0
+              ? tr(`Базовый словарь подключён: +${inserted} записей${folderName ? ` (${folderName})` : ''}.`, `Basiswoerterbuch verbunden: +${inserted} Eintraege${folderName ? ` (${folderName})` : ''}.`)
+              : tr('Базовый словарь уже подключён. Новых записей не найдено.', 'Basiswoerterbuch ist bereits verbunden. Keine neuen Eintraege gefunden.');
+            setStarterDictionaryActionError('');
+            setStarterDictionaryActionMessage(message);
+            return;
+          }
+          if (importStatus === 'failed') {
+            const failureMessage = String(offer?.state?.last_error || '').trim()
+              || tr('Не удалось подключить базовый словарь.', 'Basiswoerterbuch konnte nicht verbunden werden.');
+            setStarterDictionaryActionMessage('');
+            setStarterDictionaryActionError(failureMessage);
+            return;
+          }
+          return;
+        } catch (error) {
+          if (starterDictionaryPollTokenRef.current !== pollToken) return;
+          setStarterDictionaryActionMessage('');
+          setStarterDictionaryActionError(String(error?.message || tr('Ошибка статуса базового словаря', 'Fehler beim Basiswoerterbuch-Status')));
+          return;
+        }
+      }
+    };
+    void run();
+  }, [initData, normalizeStarterDictionaryOffer, readApiError, tr]);
+
   const loadStarterDictionaryStatus = useCallback(async () => {
     if (!initData) return;
+    const requestId = beginAsyncGuard(starterDictionaryStatusRequestIdRef);
     try {
       const response = await fetch('/api/webapp/starter-dictionary/status', {
         method: 'POST',
@@ -8622,13 +9003,24 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка загрузки базового словаря', 'Fehler beim Laden des Basiswoerterbuchs'));
       }
       const data = await response.json();
+      if (!isAsyncGuardCurrent(starterDictionaryStatusRequestIdRef, requestId)) {
+        return;
+      }
       const offer = normalizeStarterDictionaryOffer(data?.offer);
       setStarterDictionaryOffer(offer);
       setStarterDictionaryPromptOpen(Boolean(offer?.should_prompt));
+      if (String(offer?.state?.import_status || 'idle').trim().toLowerCase() === 'running') {
+        setStarterDictionaryActionError('');
+        setStarterDictionaryActionMessage(tr(
+          'Базовый словарь подключается в фоне. Можно продолжать пользоваться приложением.',
+          'Das Basiswoerterbuch wird im Hintergrund verbunden. Du kannst die App weiter benutzen.'
+        ));
+        pollStarterDictionaryStatus(1200);
+      }
     } catch (_error) {
       // Silent: starter dictionary is optional and should not block app bootstrap.
     }
-  }, [initData, normalizeStarterDictionaryOffer, readApiError]);
+  }, [initData, normalizeStarterDictionaryOffer, pollStarterDictionaryStatus, readApiError, tr]);
 
   const applyStarterDictionaryDecision = useCallback(async (accept, { forceReimport = false, closePromptOnSuccess = true } = {}) => {
     if (!initData) {
@@ -8655,12 +9047,22 @@ function AppInner() {
       const offer = normalizeStarterDictionaryOffer(data?.offer);
       setStarterDictionaryOffer(offer);
       if (accept) {
-        const inserted = Math.max(0, Number(data?.import_result?.inserted_count || 0) || 0);
+        const importStatus = String(offer?.state?.import_status || 'idle').trim().toLowerCase() || 'idle';
+        const startedInBackground = Boolean(data?.started_in_background) || importStatus === 'running';
+        const inserted = Math.max(0, Number(data?.import_result?.inserted_count || offer?.state?.last_imported_count || 0) || 0);
         const folderName = String(data?.import_result?.folder?.name || offer?.folder_name || '').trim();
-        const message = inserted > 0
-          ? tr(`Базовый словарь подключён: +${inserted} записей${folderName ? ` (${folderName})` : ''}.`, `Basiswoerterbuch verbunden: +${inserted} Eintraege${folderName ? ` (${folderName})` : ''}.`)
-          : tr('Базовый словарь уже подключён. Новых записей не найдено.', 'Basiswoerterbuch ist bereits verbunden. Keine neuen Eintraege gefunden.');
+        const message = startedInBackground
+          ? tr(
+            'Базовый словарь подключается в фоне. Можно продолжать пользоваться приложением.',
+            'Das Basiswoerterbuch wird im Hintergrund verbunden. Du kannst die App weiter benutzen.'
+          )
+          : inserted > 0
+            ? tr(`Базовый словарь подключён: +${inserted} записей${folderName ? ` (${folderName})` : ''}.`, `Basiswoerterbuch verbunden: +${inserted} Eintraege${folderName ? ` (${folderName})` : ''}.`)
+            : tr('Базовый словарь уже подключён. Новых записей не найдено.', 'Basiswoerterbuch ist bereits verbunden. Keine neuen Eintraege gefunden.');
         setStarterDictionaryActionMessage(message);
+        if (startedInBackground) {
+          pollStarterDictionaryStatus(1200);
+        }
       } else {
         setStarterDictionaryActionMessage(tr('Ок, начинаем с пустого словаря.', 'Alles klar, wir starten mit einem leeren Woerterbuch.'));
       }
@@ -8672,10 +9074,11 @@ function AppInner() {
     } finally {
       setStarterDictionaryActionLoading(false);
     }
-  }, [initData, initDataMissingMsg, normalizeStarterDictionaryOffer, readApiError, tr]);
+  }, [initData, initDataMissingMsg, normalizeStarterDictionaryOffer, pollStarterDictionaryStatus, readApiError, tr]);
 
   const loadLanguageProfile = async () => {
     if (!initData) return null;
+    const requestId = beginAsyncGuard(languageProfileRequestIdRef);
     try {
       setLanguageProfileLoading(true);
       setLanguageProfileError('');
@@ -8695,6 +9098,9 @@ function AppInner() {
         throw new Error(message);
       }
       const data = await response.json();
+      if (!isAsyncGuardCurrent(languageProfileRequestIdRef, requestId)) {
+        return null;
+      }
       const profile = data?.profile || null;
       setLanguageProfile(profile);
       if (profile) {
@@ -8705,10 +9111,15 @@ function AppInner() {
       }
       return profile;
     } catch (error) {
+      if (!isAsyncGuardCurrent(languageProfileRequestIdRef, requestId)) {
+        return null;
+      }
       setLanguageProfileError(`${tr('Ошибка профиля языка', 'Sprachprofil-Fehler')}: ${error.message}`);
       return null;
     } finally {
-      setLanguageProfileLoading(false);
+      if (isAsyncGuardCurrent(languageProfileRequestIdRef, requestId)) {
+        setLanguageProfileLoading(false);
+      }
     }
   };
 
@@ -8886,7 +9297,7 @@ function AppInner() {
         'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfuegbaren Plaene. Dort oeffnest du auch das Stripe-Portal zur Zahlungsverwaltung.'
       ),
       bullets: [
-        tr('Free — базовый бесплатный режим с лимитами, Pro — полный режим без дневного лимита; в Pro также можно отправить персональный запрос на доработку под себя.', 'Free ist der kostenlose Modus mit Limits, Pro ist der volle Modus ohne Tageslimit; in Pro kannst du zusaetzlich einen persoenlichen Anpassungswunsch einreichen.'),
+        tr('Free — базовый бесплатный режим с лимитами. Только в тарифе Pro можно отправить персональный запрос на доработку под себя.', 'Free ist der kostenlose Modus mit Limits. Nur im Tarif Pro kannst du zusaetzlich einen persoenlichen Anpassungswunsch einreichen.'),
         tr('«Кофе» и «Кофе + чизкейк» сейчас работают как альтернативные платные планы (не параллельные add-on).', '„Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Plaene (keine parallelen Add-ons).'),
         tr('Кнопка «Управлять подпиской» открывает Stripe Portal: там смена карты, отмена/возобновление и счета; затем возвращайтесь в Mini App.', '„Abo verwalten“ oeffnet das Stripe-Portal: Karte wechseln, kuendigen/reaktivieren und Rechnungen; danach zur Mini App zurueckkehren.'),
       ],
@@ -9591,7 +10002,7 @@ function AppInner() {
           {
             title: 'Что показывает блок «Подписка»',
             items: [
-              'Текущий план, статус, расход за сегодня и дневной лимит.',
+              'Текущий план и статус подписки.',
               'Полный список доступных тарифов внутри Mini App, чтобы не искать их в Stripe вручную.',
               'Если у плана написано «тариф не подключён в Stripe», значит для него не задан или неактивен Stripe Price ID на сервере.',
             ],
@@ -9600,7 +10011,7 @@ function AppInner() {
             title: 'Какие варианты тарифов есть',
             items: [
               'Free: бесплатный базовый режим с лимитами.',
-              'Pro: полный режим без дневного лимита; в Pro также можно отправить персональный запрос на индивидуальную доработку функции.',
+              'Pro: полный режим без дневного лимита; только в тарифе Pro можно отправить персональный запрос на индивидуальную доработку функции.',
               '«Поддержать разработчика: кофе» и «кофе + чизкейк» сейчас работают как альтернативные платные планы, а не как параллельные add-on поверх Pro.',
             ],
           },
@@ -9894,8 +10305,8 @@ function AppInner() {
       );
     }
     return tr(
-      'Нижняя диаграмма показывает сравнение участников по итоговому баллу за выбранный период.',
-      'Das untere Diagramm zeigt den Vergleich der Teilnehmenden nach Gesamtscore fuer den gewaehlten Zeitraum.'
+      'Нижняя диаграмма показывает сравнение участников по итоговому баллу за выбранный период. Под именем участника мелким шрифтом указано, с какой даты его данные реально учитываются в сравнении.',
+      'Das untere Diagramm zeigt den Vergleich der Teilnehmenden nach Gesamtscore fuer den gewaehlten Zeitraum. Unter dem Namen steht in kleiner Schrift, ab welchem Datum die Daten dieser Person im Vergleich tatsaechlich beruecksichtigt werden.'
     );
   }, [analyticsCompare, analyticsScopeKey, tr]);
   const analyticsFinalScoreFormulaText = useMemo(() => {
@@ -10189,9 +10600,10 @@ function AppInner() {
   }, [analyticsFinalScoreFormulaText, analyticsSummary, tr]);
   const weeklyPlanUsesDeferredAnalytics = planAnalyticsPeriod !== 'week';
   const hasPlanAnalyticsMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0;
+  const useLivePlanAnalyticsMetrics = hasPlanAnalyticsMetrics && !planAnalyticsError;
   const weeklyMetrics = weeklyPlanUsesDeferredAnalytics
-    ? (hasPlanAnalyticsMetrics ? planAnalyticsMetrics : {})
-    : (weeklyPlan?.metrics || {});
+    ? (useLivePlanAnalyticsMetrics ? planAnalyticsMetrics : {})
+    : (useLivePlanAnalyticsMetrics ? planAnalyticsMetrics : (weeklyPlan?.metrics || {}));
   const hasWeeklyPlanSnapshot = Boolean(
     weeklyPlan?.week
     || (weeklyPlan?.metrics && Object.keys(weeklyPlan.metrics).length > 0)
@@ -10224,10 +10636,10 @@ function AppInner() {
   ];
   const hasWeeklyMetricRows = weeklyMetricRows.some((item) => Object.keys(item.data || {}).length > 0);
   const canRenderWeeklyMetrics = weeklyPlanUsesDeferredAnalytics
-    ? hasPlanAnalyticsMetrics && !planAnalyticsError
-    : hasWeeklyMetricRows;
+    ? useLivePlanAnalyticsMetrics
+    : (useLivePlanAnalyticsMetrics || hasWeeklyMetricRows);
   const showWeeklyPlanSkeleton = !weeklyPlanError && !canRenderWeeklyMetrics;
-  const weeklyWeekLabel = weeklyPlanUsesDeferredAnalytics
+  const weeklyWeekLabel = (weeklyPlanUsesDeferredAnalytics || useLivePlanAnalyticsMetrics)
     ? (
       planAnalyticsRange?.start_date && planAnalyticsRange?.end_date
         ? `${planAnalyticsRange.start_date} — ${planAnalyticsRange.end_date}`
@@ -10241,7 +10653,7 @@ function AppInner() {
   const periodDaysElapsed = Math.max(
     0,
     Number(
-      weeklyPlanUsesDeferredAnalytics
+      (weeklyPlanUsesDeferredAnalytics || useLivePlanAnalyticsMetrics)
         ? (planAnalyticsRange?.days_elapsed ?? 0)
         : (weeklyPlan?.week?.days_elapsed ?? 0)
     ) || 0
@@ -10249,7 +10661,7 @@ function AppInner() {
   const periodDaysTotal = Math.max(
     1,
     Number(
-      weeklyPlanUsesDeferredAnalytics
+      (weeklyPlanUsesDeferredAnalytics || useLivePlanAnalyticsMetrics)
         ? (planAnalyticsRange?.days_total ?? 7)
         : (weeklyPlan?.week?.days_total ?? 7)
     ) || 1
@@ -10460,6 +10872,7 @@ function AppInner() {
     setFlashcardSessionActive(false);
     setFlashcardPreviewActive(false);
     setFlashcardExitSummary(false);
+    setFlashcardsEmptyState(null);
     await pauseFlashcardsTaskTimer();
   };
 
@@ -10472,6 +10885,8 @@ function AppInner() {
     setFlashcardActiveMode(normalizedMode);
     setFlashcardsOnly(true);
     setFlashcardExitSummary(false);
+    setFlashcardsError('');
+    setFlashcardsEmptyState(null);
     await ensureFlashcardsTaskTimerRunning();
 
     if (normalizedMode === 'fsrs') {
@@ -11080,6 +11495,7 @@ function AppInner() {
       const startedAt = String(data?.session?.started_at || '').trim();
       setReaderSessionStartedAt(startedAt);
       setReaderLiveSeconds(0);
+      readerLastPingSecondRef.current = -1;
       readerLastInteractionAtRef.current = Date.now();
     } catch (error) {
       console.warn('reader session start error', error);
@@ -11094,6 +11510,14 @@ function AppInner() {
     const shouldUseKeepalive = Boolean(options?.keepalive);
     const shouldSkipRefresh = Boolean(options?.skipRefresh);
     const shouldSkipReaderStateSync = Boolean(options?.skipReaderStateSync);
+    const trackedDurationSeconds = Math.max(
+      0,
+      Math.floor(Number(
+        options?.durationSeconds !== undefined && options?.durationSeconds !== null
+          ? options.durationSeconds
+          : getReaderTrackedDurationSeconds()
+      ) || 0)
+    );
     const latestProgress = computeReaderProgressPercent();
     setReaderProgressPercent(latestProgress);
     if (readerDocumentId && !shouldSkipReaderStateSync) {
@@ -11102,12 +11526,13 @@ function AppInner() {
     setReaderSessionId(null);
     setReaderSessionStartedAt('');
     setReaderLiveSeconds(0);
+    readerLastPingSecondRef.current = -1;
     try {
       const response = await fetch('/api/reader/session/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         keepalive: shouldUseKeepalive,
-        body: JSON.stringify(sid ? { initData, session_id: sid } : { initData }),
+        body: JSON.stringify(sid ? { initData, session_id: sid, duration_seconds: trackedDurationSeconds } : { initData }),
       });
       if (!response.ok) {
         throw new Error(await response.text());
@@ -11120,6 +11545,41 @@ function AppInner() {
       console.warn('reader session stop error', error);
     }
   };
+
+  const pingReaderSessionTracking = useCallback(async (sessionIdOverride = null, durationSecondsOverride = null) => {
+    if (!initData) return;
+    const sid = sessionIdOverride ?? readerSessionId;
+    if (!sid || readerSessionPingInFlightRef.current) return;
+    const durationSeconds = Math.max(
+      0,
+      Math.floor(Number(
+        durationSecondsOverride !== undefined && durationSecondsOverride !== null
+          ? durationSecondsOverride
+          : getReaderTrackedDurationSeconds()
+      ) || 0)
+    );
+    if (durationSeconds <= 0 || readerLastPingSecondRef.current === durationSeconds) return;
+    readerSessionPingInFlightRef.current = true;
+    try {
+      const response = await fetch('/api/reader/session/ping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          session_id: sid,
+          duration_seconds: durationSeconds,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      readerLastPingSecondRef.current = durationSeconds;
+    } catch (error) {
+      console.warn('reader session ping error', error);
+    } finally {
+      readerSessionPingInFlightRef.current = false;
+    }
+  }, [getReaderTrackedDurationSeconds, initData, readerSessionId]);
 
   const pauseReaderForIdle = useCallback(() => {
     if (!readerTrackingVisible || readerTimerPaused || !readerHasContent) return;
@@ -11135,9 +11595,12 @@ function AppInner() {
     setGlobalPauseReason(tr('Поставлено на паузу: нет активности в читалке', 'Pausiert: keine Aktivitaet im Leser'));
     readerAutoPausedByIdleRef.current = true;
     if (readerSessionId) {
-      void stopReaderSessionTracking(readerSessionId);
+      void stopReaderSessionTracking(readerSessionId, {
+        durationSeconds: Math.max(0, Math.floor(Number(readerAccumulatedSeconds || 0))) + segmentSeconds,
+      });
     }
   }, [
+    readerAccumulatedSeconds,
     readerTrackingVisible,
     readerTimerPaused,
     readerHasContent,
@@ -11177,7 +11640,9 @@ function AppInner() {
     setReaderTimerPaused(true);
     readerAutoPausedByIdleRef.current = false;
     if (readerSessionId) {
-      await stopReaderSessionTracking(readerSessionId);
+      await stopReaderSessionTracking(readerSessionId, {
+        durationSeconds: Math.max(0, Math.floor(Number(readerAccumulatedSeconds || 0))) + segmentSeconds,
+      });
     }
   };
 
@@ -11225,6 +11690,7 @@ function AppInner() {
         readerAutoPausedByIdleRef.current = false;
         if (readerSessionId) {
           await stopReaderSessionTracking(readerSessionId, {
+            durationSeconds: Math.max(0, Math.floor(Number(readerAccumulatedSeconds || 0))) + segmentSeconds,
             keepalive: reason === 'pagehide' || reason === 'beforeunload',
             skipRefresh: reason === 'pagehide' || reason === 'beforeunload',
             skipReaderStateSync: reason === 'pagehide' || reason === 'beforeunload',
@@ -11248,6 +11714,7 @@ function AppInner() {
     todayPlan,
     readerHasContent,
     readerTimerPaused,
+    readerAccumulatedSeconds,
     readerSessionStartedAt,
     readerSessionId,
     assistantSessionId,
@@ -11505,8 +11972,6 @@ function AppInner() {
 
   useEffect(() => {
     if (!telegramApp) return;
-    let fullscreenRetryCount = 0;
-    let fullscreenRetryTimer = null;
     let expandPulseTimer = null;
     let stopped = false;
     let viewportSyncFrame = null;
@@ -11540,35 +12005,6 @@ function AppInner() {
       return /iPad|iPhone|iPod/i.test(userAgent) || isIPadDesktopUA;
     };
 
-    const tryEnterTelegramFullscreen = () => {
-      if (stopped) return;
-      if (typeof telegramApp.requestFullscreen !== 'function') {
-        setTelegramFullscreenMode(false);
-        telegramApp.expand?.();
-        return;
-      }
-      Promise.resolve(telegramApp.requestFullscreen())
-        .then(() => {
-          const isFullscreen = typeof telegramApp.isFullscreen === 'boolean' ? telegramApp.isFullscreen : true;
-          setTelegramFullscreenMode(Boolean(isFullscreen));
-          if (!isFullscreen) {
-            telegramApp.expand?.();
-            if (fullscreenRetryCount < 6) {
-              fullscreenRetryCount += 1;
-              fullscreenRetryTimer = window.setTimeout(tryEnterTelegramFullscreen, 320);
-            }
-          }
-        })
-        .catch(() => {
-          setTelegramFullscreenMode(false);
-          telegramApp.expand?.();
-          if (fullscreenRetryCount < 6) {
-            fullscreenRetryCount += 1;
-            fullscreenRetryTimer = window.setTimeout(tryEnterTelegramFullscreen, 320);
-          }
-        });
-    };
-
     const syncViewportMode = (options = {}) => {
       const force = Boolean(options?.force);
       if (!force && isAndroidTelegramClient && hasFocusedEditableElement()) {
@@ -11579,11 +12015,9 @@ function AppInner() {
       try {
         telegramApp.ready?.();
         telegramApp.expand?.();
-        const shouldUseFullscreen = detectTabletLikeViewport();
-        setTelegramTabletLike(shouldUseFullscreen);
-        if (shouldUseFullscreen) {
-          tryEnterTelegramFullscreen();
-        } else {
+        const shouldOfferFullscreen = detectTabletLikeViewport();
+        setTelegramTabletLike(shouldOfferFullscreen);
+        if (!shouldOfferFullscreen) {
           setTelegramFullscreenMode(false);
           try {
             telegramApp.exitFullscreen?.();
@@ -11591,6 +12025,11 @@ function AppInner() {
             // ignore
           }
           telegramApp.expand?.();
+        } else {
+          const isFullscreen = typeof telegramApp.isFullscreen === 'boolean'
+            ? telegramApp.isFullscreen
+            : false;
+          setTelegramFullscreenMode(Boolean(isFullscreen));
         }
         if (isTelegramIOSClient()) {
           telegramApp.disableVerticalSwipes?.();
@@ -11626,17 +12065,6 @@ function AppInner() {
       });
     };
 
-    const onFirstUserGesture = () => {
-      if (!detectTabletLikeViewport()) return;
-      if (isAndroidTelegramClient && hasFocusedEditableElement()) return;
-      try {
-        fullscreenRetryCount = 0;
-        tryEnterTelegramFullscreen();
-      } catch (error) {
-        // ignore
-      }
-    };
-
     try {
       syncViewportMode({ force: true });
     } catch (error) {
@@ -11644,18 +12072,15 @@ function AppInner() {
     }
 
     const onResize = () => {
-      fullscreenRetryCount = 0;
       recordTranslationDraftAndroidDebugEvent('window.resize', { focusedOnly: true });
       requestViewportSync();
     };
     const onFocus = () => {
-      fullscreenRetryCount = 0;
       recordTranslationDraftAndroidDebugEvent('window.focus', { focusedOnly: true });
       requestViewportSync();
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        fullscreenRetryCount = 0;
         recordTranslationDraftAndroidDebugEvent('document.visibility.visible', { focusedOnly: true });
         requestViewportSync();
       }
@@ -11667,9 +12092,6 @@ function AppInner() {
     window.addEventListener('resize', onResize);
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisibilityChange);
-    window.addEventListener('pointerdown', onFirstUserGesture, { passive: true });
-    window.addEventListener('touchstart', onFirstUserGesture, { passive: true });
-    window.addEventListener('click', onFirstUserGesture, { passive: true });
     if (typeof telegramApp.onEvent === 'function') {
       telegramApp.onEvent('viewportChanged', onViewportChanged);
     }
@@ -11688,7 +12110,6 @@ function AppInner() {
 
     return () => {
       stopped = true;
-      if (fullscreenRetryTimer) window.clearTimeout(fullscreenRetryTimer);
       if (expandPulseTimer) window.clearTimeout(expandPulseTimer);
       if (viewportSyncFrame !== null) {
         window.cancelAnimationFrame(viewportSyncFrame);
@@ -11697,9 +12118,6 @@ function AppInner() {
       window.removeEventListener('resize', onResize);
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisibilityChange);
-      window.removeEventListener('pointerdown', onFirstUserGesture);
-      window.removeEventListener('touchstart', onFirstUserGesture);
-      window.removeEventListener('click', onFirstUserGesture);
       if (typeof telegramApp.offEvent === 'function') {
         telegramApp.offEvent('viewportChanged', onViewportChanged);
       }
@@ -11867,7 +12285,9 @@ function AppInner() {
       readerAutoPausedByNavigationRef.current = true;
       readerAutoPausedByIdleRef.current = false;
       if (readerSessionId) {
-        void stopReaderSessionTracking(readerSessionId);
+        void stopReaderSessionTracking(readerSessionId, {
+          durationSeconds: Math.max(0, Math.floor(Number(readerAccumulatedSeconds || 0))) + segmentSeconds,
+        });
       }
       return;
     }
@@ -11896,6 +12316,7 @@ function AppInner() {
     readerArchiveOpen,
     readerSettingsOpen,
     readerTimerPaused,
+    readerAccumulatedSeconds,
     readerSessionStartedAt,
     readerSessionId,
     getTodayItemElapsedSeconds,
@@ -12076,6 +12497,8 @@ function AppInner() {
     if (!isWebAppMode || !initData) {
       return;
     }
+    let cancelled = false;
+    const requestId = beginAsyncGuard(bootstrapRequestIdRef);
 
     const bootstrap = async () => {
       try {
@@ -12090,6 +12513,9 @@ function AppInner() {
           throw new Error(await readApiError(response, 'Ошибка инициализации', 'Initialisierungsfehler'));
         }
         const data = await response.json();
+        if (cancelled || !isAsyncGuardCurrent(bootstrapRequestIdRef, requestId)) {
+          return;
+        }
         setSessionId(data.session_id);
         setWebappUser(data.user);
         const unsafeChatType = telegramApp?.initDataUnsafe?.chat?.type || telegramApp?.initDataUnsafe?.chat_type;
@@ -12098,6 +12524,9 @@ function AppInner() {
         setStarterDictionaryOffer(starterOffer);
         setStarterDictionaryPromptOpen(Boolean(starterOffer?.should_prompt));
       } catch (error) {
+        if (cancelled || !isAsyncGuardCurrent(bootstrapRequestIdRef, requestId)) {
+          return;
+        }
         const message = String(error?.message || '').trim();
         if (isInitDataAuthFailureMessage(message)) {
           handleInitDataAuthFailure(message);
@@ -12107,7 +12536,20 @@ function AppInner() {
     };
 
     bootstrap();
+    return () => {
+      cancelled = true;
+    };
   }, [fetchWithTimeout, handleInitDataAuthFailure, initData, isInitDataAuthFailureMessage, isWebAppMode, normalizeStarterDictionaryOffer, readApiError, telegramApp, tr]);
+
+  useEffect(() => {
+    invalidateAsyncGuards(
+      todayPlanRequestIdRef,
+      skillReportRequestIdRef,
+      weeklyPlanRequestIdRef,
+      languageProfileRequestIdRef,
+      starterDictionaryStatusRequestIdRef,
+    );
+  }, [initData, isWebAppMode]);
 
   useEffect(() => {
     if (isWebAppMode && initData) {
@@ -12250,6 +12692,12 @@ function AppInner() {
     languageProfile?.has_profile,
     loadStarterDictionaryStatus,
   ]);
+
+  useEffect(() => {
+    if (initData) return undefined;
+    starterDictionaryPollTokenRef.current += 1;
+    return undefined;
+  }, [initData]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -12399,9 +12847,8 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready) return;
-    if (planAnalyticsPeriod === 'week' && hasWeeklyPlanSnapshot) return;
     void loadPlanAnalytics(planAnalyticsPeriod);
-  }, [planAnalyticsPeriod, isWebAppMode, initData, startupPhase3Ready, hasWeeklyPlanSnapshot]);
+  }, [planAnalyticsPeriod, isWebAppMode, initData, startupPhase3Ready]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -12515,6 +12962,23 @@ function AppInner() {
   }, [
     readerTrackingVisible,
     readerTimerPaused,
+  ]);
+
+  useEffect(() => {
+    if (!readerTrackingVisible || readerTimerPaused || !readerHasContent || !readerSessionId) {
+      return undefined;
+    }
+    void pingReaderSessionTracking(readerSessionId);
+    const intervalId = window.setInterval(() => {
+      void pingReaderSessionTracking(readerSessionId);
+    }, 15000);
+    return () => window.clearInterval(intervalId);
+  }, [
+    pingReaderSessionTracking,
+    readerHasContent,
+    readerSessionId,
+    readerTimerPaused,
+    readerTrackingVisible,
   ]);
 
   useEffect(() => {
@@ -13030,10 +13494,16 @@ function AppInner() {
   };
 
   const pollTranslationProgressiveFill = async ({ sessionId, expectedTotal = 7, pollToken }) => {
+    const getProgressiveFillPollDelayMs = (attempt) => {
+      if (attempt <= 1) return 0;
+      const backoffBase = attempt <= 4 ? 850 : Math.min(2500, 850 * (1.18 ** (attempt - 4)));
+      const jitterMs = Math.floor(Math.random() * 180);
+      return Math.round(backoffBase + jitterMs);
+    };
     let attempts = 0;
     while (translationProgressiveFillPollTokenRef.current === pollToken) {
       if (attempts > 0) {
-        await new Promise((resolve) => window.setTimeout(resolve, 850));
+        await new Promise((resolve) => window.setTimeout(resolve, getProgressiveFillPollDelayMs(attempts)));
       }
       attempts += 1;
       const data = await loadSentences({
@@ -13106,6 +13576,58 @@ function AppInner() {
       setTodayTranslationRecommendation(null);
     }
   }, [sentences.length]);
+
+  useEffect(() => {
+    if (!initData || sentences.length === 0) {
+      return undefined;
+    }
+    const sourceSessionId = String(sentences[0]?.source_session_id || '').trim();
+    if (!sourceSessionId) {
+      return undefined;
+    }
+    const currentAcked = translationShownAckedRef.current.get(sourceSessionId) || new Set();
+    const sentenceIds = Array.from(new Set(
+      sentences
+        .map((item) => Number(item?.id_for_mistake_table || 0))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    ));
+    const missingAckIds = sentenceIds.filter((id) => !currentAcked.has(id));
+    if (missingAckIds.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const frameId = window.requestAnimationFrame(() => {
+      window.setTimeout(async () => {
+        if (cancelled) return;
+        try {
+          const response = await fetch('/api/webapp/sentences/ack', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              source_session_id: sourceSessionId,
+              sentence_ids: missingAckIds,
+            }),
+            keepalive: true,
+          });
+          if (!response.ok) {
+            return;
+          }
+          const nextAcked = new Set(translationShownAckedRef.current.get(sourceSessionId) || []);
+          missingAckIds.forEach((id) => nextAcked.add(id));
+          translationShownAckedRef.current.set(sourceSessionId, nextAcked);
+        } catch (_error) {
+          // best effort
+        }
+      }, 0);
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [initData, sentences]);
 
   useEffect(() => {
     const stableUserId = String(webappUser?.id || getInitDataUserId(initData) || '').trim();
@@ -13491,6 +14013,7 @@ function AppInner() {
       ? payload.check_session
       : null;
     const checkItems = Array.isArray(payload?.items) ? payload.items : [];
+    const itemsIncluded = payload?.items_included !== false;
     const mappedResults = checkItems
       .map((item) => buildTranslationResultFromCheckItem(item))
       .filter(Boolean)
@@ -13507,8 +14030,10 @@ function AppInner() {
       }
     });
 
-    setResults(mappedResults);
-    setTranslationAudioGrammarOptIn(audioOptInMap);
+    if (itemsIncluded) {
+      setResults(mappedResults);
+      setTranslationAudioGrammarOptIn(audioOptInMap);
+    }
     const processedSentenceIds = new Set(
       checkItems
         .filter((item) => {
@@ -13562,10 +14087,16 @@ function AppInner() {
   };
 
   const pollTranslationCheckStatus = async ({ checkSessionId: checkSessionIdParam, pollToken }) => {
+    const getCheckStatusPollDelayMs = (attempt) => {
+      if (attempt <= 1) return 0;
+      const backoffBase = attempt <= 3 ? 900 : Math.min(4000, 900 * (1.28 ** (attempt - 3)));
+      const jitterMs = Math.floor(Math.random() * 250);
+      return Math.round(backoffBase + jitterMs);
+    };
     let attempt = 0;
     while (!translationCheckUnmountedRef.current && translationCheckPollTokenRef.current === pollToken) {
       if (attempt > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 900));
+        await new Promise((resolve) => setTimeout(resolve, getCheckStatusPollDelayMs(attempt)));
       }
       attempt += 1;
       let response;
@@ -13576,6 +14107,7 @@ function AppInner() {
           body: JSON.stringify({
             initData,
             check_session_id: checkSessionIdParam,
+            poll_count: attempt,
           }),
         });
       } catch (error) {
@@ -13794,7 +14326,6 @@ function AppInner() {
           topic: selectedTopic,
           custom_focus: isCustomTopic(selectedTopic) ? customTopicInput.trim() : '',
           level: selectedLevel,
-          force_new_session: true,
         }),
       });
       if (!response.ok) {
@@ -13824,7 +14355,7 @@ function AppInner() {
         expectedTotal,
       });
       if (data.blocked) {
-        setFinishMessage(tr('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.', 'Es gibt eine aktive Session. Beende die aktuelle Uebersetzung, um ein neues Set zu erhalten.'));
+        setFinishMessage(activeTranslationSessionWarning);
       }
       if (generationInProgress && nextSessionId) {
         const pollToken = translationProgressiveFillPollTokenRef.current + 1;
@@ -13930,7 +14461,7 @@ function AppInner() {
       }
       const data = await response.json();
       if (data.blocked) {
-        setFinishMessage(tr('Есть активная сессия. Завершите текущий перевод, чтобы получить новый сет.', 'Es gibt eine aktive Session. Beende die aktuelle Uebersetzung, um ein neues Set zu erhalten.'));
+        setFinishMessage(activeTranslationSessionWarning);
         const sessionInfo = await loadSessionInfo();
         if (String(sessionInfo?.type || '') === 'story') {
           await loadSentences();
@@ -15352,6 +15883,21 @@ function AppInner() {
     return `${pad(minutes)}:${pad(secs)}`;
   }
 
+  function getReaderTrackedDurationSeconds(options = {}) {
+    const baseSeconds = Math.max(0, Math.floor(Number(
+      options?.baseSeconds ?? readerAccumulatedSeconds ?? 0
+    )));
+    const overrideLiveSeconds = options?.liveSeconds;
+    if (overrideLiveSeconds !== undefined && overrideLiveSeconds !== null) {
+      return Math.max(0, baseSeconds + Math.floor(Number(overrideLiveSeconds || 0)));
+    }
+    const startedTs = Date.parse(String(readerSessionStartedAt || ''));
+    const liveSeconds = Number.isFinite(startedTs)
+      ? Math.max(0, Math.floor((Date.now() - startedTs) / 1000))
+      : Math.max(0, Math.floor(Number(readerLiveSeconds || 0)));
+    return Math.max(0, baseSeconds + liveSeconds);
+  }
+
   function computeReaderProgressPercent() {
     if (readerPageCount > 0) {
       const page = Math.max(1, Math.min(readerPageCount, Number(readerCurrentPage || 1)));
@@ -16289,6 +16835,84 @@ function AppInner() {
     }
   }
 
+  const buildFlashcardsEmptyState = useCallback((reason, meta = {}, mode = flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz') => {
+    const normalizedReason = String(reason || '').trim().toLowerCase();
+    const normalizedMode = String(mode || 'quiz').trim().toLowerCase();
+    if (!normalizedReason) return null;
+    if (normalizedReason === 'dictionary_empty') {
+      return {
+        kind: normalizedReason,
+        badge: normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training',
+        title: tr('У вас пока нет слов в словаре', 'Du hast noch keine Woerter im Woerterbuch'),
+        body: tr(
+          'Добавьте слова из переводов, словаря, YouTube, Reader или из чата с ботом, а затем возвращайтесь сюда, чтобы тренировать их.',
+          'Fuege Woerter aus Uebersetzungen, Woerterbuch, YouTube, Reader oder dem Bot-Chat hinzu und komm dann hierher zurueck, um sie zu trainieren.'
+        ),
+      };
+    }
+    if (normalizedReason === 'shared_queue_completed_today') {
+      return {
+        kind: normalizedReason,
+        badge: normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training',
+        title: tr('На сегодня слова для тренировки уже закончились', 'Fuer heute sind die Trainingswoerter schon erledigt'),
+        body: tr(
+          'Вы уже прошли доступные карточки из общей очереди через FSRS или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
+          'Du hast die verfuegbaren Karten aus der gemeinsamen Warteschlange bereits in FSRS oder einem anderen Modus durchgearbeitet. Komm spaeter wieder oder fuege neue Woerter zum Woerterbuch hinzu.'
+        ),
+      };
+    }
+    if (normalizedReason === 'blocks_no_eligible_cards_today') {
+      return {
+        kind: normalizedReason,
+        badge: 'Blocks',
+        title: tr('Для Blocks сейчас нет подходящих коротких карточек', 'Fuer Blocks gibt es aktuell keine passenden kurzen Karten'),
+        body: tr(
+          'Этот режим работает только с короткими словами и компактными ответами. Добавьте больше отдельных слов в словарь или выберите другой режим тренировки.',
+          'Dieser Modus arbeitet nur mit kurzen Woertern und kompakten Antworten. Fuege mehr einzelne Woerter zum Woerterbuch hinzu oder waehle einen anderen Trainingsmodus.'
+        ),
+      };
+    }
+    if (normalizedReason === 'daily_mode_limit_reached') {
+      const limit = Math.max(0, Number(meta?.limit || 0) || 0);
+      return {
+        kind: normalizedReason,
+        badge: normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training',
+        title: tr('На сегодня лимит этого режима уже исчерпан', 'Das Tageslimit fuer diesen Modus ist bereits erreicht'),
+        body: limit > 0
+          ? tr(
+            `Сегодня для этого режима уже использованы все доступные ${limit} слов. Попробуйте другой режим или возвращайтесь завтра.`,
+            `Heute wurden fuer diesen Modus bereits alle verfuegbaren ${limit} Woerter genutzt. Probiere einen anderen Modus oder komm morgen wieder.`
+          )
+          : tr(
+            'Сегодня для этого режима уже использованы все доступные слова. Попробуйте другой режим или возвращайтесь завтра.',
+            'Heute wurden fuer diesen Modus bereits alle verfuegbaren Woerter genutzt. Probiere einen anderen Modus oder komm morgen wieder.'
+          ),
+      };
+    }
+    return null;
+  }, [flashcardTrainingMode, tr]);
+
+  const buildYoutubeEmptyState = useCallback((reason) => {
+    const normalizedReason = String(reason || '').trim().toLowerCase();
+    if (normalizedReason !== 'no_history_yet') return null;
+    return {
+      kind: normalizedReason,
+      badge: 'YouTube',
+      title: tr(
+        'Пока ещё нет данных, чтобы подобрать видео автоматически',
+        'Es gibt noch nicht genug Daten fuer eine automatische Videoauswahl'
+      ),
+      body: tr(
+        'У вас ещё нет истории переводов и сформированных слабых навыков, поэтому система пока не знает, какую тему тренировать через YouTube.',
+        'Du hast noch keine Uebersetzungshistorie und noch keine schwachen Skills, daher weiss das System noch nicht, welches Thema ueber YouTube trainiert werden soll.'
+      ),
+      note: tr(
+        'Выберите интересующую тему самостоятельно, найдите видео на YouTube и вставьте сюда ссылку. Позже, когда появится история переводов, видео будут подбираться автоматически.',
+        'Waehle vorerst selbst ein interessantes Thema, suche ein Video auf YouTube und fuege hier den Link ein. Spaeter, sobald Uebersetzungshistorie vorhanden ist, werden Videos automatisch empfohlen.'
+      ),
+    };
+  }, [tr]);
+
   const loadFlashcards = async () => {
     if (!initData) {
       setFlashcardsError(initDataMissingMsg);
@@ -16326,6 +16950,7 @@ function AppInner() {
     flashcardsLoadLastStartedAtRef.current = nowTs;
     setFlashcardsLoading(true);
     setFlashcardsError('');
+    setFlashcardsEmptyState(null);
     try {
       const requestPayload = {
         initData,
@@ -16364,6 +16989,8 @@ function AppInner() {
       }
       const data = await response.json();
       setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
+      const emptyReason = String(data?.empty_reason || '').trim().toLowerCase();
+      const emptyMeta = data?.empty_meta && typeof data.empty_meta === 'object' ? data.empty_meta : {};
       const items = (data.items || []).map((item) => ({
         ...item,
         response_json: coerceResponseJson(item.response_json),
@@ -16371,17 +16998,9 @@ function AppInner() {
       const solvedFilteredItems = requestedMode === 'sentence'
         ? items.filter((item) => !readSolvedTodaySet(requestedMode).has(Number(item?.id || 0)))
         : items;
-      const isBlocksSingleWordEligible = (entry) => {
-        const raw = String(resolveBlocksAnswer(entry) || '').replace(/\s+/g, ' ').trim();
-        if (!raw) return false;
-        return raw.length <= BLOCKS_SINGLE_WORD_MAX_LEN;
-      };
-      const filteredItems = requestedMode === 'blocks'
-        ? solvedFilteredItems.filter(isBlocksSingleWordEligible)
-        : solvedFilteredItems;
       const sessionItems = requestedMode === 'blocks'
-        ? filteredItems.slice(0, flashcardSetSize)
-        : filteredItems;
+        ? solvedFilteredItems.slice(0, flashcardSetSize)
+        : solvedFilteredItems;
       try {
         console.info('[flashcards-client-profile]', {
           mode: requestedMode,
@@ -16389,9 +17008,10 @@ function AppInner() {
           requested_fetch_size: requestedSetSize,
           server_items: items.length,
           after_solved_today: solvedFilteredItems.length,
-          blocks_eligible_len10_client: requestedMode === 'blocks' ? filteredItems.length : null,
+          blocks_eligible_len10_client: requestedMode === 'blocks' ? items.length : null,
           session_items: sessionItems.length,
           server_profile: data?.profile || null,
+          empty_reason: emptyReason || null,
         });
       } catch (_error) {
         // no-op: profiling must never break training flow
@@ -16418,21 +17038,20 @@ function AppInner() {
         correct: 0,
         wrong: 0,
       });
-      if (requestedMode === 'blocks' && solvedFilteredItems.length > 0 && sessionItems.length === 0) {
-        setFlashcardsError(
-          tr(
-            `Для режима Blocks сейчас нет подходящих карточек: используем варианты длиной до ${BLOCKS_SINGLE_WORD_MAX_LEN} символов (включая пробелы).`,
-            `Fuer den Blocks-Modus gibt es aktuell keine passenden Karten: Es werden nur Varianten bis ${BLOCKS_SINGLE_WORD_MAX_LEN} Zeichen (inklusive Leerzeichen) verwendet.`
-          )
-        );
+      if (sessionItems.length === 0 && emptyReason) {
+        setFlashcardsEmptyState(buildFlashcardsEmptyState(emptyReason, emptyMeta, requestedMode));
       } else if (requestedMode === 'sentence' && items.length > 0 && solvedFilteredItems.length === 0) {
-        const modeLabel = tr('Satz ergänzen', 'Satz ergaenzen');
-        setFlashcardsError(
-          tr(
-            `На сегодня в режиме ${modeLabel} всё выполнено: карточки с верным ответом больше не показываются.`,
-            `Fuer heute ist der Modus ${modeLabel} erledigt: korrekt beantwortete Karten werden nicht erneut gezeigt.`
-          )
-        );
+        setFlashcardsEmptyState({
+          kind: 'sentence_completed_today',
+          badge: 'Sentence',
+          title: tr('На сегодня в этом режиме всё выполнено', 'Fuer heute ist dieser Modus erledigt'),
+          body: tr(
+            'Карточки с уже правильным ответом сегодня больше не показываются. Можно вернуться позже или выбрать другой режим.',
+            'Karten mit bereits korrekter Antwort werden heute nicht erneut gezeigt. Komm spaeter wieder oder waehle einen anderen Modus.'
+          ),
+        });
+      } else if (sessionItems.length === 0) {
+        setFlashcardsEmptyState(buildFlashcardsEmptyState('dictionary_empty', {}, requestedMode));
       }
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
@@ -16440,6 +17059,7 @@ function AppInner() {
         'Не удалось загрузить карточки.',
         'Karten konnten nicht geladen werden.'
       );
+      setFlashcardsEmptyState(null);
       setFlashcardsError(`${tr('Ошибка карточек', 'Kartenfehler')}: ${friendly}`);
     } finally {
       setFlashcardsLoading(false);
@@ -17171,7 +17791,11 @@ function AppInner() {
         clearTimeout(translationDraftSyncTimeoutRef.current);
         translationDraftSyncTimeoutRef.current = null;
       }
+      const finishedSessionId = String(translationSessionIdRef.current || translationDraftScopeKey || '').trim();
       translationDraftsRef.current = {};
+      if (finishedSessionId) {
+        translationShownAckedRef.current.delete(finishedSessionId);
+      }
       safeStorageRemove(translationDraftStorageKey);
       recordTranslationDraftAndroidDebugEvent('draft.state_update.clear_session', { focusedOnly: false, flush: true });
       setTranslationDrafts({});
@@ -17186,7 +17810,11 @@ function AppInner() {
       setTranslationAudioGrammarSaving({});
       translationCheckPollTokenRef.current += 1;
       setTranslationCheckProgress({ active: false, done: 0, total: 0 });
-      await loadSessionInfo();
+      await Promise.allSettled([
+        loadSessionInfo(),
+        loadTodayPlan(),
+        loadSkillReport(),
+      ]);
     } catch (error) {
       setWebappError(`${tr('Ошибка завершения', 'Abschlussfehler')}: ${error.message}`);
     } finally {
@@ -17305,6 +17933,412 @@ function AppInner() {
       }
       return <span key={`${keyPrefix}-part-${index}`}>{rendered}</span>;
     });
+  };
+
+  const StructuredSelectableText = ({
+    text,
+    langHint = '',
+    keyPrefix = 'structured',
+  }) => {
+    const sourceText = stripMarkdownEmphasis(String(text || ''));
+    const rootRef = useRef(null);
+    const dragSelectionMetaRef = useRef(null);
+    const phraseGestureRef = useRef({
+      active: false,
+      sentenceId: '',
+      anchorIndex: -1,
+      currentIndex: -1,
+      moved: false,
+      startX: 0,
+      startY: 0,
+    });
+    const suppressStructuredClickRef = useRef(0);
+    const [dragSelectionMeta, setDragSelectionMeta] = useState(null);
+
+    const structuredSentencesModel = useMemo(
+      () => segmentText(sourceText, normalizeLangCode(langHint || '') || getNormalizeLookupLang() || 'de'),
+      [sourceText, langHint]
+    );
+    const structuredSentenceMap = useMemo(() => {
+      const map = new Map();
+      structuredSentencesModel.forEach((sentence) => {
+        map.set(sentence.sid, sentence);
+      });
+      return map;
+    }, [structuredSentencesModel]);
+    const structuredWordMap = useMemo(() => {
+      const map = new Map();
+      structuredSentencesModel.forEach((sentence) => {
+        sentence.tokens
+          .filter((token) => token.kind === 'word' && token.wid)
+          .forEach((token) => {
+            map.set(token.wid, { ...token, sid: sentence.sid });
+          });
+      });
+      return map;
+    }, [structuredSentencesModel]);
+    const selectedStructuredSentenceIds = useMemo(() => {
+      const ids = new Set(Array.isArray(selectedMeta?.sids) ? selectedMeta.sids : []);
+      if (Array.isArray(dragSelectionMeta?.sids)) {
+        dragSelectionMeta.sids.forEach((sid) => {
+          if (sid) ids.add(sid);
+        });
+      }
+      return ids;
+    }, [dragSelectionMeta]);
+    const selectedStructuredWordIds = useMemo(() => {
+      const ids = new Set(Array.isArray(selectedMeta?.wids) ? selectedMeta.wids : []);
+      if (Array.isArray(dragSelectionMeta?.wids)) {
+        dragSelectionMeta.wids.forEach((wid) => {
+          if (wid) ids.add(wid);
+        });
+      }
+      return ids;
+    }, [dragSelectionMeta]);
+
+    const resetPhraseGesture = () => {
+      phraseGestureRef.current = {
+        active: false,
+        sentenceId: '',
+        anchorIndex: -1,
+        currentIndex: -1,
+        moved: false,
+        startX: 0,
+        startY: 0,
+      };
+      dragSelectionMetaRef.current = null;
+      setDragSelectionMeta(null);
+    };
+
+    const getSentenceWords = (sentenceId) => {
+      const sentence = structuredSentenceMap.get(String(sentenceId || '').trim());
+      if (!sentence) return [];
+      return sentence.tokens.filter((token) => token.kind === 'word' && token.wid);
+    };
+
+    const getWordIndexInSentence = (sentenceId, wordId) => {
+      const words = getSentenceWords(sentenceId);
+      return words.findIndex((token) => String(token.wid || '') === String(wordId || ''));
+    };
+
+    const buildPhraseSelection = (sentenceId, firstIndex, lastIndex) => {
+      const sentence = structuredSentenceMap.get(String(sentenceId || '').trim());
+      if (!sentence) return null;
+      const words = getSentenceWords(sentenceId);
+      if (!words.length) return null;
+      const from = Math.max(0, Math.min(words.length - 1, Math.min(firstIndex, lastIndex)));
+      const to = Math.max(0, Math.min(words.length - 1, Math.max(firstIndex, lastIndex)));
+      const selectedWords = words.slice(from, to + 1);
+      if (!selectedWords.length) return null;
+      const start = Number(selectedWords[0]?.start || 0);
+      const end = Number(selectedWords[selectedWords.length - 1]?.end || start);
+      const relativeStart = Math.max(0, start - Number(sentence.start || 0));
+      const relativeEnd = Math.max(relativeStart, end - Number(sentence.start || 0));
+      const selectedText = normalizeSelectionText(String(sentence.text || '').slice(relativeStart, relativeEnd));
+      if (!selectedText) return null;
+      return {
+        text: selectedText,
+        sids: [sentence.sid],
+        wids: selectedWords.map((token) => String(token.wid || '')).filter(Boolean),
+        start,
+        end,
+      };
+    };
+
+    const getWordElementByPoint = (clientX, clientY) => {
+      if (!Number.isFinite(clientX) || !Number.isFinite(clientY) || typeof document === 'undefined') return null;
+      const target = document.elementFromPoint(clientX, clientY);
+      if (!(target instanceof Element)) return null;
+      return target.closest('[data-wid][data-sid]');
+    };
+
+    const openStructuredSelection = (event, value, selectionType, meta) => {
+      handleSelection(event, value, {
+        compact: true,
+        inlineLookup: true,
+        lookupLang: getNormalizeLookupLang(),
+        selectionType,
+        selectedMeta: meta,
+      });
+    };
+
+    const handleStructuredClick = (event) => {
+      if (Date.now() - Number(suppressStructuredClickRef.current || 0) < 420) return;
+      const root = rootRef.current;
+      if (!root) return;
+      const target = event?.target;
+      if (!(target instanceof Element)) return;
+
+      const wordEl = target.closest('[data-wid]');
+      if (wordEl && root.contains(wordEl)) {
+        const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+        const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+        const metaWord = structuredWordMap.get(wid);
+        if (!metaWord || !sid) return;
+        openStructuredSelection(event, metaWord.value, 'translation_result_word', {
+          sids: [sid],
+          wids: [wid],
+          start: Number(metaWord.start || 0),
+          end: Number(metaWord.end || 0),
+        });
+        return;
+      }
+
+      const sentenceEl = target.closest('[data-sid]');
+      if (sentenceEl && root.contains(sentenceEl)) {
+        const sid = String(sentenceEl.getAttribute('data-sid') || '').trim();
+        const sentence = structuredSentenceMap.get(sid);
+        if (!sentence) return;
+        openStructuredSelection(event, String(sentence.text || ''), 'translation_result_sentence', {
+          sids: [sid],
+          start: Number(sentence.start || 0),
+          end: Number(sentence.end || 0),
+        });
+      }
+    };
+
+    const handleStructuredSelectionEnd = (event) => {
+      const root = rootRef.current;
+      if (!root) return;
+      const selection = window.getSelection?.();
+      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+      const range = selection.getRangeAt(0);
+      const commonNode = range.commonAncestorContainer;
+      const anchorNode = selection.anchorNode;
+      const focusNode = selection.focusNode;
+      if (commonNode && !root.contains(commonNode)) return;
+      if (anchorNode && !root.contains(anchorNode)) return;
+      if (focusNode && !root.contains(focusNode)) return;
+
+      const words = Array.from(root.querySelectorAll('[data-wid][data-sid]'));
+      const pickedWords = [];
+      for (const node of words) {
+        try {
+          if (range.intersectsNode(node)) {
+            pickedWords.push(node);
+          }
+        } catch (_rangeError) {
+          // ignore invalid nodes
+        }
+      }
+      if (pickedWords.length === 0) return;
+
+      const sentenceIds = [];
+      const sentenceIdSet = new Set();
+      const wordIds = [];
+      pickedWords.forEach((node) => {
+        const sid = String(node.getAttribute('data-sid') || '').trim();
+        const wid = String(node.getAttribute('data-wid') || '').trim();
+        if (sid && !sentenceIdSet.has(sid)) {
+          sentenceIdSet.add(sid);
+          sentenceIds.push(sid);
+        }
+        if (wid) wordIds.push(wid);
+      });
+      if (!sentenceIds.length) return;
+
+      if (sentenceIds.length === 1 && wordIds.length > 0) {
+        const sid = sentenceIds[0];
+        const sentenceWords = getSentenceWords(sid);
+        const firstWordIndex = getWordIndexInSentence(sid, wordIds[0]);
+        const lastWordIndex = getWordIndexInSentence(sid, wordIds[wordIds.length - 1]);
+        if (firstWordIndex >= 0 && lastWordIndex >= 0) {
+          if (wordIds.length === 1) {
+            const wordId = wordIds[0];
+            const metaWord = structuredWordMap.get(wordId);
+            if (metaWord) {
+              openStructuredSelection(event, metaWord.value, 'translation_result_word', {
+                sids: [sid],
+                wids: [wordId],
+                start: Number(metaWord.start || 0),
+                end: Number(metaWord.end || 0),
+              });
+              try {
+                selection.removeAllRanges();
+              } catch (_clearWordError) {
+                // ignore cleanup errors
+              }
+              return;
+            }
+          }
+
+          if (wordIds.length < sentenceWords.length) {
+            const phraseMeta = buildPhraseSelection(sid, firstWordIndex, lastWordIndex);
+            if (phraseMeta) {
+              openStructuredSelection(event, phraseMeta.text, 'translation_result_phrase', {
+                sids: phraseMeta.sids,
+                wids: phraseMeta.wids,
+                start: Number(phraseMeta.start || 0),
+                end: Number(phraseMeta.end || 0),
+              });
+              try {
+                selection.removeAllRanges();
+              } catch (_clearPhraseError) {
+                // ignore cleanup errors
+              }
+              return;
+            }
+          }
+        }
+      }
+
+      const selectedSentences = structuredSentencesModel.filter((sentence) => sentenceIdSet.has(sentence.sid));
+      if (!selectedSentences.length) return;
+      const selectedText = selectedSentences.map((sentence) => String(sentence.text || '')).join('');
+      if (!selectedText) return;
+
+      openStructuredSelection(
+        event,
+        selectedText,
+        selectedSentences.length > 1 ? 'translation_result_multi_sentence' : 'translation_result_sentence',
+        {
+          sids: sentenceIds,
+          wids: wordIds,
+          start: Number(selectedSentences[0]?.start || 0),
+          end: Number(selectedSentences[selectedSentences.length - 1]?.end || 0),
+        }
+      );
+      try {
+        selection.removeAllRanges();
+      } catch (_clearError) {
+        // ignore cleanup errors
+      }
+    };
+
+    const handleWordTouchStart = (event) => {
+      const touch = event?.touches?.[0];
+      const target = event?.target;
+      if (!touch || !(target instanceof Element)) {
+        resetPhraseGesture();
+        return;
+      }
+      const wordEl = target.closest('[data-wid][data-sid]');
+      if (!wordEl) {
+        resetPhraseGesture();
+        return;
+      }
+      const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+      const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+      const anchorIndex = getWordIndexInSentence(sid, wid);
+      if (!sid || anchorIndex < 0) {
+        resetPhraseGesture();
+        return;
+      }
+      phraseGestureRef.current = {
+        active: true,
+        sentenceId: sid,
+        anchorIndex,
+        currentIndex: anchorIndex,
+        moved: false,
+        startX: touch.clientX,
+        startY: touch.clientY,
+      };
+      dragSelectionMetaRef.current = null;
+      setDragSelectionMeta(null);
+    };
+
+    const handleRootTouchMove = (event) => {
+      const gesture = phraseGestureRef.current;
+      if (!gesture?.active) return;
+      const touch = event?.touches?.[0];
+      if (!touch) return;
+      const dx = touch.clientX - Number(gesture.startX || 0);
+      const dy = touch.clientY - Number(gesture.startY || 0);
+      if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
+      const wordEl = getWordElementByPoint(touch.clientX, touch.clientY);
+      if (!wordEl) return;
+      const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+      const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+      if (!sid || sid !== gesture.sentenceId) return;
+      const currentIndex = getWordIndexInSentence(sid, wid);
+      if (currentIndex < 0 || currentIndex === gesture.currentIndex) return;
+      const nextMeta = buildPhraseSelection(sid, gesture.anchorIndex, currentIndex);
+      phraseGestureRef.current = {
+        ...gesture,
+        currentIndex,
+        moved: Math.abs(currentIndex - gesture.anchorIndex) >= 1,
+      };
+      dragSelectionMetaRef.current = nextMeta;
+      setDragSelectionMeta(nextMeta);
+    };
+
+    const handleRootTouchEnd = (event) => {
+      const gesture = phraseGestureRef.current;
+      const previewMeta = dragSelectionMetaRef.current;
+      const touch = event?.changedTouches?.[0];
+      if (gesture?.active && gesture.moved && previewMeta?.wids?.length >= 2) {
+        const selectionEvent = touch
+          ? { clientX: touch.clientX, clientY: touch.clientY }
+          : event;
+        openStructuredSelection(selectionEvent, previewMeta.text, 'translation_result_phrase', {
+          sids: Array.isArray(previewMeta.sids) ? previewMeta.sids : [],
+          wids: Array.isArray(previewMeta.wids) ? previewMeta.wids : [],
+          start: Number(previewMeta.start || 0),
+          end: Number(previewMeta.end || 0),
+        });
+        suppressStructuredClickRef.current = Date.now();
+        resetPhraseGesture();
+        return;
+      }
+      resetPhraseGesture();
+      handleStructuredSelectionEnd(event);
+    };
+
+    const handleRootMouseUp = (event) => {
+      handleStructuredSelectionEnd(event);
+    };
+
+    if (!sourceText) return null;
+
+    return (
+      <span
+        ref={rootRef}
+        className="translation-structured-text"
+        onClick={handleStructuredClick}
+        onMouseUp={handleRootMouseUp}
+        onTouchMove={handleRootTouchMove}
+        onTouchEnd={handleRootTouchEnd}
+        onTouchCancel={resetPhraseGesture}
+      >
+        {structuredSentencesModel.map((sentence) => (
+          <span
+            key={`${keyPrefix}-${sentence.sid}`}
+            className={`reader-sentence ${selectedStructuredSentenceIds.has(sentence.sid) ? 'is-selected' : ''}`}
+            data-sid={sentence.sid}
+            data-start={sentence.start}
+            data-end={sentence.end}
+          >
+            {sentence.tokens.map((token, tokenIndex) => {
+              if (token.kind === 'word') {
+                const wordId = String(token.wid || '');
+                return (
+                  <span
+                    key={wordId || `${sentence.sid}-word-${tokenIndex}`}
+                    className={`reader-word ${selectedStructuredWordIds.has(wordId) ? 'is-selected' : ''}`}
+                    data-wid={wordId}
+                    data-sid={sentence.sid}
+                    data-start={token.start}
+                    data-end={token.end}
+                    onTouchStart={handleWordTouchStart}
+                  >
+                    {token.value}
+                  </span>
+                );
+              }
+              return (
+                <span
+                  key={`${sentence.sid}-${token.kind}-${token.start}-${token.end}-${tokenIndex}`}
+                  className="reader-token"
+                  aria-hidden="true"
+                >
+                  {token.value}
+                </span>
+              );
+            })}
+          </span>
+        ))}
+      </span>
+    );
   };
 
   const normalizeStoryFeedbackLine = (line) => String(line || '')
@@ -17547,10 +18581,10 @@ function AppInner() {
         <span className="webapp-feedback-label">{label}</span>
         {String(value || '').trim() ? (
           <span className="webapp-feedback-value">
-            {renderRichClickableText(String(value || '').trim(), {
-              ...clickableOptions,
-              keyPrefix: `${key}-value`,
-            })}
+            <StructuredSelectableText
+              text={String(value || '').trim()}
+              keyPrefix={`${key}-value`}
+            />
           </span>
         ) : null}
       </div>
@@ -17611,10 +18645,10 @@ function AppInner() {
 
       return (
         <div key={`exp-${index}`} className="webapp-feedback-line webapp-explanation-line">
-          {renderRichClickableText(line, {
-            ...clickableOptions,
-            keyPrefix: `exp-${index}`,
-          })}
+          <StructuredSelectableText
+            text={line}
+            keyPrefix={`exp-${index}`}
+          />
         </div>
       );
     });
@@ -18275,6 +19309,7 @@ function AppInner() {
     if (id) {
       setYoutubeId(id);
       setYoutubeError('');
+      setYoutubeEmptyState(null);
       const existingRaw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
       let existingTime = 0;
       try {
@@ -18882,7 +19917,6 @@ function AppInner() {
   const isFocusedTranslations = isFocusedSection('translations');
   const learningTtsLocale = getLearningTtsLocale();
   const activeLanguagePairLabel = getActiveLanguagePairLabel();
-  const renderTranslationsTaskHud = useStableCallback(() => renderTodaySectionTaskHud('translations'));
   const goHomeScreenStable = useStableCallback(goHomeScreen);
   const handleTranslationSubmitStable = useStableCallback(handleTranslationSubmit);
   const handleStartTranslationStable = useStableCallback(handleStartTranslation);
@@ -19014,11 +20048,7 @@ function AppInner() {
       if (Object.keys(scopeContext).length > 0) {
         body.scope_context = scopeContext;
       }
-      const response = await fetch('/api/webapp/analytics/scope', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const response = await postJsonWithRetry('/api/webapp/analytics/scope', body);
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки режима участия', 'Fehler beim Laden des Teilnahme-Modus'));
       }
@@ -19027,13 +20057,95 @@ function AppInner() {
       return data;
     } catch (error) {
       if (!silent) {
-        setAnalyticsScopeError(`${tr('Ошибка режима участия', 'Fehler beim Teilnahme-Modus')}: ${error.message}`);
+        const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить режим участия.', 'Teilnahme-Modus konnte nicht geladen werden.');
+        setAnalyticsScopeError(`${tr('Ошибка режима участия', 'Fehler beim Teilnahme-Modus')}: ${friendly}`);
       }
       return null;
     } finally {
       if (!silent) {
         setAnalyticsScopeLoading(false);
       }
+    }
+  };
+
+  const loadProgressResetStatus = async ({ silent = false } = {}) => {
+    if (!initData) {
+      if (!silent) {
+        setProgressResetError(initDataMissingMsg);
+      }
+      return null;
+    }
+    if (!silent) {
+      setProgressResetLoading(true);
+      setProgressResetError('');
+    }
+    try {
+      const response = await postJsonWithRetry('/api/webapp/progress-reset/status', { initData });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки reset progress', 'Fehler beim Laden des Reset-Status'));
+      }
+      const data = await response.json();
+      setProgressResetInfo(data || null);
+      return data;
+    } catch (error) {
+      if (!silent) {
+        const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить reset progress.', 'Reset-Status konnte nicht geladen werden.');
+        setProgressResetError(`${tr('Ошибка reset progress', 'Fehler beim Reset-Status')}: ${friendly}`);
+      }
+      return null;
+    } finally {
+      if (!silent) {
+        setProgressResetLoading(false);
+      }
+    }
+  };
+
+  const openProgressResetModal = useCallback(() => {
+    const fallbackDate = String(progressResetInfo?.date_bounds?.today || '').trim();
+    const currentResetDate = String(progressResetInfo?.reset?.reset_date || '').trim();
+    setProgressResetDraftDate(currentResetDate || fallbackDate);
+    setProgressResetError('');
+    setProgressResetModalOpen(true);
+  }, [progressResetInfo]);
+
+  const applyProgressReset = async () => {
+    if (!initData) {
+      setProgressResetError(initDataMissingMsg);
+      return;
+    }
+    const resetDate = String(progressResetDraftDate || '').trim();
+    if (!resetDate) {
+      setProgressResetError(tr('Выберите дату для новой точки отсчета.', 'Waehle ein Datum fuer den Neustart.'));
+      return;
+    }
+    setProgressResetSaving(true);
+    setProgressResetError('');
+    try {
+      const response = await postJsonWithRetry('/api/webapp/progress-reset/apply', {
+        initData,
+        reset_date: resetDate,
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка сохранения reset progress', 'Fehler beim Speichern des Reset-Status'));
+      }
+      const data = await response.json();
+      setProgressResetInfo((prev) => ({
+        ...(prev && typeof prev === 'object' ? prev : {}),
+        ...(data && typeof data === 'object' ? data : {}),
+      }));
+      setProgressResetModalOpen(false);
+      await Promise.all([
+        loadTodayPlan(),
+        loadSkillReport(),
+        loadWeeklyPlan(),
+        loadPlanAnalytics(planAnalyticsPeriod),
+        loadAnalytics(undefined, analyticsScopeKey),
+      ]);
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить reset progress.', 'Reset-Status konnte nicht gespeichert werden.');
+      setProgressResetError(`${tr('Ошибка reset progress', 'Fehler beim Reset-Status')}: ${friendly}`);
+    } finally {
+      setProgressResetSaving(false);
     }
   };
 
@@ -19139,18 +20251,15 @@ function AppInner() {
       if (Object.keys(scopeContext).length > 0) {
         body.scope_context = scopeContext;
       }
-      const response = await fetch('/api/webapp/analytics/scope/select', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const response = await postJsonWithRetry('/api/webapp/analytics/scope/select', body);
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка сохранения режима участия', 'Fehler beim Speichern des Teilnahme-Modus'));
       }
       await loadAnalyticsScope({ silent: true });
     } catch (error) {
       setAnalyticsScopeKey(previousScopeKey);
-      setAnalyticsScopeError(`${tr('Ошибка режима участия', 'Fehler beim Teilnahme-Modus')}: ${error.message}`);
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить режим участия.', 'Teilnahme-Modus konnte nicht gespeichert werden.');
+      setAnalyticsScopeError(`${tr('Ошибка режима участия', 'Fehler beim Teilnahme-Modus')}: ${friendly}`);
     } finally {
       setAnalyticsScopeSaving(false);
     }
@@ -19211,6 +20320,17 @@ function AppInner() {
     } catch (_error) {
       // ignore focus cleanup issues on mobile clients
     }
+    window.setTimeout(() => {
+      try {
+        analyticsPeriodSelectRef.current?.blur?.();
+        if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+      } catch (_error) {
+        // ignore delayed focus cleanup issues on mobile clients
+      }
+      setAnalyticsPeriodSelectVersion((value) => value + 1);
+    }, 0);
     setAnalyticsCalendarOpen(true);
   }, [ensureAnalyticsCalendarDraftRange]);
 
@@ -19264,33 +20384,21 @@ function AppInner() {
     setAnalyticsCompare([]);
     setAnalyticsRank(null);
     try {
-      const summaryResponse = await fetch('/api/webapp/analytics/summary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(personalPayloadBase),
-      });
+      const summaryResponse = await postJsonWithRetry('/api/webapp/analytics/summary', personalPayloadBase);
       if (!summaryResponse.ok) {
         throw new Error(await readApiError(summaryResponse, 'Ошибка загрузки аналитики', 'Fehler beim Laden der Analytik'));
       }
       const summaryData = await summaryResponse.json();
       setAnalyticsSummary(summaryData.summary || null);
 
-      const seriesResponse = await fetch('/api/webapp/analytics/timeseries', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...personalPayloadBase, granularity }),
-      });
+      const seriesResponse = await postJsonWithRetry('/api/webapp/analytics/timeseries', { ...personalPayloadBase, granularity });
       if (!seriesResponse.ok) {
         throw new Error(await readApiError(seriesResponse, 'Ошибка загрузки динамики', 'Fehler beim Laden des Verlaufs'));
       }
       const seriesData = await seriesResponse.json();
       setAnalyticsPoints(seriesData.points || []);
 
-      const compareResponse = await fetch('/api/webapp/analytics/compare', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payloadBase, limit: 8 }),
-      });
+      const compareResponse = await postJsonWithRetry('/api/webapp/analytics/compare', { ...payloadBase, limit: 8 });
       if (!compareResponse.ok) {
         throw new Error(await readApiError(compareResponse, 'Ошибка загрузки сравнения', 'Fehler beim Laden des Vergleichs'));
       }
@@ -19298,7 +20406,8 @@ function AppInner() {
       setAnalyticsCompare(compareData.items || []);
       setAnalyticsRank(scope.scope_kind === 'group' ? (compareData.self?.rank ?? null) : null);
     } catch (error) {
-      setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${error.message}`);
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить аналитику.', 'Analytik konnte nicht geladen werden.');
+      setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
     } finally {
       setAnalyticsLoading(false);
     }
@@ -19325,6 +20434,17 @@ function AppInner() {
     } catch (_error) {
       // ignore focus cleanup issues on mobile clients
     }
+    window.setTimeout(() => {
+      try {
+        analyticsPeriodSelectRef.current?.blur?.();
+        if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+      } catch (_error) {
+        // ignore delayed focus cleanup issues on mobile clients
+      }
+      setAnalyticsPeriodSelectVersion((value) => value + 1);
+    }, 0);
     loadAnalytics('calendar', analyticsScopeKey, nextRange);
   }, [
     analyticsCalendarDraftEndDate,
@@ -19482,15 +20602,37 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
+      setAnalyticsBootstrapReady(false);
       return;
     }
     if (!flashcardsOnly && isSectionVisible('analytics')) {
-      loadAnalyticsScope();
+      let cancelled = false;
+      setAnalyticsBootstrapReady(false);
+      (async () => {
+        await loadAnalyticsScope();
+        if (cancelled) return;
+        await loadProgressResetStatus();
+        if (cancelled) return;
+        setAnalyticsBootstrapReady(true);
+      })();
+      return () => {
+        cancelled = true;
+      };
     }
-  }, [initData, isWebAppMode, selectedSections, flashcardsOnly, webappChatType]);
+    setAnalyticsBootstrapReady(false);
+    return undefined;
+  }, [
+    initData,
+    isWebAppMode,
+    selectedSections,
+    flashcardsOnly,
+    webappChatType,
+    languageProfile?.learning_language,
+    languageProfile?.native_language,
+  ]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData) {
+    if (!isWebAppMode || !initData || !analyticsBootstrapReady) {
       return;
     }
     if (!flashcardsOnly && isSectionVisible('analytics')) {
@@ -19502,6 +20644,7 @@ function AppInner() {
   }, [
     initData,
     isWebAppMode,
+    analyticsBootstrapReady,
     analyticsPeriod,
     analyticsScopeKey,
     analyticsCalendarRangeValid,
@@ -19530,6 +20673,18 @@ function AppInner() {
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [analyticsCalendarOpen]);
+
+  useEffect(() => {
+    if (isWebAppMode && initData) {
+      return;
+    }
+    setProgressResetInfo(null);
+    setProgressResetError('');
+    setProgressResetLoading(false);
+    setProgressResetSaving(false);
+    setProgressResetModalOpen(false);
+    setProgressResetDraftDate('');
+  }, [initData, isWebAppMode]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -19827,27 +20982,54 @@ function AppInner() {
   }, [analyticsPoints, analyticsPeriod, themeMode]);
 
   useEffect(() => {
-    if (!analyticsCompareRef.current) {
+    if (!analyticsCompareRef.current || !analyticsCompareWordsRef.current || !analyticsCompareErrorsRef.current) {
       return;
     }
     let disposed = false;
-    let chart = null;
+    const charts = [];
     const isLightTheme = themeMode === 'light';
     const chartTextColor = isLightTheme ? '#5a4a39' : '#c7d2f1';
     const chartSplitLineColor = isLightTheme ? 'rgba(130, 101, 67, 0.18)' : 'rgba(255,255,255,0.08)';
     const tooltipBackground = isLightTheme ? 'rgba(255, 248, 238, 0.96)' : 'rgba(15, 23, 42, 0.92)';
     const tooltipBorder = isLightTheme ? 'rgba(171, 126, 72, 0.5)' : 'rgba(148, 163, 184, 0.28)';
     const tooltipTextColor = isLightTheme ? '#1f1a14' : '#e2e8f0';
+    const secondaryLabelColor = isLightTheme ? 'rgba(90, 74, 57, 0.72)' : 'rgba(199, 210, 241, 0.72)';
     const selfId = webappUser?.id;
     const names = analyticsCompare.map((item) => item.username);
-    const data = analyticsCompare.map((item) => ({
-      value: item.final_score || 0,
+    const formatCompareStartDateLabel = (rawValue) => {
+      const normalized = String(rawValue || '').trim();
+      if (!normalized) return '';
+      const formatted = formatAnalyticsCalendarDisplayDate(normalized, uiLang === 'de' ? 'de-AT' : 'ru-RU') || normalized;
+      return uiLang === 'de' ? `seit ${formatted}` : `с ${formatted}`;
+    };
+    const formatMetricValue = (metricKey, value) => {
+      const numeric = Number(value || 0);
+      if (!Number.isFinite(numeric)) return '0';
+      if (metricKey === 'learned_words') return `${Math.round(numeric)}`;
+      if (metricKey === 'errors_per_sentence') return numeric.toFixed(2);
+      return `${Math.round(numeric * 100) / 100}`;
+    };
+    const buildCompareData = (metricKey, selfColor, peerColor) => analyticsCompare.map((item) => ({
+      value: Number(item?.[metricKey] || 0),
       itemStyle: {
-        color: item.user_id === selfId ? '#ffd166' : '#5ddcff',
+        color: item.user_id === selfId ? selfColor : peerColor,
       },
     }));
-
-    const option = {
+    const buildCompareTooltip = (metricKey, label) => (params) => {
+      const item = analyticsCompare[params.dataIndex];
+      if (!item) return '';
+      return `
+        <strong>${item.username}</strong><br/>
+        ${tr('Данные в сравнении с', 'Vergleichsdaten seit')}: ${formatCompareStartDateLabel(item.effective_compare_start_date) || '—'}<br/>
+        ${label}: ${formatMetricValue(metricKey, item?.[metricKey])}<br/>
+        ${tr('Общий результат', 'Gesamtergebnis')}: ${formatMetricValue('final_score', item?.final_score)}<br/>
+        ${tr('Слова', 'Woerter')}: ${formatMetricValue('learned_words', item?.learned_words)}<br/>
+        ${tr('Ошибок на 1 предложение', 'Fehler pro Satz')}: ${formatMetricValue('errors_per_sentence', item?.errors_per_sentence)}<br/>
+        ${tr('Переведено', 'Uebersetzt')}: ${item.total_translations}<br/>
+        ${tr('Попытки', 'Versuche')}: ${item.translation_attempts ?? item.total_translations ?? 0}
+      `;
+    };
+    const buildCompareOption = ({ metricKey, label, selfColor, peerColor }) => ({
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'item',
@@ -19855,21 +21037,7 @@ function AppInner() {
         borderColor: tooltipBorder,
         borderWidth: 1,
         textStyle: { color: tooltipTextColor },
-        formatter: (params) => {
-          const item = analyticsCompare[params.dataIndex];
-          if (!item) return '';
-          return `
-            <strong>${item.username}</strong><br/>
-            ${tr('Общий результат', 'Gesamtergebnis')}: ${item.final_score}<br/>
-            ${tr('Удачных переводов', 'Gute Uebersetzungen')}: ${item.success_rate}%<br/>
-            ${tr('Закрыто по плану', 'Vom Plan erledigt')}: ${Number(item.completion_rate ?? 0)}% (${item.covered_sentences ?? item.total_translations ?? 0}/${item.assigned_sentences ?? 0})<br/>
-            ${tr('Средняя оценка', 'Durchschnittliche Bewertung')}: ${item.avg_score}<br/>
-            ${tr('Переведено', 'Uebersetzt')}: ${item.total_translations}<br/>
-            ${tr('Попытки', 'Versuche')}: ${item.translation_attempts ?? item.total_translations ?? 0}<br/>
-            ${tr('Пропущено заданий', 'Verpasste Aufgaben')}: ${item.missed_sentences}<br/>
-            ${tr('Дней без практики', 'Tage ohne Praxis')}: ${item.missed_days ?? 0}
-          `;
-        },
+        formatter: buildCompareTooltip(metricKey, label),
       },
       grid: { left: 20, right: 20, top: 20, bottom: 20, containLabel: true },
       xAxis: {
@@ -19880,13 +21048,37 @@ function AppInner() {
       yAxis: {
         type: 'category',
         data: names,
-        axisLabel: { color: chartTextColor },
+        axisLabel: {
+          color: chartTextColor,
+          formatter: (_value, index) => {
+            const item = analyticsCompare[index];
+            const username = String(item?.username || '').trim() || 'Unknown';
+            const compareStartLabel = formatCompareStartDateLabel(item?.effective_compare_start_date);
+            if (!compareStartLabel) {
+              return `{name|${username}}`;
+            }
+            return `{name|${username}}\n{meta|${compareStartLabel}}`;
+          },
+          rich: {
+            name: {
+              color: chartTextColor,
+              fontSize: 13,
+              fontWeight: 600,
+              lineHeight: 18,
+            },
+            meta: {
+              color: secondaryLabelColor,
+              fontSize: 11,
+              lineHeight: 14,
+            },
+          },
+        },
         inverse: true,
       },
       series: [
         {
           type: 'bar',
-          data,
+          data: buildCompareData(metricKey, selfColor, peerColor),
           barWidth: 18,
           borderRadius: [8, 8, 8, 8],
           label: {
@@ -19895,31 +21087,66 @@ function AppInner() {
             color: chartTextColor,
             formatter: (params) => {
               const item = analyticsCompare[params.dataIndex];
-              return `${Number(item?.final_score || 0)}`;
+              return formatMetricValue(metricKey, item?.[metricKey]);
             },
           },
         },
       ],
-    };
+    });
 
     (async () => {
       const echartsModule = await import('echarts');
-      if (disposed || !analyticsCompareRef.current) {
-        return;
-      }
-      chart = echartsModule.init(analyticsCompareRef.current);
-      chart.setOption(option);
+      if (disposed) return;
+      const chartConfigs = [
+        {
+          ref: analyticsCompareRef,
+          option: buildCompareOption({
+            metricKey: 'final_score',
+            label: tr('Общий результат', 'Gesamtergebnis'),
+            selfColor: '#ffd166',
+            peerColor: '#5ddcff',
+          }),
+        },
+        {
+          ref: analyticsCompareWordsRef,
+          option: buildCompareOption({
+            metricKey: 'learned_words',
+            label: tr('Слова', 'Woerter'),
+            selfColor: '#ff9f1c',
+            peerColor: '#2ec4b6',
+          }),
+        },
+        {
+          ref: analyticsCompareErrorsRef,
+          option: buildCompareOption({
+            metricKey: 'errors_per_sentence',
+            label: tr('Ошибок на 1 предложение', 'Fehler pro Satz'),
+            selfColor: '#9b5de5',
+            peerColor: '#f15bb5',
+          }),
+        },
+      ];
+      chartConfigs.forEach(({ ref, option }) => {
+        if (!ref.current) return;
+        const chart = echartsModule.init(ref.current);
+        chart.setOption(option);
+        charts.push(chart);
+      });
     })().catch(() => {
-      // comparison list still works even if chart import fails
+      // comparison cards remain usable even if chart import fails
     });
 
     return () => {
       disposed = true;
-      if (chart) {
-        chart.dispose();
-      }
+      charts.forEach((chart) => {
+        try {
+          chart.dispose();
+        } catch (_error) {
+          // ignore dispose issues
+        }
+      });
     };
-  }, [analyticsCompare, webappUser, themeMode]);
+  }, [analyticsCompare, webappUser, themeMode, tr, uiLang]);
 
   if (isWebAppMode) {
     if (singleInstanceBlocked) {
@@ -20793,9 +22020,14 @@ function AppInner() {
                         type="button"
                         className="secondary-button language-profile-starter-btn"
                         onClick={() => void applyStarterDictionaryDecision(true, { forceReimport: true, closePromptOnSuccess: false })}
-                        disabled={languageProfileSaving || starterDictionaryActionLoading || !starterDictionaryOffer?.can_reconnect}
+                        disabled={
+                          languageProfileSaving
+                          || starterDictionaryActionLoading
+                          || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
+                          || !starterDictionaryOffer?.can_reconnect
+                        }
                       >
-                        {starterDictionaryActionLoading
+                        {starterDictionaryActionLoading || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
                           ? tr('Подключаем...', 'Wird verbunden...')
                           : !starterDictionaryOffer?.can_reconnect
                             ? tr('Базовый словарь пока пуст', 'Basiswoerterbuch ist noch leer')
@@ -20844,9 +22076,12 @@ function AppInner() {
                       type="button"
                       className="primary-button language-profile-save-btn"
                       onClick={() => void applyStarterDictionaryDecision(true)}
-                      disabled={starterDictionaryActionLoading}
+                      disabled={
+                        starterDictionaryActionLoading
+                        || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
+                      }
                     >
-                      {starterDictionaryActionLoading
+                      {starterDictionaryActionLoading || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
                         ? tr('Подключаем...', 'Wird verbunden...')
                         : tr('Да, подключить', 'Ja, verbinden')}
                     </button>
@@ -20925,6 +22160,9 @@ function AppInner() {
                         'Die vollstaendige Karte der App in Menue-Reihenfolge: was jeder Bereich macht, was privat ankommt und was in Gruppen erscheint.'
                       )}
                     </p>
+                    <button type="button" className="secondary-button guide-tour-button" onClick={startOnboardingTour}>
+                      {tr('Показать быстрый тур', 'Schnellstart zeigen')}
+                    </button>
                   </div>
                   <div className="guide-hero-mascot-wrap" aria-hidden="true">
                     <img src={heroStickerSrc} alt="" className="guide-hero-mascot" />
@@ -20992,9 +22230,6 @@ function AppInner() {
                 <div className="guide-actions">
                   <button type="button" className="primary-button guide-primary-cta" onClick={() => openSingleSectionAndScroll('translations', translationsRef)}>
                     {tr('Начать с переводов', 'Mit Uebersetzungen starten')}
-                  </button>
-                  <button type="button" className="secondary-button guide-tour-button" onClick={startOnboardingTour}>
-                    {tr('Показать быстрый тур', 'Schnellstart zeigen')}
                   </button>
                   <div className="guide-quick-actions-grid">
                     <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('dictionary', dictionaryRef)}>
@@ -21509,7 +22744,6 @@ function AppInner() {
                 heroStickerSrc={heroStickerSrc}
                 isFocusedTranslations={isFocusedTranslations}
                 goHomeScreen={goHomeScreenStable}
-                renderTranslationsTaskHud={renderTranslationsTaskHud}
                 showTranslationStartConfigurator={showTranslationStartConfigurator}
                 todayTranslationRecommendation={todayTranslationRecommendation}
                 customTopicLabel={CUSTOM_TOPIC}
@@ -21888,6 +23122,14 @@ function AppInner() {
                     {(youtubeOverlayEnabled || !youtubeSubtitlesReady) && renderYoutubeSentenceJumpBar()}
                     {youtubeRecommendationLoading && (
                       <div className="youtube-recommendation-note">{youtubeRecommendationStatusLabel}</div>
+                    )}
+                    {!youtubeRecommendationLoading && !youtubeError && !youtubeId && youtubeEmptyState && (
+                      <div className="youtube-empty-state">
+                        <div className="youtube-empty-state-badge">{youtubeEmptyState.badge || 'YouTube'}</div>
+                        <h4>{youtubeEmptyState.title}</h4>
+                        <p>{youtubeEmptyState.body}</p>
+                        {youtubeEmptyState.note && <p className="youtube-empty-state-note">{youtubeEmptyState.note}</p>}
+                      </div>
                     )}
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
                     {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
@@ -23202,7 +24444,36 @@ function AppInner() {
                               {tr('Сегодня по FSRS всё повторено. Можно отдыхать.', 'Heute ist alles in FSRS wiederholt. Du kannst entspannen.')}
                             </div>
                           )}
-                          {!srsLoading && !srsCard && srsError && <div className="webapp-error">{srsError}</div>}
+                          {!srsLoading && !srsCard && srsError && (
+                            <div className="fsrs-study-card fsrs-error-state" role="alert" aria-live="polite">
+                              <div className="fsrs-error-badge">
+                                {tr('Соединение', 'Verbindung')}
+                              </div>
+                              <div className="fsrs-error-title">
+                                {tr('Не удалось загрузить следующую карточку', 'Die naechste Karte konnte nicht geladen werden')}
+                              </div>
+                              <div className="fsrs-divider" />
+                              <div className="fsrs-error-copy">
+                                <p>{srsError}</p>
+                                <p>
+                                  {tr(
+                                    'Карточка не потеряна. Проверьте соединение и нажмите «Повторить».',
+                                    'Die Karte ist nicht verloren. Bitte Verbindung pruefen und dann auf „Erneut versuchen“ tippen.'
+                                  )}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                className="fsrs-retry-btn"
+                                onClick={() => {
+                                  setWebappError('');
+                                  void loadSrsNextCard();
+                                }}
+                              >
+                                {tr('Повторить', 'Erneut versuchen')}
+                              </button>
+                            </div>
+                          )}
                           {!srsLoading && !srsCard && !srsError && (
                             <div className="fsrs-empty-note">{t('no_cards_now')}</div>
                           )}
@@ -23342,7 +24613,14 @@ function AppInner() {
                         </div>
                         {flashcardsLoading && <div className="webapp-muted">{t('loading_cards')}</div>}
                         {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
-                        {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && (
+                        {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && flashcardsEmptyState && (
+                          <div className="flashcards-empty-state">
+                            <div className="flashcards-empty-state-badge">{flashcardsEmptyState.badge || 'Training'}</div>
+                            <h4>{flashcardsEmptyState.title}</h4>
+                            <p>{flashcardsEmptyState.body}</p>
+                          </div>
+                        )}
+                        {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && !flashcardsEmptyState && (
                           <div className="webapp-muted">{t('dictionary_empty')}</div>
                         )}
                         {!flashcardsLoading && !flashcardsError && flashcards.length > 0 && flashcardPreviewActive && (
@@ -24194,6 +25472,7 @@ function AppInner() {
                   <label className="webapp-field analytics-period-field">
                     <span>{tr('Период', 'Zeitraum')}</span>
                     <select
+                      key={`analytics-period-${analyticsPeriodSelectVersion}`}
                       ref={analyticsPeriodSelectRef}
                       value={analyticsPeriod}
                       onChange={(event) => {
@@ -24341,8 +25620,32 @@ function AppInner() {
                   {analyticsScopeLoading ? ` ${tr('Определяем контекст...', 'Kontext wird ermittelt...')}` : ''}
                   {analyticsScopeSaving ? ` ${tr('Сохраняем режим...', 'Modus wird gespeichert...')}` : ''}
                 </div>
+                <div className="analytics-reset-card">
+                  <div className="analytics-reset-copy">
+                    <strong>{tr('Начать все сначала', 'Neu anfangen')}</strong>
+                    <span>
+                      {tr('Новая точка отсчета для KPI и skills', 'Neuer Startpunkt fuer KPI und Skills')}: {progressResetDateLabel}
+                    </span>
+                    <small>
+                      {tr('Словарь, карточки, квизы, книги и остальной контент не удаляются.', 'Woerterbuch, Karteikarten, Quizze, Buecher und Inhalte bleiben erhalten.')}
+                    </small>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-button analytics-reset-button"
+                    onClick={openProgressResetModal}
+                    disabled={progressResetLoading || progressResetSaving}
+                  >
+                    {progressResetLoading
+                      ? tr('Загружаем...', 'Laden...')
+                      : progressResetSaving
+                        ? tr('Сохраняем...', 'Speichern...')
+                        : tr('Начать все сначала', 'Neu anfangen')}
+                  </button>
+                </div>
 
                 {analyticsScopeError && <div className="webapp-error">{analyticsScopeError}</div>}
+                {progressResetError && !progressResetModalOpen && <div className="webapp-error">{progressResetError}</div>}
                 {analyticsError && <div className="webapp-error">{analyticsError}</div>}
 
                 {analyticsSummary && (
@@ -24387,7 +25690,79 @@ function AppInner() {
 
                 <div className="analytics-chart" ref={analyticsTrendRef} />
                 <div className="webapp-muted analytics-compare-hint">{analyticsCompareInsight}</div>
-                <div className="analytics-chart analytics-compare" ref={analyticsCompareRef} />
+                <div className="analytics-compare-sections">
+                  <div className="analytics-compare-section">
+                    <div className="analytics-card-group-title">{tr('Общий результат', 'Gesamtergebnis')}</div>
+                    <div className="analytics-chart analytics-compare" ref={analyticsCompareRef} />
+                  </div>
+                  <div className="analytics-compare-section">
+                    <div className="analytics-card-group-title">{tr('Слова', 'Woerter')}</div>
+                    <div className="analytics-chart analytics-compare" ref={analyticsCompareWordsRef} />
+                  </div>
+                  <div className="analytics-compare-section">
+                    <div className="analytics-card-group-title">{tr('Ошибок на 1 предложение', 'Fehler pro Satz')}</div>
+                    <div className="analytics-chart analytics-compare" ref={analyticsCompareErrorsRef} />
+                  </div>
+                </div>
+                {progressResetModalOpen && (
+                  <div
+                    className="language-profile-gate analytics-reset-gate"
+                    role="dialog"
+                    aria-modal="true"
+                    onClick={() => {
+                      if (progressResetSaving) return;
+                      setProgressResetModalOpen(false);
+                      setProgressResetError('');
+                    }}
+                  >
+                    <div className="language-profile-card analytics-reset-modal" onClick={(event) => event.stopPropagation()}>
+                      <h3>{tr('Начать все сначала', 'Neu anfangen')}</h3>
+                      <p className="webapp-muted">
+                        {tr('Выберите дату, которая станет новой точкой отсчета для KPI и skills. Словарь, карточки, квизы, книги и остальной контент останутся как есть.', 'Waehle das Datum, das als neuer Startpunkt fuer KPI und Skills gilt. Woerterbuch, Karteikarten, Quizze, Buecher und Inhalte bleiben unveraendert.')}
+                      </p>
+                      <label className="webapp-field analytics-reset-field">
+                        <span>{tr('Новая дата отсчета', 'Neues Startdatum')}</span>
+                        <div className="analytics-calendar-date-shell analytics-reset-date-shell">
+                          <span className={`analytics-calendar-date-value ${progressResetDraftDate ? '' : 'is-placeholder'}`}>
+                            {formatAnalyticsCalendarDisplayDate(progressResetDraftDate, uiLang === 'de' ? 'de-AT' : 'ru-RU') || tr('Выберите дату', 'Datum waehlen')}
+                          </span>
+                          <input
+                            className="analytics-calendar-native-input"
+                            type="date"
+                            value={progressResetDraftDate}
+                            max={progressResetMaxDate || undefined}
+                            onChange={(event) => setProgressResetDraftDate(event.target.value)}
+                          />
+                        </div>
+                      </label>
+                      <div className="webapp-muted analytics-reset-caption">
+                        {tr('С этой даты начнут считаться personal KPI и skill analytics.', 'Ab diesem Datum werden persoenliche KPI und Skill-Analytik neu berechnet.')}
+                      </div>
+                      {progressResetError && <div className="webapp-error">{progressResetError}</div>}
+                      <div className="language-profile-actions analytics-reset-actions">
+                        <button
+                          type="button"
+                          className="language-profile-close-btn"
+                          onClick={() => {
+                            setProgressResetModalOpen(false);
+                            setProgressResetError('');
+                          }}
+                          disabled={progressResetSaving}
+                        >
+                          {tr('Отмена', 'Abbrechen')}
+                        </button>
+                        <button
+                          type="button"
+                          className="language-profile-save-btn"
+                          onClick={applyProgressReset}
+                          disabled={progressResetSaving || !progressResetDraftDate}
+                        >
+                          {progressResetSaving ? tr('Сохраняем...', 'Speichern...') : tr('Применить', 'Anwenden')}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 </section>
               </PerfProfiler>
             )}
@@ -24461,19 +25836,42 @@ function AppInner() {
                         <strong>{Number(economicsSummary?.totals?.unpriced_events || 0)}</strong>
                       </div>
                       <div className="analytics-card">
-                        <span>{tr('Ср. цена события', 'Ø Kosten/Ereignis')}</span>
+                        <span>{tr('Ср. цена billing-event', 'Ø Kosten pro Billing-Event')}</span>
                         <strong>{Number(economicsSummary?.totals?.avg_cost_per_event || 0).toFixed(4)} {economicsSummary?.currency || 'USD'}</strong>
                       </div>
                       <div className="analytics-card">
                         <span>{tr('Активных пользователей', 'Aktive Nutzer')}</span>
                         <strong>{Number(economicsSummary?.totals?.active_users || 0)}</strong>
                       </div>
+                      <div className="analytics-card">
+                        <span>{tr('Событий на пользователя', 'Events pro Nutzer')}</span>
+                        <strong>{Number(economicsSummary?.totals?.avg_events_per_active_user || 0).toFixed(1)}</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('Ср. переменные затраты на пользователя', 'Ø variable Kosten pro Nutzer')}</span>
+                        <strong>{Number(economicsSummary?.totals?.avg_variable_cost_per_active_user || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                      </div>
+                      <div className="analytics-card">
+                        <span>{tr('Ср. постоянные затраты на пользователя', 'Ø Fixkosten pro Nutzer')}</span>
+                        <strong>{Number(economicsSummary?.totals?.avg_fixed_cost_per_active_user || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                      </div>
+                    </div>
+
+                    <div className="economics-total-spotlight">
+                      <span>{tr('СРЕДНЯЯ ИТОГОВАЯ СТОИМОСТЬ НА 1 ПОЛЬЗОВАТЕЛЯ', 'DURCHSCHNITTLICHE GESAMTKOSTEN PRO 1 NUTZER')}</span>
+                      <strong>{Number(economicsSummary?.totals?.avg_cost_per_active_user || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
                     </div>
 
                     <div className="economics-meta-row">
                       <span>{tr('Диапазон', 'Zeitraum')}: {economicsSummary?.range?.start_date} — {economicsSummary?.range?.end_date}</span>
                       <span>{tr('Фильтр провайдера', 'Provider-Filter')}: {selectedEconomicsProviderLabel}</span>
                       <span>{tr('Охват', 'Abdeckung')}: {tr('все пользователи и системные события', 'alle Nutzer und Systemevents')}</span>
+                    </div>
+                    <div className="webapp-muted analytics-scope-hint">
+                      {tr(
+                        'Billing ledger = внутренний журнал учтённых cost-записей. Один реальный сценарий может создать несколько billing-events: например модель, TTS, R2 и voice считаются отдельно.',
+                        'Billing-Ledger = internes Journal aller erfassten Kosten-Eintraege. Ein echter Nutzungsvorgang kann mehrere Billing-Events erzeugen: z. B. Modell, TTS, R2 und Voice getrennt.'
+                      )}
                     </div>
 
                     {economicsLedgerIsEmpty && (
@@ -24500,6 +25898,11 @@ function AppInner() {
                           const usageRatio = Number(row?.usage_ratio || 0);
                           const budgetKind = String(row?.metadata?.budget_kind || '').trim().toLowerCase();
                           const budgetLabel = String(row?.period_label || '').trim() || String(row?.period_month || '').slice(0, 7);
+                          const activeUsers = Number(row?.active_users || 0);
+                          const avgUnitsPerActiveUser = Number(row?.avg_units_per_active_user || 0);
+                          const budgetWindowLabel = budgetKind === 'daily_quota'
+                            ? tr('окно: день', 'Fenster: Tag')
+                            : tr('окно: месяц', 'Fenster: Monat');
                           const livekitTone = String(row?.metadata?.color || '').trim().toLowerCase();
                           const cardTone =
                             row?.provider === 'livekit'
@@ -24518,13 +25921,22 @@ function AppInner() {
                               </strong>
                               <small className="webapp-muted">
                                 {budgetKind === 'daily_quota' ? tr('daily quota', 'Tagesquote') : tr('free tier', 'Freikontingent')}
-                                {budgetLabel ? ` • ${budgetLabel}` : ''}
+                                {' • '}
+                                {budgetWindowLabel}
+                                {budgetLabel ? ` ${budgetLabel}` : ''}
                                 {' • '}
                                 {formatEconomicsUnitsLabel(row?.units_type || row?.unit, uiLang)}
                                 {Number.isFinite(usageRatio) && usageRatio > 0
                                   ? ` • ${Math.round(usageRatio * 100)}%`
                                   : ''}
                               </small>
+                              {activeUsers > 0 && (
+                                <small className="webapp-muted">
+                                  {tr('avg/user', 'Ø/Nutzer')}: {formatEconomicsCompactNumber(avgUnitsPerActiveUser)} {formatEconomicsUnitsLabel(row?.units_type || row?.unit, uiLang)}
+                                  {' • '}
+                                  {activeUsers} {tr('активных', 'aktive')}
+                                </small>
+                              )}
                             </div>
                           );
                         })}
@@ -24579,7 +25991,10 @@ function AppInner() {
                         )}
                       </div>
                       <div className="economics-breakdown-card">
-                        <h4>{tr('По моделям', 'Nach Modellen')}</h4>
+                        <h4>{tr('По AI-моделям', 'Nach KI-Modellen')}</h4>
+                        <div className="webapp-muted" style={{ marginBottom: 8, fontSize: 12 }}>
+                          {tr('Например GPT / Whisper / Claude, если модель записана в billing event.', 'Zum Beispiel GPT / Whisper / Claude, falls das Modell im Billing-Event gespeichert ist.')}
+                        </div>
                         {(economicsSummary?.breakdown?.by_model || []).slice(0, 10).map((item) => (
                           <div className="economics-breakdown-row economics-breakdown-row-rich" key={`model-${item.model}`}>
                             <div className="economics-breakdown-copy">
@@ -24652,14 +26067,6 @@ function AppInner() {
                         <span>{tr('Статус', 'Status')}</span>
                         <strong>{String(billingStatus?.status || 'inactive')}</strong>
                       </div>
-                      <div className="analytics-card">
-                        <span>{tr('Расход сегодня', 'Heute verbraucht')}</span>
-                        <strong>{Number(billingStatus?.spent_today_eur || 0).toFixed(2)} EUR</strong>
-                      </div>
-                      <div className="analytics-card">
-                        <span>{tr('Дневной cap', 'Tages-Cap')}</span>
-                        <strong>{billingStatus?.cap_today_eur == null ? tr('Без лимита', 'Unbegrenzt') : `${Number(billingStatus?.cap_today_eur || 0).toFixed(2)} EUR`}</strong>
-                      </div>
                     </div>
 
                     {billingStatus?.trial_ends_at && (
@@ -24667,24 +26074,15 @@ function AppInner() {
                         {tr('Trial активен до', 'Trial aktiv bis')}: {new Date(billingStatus.trial_ends_at).toLocaleString()}
                       </div>
                     )}
-                    <div className="webapp-muted">
-                      {tr('Сброс лимитов', 'Limits-Reset')}: {billingStatus?.reset_at ? new Date(billingStatus.reset_at).toLocaleString() : '—'}
-                    </div>
 
                     <div className="billing-trial-banner">
                       <strong>{tr('Первые 3 дня: Trial Pro для всех новых пользователей.', 'Die ersten 3 Tage: Trial Pro fuer alle neuen Nutzer.')}</strong>
-                      <p>
-                        {tr(
-                          'В этот период работает расширенный доступ, но действует внутренний технический cap расходов (он невидим пользователю).',
-                          'In diesem Zeitraum gilt erweiterter Zugriff, aber mit internem technischem Kosten-Cap (fuer Nutzer nicht sichtbar).'
-                        )}
-                      </p>
                     </div>
                     <div className="billing-policy-grid">
                       <article className="billing-policy-card">
                         <h4>{tr('Free после trial', 'Free nach Trial')}</h4>
                         <ul>
-                          <li>{tr('Переводы: безлимитно.', 'Uebersetzungen: unbegrenzt.')}</li>
+                          <li>{tr('Переводы: 1 набор в день (7 предложений).', 'Uebersetzungen: 1 Set pro Tag (7 Saetze).')}</li>
                           <li>{tr('Читалка: 1 книга (до 30 дней), новая только после удаления старой.', 'Reader: 1 Buch (bis 30 Tage), neues nur nach Loeschen des alten.')}</li>
                           <li>{tr('Аудио из читалки: недоступно.', 'Audio aus Reader: nicht verfuegbar.')}</li>
                           <li>{tr('Карточки: по 5 слов в день на каждый вид тренировки.', 'Karteikarten: 5 Woerter pro Tag je Trainingsmodus.')}</li>
@@ -24700,7 +26098,7 @@ function AppInner() {
                           <li>{tr('Аудио из читалки: до 10 страниц за 7 дней.', 'Audio aus Reader: bis zu 10 Seiten in 7 Tagen.')}</li>
                           <li>{tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.')}</li>
                           <li>{tr('Прокачка навыков: безлимитно.', 'Skill-Training: unbegrenzt.')}</li>
-                          <li>{tr('Можно обсудить индивидуальную доработку/тренировку (по технической возможности).', 'Individuelle Anpassung/Training kann besprochen werden (sofern technisch moeglich).')}</li>
+                          <li>{tr('Только для тарифа Pro: можно обсудить индивидуальную доработку/тренировку (по технической возможности).', 'Nur im Tarif Pro: Individuelle Anpassung/Training kann besprochen werden (sofern technisch moeglich).')}</li>
                         </ul>
                       </article>
                     </div>

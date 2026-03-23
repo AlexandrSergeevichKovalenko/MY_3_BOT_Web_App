@@ -1,0 +1,21 @@
+{
+  "label": "stage10_before",
+  "captured_at": "2026-03-23T20:39:28.576168+00:00",
+  "user_count": 10,
+  "user_ids": [
+    9100000201,
+    9100000202,
+    9100000203,
+    9100000204,
+    9100000205,
+    9100000206,
+    9100000207,
+    9100000208,
+    9100000209,
+    9100000210
+  ],
+  "translation_check_sessions": 10,
+  "translation_check_items": 70,
+  "skill_events_v2": 243,
+  "skill_state_v2_dirty": 0
+}

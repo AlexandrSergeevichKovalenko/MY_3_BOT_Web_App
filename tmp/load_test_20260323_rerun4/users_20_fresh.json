@@ -1,0 +1,122 @@
+[
+  {
+    "user_id": 9100000401,
+    "username": "load_test_9100000401",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000401%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000401%22%7D&hash=8b1454ed6553339cbaf5f0d7cc623c92c3b4fb4dcd8b4ca3b0490b5eb61349f7",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000402,
+    "username": "load_test_9100000402",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000402%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000402%22%7D&hash=f33526101c22660ad2b1452e416565ecef926a92f77f457bf3692087f01e4617",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000403,
+    "username": "load_test_9100000403",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000403%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000403%22%7D&hash=41a3364ade79de5ad0882bfaf7e85d5fcafd952e790217408689600777e786dc",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000404,
+    "username": "load_test_9100000404",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000404%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000404%22%7D&hash=cda660cba4592db74bdb00d948e96859db759b223b8b7659dacb7749c317883e",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000405,
+    "username": "load_test_9100000405",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000405%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000405%22%7D&hash=43b25eff554cb7b991b643450324b397747f286b4bca8f9314cc2126e6ae949a",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000406,
+    "username": "load_test_9100000406",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000406%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000406%22%7D&hash=8fa13093fc57a3cfd94c5e2a7ea640ccd078e7b77e61913b79bc10b1d93574e9",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000407,
+    "username": "load_test_9100000407",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000407%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000407%22%7D&hash=9f130ec180db8ee4222c875a88400b4629fc968cc3754ff251a39ff8ec8b49b8",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000408,
+    "username": "load_test_9100000408",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000408%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000408%22%7D&hash=c86adc451a0c000b314b23b7a6f530d77f702bab479320589b2054b8842ba994",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000409,
+    "username": "load_test_9100000409",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000409%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000409%22%7D&hash=74d553cb7935c0eab303413420b91a287e4f76ef5869d0ce2600d45e07f60030",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000410,
+    "username": "load_test_9100000410",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000410%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000410%22%7D&hash=e99751d4a987548d27c01a2bb0dc215eacd0a391a938915acc4f48edb5e3e8c3",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000411,
+    "username": "load_test_9100000411",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000411%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000411%22%7D&hash=6223f6282d8f29325d41ef600e7b1fff9d4f837bdc0fa50788afc4a3c9d390dc",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000412,
+    "username": "load_test_9100000412",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000412%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000412%22%7D&hash=ac2bfc8ea30e1d6bb4a34e011a51383023ff83bc101099d85924d8e675adf1c4",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000413,
+    "username": "load_test_9100000413",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000413%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000413%22%7D&hash=42b977d06380323791ffcb1f90ef394e727095de158f9155f67f2f6fcd2d90d9",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000414,
+    "username": "load_test_9100000414",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000414%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000414%22%7D&hash=1a0f1ba935adf116e30a286556b57df37b50433adcdebe777b58dd590f7a20a8",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000415,
+    "username": "load_test_9100000415",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000415%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000415%22%7D&hash=f2eed27e1f0939a528f559aa1b4266d2c57a2827d82d616a5c6e89432b597374",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000416,
+    "username": "load_test_9100000416",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000416%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000416%22%7D&hash=b2bd72e6f9146cf45ff24245251081acd6878521a193c7269f95b086999d2218",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000417,
+    "username": "load_test_9100000417",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000417%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000417%22%7D&hash=9e6ab1eae3cab06e9a30625671c77a70ccbb68bca36cfa4eca78b5255730c583",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000418,
+    "username": "load_test_9100000418",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000418%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000418%22%7D&hash=3feec8c989aac102c45143ef5183f156e2d9bfd52e9ce90bd0efe5d67aaa9f6f",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000419,
+    "username": "load_test_9100000419",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000419%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000419%22%7D&hash=b00073aa3e8365caab3a35c355ff2f15771d30133918df0e08aefc9aecd864ab",
+    "synthetic": true
+  },
+  {
+    "user_id": 9100000420,
+    "username": "load_test_9100000420",
+    "init_data": "auth_date=1774300485&user=%7B%22id%22%3A9100000420%2C%22first_name%22%3A%22Load%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22load_test_9100000420%22%7D&hash=2a8e84e0f12734ec1e4360fa65b9c71dda31e789dd92579796ea17521808231f",
+    "synthetic": true
+  }
+]

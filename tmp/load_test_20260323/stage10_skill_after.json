@@ -1,0 +1,52 @@
+{
+  "label": "after_stage10",
+  "captured_at": "2026-03-23T19:09:36.360156+00:00",
+  "base_url": "https://backendwebbackendserverpy-production.up.railway.app",
+  "status": {
+    "config": {
+      "batch_size": 50,
+      "interval_seconds": 30,
+      "lease_seconds": 45,
+      "max_batches_per_run": 4
+    },
+    "dirty": {
+      "dirty_count": 15,
+      "leased_count": 15,
+      "oldest_dirty_age_seconds": 235,
+      "oldest_dirty_at": "2026-03-23T19:05:40.294429+00:00",
+      "retry_count_max": 0,
+      "retry_count_total": 0
+    },
+    "enabled": true,
+    "ok": true,
+    "throughput": {
+      "events_per_second_last_run": 0.166,
+      "keys_per_second_last_run": 0.149
+    },
+    "worker": {
+      "errors_total": 15,
+      "events_processed_total": 1491,
+      "keys_processed_total": 1297,
+      "last_duration_ms": 60286,
+      "last_error": null,
+      "last_events_processed": 10,
+      "last_keys_processed": 9,
+      "last_run_at": "2026-03-23T19:06:07.545144+00:00",
+      "last_success_at": "2026-03-23T19:06:07.545144+00:00",
+      "runs_total": 55250,
+      "updated_at": "2026-03-23T19:06:07.545144+00:00",
+      "worker_rows": 206
+    },
+    "worker_process_local": {
+      "errors_total": 0,
+      "events_processed_total": 61,
+      "keys_processed_total": 51,
+      "last_duration_ms": 60286,
+      "last_error": null,
+      "last_events_processed": 10,
+      "last_keys_processed": 9,
+      "last_run_at": "2026-03-23T19:06:07.461931+00:00",
+      "runs_total": 96
+    }
+  }
+}

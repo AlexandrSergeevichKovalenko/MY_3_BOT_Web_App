@@ -1,0 +1,21 @@
+{
+  "label": "stage10_drain_offset2",
+  "captured_at": "2026-03-23T21:03:27.052669+00:00",
+  "user_count": 10,
+  "user_ids": [
+    9100000303,
+    9100000304,
+    9100000305,
+    9100000306,
+    9100000307,
+    9100000308,
+    9100000309,
+    9100000310,
+    9100000311,
+    9100000312
+  ],
+  "translation_check_sessions": 10,
+  "translation_check_items": 70,
+  "skill_events_v2": 240,
+  "skill_state_v2_dirty": 0
+}

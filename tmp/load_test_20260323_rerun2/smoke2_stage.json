@@ -1,0 +1,158 @@
+{
+  "stage": "smoke2",
+  "started_at": "2026-03-23T20:39:37.553784+00:00",
+  "finished_at": "2026-03-23T20:41:48.772884+00:00",
+  "user_count": 2,
+  "cold_count": 2,
+  "request_records": [
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000201,
+      "flow": "start_session",
+      "start_ts": 1774298377.599117,
+      "latency_ms": 131167.54487500113,
+      "status_code": 429,
+      "ok": false,
+      "error": "{\"error\":\"feature_limit_exceeded\",\"feature\":\"translation_daily_sets\",\"limit\":1,\"reset_at\":\"2026-03-24T00:00:00+01:00\",\"unit\":\"count\",\"upgrade\":{\"action\":\"checkout\",\"available\":true,\"endpoint\":\"/api/billing/create-checkout-session\",\"plan_code\":\"pro\"},\"used\":1}\n"
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000202,
+      "flow": "start_session",
+      "start_ts": 1774298382.603874,
+      "latency_ms": 126167.22995899909,
+      "status_code": 429,
+      "ok": false,
+      "error": "{\"error\":\"feature_limit_exceeded\",\"feature\":\"translation_daily_sets\",\"limit\":1,\"reset_at\":\"2026-03-24T00:00:00+01:00\",\"unit\":\"count\",\"upgrade\":{\"action\":\"checkout\",\"available\":true,\"endpoint\":\"/api/billing/create-checkout-session\",\"plan_code\":\"pro\"},\"used\":1}\n"
+    }
+  ],
+  "session_results": [
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000201,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 131167.74120900116,
+      "error": "feature_limit_exceeded"
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000202,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 126167.35562500071,
+      "error": "feature_limit_exceeded"
+    }
+  ],
+  "request_summary": {
+    "cold": {
+      "total_requests": 2,
+      "ok_requests": 0,
+      "error_requests": 2,
+      "success_rate": 0.0,
+      "error_rate": 1.0,
+      "count": 2,
+      "avg": 128667.3874170001,
+      "p50": 128667.3874170001,
+      "p95": 130917.52912920102,
+      "p99": 131117.54172584112
+    },
+    "warm": {
+      "total_requests": 0,
+      "ok_requests": 0,
+      "error_requests": 0,
+      "success_rate": null,
+      "error_rate": null,
+      "count": 0,
+      "avg": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "all": {
+      "total_requests": 2,
+      "ok_requests": 0,
+      "error_requests": 2,
+      "success_rate": 0.0,
+      "error_rate": 1.0,
+      "count": 2,
+      "avg": 128667.3874170001,
+      "p50": 128667.3874170001,
+      "p95": 130917.52912920102,
+      "p99": 131117.54172584112
+    }
+  },
+  "session_summary": {
+    "cold": {
+      "total_sessions": 2,
+      "successful_sessions": 0,
+      "failed_sessions": 2,
+      "timed_out_sessions": 0,
+      "success_rate": 0.0,
+      "error_rate": 1.0,
+      "avg_session_time_ms": 128667.54841700094,
+      "p95_session_time_ms": 130917.72192980113,
+      "p99_session_time_ms": 131117.73735316115
+    },
+    "warm": {
+      "total_sessions": 0,
+      "successful_sessions": 0,
+      "failed_sessions": 0,
+      "timed_out_sessions": 0,
+      "success_rate": null,
+      "error_rate": null,
+      "avg_session_time_ms": null,
+      "p95_session_time_ms": null,
+      "p99_session_time_ms": null
+    },
+    "all": {
+      "total_sessions": 2,
+      "successful_sessions": 0,
+      "failed_sessions": 2,
+      "timed_out_sessions": 0,
+      "success_rate": 0.0,
+      "error_rate": 1.0,
+      "avg_session_time_ms": 128667.54841700094,
+      "p95_session_time_ms": 130917.72192980113,
+      "p99_session_time_ms": 131117.73735316115
+    }
+  },
+  "flow_summary": {
+    "cold": {
+      "start_session": {
+        "count": 2,
+        "error_rate": 1.0,
+        "avg": 128667.3874170001,
+        "p50": 128667.3874170001,
+        "p95": 130917.52912920102,
+        "p99": 131117.54172584112
+      }
+    },
+    "warm": {
+      "start_session": {
+        "count": 0,
+        "error_rate": null,
+        "avg": null,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      }
+    },
+    "all": {
+      "start_session": {
+        "count": 2,
+        "error_rate": 1.0,
+        "avg": 128667.3874170001,
+        "p50": 128667.3874170001,
+        "p95": 130917.52912920102,
+        "p99": 131117.54172584112
+      }
+    }
+  }
+}

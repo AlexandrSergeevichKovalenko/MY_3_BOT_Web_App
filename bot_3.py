@@ -162,12 +162,14 @@ pending_quiz_feel_requests = {}
 pending_quiz_question_requests = {}
 pending_quiz_question_input = {}
 pending_quiz_question_save_requests = {}
+pending_quiz_phrase_requests = {}
 pending_dictionary_cards = {}
 pending_dictionary_save_options = {}
 pending_dictionary_lookup_requests = {}
 pending_dictionary_lookup_inflight = set()
 pending_feel_requests_inflight = set()
 pending_tts_listen_requests_inflight = set()
+pending_quiz_phrase_requests_inflight = set()
 pending_language_tutor_input = {}
 pending_tts_budget_custom = {}
 TTS_BUDGET_CUSTOM_TTL_SECONDS = 60 * 5
@@ -1542,6 +1544,15 @@ async def _send_access_denied_private(context: CallbackContext, user_id: int) ->
         return False
 
 
+def _should_attempt_access_denied_private(context: CallbackContext, cooldown_seconds: int = 43200) -> bool:
+    now_ts = int(datetime.now().timestamp())
+    last_sent = int(context.user_data.get("last_access_denied_private_attempt_at", 0) or 0)
+    if last_sent and (now_ts - last_sent) < max(60, int(cooldown_seconds or 43200)):
+        return False
+    context.user_data["last_access_denied_private_attempt_at"] = now_ts
+    return True
+
+
 async def _send_pending_requests_to_admin(context: CallbackContext, chat_id: int, limit: int = 20) -> None:
     items = list_pending_access_requests(limit=limit)
     if not items:
@@ -1942,7 +1953,30 @@ async def enforce_user_access(update: Update, context: CallbackContext):
     is_group_chat = _is_group_chat_type(getattr(chat, "type", None))
 
     if is_group_chat:
-        delivered_private = await _send_access_denied_private(context, int(user.id))
+        trigger_kind = "callback" if update.callback_query else "message" if message else "other"
+        trigger_preview = (
+            str((update.callback_query.data or "")).strip()
+            if update.callback_query
+            else text
+        )
+        if len(trigger_preview) > 120:
+            trigger_preview = f"{trigger_preview[:117]}..."
+        chat_title = str(getattr(chat, "title", "") or "").strip() or None
+        username = str(getattr(user, "username", "") or "").strip() or None
+        private_attempt_allowed = _should_attempt_access_denied_private(context)
+        logging.info(
+            "🚫 access_guard blocked user_id=%s username=%s chat_id=%s chat_title=%r trigger_kind=%s trigger=%r private_attempt=%s",
+            int(user.id),
+            username,
+            getattr(chat, "id", None),
+            chat_title,
+            trigger_kind,
+            trigger_preview,
+            private_attempt_allowed,
+        )
+        delivered_private = False
+        if private_attempt_allowed:
+            delivered_private = await _send_access_denied_private(context, int(user.id))
         if update.callback_query:
             try:
                 if delivered_private:
@@ -1957,12 +1991,6 @@ async def enforce_user_access(update: Update, context: CallbackContext):
                     )
             except Exception:
                 pass
-        elif message and not delivered_private:
-            await message.reply_text(
-                "ℹ️ Не могу написать вам в личные сообщения.\n"
-                "Откройте чат с ботом и нажмите /start, затем «📨 Запросить доступ».",
-                reply_markup=_open_private_chat_keyboard(getattr(context.bot, "username", None)),
-            )
     elif update.callback_query:
         try:
             await update.callback_query.answer("Доступ закрыт. Ожидайте одобрения администратора.", show_alert=True)
@@ -5837,6 +5865,77 @@ async def handle_quiz_speak_callback(update: Update, context: CallbackContext) -
         pending_tts_listen_requests_inflight.discard(inflight_key)
 
 
+async def handle_quiz_phrase_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+
+    key = parts[1].strip()
+    payload = pending_quiz_phrase_requests.get(key)
+    if not payload or _is_quiz_question_payload_expired(payload):
+        pending_quiz_phrase_requests.pop(key, None)
+        await query.answer("Кнопка устарела. Пройдите квиз ещё раз.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Кнопка доступна только автору результата.", show_alert=True)
+        return
+
+    inflight_key = f"quizphrase:{int(user.id)}:{key}"
+    if inflight_key in pending_quiz_phrase_requests_inflight:
+        await query.answer("Сочетание уже готовится, подождите.", show_alert=True)
+        return
+    pending_quiz_phrase_requests_inflight.add(inflight_key)
+
+    try:
+        try:
+            await query.answer("Подбираю сочетание…")
+        except Exception:
+            pass
+
+        suggestion = await _generate_quiz_phrase_suggestion(payload)
+        source_text = str(suggestion.get("source_text") or "").strip()
+        target_text = str(suggestion.get("target_text") or "").strip()
+        source_lang = str(suggestion.get("source_lang") or payload.get("source_lang") or "").strip().lower()
+        target_lang = str(suggestion.get("target_lang") or payload.get("target_lang") or "").strip().lower()
+        if not source_text or not target_text or not source_lang or not target_lang:
+            await query.answer("Не удалось подготовить сочетание.", show_alert=True)
+            return
+
+        save_key = _store_pending_quiz_question_save_request(
+            user_id=int(user.id),
+            request_key=key,
+            source_text=source_text,
+            target_text=target_text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            hide_continue_after_save=True,
+        )
+        lines = [
+            "🧩 Короткое сочетание с правильным вариантом",
+            f"{source_lang.upper()}: {source_text}",
+            f"{target_lang.upper()}: {target_text}",
+            "",
+            "Если хотите, сохраните это сочетание в словарь.",
+        ]
+        await query.message.reply_text(
+            "\n".join(lines),
+            reply_markup=_build_save_only_keyboard(save_key=save_key),
+        )
+    except Exception as exc:
+        logging.exception("❌ Ошибка quizphrase для user_id=%s key=%s: %s", int(user.id), key, exc)
+        await query.answer("Не удалось подготовить сочетание. Попробуйте позже.", show_alert=True)
+    finally:
+        pending_quiz_phrase_requests_inflight.discard(inflight_key)
+
+
 async def handle_quiz_ask_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query:
@@ -5963,15 +6062,18 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
     pending_quiz_question_save_requests[save_key] = payload
     try:
         if query.message:
-            continue_callback_data = str(payload.get("continue_callback_data") or "").strip() or "langgpt:continue"
-            continue_button_text = str(payload.get("continue_button_text") or "").strip() or "❓ Задать вопрос"
-            await query.message.edit_reply_markup(
-                reply_markup=_build_followup_answer_keyboard(
-                    continue_callback_data=continue_callback_data,
-                    continue_button_text=continue_button_text,
-                    save_key=None,
+            if bool(payload.get("hide_continue_after_save")):
+                await query.message.edit_reply_markup(reply_markup=None)
+            else:
+                continue_callback_data = str(payload.get("continue_callback_data") or "").strip() or "langgpt:continue"
+                continue_button_text = str(payload.get("continue_button_text") or "").strip() or "❓ Задать вопрос"
+                await query.message.edit_reply_markup(
+                    reply_markup=_build_followup_answer_keyboard(
+                        continue_callback_data=continue_callback_data,
+                        continue_button_text=continue_button_text,
+                        save_key=None,
+                    )
                 )
-            )
     except Exception:
         logging.debug("Failed to update quiz question save keyboard", exc_info=True)
     try:
@@ -9693,6 +9795,31 @@ def _store_pending_quiz_question_request(
     return key
 
 
+def _store_pending_quiz_phrase_request(
+    *,
+    user_id: int,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    key = hashlib.sha1(
+        f"quizphrase:{user_id}:{source_lang}:{target_lang}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
+    ).hexdigest()[:20]
+    pending_quiz_phrase_requests[key] = {
+        "user_id": int(user_id),
+        "source_text": str(source_text or "").strip(),
+        "target_text": str(target_text or "").strip(),
+        "source_lang": str(source_lang or "").strip().lower(),
+        "target_lang": str(target_lang or "").strip().lower(),
+        "started_at": pytime.time(),
+    }
+    if len(pending_quiz_phrase_requests) > 500:
+        oldest_key = next(iter(pending_quiz_phrase_requests))
+        pending_quiz_phrase_requests.pop(oldest_key, None)
+    return key
+
+
 def _store_pending_quiz_question_save_request(
     *,
     user_id: int,
@@ -9703,6 +9830,7 @@ def _store_pending_quiz_question_save_request(
     target_lang: str,
     continue_callback_data: str | None = None,
     continue_button_text: str | None = None,
+    hide_continue_after_save: bool = False,
 ) -> str:
     save_key = hashlib.sha1(
         f"quizqsave:{user_id}:{request_key}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
@@ -9722,6 +9850,7 @@ def _store_pending_quiz_question_save_request(
         "target_lang": str(target_lang or "").strip().lower(),
         "continue_callback_data": resolved_continue_callback,
         "continue_button_text": resolved_continue_button_text,
+        "hide_continue_after_save": bool(hide_continue_after_save),
         "started_at": pytime.time(),
         "saved": False,
     }
@@ -9744,17 +9873,26 @@ def _build_followup_answer_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
+def _build_save_only_keyboard(*, save_key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💾 Сохранить это сочетание", callback_data=f"quizqsave:{save_key}")]
+    ])
+
+
 def _build_quiz_result_keyboard(
     *,
     feel_key: str | None = None,
     question_key: str | None = None,
     speak_key: str | None = None,
+    phrase_key: str | None = None,
 ) -> InlineKeyboardMarkup | None:
     rows = []
     if speak_key:
         rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"quizspeak:{speak_key}")])
     if feel_key:
         rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"quizfeel:{feel_key}")])
+    if phrase_key:
+        rows.append([InlineKeyboardButton("🧩 Дать сочетание", callback_data=f"quizphrase:{phrase_key}")])
     if question_key:
         rows.append([InlineKeyboardButton("❓ Задать свой вопрос", callback_data=f"quizask:{question_key}")])
     if not rows:
@@ -9830,6 +9968,78 @@ def _build_quiz_question_reply_message(normalized: dict) -> str:
         f"Перевод: {save_target_text}"
     )
     return _truncate_telegram_reply_text(combined)
+
+
+async def _generate_quiz_phrase_suggestion(payload: dict) -> dict:
+    source_text = str(payload.get("source_text") or "").strip()
+    target_text = str(payload.get("target_text") or "").strip()
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    if not source_text or not target_text or not source_lang or not target_lang:
+        raise ValueError("missing_quiz_phrase_payload_fields")
+
+    direction = f"{source_lang}-{target_lang}"
+    if direction in {"ru-de", "de-ru"}:
+        generated = await run_dictionary_collocations(direction, source_text, target_text)
+    else:
+        generated = await run_dictionary_collocations_multilang(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            word_source=source_text,
+            word_target=target_text,
+        )
+    items = generated.get("items") if isinstance(generated, dict) else []
+    candidates: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    base_key = (
+        _normalize_dictionary_compare_key(source_text),
+        _normalize_dictionary_compare_key(target_text),
+    )
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        source_value = str(item.get("source") or "").strip()
+        target_value = str(item.get("target") or "").strip()
+        if not source_value or not target_value:
+            continue
+        compare_key = (
+            _normalize_dictionary_compare_key(source_value),
+            _normalize_dictionary_compare_key(target_value),
+        )
+        if compare_key in seen:
+            continue
+        seen.add(compare_key)
+        if compare_key == base_key:
+            continue
+        candidates.append(
+            {
+                "source": source_value,
+                "target": target_value,
+            }
+        )
+
+    def _candidate_rank(item: dict[str, str]) -> tuple[int, int, int, str]:
+        source_value = str(item.get("source") or "").strip()
+        source_word_count = len([part for part in re.split(r"\s+", source_value) if part])
+        char_count = len(source_value)
+        contains_base = 0 if _normalize_dictionary_compare_key(source_text) in _normalize_dictionary_compare_key(source_value) else 1
+        return (
+            contains_base,
+            abs(source_word_count - 3),
+            abs(char_count - max(12, len(source_text))),
+            source_value.lower(),
+        )
+
+    best = min(candidates, key=_candidate_rank) if candidates else {
+        "source": source_text,
+        "target": target_text,
+    }
+    return {
+        "source_text": str(best.get("source") or "").strip() or source_text,
+        "target_text": str(best.get("target") or "").strip() or target_text,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+    }
 
 
 def _normalize_language_tutor_llm_response(
@@ -9914,6 +10124,7 @@ async def _send_quiz_result_private(
     reply_markup = None
     fallback_reply_markup = None
     question_key = None
+    phrase_key = None
     feel_source_text = (de_text or correct_text or "").strip()
     feel_target_text = (ru_text or fallback_ru or "").strip()
     if feel_source_text:
@@ -9934,9 +10145,17 @@ async def _send_quiz_result_private(
             feel_key=feel_key,
             question_key=None,
             speak_key=feel_key,
+            phrase_key=None,
         )
         reply_markup = fallback_reply_markup
         try:
+            phrase_key = _store_pending_quiz_phrase_request(
+                user_id=int(user_id),
+                source_text=feel_source_text,
+                target_text=feel_target_text,
+                source_lang="de",
+                target_lang="ru",
+            )
             question_key = _store_pending_quiz_question_request(
                 user_id=int(user_id),
                 source_text=feel_source_text,
@@ -9948,6 +10167,7 @@ async def _send_quiz_result_private(
                 feel_key=feel_key,
                 question_key=question_key,
                 speak_key=feel_key,
+                phrase_key=phrase_key,
             )
         except Exception:
             logging.exception("❌ Не удалось подготовить кнопку quiz follow-up user_id=%s", user_id)
@@ -11299,6 +11519,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_quiz_question_cancel_callback, pattern=r"^quizaskcancel$"))
     application.add_handler(CallbackQueryHandler(handle_quiz_ask_callback, pattern=r"^quizask:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_question_save_callback, pattern=r"^quizqsave:"))
+    application.add_handler(CallbackQueryHandler(handle_quiz_phrase_callback, pattern=r"^quizphrase:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_speak_callback, pattern=r"^quizspeak:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_feel_callback, pattern=r"^quizfeel:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_speak_callback, pattern=r"^dictspeak:"))

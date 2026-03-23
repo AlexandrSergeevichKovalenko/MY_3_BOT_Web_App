@@ -1,0 +1,21 @@
+{
+  "label": "stage10_rerun_after",
+  "captured_at": "2026-03-23T20:05:24.663739+00:00",
+  "user_count": 10,
+  "user_ids": [
+    9100000203,
+    9100000204,
+    9100000205,
+    9100000206,
+    9100000207,
+    9100000208,
+    9100000209,
+    9100000210,
+    9100000211,
+    9100000212
+  ],
+  "translation_check_sessions": 9,
+  "translation_check_items": 63,
+  "skill_events_v2": 225,
+  "skill_state_v2_dirty": 70
+}

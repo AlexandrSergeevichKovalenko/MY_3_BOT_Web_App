@@ -1,0 +1,52 @@
+{
+  "label": "after_stage10_drain_check",
+  "captured_at": "2026-03-23T19:13:55.185921+00:00",
+  "base_url": "https://backendwebbackendserverpy-production.up.railway.app",
+  "status": {
+    "config": {
+      "batch_size": 50,
+      "interval_seconds": 30,
+      "lease_seconds": 45,
+      "max_batches_per_run": 4
+    },
+    "dirty": {
+      "dirty_count": 0,
+      "leased_count": 0,
+      "oldest_dirty_age_seconds": null,
+      "oldest_dirty_at": null,
+      "retry_count_max": 0,
+      "retry_count_total": 0
+    },
+    "enabled": true,
+    "ok": true,
+    "throughput": {
+      "events_per_second_last_run": 0.0,
+      "keys_per_second_last_run": 0.0
+    },
+    "worker": {
+      "errors_total": 15,
+      "events_processed_total": 1672,
+      "keys_processed_total": 1432,
+      "last_duration_ms": 445,
+      "last_error": null,
+      "last_events_processed": 0,
+      "last_keys_processed": 0,
+      "last_run_at": "2026-03-23T19:13:37.696457+00:00",
+      "last_success_at": "2026-03-23T19:09:49.252811+00:00",
+      "runs_total": 55259,
+      "updated_at": "2026-03-23T19:13:37.696457+00:00",
+      "worker_rows": 206
+    },
+    "worker_process_local": {
+      "errors_total": 0,
+      "events_processed_total": 242,
+      "keys_processed_total": 186,
+      "last_duration_ms": 445,
+      "last_error": null,
+      "last_events_processed": 0,
+      "last_keys_processed": 0,
+      "last_run_at": "2026-03-23T19:13:37.621036+00:00",
+      "runs_total": 105
+    }
+  }
+}

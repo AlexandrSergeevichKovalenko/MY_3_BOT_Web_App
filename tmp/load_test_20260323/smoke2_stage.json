@@ -1,0 +1,797 @@
+{
+  "stage": "smoke2",
+  "started_at": "2026-03-23T19:00:21.502831+00:00",
+  "finished_at": "2026-03-23T19:02:41.828297+00:00",
+  "user_count": 2,
+  "cold_count": 2,
+  "request_records": [
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "start_session",
+      "start_ts": 1774292421.545352,
+      "latency_ms": 9683.257209000658,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "progressive_fill",
+      "start_ts": 1774292431.228606,
+      "latency_ms": 3023.1391659999645,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "start_session",
+      "start_ts": 1774292426.5503528,
+      "latency_ms": 8683.334624999588,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "progressive_fill",
+      "start_ts": 1774292435.1029289,
+      "latency_ms": 1926.2050420002197,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "progressive_fill",
+      "start_ts": 1774292435.2337651,
+      "latency_ms": 3828.157457999623,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "progressive_fill",
+      "start_ts": 1774292437.880378,
+      "latency_ms": 1895.6385830006184,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "progressive_fill",
+      "start_ts": 1774292439.913315,
+      "latency_ms": 2359.006333000252,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "progressive_fill",
+      "start_ts": 1774292440.627409,
+      "latency_ms": 2381.9043330004206,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "progressive_fill",
+      "start_ts": 1774292443.1235058,
+      "latency_ms": 1885.2091249991645,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "progressive_fill",
+      "start_ts": 1774292443.8604999,
+      "latency_ms": 1968.9615420002156,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "progressive_fill",
+      "start_ts": 1774292445.8597739,
+      "latency_ms": 1862.864959000035,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "progressive_fill",
+      "start_ts": 1774292446.680935,
+      "latency_ms": 1865.1557920002233,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "progressive_fill",
+      "start_ts": 1774292448.573925,
+      "latency_ms": 1857.2155000001658,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "progressive_fill",
+      "start_ts": 1774292449.397388,
+      "latency_ms": 2000.5023339999752,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "sentences_ack",
+      "start_ts": 1774292451.39804,
+      "latency_ms": 1405.3733330001705,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "progressive_fill",
+      "start_ts": 1774292451.282536,
+      "latency_ms": 1859.3895829999383,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "progressive_fill",
+      "start_ts": 1774292453.993237,
+      "latency_ms": 1998.1216669993955,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "sentences_ack",
+      "start_ts": 1774292455.9916549,
+      "latency_ms": 1418.6584160006532,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "check_start",
+      "start_ts": 1774292472.4585059,
+      "latency_ms": 6391.390208000303,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_start",
+      "start_ts": 1774292476.665355,
+      "latency_ms": 6372.837625000102,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "check_status",
+      "start_ts": 1774292478.850195,
+      "latency_ms": 5533.709250000356,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "check_status",
+      "start_ts": 1774292485.285155,
+      "latency_ms": 1901.2973750004676,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_status",
+      "start_ts": 1774292483.038325,
+      "latency_ms": 5548.203166999883,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_status",
+      "start_ts": 1774292489.487668,
+      "latency_ms": 2480.66850000032,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "check_status",
+      "start_ts": 1774292488.088038,
+      "latency_ms": 10499.170875000345,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "check_status",
+      "start_ts": 1774292499.4887419,
+      "latency_ms": 3614.8168340005213,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_status",
+      "start_ts": 1774292492.869953,
+      "latency_ms": 13344.187083999714,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "check_status",
+      "start_ts": 1774292504.0052512,
+      "latency_ms": 5972.818708999512,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_status",
+      "start_ts": 1774292507.1153522,
+      "latency_ms": 7594.456541999534,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "check_status",
+      "start_ts": 1774292510.8796318,
+      "latency_ms": 8013.565750000453,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "check_status",
+      "start_ts": 1774292519.794593,
+      "latency_ms": 3269.0079160001915,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_status",
+      "start_ts": 1774292515.611146,
+      "latency_ms": 10676.462999999785,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "check_status",
+      "start_ts": 1774292523.964664,
+      "latency_ms": 2882.2395420002067,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "check_status",
+      "start_ts": 1774292527.748115,
+      "latency_ms": 1855.4747500002122,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_status",
+      "start_ts": 1774292527.188993,
+      "latency_ms": 3341.7524999995294,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_status",
+      "start_ts": 1774292531.4323242,
+      "latency_ms": 1846.5856659995552,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_status",
+      "start_ts": 1774292534.180362,
+      "latency_ms": 1840.6081249995623,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_status",
+      "start_ts": 1774292536.921699,
+      "latency_ms": 1834.8555000002307,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "session_completion",
+      "start_ts": 1774292533.550163,
+      "latency_ms": 6839.750542000729,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "check_status",
+      "start_ts": 1774292539.657439,
+      "latency_ms": 1830.8060829995156,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292540.390006,
+      "latency_ms": 1859.6861249998256,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292540.391659,
+      "latency_ms": 3570.6800420002764,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "session_completion",
+      "start_ts": 1774292544.532657,
+      "latency_ms": 5216.259834000084,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292549.749078,
+      "latency_ms": 1863.562833999822,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292540.390914,
+      "latency_ms": 12117.275165999672,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292549.750359,
+      "latency_ms": 5378.9012910001475,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292549.749705,
+      "latency_ms": 12077.698125000097,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    }
+  ],
+  "session_results": [
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000002,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 125959.30641700033,
+      "error": null
+    },
+    {
+      "stage": "smoke2",
+      "cohort": "cold",
+      "user_id": 9100000001,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 140283.66979099973,
+      "error": null
+    }
+  ],
+  "request_summary": {
+    "cold": {
+      "total_requests": 47,
+      "ok_requests": 47,
+      "error_requests": 0,
+      "success_rate": 1.0,
+      "error_rate": 0.0,
+      "count": 47,
+      "avg": 4414.272850212813,
+      "p50": 2882.2395420002067,
+      "p95": 11657.327587499998,
+      "p99": 12779.807601719693
+    },
+    "warm": {
+      "total_requests": 0,
+      "ok_requests": 0,
+      "error_requests": 0,
+      "success_rate": null,
+      "error_rate": null,
+      "count": 0,
+      "avg": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "all": {
+      "total_requests": 47,
+      "ok_requests": 47,
+      "error_requests": 0,
+      "success_rate": 1.0,
+      "error_rate": 0.0,
+      "count": 47,
+      "avg": 4414.272850212813,
+      "p50": 2882.2395420002067,
+      "p95": 11657.327587499998,
+      "p99": 12779.807601719693
+    }
+  },
+  "session_summary": {
+    "cold": {
+      "total_sessions": 2,
+      "successful_sessions": 2,
+      "failed_sessions": 0,
+      "timed_out_sessions": 0,
+      "success_rate": 1.0,
+      "error_rate": 0.0,
+      "avg_session_time_ms": 133121.48810400005,
+      "p95_session_time_ms": 139567.45162229976,
+      "p99_session_time_ms": 140140.42615725973
+    },
+    "warm": {
+      "total_sessions": 0,
+      "successful_sessions": 0,
+      "failed_sessions": 0,
+      "timed_out_sessions": 0,
+      "success_rate": null,
+      "error_rate": null,
+      "avg_session_time_ms": null,
+      "p95_session_time_ms": null,
+      "p99_session_time_ms": null
+    },
+    "all": {
+      "total_sessions": 2,
+      "successful_sessions": 2,
+      "failed_sessions": 0,
+      "timed_out_sessions": 0,
+      "success_rate": 1.0,
+      "error_rate": 0.0,
+      "avg_session_time_ms": 133121.48810400005,
+      "p95_session_time_ms": 139567.45162229976,
+      "p99_session_time_ms": 140140.42615725973
+    }
+  },
+  "flow_summary": {
+    "cold": {
+      "check_start": {
+        "count": 2,
+        "error_rate": 0.0,
+        "avg": 6382.113916500202,
+        "p50": 6382.113916500202,
+        "p95": 6390.462578850293,
+        "p99": 6391.204682170301
+      },
+      "check_status": {
+        "count": 19,
+        "error_rate": 0.0,
+        "avg": 4941.088798315784,
+        "p50": 3341.7524999995294,
+        "p95": 10943.235408399772,
+        "p99": 12863.996748879727
+      },
+      "post_finish_refresh": {
+        "count": 6,
+        "error_rate": 0.0,
+        "avg": 6144.633930499974,
+        "p50": 4474.790666500212,
+        "p95": 12107.380905749778,
+        "p99": 12115.296313949693
+      },
+      "progressive_fill": {
+        "count": 14,
+        "error_rate": 0.0,
+        "avg": 2193.6765297857296,
+        "p50": 1947.5832920002176,
+        "p95": 3304.895568199845,
+        "p99": 3723.5050800396666
+      },
+      "sentences_ack": {
+        "count": 2,
+        "error_rate": 0.0,
+        "avg": 1412.0158745004119,
+        "p50": 1412.0158745004119,
+        "p95": 1417.994161850629,
+        "p99": 1418.5255651706484
+      },
+      "session_completion": {
+        "count": 2,
+        "error_rate": 0.0,
+        "avg": 6028.005188000407,
+        "p50": 6028.005188000407,
+        "p95": 6758.576006600697,
+        "p99": 6823.515634920723
+      },
+      "start_session": {
+        "count": 2,
+        "error_rate": 0.0,
+        "avg": 9183.295917000123,
+        "p50": 9183.295917000123,
+        "p95": 9633.261079800604,
+        "p99": 9673.257983160647
+      }
+    },
+    "warm": {
+      "check_start": {
+        "count": 0,
+        "error_rate": null,
+        "avg": null,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "check_status": {
+        "count": 0,
+        "error_rate": null,
+        "avg": null,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "post_finish_refresh": {
+        "count": 0,
+        "error_rate": null,
+        "avg": null,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "progressive_fill": {
+        "count": 0,
+        "error_rate": null,
+        "avg": null,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "sentences_ack": {
+        "count": 0,
+        "error_rate": null,
+        "avg": null,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "session_completion": {
+        "count": 0,
+        "error_rate": null,
+        "avg": null,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "start_session": {
+        "count": 0,
+        "error_rate": null,
+        "avg": null,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      }
+    },
+    "all": {
+      "check_start": {
+        "count": 2,
+        "error_rate": 0.0,
+        "avg": 6382.113916500202,
+        "p50": 6382.113916500202,
+        "p95": 6390.462578850293,
+        "p99": 6391.204682170301
+      },
+      "check_status": {
+        "count": 19,
+        "error_rate": 0.0,
+        "avg": 4941.088798315784,
+        "p50": 3341.7524999995294,
+        "p95": 10943.235408399772,
+        "p99": 12863.996748879727
+      },
+      "post_finish_refresh": {
+        "count": 6,
+        "error_rate": 0.0,
+        "avg": 6144.633930499974,
+        "p50": 4474.790666500212,
+        "p95": 12107.380905749778,
+        "p99": 12115.296313949693
+      },
+      "progressive_fill": {
+        "count": 14,
+        "error_rate": 0.0,
+        "avg": 2193.6765297857296,
+        "p50": 1947.5832920002176,
+        "p95": 3304.895568199845,
+        "p99": 3723.5050800396666
+      },
+      "sentences_ack": {
+        "count": 2,
+        "error_rate": 0.0,
+        "avg": 1412.0158745004119,
+        "p50": 1412.0158745004119,
+        "p95": 1417.994161850629,
+        "p99": 1418.5255651706484
+      },
+      "session_completion": {
+        "count": 2,
+        "error_rate": 0.0,
+        "avg": 6028.005188000407,
+        "p50": 6028.005188000407,
+        "p95": 6758.576006600697,
+        "p99": 6823.515634920723
+      },
+      "start_session": {
+        "count": 2,
+        "error_rate": 0.0,
+        "avg": 9183.295917000123,
+        "p50": 9183.295917000123,
+        "p95": 9633.261079800604,
+        "p99": 9673.257983160647
+      }
+    }
+  }
+}

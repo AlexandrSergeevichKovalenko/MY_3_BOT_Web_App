@@ -1,0 +1,467 @@
+{
+  "stage": "stage10",
+  "started_at": "2026-03-23T19:03:21.105304+00:00",
+  "finished_at": "2026-03-23T19:09:22.416686+00:00",
+  "user_count": 10,
+  "request_summary": {
+    "cold": {
+      "total_requests": 28,
+      "success_rate": 0.9285714285714286,
+      "error_rate": 0.07142857142857142,
+      "requests_per_sec": 0.08199264258733983,
+      "count": 28,
+      "avg": 25768.657325928452,
+      "p50": 14434.203541999977,
+      "p95": 116894.60660854974,
+      "p99": 120003.48710008978
+    },
+    "warm": {
+      "total_requests": 63,
+      "success_rate": 0.9523809523809523,
+      "error_rate": 0.047619047619047616,
+      "requests_per_sec": 0.18448344582151463,
+      "count": 63,
+      "avg": 27433.912939174606,
+      "p50": 14004.284250000637,
+      "p95": 93803.34362939956,
+      "p99": 124010.03744500011
+    }
+  },
+  "session_summary": {
+    "cold": {
+      "total_sessions": 3,
+      "successful_sessions": 1,
+      "failed_sessions": 2,
+      "timed_out_sessions": 0,
+      "session_success_rate": 0.3333333333333333,
+      "session_error_rate": 0.6666666666666666,
+      "avg_session_time_ms": 256495.5054446667,
+      "p95_session_time_ms": 306636.8015375002,
+      "p99_session_time_ms": 313586.1940075002
+    },
+    "warm": {
+      "total_sessions": 7,
+      "successful_sessions": 4,
+      "failed_sessions": 3,
+      "timed_out_sessions": 0,
+      "session_success_rate": 0.5714285714285714,
+      "session_error_rate": 0.42857142857142855,
+      "avg_session_time_ms": 251001.93966657165,
+      "p95_session_time_ms": 341352.5233465004,
+      "p99_session_time_ms": 344805.4868365004
+    }
+  },
+  "flow_summary": {
+    "cold": {
+      "start_session": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 9211.176194333348,
+        "p50": 8846.353375000035,
+        "p95": 9963.583486899643,
+        "p99": 10062.892830179608
+      },
+      "progressive_fill": {
+        "count": 9,
+        "error_rate": 0.0,
+        "avg": 9358.199731555438,
+        "p50": 9587.820749999992,
+        "p95": 15327.986458999658,
+        "p99": 15591.11205899957
+      },
+      "sentences_ack": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 17277.258042000238,
+        "p50": 18484.792875000494,
+        "p95": 18801.067688100193,
+        "p99": 18829.181004820166
+      },
+      "check_start": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 13897.049208332342,
+        "p50": 10381.760207999832,
+        "p95": 21233.078846098575,
+        "p99": 22197.640502818467
+      },
+      "check_status": {
+        "count": 6,
+        "error_rate": 0.3333333333333333,
+        "avg": 76221.06998599974,
+        "p50": 95274.7553750005,
+        "p95": 120003.5084167498,
+        "p99": 120003.72158335004
+      },
+      "session_completion": {
+        "count": 1,
+        "error_rate": 0.0,
+        "avg": 20927.804458000537,
+        "p50": 20927.804458000537,
+        "p95": 20927.804458000537,
+        "p99": 20927.804458000537
+      },
+      "post_finish_refresh": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 12629.31094466694,
+        "p50": 15409.152375001213,
+        "p95": 16179.365100299401,
+        "p99": 16247.82845365924
+      },
+      "item_processing": {
+        "count": 21,
+        "error_rate": null,
+        "avg": 35188.666666666664,
+        "p50": 31619.0,
+        "p95": 43193.0,
+        "p99": 66399.40000000002
+      }
+    },
+    "warm": {
+      "start_session": {
+        "count": 7,
+        "error_rate": 0.0,
+        "avg": 17330.917458428303,
+        "p50": 16910.492790999342,
+        "p95": 22865.237716799038,
+        "p99": 23001.635676959067
+      },
+      "progressive_fill": {
+        "count": 16,
+        "error_rate": 0.0,
+        "avg": 13294.71983600007,
+        "p50": 13491.817395499766,
+        "p95": 25469.099749999943,
+        "p99": 41097.102349999426
+      },
+      "sentences_ack": {
+        "count": 7,
+        "error_rate": 0.2857142857142857,
+        "avg": 23570.490523857057,
+        "p50": 11033.249791000344,
+        "p95": 60005.76512950047,
+        "p99": 60006.16415950088
+      },
+      "check_start": {
+        "count": 5,
+        "error_rate": 0.0,
+        "avg": 74004.32942480002,
+        "p50": 85990.73633300031,
+        "p95": 123306.53250840004,
+        "p99": 129098.20950168018
+      },
+      "check_status": {
+        "count": 12,
+        "error_rate": 0.08333333333333333,
+        "avg": 48358.19159366671,
+        "p50": 18583.187125000222,
+        "p95": 116735.52795380056,
+        "p99": 119350.34239076012
+      },
+      "session_completion": {
+        "count": 4,
+        "error_rate": 0.0,
+        "avg": 29442.823896250047,
+        "p50": 20297.04172950005,
+        "p95": 64810.239096449906,
+        "p99": 69667.33268648993
+      },
+      "post_finish_refresh": {
+        "count": 12,
+        "error_rate": 0.0,
+        "avg": 13434.991673583378,
+        "p50": 11879.723333499896,
+        "p95": 23117.474258000493,
+        "p99": 24071.066017999678
+      },
+      "item_processing": {
+        "count": 35,
+        "error_rate": null,
+        "avg": 39771.71428571428,
+        "p50": 34730.0,
+        "p95": 76167.09999999995,
+        "p99": 118800.71999999986
+      }
+    }
+  },
+  "observability_summary": {
+    "cold": {
+      "stage": "stage10",
+      "count_by_stage": {
+        "check_start_completed": 3,
+        "runner_started": 3,
+        "runner_processing_started": 3,
+        "check_status_completed": 6,
+        "item_processed": 21,
+        "runner_finished": 3
+      },
+      "check_start": {
+        "count": 3,
+        "avg": 7906.0,
+        "p50": 8928.0,
+        "p95": 9918.0,
+        "p99": 10006.0
+      },
+      "check_status": {
+        "count": 6,
+        "avg": 6767.666666666667,
+        "p50": 8908.0,
+        "p95": 9456.5,
+        "p99": 9459.3
+      },
+      "item_processing": {
+        "count": 21,
+        "avg": 35188.666666666664,
+        "p50": 31619.0,
+        "p95": 43193.0,
+        "p99": 66399.40000000002
+      },
+      "runner_start_delay_ms": {
+        "count": 9,
+        "avg": 3647.0,
+        "p50": 3196.0,
+        "p95": 5201.0,
+        "p99": 5201.0
+      },
+      "db_update_duration_ms": {
+        "count": 30,
+        "avg": 9050.333333333334,
+        "p50": 8925.0,
+        "p95": 15268.299999999996,
+        "p99": 19486.880000000005
+      },
+      "session_completion_duration_ms": {
+        "count": 3,
+        "avg": 113623.66666666667,
+        "p50": 122150.0,
+        "p95": 122610.8,
+        "p99": 122651.76
+      },
+      "avg_polling_count": 1.0,
+      "terminal_outcomes": {
+        "success": 3
+      }
+    },
+    "warm": {
+      "stage": "stage10",
+      "count_by_stage": {
+        "check_start_completed": 5,
+        "runner_started": 5,
+        "runner_processing_started": 5,
+        "item_processed": 35,
+        "runner_finished": 5,
+        "check_status_completed": 12
+      },
+      "check_start": {
+        "count": 5,
+        "avg": 21743.6,
+        "p50": 22069.0,
+        "p95": 36189.2,
+        "p99": 37541.84
+      },
+      "check_status": {
+        "count": 12,
+        "avg": 3423.9166666666665,
+        "p50": 892.5,
+        "p95": 9447.9,
+        "p99": 9448.78
+      },
+      "item_processing": {
+        "count": 35,
+        "avg": 39771.71428571428,
+        "p50": 34730.0,
+        "p95": 76167.09999999995,
+        "p99": 118800.71999999986
+      },
+      "runner_start_delay_ms": {
+        "count": 15,
+        "avg": 7875.6,
+        "p50": 8377.0,
+        "p95": 12724.0,
+        "p99": 12724.0
+      },
+      "db_update_duration_ms": {
+        "count": 50,
+        "avg": 8879.18,
+        "p50": 8424.0,
+        "p95": 15383.899999999998,
+        "p99": 17907.199999999997
+      },
+      "session_completion_duration_ms": {
+        "count": 5,
+        "avg": 134989.6,
+        "p50": 116908.0,
+        "p95": 184631.0,
+        "p99": 190020.6
+      },
+      "avg_polling_count": 1.5833333333333333,
+      "terminal_outcomes": {
+        "success": 5
+      }
+    }
+  },
+  "db_before": {
+    "label": "before_stage10",
+    "captured_at": "2026-03-23T19:03:09.622777+00:00",
+    "user_count": 10,
+    "user_ids": [
+      9100000003,
+      9100000004,
+      9100000005,
+      9100000006,
+      9100000007,
+      9100000008,
+      9100000009,
+      9100000010,
+      9100000011,
+      9100000012
+    ],
+    "translation_check_sessions": 0,
+    "translation_check_items": 0,
+    "skill_events_v2": 0,
+    "skill_state_v2_dirty": 0
+  },
+  "db_after": {
+    "label": "after_stage10",
+    "captured_at": "2026-03-23T19:09:34.161986+00:00",
+    "user_count": 10,
+    "user_ids": [
+      9100000003,
+      9100000004,
+      9100000005,
+      9100000006,
+      9100000007,
+      9100000008,
+      9100000009,
+      9100000010,
+      9100000011,
+      9100000012
+    ],
+    "translation_check_sessions": 8,
+    "translation_check_items": 56,
+    "skill_events_v2": 191,
+    "skill_state_v2_dirty": 14
+  },
+  "db_delta": {
+    "translation_check_sessions": 8,
+    "translation_check_items": 56,
+    "skill_events_v2": 191,
+    "skill_state_v2_dirty": 14
+  },
+  "skill_before": {
+    "label": "before_stage10",
+    "captured_at": "2026-03-23T19:03:06.912199+00:00",
+    "base_url": "https://backendwebbackendserverpy-production.up.railway.app",
+    "status": {
+      "config": {
+        "batch_size": 50,
+        "interval_seconds": 30,
+        "lease_seconds": 45,
+        "max_batches_per_run": 4
+      },
+      "dirty": {
+        "dirty_count": 0,
+        "leased_count": 0,
+        "oldest_dirty_age_seconds": null,
+        "oldest_dirty_at": null,
+        "retry_count_max": 0,
+        "retry_count_total": 0
+      },
+      "enabled": true,
+      "ok": true,
+      "throughput": {
+        "events_per_second_last_run": 1.311,
+        "keys_per_second_last_run": 1.077
+      },
+      "worker": {
+        "errors_total": 15,
+        "events_processed_total": 1481,
+        "keys_processed_total": 1288,
+        "last_duration_ms": 21353,
+        "last_error": null,
+        "last_events_processed": 28,
+        "last_keys_processed": 23,
+        "last_run_at": "2026-03-23T19:02:58.603094+00:00",
+        "last_success_at": "2026-03-23T19:02:58.603094+00:00",
+        "runs_total": 55245,
+        "updated_at": "2026-03-23T19:02:58.603094+00:00",
+        "worker_rows": 206
+      },
+      "worker_process_local": {
+        "errors_total": 0,
+        "events_processed_total": 0,
+        "keys_processed_total": 0,
+        "last_duration_ms": 0,
+        "last_error": null,
+        "last_events_processed": 0,
+        "last_keys_processed": 0,
+        "last_run_at": null,
+        "runs_total": 0
+      }
+    }
+  },
+  "skill_after": {
+    "label": "after_stage10",
+    "captured_at": "2026-03-23T19:09:36.360156+00:00",
+    "base_url": "https://backendwebbackendserverpy-production.up.railway.app",
+    "status": {
+      "config": {
+        "batch_size": 50,
+        "interval_seconds": 30,
+        "lease_seconds": 45,
+        "max_batches_per_run": 4
+      },
+      "dirty": {
+        "dirty_count": 15,
+        "leased_count": 15,
+        "oldest_dirty_age_seconds": 235,
+        "oldest_dirty_at": "2026-03-23T19:05:40.294429+00:00",
+        "retry_count_max": 0,
+        "retry_count_total": 0
+      },
+      "enabled": true,
+      "ok": true,
+      "throughput": {
+        "events_per_second_last_run": 0.166,
+        "keys_per_second_last_run": 0.149
+      },
+      "worker": {
+        "errors_total": 15,
+        "events_processed_total": 1491,
+        "keys_processed_total": 1297,
+        "last_duration_ms": 60286,
+        "last_error": null,
+        "last_events_processed": 10,
+        "last_keys_processed": 9,
+        "last_run_at": "2026-03-23T19:06:07.545144+00:00",
+        "last_success_at": "2026-03-23T19:06:07.545144+00:00",
+        "runs_total": 55250,
+        "updated_at": "2026-03-23T19:06:07.545144+00:00",
+        "worker_rows": 206
+      },
+      "worker_process_local": {
+        "errors_total": 0,
+        "events_processed_total": 61,
+        "keys_processed_total": 51,
+        "last_duration_ms": 60286,
+        "last_error": null,
+        "last_events_processed": 10,
+        "last_keys_processed": 9,
+        "last_run_at": "2026-03-23T19:06:07.461931+00:00",
+        "runs_total": 96
+      }
+    }
+  },
+  "skill_delta": {
+    "dirty_total_keys_before": null,
+    "dirty_total_keys_after": null,
+    "dirty_total_keys_delta": null,
+    "worker_error_count_total_before": null,
+    "worker_error_count_total_after": null,
+    "worker_error_count_total_delta": null,
+    "worker_last_duration_ms_after": 60286,
+    "worker_last_keys_processed_after": 9,
+    "worker_last_events_processed_after": 10
+  }
+}

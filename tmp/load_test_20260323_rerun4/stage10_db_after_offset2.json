@@ -1,0 +1,21 @@
+{
+  "label": "stage10_after_offset2",
+  "captured_at": "2026-03-23T21:28:24.557745+00:00",
+  "user_count": 10,
+  "user_ids": [
+    9100000403,
+    9100000404,
+    9100000405,
+    9100000406,
+    9100000407,
+    9100000408,
+    9100000409,
+    9100000410,
+    9100000411,
+    9100000412
+  ],
+  "translation_check_sessions": 10,
+  "translation_check_items": 70,
+  "skill_events_v2": 245,
+  "skill_state_v2_dirty": 70
+}

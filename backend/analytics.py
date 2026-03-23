@@ -5,7 +5,12 @@ from datetime import date, datetime, timedelta
 from calendar import monthrange
 from typing import Any
 
-from backend.database import get_db_connection_context, build_translation_session_minutes_sql
+from backend.database import (
+    get_db_connection_context,
+    build_translation_session_minutes_sql,
+    get_user_progress_reset_date,
+)
+from backend.srs import MATURE_INTERVAL_DAYS
 
 
 ALLOWED_PERIODS = {"day", "week", "month", "quarter", "half-year", "year", "all"}
@@ -131,6 +136,134 @@ def _normalize_user_ids(user_ids: list[int] | tuple[int, ...] | set[int] | None)
     return normalized
 
 
+def _list_first_activity_dates(
+    user_ids: list[int] | tuple[int, ...] | set[int] | None,
+) -> dict[int, date]:
+    normalized_user_ids = _normalize_user_ids(user_ids)
+    if not normalized_user_ids:
+        return {}
+    sql = """
+        WITH activity_union AS (
+            SELECT user_id, MIN(start_time::date) AS activity_date
+            FROM bt_3_user_progress
+            WHERE user_id = ANY(%s)
+            GROUP BY user_id
+
+            UNION ALL
+
+            SELECT user_id, MIN(created_at::date) AS activity_date
+            FROM bt_3_webapp_checks
+            WHERE user_id = ANY(%s)
+            GROUP BY user_id
+
+            UNION ALL
+
+            SELECT user_id, MIN(timestamp::date) AS activity_date
+            FROM bt_3_translations
+            WHERE user_id = ANY(%s)
+            GROUP BY user_id
+
+            UNION ALL
+
+            SELECT user_id, MIN(date) AS activity_date
+            FROM bt_3_daily_sentences
+            WHERE user_id = ANY(%s)
+            GROUP BY user_id
+        )
+        SELECT user_id, MIN(activity_date) AS first_activity_date
+        FROM activity_union
+        GROUP BY user_id;
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                sql,
+                (
+                    normalized_user_ids,
+                    normalized_user_ids,
+                    normalized_user_ids,
+                    normalized_user_ids,
+                ),
+            )
+            rows = cursor.fetchall() or []
+    result: dict[int, date] = {}
+    for row in rows:
+        if not row or row[0] is None or row[1] is None:
+            continue
+        result[int(row[0])] = row[1]
+    return result
+
+
+def _list_progress_reset_dates(
+    user_ids: list[int] | tuple[int, ...] | set[int] | None,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> dict[int, date]:
+    normalized_user_ids = _normalize_user_ids(user_ids)
+    if not normalized_user_ids:
+        return {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, reset_date
+                FROM bt_3_user_progress_resets
+                WHERE user_id = ANY(%s)
+                  AND source_lang = %s
+                  AND target_lang = %s;
+                """,
+                (normalized_user_ids, source_lang, target_lang),
+            )
+            rows = cursor.fetchall() or []
+    result: dict[int, date] = {}
+    for row in rows:
+        if not row or row[0] is None or row[1] is None:
+            continue
+        result[int(row[0])] = row[1]
+    return result
+
+
+def _attach_compare_window_metadata(
+    rows: list[dict[str, Any]],
+    *,
+    start_date: date,
+    source_lang: str,
+    target_lang: str,
+) -> list[dict[str, Any]]:
+    normalized_user_ids = _normalize_user_ids(
+        [item.get("user_id") for item in rows if isinstance(item, dict)]
+    )
+    if not normalized_user_ids:
+        return rows
+    reset_dates = _list_progress_reset_dates(
+        normalized_user_ids,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    first_activity_dates = _list_first_activity_dates(normalized_user_ids)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            user_id = int(row.get("user_id") or 0)
+        except Exception:
+            user_id = 0
+        if user_id <= 0:
+            continue
+        reset_date = reset_dates.get(user_id)
+        first_activity_date = first_activity_dates.get(user_id)
+        effective_compare_start_date = start_date
+        if reset_date is not None:
+            effective_compare_start_date = max(effective_compare_start_date, reset_date)
+        if first_activity_date is not None:
+            effective_compare_start_date = max(effective_compare_start_date, first_activity_date)
+        row["progress_reset_date"] = reset_date.isoformat() if reset_date else None
+        row["first_activity_date"] = first_activity_date.isoformat() if first_activity_date else None
+        row["effective_compare_start_date"] = effective_compare_start_date.isoformat()
+    return rows
+
+
 def get_all_time_bounds_for_users(user_ids: list[int] | tuple[int, ...] | set[int]) -> PeriodBounds:
     normalized_user_ids = _normalize_user_ids(user_ids)
     if not normalized_user_ids:
@@ -203,11 +336,14 @@ def _post_process_row(row: dict[str, Any]) -> dict[str, Any]:
     total_time = float(row.get("total_time_min") or 0)
     assigned = int(row.get("assigned_sentences") or 0)
     avg_score = float(row.get("avg_score") or 0)
+    learned_words = int(row.get("learned_words") or 0)
+    total_errors = int(row.get("total_errors") or 0)
     avg_time = round(total_time / covered, 2) if covered > 0 else 0.0
     missed = max(0, assigned - covered)
     missed_days = int(row.get("missed_days") or 0)
     success_rate = round((success / covered) * 100, 1) if covered > 0 else 0.0
     completion_rate = round((covered / assigned) * 100, 1) if assigned > 0 else 0.0
+    errors_per_sentence = round(total_errors / covered, 2) if covered > 0 else 0.0
     return {
         **row,
         "translation_attempts": attempts,
@@ -218,6 +354,9 @@ def _post_process_row(row: dict[str, Any]) -> dict[str, Any]:
         "total_time_min": round(total_time, 2),
         "avg_time_min": avg_time,
         "assigned_sentences": assigned,
+        "learned_words": learned_words,
+        "total_errors": total_errors,
+        "errors_per_sentence": errors_per_sentence,
         "missed_sentences": missed,
         "missed_days": missed_days,
         "success_rate": success_rate,
@@ -240,6 +379,16 @@ def fetch_user_timeseries(
     source_lang: str = "ru",
     target_lang: str = "de",
 ) -> list[dict[str, Any]]:
+    effective_start_date = max(
+        start_date,
+        get_user_progress_reset_date(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        ) or start_date,
+    )
+    if effective_start_date > end_date:
+        return []
     granularity = _normalize_granularity(granularity)
     period_expr_t = _period_start_expr("ds.date", granularity)
     period_expr_p = _period_start_expr("p.start_time", granularity)
@@ -332,6 +481,7 @@ def fetch_user_timeseries(
             WHERE ds.user_id = %s
                 AND COALESCE(ds.source_lang, 'ru') = %s
                 AND COALESCE(ds.target_lang, 'de') = %s
+                AND COALESCE(ds.shown_to_user, FALSE) = TRUE
                 AND ds.date BETWEEN %s AND %s
             GROUP BY period_start
         )
@@ -363,20 +513,20 @@ def fetch_user_timeseries(
                     user_id,
                     source_lang,
                     target_lang,
-                    start_date,
+                    effective_start_date,
                     end_date,
                     user_id,
                     source_lang,
                     target_lang,
-                    start_date,
+                    effective_start_date,
                     end_date,
                     user_id,
-                    start_date,
+                    effective_start_date,
                     end_date,
                     user_id,
                     source_lang,
                     target_lang,
-                    start_date,
+                    effective_start_date,
                     end_date,
                 ),
             )
@@ -503,6 +653,7 @@ def fetch_scope_timeseries(
             WHERE ds.user_id = ANY(%s)
                 AND COALESCE(ds.source_lang, 'ru') = %s
                 AND COALESCE(ds.target_lang, 'de') = %s
+                AND COALESCE(ds.shown_to_user, FALSE) = TRUE
                 AND ds.date BETWEEN %s AND %s
             GROUP BY period_start
         )
@@ -568,6 +719,16 @@ def fetch_user_summary(
     source_lang: str = "ru",
     target_lang: str = "de",
 ) -> dict[str, Any]:
+    effective_start_date = max(
+        start_date,
+        get_user_progress_reset_date(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        ) or start_date,
+    )
+    if effective_start_date > end_date:
+        return _post_process_row({})
     sql = f"""
         WITH base AS (
             SELECT
@@ -645,7 +806,39 @@ def fetch_user_summary(
             WHERE user_id = %s
               AND COALESCE(ds.source_lang, 'ru') = %s
               AND COALESCE(ds.target_lang, 'de') = %s
+              AND COALESCE(ds.shown_to_user, FALSE) = TRUE
               AND date BETWEEN %s AND %s
+        ),
+        learned_words_agg AS (
+            WITH first_learned AS (
+                SELECT
+                    l.card_id,
+                    MIN(l.reviewed_at) AS learned_at
+                FROM bt_3_card_review_log l
+                JOIN bt_3_webapp_dictionary_queries q
+                  ON q.id = l.card_id
+                 AND q.user_id = l.user_id
+                WHERE l.user_id = %s
+                  AND COALESCE(l.interval_days_after, 0) >= %s
+                  AND COALESCE(q.source_lang, 'ru') = %s
+                  AND COALESCE(q.target_lang, 'de') = %s
+                GROUP BY l.card_id
+            )
+            SELECT COUNT(*) AS learned_words
+            FROM first_learned
+            WHERE (learned_at AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+        ),
+        errors_agg AS (
+            SELECT
+                COALESCE(SUM(COALESCE(dm.mistake_count, 1)), 0) AS total_errors
+            FROM bt_3_detailed_mistakes dm
+            JOIN bt_3_daily_sentences ds
+              ON ds.id_for_mistake_table = dm.sentence_id
+             AND ds.user_id = dm.user_id
+            WHERE dm.user_id = %s
+              AND COALESCE(ds.source_lang, 'ru') = %s
+              AND COALESCE(ds.target_lang, 'de') = %s
+              AND COALESCE(dm.last_seen, dm.added_data, NOW())::date BETWEEN %s AND %s
         ),
         first_activity AS (
             SELECT MIN(activity_date) AS first_activity_date
@@ -704,8 +897,10 @@ def fetch_user_summary(
             COALESCE(time_agg.total_time_min, 0) AS total_time_min,
             COALESCE(time_agg.avg_session_time_min, 0) AS avg_session_time_min,
             COALESCE(assigned_agg.assigned_sentences, 0) AS assigned_sentences,
+            COALESCE(learned_words_agg.learned_words, 0) AS learned_words,
+            COALESCE(errors_agg.total_errors, 0) AS total_errors,
             COALESCE(missed_days.missed_days, 0) AS missed_days
-        FROM translations_agg, time_agg, assigned_agg, missed_days;
+        FROM translations_agg, time_agg, assigned_agg, learned_words_agg, errors_agg, missed_days;
     """
 
     with get_db_connection_context() as conn:
@@ -716,32 +911,43 @@ def fetch_user_summary(
                     user_id,
                     source_lang,
                     target_lang,
-                    start_date,
+                    effective_start_date,
                     end_date,
                     user_id,
                     source_lang,
                     target_lang,
-                    start_date,
+                    effective_start_date,
                     end_date,
                     user_id,
-                    start_date,
-                    end_date,
-                    user_id,
-                    source_lang,
-                    target_lang,
-                    start_date,
-                    end_date,
-                    user_id,
-                    user_id,
-                    user_id,
-                    user_id,
-                    start_date,
-                    start_date,
+                    effective_start_date,
                     end_date,
                     user_id,
                     source_lang,
                     target_lang,
-                    start_date,
+                    effective_start_date,
+                    end_date,
+                    user_id,
+                    MATURE_INTERVAL_DAYS,
+                    source_lang,
+                    target_lang,
+                    effective_start_date,
+                    end_date,
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    effective_start_date,
+                    end_date,
+                    user_id,
+                    user_id,
+                    user_id,
+                    user_id,
+                    effective_start_date,
+                    effective_start_date,
+                    end_date,
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    effective_start_date,
                     end_date,
                 ),
             )
@@ -850,6 +1056,7 @@ def fetch_scope_summary(
             WHERE ds.user_id = ANY(%s)
               AND COALESCE(ds.source_lang, 'ru') = %s
               AND COALESCE(ds.target_lang, 'de') = %s
+              AND COALESCE(ds.shown_to_user, FALSE) = TRUE
               AND date BETWEEN %s AND %s
         ),
         first_activity AS (
@@ -966,11 +1173,62 @@ def fetch_comparison_leaderboard(
     cohort_user_ids: list[int] | tuple[int, ...] | set[int] | None = None,
 ) -> list[dict[str, Any]]:
     normalized_cohort_user_ids = _normalize_user_ids(cohort_user_ids)
+    if normalized_cohort_user_ids:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT ON (user_id)
+                        user_id,
+                        username
+                    FROM bt_3_user_progress
+                    WHERE user_id = ANY(%s)
+                    ORDER BY user_id, start_time DESC;
+                    """,
+                    (normalized_cohort_user_ids,),
+                )
+                username_rows = cursor.fetchall() or []
+        username_map = {
+            int(row[0]): str(row[1] or "").strip() or "Unknown"
+            for row in username_rows
+            if row and row[0] is not None
+        }
+        processed: list[dict[str, Any]] = []
+        for cohort_user_id in normalized_cohort_user_ids:
+            summary = fetch_user_summary(
+                cohort_user_id,
+                start_date,
+                end_date,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            row = {
+                "user_id": int(cohort_user_id),
+                "username": username_map.get(int(cohort_user_id), "Unknown"),
+                **summary,
+            }
+            if not any(
+                float(row.get(key) or 0) > 0
+                for key in ("translation_attempts", "covered_sentences", "total_time_min", "assigned_sentences", "missed_days")
+            ):
+                continue
+            processed.append(row)
+        _attach_compare_window_metadata(
+            processed,
+            start_date=start_date,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        processed.sort(key=lambda item: item.get("final_score", 0), reverse=True)
+        return processed[: max(1, limit)]
     base_user_filter = " AND t.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
     pair_sessions_user_filter = " AND t.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
     progress_user_filter = " AND p.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
     assigned_user_filter = " AND ds.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
     translated_user_filter = " AND t.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
+    learned_words_user_filter = " AND l.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
+    learned_words_query_user_filter = " AND q.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
+    errors_user_filter = " AND dm.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
 
     sql = f"""
         WITH base AS (
@@ -1055,8 +1313,47 @@ def fetch_comparison_leaderboard(
             WHERE date BETWEEN %s AND %s
               AND COALESCE(ds.source_lang, 'ru') = %s
               AND COALESCE(ds.target_lang, 'de') = %s
+              AND COALESCE(ds.shown_to_user, FALSE) = TRUE
               {assigned_user_filter}
             GROUP BY user_id
+        ),
+        learned_words_agg AS (
+            WITH first_learned AS (
+                SELECT
+                    l.user_id,
+                    l.card_id,
+                    MIN(l.reviewed_at) AS learned_at
+                FROM bt_3_card_review_log l
+                JOIN bt_3_webapp_dictionary_queries q
+                  ON q.id = l.card_id
+                 AND q.user_id = l.user_id
+                WHERE COALESCE(l.interval_days_after, 0) >= %s
+                  AND COALESCE(q.source_lang, 'ru') = %s
+                  AND COALESCE(q.target_lang, 'de') = %s
+                  {learned_words_user_filter}
+                  {learned_words_query_user_filter}
+                GROUP BY l.user_id, l.card_id
+            )
+            SELECT
+                user_id,
+                COUNT(*) AS learned_words
+            FROM first_learned
+            WHERE (learned_at AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+            GROUP BY user_id
+        ),
+        errors_agg AS (
+            SELECT
+                dm.user_id,
+                COALESCE(SUM(COALESCE(dm.mistake_count, 1)), 0) AS total_errors
+            FROM bt_3_detailed_mistakes dm
+            JOIN bt_3_daily_sentences ds
+              ON ds.id_for_mistake_table = dm.sentence_id
+             AND ds.user_id = dm.user_id
+            WHERE COALESCE(ds.source_lang, 'ru') = %s
+              AND COALESCE(ds.target_lang, 'de') = %s
+              AND COALESCE(dm.last_seen, dm.added_data, NOW())::date BETWEEN %s AND %s
+              {errors_user_filter}
+            GROUP BY dm.user_id
         ),
         users_in_scope AS (
             SELECT user_id FROM translations_agg
@@ -1064,6 +1361,10 @@ def fetch_comparison_leaderboard(
             SELECT user_id FROM assigned_agg
             UNION
             SELECT user_id FROM time_agg
+            UNION
+            SELECT user_id FROM learned_words_agg
+            UNION
+            SELECT user_id FROM errors_agg
         ),
         first_activity AS (
             SELECT
@@ -1142,11 +1443,15 @@ def fetch_comparison_leaderboard(
             COALESCE(t.avg_score, 0) AS avg_score,
             COALESCE(time_agg.total_time_min, 0) AS total_time_min,
             COALESCE(assigned_agg.assigned_sentences, 0) AS assigned_sentences,
+            COALESCE(learned_words_agg.learned_words, 0) AS learned_words,
+            COALESCE(errors_agg.total_errors, 0) AS total_errors,
             COALESCE(missed_days.missed_days, 0) AS missed_days
         FROM users_in_scope u
         LEFT JOIN translations_agg t ON t.user_id = u.user_id
         LEFT JOIN time_agg ON time_agg.user_id = u.user_id
         LEFT JOIN assigned_agg ON assigned_agg.user_id = u.user_id
+        LEFT JOIN learned_words_agg ON learned_words_agg.user_id = u.user_id
+        LEFT JOIN errors_agg ON errors_agg.user_id = u.user_id
         LEFT JOIN missed_days ON missed_days.user_id = u.user_id
         LEFT JOIN latest_name ON latest_name.user_id = u.user_id
         ORDER BY u.user_id;
@@ -1189,6 +1494,23 @@ def fetch_comparison_leaderboard(
 
     params.extend(
         [
+            MATURE_INTERVAL_DAYS,
+            source_lang,
+            target_lang,
+        ]
+    )
+    if normalized_cohort_user_ids:
+        params.append(normalized_cohort_user_ids)
+    if normalized_cohort_user_ids:
+        params.append(normalized_cohort_user_ids)
+    params.extend([start_date, end_date])
+
+    params.extend([source_lang, target_lang, start_date, end_date])
+    if normalized_cohort_user_ids:
+        params.append(normalized_cohort_user_ids)
+
+    params.extend(
+        [
             start_date,
             start_date,
             end_date,
@@ -1211,5 +1533,11 @@ def fetch_comparison_leaderboard(
             rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     processed = [_post_process_row(row) for row in rows]
+    _attach_compare_window_metadata(
+        processed,
+        start_date=start_date,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     processed.sort(key=lambda item: item.get("final_score", 0), reverse=True)
     return processed[: max(1, limit)]

@@ -1,0 +1,33 @@
+{"timestamp":"2026-03-23T21:13:39.372711141Z","level":"info","message":"Starting Container"}
+{"timestamp":"2026-03-23T21:13:39.448958943Z","level":"error","message":"[2026-03-23 21:13:38 +0000] [2] [INFO] Starting gunicorn 25.1.0"}
+{"level":"error","timestamp":"2026-03-23T21:13:39.448962523Z","message":"[2026-03-23 21:13:38 +0000] [2] [INFO] Listening at: http://0.0.0.0:8080 (2)"}
+{"message":"[2026-03-23 21:13:38 +0000] [2] [INFO] Using worker: gthread","level":"error","timestamp":"2026-03-23T21:13:39.448966493Z"}
+{"message":"[2026-03-23 21:13:38 +0000] [2] [INFO] Control socket listening at /app/gunicorn.ctl","timestamp":"2026-03-23T21:13:39.448970953Z","level":"error"}
+{"message":"[2026-03-23 21:13:39 +0000] [4] [INFO] Booting worker with pid: 4","timestamp":"2026-03-23T21:13:39.448975873Z","level":"error"}
+{"level":"error","message":"[2026-03-23 21:13:39 +0000] [5] [INFO] Booting worker with pid: 5","timestamp":"2026-03-23T21:13:39.448980513Z"}
+{"message":"[2026-03-23 21:13:39 +0000] [6] [INFO] Booting worker with pid: 6","timestamp":"2026-03-23T21:13:39.448985063Z","level":"error"}
+{"message":"[2026-03-23 21:13:39 +0000] [7] [INFO] Booting worker with pid: 7","timestamp":"2026-03-23T21:13:39.448994053Z","level":"error"}
+{"message":"2026-03-23 21:13:39,823 - root - INFO - OpenAI SDK version detected: 2.29.0","level":"error","timestamp":"2026-03-23T21:13:39.829327561Z"}
+{"message":"2026-03-23 21:13:39,823 - root - INFO - ✅ OPENAI_API_KEY успешно загружен для openai_manager.","timestamp":"2026-03-23T21:13:39.829493590Z","level":"error"}
+{"message":"2026-03-23 21:13:39,827 - root - INFO - OpenAI SDK version detected: 2.29.0","timestamp":"2026-03-23T21:13:39.829506020Z","level":"error"}
+{"message":"2026-03-23 21:13:39,828 - root - INFO - ✅ OPENAI_API_KEY успешно загружен для openai_manager.","timestamp":"2026-03-23T21:13:39.829512100Z","level":"error"}
+{"level":"error","timestamp":"2026-03-23T21:13:39.852570507Z","message":"2026-03-23 21:13:39,845 - root - INFO - OpenAI SDK version detected: 2.29.0"}
+{"timestamp":"2026-03-23T21:13:39.852579627Z","level":"error","message":"2026-03-23 21:13:39,846 - root - INFO - ✅ OPENAI_API_KEY успешно загружен для openai_manager."}
+{"timestamp":"2026-03-23T21:13:39.858094250Z","level":"error","message":"2026-03-23 21:13:39,856 - root - INFO - OpenAI SDK version detected: 2.29.0"}
+{"level":"error","message":"2026-03-23 21:13:39,856 - root - INFO - ✅ OPENAI_API_KEY успешно загружен для openai_manager.","timestamp":"2026-03-23T21:13:39.858099190Z"}
+{"message":"2026-03-23 21:13:40,509 - root - INFO - ⚠️ YouTube cookies not configured","timestamp":"2026-03-23T21:13:40.515201684Z","level":"error"}
+{"timestamp":"2026-03-23T21:13:40.515209624Z","message":"2026-03-23 21:13:40,510 - root - WARNING - ⚠️ KEY_SALT is not set. Using fallback secret for TTS cache keys.","level":"error"}
+{"timestamp":"2026-03-23T21:13:40.515233184Z","message":"2026-03-23 21:13:40,508 - root - WARNING - ⚠️ KEY_SALT is not set. Using fallback secret for TTS cache keys.","level":"error"}
+{"level":"error","timestamp":"2026-03-23T21:13:40.515244494Z","message":"2026-03-23 21:13:40,508 - root - INFO - ✅ youtube_transcript_api version: 1.2.4"}
+{"message":"2026-03-23 21:13:40,507 - root - INFO - ✅ youtube_transcript_api version: 1.2.4","timestamp":"2026-03-23T21:13:40.515250234Z","level":"error"}
+{"timestamp":"2026-03-23T21:13:40.515252704Z","level":"error","message":"2026-03-23 21:13:40,509 - root - INFO - ✅ YouTube transcript proxy configured"}
+{"level":"error","message":"2026-03-23 21:13:40,508 - root - INFO - ✅ YouTube transcript proxy configured","timestamp":"2026-03-23T21:13:40.515254144Z"}
+{"timestamp":"2026-03-23T21:13:40.515257234Z","message":"2026-03-23 21:13:40,508 - root - INFO - ⚠️ YouTube cookies not configured","level":"error"}
+{"timestamp":"2026-03-23T21:13:40.515258544Z","level":"error","message":"2026-03-23 21:13:40,509 - root - INFO - ⚠️ YouTube cookies not configured"}
+{"timestamp":"2026-03-23T21:13:40.515260004Z","message":"2026-03-23 21:13:40,508 - root - WARNING - ⚠️ KEY_SALT is not set. Using fallback secret for TTS cache keys.","level":"error"}
+{"message":"2026-03-23 21:13:40,508 - root - INFO - ✅ youtube_transcript_api version: 1.2.4","level":"error","timestamp":"2026-03-23T21:13:40.515263644Z"}
+{"timestamp":"2026-03-23T21:13:40.515264244Z","level":"error","message":"2026-03-23 21:13:40,509 - root - WARNING - ⚠️ KEY_SALT is not set. Using fallback secret for TTS cache keys."}
+{"level":"error","message":"2026-03-23 21:13:40,508 - root - INFO - ✅ YouTube transcript proxy configured","timestamp":"2026-03-23T21:13:40.515266434Z"}
+{"timestamp":"2026-03-23T21:13:40.515269884Z","level":"error","message":"2026-03-23 21:13:40,508 - root - INFO - ⚠️ YouTube cookies not configured"}
+{"message":"2026-03-23 21:13:40,509 - root - INFO - ✅ youtube_transcript_api version: 1.2.4","timestamp":"2026-03-23T21:13:40.515270433Z","level":"error"}
+{"level":"error","message":"2026-03-23 21:13:40,509 - root - INFO - ✅ YouTube transcript proxy configured","timestamp":"2026-03-23T21:13:40.515274793Z"}

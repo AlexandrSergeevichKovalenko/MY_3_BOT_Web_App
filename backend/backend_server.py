@@ -96,7 +96,7 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, g, re
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import HTTPException
-from backend.database import get_db_connection_context
+from backend.database import get_db_connection_context, db_acquire_scope, summarize_db_acquire_events
 from backend.translation_workflow import _extract_correct_translation
 from livekit.api import AccessToken, VideoGrants
 from pathlib import Path
@@ -262,6 +262,8 @@ from backend.database import (
     mark_telegram_system_message_deleted,
     get_user_language_profile,
     upsert_user_language_profile,
+    get_user_progress_reset,
+    upsert_user_progress_reset,
     get_webapp_scope_state,
     upsert_webapp_scope_state,
     get_webapp_instance_lease,
@@ -272,7 +274,9 @@ from backend.database import (
     list_webapp_group_member_user_ids,
     list_known_webapp_group_chats,
     get_daily_plan,
+    get_daily_plan_item,
     create_daily_plan,
+    delete_daily_plans_from_date,
     update_daily_plan_item_status,
     update_daily_plan_item_payload,
     update_daily_plan_item_timer,
@@ -315,6 +319,7 @@ from backend.database import (
     get_google_translate_monthly_budget_status,
     get_google_tts_monthly_budget_status,
     get_provider_monthly_budget_status,
+    get_provider_active_users_count,
     mark_provider_budget_threshold_notified,
     set_provider_budget_block_state,
     has_admin_scheduler_run,
@@ -349,6 +354,7 @@ from backend.database import (
     finish_agent_voice_session,
     start_reader_session,
     finish_reader_session,
+    touch_reader_session,
     upsert_reader_library_document,
     list_reader_library_documents,
     get_reader_library_document,
@@ -366,6 +372,7 @@ from backend.database import (
     finalize_translation_check_item,
     refresh_translation_check_session_counters,
     close_stale_open_translation_sessions_for_user,
+    mark_translation_sentences_shown,
     FLASHCARD_RECENT_SEEN_HOURS,
     SUPPORTED_LEARNING_LANGUAGES,
     SUPPORTED_NATIVE_LANGUAGES,
@@ -374,7 +381,13 @@ from backend.database import (
 )
 from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url, r2_delete_object, r2_bucket_usage_summary
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
-from backend.grammar_focuses import WEBAPP_TOPICS, resolve_webapp_focus, recommend_webapp_focus_for_error_pair
+from backend.grammar_focuses import (
+    GRAMMAR_FOCUS_PRESETS,
+    WEBAPP_TOPICS,
+    focus_matches_error_pair,
+    resolve_webapp_focus,
+    recommend_webapp_focus_for_error_pair,
+)
 from backend.translation_workflow import (
     build_user_daily_summary,
     check_user_translation_webapp_item,
@@ -388,6 +401,7 @@ from backend.translation_workflow import (
     submit_story_translation_webapp,
     get_story_history_webapp,
     get_active_session_type,
+    prewarm_shared_translation_sentence_pool,
 )
 from backend.analytics import (
     _calculate_final_score,
@@ -489,6 +503,7 @@ BILLING_ALLOCATION_DEFAULT = (os.getenv("BILLING_ALLOCATION_METHOD_DEFAULT") or 
 READER_AUDIO_PAGES_7D_LIMIT = max(1, int((os.getenv("READER_AUDIO_PAGES_7D_LIMIT") or "10").strip() or "10"))
 READER_AUDIO_PAGES_WINDOW_DAYS = max(1, int((os.getenv("READER_AUDIO_PAGES_WINDOW_DAYS") or "7").strip() or "7"))
 FREE_FLASHCARDS_WORDS_DAILY_PER_MODE = max(1, int((os.getenv("FREE_FLASHCARDS_WORDS_DAILY_PER_MODE") or "5").strip() or "5"))
+BLOCKS_SINGLE_WORD_MAX_LEN = 10
 FREE_VOICE_MINUTES_DAILY_LIMIT = max(1, int((os.getenv("FREE_VOICE_MINUTES_DAILY_LIMIT") or "3").strip() or "3"))
 PAID_VOICE_MINUTES_DAILY_LIMIT = max(1, int((os.getenv("PAID_VOICE_MINUTES_DAILY_LIMIT") or "15").strip() or "15"))
 FREE_READER_STORAGE_DAYS = max(1, int((os.getenv("FREE_READER_STORAGE_DAYS") or "30").strip() or "30"))
@@ -529,6 +544,16 @@ SENTENCE_PREWARM_MAX_GENERATE_PER_USER = max(1, min(20, int((os.getenv("SENTENCE
 SENTENCE_PREWARM_OFFPEAK_START_HOUR = max(0, min(23, int((os.getenv("SENTENCE_PREWARM_OFFPEAK_START_HOUR") or "1").strip())))
 SENTENCE_PREWARM_OFFPEAK_END_HOUR = max(0, min(23, int((os.getenv("SENTENCE_PREWARM_OFFPEAK_END_HOUR") or "7").strip())))
 SENTENCE_PREWARM_ALLOW_DAYTIME = str(os.getenv("SENTENCE_PREWARM_ALLOW_DAYTIME") or "0").strip().lower() in {"1", "true", "yes", "on"}
+TRANSLATION_FOCUS_POOL_PREWARM_ENABLED = str(os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS = max(1, min(180, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS") or "30").strip())))
+TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT = max(1, min(15, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT") or "6").strip())))
+TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET = max(2, min(30, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET") or "8").strip())))
+TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET = max(1, min(10, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET") or "4").strip())))
+TRANSLATION_FOCUS_POOL_PREWARM_LEVELS = [
+    str(item or "").strip().lower()
+    for item in str(os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_LEVELS") or "b1,b2,c1").split(",")
+    if str(item or "").strip()
+]
 _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_URL_PENDING_RETRY_MS = max(150, int((os.getenv("TTS_URL_PENDING_RETRY_MS") or "350").strip() or "350"))
@@ -867,8 +892,9 @@ def enforce_webapp_access():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    if not _is_webapp_user_allowed(int(user_id)):
-        return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
+    with db_acquire_scope("request_guard_access"):
+        if not _is_webapp_user_allowed(int(user_id)):
+            return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
 
     g.telegram_user_id = int(user_id)
     g.telegram_user = user_data
@@ -893,17 +919,18 @@ def enforce_webapp_single_instance():
     if not instance_id:
         return None
 
-    active_lease = get_webapp_instance_lease(int(user_id))
-    if not active_lease or not _webapp_instance_lease_is_fresh(active_lease):
-        claim_webapp_instance_lease(
-            user_id=int(user_id),
-            instance_id=instance_id,
-            session_id=request.headers.get("X-Webapp-Session-Id"),
-            platform=request.headers.get("X-Webapp-Platform"),
-            app_context=request.headers.get("X-Webapp-App-Context"),
-        )
-        g.webapp_instance_id = instance_id
-        return None
+    with db_acquire_scope("request_guard_instance"):
+        active_lease = get_webapp_instance_lease(int(user_id))
+        if not active_lease or not _webapp_instance_lease_is_fresh(active_lease):
+            claim_webapp_instance_lease(
+                user_id=int(user_id),
+                instance_id=instance_id,
+                session_id=request.headers.get("X-Webapp-Session-Id"),
+                platform=request.headers.get("X-Webapp-Platform"),
+                app_context=request.headers.get("X-Webapp-App-Context"),
+            )
+            g.webapp_instance_id = instance_id
+            return None
 
     active_instance_id = str(active_lease.get("instance_id") or "").strip()
     if active_instance_id and active_instance_id != instance_id:
@@ -926,7 +953,8 @@ def enforce_billing_guards():
         return None
     if _admin_token_is_valid() and path.startswith("/api/admin/"):
         return None
-    payload, status = _apply_billing_guard(path)
+    with db_acquire_scope("request_guard_billing"):
+        payload, status = _apply_billing_guard(path)
     if payload:
         return jsonify(payload), int(status or 429)
     return None
@@ -1227,6 +1255,11 @@ def webapp_starter_dictionary_apply():
                 last_imported_count=previous_imported_count,
                 decided_at=decided_at,
                 last_imported_at=previous_imported_at,
+                import_status="idle",
+                active_job_id=None,
+                last_error=None,
+                import_started_at=None,
+                import_finished_at=datetime.now(timezone.utc),
             )
             offer = _build_starter_dictionary_offer(
                 user_id=int(user_id),
@@ -1249,8 +1282,34 @@ def webapp_starter_dictionary_apply():
     if template_total <= 0:
         return jsonify({"error": "Для текущей языковой пары базовый словарь пока пуст"}), 400
 
+    current_import_status = str(current_state.get("import_status") or "idle").strip().lower() or "idle"
+    active_job_id = str(current_state.get("active_job_id") or "").strip() or None
+    if current_import_status == "running":
+        offer = _build_starter_dictionary_offer(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            profile=profile,
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "action": "accepted",
+                "started_in_background": True,
+                "already_in_progress": True,
+                "job_id": active_job_id,
+                "offer": offer,
+                "template_total": int(template_total),
+            }
+        )
+
+    user_pair_total = count_dictionary_entries_for_language_pair(
+        int(user_id),
+        source_lang,
+        target_lang,
+    )
     already_accepted = str(current_state.get("decision_status") or "").strip().lower() == "accepted"
-    if already_accepted and not force_reimport:
+    if already_accepted and user_pair_total > 0 and not force_reimport:
         offer = _build_starter_dictionary_offer(
             user_id=int(user_id),
             source_lang=source_lang,
@@ -1271,17 +1330,7 @@ def webapp_starter_dictionary_apply():
         )
 
     try:
-        import_result = import_starter_dictionary_snapshot(
-            source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
-            target_user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            import_limit=int(STARTER_DICTIONARY_IMPORT_LIMIT),
-            folder_name=STARTER_DICTIONARY_FOLDER_NAME,
-            template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
-        )
-        imported_count = max(0, int(import_result.get("inserted_count") or 0))
-        imported_at = datetime.now(timezone.utc)
+        job_id = f"starter_{int(time.time() * 1000)}_{uuid4().hex[:10]}"
         state = upsert_starter_dictionary_state(
             user_id=int(user_id),
             decision_status="accepted",
@@ -1289,15 +1338,29 @@ def webapp_starter_dictionary_apply():
             template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
             source_lang=source_lang,
             target_lang=target_lang,
-            last_imported_count=imported_count,
+            last_imported_count=previous_imported_count,
             decided_at=decided_at,
-            last_imported_at=imported_at,
+            last_imported_at=previous_imported_at,
+            import_status="running",
+            active_job_id=job_id,
+            last_error=None,
+            import_started_at=decided_at,
+            import_finished_at=None,
         )
         offer = _build_starter_dictionary_offer(
             user_id=int(user_id),
             source_lang=source_lang,
             target_lang=target_lang,
             profile=profile,
+        )
+        _start_starter_dictionary_import_runner(
+            job_id=job_id,
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            decided_at=decided_at,
+            previous_imported_count=previous_imported_count,
+            previous_imported_at=previous_imported_at,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка импорта базового словаря: {exc}"}), 500
@@ -1306,9 +1369,10 @@ def webapp_starter_dictionary_apply():
         {
             "ok": True,
             "action": "accepted",
+            "started_in_background": True,
+            "job_id": job_id,
             "state": state,
             "offer": offer,
-            "import_result": import_result,
             "template_total": int(template_total),
         }
     )
@@ -1588,6 +1652,13 @@ def _log_flow_observation(flow: str, stage: str, **fields: Any) -> None:
         logging.info("obs %s", json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str))
     except Exception:
         logging.info("obs flow=%s stage=%s fields=%s", event.get("flow"), event.get("stage"), fields)
+
+
+def _estimate_json_payload_size_bytes(payload: Any) -> int | None:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+    except Exception:
+        return None
 
 
 def _log_billing_skip_warning(*, provider: str, action_type: str, units_type: str, exc: Exception) -> None:
@@ -2044,6 +2115,109 @@ def _build_starter_dictionary_offer(
         "should_prompt": should_prompt,
         "can_reconnect": bool(STARTER_DICTIONARY_ENABLED and template_total > 0 and has_profile),
     }
+
+
+def _run_starter_dictionary_import_job(
+    *,
+    job_id: str,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    decided_at: datetime,
+    previous_imported_count: int,
+    previous_imported_at: datetime | None,
+) -> None:
+    started_at = datetime.now(timezone.utc)
+    try:
+        import_result = import_starter_dictionary_snapshot(
+            source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+            target_user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            import_limit=int(STARTER_DICTIONARY_IMPORT_LIMIT),
+            folder_name=STARTER_DICTIONARY_FOLDER_NAME,
+            template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
+        )
+        imported_count = max(0, int(import_result.get("inserted_count") or 0))
+        imported_at = datetime.now(timezone.utc)
+        upsert_starter_dictionary_state(
+            user_id=int(user_id),
+            decision_status="accepted",
+            source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+            template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            last_imported_count=imported_count,
+            decided_at=decided_at,
+            last_imported_at=imported_at,
+            import_status="done",
+            active_job_id=None,
+            last_error=None,
+            import_started_at=started_at,
+            import_finished_at=imported_at,
+        )
+        logging.info(
+            "Starter dictionary import completed: user=%s job=%s source_lang=%s target_lang=%s inserted=%s",
+            int(user_id),
+            str(job_id or "").strip(),
+            str(source_lang or "").strip().lower(),
+            str(target_lang or "").strip().lower(),
+            imported_count,
+        )
+    except Exception as exc:
+        finished_at = datetime.now(timezone.utc)
+        upsert_starter_dictionary_state(
+            user_id=int(user_id),
+            decision_status="accepted",
+            source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+            template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            last_imported_count=max(0, int(previous_imported_count or 0)),
+            decided_at=decided_at,
+            last_imported_at=previous_imported_at,
+            import_status="failed",
+            active_job_id=None,
+            last_error=str(exc or "").strip() or "starter_dictionary_import_failed",
+            import_started_at=started_at,
+            import_finished_at=finished_at,
+        )
+        logging.warning(
+            "Starter dictionary import failed: user=%s job=%s source_lang=%s target_lang=%s error=%s",
+            int(user_id),
+            str(job_id or "").strip(),
+            str(source_lang or "").strip().lower(),
+            str(target_lang or "").strip().lower(),
+            exc,
+            exc_info=True,
+        )
+
+
+def _start_starter_dictionary_import_runner(
+    *,
+    job_id: str,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    decided_at: datetime,
+    previous_imported_count: int,
+    previous_imported_at: datetime | None,
+) -> None:
+    worker = threading.Thread(
+        target=_run_starter_dictionary_import_job,
+        kwargs={
+            "job_id": str(job_id or "").strip(),
+            "user_id": int(user_id),
+            "source_lang": str(source_lang or "").strip().lower(),
+            "target_lang": str(target_lang or "").strip().lower(),
+            "decided_at": decided_at,
+            "previous_imported_count": max(0, int(previous_imported_count or 0)),
+            "previous_imported_at": previous_imported_at,
+        },
+        daemon=True,
+        name=f"starter-dictionary-{int(user_id)}",
+    )
+    worker.start()
 
 
 def _normalize_dictionary_lookup_word(word: str) -> str:
@@ -6676,6 +6850,13 @@ def _build_today_plan_for_user(
                 "mode": "weakest_topic",
                 "lookback_days": 7,
                 "sentences": 7,
+                "translation_session_id": None,
+                "source_session_id": None,
+                "translation_target_count": 7,
+                "translation_completed_count": 0,
+                "translation_progress_percent": 0.0,
+                "source_lang": str(source_lang or "ru").strip().lower() or "ru",
+                "target_lang": str(target_lang or "de").strip().lower() or "de",
                 "focus_source": "mastery" if weakest_skill else "mistakes",
                 "skill_id": weakest_skill.get("skill_id") if weakest_skill else None,
                 "skill_title": weakest_skill.get("skill_title") if weakest_skill else None,
@@ -6734,14 +6915,9 @@ def _build_today_plan_for_user(
             cooldown_days=int(os.getenv("TODAY_VIDEO_TOPIC_COOLDOWN_DAYS") or 7),
             candidate_limit=5,
         )
-        video_focus, recommended_video = _pick_today_recommended_video_across_focus_candidates(
-            video_focus_candidates,
-            target_lang=target_lang,
-            billing_user_id=int(user_id),
-            billing_source_lang=source_lang,
-            billing_target_lang=target_lang,
-        )
-        video_focus = video_focus or {}
+        # Keep home screen startup fast: video recommendation is loaded lazily
+        # when the user actually opens the video task.
+        video_focus = (video_focus_candidates[0] if video_focus_candidates else {}) or {}
         items.append(
             {
                 "task_type": "video",
@@ -6760,10 +6936,10 @@ def _build_today_plan_for_user(
                     "focus_cooldown_applied": bool(video_focus.get("cooldown_applied")),
                     "focus_cooldown_fallback_same_topic": bool(video_focus.get("cooldown_skipped_recent")),
                     "start_action": "youtube",
-                    "video_id": (recommended_video or {}).get("video_id"),
-                    "video_url": (recommended_video or {}).get("video_url"),
-                    "video_title": (recommended_video or {}).get("title"),
-                    "video_query": (recommended_video or {}).get("query"),
+                    "video_id": None,
+                    "video_url": None,
+                    "video_title": None,
+                    "video_query": None,
                 },
                 "status": "todo",
             }
@@ -11691,8 +11867,96 @@ def _should_run_sentence_prewarm_now(tz_name: str) -> bool:
     )
 
 
+def _build_translation_focus_preset_payload(preset: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "preset",
+        "key": str(preset.get("key") or "").strip(),
+        "label": str(preset.get("label") or "").strip(),
+        "prompt_topic": str(preset.get("prompt_topic") or "").strip(),
+        "main_categories": [str(item or "").strip() for item in (preset.get("main_categories") or []) if str(item or "").strip()],
+        "subcategories": [str(item or "").strip() for item in (preset.get("subcategories") or []) if str(item or "").strip()],
+        "custom_text": "",
+    }
+
+
+def _list_translation_focus_pool_prewarm_candidates(
+    *,
+    limit: int,
+    lookback_days: int,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, int(limit or 1))
+    preset_payloads = {
+        str(preset.get("key") or "").strip(): _build_translation_focus_preset_payload(preset)
+        for preset in GRAMMAR_FOCUS_PRESETS
+        if str(preset.get("key") or "").strip()
+    }
+    scores: Counter[str] = Counter()
+    fallback_focus_keys = [
+        "subordinate_clause_word_order",
+        "subordinating_conjunctions",
+        "articles",
+        "accusative_dative",
+        "adjective_declension",
+        "konjunktiv_ii",
+        "passive_voice",
+        "relative_clauses",
+        "zu_infinitive",
+    ]
+
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        COALESCE(NULLIF(main_category, ''), '') AS main_category,
+                        COALESCE(NULLIF(sub_category, ''), '') AS sub_category,
+                        SUM(COALESCE(mistake_count, 0)) AS total_mistakes
+                    FROM bt_3_detailed_mistakes
+                    WHERE COALESCE(last_seen, added_data, NOW()) >= NOW() - (%s::int * INTERVAL '1 day')
+                    GROUP BY 1, 2;
+                    """,
+                    (int(lookback_days),),
+                )
+                for main_category, sub_category, total_mistakes in cursor.fetchall() or []:
+                    for focus_key, focus_payload in preset_payloads.items():
+                        if focus_matches_error_pair(focus_payload, main_category, sub_category):
+                            scores[focus_key] += int(total_mistakes or 0)
+                cursor.execute(
+                    """
+                    SELECT focus_key, COALESCE(SUM(use_count), 0) AS total_use
+                    FROM bt_3_translation_sentence_pool
+                    WHERE source_lang = 'ru'
+                      AND target_lang = 'de'
+                      AND is_active = TRUE
+                    GROUP BY focus_key;
+                    """
+                )
+                for focus_key, total_use in cursor.fetchall() or []:
+                    normalized_focus_key = str(focus_key or "").strip()
+                    if normalized_focus_key in preset_payloads:
+                        scores[normalized_focus_key] += int(total_use or 0) * 3
+    except Exception:
+        logging.exception("Failed to compute translation focus pool prewarm candidates")
+
+    ordered_focus_keys = [
+        focus_key
+        for focus_key, _score in sorted(
+            scores.items(),
+            key=lambda item: (-int(item[1]), item[0]),
+        )
+        if focus_key in preset_payloads
+    ]
+    for fallback_key in fallback_focus_keys:
+        if fallback_key in preset_payloads and fallback_key not in ordered_focus_keys:
+            ordered_focus_keys.append(fallback_key)
+    if not ordered_focus_keys:
+        ordered_focus_keys = [key for key in preset_payloads.keys()]
+    return [preset_payloads[key] for key in ordered_focus_keys[:safe_limit]]
+
+
 def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
-    if not SENTENCE_PREWARM_ENABLED and not force:
+    if not (SENTENCE_PREWARM_ENABLED or TRANSLATION_FOCUS_POOL_PREWARM_ENABLED) and not force:
         return {"ok": True, "skipped": True, "reason": "disabled"}
     if not force and not _should_run_sentence_prewarm_now(tz_name):
         return {"ok": True, "skipped": True, "reason": "outside_offpeak_window"}
@@ -11710,6 +11974,14 @@ def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN
         generated_total = 0
         current_seed_total = 0
         errors = 0
+        focus_pool_result: dict[str, Any] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "disabled",
+            "generated": 0,
+            "upserted": 0,
+            "focuses": 0,
+        }
 
         for user_id in user_ids:
             scanned_users += 1
@@ -11750,6 +12022,44 @@ def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN
                 errors += 1
                 logging.exception("Sentence prewarm failed for user_id=%s", user_id)
 
+        if TRANSLATION_FOCUS_POOL_PREWARM_ENABLED or force:
+            try:
+                focus_candidates = _list_translation_focus_pool_prewarm_candidates(
+                    limit=TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT,
+                    lookback_days=TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS,
+                )
+                if focus_candidates:
+                    focus_pool_result = asyncio.run(
+                        prewarm_shared_translation_sentence_pool(
+                            focuses=focus_candidates,
+                            levels=TRANSLATION_FOCUS_POOL_PREWARM_LEVELS,
+                            source_lang="ru",
+                            target_lang="de",
+                            target_ready_per_bucket=TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET,
+                            max_generate_per_bucket=TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET,
+                        )
+                    )
+                    focus_pool_result["skipped"] = False
+                else:
+                    focus_pool_result = {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": "no_focus_candidates",
+                        "generated": 0,
+                        "upserted": 0,
+                        "focuses": 0,
+                    }
+            except Exception:
+                focus_pool_result = {
+                    "ok": False,
+                    "skipped": False,
+                    "reason": "exception",
+                    "generated": 0,
+                    "upserted": 0,
+                    "focuses": 0,
+                }
+                logging.exception("Translation focus pool prewarm failed")
+
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         result = {
             "ok": True,
@@ -11758,6 +12068,11 @@ def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN
             "generated": generated_total,
             "seed_items_total": current_seed_total,
             "errors": errors,
+            "focus_pool_generated": int(focus_pool_result.get("generated") or 0),
+            "focus_pool_upserted": int(focus_pool_result.get("upserted") or 0),
+            "focus_pool_focuses": int(focus_pool_result.get("focuses") or 0),
+            "focus_pool_skipped": bool(focus_pool_result.get("skipped")),
+            "focus_pool_reason": str(focus_pool_result.get("reason") or "").strip() or None,
             "elapsed_ms": elapsed_ms,
             "force": bool(force),
             "tz": tz_name,
@@ -13935,14 +14250,17 @@ def _build_translation_check_payload(
     items: list[dict[str, Any]] | None,
     source_lang: str,
     target_lang: str,
+    include_items: bool = True,
 ) -> dict[str, Any]:
     normalized_items = items or []
+    response_items = normalized_items if include_items else []
     running_items = sum(1 for item in normalized_items if str(item.get("status") or "") == "running")
     pending_items = sum(1 for item in normalized_items if str(item.get("status") or "") == "pending")
     return {
         "ok": True,
         "check_session": session,
-        "items": normalized_items,
+        "items": response_items,
+        "items_included": bool(include_items),
         "progress": {
             "total": int((session or {}).get("total_items") or len(normalized_items)),
             "completed": int((session or {}).get("completed_items") or 0),
@@ -14649,6 +14967,7 @@ def start_webapp_translation_check():
         target_lang=target_lang,
     )
     map_load_duration_ms = _elapsed_ms_since(map_load_started_perf)
+    sentence_map_size = len(allowed_by_mistake_id)
     normalize_started_perf = time.perf_counter()
     normalized_items = _normalize_translation_check_entries(
         translations,
@@ -14673,6 +14992,7 @@ def start_webapp_translation_check():
         )
         return jsonify({"error": "Нет валидных предложений для проверки."}), 400
 
+    existing_lookup_started_perf = time.perf_counter()
     existing_session, existing_items = _get_matching_active_translation_check_session(
         user_id=int(user_id),
         source_session_id=source_session_id,
@@ -14680,12 +15000,19 @@ def start_webapp_translation_check():
         target_lang=target_lang,
         normalized_items=normalized_items,
     )
+    existing_lookup_duration_ms = _elapsed_ms_since(existing_lookup_started_perf)
     if existing_session:
         session_id = int(existing_session["id"])
         correlation_id = _build_observability_correlation_id(
             payload=payload,
             fallback_seed=f"session-{session_id}",
             prefix="translation_check",
+        )
+        response_payload = _build_translation_check_payload(
+            session=existing_session,
+            items=existing_items,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
         _log_flow_observation(
             "translation_check",
@@ -14699,20 +15026,16 @@ def start_webapp_translation_check():
             items_requested=len(translations),
             items_normalized=len(normalized_items),
             items_total=len(existing_items),
-            db_lookup_duration_ms=map_load_duration_ms,
+            db_lookup_duration_ms=map_load_duration_ms + existing_lookup_duration_ms,
+            sentence_map_size=sentence_map_size,
+            existing_session_lookup_duration_ms=existing_lookup_duration_ms,
             normalize_duration_ms=normalize_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
             final_status="reused",
             duration_ms=_elapsed_ms_since(started_perf),
             http_status=200,
         )
-        return jsonify(
-            _build_translation_check_payload(
-                session=existing_session,
-                items=existing_items,
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
-        )
+        return jsonify(response_payload)
 
     create_session_started_perf = time.perf_counter()
     session = create_translation_check_session(
@@ -14737,7 +15060,9 @@ def start_webapp_translation_check():
             items_requested=len(translations),
             items_normalized=len(normalized_items),
             source_session_id=source_session_id,
-            db_lookup_duration_ms=map_load_duration_ms,
+            db_lookup_duration_ms=map_load_duration_ms + existing_lookup_duration_ms,
+            sentence_map_size=sentence_map_size,
+            existing_session_lookup_duration_ms=existing_lookup_duration_ms,
             normalize_duration_ms=normalize_duration_ms,
             db_update_duration_ms=create_session_duration_ms,
             final_status="error",
@@ -14765,6 +15090,12 @@ def start_webapp_translation_check():
     list_items_started_perf = time.perf_counter()
     items = list_translation_check_items(session_id=int(session["id"]))
     list_items_duration_ms = _elapsed_ms_since(list_items_started_perf)
+    response_payload = _build_translation_check_payload(
+        session=session,
+        items=items,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     _log_flow_observation(
         "translation_check",
         "check_start_completed",
@@ -14779,21 +15110,18 @@ def start_webapp_translation_check():
         items_total=len(items),
         start_accepted_ts_ms=accepted_at_ms,
         db_lookup_duration_ms=map_load_duration_ms + list_items_duration_ms,
+        sentence_map_size=sentence_map_size,
+        existing_session_lookup_duration_ms=existing_lookup_duration_ms,
+        items_list_duration_ms=list_items_duration_ms,
         normalize_duration_ms=normalize_duration_ms,
         db_update_duration_ms=create_session_duration_ms,
         runner_dispatch_duration_ms=runner_dispatch_duration_ms,
+        response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
         final_status="accepted",
         duration_ms=_elapsed_ms_since(started_perf),
         http_status=200,
     )
-    return jsonify(
-        _build_translation_check_payload(
-            session=session,
-            items=items,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-    )
+    return jsonify(response_payload)
 
 
 @app.route("/api/webapp/check/status", methods=["POST"])
@@ -14806,6 +15134,7 @@ def get_webapp_translation_check_status():
     requested_session_id = payload.get("check_session_id")
     active_only = bool(payload.get("active_only"))
     requested_poll_count = payload.get("poll_count")
+    include_items = bool(payload.get("include_items"))
 
     if not init_data:
         _log_flow_observation(
@@ -14899,10 +15228,14 @@ def get_webapp_translation_check_status():
         except Exception:
             payload_poll_count = None
     items: list[dict[str, Any]] = []
+    should_include_items = False
     if session:
-        list_items_started_perf = time.perf_counter()
-        items = list_translation_check_items(session_id=int(session["id"]))
-        list_items_duration_ms = _elapsed_ms_since(list_items_started_perf)
+        session_status = str((session or {}).get("status") or "").strip().lower()
+        should_include_items = include_items or session_status in {"done", "failed", "canceled"}
+        if should_include_items:
+            list_items_started_perf = time.perf_counter()
+            items = list_translation_check_items(session_id=int(session["id"]))
+            list_items_duration_ms = _elapsed_ms_since(list_items_started_perf)
         status_poll_count = _increment_translation_check_status_poll(int(session["id"]))
     session_status = str((session or {}).get("status") or "").strip().lower()
     session_completion_duration_ms = _duration_between_ms(
@@ -14912,6 +15245,13 @@ def get_webapp_translation_check_status():
     terminal_status = session_status in {"done", "failed", "canceled"}
     if terminal_status and session_id is not None:
         _clear_translation_check_status_poll(session_id)
+    response_payload = _build_translation_check_payload(
+        session=session,
+        items=items,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        include_items=should_include_items,
+    )
     _log_flow_observation(
         "translation_check",
         "check_status_completed",
@@ -14924,8 +15264,12 @@ def get_webapp_translation_check_status():
         status_polling_count=status_poll_count or None,
         status_polling_count_client=payload_poll_count,
         items_total=len(items),
+        items_included=should_include_items,
+        session_lookup_duration_ms=session_lookup_duration_ms,
+        items_lookup_duration_ms=list_items_duration_ms,
         db_lookup_duration_ms=session_lookup_duration_ms + list_items_duration_ms,
         session_completion_duration_ms=session_completion_duration_ms,
+        response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
         final_status=(
             "success"
             if session_status == "done" and int((session or {}).get("failed_items") or 0) == 0
@@ -14938,14 +15282,7 @@ def get_webapp_translation_check_status():
         duration_ms=_elapsed_ms_since(started_perf),
         http_status=200,
     )
-    return jsonify(
-        _build_translation_check_payload(
-            session=session,
-            items=items,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-    )
+    return jsonify(response_payload)
 
 
 @app.route("/api/webapp/history", methods=["POST"])
@@ -15292,6 +15629,75 @@ def select_webapp_analytics_scope():
             "ok": True,
             "saved_scope": saved_scope,
             "available_groups": known_groups,
+        }
+    )
+
+
+@app.route("/api/webapp/progress-reset/status", methods=["POST"])
+def get_webapp_progress_reset_status():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    user_id_int = int(user_id)
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+    reset_info = get_user_progress_reset(
+        user_id=user_id_int,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    all_time_bounds = get_all_time_bounds(user_id_int)
+    today_local = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    return jsonify(
+        {
+            "ok": True,
+            "reset": reset_info,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "date_bounds": {
+                "min_date": all_time_bounds.start_date.isoformat() if all_time_bounds.start_date else None,
+                "max_date": today_local.isoformat(),
+                "today": today_local.isoformat(),
+            },
+        }
+    )
+
+
+@app.route("/api/webapp/progress-reset/apply", methods=["POST"])
+def apply_webapp_progress_reset():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    payload = request.get_json(silent=True) or {}
+    user_id_int = int(user_id)
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+    reset_date = _parse_iso_date(str(payload.get("reset_date") or "").strip() or None)
+    if reset_date is None:
+        return jsonify({"error": "reset_date must be an ISO date"}), 400
+    today_local = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    if reset_date > today_local:
+        return jsonify({"error": "reset_date не может быть позже сегодняшней даты"}), 400
+    try:
+        reset_info = upsert_user_progress_reset(
+            user_id=user_id_int,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            reset_date=reset_date,
+        )
+        deleted_plans = delete_daily_plans_from_date(
+            user_id=user_id_int,
+            from_date=reset_date,
+        )
+    except Exception as exc:
+        logging.exception("progress reset apply failed user_id=%s", user_id_int)
+        return jsonify({"error": f"Не удалось сохранить reset progress: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "reset": reset_info,
+            "deleted_daily_plans": int(deleted_plans),
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
 
@@ -15712,6 +16118,47 @@ def get_economics_summary():
 
     try:
         provider_budget_rows = []
+
+        def _append_monthly_budget_card(*, provider: str, label: str, units_type: str, unit_label: str) -> None:
+            status = get_provider_monthly_budget_status(
+                provider=provider,
+                units_type=units_type,
+                unit_label=unit_label,
+                tz="Europe/Vienna",
+            )
+            if not status:
+                return
+            effective_limit = float(status.get("effective_limit_units") or 0.0)
+            used_units = float(status.get("used_units") or 0.0)
+            if effective_limit <= 0 and used_units <= 0:
+                return
+            period_month_value = str(status.get("period_month") or "").strip()
+            try:
+                month_start = date.fromisoformat(period_month_value) if period_month_value else None
+            except Exception:
+                month_start = None
+            month_end = (
+                date(month_start.year, month_start.month, monthrange(month_start.year, month_start.month)[1])
+                if month_start else None
+            )
+            provider_active_users = (
+                get_provider_active_users_count(
+                    period_start=month_start,
+                    period_end=month_end,
+                    provider=provider,
+                )
+                if month_start and month_end
+                else 0
+            )
+            avg_units_per_active_user = (used_units / provider_active_users) if provider_active_users > 0 else 0.0
+            provider_budget_rows.append({
+                "provider": provider,
+                "label": label,
+                "active_users": int(provider_active_users),
+                "avg_units_per_active_user": round(avg_units_per_active_user, 6),
+                **status,
+            })
+
         google_tts_budget = get_google_tts_monthly_budget_status(tz="Europe/Vienna")
         if google_tts_budget:
             provider_budget_rows.append({
@@ -15726,6 +16173,42 @@ def get_economics_summary():
                 "label": "Google Translate",
                 **google_translate_budget,
             })
+        _append_monthly_budget_card(
+            provider="azure_translator",
+            label="Azure Translator",
+            units_type="chars",
+            unit_label="chars",
+        )
+        _append_monthly_budget_card(
+            provider="deepl_free",
+            label="DeepL",
+            units_type="chars",
+            unit_label="chars",
+        )
+        _append_monthly_budget_card(
+            provider="perplexity",
+            label="Perplexity",
+            units_type="requests",
+            unit_label="requests",
+        )
+        _append_monthly_budget_card(
+            provider="cloudflare_r2_class_a",
+            label="Cloudflare R2 Class A",
+            units_type="operations",
+            unit_label="operations",
+        )
+        _append_monthly_budget_card(
+            provider="cloudflare_r2_class_b",
+            label="Cloudflare R2 Class B",
+            units_type="operations",
+            unit_label="operations",
+        )
+        _append_monthly_budget_card(
+            provider="cloudflare_r2_storage",
+            label="Cloudflare R2 Storage",
+            units_type="mb_month",
+            unit_label="mb_month",
+        )
         youtube_quota_status = _get_youtube_daily_quota_status()
         if youtube_quota_status:
             provider_budget_rows.append(youtube_quota_status)
@@ -17323,62 +17806,120 @@ def get_mobile_dashboard():
 
 @app.route("/api/today", methods=["GET"])
 def get_today_plan():
-    user_id, username, error = _get_authenticated_user_from_request_init_data()
-    if error:
-        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
-        return jsonify({"error": error}), status
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="today_plan")
+    with db_acquire_scope("today_plan") as db_acquire_events:
+        user_id, username, error = _get_authenticated_user_from_request_init_data()
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation(
+                "today_plan",
+                "today_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="auth_error",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=status,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": error}), status
 
-    requested_date = request.args.get("date")
-    plan_date = _safe_plan_date(requested_date, TODAY_PLAN_DEFAULT_TZ)
-    auto_opt_in = (os.getenv("TODAY_REMINDER_AUTO_OPT_IN") or "1").strip().lower() in {"1", "true", "yes", "on"}
-    if auto_opt_in:
+        requested_date = request.args.get("date")
+        plan_date = _safe_plan_date(requested_date, TODAY_PLAN_DEFAULT_TZ)
+        auto_opt_in = (os.getenv("TODAY_REMINDER_AUTO_OPT_IN") or "1").strip().lower() in {"1", "true", "yes", "on"}
+        reminder_sync_started_perf = time.perf_counter()
+        if auto_opt_in:
+            try:
+                current = get_today_reminder_settings(int(user_id))
+                if not current.get("updated_at"):
+                    upsert_today_reminder_settings(
+                        int(user_id),
+                        enabled=True,
+                        timezone_name=TODAY_PLAN_DEFAULT_TZ,
+                        reminder_hour=7,
+                        reminder_minute=0,
+                    )
+            except Exception as exc:
+                logging.warning("Today reminder auto-opt-in skipped for user %s: %s", user_id, exc)
+        reminder_sync_duration_ms = _elapsed_ms_since(reminder_sync_started_perf)
+
+        language_pair_started_perf = time.perf_counter()
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
         try:
-            current = get_today_reminder_settings(int(user_id))
-            if not current.get("updated_at"):
-                upsert_today_reminder_settings(
-                    int(user_id),
-                    enabled=True,
-                    timezone_name=TODAY_PLAN_DEFAULT_TZ,
-                    reminder_hour=7,
-                    reminder_minute=0,
-                )
+            plan_build_started_perf = time.perf_counter()
+            plan = _get_or_create_today_plan(
+                user_id=int(user_id),
+                plan_date=plan_date,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            plan = _normalize_stale_today_plan_timers(
+                user_id=int(user_id),
+                plan=plan,
+                stale_after_seconds=int((os.getenv("TODAY_PLAN_TIMER_STALE_AFTER_SECONDS") or "120").strip() or "120"),
+            )
+            plan = _sync_today_plan_translation_progress(
+                user_id=int(user_id),
+                username=username,
+                plan=plan,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                trigger="today_fetch",
+            )
+            plan_build_duration_ms = _elapsed_ms_since(plan_build_started_perf)
         except Exception as exc:
-            logging.warning("Today reminder auto-opt-in skipped for user %s: %s", user_id, exc)
+            _log_flow_observation(
+                "today_plan",
+                "today_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                plan_date=plan_date.isoformat() if hasattr(plan_date, "isoformat") else str(plan_date),
+                reminder_sync_duration_ms=reminder_sync_duration_ms,
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=500,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": f"Ошибка формирования плана: {exc}"}), 500
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    try:
-        plan = _get_or_create_today_plan(
+        response_payload = _format_today_plan_response(plan)
+        response_payload.update(
+            {
+                "ok": True,
+                "user_id": int(user_id),
+                "username": username,
+                "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            }
+        )
+        _log_flow_observation(
+            "today_plan",
+            "today_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
             user_id=int(user_id),
-            plan_date=plan_date,
             source_lang=source_lang,
             target_lang=target_lang,
+            plan_date=response_payload.get("date"),
+            items_count=len(response_payload.get("items") or []),
+            total_minutes=int(response_payload.get("total_minutes") or 0),
+            reminder_sync_duration_ms=reminder_sync_duration_ms,
+            language_pair_lookup_duration_ms=language_pair_duration_ms,
+            plan_build_duration_ms=plan_build_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
         )
-        plan = _normalize_stale_today_plan_timers(
-            user_id=int(user_id),
-            plan=plan,
-            stale_after_seconds=int((os.getenv("TODAY_PLAN_TIMER_STALE_AFTER_SECONDS") or "120").strip() or "120"),
-        )
-        plan = _sync_today_plan_translation_progress(
-            user_id=int(user_id),
-            username=username,
-            plan=plan,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            trigger="today_fetch",
-        )
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка формирования плана: {exc}"}), 500
-
-    response_payload = _format_today_plan_response(plan)
-    response_payload.update(
-        {
-            "ok": True,
-            "user_id": int(user_id),
-            "username": username,
-            "language_pair": _build_language_pair_payload(source_lang, target_lang),
-        }
-    )
-    return jsonify(response_payload)
+        return jsonify(response_payload)
 
 
 @app.route("/api/today/regenerate", methods=["POST"])
@@ -17468,16 +18009,7 @@ def start_today_translation_item(item_id: int):
     payload = request.get_json(silent=True) or {}
     requested_level = str(payload.get("level") or "").strip().lower()
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    today_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
-    plan = get_daily_plan(user_id=int(user_id), plan_date=today_date)
-    if not plan:
-        return jsonify({"error": "План на сегодня не найден"}), 404
-
-    item = None
-    for entry in (plan.get("items") or []):
-        if int(entry.get("id") or 0) == int(item_id):
-            item = entry
-            break
+    item = get_daily_plan_item(user_id=int(user_id), item_id=int(item_id))
     if not item:
         return jsonify({"error": "Задача не найдена"}), 404
     if str(item.get("task_type") or "").strip().lower() != "translation":
@@ -17527,8 +18059,25 @@ def start_today_translation_item(item_id: int):
     except Exception as exc:
         return jsonify({"error": f"Ошибка запуска переводов по задаче дня: {exc}"}), 500
 
-    session_id_value = _normalize_today_translation_session_id(session.get("session_id"))
-    target_count = max(1, int(session.get("count") or task_payload.get("sentences") or 7))
+    if isinstance(session, dict) and session.get("error"):
+        error_code = str(session.get("error") or "").strip().lower()
+        if error_code in {"feature_limit_exceeded", "cost_cap_exceeded"}:
+            return jsonify(session), 429
+        return jsonify({"error": str(session.get("error") or "Ошибка запуска переводов по задаче дня")}), 500
+
+    session_payload = _build_translation_session_start_payload(
+        user_id=int(user_id),
+        username=username,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        result=session if isinstance(session, dict) else {},
+        topic=str(resolved_focus.get("prompt_topic") or topic_label).strip() or topic_label,
+        level=level,
+        grammar_focus=resolved_focus,
+    )
+
+    session_id_value = _normalize_today_translation_session_id(session_payload.get("session_id"))
+    target_count = max(1, int(session_payload.get("expected_total") or session_payload.get("count") or task_payload.get("sentences") or 7))
     completed_count = _count_translation_session_completed_sentences(
         user_id=int(user_id),
         translation_session_id=session_id_value,
@@ -17541,9 +18090,12 @@ def start_today_translation_item(item_id: int):
         item_id=int(item_id),
         payload_updates={
             "translation_session_id": session_id_value or None,
+            "source_session_id": session_id_value or None,
             "translation_target_count": int(target_count),
             "translation_completed_count": int(completed_count),
             "translation_progress_percent": round(progress_percent, 2),
+            "source_lang": str(source_lang or "ru").strip().lower() or "ru",
+            "target_lang": str(target_lang or "de").strip().lower() or "de",
             "translation_completed_at": None,
         },
     ) or item
@@ -17566,7 +18118,7 @@ def start_today_translation_item(item_id: int):
                 "sub_category": sub_category or None,
                 "skill_title": skill_title or None,
             },
-            **session,
+            **session_payload,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
@@ -17736,6 +18288,7 @@ def recommend_today_video():
     recommended_video = None
     recommendation_row = None
     cache_hit = False
+    empty_reason = None
 
     try:
         recommendation_row = get_best_video_recommendation_for_focus(
@@ -17807,13 +18360,33 @@ def recommend_today_video():
                 if isinstance(selected_focus.get("examples"), list) and selected_focus.get("examples"):
                     examples_payload = selected_focus.get("examples")
         if not recommended_video:
+            if not explicit_focus_requested:
+                has_focus_context = bool(
+                    str(skill_id or "").strip()
+                    or str(skill_title or "").strip()
+                    or str(main_category or "").strip()
+                    or str(sub_category or "").strip()
+                    or video_focus_candidates
+                )
+                if not has_focus_context:
+                    try:
+                        has_translation_history = bool(
+                            get_webapp_translation_history(user_id=int(user_id), limit=1)
+                        )
+                    except Exception:
+                        has_translation_history = None
+                    if has_translation_history is False:
+                        empty_reason = "no_history_yet"
+            if not empty_reason:
+                empty_reason = "video_not_found_for_focus"
             logging.warning(
-                "YT recommendation not found: user_id=%s skill_id=%s skill_title='%s' main='%s' sub='%s'",
+                "YT recommendation not found: user_id=%s skill_id=%s skill_title='%s' main='%s' sub='%s' empty_reason=%s",
                 int(user_id),
                 skill_id,
                 skill_title,
                 main_category,
                 sub_category,
+                empty_reason,
             )
 
         if recommended_video and recommended_video.get("video_id"):
@@ -17874,6 +18447,7 @@ def recommend_today_video():
                 "sub_category": sub_category or None,
             },
             "video": recommended_video,
+            "empty_reason": empty_reason,
             "updated_item": updated_item,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
             "resolved_from_mastery": bool(resolved_skill),
@@ -18711,6 +19285,13 @@ def complete_reader_session_route():
             session_id = int(session_id_raw)
         except Exception:
             return jsonify({"error": "session_id должен быть числом"}), 400
+    duration_seconds_raw = payload.get("duration_seconds")
+    duration_seconds = None
+    if duration_seconds_raw is not None and str(duration_seconds_raw).strip() != "":
+        try:
+            duration_seconds = int(duration_seconds_raw)
+        except Exception:
+            return jsonify({"error": "duration_seconds должен быть числом"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
         session = finish_reader_session(
@@ -18718,55 +19299,104 @@ def complete_reader_session_route():
             session_id=session_id,
             source_lang=source_lang,
             target_lang=target_lang,
+            duration_seconds=duration_seconds,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка завершения сессии чтения: {exc}"}), 500
     return jsonify({"ok": True, "session": session})
 
 
-@app.route("/api/progress/skills", methods=["GET"])
-def get_skill_progress():
-    user_id, username, error = _get_authenticated_user_from_request_init_data()
+@app.route("/api/reader/session/ping", methods=["POST"])
+def ping_reader_session_route():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
-
-    raw_period = str(request.args.get("period") or "7d").strip().lower()
-    lookback_days = 7
-    if raw_period.endswith("d"):
-        try:
-            lookback_days = int(raw_period[:-1] or "7")
-        except Exception:
-            lookback_days = 7
-
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    report_warning: str | None = None
+    payload = request.get_json(silent=True) or {}
     try:
-        report = get_skill_progress_report(
+        session_id = int(payload.get("session_id"))
+    except Exception:
+        return jsonify({"error": "session_id должен быть числом"}), 400
+    try:
+        duration_seconds = int(payload.get("duration_seconds"))
+    except Exception:
+        return jsonify({"error": "duration_seconds должен быть числом"}), 400
+    try:
+        session = touch_reader_session(
             user_id=int(user_id),
-            lookback_days=lookback_days,
-            source_lang=source_lang,
-            target_lang=target_lang,
+            session_id=session_id,
+            duration_seconds=duration_seconds,
         )
     except Exception as exc:
-        logging.exception("Skill progress report failed user_id=%s", user_id)
-        report_warning = f"skill_progress_report_failed: {exc}"
-        report = {
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "period_days": int(lookback_days),
-            "top_weak": [],
-            "groups": [],
-            "total_skills": 0,
-            "skills_with_data": 0,
-        }
-    try:
-        skill_training_status = _get_skill_training_status_map(int(user_id))
-    except Exception as exc:
-        logging.warning("Skill training status load failed: %s", exc)
-        skill_training_status = {}
+        return jsonify({"error": f"Ошибка обновления сессии чтения: {exc}"}), 500
+    if not session:
+        return jsonify({"error": "Сессия чтения не найдена"}), 404
+    return jsonify({"ok": True, "session": session})
 
-    return jsonify(
-        {
+
+@app.route("/api/progress/skills", methods=["GET"])
+def get_skill_progress():
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="skill_progress")
+    with db_acquire_scope("skill_progress") as db_acquire_events:
+        user_id, username, error = _get_authenticated_user_from_request_init_data()
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation(
+                "skill_progress",
+                "skill_progress_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="auth_error",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=status,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": error}), status
+
+        raw_period = str(request.args.get("period") or "7d").strip().lower()
+        lookback_days = 7
+        if raw_period.endswith("d"):
+            try:
+                lookback_days = int(raw_period[:-1] or "7")
+            except Exception:
+                lookback_days = 7
+
+        language_pair_started_perf = time.perf_counter()
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+        report_warning: str | None = None
+        report_started_perf = time.perf_counter()
+        try:
+            report = get_skill_progress_report(
+                user_id=int(user_id),
+                lookback_days=lookback_days,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        except Exception as exc:
+            logging.exception("Skill progress report failed user_id=%s", user_id)
+            report_warning = f"skill_progress_report_failed: {exc}"
+            report = {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "period_days": int(lookback_days),
+                "top_weak": [],
+                "groups": [],
+                "total_skills": 0,
+                "skills_with_data": 0,
+            }
+        report_duration_ms = _elapsed_ms_since(report_started_perf)
+        training_status_started_perf = time.perf_counter()
+        try:
+            skill_training_status = _get_skill_training_status_map(int(user_id))
+        except Exception as exc:
+            logging.warning("Skill training status load failed: %s", exc)
+            skill_training_status = {}
+        training_status_duration_ms = _elapsed_ms_since(training_status_started_perf)
+
+        response_payload = {
             "ok": True,
             "user_id": int(user_id),
             "username": username,
@@ -18775,7 +19405,28 @@ def get_skill_progress():
             **({"warning": report_warning} if report_warning else {}),
             **report,
         }
-    )
+        _log_flow_observation(
+            "skill_progress",
+            "skill_progress_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            lookback_days=int(lookback_days),
+            groups_count=len(response_payload.get("groups") or []),
+            total_skills=int(response_payload.get("total_skills") or 0),
+            skills_with_data=int(response_payload.get("skills_with_data") or 0),
+            language_pair_lookup_duration_ms=language_pair_duration_ms,
+            report_duration_ms=report_duration_ms,
+            training_status_duration_ms=training_status_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success" if not report_warning else "partial",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
 
 
 @app.route("/api/progress/skills/<string:skill_id>/practice/event", methods=["POST"])
@@ -20082,7 +20733,26 @@ def get_webapp_flashcard_set():
         requested_words=requested_set_size,
     )
     if flashcards_limit_state.get("error"):
-        return jsonify(flashcards_limit_state.get("error")), 429
+        return jsonify(
+            {
+                "ok": True,
+                "items": [],
+                "empty_reason": "daily_mode_limit_reached",
+                "empty_meta": flashcards_limit_state.get("error") or {},
+                "profile": {
+                    "mode": training_mode,
+                    "requested_set_size": requested_set_size,
+                    "effective_set_size": 0,
+                    "daily_words_limit": (flashcards_limit_state.get("error") or {}).get("limit"),
+                    "daily_words_used": (flashcards_limit_state.get("error") or {}).get("used"),
+                    "server_items": 0,
+                    "blocks_eligible_len10_server": None,
+                    "selection_strategy": None,
+                    "is_supplemental_mode": False,
+                },
+                "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            }
+        )
     allowed_set_size = max(1, int(flashcards_limit_state.get("allowed_words") or requested_set_size))
     set_size = min(requested_set_size, allowed_set_size)
 
@@ -20116,6 +20786,11 @@ def get_webapp_flashcard_set():
         resolved_folder_id = int(folder_id) if folder_id is not None else None
     except Exception:
         resolved_folder_id = None
+    dictionary_pair_total = count_dictionary_entries_for_language_pair(
+        int(user_id),
+        source_lang,
+        target_lang,
+    )
 
     profile_payload: dict[str, object] = {
         "mode": training_mode,
@@ -20167,12 +20842,13 @@ def get_webapp_flashcard_set():
                 for item in items
             ]
             if training_mode == "blocks":
-                blocks_eligible = 0
+                blocks_items: list[dict] = []
                 for item in decorated_items:
                     answer = _resolve_blocks_answer_for_profile(item)
-                    if answer and len(answer) <= 10:
-                        blocks_eligible += 1
-                profile_payload["blocks_eligible_len10_server"] = blocks_eligible
+                    if answer and len(answer) <= BLOCKS_SINGLE_WORD_MAX_LEN:
+                        blocks_items.append(item)
+                profile_payload["blocks_eligible_len10_server"] = len(blocks_items)
+                decorated_items = blocks_items
             if decorated_items:
                 mark_flashcards_seen(
                     user_id=int(user_id),
@@ -20203,10 +20879,31 @@ def get_webapp_flashcard_set():
         source_lang=source_lang,
         target_lang=target_lang,
     )
+    empty_reason = None
+    empty_meta: dict[str, object] = {}
+    selection_payload = profile_payload.get("selection") if isinstance(profile_payload.get("selection"), dict) else {}
+    if not decorated_items:
+        if training_mode == "blocks" and int(profile_payload.get("server_items") or 0) > 0:
+            empty_reason = "blocks_no_eligible_cards_today"
+            empty_meta = {
+                "max_answer_length": int(BLOCKS_SINGLE_WORD_MAX_LEN),
+                "server_items": int(profile_payload.get("server_items") or 0),
+            }
+        elif int(dictionary_pair_total or 0) <= 0:
+            empty_reason = "dictionary_empty"
+        elif training_mode in {"quiz", "blocks"}:
+            empty_reason = "shared_queue_completed_today"
+            empty_meta = {
+                "due_count": int(selection_payload.get("due_count") or 0),
+                "new_remaining_today": int(selection_payload.get("new_remaining_today") or 0),
+            }
+    profile_payload["dictionary_pair_total"] = int(dictionary_pair_total)
     return jsonify(
         {
             "ok": True,
             "items": decorated_items,
+            "empty_reason": empty_reason,
+            "empty_meta": empty_meta,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
             "profile": profile_payload,
         }
@@ -23545,7 +24242,10 @@ def normalize_lookup_text(lang_code: str = "de"):
 
 @app.route("/api/webapp/sentences", methods=["POST"])
 def get_webapp_sentences():
+    started_perf = time.perf_counter()
     payload = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload)
+    correlation_id = _build_observability_correlation_id(payload=payload, prefix="webapp_sentences")
     init_data = payload.get("initData")
     requested_limit = payload.get("limit", 7)
     try:
@@ -23555,9 +24255,29 @@ def get_webapp_sentences():
     limit = max(1, min(limit, 7))
 
     if not init_data:
+        _log_flow_observation(
+            "webapp_translation",
+            "sentences_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            requested_limit=limit,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "initData обязателен"}), 400
 
     if not _telegram_hash_is_valid(init_data):
+        _log_flow_observation(
+            "webapp_translation",
+            "sentences_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            requested_limit=limit,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=401,
+        )
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
     parsed = _parse_telegram_init_data(init_data)
@@ -23565,25 +24285,235 @@ def get_webapp_sentences():
     user_id = user_data.get("id")
 
     if not user_id:
+        _log_flow_observation(
+            "webapp_translation",
+            "sentences_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            requested_limit=limit,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    with db_acquire_scope("webapp_sentences") as db_acquire_events:
+        language_pair_started_perf = time.perf_counter()
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+        sentence_lookup_started_perf = time.perf_counter()
+        sentences = get_pending_daily_sentences(
+            user_id=user_id,
+            limit=limit,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            close_stale_sessions=False,
+        )
+        sentence_lookup_duration_ms = _elapsed_ms_since(sentence_lookup_started_perf)
+    dedupe_started_perf = time.perf_counter()
+    deduped = _dedupe_sentences(sentences)
+    dedupe_duration_ms = _elapsed_ms_since(dedupe_started_perf)
+    response_payload = {
+        "ok": True,
+        "items": deduped,
+        "ready_count": len(deduped),
+        "expected_total": 7,
+        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+    }
+    source_session_id = str(deduped[0].get("source_session_id") or "").strip() if deduped else None
+    _log_flow_observation(
+        "webapp_translation",
+        "sentences_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        source_session_id=source_session_id or None,
+        requested_limit=limit,
+        ready_count=len(deduped),
+        expected_total=7,
+        language_pair_lookup_duration_ms=language_pair_duration_ms,
+        sentence_lookup_duration_ms=sentence_lookup_duration_ms,
+        dedupe_duration_ms=dedupe_duration_ms,
+        response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+        final_status="success",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+        **summarize_db_acquire_events(db_acquire_events),
+    )
+    return jsonify(response_payload)
+
+
+@app.route("/api/webapp/sentences/ack", methods=["POST"])
+def ack_webapp_sentences_shown():
+    started_perf = time.perf_counter()
+    payload = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload)
+    correlation_id = _build_observability_correlation_id(payload=payload, prefix="webapp_sentences_ack")
+    init_data = payload.get("initData")
+    source_session_id = str(payload.get("source_session_id") or "").strip()
+    sentence_ids_payload = payload.get("sentence_ids")
+
+    if not init_data:
+        _log_flow_observation(
+            "webapp_translation",
+            "sentences_ack_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
+        return jsonify({"error": "initData обязателен"}), 400
+    if not source_session_id:
+        _log_flow_observation(
+            "webapp_translation",
+            "sentences_ack_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
+        return jsonify({"error": "source_session_id обязателен"}), 400
+    if not isinstance(sentence_ids_payload, list):
+        _log_flow_observation(
+            "webapp_translation",
+            "sentences_ack_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            source_session_id=source_session_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
+        return jsonify({"error": "sentence_ids должны быть списком"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        _log_flow_observation(
+            "webapp_translation",
+            "sentences_ack_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            source_session_id=source_session_id,
+            requested_sentence_count=len(sentence_ids_payload),
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=401,
+        )
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        _log_flow_observation(
+            "webapp_translation",
+            "sentences_ack_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            source_session_id=source_session_id,
+            requested_sentence_count=len(sentence_ids_payload),
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    sentences = get_pending_daily_sentences(
-        user_id=user_id,
-        limit=limit,
+    try:
+        db_started_perf = time.perf_counter()
+        result = mark_translation_sentences_shown(
+            user_id=int(user_id),
+            source_session_id=source_session_id,
+            sentence_ids=sentence_ids_payload,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        db_update_duration_ms = _elapsed_ms_since(db_started_perf)
+    except Exception as exc:
+        _log_flow_observation(
+            "webapp_translation",
+            "sentences_ack_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            source_session_id=source_session_id,
+            requested_sentence_count=len(sentence_ids_payload),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            final_status="error",
+            error_code=exc.__class__.__name__,
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=500,
+        )
+        return jsonify({"error": f"Ошибка подтверждения показа предложений: {exc}"}), 500
+
+    response_payload = {"ok": True, **result}
+    _log_flow_observation(
+        "webapp_translation",
+        "sentences_ack_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        source_session_id=source_session_id,
+        requested_sentence_count=len(sentence_ids_payload),
+        updated_sentence_count=int(result.get("updated") or 0),
         source_lang=source_lang,
         target_lang=target_lang,
+        db_update_duration_ms=db_update_duration_ms,
+        response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+        final_status="success",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
     )
-    deduped = _dedupe_sentences(sentences)
-    return jsonify(
-        {
-            "ok": True,
-            "items": deduped,
-            "ready_count": len(deduped),
-            "expected_total": 7,
-            "language_pair": _build_language_pair_payload(source_lang, target_lang),
-        }
+    return jsonify(response_payload)
+
+
+def _build_translation_session_start_payload(
+    *,
+    user_id: int,
+    username: str | None,
+    source_lang: str,
+    target_lang: str,
+    result: dict[str, Any],
+    topic: str,
+    level: str | None,
+    grammar_focus: dict[str, Any] | None,
+) -> dict[str, Any]:
+    ready_items = get_pending_daily_sentences(
+        user_id=user_id,
+        limit=7,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        close_stale_sessions=False,
     )
+    deduped_items = _dedupe_sentences(ready_items)
+    session_id = int(result.get("session_id") or 0) if isinstance(result, dict) and result.get("session_id") else None
+    ready_count = len(deduped_items)
+    expected_total = int(result.get("expected_total") or 7) if isinstance(result, dict) else 7
+    remaining_count = max(0, expected_total - ready_count)
+    generation_started = bool(session_id and remaining_count > 0 and not bool(result.get("blocked")))
+    if generation_started and session_id is not None:
+        _start_translation_session_fill_runner(
+            user_id=int(user_id),
+            username=username,
+            session_id=int(session_id),
+            topic=topic,
+            level=level,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            grammar_focus=grammar_focus,
+        )
+    response_payload = {
+        **(result or {}),
+        "type": "regular",
+        "items": deduped_items,
+        "ready_count": ready_count,
+        "expected_total": expected_total,
+        "remaining_count": remaining_count,
+        "generation_in_progress": generation_started,
+    }
+    return response_payload
 
 
 def _run_translation_session_fill(
@@ -23683,6 +24613,8 @@ def get_webapp_topics():
 def start_webapp_translation():
     started_at = time.perf_counter()
     payload = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload)
+    correlation_id = _build_observability_correlation_id(payload=payload, prefix="webapp_start")
     init_data = payload.get("initData")
     topic = (payload.get("topic") or "Random sentences").strip()
     custom_focus = str(payload.get("custom_focus") or "").strip()
@@ -23690,9 +24622,27 @@ def start_webapp_translation():
     force_new_session = bool(payload.get("force_new_session"))
 
     if not init_data:
+        _log_flow_observation(
+            "webapp_translation",
+            "start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=400,
+        )
         return jsonify({"error": "initData обязателен"}), 400
 
     if not _telegram_hash_is_valid(init_data):
+        _log_flow_observation(
+            "webapp_translation",
+            "start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=401,
+        )
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
     parsed = _parse_telegram_init_data(init_data)
@@ -23701,88 +24651,174 @@ def start_webapp_translation():
     username = _extract_display_name(user_data)
 
     if not user_id:
+        _log_flow_observation(
+            "webapp_translation",
+            "start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=400,
+        )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    resolved_focus = resolve_webapp_focus(topic, custom_focus)
-    if str(resolved_focus.get("kind") or "") == "custom" and not str(resolved_focus.get("custom_text") or "").strip():
-        return jsonify({"error": "custom_focus обязателен для пользовательского грамматического фокуса"}), 400
-
-    try:
-        workflow_started_at = time.perf_counter()
-        result = asyncio.run(
-            start_translation_session_webapp(
-                user_id=user_id,
-                username=username,
-                topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
-                level=level,
+    with db_acquire_scope("webapp_start") as db_acquire_events:
+        language_pair_started_perf = time.perf_counter()
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+        focus_started_perf = time.perf_counter()
+        resolved_focus = resolve_webapp_focus(topic, custom_focus)
+        focus_duration_ms = _elapsed_ms_since(focus_started_perf)
+        if str(resolved_focus.get("kind") or "") == "custom" and not str(resolved_focus.get("custom_text") or "").strip():
+            _log_flow_observation(
+                "webapp_translation",
+                "start_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
                 source_lang=source_lang,
                 target_lang=target_lang,
-                force_new_session=force_new_session,
-                grammar_focus=resolved_focus,
+                focus_kind=str(resolved_focus.get("kind") or "").strip(),
+                focus_key=str(resolved_focus.get("key") or "").strip() or None,
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                focus_duration_ms=focus_duration_ms,
+                final_status="error",
+                duration_ms=_elapsed_ms_since(started_at),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
             )
-        )
-        workflow_elapsed_ms = int((time.perf_counter() - workflow_started_at) * 1000)
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка запуска сессии: {exc}"}), 500
+            return jsonify({"error": "custom_focus обязателен для пользовательского грамматического фокуса"}), 400
 
-    if isinstance(result, dict) and result.get("error"):
-        return jsonify({"error": result["error"]}), 500
+        try:
+            workflow_started_at = time.perf_counter()
+            result = asyncio.run(
+                start_translation_session_webapp(
+                    user_id=user_id,
+                    username=username,
+                    topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
+                    level=level,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    force_new_session=force_new_session,
+                    grammar_focus=resolved_focus,
+                )
+            )
+            workflow_elapsed_ms = int((time.perf_counter() - workflow_started_at) * 1000)
+        except Exception as exc:
+            _log_flow_observation(
+                "webapp_translation",
+                "start_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                focus_kind=str(resolved_focus.get("kind") or "").strip(),
+                focus_key=str(resolved_focus.get("key") or "").strip() or None,
+                level=str(level or "").strip().lower(),
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                focus_duration_ms=focus_duration_ms,
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                duration_ms=_elapsed_ms_since(started_at),
+                http_status=500,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": f"Ошибка запуска сессии: {exc}"}), 500
 
-    ready_items = get_pending_daily_sentences(
-        user_id=user_id,
-        limit=7,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
-    deduped_items = _dedupe_sentences(ready_items)
-    session_id = int(result.get("session_id") or 0) if isinstance(result, dict) and result.get("session_id") else None
-    ready_count = len(deduped_items)
-    expected_total = int(result.get("expected_total") or 7) if isinstance(result, dict) else 7
-    remaining_count = max(0, expected_total - ready_count)
-    generation_started = bool(session_id and remaining_count > 0 and not bool(result.get("blocked")))
-    if generation_started and session_id is not None:
-        _start_translation_session_fill_runner(
+        if isinstance(result, dict) and result.get("error"):
+            error_code = str(result.get("error") or "").strip().lower()
+            status_code = 429 if error_code in {"feature_limit_exceeded", "cost_cap_exceeded"} else 500
+            _log_flow_observation(
+                "webapp_translation",
+                "start_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                focus_kind=str(resolved_focus.get("kind") or "").strip(),
+                focus_key=str(resolved_focus.get("key") or "").strip() or None,
+                level=str(level or "").strip().lower(),
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                focus_duration_ms=focus_duration_ms,
+                workflow_duration_ms=workflow_elapsed_ms,
+                final_status="error",
+                error_code=error_code or "workflow_error",
+                duration_ms=_elapsed_ms_since(started_at),
+                http_status=status_code,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            if error_code in {"feature_limit_exceeded", "cost_cap_exceeded"}:
+                return jsonify(result), 429
+            return jsonify({"error": result["error"]}), 500
+
+        build_payload_started_perf = time.perf_counter()
+        response_payload = _build_translation_session_start_payload(
             user_id=int(user_id),
             username=username,
-            session_id=int(session_id),
-            topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
-            level=level,
             source_lang=source_lang,
             target_lang=target_lang,
+            result=result if isinstance(result, dict) else {},
+            topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
+            level=level,
             grammar_focus=resolved_focus,
         )
+        build_payload_duration_ms = _elapsed_ms_since(build_payload_started_perf)
+        session_id = int(response_payload.get("session_id") or 0) if response_payload.get("session_id") else None
+        ready_count = int(response_payload.get("ready_count") or 0)
+        expected_total = int(response_payload.get("expected_total") or 7)
+        remaining_count = int(response_payload.get("remaining_count") or 0)
+        generation_started = bool(response_payload.get("generation_in_progress"))
 
-    total_elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-    logging.info(
-        "webapp translation start completed: user_id=%s session_id=%s ready_count=%s expected_total=%s remaining_count=%s "
-        "generation_in_progress=%s workflow_ms=%s total_ms=%s focus_kind=%s focus_key=%s level=%s",
-        int(user_id),
-        int(session_id or 0),
-        int(ready_count),
-        int(expected_total),
-        int(remaining_count),
-        bool(generation_started),
-        int(workflow_elapsed_ms),
-        int(total_elapsed_ms),
-        str(resolved_focus.get("kind") or "").strip(),
-        str(resolved_focus.get("key") or "").strip(),
-        str(level or "").strip().lower(),
-    )
-
-    return jsonify(
-        {
+        total_elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        logging.info(
+            "webapp translation start completed: user_id=%s session_id=%s ready_count=%s expected_total=%s remaining_count=%s "
+            "generation_in_progress=%s workflow_ms=%s total_ms=%s focus_kind=%s focus_key=%s level=%s",
+            int(user_id),
+            int(session_id or 0),
+            int(ready_count),
+            int(expected_total),
+            int(remaining_count),
+            bool(generation_started),
+            int(workflow_elapsed_ms),
+            int(total_elapsed_ms),
+            str(resolved_focus.get("kind") or "").strip(),
+            str(resolved_focus.get("key") or "").strip(),
+            str(level or "").strip().lower(),
+        )
+        response_body = {
             "ok": True,
-            **result,
-            "type": "regular",
-            "items": deduped_items,
-            "ready_count": ready_count,
-            "expected_total": expected_total,
-            "remaining_count": remaining_count,
-            "generation_in_progress": generation_started,
+            **response_payload,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
-    )
+        _log_flow_observation(
+            "webapp_translation",
+            "start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            session_id=int(session_id or 0) if session_id else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            focus_kind=str(resolved_focus.get("kind") or "").strip(),
+            focus_key=str(resolved_focus.get("key") or "").strip() or None,
+            level=str(level or "").strip().lower(),
+            ready_count=ready_count,
+            expected_total=expected_total,
+            remaining_count=remaining_count,
+            generation_in_progress=bool(generation_started),
+            language_pair_lookup_duration_ms=language_pair_duration_ms,
+            focus_duration_ms=focus_duration_ms,
+            workflow_duration_ms=workflow_elapsed_ms,
+            build_payload_duration_ms=build_payload_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_body),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_body)
 
 
 @app.route("/api/webapp/story/history", methods=["POST"])
@@ -23924,13 +24960,34 @@ def submit_webapp_story():
 
 @app.route("/api/webapp/session", methods=["POST"])
 def get_webapp_session():
+    started_perf = time.perf_counter()
     payload = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload)
+    correlation_id = _build_observability_correlation_id(payload=payload, prefix="webapp_session")
     init_data = payload.get("initData")
 
     if not init_data:
+        _log_flow_observation(
+            "webapp_session",
+            "session_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "initData обязателен"}), 400
 
     if not _telegram_hash_is_valid(init_data):
+        _log_flow_observation(
+            "webapp_session",
+            "session_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=401,
+        )
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
     parsed = _parse_telegram_init_data(init_data)
@@ -23938,10 +24995,38 @@ def get_webapp_session():
     user_id = user_data.get("id")
 
     if not user_id:
+        _log_flow_observation(
+            "webapp_session",
+            "session_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    info = get_active_session_type(user_id=user_id)
-    return jsonify({"ok": True, **info})
+    with db_acquire_scope("webapp_session") as db_acquire_events:
+        lookup_started_perf = time.perf_counter()
+        info = get_active_session_type(user_id=user_id, close_stale_sessions=False)
+        lookup_duration_ms = _elapsed_ms_since(lookup_started_perf)
+    response_payload = {"ok": True, **info}
+    _log_flow_observation(
+        "webapp_session",
+        "session_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        session_type=str(info.get("type") or "").strip() or "none",
+        session_id=str(info.get("session_id") or "").strip() or None,
+        session_lookup_duration_ms=lookup_duration_ms,
+        response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+        final_status="success",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+        **summarize_db_acquire_events(db_acquire_events),
+    )
+    return jsonify(response_payload)
 
 
 @app.route("/api/webapp/session/activity", methods=["POST"])
@@ -24936,6 +26021,7 @@ def _collect_weekly_badges_rows(week_start: date, week_end: date) -> list[dict]:
                         ON lt.sentence_id = ds.id
                        AND lt.user_id = ds.user_id
                     WHERE ds.date BETWEEN %s AND %s
+                      AND COALESCE(ds.shown_to_user, FALSE) = TRUE
                     GROUP BY ds.user_id, ds.date
                 ),
                 missed_agg AS (
@@ -25819,6 +26905,7 @@ def _fetch_group_daily_summary_rows(*, target_date: date, cohort_user_ids: list[
                 ) p ON p.user_id = ds.user_id
                 WHERE ds.date = %s
                   AND ds.user_id = ANY(%s)
+                  AND COALESCE(ds.shown_to_user, FALSE) = TRUE
                 GROUP BY ds.user_id, p.avg_time, p.total_time
                 ORDER BY ds.user_id ASC;
                 """,
@@ -25907,6 +26994,7 @@ def _fetch_group_weekly_summary_rows(*, week_start: date, week_end: date, cohort
                     FROM bt_3_daily_sentences ds
                     WHERE ds.date BETWEEN %s AND %s
                       AND ds.user_id = ANY(%s)
+                      AND COALESCE(ds.shown_to_user, FALSE) = TRUE
                 ),
                 daily_coverage AS (
                     SELECT
@@ -25920,6 +27008,7 @@ def _fetch_group_weekly_summary_rows(*, week_start: date, week_end: date, cohort
                        AND lt.user_id = ds.user_id
                     WHERE ds.date BETWEEN %s AND %s
                       AND ds.user_id = ANY(%s)
+                      AND COALESCE(ds.shown_to_user, FALSE) = TRUE
                     GROUP BY ds.user_id, ds.date
                 ),
                 missed_agg AS (
@@ -26365,6 +27454,109 @@ def _normalize_today_translation_session_id(value: object) -> str:
         return raw
 
 
+def _parse_today_plan_date(value: object) -> date | None:
+    if isinstance(value, date):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except Exception:
+        return None
+
+
+def _resolve_legacy_today_translation_session_id(
+    *,
+    user_id: int,
+    plan_date: date | str | None,
+    target_count: int,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    resolved_plan_date = _parse_today_plan_date(plan_date)
+    if resolved_plan_date is None:
+        return ""
+
+    normalized_source_lang = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+    safe_target_count = max(0, int(target_count or 0))
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    ds.session_id::text AS session_id,
+                    COUNT(*) AS sentence_count,
+                    COUNT(DISTINCT tr.sentence_id) AS completed_count,
+                    MAX(ds.id) AS last_sentence_id
+                FROM bt_3_daily_sentences ds
+                LEFT JOIN bt_3_translations tr
+                  ON tr.user_id = ds.user_id
+                 AND tr.sentence_id = ds.id
+                WHERE ds.user_id = %s
+                  AND ds.date = %s
+                  AND COALESCE(ds.source_lang, 'ru') = %s
+                  AND COALESCE(ds.target_lang, 'de') = %s
+                GROUP BY ds.session_id
+                ORDER BY COUNT(DISTINCT tr.sentence_id) DESC, COUNT(*) DESC, MAX(ds.id) DESC;
+                """,
+                (
+                    int(user_id),
+                    resolved_plan_date,
+                    normalized_source_lang,
+                    normalized_target_lang,
+                ),
+            )
+            rows = cursor.fetchall() or []
+
+    candidates: list[dict[str, int | str]] = []
+    for row in rows:
+        session_id = _normalize_today_translation_session_id(row[0])
+        if not session_id:
+            continue
+        candidates.append(
+            {
+                "session_id": session_id,
+                "sentence_count": max(0, int(row[1] or 0)),
+                "completed_count": max(0, int(row[2] or 0)),
+                "last_sentence_id": max(0, int(row[3] or 0)),
+            }
+        )
+
+    if not candidates:
+        return ""
+    if len(candidates) == 1:
+        return str(candidates[0]["session_id"])
+
+    exact_target_candidates = [
+        candidate
+        for candidate in candidates
+        if int(candidate.get("sentence_count") or 0) == safe_target_count and safe_target_count > 0
+    ]
+    if len(exact_target_candidates) == 1:
+        return str(exact_target_candidates[0]["session_id"])
+
+    translated_candidates = [
+        candidate
+        for candidate in (exact_target_candidates or candidates)
+        if int(candidate.get("completed_count") or 0) > 0
+    ]
+    if len(translated_candidates) == 1:
+        return str(translated_candidates[0]["session_id"])
+
+    logging.info(
+        "Today translation session recovery ambiguous: user=%s plan_date=%s source_lang=%s target_lang=%s candidates=%s",
+        int(user_id),
+        resolved_plan_date.isoformat(),
+        normalized_source_lang,
+        normalized_target_lang,
+        [str(candidate.get("session_id") or "") for candidate in candidates],
+    )
+    return ""
+
+
 def _count_translation_session_completed_sentences(
     *,
     user_id: int,
@@ -26418,6 +27610,8 @@ def _sync_today_translation_item_progress(
     source_lang: str,
     target_lang: str,
     trigger: str,
+    plan_date: date | str | None = None,
+    fallback_translation_session_id: str | None = None,
 ) -> dict | None:
     if not isinstance(item, dict):
         return item
@@ -26425,18 +27619,28 @@ def _sync_today_translation_item_progress(
         return item
 
     payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    effective_source_lang = str(payload.get("source_lang") or source_lang or "ru").strip().lower() or "ru"
+    effective_target_lang = str(payload.get("target_lang") or target_lang or "de").strip().lower() or "de"
+    target_count = max(1, int(payload.get("translation_target_count") or payload.get("sentences") or 7))
     translation_session_id = _normalize_today_translation_session_id(
-        payload.get("translation_session_id") or payload.get("source_session_id")
+        payload.get("translation_session_id") or payload.get("source_session_id") or fallback_translation_session_id
     )
+    if not translation_session_id:
+        translation_session_id = _resolve_legacy_today_translation_session_id(
+            user_id=int(user_id),
+            plan_date=plan_date,
+            target_count=target_count,
+            source_lang=effective_source_lang,
+            target_lang=effective_target_lang,
+        )
     if not translation_session_id:
         return item
 
-    target_count = max(1, int(payload.get("translation_target_count") or payload.get("sentences") or 7))
     completed_count = _count_translation_session_completed_sentences(
         user_id=int(user_id),
         translation_session_id=translation_session_id,
-        source_lang=source_lang,
-        target_lang=target_lang,
+        source_lang=effective_source_lang,
+        target_lang=effective_target_lang,
     )
     progress_percent = min(100.0, (float(completed_count) / float(target_count)) * 100.0) if target_count > 0 else 0.0
     current_status = str(item.get("status") or "todo").strip().lower() or "todo"
@@ -26451,9 +27655,12 @@ def _sync_today_translation_item_progress(
 
     payload_updates = {
         "translation_session_id": translation_session_id,
+        "source_session_id": translation_session_id,
         "translation_target_count": int(target_count),
         "translation_completed_count": int(completed_count),
         "translation_progress_percent": round(progress_percent, 2),
+        "source_lang": effective_source_lang,
+        "target_lang": effective_target_lang,
         "translation_completed_at": datetime.now(timezone.utc).isoformat()
         if desired_status == "done"
         else None,
@@ -26523,6 +27730,7 @@ def _sync_today_plan_translation_progress(
             source_lang=source_lang,
             target_lang=target_lang,
             trigger=trigger,
+            plan_date=plan.get("plan_date"),
         )
         synced_items.append(synced_item or item)
         changed = changed or (synced_item is not None and synced_item != item)
@@ -26582,6 +27790,8 @@ def _sync_today_translation_task_progress_for_session(
         source_lang=source_lang,
         target_lang=target_lang,
         trigger=trigger,
+        plan_date=plan.get("plan_date"),
+        fallback_translation_session_id=normalized_session_id,
     )
 
 
@@ -28594,17 +29804,20 @@ try:
 except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 
-try:
-    threading.Thread(
-        target=_resume_all_active_translation_check_sessions,
-        daemon=True,
-    ).start()
-except Exception as exc:
-    logging.warning("Translation check recovery startup failed: %s", exc)
+if not _imported_by_bot_process:
+    try:
+        threading.Thread(
+            target=_resume_all_active_translation_check_sessions,
+            daemon=True,
+        ).start()
+    except Exception as exc:
+        logging.warning("Translation check recovery startup failed: %s", exc)
 
-_bootstrap_backend_schema_or_raise()
-_start_audio_scheduler()
-_start_skill_resource_domain_autoseed()
+    _bootstrap_backend_schema_or_raise()
+    _start_audio_scheduler()
+    _start_skill_resource_domain_autoseed()
+else:
+    logging.info("Skipping backend runtime side effects during bot import")
 
 
 if __name__ == "__main__":

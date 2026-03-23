@@ -1,0 +1,1361 @@
+{
+  "stage": "stage10",
+  "started_at": "2026-03-23T19:03:21.105304+00:00",
+  "finished_at": "2026-03-23T19:09:22.416686+00:00",
+  "user_count": 10,
+  "cold_count": 3,
+  "request_records": [
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000003,
+      "flow": "start_session",
+      "start_ts": 1774292601.134222,
+      "latency_ms": 8699.455042000409,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000003,
+      "flow": "progressive_fill",
+      "start_ts": 1774292609.833719,
+      "latency_ms": 2904.8507909992622,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000004,
+      "flow": "start_session",
+      "start_ts": 1774292606.138675,
+      "latency_ms": 8846.353375000035,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000003,
+      "flow": "progressive_fill",
+      "start_ts": 1774292613.589958,
+      "latency_ms": 5443.8493750003545,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000004,
+      "flow": "progressive_fill",
+      "start_ts": 1774292614.985065,
+      "latency_ms": 5831.594666000456,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "start_session",
+      "start_ts": 1774292611.138481,
+      "latency_ms": 10087.720165999599,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000003,
+      "flow": "progressive_fill",
+      "start_ts": 1774292619.88504,
+      "latency_ms": 4158.9764589998595,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "start_session",
+      "start_ts": 1774292616.138318,
+      "latency_ms": 13249.076959000377,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000007,
+      "flow": "start_session",
+      "start_ts": 1774292621.1377752,
+      "latency_ms": 11440.57683400024,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "progressive_fill",
+      "start_ts": 1774292621.2262132,
+      "latency_ms": 11447.550957999738,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000003,
+      "flow": "progressive_fill",
+      "start_ts": 1774292624.895405,
+      "latency_ms": 9587.820749999992,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000004,
+      "flow": "progressive_fill",
+      "start_ts": 1774292621.667813,
+      "latency_ms": 14357.635166999899,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "progressive_fill",
+      "start_ts": 1774292629.387407,
+      "latency_ms": 8874.107167000147,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000008,
+      "flow": "start_session",
+      "start_ts": 1774292626.138294,
+      "latency_ms": 16910.492790999342,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000007,
+      "flow": "progressive_fill",
+      "start_ts": 1774292632.578347,
+      "latency_ms": 13813.075041000047,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "start_session",
+      "start_ts": 1774292631.138415,
+      "latency_ms": 15631.57795799998,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "progressive_fill",
+      "start_ts": 1774292633.52512,
+      "latency_ms": 15656.893458999548,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000003,
+      "flow": "progressive_fill",
+      "start_ts": 1774292635.334508,
+      "latency_ms": 14834.625958999823,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000004,
+      "flow": "sentences_ack",
+      "start_ts": 1774292636.02547,
+      "latency_ms": 14510.771917000056,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "progressive_fill",
+      "start_ts": 1774292639.112702,
+      "latency_ms": 13170.559749999484,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "flow": "start_session",
+      "start_ts": 1774292636.138318,
+      "latency_ms": 22467.410332998952,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000011,
+      "flow": "start_session",
+      "start_ts": 1774292641.13844,
+      "latency_ms": 18581.552167000154,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000008,
+      "flow": "progressive_fill",
+      "start_ts": 1774292643.0487602,
+      "latency_ms": 18957.432000000153,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "progressive_fill",
+      "start_ts": 1774292646.76995,
+      "latency_ms": 17149.333374999514,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000007,
+      "flow": "progressive_fill",
+      "start_ts": 1774292647.242719,
+      "latency_ms": 18612.197667001055,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "sentences_ack",
+      "start_ts": 1774292649.181921,
+      "latency_ms": 18484.792875000494,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000003,
+      "flow": "sentences_ack",
+      "start_ts": 1774292650.16918,
+      "latency_ms": 18836.20933400016,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000012,
+      "flow": "start_session",
+      "start_ts": 1774292646.1382332,
+      "latency_ms": 23035.735166999075,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "progressive_fill",
+      "start_ts": 1774292653.1343842,
+      "latency_ms": 18276.12820899958,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "flow": "progressive_fill",
+      "start_ts": 1774292658.605618,
+      "latency_ms": 14004.284250000637,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000011,
+      "flow": "progressive_fill",
+      "start_ts": 1774292659.719934,
+      "latency_ms": 13912.769291999211,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000008,
+      "flow": "sentences_ack",
+      "start_ts": 1774292662.00612,
+      "latency_ms": 11956.621166998957,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "sentences_ack",
+      "start_ts": 1774292663.919162,
+      "latency_ms": 11033.249791000344,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000007,
+      "flow": "sentences_ack",
+      "start_ts": 1774292665.854847,
+      "latency_ms": 9889.12800000071,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "sentences_ack",
+      "start_ts": 1774292671.4104488,
+      "latency_ms": 5667.21645799953,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000012,
+      "flow": "progressive_fill",
+      "start_ts": 1774292669.173853,
+      "latency_ms": 7987.300624999989,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "flow": "sentences_ack",
+      "start_ts": 1774292672.6098409,
+      "latency_ms": 6436.35304199961,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000011,
+      "flow": "progressive_fill",
+      "start_ts": 1774292674.483766,
+      "latency_ms": 6336.068750000777,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000012,
+      "flow": "progressive_fill",
+      "start_ts": 1774292678.0123332,
+      "latency_ms": 4590.153959001327,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000004,
+      "flow": "check_start",
+      "start_ts": 1774292674.398113,
+      "latency_ms": 8870.606499998757,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000011,
+      "flow": "progressive_fill",
+      "start_ts": 1774292681.6708639,
+      "latency_ms": 2721.7042079992098,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000004,
+      "flow": "check_status",
+      "start_ts": 1774292683.2686698,
+      "latency_ms": 2923.617082999044,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000012,
+      "flow": "progressive_fill",
+      "start_ts": 1774292683.453826,
+      "latency_ms": 4528.688082998997,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000011,
+      "flow": "progressive_fill",
+      "start_ts": 1774292685.2439418,
+      "latency_ms": 4777.612000001682,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "check_start",
+      "start_ts": 1774292682.71489,
+      "latency_ms": 10381.760207999832,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000008,
+      "flow": "check_start",
+      "start_ts": 1774292686.240438,
+      "latency_ms": 9888.693790999241,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000003,
+      "flow": "check_start",
+      "start_ts": 1774292687.146573,
+      "latency_ms": 22438.78091699844,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000004,
+      "flow": "check_status",
+      "start_ts": 1774292687.09351,
+      "latency_ms": 23846.80816599939,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000012,
+      "flow": "progressive_fill",
+      "start_ts": 1774292688.833966,
+      "latency_ms": 45004.102999999304,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000007,
+      "flow": "check_start",
+      "start_ts": 1774292689.0497642,
+      "latency_ms": 49247.9407080009,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000011,
+      "flow": "sentences_ack",
+      "start_ts": 1774292690.021626,
+      "latency_ms": 60004.60129199928,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "check_status",
+      "start_ts": 1774292693.096737,
+      "latency_ms": 79427.0943749998,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "check_start",
+      "start_ts": 1774292691.250726,
+      "latency_ms": 85990.73633300031,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "flow": "check_start",
+      "start_ts": 1774292694.79289,
+      "latency_ms": 94348.14754199942,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000012,
+      "flow": "sentences_ack",
+      "start_ts": 1774292733.8378398,
+      "latency_ms": 60006.26391700098,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000008,
+      "flow": "check_status",
+      "start_ts": 1774292696.129211,
+      "latency_ms": 114061.285916001,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "check_start",
+      "start_ts": 1774292695.232995,
+      "latency_ms": 130546.1287500002,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000003,
+      "flow": "check_status",
+      "start_ts": 1774292709.585278,
+      "latency_ms": 120003.77487500009,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000004,
+      "flow": "check_status",
+      "start_ts": 1774292711.841471,
+      "latency_ms": 120002.70904199897,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000007,
+      "flow": "check_status",
+      "start_ts": 1774292738.2972648,
+      "latency_ms": 120004.04600000002,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "check_status",
+      "start_ts": 1774292777.2406662,
+      "latency_ms": 88900.10841600088,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "flow": "check_status",
+      "start_ts": 1774292789.140121,
+      "latency_ms": 84538.73504199873,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "check_status",
+      "start_ts": 1774292773.4243698,
+      "latency_ms": 111122.4163750012,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000008,
+      "flow": "session_completion",
+      "start_ts": 1774292814.744527,
+      "latency_ms": 70881.60608399994,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "check_status",
+      "start_ts": 1774292867.0412748,
+      "latency_ms": 20353.02254099952,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "flow": "check_status",
+      "start_ts": 1774292874.579422,
+      "latency_ms": 14572.459375000108,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000008,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292885.626847,
+      "latency_ms": 13584.436791999906,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000008,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292885.6257012,
+      "latency_ms": 15352.495375000217,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000008,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292885.627854,
+      "latency_ms": 17809.884750000492,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "check_status",
+      "start_ts": 1774292888.295766,
+      "latency_ms": 16813.351709000926,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "check_status",
+      "start_ts": 1774292825.777799,
+      "latency_ms": 79758.63349999963,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "session_completion",
+      "start_ts": 1774292889.264792,
+      "latency_ms": 20927.804458000537,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "check_status",
+      "start_ts": 1774292906.010617,
+      "latency_ms": 6416.277209000327,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "check_status",
+      "start_ts": 1774292906.436981,
+      "latency_ms": 8208.310333000554,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292910.1925938,
+      "latency_ms": 6213.836167000409,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "flow": "session_completion",
+      "start_ts": 1774292892.586269,
+      "latency_ms": 30405.82616699976,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292910.194149,
+      "latency_ms": 15409.152375001213,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292910.1934478,
+      "latency_ms": 16264.9442919992,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "check_status",
+      "start_ts": 1774292913.328419,
+      "latency_ms": 13987.373624999236,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "check_status",
+      "start_ts": 1774292915.546651,
+      "latency_ms": 12684.695457999624,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292922.991953,
+      "latency_ms": 6575.886624999839,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292922.9940648,
+      "latency_ms": 7689.00874999963,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "session_completion",
+      "start_ts": 1774292931.1971462,
+      "latency_ms": 6295.606042000145,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "session_completion",
+      "start_ts": 1774292932.4396071,
+      "latency_ms": 10188.257292000344,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292937.492905,
+      "latency_ms": 7027.804542000013,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292922.993005,
+      "latency_ms": 22142.20995800133,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292937.494174,
+      "latency_ms": 10175.009874999887,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292942.627824,
+      "latency_ms": 7153.9648749985645,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292942.628277,
+      "latency_ms": 9611.840708001182,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292937.493647,
+      "latency_ms": 24309.46395799947,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774292942.628056,
+      "latency_ms": 19787.89387500001,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    }
+  ],
+  "session_results": [
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000011,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 108888.46283300064,
+      "error": ""
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000012,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 147707.02566599994,
+      "error": ""
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000003,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 228456.1362500008,
+      "error": ""
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000004,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 225706.83795899912,
+      "error": ""
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000007,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 237164.96979100065,
+      "error": ""
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000008,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 277302.661875,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "cold",
+      "user_id": 9100000005,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 315323.54212500015,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000010,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 309000.3499579998,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000006,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 345668.72770900046,
+      "error": null
+    },
+    {
+      "stage": "stage10",
+      "cohort": "warm",
+      "user_id": 9100000009,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 331281.3798340003,
+      "error": null
+    }
+  ],
+  "request_summary": {
+    "cold": {
+      "total_requests": 28,
+      "ok_requests": 26,
+      "error_requests": 2,
+      "success_rate": 0.9285714285714286,
+      "error_rate": 0.07142857142857142,
+      "count": 28,
+      "avg": 25768.657325928452,
+      "p50": 14434.203541999977,
+      "p95": 116894.60660854974,
+      "p99": 120003.48710008978
+    },
+    "warm": {
+      "total_requests": 63,
+      "ok_requests": 60,
+      "error_requests": 3,
+      "success_rate": 0.9523809523809523,
+      "error_rate": 0.047619047619047616,
+      "count": 63,
+      "avg": 27433.912939174606,
+      "p50": 14004.284250000637,
+      "p95": 93803.34362939956,
+      "p99": 124010.03744500011
+    },
+    "all": {
+      "total_requests": 91,
+      "ok_requests": 86,
+      "error_requests": 5,
+      "success_rate": 0.945054945054945,
+      "error_rate": 0.054945054945054944,
+      "count": 91,
+      "avg": 26921.526596637315,
+      "p50": 14357.635166999899,
+      "p95": 112591.8511455011,
+      "p99": 121058.25427499997
+    }
+  },
+  "session_summary": {
+    "cold": {
+      "total_sessions": 3,
+      "successful_sessions": 1,
+      "failed_sessions": 2,
+      "timed_out_sessions": 0,
+      "success_rate": 0.3333333333333333,
+      "error_rate": 0.6666666666666666,
+      "avg_session_time_ms": 256495.5054446667,
+      "p95_session_time_ms": 306636.8015375002,
+      "p99_session_time_ms": 313586.1940075002
+    },
+    "warm": {
+      "total_sessions": 7,
+      "successful_sessions": 4,
+      "failed_sessions": 3,
+      "timed_out_sessions": 0,
+      "success_rate": 0.5714285714285714,
+      "error_rate": 0.42857142857142855,
+      "avg_session_time_ms": 251001.93966657165,
+      "p95_session_time_ms": 341352.5233465004,
+      "p99_session_time_ms": 344805.4868365004
+    },
+    "all": {
+      "total_sessions": 10,
+      "successful_sessions": 5,
+      "failed_sessions": 5,
+      "timed_out_sessions": 0,
+      "success_rate": 0.5,
+      "error_rate": 0.5,
+      "avg_session_time_ms": 252650.00940000018,
+      "p95_session_time_ms": 339194.42116525036,
+      "p99_session_time_ms": 344373.86640025047
+    }
+  },
+  "flow_summary": {
+    "cold": {
+      "check_start": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 13897.049208332342,
+        "p50": 10381.760207999832,
+        "p95": 21233.078846098575,
+        "p99": 22197.640502818467
+      },
+      "check_status": {
+        "count": 6,
+        "error_rate": 0.3333333333333333,
+        "avg": 76221.06998599974,
+        "p50": 95274.7553750005,
+        "p95": 120003.5084167498,
+        "p99": 120003.72158335004
+      },
+      "post_finish_refresh": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 12629.31094466694,
+        "p50": 15409.152375001213,
+        "p95": 16179.365100299401,
+        "p99": 16247.82845365924
+      },
+      "progressive_fill": {
+        "count": 9,
+        "error_rate": 0.0,
+        "avg": 9358.199731555438,
+        "p50": 9587.820749999992,
+        "p95": 15327.986458999658,
+        "p99": 15591.11205899957
+      },
+      "sentences_ack": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 17277.258042000238,
+        "p50": 18484.792875000494,
+        "p95": 18801.067688100193,
+        "p99": 18829.181004820166
+      },
+      "session_completion": {
+        "count": 1,
+        "error_rate": 0.0,
+        "avg": 20927.804458000537,
+        "p50": 20927.804458000537,
+        "p95": 20927.804458000537,
+        "p99": 20927.804458000537
+      },
+      "start_session": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 9211.176194333348,
+        "p50": 8846.353375000035,
+        "p95": 9963.583486899643,
+        "p99": 10062.892830179608
+      }
+    },
+    "warm": {
+      "check_start": {
+        "count": 5,
+        "error_rate": 0.0,
+        "avg": 74004.32942480002,
+        "p50": 85990.73633300031,
+        "p95": 123306.53250840004,
+        "p99": 129098.20950168018
+      },
+      "check_status": {
+        "count": 12,
+        "error_rate": 0.08333333333333333,
+        "avg": 48358.19159366671,
+        "p50": 18583.187125000222,
+        "p95": 116735.52795380056,
+        "p99": 119350.34239076012
+      },
+      "post_finish_refresh": {
+        "count": 12,
+        "error_rate": 0.0,
+        "avg": 13434.991673583378,
+        "p50": 11879.723333499896,
+        "p95": 23117.474258000493,
+        "p99": 24071.066017999678
+      },
+      "progressive_fill": {
+        "count": 16,
+        "error_rate": 0.0,
+        "avg": 13294.71983600007,
+        "p50": 13491.817395499766,
+        "p95": 25469.099749999943,
+        "p99": 41097.102349999426
+      },
+      "sentences_ack": {
+        "count": 7,
+        "error_rate": 0.2857142857142857,
+        "avg": 23570.490523857057,
+        "p50": 11033.249791000344,
+        "p95": 60005.76512950047,
+        "p99": 60006.16415950088
+      },
+      "session_completion": {
+        "count": 4,
+        "error_rate": 0.0,
+        "avg": 29442.823896250047,
+        "p50": 20297.04172950005,
+        "p95": 64810.239096449906,
+        "p99": 69667.33268648993
+      },
+      "start_session": {
+        "count": 7,
+        "error_rate": 0.0,
+        "avg": 17330.917458428303,
+        "p50": 16910.492790999342,
+        "p95": 22865.237716799038,
+        "p99": 23001.635676959067
+      }
+    },
+    "all": {
+      "check_start": {
+        "count": 8,
+        "error_rate": 0.0,
+        "avg": 51464.099343624635,
+        "p50": 35843.36081249967,
+        "p95": 117876.83532719991,
+        "p99": 128012.27006544014
+      },
+      "check_status": {
+        "count": 18,
+        "error_rate": 0.16666666666666666,
+        "avg": 57645.81772444438,
+        "p50": 51636.951270499594,
+        "p95": 120003.81554375007,
+        "p99": 120003.99990875003
+      },
+      "post_finish_refresh": {
+        "count": 15,
+        "error_rate": 0.0,
+        "avg": 13273.85552780009,
+        "p50": 13584.436791999906,
+        "p95": 22792.386158000772,
+        "p99": 24006.04839799973
+      },
+      "progressive_fill": {
+        "count": 25,
+        "error_rate": 0.0,
+        "avg": 11877.572598400002,
+        "p50": 11447.550957999738,
+        "p95": 18888.385133400334,
+        "p99": 38752.90195999946
+      },
+      "sentences_ack": {
+        "count": 10,
+        "error_rate": 0.2,
+        "avg": 21682.520779300008,
+        "p50": 13233.696541999507,
+        "p95": 60005.51573575022,
+        "p99": 60006.11428075083
+      },
+      "session_completion": {
+        "count": 5,
+        "error_rate": 0.0,
+        "avg": 27739.82000860014,
+        "p50": 20927.804458000537,
+        "p95": 62786.4501005999,
+        "p99": 69262.57488731993
+      },
+      "start_session": {
+        "count": 10,
+        "error_rate": 0.0,
+        "avg": 14894.995079199818,
+        "p50": 14440.327458500178,
+        "p95": 22779.98899169902,
+        "p99": 22984.585931939066
+      }
+    }
+  }
+}

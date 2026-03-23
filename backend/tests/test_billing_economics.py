@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from psycopg2.extras import Json
 
-from backend.database import _get_product_active_users_count, get_global_billing_summary, log_billing_event
+from backend.database import _billing_period_bounds, _get_feature_usage_today, _get_product_active_users_count, _prorate_fixed_cost_amount, enforce_feature_limit, get_global_billing_summary, log_billing_event
 
 
 class _DummyCursor:
@@ -62,6 +62,24 @@ def _db_context(cursor):
 
 
 class BillingEconomicsTests(unittest.TestCase):
+    def test_billing_period_bounds_day_uses_single_day(self):
+        start, end = _billing_period_bounds("day", date(2026, 3, 21))
+        self.assertEqual(start, date(2026, 3, 21))
+        self.assertEqual(end, date(2026, 3, 21))
+
+    def test_prorate_fixed_cost_amount_for_single_day_inside_month(self):
+        prorated, ratio, overlap_days, period_days = _prorate_fixed_cost_amount(
+            amount=31.0,
+            item_start=date(2026, 3, 1),
+            item_end=date(2026, 3, 31),
+            range_start=date(2026, 3, 21),
+            range_end=date(2026, 3, 21),
+        )
+        self.assertEqual(prorated, 1.0)
+        self.assertAlmostEqual(ratio, 1 / 31)
+        self.assertEqual(overlap_days, 1)
+        self.assertEqual(period_days, 31)
+
     def test_log_billing_event_wraps_metadata_in_json_payload(self):
         cursor = _DummyCursor([
             (
@@ -103,7 +121,7 @@ class BillingEconomicsTests(unittest.TestCase):
     def test_global_summary_all_providers_tolerates_short_rows(self):
         cursor = _DummyCursor([
             (0, 0, 0, 0, 0, 0, 0),
-            (0,),
+            [],
             [
                 ("google_tts",),
                 ("google_translate", 1.25),
@@ -149,14 +167,12 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(summary["breakdown"]["by_provider"][1]["fixed_cost"], 0.0)
         self.assertEqual(summary["breakdown"]["by_action_type"][0]["events"], 0)
         self.assertEqual(summary["breakdown"]["by_model"][0]["tokens_in"], 0.0)
-        self.assertEqual(summary["breakdown"]["fixed_costs"][0]["amount"], 0.0)
+        self.assertEqual(summary["breakdown"]["fixed_costs"], [])
 
     def test_global_summary_tolerates_short_totals_row(self):
         cursor = _DummyCursor([
             (None, None),
-            (0,),
-            (0,),
-            [],
+            (None, None),
             [],
             [],
             [],
@@ -178,6 +194,10 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(summary["totals"]["variable_cost_total"], 0.0)
         self.assertEqual(summary["totals"]["events_count"], 0)
         self.assertEqual(summary["totals"]["unpriced_events"], 0)
+        self.assertEqual(summary["totals"]["avg_events_per_active_user"], 0.0)
+        self.assertEqual(summary["totals"]["avg_variable_cost_per_active_user"], 0.0)
+        self.assertEqual(summary["totals"]["avg_fixed_cost_per_active_user"], 0.0)
+        self.assertEqual(summary["totals"]["avg_cost_per_active_user"], 0.0)
 
     def test_product_active_users_count_treats_mymemory_as_translation_provider(self):
         cursor = _DummyCursor([
@@ -212,6 +232,52 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(len(cursor.executed), 1)
         _, params = cursor.executed[0]
         self.assertEqual(len(params), 12)
+
+    def test_feature_usage_today_counts_distinct_translation_sets(self):
+        cursor = _DummyCursor([
+            (1,),
+        ])
+
+        with patch("backend.database.get_db_connection_context", _db_context(cursor)):
+            usage = _get_feature_usage_today(
+                user_id=77,
+                feature_code="translation_daily_sets",
+                tz="Europe/Vienna",
+            )
+
+        self.assertEqual(usage, 1.0)
+        self.assertEqual(len(cursor.executed), 1)
+        query, params = cursor.executed[0]
+        self.assertIn("COUNT(DISTINCT ds.session_id)", query)
+        self.assertEqual(params[0], 77)
+
+    def test_enforce_feature_limit_blocks_second_free_translation_set(self):
+        with patch("backend.database.resolve_entitlement", return_value={
+            "plan_code": "free",
+            "effective_mode": "free",
+            "reset_at": "2026-03-23T00:00:00+01:00",
+        }):
+            with patch("backend.database.get_plan_limit", return_value={
+                "plan_code": "free",
+                "feature_code": "translation_daily_sets",
+                "limit_value": 1,
+                "limit_unit": "count",
+                "period": "day",
+                "is_active": True,
+            }):
+                with patch("backend.database._get_feature_usage_today", return_value=1.0):
+                    result = enforce_feature_limit(
+                        user_id=77,
+                        feature_code="translation_daily_sets",
+                        requested_units=1.0,
+                        tz="Europe/Vienna",
+                    )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["error"], "feature_limit_exceeded")
+        self.assertEqual(result["feature"], "translation_daily_sets")
+        self.assertEqual(result["limit"], 1)
+        self.assertEqual(result["used"], 1)
 
 
 if __name__ == "__main__":

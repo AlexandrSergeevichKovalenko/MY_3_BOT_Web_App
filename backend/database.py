@@ -8,6 +8,7 @@ import os
 import hashlib
 import atexit
 import math
+import logging
 from contextlib import contextmanager
 import json
 import random
@@ -41,8 +42,12 @@ DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "12"))
 DB_CONNECT_RETRIES = max(1, int(os.getenv("DB_CONNECT_RETRIES", "3")))
 DB_CONNECT_RETRY_DELAY_SECONDS = float(os.getenv("DB_CONNECT_RETRY_DELAY_SECONDS", "0.6"))
 DB_POOL_ENABLED = str(os.getenv("DB_POOL_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
-DB_POOL_MINCONN = max(1, int(os.getenv("DB_POOL_MINCONN", "1")))
-DB_POOL_MAXCONN = max(DB_POOL_MINCONN, int(os.getenv("DB_POOL_MAXCONN", "20")))
+DB_POOL_MINCONN = max(1, int(os.getenv("DB_POOL_MINCONN", "4")))
+DB_POOL_MAXCONN = max(DB_POOL_MINCONN, int(os.getenv("DB_POOL_MAXCONN", "48")))
+DB_POOL_ACQUIRE_TIMEOUT_MS = max(0, int(os.getenv("DB_POOL_ACQUIRE_TIMEOUT_MS", "1500")))
+DB_POOL_ACQUIRE_RETRY_MS = max(10, int(os.getenv("DB_POOL_ACQUIRE_RETRY_MS", "50")))
+DB_POOL_LOG_SLOW_ACQUIRE_MS = max(0, int(os.getenv("DB_POOL_LOG_SLOW_ACQUIRE_MS", "100")))
+DB_POOL_ALLOW_DIRECT_FALLBACK = str(os.getenv("DB_POOL_ALLOW_DIRECT_FALLBACK", "0")).strip().lower() in {"1", "true", "yes", "on"}
 READER_SESSION_AUTOCLOSE_MAX_SECONDS = max(
     300,
     int(os.getenv("READER_SESSION_AUTOCLOSE_MAX_SECONDS", "10800")),
@@ -52,6 +57,7 @@ _ENSURE_WEBAPP_TABLES_MUTEX = threading.Lock()
 _ENSURE_WEBAPP_TABLES_DONE = False
 _DB_POOL_LOCK = threading.Lock()
 _DB_POOL: ThreadedConnectionPool | None = None
+_DB_ACQUIRE_LOCAL = threading.local()
 PHASE1_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase1_schema"
 PHASE2_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase2_schema"
 SKILL_MASTERY_GROUPS_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_mastery_groups_schema"
@@ -325,13 +331,13 @@ TRIAL_POLICY_DAYS = max(0, _env_int("TRIAL_DAYS", 3))
 TRIAL_POLICY_TZ = "Europe/Vienna"
 GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS", 1_000_000))
 GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS", 500_000))
-DEEPL_MONTHLY_BASE_LIMIT_CHARS = max(0, _env_int("DEEPL_MONTHLY_BASE_LIMIT_CHARS", 0))
-AZURE_TRANSLATOR_MONTHLY_BASE_LIMIT_CHARS = max(0, _env_int("AZURE_TRANSLATOR_MONTHLY_BASE_LIMIT_CHARS", 0))
+DEEPL_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("DEEPL_MONTHLY_BASE_LIMIT_CHARS", 500_000))
+AZURE_TRANSLATOR_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("AZURE_TRANSLATOR_MONTHLY_BASE_LIMIT_CHARS", 2_000_000))
 PERPLEXITY_MONTHLY_BASE_LIMIT_REQUESTS = max(0, _env_int("PERPLEXITY_MONTHLY_BASE_LIMIT_REQUESTS", 0))
-CLOUDFLARE_R2_CLASS_A_MONTHLY_BASE_LIMIT_OPS = max(0, _env_int("CLOUDFLARE_R2_CLASS_A_MONTHLY_BASE_LIMIT_OPS", 0))
-CLOUDFLARE_R2_CLASS_B_MONTHLY_BASE_LIMIT_OPS = max(0, _env_int("CLOUDFLARE_R2_CLASS_B_MONTHLY_BASE_LIMIT_OPS", 0))
+CLOUDFLARE_R2_CLASS_A_MONTHLY_BASE_LIMIT_OPS = max(0, _env_int("CLOUDFLARE_R2_CLASS_A_MONTHLY_BASE_LIMIT_OPS", 1_000_000))
+CLOUDFLARE_R2_CLASS_B_MONTHLY_BASE_LIMIT_OPS = max(0, _env_int("CLOUDFLARE_R2_CLASS_B_MONTHLY_BASE_LIMIT_OPS", 10_000_000))
 CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_MB = max(0, _env_int("CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_MB", 0))
-CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB = max(0, _env_int("CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB", 0))
+CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB = max(0, _env_int("CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB", 10))
 STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS = max(0, _env_int("STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS", 0))
 READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS = max(1, _env_int("READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS", 10_000))
 
@@ -1115,6 +1121,56 @@ def get_db_connection_context(): #
             conn.close()
 
 
+@contextmanager
+def db_acquire_scope(label: str):
+    previous_label = getattr(_DB_ACQUIRE_LOCAL, "label", None)
+    previous_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    scoped_events: list[dict[str, Any]] = []
+    _DB_ACQUIRE_LOCAL.label = str(label or "").strip() or "unknown"
+    _DB_ACQUIRE_LOCAL.events = scoped_events
+    try:
+        yield scoped_events
+    finally:
+        _DB_ACQUIRE_LOCAL.label = previous_label
+        _DB_ACQUIRE_LOCAL.events = previous_events
+
+
+def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str, Any]:
+    normalized_events = [item for item in (events or []) if isinstance(item, dict)]
+    if not normalized_events:
+        return {
+            "db_pool_acquire_count": 0,
+            "db_pool_acquire_wait_ms_total": 0,
+            "db_pool_acquire_wait_ms_max": 0,
+            "db_pool_slow_acquire_count": 0,
+            "db_pool_exhausted_count": 0,
+            "db_pool_direct_fallback_count": 0,
+            "db_pool_used_count_max": None,
+            "db_pool_available_count_min": None,
+        }
+    wait_values = [int(item.get("wait_ms") or 0) for item in normalized_events]
+    used_values = [
+        int(item.get("pool_used_count"))
+        for item in normalized_events
+        if item.get("pool_used_count") is not None
+    ]
+    available_values = [
+        int(item.get("pool_available_count"))
+        for item in normalized_events
+        if item.get("pool_available_count") is not None
+    ]
+    return {
+        "db_pool_acquire_count": len(normalized_events),
+        "db_pool_acquire_wait_ms_total": sum(wait_values),
+        "db_pool_acquire_wait_ms_max": max(wait_values) if wait_values else 0,
+        "db_pool_slow_acquire_count": sum(1 for item in normalized_events if bool(item.get("slow_acquire"))),
+        "db_pool_exhausted_count": sum(1 for item in normalized_events if bool(item.get("pool_exhausted"))),
+        "db_pool_direct_fallback_count": sum(1 for item in normalized_events if bool(item.get("direct_fallback"))),
+        "db_pool_used_count_max": max(used_values) if used_values else None,
+        "db_pool_available_count_min": min(available_values) if available_values else None,
+    }
+
+
 def _new_raw_db_connection():
     conn = None
     last_error = None
@@ -1170,6 +1226,57 @@ def _get_or_init_db_pool() -> ThreadedConnectionPool | None:
         if _DB_POOL is None and last_error is not None:
             raise last_error
         return _DB_POOL
+
+
+def _capture_pool_state(pool: ThreadedConnectionPool | None) -> tuple[int | None, int | None]:
+    if pool is None:
+        return None, None
+    try:
+        used_connections = len(getattr(pool, "_used", {}) or {})
+    except Exception:
+        used_connections = None
+    try:
+        available_connections = len(getattr(pool, "_pool", []) or [])
+    except Exception:
+        available_connections = None
+    return used_connections, available_connections
+
+
+def _record_db_acquire_event(
+    *,
+    context_label: str,
+    wait_ms: int,
+    used_pool: bool,
+    pool_exhausted: bool,
+    direct_fallback: bool,
+    pool: ThreadedConnectionPool | None = None,
+) -> None:
+    slow_acquire = wait_ms >= DB_POOL_LOG_SLOW_ACQUIRE_MS if DB_POOL_LOG_SLOW_ACQUIRE_MS > 0 else False
+    pool_used_count, pool_available_count = _capture_pool_state(pool)
+    event = {
+        "context": context_label,
+        "wait_ms": int(wait_ms),
+        "used_pool": bool(used_pool),
+        "pool_exhausted": bool(pool_exhausted),
+        "direct_fallback": bool(direct_fallback),
+        "slow_acquire": bool(slow_acquire),
+        "pool_used_count": pool_used_count,
+        "pool_available_count": pool_available_count,
+    }
+    scoped_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    if isinstance(scoped_events, list):
+        scoped_events.append(event)
+    if bool(pool_exhausted) or bool(direct_fallback) or bool(slow_acquire):
+        logging.warning(
+            "db acquire: context=%s wait_ms=%s used_pool=%s pool_exhausted=%s direct_fallback=%s pool_used=%s pool_available=%s",
+            context_label,
+            int(wait_ms),
+            bool(used_pool),
+            bool(pool_exhausted),
+            bool(direct_fallback),
+            pool_used_count,
+            pool_available_count,
+        )
 
 
 class _PooledConnectionProxy:
@@ -1231,14 +1338,54 @@ class _DirectConnectionProxy:
 
 def get_db_connection():
     pool = _get_or_init_db_pool()
+    context_label = str(getattr(_DB_ACQUIRE_LOCAL, "label", "") or "unspecified").strip() or "unspecified"
     if pool is None:
-        return _DirectConnectionProxy(_new_raw_db_connection())
-    try:
-        conn = pool.getconn()
-    except PoolError:
-        # Fallback keeps app working even if pool is temporarily exhausted.
-        return _DirectConnectionProxy(_new_raw_db_connection())
-    return _PooledConnectionProxy(conn, pool)
+        started_at = time.perf_counter()
+        conn = _new_raw_db_connection()
+        _record_db_acquire_event(
+            context_label=context_label,
+            wait_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+            used_pool=False,
+            pool_exhausted=False,
+            direct_fallback=True,
+            pool=None,
+        )
+        return _DirectConnectionProxy(conn)
+    deadline = time.perf_counter() + (DB_POOL_ACQUIRE_TIMEOUT_MS / 1000.0)
+    pool_exhausted = False
+    acquire_started_at = time.perf_counter()
+    while True:
+        try:
+            conn = pool.getconn()
+            _record_db_acquire_event(
+                context_label=context_label,
+                wait_ms=max(0, int((time.perf_counter() - acquire_started_at) * 1000)),
+                used_pool=True,
+                pool_exhausted=pool_exhausted,
+                direct_fallback=False,
+                pool=pool,
+            )
+            return _PooledConnectionProxy(conn, pool)
+        except PoolError:
+            pool_exhausted = True
+            if time.perf_counter() >= deadline:
+                break
+            time.sleep(DB_POOL_ACQUIRE_RETRY_MS / 1000.0)
+    if DB_POOL_ALLOW_DIRECT_FALLBACK:
+        conn = _new_raw_db_connection()
+        wait_ms = max(0, int((time.perf_counter() - acquire_started_at) * 1000))
+        _record_db_acquire_event(
+            context_label=context_label,
+            wait_ms=wait_ms,
+            used_pool=False,
+            pool_exhausted=True,
+            direct_fallback=True,
+            pool=pool,
+        )
+        return _DirectConnectionProxy(conn)
+    raise RuntimeError(
+        f"DB pool exhausted for context={context_label} after {max(0, int((time.perf_counter() - acquire_started_at) * 1000))}ms"
+    )
 
 
 def _close_db_pool():
@@ -1478,6 +1625,21 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_user_language_profile_updated
                 ON bt_3_user_language_profile (updated_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_user_progress_resets (
+                    user_id BIGINT NOT NULL,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    reset_date DATE NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, source_lang, target_lang)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_user_progress_resets_updated
+                ON bt_3_user_progress_resets (updated_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_scope_state (
@@ -1758,9 +1920,40 @@ def ensure_webapp_tables() -> None:
                     last_imported_count INT NOT NULL DEFAULT 0,
                     decided_at TIMESTAMPTZ,
                     last_imported_at TIMESTAMPTZ,
+                    import_status TEXT NOT NULL DEFAULT 'idle',
+                    active_job_id TEXT,
+                    last_error TEXT,
+                    import_started_at TIMESTAMPTZ,
+                    import_finished_at TIMESTAMPTZ,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    CHECK (decision_status IN ('pending', 'accepted', 'declined'))
+                    CHECK (decision_status IN ('pending', 'accepted', 'declined')),
+                    CHECK (import_status IN ('idle', 'running', 'done', 'failed'))
                 );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_starter_dictionary_state
+                ADD COLUMN IF NOT EXISTS import_status TEXT NOT NULL DEFAULT 'idle';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_starter_dictionary_state
+                ADD COLUMN IF NOT EXISTS active_job_id TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_starter_dictionary_state
+                ADD COLUMN IF NOT EXISTS last_error TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_starter_dictionary_state
+                ADD COLUMN IF NOT EXISTS import_started_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_starter_dictionary_state
+                ADD COLUMN IF NOT EXISTS import_finished_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                UPDATE bt_3_starter_dictionary_state
+                SET import_status = 'idle'
+                WHERE import_status IS NULL OR import_status = '';
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_starter_dictionary_state_updated
@@ -2538,8 +2731,17 @@ def ensure_webapp_tables() -> None:
                     IF to_regclass('public.bt_3_daily_sentences') IS NOT NULL THEN
                         ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS source_lang TEXT;
                         ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS target_lang TEXT;
+                        ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS shown_to_user BOOLEAN;
+                        ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS shown_to_user_at TIMESTAMPTZ;
+                        UPDATE bt_3_daily_sentences
+                        SET shown_to_user = FALSE
+                        WHERE shown_to_user IS NULL;
+                        ALTER TABLE bt_3_daily_sentences ALTER COLUMN shown_to_user SET DEFAULT FALSE;
+                        ALTER TABLE bt_3_daily_sentences ALTER COLUMN shown_to_user SET NOT NULL;
                         CREATE INDEX IF NOT EXISTS idx_bt_3_daily_sentences_user_date_lang
                         ON bt_3_daily_sentences (user_id, date, source_lang, target_lang);
+                        CREATE INDEX IF NOT EXISTS idx_bt_3_daily_sentences_user_session_shown
+                        ON bt_3_daily_sentences (user_id, session_id, shown_to_user, unique_id);
                     END IF;
                 END $$;
                 """
@@ -3413,6 +3615,129 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_provider_budget_controls_period
                 ON bt_3_provider_budget_controls (period_month DESC, provider);
             """)
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM bt_3_schema_migrations
+                        WHERE migration_key = '2026_03_21_cloudflare_r2_free_tier_correction'
+                    ) THEN
+                        UPDATE bt_3_provider_budget_controls
+                        SET base_limit_units = 1000000,
+                            updated_at = NOW(),
+                            metadata = jsonb_set(
+                                COALESCE(metadata, '{}'::jsonb),
+                                '{free_tier_corrected_2026_03_21}',
+                                'true'::jsonb,
+                                true
+                            )
+                        WHERE provider = 'cloudflare_r2_class_a'
+                          AND base_limit_units = 2000000
+                          AND extra_limit_units = 0;
+
+                        UPDATE bt_3_provider_budget_controls
+                        SET base_limit_units = 10000000,
+                            updated_at = NOW(),
+                            metadata = jsonb_set(
+                                COALESCE(metadata, '{}'::jsonb),
+                                '{free_tier_corrected_2026_03_21}',
+                                'true'::jsonb,
+                                true
+                            )
+                        WHERE provider = 'cloudflare_r2_class_b'
+                          AND base_limit_units = 20000000
+                          AND extra_limit_units = 0;
+
+                        UPDATE bt_3_provider_budget_controls
+                        SET base_limit_units = 10240,
+                            updated_at = NOW(),
+                            metadata = jsonb_set(
+                                COALESCE(metadata, '{}'::jsonb),
+                                '{free_tier_corrected_2026_03_21}',
+                                'true'::jsonb,
+                                true
+                            )
+                        WHERE provider = 'cloudflare_r2_storage'
+                          AND base_limit_units = 5120
+                          AND extra_limit_units = 0;
+
+                        INSERT INTO bt_3_schema_migrations (migration_key)
+                        VALUES ('2026_03_21_cloudflare_r2_free_tier_correction')
+                        ON CONFLICT (migration_key) DO NOTHING;
+                    END IF;
+                END $$;
+                """
+            )
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM bt_3_schema_migrations
+                        WHERE migration_key = '2026_03_22_provider_budget_limit_correction'
+                    ) THEN
+                        UPDATE bt_3_provider_budget_controls
+                        SET base_limit_units = 500000,
+                            updated_at = NOW(),
+                            metadata = jsonb_set(
+                                COALESCE(metadata, '{}'::jsonb),
+                                '{free_tier_corrected_2026_03_22}',
+                                'true'::jsonb,
+                                true
+                            )
+                        WHERE provider = 'deepl_free'
+                          AND base_limit_units IN (0, 1000000, 5000000)
+                          AND extra_limit_units = 0;
+
+                        UPDATE bt_3_provider_budget_controls
+                        SET base_limit_units = 2000000,
+                            updated_at = NOW(),
+                            metadata = jsonb_set(
+                                COALESCE(metadata, '{}'::jsonb),
+                                '{free_tier_corrected_2026_03_22}',
+                                'true'::jsonb,
+                                true
+                            )
+                        WHERE provider = 'azure_translator'
+                          AND base_limit_units IN (0, 1000000)
+                          AND extra_limit_units = 0;
+
+                        UPDATE bt_3_provider_budget_controls
+                        SET base_limit_units = 1000000,
+                            updated_at = NOW(),
+                            metadata = jsonb_set(
+                                COALESCE(metadata, '{}'::jsonb),
+                                '{free_tier_corrected_2026_03_22}',
+                                'true'::jsonb,
+                                true
+                            )
+                        WHERE provider = 'cloudflare_r2_class_a'
+                          AND base_limit_units = 2000000
+                          AND extra_limit_units = 0;
+
+                        UPDATE bt_3_provider_budget_controls
+                        SET base_limit_units = 10000000,
+                            updated_at = NOW(),
+                            metadata = jsonb_set(
+                                COALESCE(metadata, '{}'::jsonb),
+                                '{free_tier_corrected_2026_03_22}',
+                                'true'::jsonb,
+                                true
+                            )
+                        WHERE provider = 'cloudflare_r2_class_b'
+                          AND base_limit_units = 20000000
+                          AND extra_limit_units = 0;
+
+                        INSERT INTO bt_3_schema_migrations (migration_key)
+                        VALUES ('2026_03_22_provider_budget_limit_correction')
+                        ON CONFLICT (migration_key) DO NOTHING;
+                    END IF;
+                END $$;
+                """
+            )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS plans (
                     plan_code TEXT PRIMARY KEY,
@@ -3568,7 +3893,18 @@ def ensure_webapp_tables() -> None:
             """)
             free_feel_word_daily = _env_decimal("FREE_FEEL_WORD_DAILY_LIMIT", "3")
             free_skill_training_daily = _env_decimal("FREE_SKILL_TRAINING_DAILY_LIMIT", "1")
+            free_translation_daily_sets = _env_decimal("FREE_TRANSLATION_DAILY_SETS_LIMIT", "1")
             plan_limit_seed_rows: list[tuple] = []
+            if free_translation_daily_sets is not None and free_translation_daily_sets >= 0:
+                plan_limit_seed_rows.append(
+                    (
+                        "free",
+                        "translation_daily_sets",
+                        free_translation_daily_sets,
+                        "count",
+                        "day",
+                    )
+                )
             if free_feel_word_daily is not None and free_feel_word_daily >= 0:
                 plan_limit_seed_rows.append(
                     (
@@ -4106,6 +4442,147 @@ def _compute_skill_state_v2_mastery(net_evidence_recent: float, net_evidence_lif
         * math.tanh(float(net_evidence_lifetime or 0.0) / SKILL_STATE_V2_MASTERY_LIFETIME_SPREAD)
     )
     return max(5.0, min(99.0, float(mastery)))
+
+
+def _get_skill_state_v2_snapshot_since_date(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    reset_date: date | None,
+) -> dict[str, dict[str, Any]]:
+    if reset_date is None:
+        return {}
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    start_dt = datetime.combine(reset_date, dt_time.min, tzinfo=timezone.utc)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    skill_id,
+                    created_at,
+                    is_tested,
+                    per_skill_outcome,
+                    shadow_delta_signal
+                FROM bt_3_skill_events_v2
+                WHERE user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                  AND created_at >= %s
+                ORDER BY skill_id ASC, created_at ASC, id ASC;
+                """,
+                (int(user_id), normalized_source, normalized_target, start_dt),
+            )
+            rows = cursor.fetchall() or []
+
+    state_map: dict[str, dict[str, Any]] = {}
+    tau_seconds = SKILL_STATE_V2_RECENT_TAU_DAYS * 24.0 * 60.0 * 60.0
+    for row in rows:
+        skill_id = str(row[0] or "").strip()
+        if not skill_id:
+            continue
+        event_created_at = row[1] or start_dt
+        is_tested = bool(row[2])
+        per_skill_outcome = row[3]
+        shadow_delta_signal = float(row[4] or 0.0)
+        current = state_map.setdefault(
+            skill_id,
+            {
+                "mastery": 50.0,
+                "confidence": 0.0,
+                "net_evidence_recent": 0.0,
+                "net_evidence_lifetime": 0.0,
+                "tested_events": 0,
+                "total_events": 0,
+                "last_practiced_at": None,
+                "last_event_at": None,
+            },
+        )
+        last_event_at = current.get("last_event_at")
+        if isinstance(last_event_at, datetime):
+            delta_seconds = max(0.0, float((event_created_at - last_event_at).total_seconds()))
+            if tau_seconds > 0:
+                current["net_evidence_recent"] *= math.exp(-delta_seconds / tau_seconds)
+        current["net_evidence_recent"] += shadow_delta_signal
+        current["net_evidence_lifetime"] += shadow_delta_signal
+        current["total_events"] = int(current.get("total_events") or 0) + 1
+        if is_tested:
+            current["tested_events"] = int(current.get("tested_events") or 0) + 1
+        current["confidence"] = _compute_skill_state_v2_confidence(int(current.get("tested_events") or 0))
+        current["mastery"] = _compute_skill_state_v2_mastery(
+            float(current.get("net_evidence_recent") or 0.0),
+            float(current.get("net_evidence_lifetime") or 0.0),
+        )
+        current["last_event_at"] = event_created_at
+        current["last_practiced_at"] = event_created_at
+        current["outcome_bucket"] = _skill_state_v2_classify_outcome(per_skill_outcome)
+
+    for item in state_map.values():
+        item.pop("last_event_at", None)
+        last_practiced_at = item.get("last_practiced_at")
+        if isinstance(last_practiced_at, datetime):
+            item["last_practiced_at"] = last_practiced_at.isoformat()
+        else:
+            item["last_practiced_at"] = None
+    return state_map
+
+
+def _list_prorated_weekly_goals(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    start_date: date,
+    end_date: date,
+) -> dict[str, int]:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    totals = {
+        "translations_goal": 0.0,
+        "learned_words_goal": 0.0,
+        "agent_minutes_goal": 0.0,
+        "reading_minutes_goal": 0.0,
+    }
+    if end_date < start_date:
+        return {key: 0 for key in totals}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    week_start,
+                    translations_goal,
+                    learned_words_goal,
+                    agent_minutes_goal,
+                    reading_minutes_goal
+                FROM bt_3_weekly_goals
+                WHERE user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                  AND week_start <= %s
+                  AND (week_start + INTERVAL '6 days')::date >= %s;
+                """,
+                (int(user_id), normalized_source, normalized_target, end_date, start_date),
+            )
+            rows = cursor.fetchall() or []
+    for row in rows:
+        week_start = row[0]
+        if not isinstance(week_start, date):
+            continue
+        week_end = week_start + timedelta(days=6)
+        overlap_start = max(start_date, week_start)
+        overlap_end = min(end_date, week_end)
+        if overlap_end < overlap_start:
+            continue
+        overlap_days = (overlap_end - overlap_start).days + 1
+        ratio = max(0.0, min(1.0, overlap_days / 7.0))
+        totals["translations_goal"] += float(row[1] or 0) * ratio
+        totals["learned_words_goal"] += float(row[2] or 0) * ratio
+        totals["agent_minutes_goal"] += float(row[3] or 0) * ratio
+        totals["reading_minutes_goal"] += float(row[4] or 0) * ratio
+    return {key: max(0, int(round(value))) for key, value in totals.items()}
 
 
 def claim_skill_state_v2_dirty_keys(*, limit: int, lease_owner: str, lease_seconds: int) -> list[dict]:
@@ -5453,6 +5930,129 @@ def upsert_user_language_profile(user_id: int, learning_language: str, native_la
         "updated_at": row[2].isoformat() if row[2] else None,
         "has_profile": True,
     }
+
+
+def get_user_progress_reset(
+    user_id: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT reset_date, created_at, updated_at
+                FROM bt_3_user_progress_resets
+                WHERE user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                LIMIT 1;
+                """,
+                (int(user_id), normalized_source, normalized_target),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return {
+            "user_id": int(user_id),
+            "source_lang": normalized_source,
+            "target_lang": normalized_target,
+            "has_reset": False,
+            "reset_date": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+    return {
+        "user_id": int(user_id),
+        "source_lang": normalized_source,
+        "target_lang": normalized_target,
+        "has_reset": True,
+        "reset_date": row[0].isoformat() if row[0] else None,
+        "created_at": row[1].isoformat() if row[1] else None,
+        "updated_at": row[2].isoformat() if row[2] else None,
+    }
+
+
+def upsert_user_progress_reset(
+    user_id: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+    reset_date: date,
+) -> dict:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    if not isinstance(reset_date, date):
+        raise ValueError("reset_date must be a date")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_user_progress_resets (
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    reset_date,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (user_id, source_lang, target_lang) DO UPDATE
+                SET reset_date = EXCLUDED.reset_date,
+                    updated_at = NOW()
+                RETURNING reset_date, created_at, updated_at;
+                """,
+                (int(user_id), normalized_source, normalized_target, reset_date),
+            )
+            row = cursor.fetchone()
+    return {
+        "user_id": int(user_id),
+        "source_lang": normalized_source,
+        "target_lang": normalized_target,
+        "has_reset": True,
+        "reset_date": row[0].isoformat() if row and row[0] else reset_date.isoformat(),
+        "created_at": row[1].isoformat() if row and row[1] else None,
+        "updated_at": row[2].isoformat() if row and row[2] else None,
+    }
+
+
+def get_user_progress_reset_date(
+    user_id: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> date | None:
+    reset = get_user_progress_reset(
+        user_id=user_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    raw_reset_date = reset.get("reset_date")
+    if not raw_reset_date:
+        return None
+    try:
+        return date.fromisoformat(str(raw_reset_date))
+    except Exception:
+        return None
+
+
+def _resolve_progress_window_start(
+    user_id: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+    start_date: date,
+) -> date:
+    reset_date = get_user_progress_reset_date(
+        user_id=user_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if reset_date is None:
+        return start_date
+    return max(start_date, reset_date)
 
 
 def _normalize_webapp_scope_kind(value: str | None) -> str:
@@ -6971,6 +7571,11 @@ def _map_starter_dictionary_state_row(row, *, user_id: int) -> dict:
             "last_imported_count": 0,
             "decided_at": None,
             "last_imported_at": None,
+            "import_status": "idle",
+            "active_job_id": None,
+            "last_error": None,
+            "import_started_at": None,
+            "import_finished_at": None,
             "updated_at": None,
         }
     return {
@@ -6983,7 +7588,12 @@ def _map_starter_dictionary_state_row(row, *, user_id: int) -> dict:
         "last_imported_count": max(0, int(row[5] or 0)),
         "decided_at": row[6].isoformat() if row[6] else None,
         "last_imported_at": row[7].isoformat() if row[7] else None,
-        "updated_at": row[8].isoformat() if row[8] else None,
+        "import_status": str(row[8] or "idle").strip().lower() or "idle",
+        "active_job_id": str(row[9] or "").strip() or None,
+        "last_error": str(row[10] or "").strip() or None,
+        "import_started_at": row[11].isoformat() if row[11] else None,
+        "import_finished_at": row[12].isoformat() if row[12] else None,
+        "updated_at": row[13].isoformat() if row[13] else None,
     }
 
 
@@ -7000,6 +7610,11 @@ def get_starter_dictionary_state(user_id: int, cursor=None) -> dict:
                 last_imported_count,
                 decided_at,
                 last_imported_at,
+                import_status,
+                active_job_id,
+                last_error,
+                import_started_at,
+                import_finished_at,
                 updated_at
             FROM bt_3_starter_dictionary_state
             WHERE user_id = %s
@@ -7028,10 +7643,18 @@ def upsert_starter_dictionary_state(
     last_imported_count: int = 0,
     decided_at: datetime | None = None,
     last_imported_at: datetime | None = None,
+    import_status: str = "idle",
+    active_job_id: str | None = None,
+    last_error: str | None = None,
+    import_started_at: datetime | None = None,
+    import_finished_at: datetime | None = None,
 ) -> dict:
     normalized_decision = str(decision_status or "").strip().lower() or "pending"
     if normalized_decision not in {"pending", "accepted", "declined"}:
         raise ValueError("Invalid starter dictionary decision status")
+    normalized_import_status = str(import_status or "idle").strip().lower() or "idle"
+    if normalized_import_status not in {"idle", "running", "done", "failed"}:
+        raise ValueError("Invalid starter dictionary import status")
     normalized_source = _normalize_lang_code(source_lang) or None
     normalized_target = _normalize_lang_code(target_lang) or None
     imported_count_value = max(0, int(last_imported_count or 0))
@@ -7049,9 +7672,14 @@ def upsert_starter_dictionary_state(
                     last_imported_count,
                     decided_at,
                     last_imported_at,
+                    import_status,
+                    active_job_id,
+                    last_error,
+                    import_started_at,
+                    import_finished_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (user_id) DO UPDATE
                 SET
                     decision_status = EXCLUDED.decision_status,
@@ -7062,6 +7690,11 @@ def upsert_starter_dictionary_state(
                     last_imported_count = EXCLUDED.last_imported_count,
                     decided_at = EXCLUDED.decided_at,
                     last_imported_at = EXCLUDED.last_imported_at,
+                    import_status = EXCLUDED.import_status,
+                    active_job_id = EXCLUDED.active_job_id,
+                    last_error = EXCLUDED.last_error,
+                    import_started_at = EXCLUDED.import_started_at,
+                    import_finished_at = EXCLUDED.import_finished_at,
                     updated_at = NOW()
                 RETURNING
                     decision_status,
@@ -7072,6 +7705,11 @@ def upsert_starter_dictionary_state(
                     last_imported_count,
                     decided_at,
                     last_imported_at,
+                    import_status,
+                    active_job_id,
+                    last_error,
+                    import_started_at,
+                    import_finished_at,
                     updated_at;
                 """,
                 (
@@ -7084,6 +7722,11 @@ def upsert_starter_dictionary_state(
                     imported_count_value,
                     decided_at,
                     last_imported_at,
+                    normalized_import_status,
+                    str(active_job_id or "").strip() or None,
+                    str(last_error or "").strip() or None,
+                    import_started_at,
+                    import_finished_at,
                 ),
             )
             row = cursor.fetchone()
@@ -7331,9 +7974,9 @@ def import_starter_dictionary_snapshot(
                     )
                 )
 
-            inserted_count = 0
             skipped_existing_count = 0
             import_started_at = datetime.now(timezone.utc)
+            rows_to_insert: list[tuple[Any, ...]] = []
             for item in candidates:
                 if item["key"] in existing_keys:
                     skipped_existing_count += 1
@@ -7346,7 +7989,25 @@ def import_starter_dictionary_snapshot(
                     "source_lang": pair_source,
                     "target_lang": pair_target,
                 }
-                cursor.execute(
+                rows_to_insert.append(
+                    (
+                        target_user,
+                        item["word_ru"],
+                        folder_id,
+                        item["translation_de"],
+                        item["word_de"],
+                        item["translation_ru"],
+                        pair_source,
+                        pair_target,
+                        "import",
+                        Json(origin_meta),
+                        Json(item["response_json"]),
+                    )
+                )
+                existing_keys.add(item["key"])
+            if rows_to_insert:
+                execute_values(
+                    cursor,
                     """
                     INSERT INTO bt_3_webapp_dictionary_queries (
                         user_id,
@@ -7361,24 +8022,12 @@ def import_starter_dictionary_snapshot(
                         origin_meta,
                         response_json
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    VALUES %s;
                     """,
-                    (
-                        target_user,
-                        item["word_ru"],
-                        folder_id,
-                        item["translation_de"],
-                        item["word_de"],
-                        item["translation_ru"],
-                        pair_source,
-                        pair_target,
-                        "import",
-                        Json(origin_meta),
-                        Json(item["response_json"]),
-                    ),
+                    rows_to_insert,
+                    page_size=250,
                 )
-                existing_keys.add(item["key"])
-                inserted_count += 1
+            inserted_count = len(rows_to_insert)
 
     return {
         "source_user_id": source_user,
@@ -11768,34 +12417,22 @@ def get_plan_progress(
         resolved_start, resolved_end = _week_bounds(week_start or as_of_date)
     else:
         resolved_start, resolved_end = _period_bounds(normalized_period, as_of_date)
+    effective_start = _resolve_progress_window_start(
+        int(user_id),
+        source_lang=normalized_source,
+        target_lang=normalized_target,
+        start_date=resolved_start,
+    )
+    has_overlap = effective_start <= resolved_end
+    report_start = effective_start if has_overlap else resolved_end
     today = as_of_date or date.today()
-    effective_end = min(resolved_end, max(resolved_start, today))
-    days_total = max(1, (resolved_end - resolved_start).days + 1)
-    days_elapsed = max(1, (effective_end - resolved_start).days + 1)
+    effective_end = min(resolved_end, max(report_start, today))
+    days_total = max(1, (resolved_end - report_start).days + 1)
+    days_elapsed = max(1, (effective_end - report_start).days + 1)
     mature_threshold = max(1, int(mature_interval_days or 21))
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    COALESCE(SUM(translations_goal), 0) AS translations_goal,
-                    COALESCE(SUM(learned_words_goal), 0) AS learned_words_goal,
-                    COALESCE(SUM(agent_minutes_goal), 0) AS agent_minutes_goal,
-                    COALESCE(SUM(reading_minutes_goal), 0) AS reading_minutes_goal
-                FROM bt_3_weekly_goals
-                WHERE user_id = %s
-                  AND source_lang = %s
-                  AND target_lang = %s
-                  AND week_start BETWEEN %s AND %s;
-                """,
-                (int(user_id), normalized_source, normalized_target, resolved_start, resolved_end),
-            )
-            goals_row = cursor.fetchone()
-            translations_goal = max(0, int(goals_row[0] or 0)) if goals_row else 0
-            learned_words_goal = max(0, int(goals_row[1] or 0)) if goals_row else 0
-            agent_minutes_goal = max(0, int(goals_row[2] or 0)) if goals_row else 0
-            reading_minutes_goal = max(0, int(goals_row[3] or 0)) if goals_row else 0
             cursor.execute(
                 """
                 SELECT COALESCE(SUM(i.estimated_minutes), 0)
@@ -11807,7 +12444,7 @@ def get_plan_progress(
                 """,
                 (
                     int(user_id),
-                    resolved_start,
+                    effective_start,
                     resolved_end,
                 ),
             )
@@ -11828,7 +12465,7 @@ def get_plan_progress(
                     int(user_id),
                     normalized_source,
                     normalized_target,
-                    resolved_start,
+                    effective_start,
                     effective_end,
                 ),
             )
@@ -11863,14 +12500,14 @@ def get_plan_progress(
                     int(user_id),
                     mature_threshold,
                     *language_params,
-                    resolved_start,
+                    effective_start,
                     effective_end,
                 ],
             )
             learned_row = cursor.fetchone()
             learned_words_actual = max(0, int(learned_row[0] or 0)) if learned_row else 0
 
-            period_start_dt = datetime.combine(resolved_start, dt_time.min, tzinfo=timezone.utc)
+            period_start_dt = datetime.combine(effective_start, dt_time.min, tzinfo=timezone.utc)
             end_exclusive_dt = datetime.combine(effective_end + timedelta(days=1), dt_time.min, tzinfo=timezone.utc)
             now_utc = datetime.now(timezone.utc)
             cap_dt = min(end_exclusive_dt, now_utc)
@@ -11940,14 +12577,16 @@ def get_plan_progress(
                                 EXTRACT(
                                     EPOCH FROM (
                                         LEAST(
-                                            COALESCE(
-                                                ended_at,
-                                                CASE
-                                                    WHEN duration_seconds IS NOT NULL
-                                                        THEN started_at + (GREATEST(duration_seconds, 0) * INTERVAL '1 second')
-                                                    ELSE started_at
-                                                END
-                                            ),
+                                            CASE
+                                                WHEN duration_seconds IS NOT NULL
+                                                    THEN started_at + (LEAST(GREATEST(duration_seconds, 0), %s) * INTERVAL '1 second')
+                                                WHEN ended_at IS NOT NULL
+                                                    THEN LEAST(
+                                                        ended_at,
+                                                        started_at + (%s * INTERVAL '1 second')
+                                                    )
+                                                ELSE started_at
+                                            END,
                                             %s
                                         )
                                         - GREATEST(started_at, %s)
@@ -11962,22 +12601,28 @@ def get_plan_progress(
                       AND source_lang = %s
                       AND target_lang = %s
                       AND started_at < %s
-                      AND COALESCE(
-                          ended_at,
-                          CASE
-                              WHEN duration_seconds IS NOT NULL
-                                  THEN started_at + (GREATEST(duration_seconds, 0) * INTERVAL '1 second')
-                              ELSE started_at
-                          END
-                      ) > %s;
+                      AND CASE
+                          WHEN duration_seconds IS NOT NULL
+                              THEN started_at + (LEAST(GREATEST(duration_seconds, 0), %s) * INTERVAL '1 second')
+                          WHEN ended_at IS NOT NULL
+                              THEN LEAST(
+                                  ended_at,
+                                  started_at + (%s * INTERVAL '1 second')
+                              )
+                          ELSE started_at
+                      END > %s;
                     """,
                     (
+                        int(READER_SESSION_AUTOCLOSE_MAX_SECONDS),
+                        int(READER_SESSION_AUTOCLOSE_MAX_SECONDS),
                         cap_dt,
                         period_start_dt,
                         int(user_id),
                         normalized_source,
                         normalized_target,
                         cap_dt,
+                        int(READER_SESSION_AUTOCLOSE_MAX_SECONDS),
+                        int(READER_SESSION_AUTOCLOSE_MAX_SECONDS),
                         period_start_dt,
                     ),
                 )
@@ -12015,12 +12660,24 @@ def get_plan_progress(
                 """,
                 (
                     int(user_id),
-                    resolved_start,
+                    effective_start,
                     effective_end,
                 ),
             )
             youtube_row = cursor.fetchone()
             youtube_minutes_actual = float(youtube_row[0] or 0.0) if youtube_row else 0.0
+
+    prorated_goals = _list_prorated_weekly_goals(
+        user_id=int(user_id),
+        source_lang=normalized_source,
+        target_lang=normalized_target,
+        start_date=effective_start,
+        end_date=resolved_end,
+    )
+    translations_goal = int(prorated_goals.get("translations_goal") or 0)
+    learned_words_goal = int(prorated_goals.get("learned_words_goal") or 0)
+    agent_minutes_goal = int(prorated_goals.get("agent_minutes_goal") or 0)
+    reading_minutes_goal = int(prorated_goals.get("reading_minutes_goal") or 0)
 
     def _metric(goal: int, actual: float) -> dict:
         return _build_plan_metric(
@@ -12032,7 +12689,7 @@ def get_plan_progress(
 
     return {
         "period": normalized_period,
-        "start_date": resolved_start.isoformat(),
+        "start_date": report_start.isoformat(),
         "end_date": resolved_end.isoformat(),
         "as_of_date": effective_end.isoformat(),
         "days_elapsed": days_elapsed,
@@ -12246,7 +12903,10 @@ def start_reader_session(
                     duration_seconds = GREATEST(
                         0,
                         LEAST(
-                            EXTRACT(EPOCH FROM (%s - started_at))::INT,
+                            CASE
+                                WHEN duration_seconds IS NOT NULL THEN GREATEST(duration_seconds, 0)
+                                ELSE EXTRACT(EPOCH FROM (%s - started_at))::INT
+                            END,
                             %s
                         )
                     ),
@@ -12293,12 +12953,16 @@ def finish_reader_session(
     source_lang: str = "ru",
     target_lang: str = "de",
     ended_at: datetime | None = None,
+    duration_seconds: int | None = None,
 ) -> dict | None:
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
     ended = ended_at or datetime.now(timezone.utc)
     if ended.tzinfo is None:
         ended = ended.replace(tzinfo=timezone.utc)
+    normalized_duration_seconds = None
+    if duration_seconds is not None:
+        normalized_duration_seconds = max(0, min(int(duration_seconds), int(READER_SESSION_AUTOCLOSE_MAX_SECONDS)))
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -12310,14 +12974,27 @@ def finish_reader_session(
                         ended_at = COALESCE(ended_at, %s),
                         duration_seconds = CASE
                             WHEN ended_at IS NOT NULL THEN duration_seconds
-                            ELSE GREATEST(0, EXTRACT(EPOCH FROM (%s - started_at))::INT)
+                            ELSE GREATEST(
+                                0,
+                                LEAST(
+                                    COALESCE(%s, EXTRACT(EPOCH FROM (%s - started_at))::INT),
+                                    %s
+                                )
+                            )
                         END,
                         updated_at = NOW()
                     WHERE id = %s
                       AND user_id = %s
                     RETURNING id, started_at, ended_at, duration_seconds, source_lang, target_lang;
                     """,
-                    (ended, ended, int(session_id), int(user_id)),
+                    (
+                        ended,
+                        normalized_duration_seconds,
+                        ended,
+                        int(READER_SESSION_AUTOCLOSE_MAX_SECONDS),
+                        int(session_id),
+                        int(user_id),
+                    ),
                 )
             else:
                 cursor.execute(
@@ -12335,13 +13012,27 @@ def finish_reader_session(
                     UPDATE bt_3_reader_sessions s
                     SET
                         ended_at = %s,
-                        duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (%s - s.started_at))::INT),
+                        duration_seconds = GREATEST(
+                            0,
+                            LEAST(
+                                COALESCE(%s, EXTRACT(EPOCH FROM (%s - s.started_at))::INT),
+                                %s
+                            )
+                        ),
                         updated_at = NOW()
                     FROM latest
                     WHERE s.id = latest.id
                     RETURNING s.id, s.started_at, s.ended_at, s.duration_seconds, s.source_lang, s.target_lang;
                     """,
-                    (int(user_id), normalized_source, normalized_target, ended, ended),
+                    (
+                        int(user_id),
+                        normalized_source,
+                        normalized_target,
+                        ended,
+                        normalized_duration_seconds,
+                        ended,
+                        int(READER_SESSION_AUTOCLOSE_MAX_SECONDS),
+                    ),
                 )
             row = cursor.fetchone()
     if not row:
@@ -12355,6 +13046,46 @@ def finish_reader_session(
         "duration_minutes": round(duration_seconds / 60.0, 2),
         "source_lang": str(row[4] or normalized_source),
         "target_lang": str(row[5] or normalized_target),
+    }
+
+
+def touch_reader_session(
+    *,
+    user_id: int,
+    session_id: int,
+    duration_seconds: int,
+) -> dict | None:
+    normalized_duration_seconds = max(0, min(int(duration_seconds or 0), int(READER_SESSION_AUTOCLOSE_MAX_SECONDS)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_sessions
+                SET
+                    duration_seconds = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND ended_at IS NULL
+                RETURNING id, started_at, ended_at, duration_seconds, source_lang, target_lang;
+                """,
+                (
+                    normalized_duration_seconds,
+                    int(session_id),
+                    int(user_id),
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "session_id": int(row[0]),
+        "started_at": row[1].isoformat() if row[1] else None,
+        "ended_at": row[2].isoformat() if row[2] else None,
+        "duration_seconds": int(row[3] or 0),
+        "duration_minutes": round(int(row[3] or 0) / 60.0, 2),
+        "source_lang": str(row[4] or ""),
+        "target_lang": str(row[5] or ""),
     }
 
 
@@ -12730,6 +13461,35 @@ def get_daily_plan(user_id: int, plan_date: date) -> dict | None:
     }
 
 
+def get_daily_plan_item(*, user_id: int, item_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    i.id,
+                    i.plan_id,
+                    i.order_index,
+                    i.task_type,
+                    i.title,
+                    i.estimated_minutes,
+                    i.payload,
+                    i.status,
+                    i.completed_at
+                FROM bt_3_daily_plan_items i
+                JOIN bt_3_daily_plans p ON p.id = i.plan_id
+                WHERE i.id = %s
+                  AND p.user_id = %s
+                LIMIT 1;
+                """,
+                (int(item_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _map_daily_plan_item(row)
+
+
 def create_daily_plan(
     user_id: int,
     plan_date: date,
@@ -12794,6 +13554,26 @@ def create_daily_plan(
         "created_at": None,
         "items": [],
     }
+
+
+def delete_daily_plans_from_date(
+    *,
+    user_id: int,
+    from_date: date,
+) -> int:
+    if not isinstance(from_date, date):
+        raise ValueError("from_date must be a date")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_daily_plans
+                WHERE user_id = %s
+                  AND plan_date >= %s;
+                """,
+                (int(user_id), from_date),
+            )
+            return int(cursor.rowcount or 0)
 
 
 def update_daily_plan_item_status(
@@ -13351,6 +14131,13 @@ def list_top_weak_topics(
 ) -> list[dict]:
     lookback_days = max(1, int(lookback_days))
     limit = max(1, min(int(limit or 5), 20))
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    cutoff_date = get_user_progress_reset_date(
+        user_id=int(user_id),
+        source_lang=normalized_source,
+        target_lang=normalized_target,
+    )
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -13369,11 +14156,12 @@ def list_top_weak_topics(
                       AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
                       AND LOWER(COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')) NOT IN ('unclassified mistake', 'unclassified mistakes')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                      AND (%s::date IS NULL OR COALESCE(dm.last_seen, dm.added_data, NOW())::date >= %s::date)
                     GROUP BY 1, 2
                     ORDER BY total_mistakes DESC, main_category ASC, sub_category ASC
                     LIMIT %s;
                     """,
-                    (int(user_id), source_lang or "ru", target_lang or "de", lookback_days, limit),
+                    (int(user_id), normalized_source, normalized_target, lookback_days, cutoff_date, cutoff_date, limit),
                 )
                 rows = cursor.fetchall()
     except Exception:
@@ -13426,6 +14214,13 @@ def get_weak_topic_sentences(
         return []
     lookback_days = max(1, int(lookback_days))
     limit = max(1, min(int(limit), 20))
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    cutoff_date = get_user_progress_reset_date(
+        user_id=int(user_id),
+        source_lang=normalized_source,
+        target_lang=normalized_target,
+    )
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -13442,6 +14237,7 @@ def get_weak_topic_sentences(
                       AND COALESCE(NULLIF(dm.main_category, ''), 'Other mistake') = %s
                       AND COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake') = %s
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                      AND (%s::date IS NULL OR COALESCE(dm.last_seen, dm.added_data, NOW())::date >= %s::date)
                       AND dm.sentence IS NOT NULL
                       AND dm.sentence <> ''
                     ORDER BY COALESCE(dm.last_seen, dm.added_data, NOW()) DESC, COALESCE(dm.mistake_count, 1) DESC
@@ -13449,11 +14245,13 @@ def get_weak_topic_sentences(
                     """,
                     (
                         int(user_id),
-                        source_lang or "ru",
-                        target_lang or "de",
+                        normalized_source,
+                        normalized_target,
                         main_category,
                         sub_category,
                         lookback_days,
+                        cutoff_date,
+                        cutoff_date,
                         limit,
                     ),
                 )
@@ -13542,6 +14340,13 @@ def get_recent_mistake_examples_for_topic(
         return []
     lookback_days = max(1, int(lookback_days))
     limit = max(1, min(int(limit), 20))
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    cutoff_date = get_user_progress_reset_date(
+        user_id=int(user_id),
+        source_lang=normalized_source,
+        target_lang=normalized_target,
+    )
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -13562,6 +14367,7 @@ def get_recent_mistake_examples_for_topic(
                           AND tr.id_for_mistake_table = dm.sentence_id
                           AND COALESCE(tr.source_lang, 'ru') = COALESCE(%s, 'ru')
                           AND COALESCE(tr.target_lang, 'de') = COALESCE(%s, 'de')
+                          AND (%s::date IS NULL OR tr.timestamp::date >= %s::date)
                         ORDER BY tr.timestamp DESC
                         LIMIT 1
                     ) latest_tr ON TRUE
@@ -13571,18 +14377,23 @@ def get_recent_mistake_examples_for_topic(
                       AND COALESCE(NULLIF(dm.main_category, ''), 'Other mistake') = %s
                       AND COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake') = %s
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                      AND (%s::date IS NULL OR COALESCE(dm.last_seen, dm.added_data, NOW())::date >= %s::date)
                     ORDER BY COALESCE(dm.last_seen, dm.added_data, NOW()) DESC, COALESCE(dm.mistake_count, 1) DESC
                     LIMIT %s;
                     """,
                     (
-                        source_lang or "ru",
-                        target_lang or "de",
+                        normalized_source,
+                        normalized_target,
+                        cutoff_date,
+                        cutoff_date,
                         int(user_id),
-                        source_lang or "ru",
-                        target_lang or "de",
+                        normalized_source,
+                        normalized_target,
                         main_category,
                         sub_category,
                         lookback_days,
+                        cutoff_date,
+                        cutoff_date,
                         limit,
                     ),
                 )
@@ -13612,6 +14423,60 @@ def get_lowest_mastery_skill(
     source_lang: str | None = None,
     target_lang: str | None = None,
 ) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    reset_date = get_user_progress_reset_date(
+        user_id=int(user_id),
+        source_lang=normalized_source,
+        target_lang=normalized_target,
+    )
+    if reset_date is not None:
+        state_map = _get_skill_state_v2_snapshot_since_date(
+            user_id=int(user_id),
+            source_lang=normalized_source,
+            target_lang=normalized_target,
+            reset_date=reset_date,
+        )
+        if not state_map:
+            return None
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT skill_id, title, category
+                        FROM bt_3_skills
+                        WHERE language_code = %s
+                          AND COALESCE(is_active, TRUE) = TRUE
+                          AND LOWER(COALESCE(skill_id, '')) NOT IN ('other_unclassified', 'en_other_unclassified', 'es_other_unclassified', 'it_other_unclassified')
+                          AND LOWER(COALESCE(skill_id, '')) NOT LIKE '%%unclassified%%'
+                          AND LOWER(COALESCE(title, '')) NOT LIKE '%%unclassified%%';
+                        """,
+                        (normalized_target,),
+                    )
+                    skill_rows = cursor.fetchall() or []
+        except Exception:
+            return None
+        candidates: list[dict[str, Any]] = []
+        for skill_id_raw, title_raw, category_raw in skill_rows:
+            skill_id = str(skill_id_raw or "").strip()
+            state = state_map.get(skill_id)
+            if not skill_id or not state or int(state.get("total_events") or 0) <= 0:
+                continue
+            candidates.append(
+                {
+                    "skill_id": skill_id,
+                    "skill_title": str(title_raw or ""),
+                    "skill_category": str(category_raw or ""),
+                    "mastery": float(state.get("mastery") or 0.0),
+                    "total_events": int(state.get("total_events") or 0),
+                    "updated_at": state.get("last_practiced_at"),
+                }
+            )
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (float(item.get("mastery") or 0.0), -int(item.get("total_events") or 0)))
+        return candidates[0]
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -13639,9 +14504,9 @@ def get_lowest_mastery_skill(
                     """,
                     (
                         int(user_id),
-                        source_lang or "ru",
-                        target_lang or "de",
-                        target_lang or "de",
+                        normalized_source,
+                        normalized_target,
+                        normalized_target,
                     ),
                 )
                 row = cursor.fetchone()
@@ -13675,7 +14540,13 @@ def get_top_error_topic_for_skill(
     normalized_skill_key = _normalize_skill_error_label(normalized_skill_id)
     if normalized_skill_key in EXCLUDED_UNCLASSIFIED_SKILL_IDS or "unclassified" in normalized_skill_key:
         return None
+    normalized_source_lang = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+    cutoff_date = get_user_progress_reset_date(
+        user_id=int(user_id),
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+    )
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -13700,6 +14571,7 @@ def get_top_error_topic_for_skill(
                       AND m.skill_id = %s
                       AND LOWER(COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')) NOT IN ('unclassified mistake', 'unclassified mistakes')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                      AND (%s::date IS NULL OR COALESCE(dm.last_seen, dm.added_data, NOW())::date >= %s::date)
                     GROUP BY 1, 2
                     ORDER BY total_mistakes DESC, map_weight DESC, main_category ASC, sub_category ASC
                     LIMIT 1;
@@ -13707,10 +14579,12 @@ def get_top_error_topic_for_skill(
                     (
                         int(user_id),
                         normalized_target_lang,
-                        source_lang or "ru",
+                        normalized_source_lang,
                         normalized_target_lang,
                         normalized_skill_id,
                         lookback_days,
+                        cutoff_date,
+                        cutoff_date,
                     ),
                 )
                 row = cursor.fetchone()
@@ -13857,6 +14731,9 @@ def _billing_period_bounds(period: str, as_of_date: date | None = None) -> tuple
     normalized = str(period or "month").strip().lower()
     if normalized == "all":
         return date(1970, 1, 1), (as_of_date or date.today())
+    if normalized == "day":
+        anchor = as_of_date or date.today()
+        return anchor, anchor
     if normalized == "half_year":
         normalized = "half-year"
     if normalized not in {"week", "month", "quarter", "half-year", "year"}:
@@ -13873,6 +14750,32 @@ def _month_period_start(as_of: date | datetime | None = None, tz: str = TRIAL_PO
     else:
         base_date = datetime.now(timezone.utc).astimezone(_resolve_timezone(tz)).date()
     return base_date.replace(day=1)
+
+
+def _prorate_fixed_cost_amount(
+    *,
+    amount: float,
+    item_start: date | None,
+    item_end: date | None,
+    range_start: date,
+    range_end: date,
+) -> tuple[float, float, int, int]:
+    try:
+        amount_value = float(amount or 0.0)
+    except Exception:
+        amount_value = 0.0
+    if amount_value <= 0 or not item_start or not item_end or item_end < item_start:
+        return 0.0, 0.0, 0, 0
+    overlap_start = max(item_start, range_start)
+    overlap_end = min(item_end, range_end)
+    if overlap_end < overlap_start:
+        return 0.0, 0.0, 0, 0
+    period_days = (item_end - item_start).days + 1
+    overlap_days = (overlap_end - overlap_start).days + 1
+    if period_days <= 0 or overlap_days <= 0:
+        return 0.0, 0.0, 0, 0
+    ratio = overlap_days / period_days
+    return amount_value * ratio, ratio, overlap_days, period_days
 
 
 def _provider_budget_default_base_limit(provider: str) -> int:
@@ -14975,6 +15878,22 @@ def _get_product_active_users_count(
     )
 
 
+def get_provider_active_users_count(
+    *,
+    period_start: date,
+    period_end: date,
+    provider: str | None = None,
+) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            return _get_product_active_users_count(
+                cursor,
+                period_start=period_start,
+                period_end=period_end,
+                provider=provider,
+            )
+
+
 def get_global_billing_summary(
     *,
     period: str = "month",
@@ -15026,21 +15945,53 @@ def get_global_billing_summary(
             unpriced_units = float(_row_get(totals_row, 5, 0.0) or 0.0)
             unpriced_events = int(_row_get(totals_row, 6, 0) or 0)
 
-            fixed_params = [currency_value, period_start, period_end]
+            fixed_items_params = [currency_value, period_start, period_end]
             if provider_value:
-                fixed_params.append(provider_value)
+                fixed_items_params.append(provider_value)
             cursor.execute(
                 f"""
-                SELECT COALESCE(SUM(amount), 0)
+                SELECT category, provider, amount, period_start, period_end, allocation_method_default
                 FROM bt_3_billing_fixed_costs
                 WHERE currency = %s
                   AND period_end >= %s
                   AND period_start <= %s
-                  {fixed_provider_sql};
+                  {fixed_provider_sql}
+                ORDER BY period_start DESC, category ASC;
                 """,
-                fixed_params,
+                fixed_items_params,
             )
-            fixed_cost_total = float(_row_get(cursor.fetchone(), 0, 0.0) or 0.0)
+            fixed_rows = cursor.fetchall() or []
+            fixed_items: list[dict] = []
+            fixed_by_provider: dict[str, float] = {}
+            fixed_cost_total = 0.0
+            for row in fixed_rows:
+                row_amount = float(_row_get(row, 2, 0.0) or 0.0)
+                row_period_start = _row_get(row, 3)
+                row_period_end = _row_get(row, 4)
+                prorated_amount, proration_ratio, overlap_days, period_days = _prorate_fixed_cost_amount(
+                    amount=row_amount,
+                    item_start=row_period_start,
+                    item_end=row_period_end,
+                    range_start=period_start,
+                    range_end=period_end,
+                )
+                provider_key = str(_row_get(row, 1, "") or "")
+                fixed_cost_total += prorated_amount
+                fixed_by_provider[provider_key] = fixed_by_provider.get(provider_key, 0.0) + prorated_amount
+                fixed_items.append(
+                    {
+                        "category": str(_row_get(row, 0, "") or ""),
+                        "provider": provider_key,
+                        "amount": round(prorated_amount, 6),
+                        "full_amount": round(row_amount, 6),
+                        "period_start": row_period_start.isoformat() if row_period_start else None,
+                        "period_end": row_period_end.isoformat() if row_period_end else None,
+                        "allocation_method_default": str(_row_get(row, 5, "equal") or "equal"),
+                        "proration_ratio": round(proration_ratio, 6),
+                        "overlap_days": overlap_days,
+                        "period_days": period_days,
+                    }
+                )
 
             active_users = _get_product_active_users_count(
                 cursor,
@@ -15089,22 +16040,6 @@ def get_global_billing_summary(
                         "units_type": str(_row_get(row, 1, "") or ""),
                         "units": float(_row_get(row, 2, 0.0) or 0.0),
                     })
-                cursor.execute(
-                    """
-                    SELECT COALESCE(provider, '') AS provider, SUM(amount) AS fixed_total
-                    FROM bt_3_billing_fixed_costs
-                    WHERE currency = %s
-                      AND period_end >= %s
-                      AND period_start <= %s
-                    GROUP BY COALESCE(provider, '')
-                    ORDER BY fixed_total DESC;
-                    """,
-                    (currency_value, period_start, period_end),
-                )
-                fixed_by_provider = {
-                    str(_row_get(row, 0, "") or ""): float(_row_get(row, 1, 0.0) or 0.0)
-                    for row in (cursor.fetchall() or [])
-                }
                 provider_map = {str(item.get("provider") or ""): item for item in provider_rows}
                 for provider_key, fixed_total in fixed_by_provider.items():
                     existing = provider_map.get(provider_key)
@@ -15248,33 +16183,6 @@ def get_global_billing_summary(
                 for row in (cursor.fetchall() or [])
             ]
 
-            fixed_items_params = [currency_value, period_start, period_end]
-            if provider_value:
-                fixed_items_params.append(provider_value)
-            cursor.execute(
-                f"""
-                SELECT category, provider, amount, period_start, period_end, allocation_method_default
-                FROM bt_3_billing_fixed_costs
-                WHERE currency = %s
-                  AND period_end >= %s
-                  AND period_start <= %s
-                  {fixed_provider_sql}
-                ORDER BY period_start DESC, category ASC;
-                """,
-                fixed_items_params,
-            )
-            fixed_items = [
-                {
-                    "category": str(_row_get(row, 0, "") or ""),
-                    "provider": str(_row_get(row, 1, "") or ""),
-                    "amount": float(_row_get(row, 2, 0.0) or 0.0),
-                    "period_start": _row_get(row, 3).isoformat() if _row_get(row, 3) else None,
-                    "period_end": _row_get(row, 4).isoformat() if _row_get(row, 4) else None,
-                    "allocation_method_default": str(_row_get(row, 5, "equal") or "equal"),
-                }
-                for row in (cursor.fetchall() or [])
-            ]
-
             cursor.execute(
                 """
                 SELECT provider
@@ -15298,7 +16206,10 @@ def get_global_billing_summary(
 
     total_cost = variable_cost_total + fixed_cost_total
     avg_cost_per_event = total_cost / events_count if events_count > 0 else 0.0
+    avg_variable_cost_per_active_user = variable_cost_total / active_users if active_users > 0 else 0.0
+    avg_fixed_cost_per_active_user = fixed_cost_total / active_users if active_users > 0 else 0.0
     avg_cost_per_active_user = total_cost / active_users if active_users > 0 else 0.0
+    avg_events_per_active_user = events_count / active_users if active_users > 0 else 0.0
     return {
         "scope": "global",
         "period": normalized_period,
@@ -15321,7 +16232,10 @@ def get_global_billing_summary(
             "units_total": round(units_total, 6),
             "active_users": active_users,
             "avg_cost_per_event": round(avg_cost_per_event, 6),
+            "avg_variable_cost_per_active_user": round(avg_variable_cost_per_active_user, 6),
+            "avg_fixed_cost_per_active_user": round(avg_fixed_cost_per_active_user, 6),
             "avg_cost_per_active_user": round(avg_cost_per_active_user, 6),
+            "avg_events_per_active_user": round(avg_events_per_active_user, 6),
         },
         "breakdown": {
             "by_provider": provider_rows,
@@ -16092,6 +17006,24 @@ def _get_feature_usage_today(user_id: int, feature_code: str, tz: str = TRIAL_PO
                     WHERE user_id = %s
                       AND action_type = 'theory_package_prepare'
                       AND (event_time AT TIME ZONE %s)::date = %s;
+                    """,
+                    (int(user_id), tz_name, day_local),
+                )
+                row = cursor.fetchone()
+        return float((row or [0])[0] or 0)
+
+    if feature == "translation_daily_sets":
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(DISTINCT ds.session_id)
+                    FROM bt_3_daily_sentences ds
+                    WHERE ds.user_id = %s
+                      AND COALESCE(ds.shown_to_user, FALSE) = TRUE
+                      AND (
+                        COALESCE((ds.shown_to_user_at AT TIME ZONE %s)::date, ds.date) = %s
+                      );
                     """,
                     (int(user_id), tz_name, day_local),
                 )
@@ -17037,6 +17969,11 @@ def get_skill_progress_report(
     now_utc = datetime.now(timezone.utc)
     normalized_source_lang = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+    reset_date = get_user_progress_reset_date(
+        user_id=int(user_id),
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+    )
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -17059,6 +17996,7 @@ def get_skill_progress_report(
                       AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
                       AND LOWER(COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')) NOT IN ('unclassified mistake', 'unclassified mistakes')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
+                      AND (%s::date IS NULL OR COALESCE(dm.last_seen, dm.added_data, NOW())::date >= %s::date)
                     GROUP BY m.skill_id
                 ),
                 err_prev_7d AS (
@@ -17079,23 +18017,16 @@ def get_skill_progress_report(
                       AND LOWER(COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')) NOT IN ('unclassified mistake', 'unclassified mistakes')
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) < NOW() - (%s::text || ' days')::interval
                       AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - ((%s * 2)::text || ' days')::interval
+                      AND (%s::date IS NULL OR COALESCE(dm.last_seen, dm.added_data, NOW())::date >= %s::date)
                     GROUP BY m.skill_id
                 )
                 SELECT
                     k.skill_id,
                     k.title,
                     k.category,
-                    s.mastery AS mastery,
-                    COALESCE(s.total_events, 0) AS total_events,
                     COALESCE(e.errors_7d, 0) AS errors_7d,
-                    COALESCE(p.errors_prev_7d, 0) AS errors_prev_7d,
-                    s.last_practiced_at
+                    COALESCE(p.errors_prev_7d, 0) AS errors_prev_7d
                 FROM bt_3_skills k
-                LEFT JOIN bt_3_user_skill_state s
-                  ON s.skill_id = k.skill_id
-                 AND s.user_id = %s
-                 AND s.source_lang = COALESCE(%s, 'ru')
-                 AND s.target_lang = COALESCE(%s, 'de')
                 LEFT JOIN err_7d e ON e.skill_id = k.skill_id
                 LEFT JOIN err_prev_7d p ON p.skill_id = k.skill_id
                 WHERE k.is_active = TRUE
@@ -17103,7 +18034,7 @@ def get_skill_progress_report(
                   AND LOWER(COALESCE(k.skill_id, '')) NOT IN ('other_unclassified', 'en_other_unclassified', 'es_other_unclassified', 'it_other_unclassified')
                   AND LOWER(COALESCE(k.skill_id, '')) NOT LIKE '%%unclassified%%'
                   AND LOWER(COALESCE(k.title, '')) NOT LIKE '%%unclassified%%'
-                ORDER BY k.category ASC, mastery ASC, k.skill_id ASC;
+                ORDER BY k.category ASC, k.title ASC, k.skill_id ASC;
                 """,
                 (
                     int(user_id),
@@ -17111,19 +18042,49 @@ def get_skill_progress_report(
                     normalized_source_lang,
                     normalized_target_lang,
                     window_days,
+                    reset_date,
+                    reset_date,
                     int(user_id),
                     normalized_target_lang,
                     normalized_source_lang,
                     normalized_target_lang,
                     window_days,
                     window_days,
-                    int(user_id),
-                    normalized_source_lang,
-                    normalized_target_lang,
+                    reset_date,
+                    reset_date,
                     normalized_target_lang,
                 ),
             )
             rows = cursor.fetchall()
+            state_map: dict[str, dict[str, Any]] = {}
+            if reset_date is None:
+                cursor.execute(
+                    """
+                    SELECT skill_id, mastery, total_events, last_practiced_at
+                    FROM bt_3_user_skill_state
+                    WHERE user_id = %s
+                      AND source_lang = %s
+                      AND target_lang = %s;
+                    """,
+                    (int(user_id), normalized_source_lang, normalized_target_lang),
+                )
+                state_rows = cursor.fetchall() or []
+                for state_row in state_rows:
+                    skill_id = str(state_row[0] or "").strip()
+                    if not skill_id:
+                        continue
+                    state_map[skill_id] = {
+                        "mastery": float(state_row[1]) if state_row[1] is not None else None,
+                        "total_events": int(state_row[2] or 0),
+                        "last_practiced_at": state_row[3].isoformat() if hasattr(state_row[3], "isoformat") else None,
+                    }
+            else:
+                state_map = _get_skill_state_v2_snapshot_since_date(
+                    user_id=int(user_id),
+                    source_lang=normalized_source_lang,
+                    target_lang=normalized_target_lang,
+                    reset_date=reset_date,
+                )
 
     skills: list[dict] = []
     groups_map: dict[str, list[dict]] = {}
@@ -17131,16 +18092,17 @@ def get_skill_progress_report(
         if not isinstance(row, (tuple, list)):
             continue
         row_values = list(row)
-        if len(row_values) < 8:
-            row_values.extend([None] * (8 - len(row_values)))
+        if len(row_values) < 5:
+            row_values.extend([None] * (5 - len(row_values)))
         skill_id_raw = row_values[0]
         title_raw = row_values[1]
         category_raw = row_values[2]
-        mastery_raw = row_values[3]
-        total_events = int(row_values[4] or 0)
-        errors_7d = int(row_values[5] or 0)
-        errors_prev_7d = int(row_values[6] or 0)
-        last_practiced_raw = row_values[7]
+        errors_7d = int(row_values[3] or 0)
+        errors_prev_7d = int(row_values[4] or 0)
+        state = state_map.get(str(skill_id_raw or "").strip()) or {}
+        mastery_raw = state.get("mastery")
+        total_events = int(state.get("total_events") or 0)
+        last_practiced_raw = state.get("last_practiced_at")
         has_data = total_events > 0 and mastery_raw is not None
 
         mastery: float | None = None
@@ -17178,7 +18140,11 @@ def get_skill_progress_report(
             "confidence": round(min(1.0, total_events / 20.0), 3) if has_data else 0.0,
             "has_data": has_data,
             "total_events": total_events,
-            "last_practiced_at": last_practiced_raw.isoformat() if hasattr(last_practiced_raw, "isoformat") else None,
+            "last_practiced_at": (
+                last_practiced_raw.isoformat()
+                if hasattr(last_practiced_raw, "isoformat")
+                else (str(last_practiced_raw) if last_practiced_raw else None)
+            ),
         }
         skills.append(skill)
         group_name = skill["group"]
@@ -17305,17 +18271,19 @@ def get_pending_daily_sentences(
     limit: int = 7,
     source_lang: str = "ru",
     target_lang: str = "de",
+    close_stale_sessions: bool = True,
 ) -> list[dict]:
     try:
         safe_limit = int(limit or 7)
     except Exception:
         safe_limit = 7
     safe_limit = max(1, min(safe_limit, 7))
-    close_stale_open_translation_sessions_for_user(
-        user_id=int(user_id),
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
+    if close_stale_sessions:
+        close_stale_open_translation_sessions_for_user(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -17380,6 +18348,55 @@ def get_pending_daily_sentences(
                 }
                 for row in rows
             ]
+
+
+def mark_translation_sentences_shown(
+    *,
+    user_id: int,
+    source_session_id: str | int,
+    sentence_ids: list[int] | tuple[int, ...] | set[int],
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> dict[str, int | str]:
+    normalized_session_id = str(source_session_id or "").strip()
+    if not normalized_session_id:
+        return {"session_id": "", "updated": 0}
+    normalized_sentence_ids = sorted(
+        {
+            int(item)
+            for item in list(sentence_ids or [])
+            if item is not None and str(item).strip() != "" and int(item) > 0
+        }
+    )
+    if not normalized_sentence_ids:
+        return {"session_id": normalized_session_id, "updated": 0}
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_daily_sentences
+                SET
+                    shown_to_user = TRUE,
+                    shown_to_user_at = COALESCE(shown_to_user_at, NOW())
+                WHERE user_id = %s
+                  AND session_id = %s
+                  AND id_for_mistake_table = ANY(%s)
+                  AND COALESCE(source_lang, 'ru') = %s
+                  AND COALESCE(target_lang, 'de') = %s
+                  AND shown_to_user = FALSE;
+                """,
+                (
+                    int(user_id),
+                    normalized_session_id,
+                    normalized_sentence_ids,
+                    source_lang,
+                    target_lang,
+                ),
+            )
+            updated = int(cursor.rowcount or 0)
+
+    return {"session_id": normalized_session_id, "updated": updated}
 
 # --- Новые функции для ассистента по продажам ---
 

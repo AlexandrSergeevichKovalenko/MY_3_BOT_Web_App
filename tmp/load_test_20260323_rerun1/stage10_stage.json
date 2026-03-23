@@ -1,0 +1,1284 @@
+{
+  "stage": "stage10_rerun",
+  "started_at": "2026-03-23T19:58:47.937846+00:00",
+  "finished_at": "2026-03-23T20:05:12.905742+00:00",
+  "user_count": 10,
+  "cold_count": 3,
+  "request_records": [
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000203,
+      "flow": "start_session",
+      "start_ts": 1774295927.966374,
+      "latency_ms": 9064.165874999162,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000203,
+      "flow": "progressive_fill",
+      "start_ts": 1774295937.0307,
+      "latency_ms": 3133.243250000305,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "start_session",
+      "start_ts": 1774295932.971019,
+      "latency_ms": 9240.953041000466,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000203,
+      "flow": "progressive_fill",
+      "start_ts": 1774295940.164115,
+      "latency_ms": 5630.814916999952,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "progressive_fill",
+      "start_ts": 1774295942.212113,
+      "latency_ms": 5221.270000000004,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000205,
+      "flow": "start_session",
+      "start_ts": 1774295937.97067,
+      "latency_ms": 11408.82133300147,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000203,
+      "flow": "progressive_fill",
+      "start_ts": 1774295946.8092,
+      "latency_ms": 5041.180292000718,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "progressive_fill",
+      "start_ts": 1774295947.433554,
+      "latency_ms": 6739.444625000033,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000206,
+      "flow": "start_session",
+      "start_ts": 1774295942.971256,
+      "latency_ms": 13101.278332998845,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "start_session",
+      "start_ts": 1774295947.970956,
+      "latency_ms": 15012.77058300002,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000205,
+      "flow": "progressive_fill",
+      "start_ts": 1774295949.379601,
+      "latency_ms": 13942.014249998465,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000203,
+      "flow": "sentences_ack",
+      "start_ts": 1774295951.850517,
+      "latency_ms": 13797.42512499979,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "progressive_fill",
+      "start_ts": 1774295955.066266,
+      "latency_ms": 12339.03779100001,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000206,
+      "flow": "progressive_fill",
+      "start_ts": 1774295956.072632,
+      "latency_ms": 13385.025915998995,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000208,
+      "flow": "start_session",
+      "start_ts": 1774295952.971401,
+      "latency_ms": 19085.9747909999,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "progressive_fill",
+      "start_ts": 1774295962.983861,
+      "latency_ms": 12439.497584000492,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000209,
+      "flow": "start_session",
+      "start_ts": 1774295957.971353,
+      "latency_ms": 20121.652542000447,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000205,
+      "flow": "sentences_ack",
+      "start_ts": 1774295963.3217332,
+      "latency_ms": 17701.853500000652,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000210,
+      "flow": "start_session",
+      "start_ts": 1774295962.971339,
+      "latency_ms": 21250.48141699881,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "progressive_fill",
+      "start_ts": 1774295968.2606,
+      "latency_ms": 20148.617541999556,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "start_session",
+      "start_ts": 1774295967.971375,
+      "latency_ms": 21449.61266700011,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000206,
+      "flow": "progressive_fill",
+      "start_ts": 1774295969.457818,
+      "latency_ms": 21835.690083998998,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000208,
+      "flow": "progressive_fill",
+      "start_ts": 1774295972.057523,
+      "latency_ms": 20727.07070800061,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "progressive_fill",
+      "start_ts": 1774295975.423499,
+      "latency_ms": 19630.91683300081,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000209,
+      "flow": "progressive_fill",
+      "start_ts": 1774295978.093096,
+      "latency_ms": 18632.007541998973,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000212,
+      "flow": "start_session",
+      "start_ts": 1774295972.9714382,
+      "latency_ms": 26873.350207999465,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000210,
+      "flow": "progressive_fill",
+      "start_ts": 1774295984.2219882,
+      "latency_ms": 18809.619290999763,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000203,
+      "flow": "check_start",
+      "start_ts": 1774295983.7896068,
+      "latency_ms": 19245.18079200061,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "sentences_ack",
+      "start_ts": 1774295988.4094012,
+      "latency_ms": 15918.028709000282,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000206,
+      "flow": "sentences_ack",
+      "start_ts": 1774295991.2936902,
+      "latency_ms": 14889.244791000237,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000208,
+      "flow": "sentences_ack",
+      "start_ts": 1774295992.784816,
+      "latency_ms": 15479.535874999783,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "progressive_fill",
+      "start_ts": 1774295989.421088,
+      "latency_ms": 19302.14375000105,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "sentences_ack",
+      "start_ts": 1774295995.054592,
+      "latency_ms": 14403.763166999852,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000212,
+      "flow": "progressive_fill",
+      "start_ts": 1774295999.8449721,
+      "latency_ms": 11694.885083001282,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000209,
+      "flow": "sentences_ack",
+      "start_ts": 1774295996.725297,
+      "latency_ms": 14815.02008300049,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000210,
+      "flow": "sentences_ack",
+      "start_ts": 1774296003.03178,
+      "latency_ms": 11756.010541999785,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000205,
+      "flow": "check_start",
+      "start_ts": 1774296001.304759,
+      "latency_ms": 16414.683041999524,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000203,
+      "flow": "check_status",
+      "start_ts": 1774296003.0350049,
+      "latency_ms": 16800.53320800107,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "progressive_fill",
+      "start_ts": 1774296008.7233121,
+      "latency_ms": 18480.900082999142,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000212,
+      "flow": "progressive_fill",
+      "start_ts": 1774296011.54041,
+      "latency_ms": 19145.0340829997,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000205,
+      "flow": "check_status",
+      "start_ts": 1774296017.719608,
+      "latency_ms": 15326.773791999585,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "check_start",
+      "start_ts": 1774296017.6335082,
+      "latency_ms": 21404.882625000027,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000203,
+      "flow": "check_status",
+      "start_ts": 1774296019.835755,
+      "latency_ms": 19234.204959000635,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000208,
+      "flow": "check_start",
+      "start_ts": 1774296024.012251,
+      "latency_ms": 29712.95220799948,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "sentences_ack",
+      "start_ts": 1774296027.2043781,
+      "latency_ms": 32778.820166000514,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000210,
+      "flow": "check_start",
+      "start_ts": 1774296029.6056068,
+      "latency_ms": 53169.28533400096,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000206,
+      "flow": "check_start",
+      "start_ts": 1774296020.35584,
+      "latency_ms": 65627.47495800068,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000212,
+      "flow": "sentences_ack",
+      "start_ts": 1774296030.6855721,
+      "latency_ms": 60004.241874999934,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000205,
+      "flow": "check_status",
+      "start_ts": 1774296033.046589,
+      "latency_ms": 71600.34537499996,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000209,
+      "flow": "check_start",
+      "start_ts": 1774296034.7086048,
+      "latency_ms": 101453.28175000031,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "check_start",
+      "start_ts": 1774296031.5586581,
+      "latency_ms": 122933.74345800112,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "check_status",
+      "start_ts": 1774296039.038584,
+      "latency_ms": 119340.7029580012,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000203,
+      "flow": "check_status",
+      "start_ts": 1774296040.0809631,
+      "latency_ms": 120005.99241700002,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000208,
+      "flow": "check_status",
+      "start_ts": 1774296053.7253408,
+      "latency_ms": 120001.98441700013,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000210,
+      "flow": "check_status",
+      "start_ts": 1774296082.775231,
+      "latency_ms": 120005.2782920011,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000206,
+      "flow": "check_status",
+      "start_ts": 1774296085.983535,
+      "latency_ms": 120004.34029099961,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "check_start",
+      "start_ts": 1774296079.829025,
+      "latency_ms": 137437.17916700005,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000205,
+      "flow": "check_status",
+      "start_ts": 1774296105.636887,
+      "latency_ms": 120003.94612499986,
+      "status_code": null,
+      "ok": false,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "check_status",
+      "start_ts": 1774296154.492678,
+      "latency_ms": 90930.42279200017,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000209,
+      "flow": "check_status",
+      "start_ts": 1774296136.162247,
+      "latency_ms": 113785.4679159991,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "check_status",
+      "start_ts": 1774296217.26662,
+      "latency_ms": 34507.26383300025,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "check_status",
+      "start_ts": 1774296245.423347,
+      "latency_ms": 8601.278875001299,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "check_status",
+      "start_ts": 1774296251.7741199,
+      "latency_ms": 3539.379542000461,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "check_status",
+      "start_ts": 1774296158.3795588,
+      "latency_ms": 97976.78612500022,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000209,
+      "flow": "session_completion",
+      "start_ts": 1774296254.6886039,
+      "latency_ms": 6532.701457999792,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "check_status",
+      "start_ts": 1774296255.114361,
+      "latency_ms": 7038.464665998617,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "check_status",
+      "start_ts": 1774296256.221303,
+      "latency_ms": 6404.895707999458,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000209,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296261.221566,
+      "latency_ms": 3251.6547909999645,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000209,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296261.223135,
+      "latency_ms": 6009.2097080014355,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "session_completion",
+      "start_ts": 1774296260.130222,
+      "latency_ms": 10582.926999999472,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "check_status",
+      "start_ts": 1774296263.6744802,
+      "latency_ms": 8784.30283399939,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000209,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296261.2224388,
+      "latency_ms": 16557.589250000092,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "session_completion",
+      "start_ts": 1774296266.324236,
+      "latency_ms": 11604.666041999735,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296270.713242,
+      "latency_ms": 8807.892750000974,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296270.7137558,
+      "latency_ms": 11599.684832999628,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "check_status",
+      "start_ts": 1774296273.688218,
+      "latency_ms": 10084.311499998876,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296270.713504,
+      "latency_ms": 22426.9512080009,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296277.9296892,
+      "latency_ms": 16443.852500000503,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296277.9290729,
+      "latency_ms": 17583.073292000336,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296277.930364,
+      "latency_ms": 18999.74462499995,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "session_completion",
+      "start_ts": 1774296287.621823,
+      "latency_ms": 13610.524416999397,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296301.232613,
+      "latency_ms": 2045.952665999721,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296301.234039,
+      "latency_ms": 4782.043834000433,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "flow": "post_finish_refresh",
+      "start_ts": 1774296301.2334158,
+      "latency_ms": 11671.824874998492,
+      "status_code": 200,
+      "ok": true,
+      "error": null
+    }
+  ],
+  "session_results": [
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000212,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 117718.360208999,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000203,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 232120.3953330005,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000208,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 220755.83229199948,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000210,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 239809.05541599897,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000206,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 263016.4608340001,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000205,
+      "success": false,
+      "failed": true,
+      "timeout": false,
+      "session_time_ms": 287669.9468749994,
+      "error": ""
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000209,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 319808.3949160009,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "cold",
+      "user_id": 9100000204,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 360169.0295419994,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000207,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 348958.80258300167,
+      "error": null
+    },
+    {
+      "stage": "stage10_rerun",
+      "cohort": "warm",
+      "user_id": 9100000211,
+      "success": true,
+      "failed": false,
+      "timeout": false,
+      "session_time_ms": 344933.518875001,
+      "error": null
+    }
+  ],
+  "request_summary": {
+    "cold": {
+      "total_requests": 29,
+      "ok_requests": 27,
+      "error_requests": 2,
+      "success_rate": 0.9310344827586207,
+      "error_rate": 0.06896551724137931,
+      "count": 29,
+      "avg": 28968.9088778967,
+      "p50": 15326.773791999585,
+      "p95": 119738.64885820038,
+      "p99": 120005.41945523999
+    },
+    "warm": {
+      "total_requests": 55,
+      "ok_requests": 51,
+      "error_requests": 4,
+      "success_rate": 0.9272727272727272,
+      "error_rate": 0.07272727272727272,
+      "count": 55,
+      "avg": 32331.24896356362,
+      "p50": 18480.900082999142,
+      "p95": 120004.62169130005,
+      "p99": 129605.32388414064
+    },
+    "all": {
+      "total_requests": 84,
+      "ok_requests": 78,
+      "error_requests": 6,
+      "success_rate": 0.9285714285714286,
+      "error_rate": 0.07142857142857142,
+      "count": 84,
+      "avg": 31170.441076845273,
+      "p50": 16500.720875000297,
+      "p95": 120004.28116609965,
+      "p99": 125399.32752853096
+    }
+  },
+  "session_summary": {
+    "cold": {
+      "total_sessions": 3,
+      "successful_sessions": 1,
+      "failed_sessions": 2,
+      "timed_out_sessions": 0,
+      "success_rate": 0.3333333333333333,
+      "error_rate": 0.6666666666666666,
+      "avg_session_time_ms": 293319.79058333306,
+      "p95_session_time_ms": 352919.12127529935,
+      "p99_session_time_ms": 358719.04788865935
+    },
+    "warm": {
+      "total_sessions": 7,
+      "successful_sessions": 3,
+      "failed_sessions": 4,
+      "timed_out_sessions": 0,
+      "success_rate": 0.42857142857142855,
+      "error_rate": 0.5714285714285714,
+      "avg_session_time_ms": 265000.060732143,
+      "p95_session_time_ms": 347751.21747060143,
+      "p99_session_time_ms": 348717.28556052165
+    },
+    "all": {
+      "total_sessions": 10,
+      "successful_sessions": 4,
+      "failed_sessions": 6,
+      "timed_out_sessions": 0,
+      "success_rate": 0.4,
+      "error_rate": 0.6,
+      "avg_session_time_ms": 273495.97968750005,
+      "p95_session_time_ms": 355124.4274104504,
+      "p99_session_time_ms": 359160.10911568964
+    }
+  },
+  "flow_summary": {
+    "cold": {
+      "check_start": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 19021.582153000054,
+        "p50": 19245.18079200061,
+        "p95": 21188.912441700086,
+        "p99": 21361.68858834004
+      },
+      "check_status": {
+        "count": 8,
+        "error_rate": 0.25,
+        "avg": 72536.16061987531,
+        "p50": 84788.5657500001,
+        "p95": 120005.27621479996,
+        "p99": 120005.84917656
+      },
+      "post_finish_refresh": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 14278.176263667168,
+        "p50": 11599.684832999628,
+        "p95": 21344.22457050077,
+        "p99": 22210.405880500875
+      },
+      "progressive_fill": {
+        "count": 8,
+        "error_rate": 0.0,
+        "avg": 9024.45283337488,
+        "p50": 6185.129770999993,
+        "p95": 17976.30638979917,
+        "p99": 19714.155311559476
+      },
+      "sentences_ack": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 15805.769111333575,
+        "p50": 15918.028709000282,
+        "p95": 17523.471020900615,
+        "p99": 17666.177004180645
+      },
+      "session_completion": {
+        "count": 1,
+        "error_rate": 0.0,
+        "avg": 10582.926999999472,
+        "p50": 10582.926999999472,
+        "p95": 10582.926999999472,
+        "p99": 10582.926999999472
+      },
+      "start_session": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 9904.646749667032,
+        "p50": 9240.953041000466,
+        "p95": 11192.034503801367,
+        "p99": 11365.46396716145
+      }
+    },
+    "warm": {
+      "check_start": {
+        "count": 6,
+        "error_rate": 0.0,
+        "avg": 85055.65281250044,
+        "p50": 83540.3783540005,
+        "p95": 133811.32023975032,
+        "p99": 136712.0073815501
+      },
+      "check_status": {
+        "count": 12,
+        "error_rate": 0.25,
+        "avg": 53640.61588883321,
+        "p50": 22295.787666499564,
+        "p95": 120004.76239145028,
+        "p99": 120005.17511189092
+      },
+      "post_finish_refresh": {
+        "count": 9,
+        "error_rate": 0.0,
+        "avg": 10816.105060111215,
+        "p50": 11671.824874998492,
+        "p95": 18433.076091800103,
+        "p99": 18886.41091835998
+      },
+      "progressive_fill": {
+        "count": 11,
+        "error_rate": 0.0,
+        "avg": 17643.89008699998,
+        "p50": 18809.619290999763,
+        "p95": 21281.380395999804,
+        "p99": 21724.82814639916
+      },
+      "sentences_ack": {
+        "count": 7,
+        "error_rate": 0.14285714285714285,
+        "avg": 23446.662357000085,
+        "p50": 14889.244791000237,
+        "p95": 51836.61536230009,
+        "p99": 58370.716572459954
+      },
+      "session_completion": {
+        "count": 3,
+        "error_rate": 0.0,
+        "avg": 10582.63063899964,
+        "p50": 11604.666041999735,
+        "p95": 13409.93857949943,
+        "p99": 13570.407249499403
+      },
+      "start_session": {
+        "count": 7,
+        "error_rate": 0.0,
+        "avg": 19556.445791571085,
+        "p50": 20121.652542000447,
+        "p95": 25246.228945699655,
+        "p99": 26547.9259555395
+      }
+    },
+    "all": {
+      "check_start": {
+        "count": 9,
+        "error_rate": 0.0,
+        "avg": 63044.295926000304,
+        "p50": 53169.28533400096,
+        "p95": 131635.80488340047,
+        "p99": 136276.90431028014
+      },
+      "check_status": {
+        "count": 20,
+        "error_rate": 0.25,
+        "avg": 61198.833781250054,
+        "p50": 53053.804604000106,
+        "p95": 120005.31399825103,
+        "p99": 120005.85673325023
+      },
+      "post_finish_refresh": {
+        "count": 12,
+        "error_rate": 0.0,
+        "avg": 11681.622861000202,
+        "p50": 11635.75485399906,
+        "p95": 20541.987587350373,
+        "p99": 22049.9584838708
+      },
+      "progressive_fill": {
+        "count": 19,
+        "error_rate": 0.0,
+        "avg": 14014.653348631517,
+        "p50": 13942.014249998465,
+        "p95": 20837.932645600446,
+        "p99": 21636.138596319288
+      },
+      "sentences_ack": {
+        "count": 10,
+        "error_rate": 0.1,
+        "avg": 21154.394383300132,
+        "p50": 15184.39033300001,
+        "p95": 47752.80210595017,
+        "p99": 57553.95392118999
+      },
+      "session_completion": {
+        "count": 4,
+        "error_rate": 0.0,
+        "avg": 10582.704729249599,
+        "p50": 11093.796520999604,
+        "p95": 13309.645660749446,
+        "p99": 13550.348665749407
+      },
+      "start_session": {
+        "count": 10,
+        "error_rate": 0.0,
+        "avg": 16660.90607899987,
+        "p50": 17049.37268699996,
+        "p95": 24432.66831454975,
+        "p99": 26385.213829309523
+      }
+    }
+  }
+}
