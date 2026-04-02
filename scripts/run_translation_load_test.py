@@ -30,8 +30,22 @@ THINK_TIME_MAX_SEC = 25.0
 REVIEW_PAUSE_MIN_SEC = 3.0
 REVIEW_PAUSE_MAX_SEC = 5.0
 PROGRESSIVE_FILL_MAX_POLLS = 72
-CHECK_STATUS_MAX_WAIT_SEC = 240.0
-SESSION_TIMEOUT_SEC = 360.0
+CHECK_STATUS_MAX_WAIT_SEC = 420.0
+SESSION_TIMEOUT_SEC = 600.0
+DEFAULT_LANGUAGE_PAIR = {"source_lang": "ru", "target_lang": "de"}
+DEFAULT_TOPIC = "Random sentences"
+DEFAULT_CUSTOM_FOCUS = ""
+DEFAULT_LEVEL = "b1"
+DEFAULT_PREWARM_MIN_READY = 12
+DEFAULT_PREWARM_TARGET_READY = 24
+DEFAULT_PREWARM_MAX_GENERATE = 12
+HOT_BUCKET_PREWARM_OVERRIDES: dict[tuple[str, str], dict[str, int]] = {
+    ("🔗 Порядок слов в придаточном", "b1"): {
+        "min_ready": 24,
+        "target_ready": 48,
+        "max_generate": 24,
+    },
+}
 
 
 @dataclass
@@ -286,6 +300,22 @@ def build_request_headers(instance_id: str, session_id: str | None = None) -> di
     return headers
 
 
+def extract_language_pair(payload: dict[str, Any] | None) -> dict[str, str] | None:
+    pair = (payload or {}).get("language_pair")
+    if not isinstance(pair, dict):
+        return None
+    source_lang = str(pair.get("source_lang") or "").strip().lower()
+    target_lang = str(pair.get("target_lang") or "").strip().lower()
+    if not source_lang or not target_lang:
+        return None
+    return {"source_lang": source_lang, "target_lang": target_lang}
+
+
+def normalize_language_pair(pair: dict[str, Any] | None) -> dict[str, str]:
+    extracted = extract_language_pair({"language_pair": dict(pair or {})})
+    return extracted or dict(DEFAULT_LANGUAGE_PAIR)
+
+
 def build_user_translations(sentences: list[dict[str, Any]], user_id: int) -> list[dict[str, Any]]:
     templates_ok = [
         "Ich denke, dass das heute wirklich wichtig ist.",
@@ -344,12 +374,77 @@ def progressive_fill_poll_delay_sec(attempt: int) -> float:
     return backoff_base + jitter
 
 
-def check_status_poll_delay_sec(attempt: int) -> float:
+def check_status_poll_delay_sec(attempt: int, *, suggested_delay_ms: float | None = None) -> float:
     if attempt <= 1:
         return 0.0
-    backoff_base = 0.90 if attempt <= 3 else min(4.0, 0.90 * (1.28 ** (attempt - 3)))
-    jitter = random.uniform(0.0, 0.249)
-    return backoff_base + jitter
+    backoff_base = 1.60 if attempt <= 3 else min(8.0, 1.60 * (1.22 ** (attempt - 3)))
+    suggested_sec = max(0.0, float(suggested_delay_ms or 0.0) / 1000.0)
+    jitter = random.uniform(0.0, 0.420)
+    return max(backoff_base, suggested_sec) + jitter
+
+
+def _resolve_exact_bucket_prewarm_targets(topic: str, level: str) -> tuple[int, int, int]:
+    normalized_topic = str(topic or DEFAULT_TOPIC).strip() or DEFAULT_TOPIC
+    normalized_level = str(level or DEFAULT_LEVEL).strip().lower() or DEFAULT_LEVEL
+    override = HOT_BUCKET_PREWARM_OVERRIDES.get((normalized_topic, normalized_level)) or {}
+    min_ready = int(override.get("min_ready") or DEFAULT_PREWARM_MIN_READY)
+    target_ready = int(override.get("target_ready") or DEFAULT_PREWARM_TARGET_READY)
+    max_generate = int(override.get("max_generate") or DEFAULT_PREWARM_MAX_GENERATE)
+    return min_ready, target_ready, max_generate
+
+
+def force_prewarm_exact_bucket(args: argparse.Namespace) -> dict[str, Any]:
+    topic = str(getattr(args, "topic", DEFAULT_TOPIC) or DEFAULT_TOPIC).strip()
+    custom_focus = str(getattr(args, "custom_focus", DEFAULT_CUSTOM_FOCUS) or "").strip()
+    level = str(getattr(args, "level", DEFAULT_LEVEL) or DEFAULT_LEVEL).strip().lower() or DEFAULT_LEVEL
+    source_lang = str(getattr(args, "source_lang", DEFAULT_LANGUAGE_PAIR["source_lang"]) or DEFAULT_LANGUAGE_PAIR["source_lang"]).strip().lower()
+    target_lang = str(getattr(args, "target_lang", DEFAULT_LANGUAGE_PAIR["target_lang"]) or DEFAULT_LANGUAGE_PAIR["target_lang"]).strip().lower()
+    min_ready, target_ready, max_generate = _resolve_exact_bucket_prewarm_targets(topic, level)
+    cli_min_ready = getattr(args, "prewarm_min_ready", None)
+    cli_target_ready = getattr(args, "prewarm_target_ready", None)
+    cli_max_generate = getattr(args, "prewarm_max_generate", None)
+    if cli_min_ready is not None:
+        min_ready = max(min_ready, int(cli_min_ready))
+    if cli_target_ready is not None:
+        target_ready = max(target_ready, int(cli_target_ready))
+    if cli_max_generate is not None:
+        max_generate = max(max_generate, int(cli_max_generate))
+    admin_token = str(os.getenv("AUDIO_DISPATCH_TOKEN") or os.getenv("ADMIN_TOKEN") or "").strip()
+    if not admin_token:
+        raise RuntimeError("AUDIO_DISPATCH_TOKEN or ADMIN_TOKEN is required for exact bucket prewarm")
+    base_url = str(getattr(args, "base_url", DEFAULT_BASE_URL) or DEFAULT_BASE_URL).rstrip("/")
+    url = f"{base_url}/api/admin/prewarm-translation-bucket"
+    payload = {
+        "token": admin_token,
+        "topic": topic,
+        "custom_focus": custom_focus,
+        "level": level,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "min_ready": int(min_ready),
+        "target_ready": int(target_ready),
+        "max_generate": int(max_generate),
+    }
+    started = time.perf_counter()
+    with httpx.Client(timeout=180.0, follow_redirects=True) as client:
+        response = client.post(url, json=payload)
+    latency_ms = (time.perf_counter() - started) * 1000.0
+    if response.status_code >= 400:
+        raise RuntimeError(f"Exact bucket prewarm failed status={response.status_code} body={response.text[:400]}")
+    result = response.json()
+    return {
+        "topic": topic,
+        "custom_focus": custom_focus,
+        "level": level,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "min_ready": int(min_ready),
+        "target_ready": int(target_ready),
+        "max_generate": int(max_generate),
+        "http_status": int(response.status_code),
+        "latency_ms": latency_ms,
+        "result": result,
+    }
 
 
 class StageRunner:
@@ -359,6 +454,17 @@ class StageRunner:
         self.base_url = str(args.base_url or DEFAULT_BASE_URL).rstrip("/")
         self.stage = str(args.stage)
         self.cold_count = max(0, int(args.cold_count))
+        self.topic = str(getattr(args, "topic", DEFAULT_TOPIC) or DEFAULT_TOPIC).strip() or DEFAULT_TOPIC
+        self.custom_focus = str(getattr(args, "custom_focus", DEFAULT_CUSTOM_FOCUS) or "").strip()
+        self.level = str(getattr(args, "level", DEFAULT_LEVEL) or DEFAULT_LEVEL).strip().lower() or DEFAULT_LEVEL
+        self.language_pair = normalize_language_pair(
+            {
+                "source_lang": getattr(args, "source_lang", DEFAULT_LANGUAGE_PAIR["source_lang"]),
+                "target_lang": getattr(args, "target_lang", DEFAULT_LANGUAGE_PAIR["target_lang"]),
+            }
+        )
+        self.post_finish_session_read = bool(getattr(args, "post_finish_session_read", False))
+        self.post_finish_home_reads = bool(getattr(args, "post_finish_home_reads", False))
         self.request_records: list[RequestRecord] = []
         self.session_results: list[SessionResult] = []
 
@@ -426,6 +532,7 @@ class StageRunner:
         cohort = "cold" if index < self.cold_count else "warm"
         instance_id = f"lt_{self.stage}_{user.user_id}"
         session_id: str | None = None
+        language_pair: dict[str, str] | None = dict(self.language_pair)
         acked = False
         try:
             start_response = await self._request(
@@ -438,20 +545,32 @@ class StageRunner:
                 headers=build_request_headers(instance_id),
                 json_body={
                     "initData": user.init_data,
-                    "topic": "Random sentences",
-                    "custom_focus": "",
-                    "level": "b1",
+                    "topic": self.topic,
+                    "custom_focus": self.custom_focus,
+                    "level": self.level,
+                    "language_pair": language_pair,
                 },
             )
             start_payload = start_response.json()
             if not start_response.is_success:
                 raise RuntimeError(start_payload.get("error") or start_response.text)
             session_id = str(start_payload.get("session_id") or "").strip() or None
+            language_pair = extract_language_pair(start_payload) or language_pair
             sentences = list(start_payload.get("items") or [])
             expected_total = max(1, int(start_payload.get("expected_total") or 7))
             ready_count = int(start_payload.get("ready_count") or len(sentences) or 0)
+            generation_status = str(
+                start_payload.get("generation_status")
+                or (
+                    "running"
+                    if start_payload.get("generation_in_progress") and ready_count < expected_total
+                    else "ready"
+                    if ready_count >= expected_total
+                    else "idle"
+                )
+            ).strip().lower()
             progressive_attempts = 0
-            while ready_count < expected_total and progressive_attempts < PROGRESSIVE_FILL_MAX_POLLS:
+            while ready_count < expected_total and generation_status in {"pending", "running"} and progressive_attempts < PROGRESSIVE_FILL_MAX_POLLS:
                 if progressive_attempts > 0:
                     await asyncio.sleep(progressive_fill_poll_delay_sec(progressive_attempts))
                 progressive_attempts += 1
@@ -463,36 +582,35 @@ class StageRunner:
                     cohort=cohort,
                     user_id=user.user_id,
                     headers=build_request_headers(instance_id, session_id=session_id),
-                    json_body={"initData": user.init_data, "limit": 7},
+                    json_body={
+                        "initData": user.init_data,
+                        "limit": 7,
+                        "session_id": session_id,
+                        "language_pair": language_pair,
+                    },
                 )
                 fill_payload = fill_response.json()
                 if not fill_response.is_success:
                     raise RuntimeError(fill_payload.get("error") or fill_response.text)
+                language_pair = extract_language_pair(fill_payload) or language_pair
                 sentences = list(fill_payload.get("items") or [])
                 ready_count = int(fill_payload.get("ready_count") or len(sentences) or 0)
+                generation_status = str(
+                    fill_payload.get("generation_status")
+                    or (
+                        "running"
+                        if fill_payload.get("generation_in_progress") and ready_count < expected_total
+                        else "ready"
+                        if ready_count >= expected_total
+                        else "idle"
+                    )
+                ).strip().lower()
+                if generation_status == "failed":
+                    raise RuntimeError(fill_payload.get("generation_error") or "Sentence generation failed")
             if not sentences:
                 raise RuntimeError("No sentences available after start/progressive fill")
             if not acked:
-                source_session_id = str(sentences[0].get("source_session_id") or "").strip()
-                sentence_ids = [int(item.get("id_for_mistake_table") or 0) for item in sentences if int(item.get("id_for_mistake_table") or 0) > 0]
-                if source_session_id and sentence_ids:
-                    ack_response = await self._request(
-                        client,
-                        method="POST",
-                        path="/api/webapp/sentences/ack",
-                        flow="sentences_ack",
-                        cohort=cohort,
-                        user_id=user.user_id,
-                        headers=build_request_headers(instance_id, session_id=session_id),
-                        json_body={
-                            "initData": user.init_data,
-                            "source_session_id": source_session_id,
-                            "sentence_ids": sentence_ids,
-                        },
-                        timeout_sec=60.0,
-                    )
-                    if ack_response.is_success:
-                        acked = True
+                acked = True
             await asyncio.sleep(random.uniform(THINK_TIME_MIN_SEC, THINK_TIME_MAX_SEC))
             translations = build_user_translations(sentences, user.user_id)
             check_start_response = await self._request(
@@ -508,6 +626,7 @@ class StageRunner:
                     "session_id": session_id,
                     "translations": translations,
                     "send_private_grammar_text": False,
+                    "language_pair": language_pair,
                 },
                 timeout_sec=180.0,
             )
@@ -522,11 +641,17 @@ class StageRunner:
             poll_started = time.perf_counter()
             terminal_status = ""
             status_attempt = 0
+            suggested_status_delay_ms = 0.0
             while True:
                 if (time.perf_counter() - poll_started) > CHECK_STATUS_MAX_WAIT_SEC:
                     raise TimeoutError("check_status timeout")
                 if status_attempt > 0:
-                    await asyncio.sleep(check_status_poll_delay_sec(status_attempt))
+                    await asyncio.sleep(
+                        check_status_poll_delay_sec(
+                            status_attempt,
+                            suggested_delay_ms=suggested_status_delay_ms,
+                        )
+                    )
                 status_attempt += 1
                 status_response = await self._request(
                     client,
@@ -540,6 +665,7 @@ class StageRunner:
                         "initData": user.init_data,
                         "check_session_id": check_session_id,
                         "poll_count": status_attempt,
+                        "language_pair": language_pair,
                     },
                     timeout_sec=120.0,
                 )
@@ -547,6 +673,9 @@ class StageRunner:
                 if not status_response.is_success:
                     raise RuntimeError(status_payload.get("error") or status_response.text)
                 current_session = status_payload.get("check_session") or {}
+                suggested_status_delay_ms = float(
+                    ((status_payload.get("polling") or {}).get("suggested_delay_ms") or 0.0)
+                )
                 terminal_status = str(current_session.get("status") or "").strip().lower()
                 if terminal_status in {"done", "failed", "canceled"}:
                     break
@@ -567,42 +696,50 @@ class StageRunner:
             if not finish_response.is_success:
                 raise RuntimeError(finish_payload.get("error") or finish_response.text)
 
-            # Post-finish refresh calls that the frontend currently does.
-            await asyncio.gather(
-                self._request(
-                    client,
-                    method="POST",
-                    path="/api/webapp/session",
-                    flow="post_finish_session",
-                    cohort=cohort,
-                    user_id=user.user_id,
-                    headers=build_request_headers(instance_id),
-                    json_body={"initData": user.init_data},
-                    timeout_sec=60.0,
-                ),
-                self._request(
-                    client,
-                    method="GET",
-                    path="/api/today",
-                    flow="post_finish_today",
-                    cohort=cohort,
-                    user_id=user.user_id,
-                    headers={"X-Webapp-Instance-Id": instance_id},
-                    params={"initData": user.init_data},
-                    timeout_sec=60.0,
-                ),
-                self._request(
-                    client,
-                    method="GET",
-                    path="/api/progress/skills",
-                    flow="post_finish_skills",
-                    cohort=cohort,
-                    user_id=user.user_id,
-                    headers={"X-Webapp-Instance-Id": instance_id},
-                    params={"period": "7d", "initData": user.init_data},
-                    timeout_sec=60.0,
-                ),
-            )
+            post_finish_requests = []
+            if self.post_finish_session_read:
+                post_finish_requests.append(
+                    self._request(
+                        client,
+                        method="POST",
+                        path="/api/webapp/session",
+                        flow="post_finish_session",
+                        cohort=cohort,
+                        user_id=user.user_id,
+                        headers=build_request_headers(instance_id),
+                        json_body={"initData": user.init_data},
+                        timeout_sec=60.0,
+                    )
+                )
+            if self.post_finish_home_reads:
+                post_finish_requests.extend(
+                    [
+                        self._request(
+                            client,
+                            method="GET",
+                            path="/api/today",
+                            flow="post_finish_today",
+                            cohort=cohort,
+                            user_id=user.user_id,
+                            headers={"X-Webapp-Instance-Id": instance_id},
+                            params={"initData": user.init_data},
+                            timeout_sec=60.0,
+                        ),
+                        self._request(
+                            client,
+                            method="GET",
+                            path="/api/progress/skills",
+                            flow="post_finish_skills",
+                            cohort=cohort,
+                            user_id=user.user_id,
+                            headers={"X-Webapp-Instance-Id": instance_id},
+                            params={"period": "7d", "initData": user.init_data},
+                            timeout_sec=60.0,
+                        ),
+                    ]
+                )
+            if post_finish_requests:
+                await asyncio.gather(*post_finish_requests)
             self.session_results.append(
                 SessionResult(
                     stage=self.stage,
@@ -730,7 +867,12 @@ def run_stage(args: argparse.Namespace) -> None:
     if len(selected) < count:
         raise RuntimeError(f"Need {count} users from offset {offset}, found {len(selected)}")
     random.seed(int(args.seed))
+    prewarm_payload = None
+    if bool(getattr(args, "force_prewarm_exact_bucket", False)):
+        prewarm_payload = force_prewarm_exact_bucket(args)
     payload = asyncio.run(StageRunner(args, selected).run())
+    if prewarm_payload is not None:
+        payload["prewarm"] = prewarm_payload
     write_json(args.out, payload)
     print(json.dumps({
         "ok": True,
@@ -738,6 +880,7 @@ def run_stage(args: argparse.Namespace) -> None:
         "users": count,
         "offset": offset,
         "out": args.out,
+        "prewarm": prewarm_payload,
         "session_summary": payload["session_summary"],
     }))
 
@@ -780,6 +923,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--base-url", default=DEFAULT_BASE_URL)
     run.add_argument("--cold-count", type=int, default=3)
     run.add_argument("--seed", type=int, default=20260323)
+    run.add_argument("--topic", default=DEFAULT_TOPIC)
+    run.add_argument("--custom-focus", default=DEFAULT_CUSTOM_FOCUS)
+    run.add_argument("--level", default=DEFAULT_LEVEL)
+    run.add_argument("--source-lang", default=DEFAULT_LANGUAGE_PAIR["source_lang"])
+    run.add_argument("--target-lang", default=DEFAULT_LANGUAGE_PAIR["target_lang"])
+    run.add_argument("--force-prewarm-exact-bucket", action="store_true")
+    run.add_argument("--prewarm-min-ready", type=int)
+    run.add_argument("--prewarm-target-ready", type=int)
+    run.add_argument("--prewarm-max-generate", type=int)
+    run.add_argument("--post-finish-session-read", action="store_true")
+    run.add_argument("--post-finish-home-reads", action="store_true")
     run.set_defaults(func=run_stage)
 
     return parser

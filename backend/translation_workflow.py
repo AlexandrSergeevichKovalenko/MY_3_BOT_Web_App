@@ -6,6 +6,8 @@ import os
 import re
 import json
 import time
+import threading
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -30,10 +32,10 @@ from backend.analytics import _calculate_final_score
 from backend.database import (
     get_db_connection,
     get_db_connection_context,
+    db_acquire_scope,
     apply_skill_events_for_error,
     close_stale_open_translation_sessions_for_user,
     get_skill_mapping_for_error,
-    update_translation_check_item_result,
     delete_translation_draft_state,
     build_translation_session_minutes_sql,
     enforce_feature_limit,
@@ -53,6 +55,47 @@ AUTHORED_PROFILE_SOURCE = "authored_generation"
 AUTHORED_PROFILE_CONFIDENCE = 1.0
 REMEDIATION_PROFILE_SOURCE = "remediation_history"
 REMEDIATION_PROFILE_CONFIDENCE = 0.85
+TRANSLATION_SENTENCE_LLM_GLOBAL_CONCURRENCY = max(
+    1,
+    min(32, int((os.getenv("TRANSLATION_SENTENCE_LLM_GLOBAL_CONCURRENCY") or "4").strip() or "4")),
+)
+_TRANSLATION_SENTENCE_LLM_SEMAPHORE = threading.BoundedSemaphore(TRANSLATION_SENTENCE_LLM_GLOBAL_CONCURRENCY)
+
+
+def _translation_sentence_fill_async_enabled() -> bool:
+    if str((os.getenv("TRANSLATION_SENTENCE_FILL_ASYNC_ENABLED") or "0")).strip().lower() not in {"1", "true", "yes", "on"}:
+        return False
+    return bool(
+        (os.getenv("REDIS_URL") or "").strip()
+        or (os.getenv("RAILWAY_REDIS_URL") or "").strip()
+        or (os.getenv("UPSTASH_REDIS_URL") or "").strip()
+    )
+
+
+def _translation_result_side_effects_async_enabled() -> bool:
+    raw = str(os.getenv("TRANSLATION_RESULT_SIDE_EFFECTS_ASYNC_ENABLED") or "").strip().lower()
+    if raw:
+        enabled = raw in {"1", "true", "yes", "on"}
+    else:
+        enabled = True
+    if not enabled:
+        return False
+    return bool(
+        (os.getenv("REDIS_URL") or "").strip()
+        or (os.getenv("RAILWAY_REDIS_URL") or "").strip()
+        or (os.getenv("UPSTASH_REDIS_URL") or "").strip()
+    )
+
+
+@asynccontextmanager
+async def _sentence_generation_slot(task_name: str):
+    wait_started_at = time.perf_counter()
+    await asyncio.to_thread(_TRANSLATION_SENTENCE_LLM_SEMAPHORE.acquire)
+    wait_duration_ms = int((time.perf_counter() - wait_started_at) * 1000)
+    try:
+        yield wait_duration_ms
+    finally:
+        _TRANSLATION_SENTENCE_LLM_SEMAPHORE.release()
 
 
 def _extract_nested_error_message(value: Any) -> str:
@@ -83,6 +126,14 @@ def _extract_nested_error_message(value: Any) -> str:
             if nested:
                 return nested
     return text
+
+
+def _translation_fill_reached_target(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    expected_total = int(result.get("expected_total") or 0)
+    ready_count = int(result.get("ready_count") or 0)
+    return expected_total > 0 and ready_count >= expected_total
 
 
 def finalize_open_translation_sessions() -> dict[str, int]:
@@ -127,6 +178,8 @@ def _get_active_session_id(
     target_lang: str | None = None,
 ) -> str | None:
     if source_lang and target_lang:
+        normalized_source_lang = str(source_lang or "").strip().lower() or "ru"
+        normalized_target_lang = str(target_lang or "").strip().lower() or "de"
         cursor.execute(
             """
             SELECT up.session_id
@@ -140,12 +193,15 @@ def _get_active_session_id(
                   AND ds.session_id = up.session_id
                   AND COALESCE(ds.source_lang, 'ru') = %s
                   AND COALESCE(ds.target_lang, 'de') = %s
+                LIMIT 1
               )
             ORDER BY up.start_time DESC
             LIMIT 1;
             """,
-            (user_id, source_lang, target_lang),
+            (int(user_id), normalized_source_lang, normalized_target_lang),
         )
+        row = cursor.fetchone()
+        return str(row[0]).strip() if row and row[0] is not None else None
     else:
         cursor.execute(
             """
@@ -755,9 +811,19 @@ def get_story_history_webapp(user_id: int, limit: int = 10) -> list[dict[str, An
     ]
 
 
-def get_active_session_type(user_id: int, *, close_stale_sessions: bool = True) -> dict[str, Any]:
+def get_active_session_type(
+    user_id: int,
+    *,
+    close_stale_sessions: bool = True,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> dict[str, Any]:
     if close_stale_sessions:
-        close_stale_open_translation_sessions_for_user(user_id=int(user_id))
+        close_stale_open_translation_sessions_for_user(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -766,6 +832,7 @@ def get_active_session_type(user_id: int, *, close_stale_sessions: bool = True) 
                 FROM bt_3_user_progress
                 WHERE user_id = %s AND completed = FALSE
                 ORDER BY start_time DESC
+                LIMIT 1
                 """,
                 (user_id,),
             )
@@ -773,64 +840,36 @@ def get_active_session_type(user_id: int, *, close_stale_sessions: bool = True) 
             if not rows:
                 return {"type": "none", "session_id": None}
 
-            for row in rows:
-                session_id = row[0]
+            session_id = rows[0][0]
 
-                cursor.execute(
-                    """
-                    SELECT story_id
-                    FROM bt_3_story_sessions
-                    WHERE user_id = %s AND session_id = %s
-                    ORDER BY created_at DESC
-                    LIMIT 1;
-                    """,
-                    (user_id, str(session_id)),
-                )
-                story_row = cursor.fetchone()
-                if story_row:
-                    return {"type": "story", "story_id": story_row[0], "session_id": str(session_id)}
+            cursor.execute(
+                """
+                SELECT story_id
+                FROM bt_3_story_sessions
+                WHERE user_id = %s AND session_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (user_id, str(session_id)),
+            )
+            story_row = cursor.fetchone()
+            if story_row:
+                return {"type": "story", "story_id": story_row[0], "session_id": str(session_id)}
 
-                cursor.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM bt_3_daily_sentences
-                    WHERE user_id = %s AND session_id = %s;
-                    """,
-                    (user_id, session_id),
-                )
-                sentence_count = int((cursor.fetchone() or [0])[0] or 0)
-                if sentence_count > 0:
-                    return {"type": "regular", "session_id": str(session_id)}
+            cursor.execute(
+                """
+                SELECT 1
+                FROM bt_3_daily_sentences
+                WHERE user_id = %s AND session_id = %s
+                LIMIT 1;
+                """,
+                (user_id, session_id),
+            )
+            sentence_row = cursor.fetchone()
+            if sentence_row:
+                return {"type": "regular", "session_id": str(session_id)}
 
-                cursor.execute(
-                    """
-                    UPDATE bt_3_user_progress
-                    SET
-                        active_seconds = COALESCE(active_seconds, 0)
-                            + CASE
-                                WHEN COALESCE(active_running, FALSE) = TRUE
-                                 AND active_started_at IS NOT NULL
-                                    THEN GREATEST(
-                                        0,
-                                        EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
-                                    )
-                                ELSE 0
-                            END,
-                        active_started_at = NULL,
-                        active_running = FALSE,
-                        end_time = NOW(),
-                        completed = TRUE
-                    WHERE user_id = %s AND session_id = %s;
-                    """,
-                    (user_id, session_id),
-                )
-                logging.warning(
-                    "Auto-closed empty active translation session: user_id=%s session_id=%s",
-                    user_id,
-                    session_id,
-                )
-
-            return {"type": "none", "session_id": None}
+    return {"type": "none", "session_id": None}
 
 
 async def start_story_session_webapp(
@@ -848,7 +887,8 @@ async def start_story_session_webapp(
         source_lang=source_lang,
         target_lang=target_lang,
     )
-    conn = get_db_connection()
+    with db_acquire_scope("story_session_start"):
+        conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
@@ -1006,7 +1046,8 @@ async def submit_story_translation_webapp(
     if not translations:
         return {"error": "translations обязательны"}
 
-    conn = get_db_connection()
+    with db_acquire_scope("story_translation_submit"):
+        conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
@@ -1239,12 +1280,21 @@ async def generate_sentences_webapp(
 
     for attempt in range(5):
         try:
-            sentences = await llm_execute(
-                task_name=task_name,
-                system_instruction_key=system_instruction_key,
-                user_message=user_message,
-                poll_interval_seconds=1.0,
-            )
+            async with _sentence_generation_slot(task_name) as wait_duration_ms:
+                if wait_duration_ms >= 500:
+                    logging.info(
+                        "Sentence generation backpressure: task=%s waited_ms=%s target_count=%s level=%s",
+                        task_name,
+                        wait_duration_ms,
+                        target_count,
+                        level_key,
+                    )
+                sentences = await llm_execute(
+                    task_name=task_name,
+                    system_instruction_key=system_instruction_key,
+                    user_message=user_message,
+                    poll_interval_seconds=1.0,
+                )
 
             raw_lines = [s.strip() for s in sentences.split("\n") if s.strip()]
             filtered = _filter_sentences_for_level(raw_lines, level_key)
@@ -1256,7 +1306,9 @@ async def generate_sentences_webapp(
         except Exception:
             break
 
-    with get_db_connection() as conn:
+    with db_acquire_scope("generate_sentences_fallback"):
+        conn = get_db_connection()
+    with conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -1534,6 +1586,187 @@ def _sentence_pool_hash(sentence: str | None) -> str:
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest() if normalized else ""
 
 
+def _get_mastered_sentence_keys_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    limit: int = 5000,
+) -> set[str]:
+    safe_limit = max(1, int(limit or 5000))
+    cursor.execute(
+        """
+        SELECT sentence_text
+        FROM bt_3_translation_sentence_user_state
+        WHERE user_id = %s
+          AND source_lang = %s
+          AND target_lang = %s
+          AND mastered = TRUE
+        ORDER BY updated_at DESC
+        LIMIT %s;
+        """,
+        (
+            int(user_id),
+            str(source_lang or "").strip().lower() or "ru",
+            str(target_lang or "").strip().lower() or "de",
+            safe_limit,
+        ),
+    )
+    rows = cursor.fetchall() or []
+    return {
+        _normalize_sentence_text_key(str(row[0] or ""))
+        for row in rows
+        if row and str(row[0] or "").strip()
+    }
+
+
+def _record_translation_sentence_user_state_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    sentence_text: str,
+    score_value: int,
+    session_id: int | None = None,
+    mastered: bool = False,
+) -> None:
+    normalized_sentence = _normalize_sentence_pool_text(sentence_text)
+    sentence_hash = _sentence_pool_hash(normalized_sentence)
+    if not normalized_sentence or not sentence_hash:
+        return
+    normalized_source_lang = str(source_lang or "").strip().lower() or "ru"
+    normalized_target_lang = str(target_lang or "").strip().lower() or "de"
+    cursor.execute(
+        """
+        INSERT INTO bt_3_translation_sentence_user_state (
+            user_id,
+            source_lang,
+            target_lang,
+            sentence_hash,
+            sentence_text,
+            seen_count,
+            best_score,
+            last_score,
+            mastered,
+            mastered_at,
+            last_session_id
+        )
+        VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END, %s)
+        ON CONFLICT (user_id, source_lang, target_lang, sentence_hash)
+        DO UPDATE SET
+            sentence_text = EXCLUDED.sentence_text,
+            seen_count = bt_3_translation_sentence_user_state.seen_count + 1,
+            best_score = GREATEST(
+                COALESCE(bt_3_translation_sentence_user_state.best_score, EXCLUDED.best_score),
+                COALESCE(EXCLUDED.best_score, bt_3_translation_sentence_user_state.best_score)
+            ),
+            last_score = EXCLUDED.last_score,
+            mastered = bt_3_translation_sentence_user_state.mastered OR EXCLUDED.mastered,
+            mastered_at = COALESCE(
+                bt_3_translation_sentence_user_state.mastered_at,
+                CASE WHEN EXCLUDED.mastered THEN NOW() ELSE NULL END
+            ),
+            last_session_id = EXCLUDED.last_session_id,
+            last_seen_at = NOW(),
+            updated_at = NOW();
+        """,
+        (
+            int(user_id),
+            normalized_source_lang,
+            normalized_target_lang,
+            sentence_hash,
+            normalized_sentence,
+            int(score_value or 0),
+            int(score_value or 0),
+            bool(mastered),
+            bool(mastered),
+            str(session_id) if session_id is not None else None,
+        ),
+    )
+
+
+def _record_translation_bucket_demand_with_cursor(
+    cursor,
+    *,
+    source_lang: str,
+    target_lang: str,
+    focus_key: str | None,
+    level: str | None,
+    sessions_started_delta: int = 0,
+    sentences_assigned_delta: int = 0,
+    sentences_mastered_delta: int = 0,
+) -> None:
+    normalized_focus_key = str(focus_key or "").strip()
+    if not normalized_focus_key:
+        return
+    normalized_level = _normalize_level(level)
+    cursor.execute(
+        """
+        INSERT INTO bt_3_translation_bucket_daily_demand (
+            demand_date,
+            source_lang,
+            target_lang,
+            focus_key,
+            level,
+            sessions_started,
+            sentences_assigned,
+            sentences_mastered
+        )
+        VALUES (
+            CURRENT_DATE,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s
+        )
+        ON CONFLICT (demand_date, source_lang, target_lang, focus_key, level)
+        DO UPDATE SET
+            sessions_started = bt_3_translation_bucket_daily_demand.sessions_started + EXCLUDED.sessions_started,
+            sentences_assigned = bt_3_translation_bucket_daily_demand.sentences_assigned + EXCLUDED.sentences_assigned,
+            sentences_mastered = bt_3_translation_bucket_daily_demand.sentences_mastered + EXCLUDED.sentences_mastered,
+            updated_at = NOW();
+        """,
+        (
+            str(source_lang or "").strip().lower() or "ru",
+            str(target_lang or "").strip().lower() or "de",
+            normalized_focus_key,
+            normalized_level,
+            max(0, int(sessions_started_delta or 0)),
+            max(0, int(sentences_assigned_delta or 0)),
+            max(0, int(sentences_mastered_delta or 0)),
+        ),
+    )
+
+
+def _load_sentence_bucket_info_with_cursor(cursor, *, sentence_id: int) -> dict[str, str] | None:
+    cursor.execute(
+        """
+        SELECT
+            COALESCE(NULLIF(focus_key, ''), ''),
+            COALESCE(NULLIF(level, ''), '')
+        FROM bt_3_daily_sentences
+        WHERE id = %s
+        LIMIT 1;
+        """,
+        (int(sentence_id),),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    focus_key = str(row[0] or "").strip()
+    if not focus_key:
+        return None
+    return {
+        "focus_key": focus_key,
+        "level": _normalize_level(row[1] or None),
+    }
+
+
 def _fetch_shared_sentence_pool_entries_with_cursor(
     cursor,
     *,
@@ -1767,6 +2000,7 @@ async def _top_up_immediate_sentence_entries_with_cursor(
     target_min_ready: int,
     existing_entries: list[dict[str, Any]] | None,
     recent_sentence_keys: set[str] | None = None,
+    tested_skill_profile_seed: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     normalized_entries = _normalize_sentence_entries(list(existing_entries or []))
     focus_kind = str(resolved_focus.get("kind") or "").strip().lower()
@@ -1798,7 +2032,7 @@ async def _top_up_immediate_sentence_entries_with_cursor(
         level=level,
         target_count=requested_count,
         skill_catalog=skill_catalog,
-        focus_hint=resolved_focus,
+        focus_hint=tested_skill_profile_seed if isinstance(tested_skill_profile_seed, dict) else None,
     )
     filtered_entries = _filter_sentence_entries_for_session(
         generated_entries,
@@ -1829,6 +2063,10 @@ async def prewarm_shared_translation_sentence_pool(
     levels: list[str] | None = None,
     source_lang: str = "ru",
     target_lang: str = "de",
+    min_ready_by_focus: dict[str, int] | None = None,
+    target_ready_by_focus: dict[str, int] | None = None,
+    min_ready_by_bucket: dict[tuple[str, str], int] | None = None,
+    target_ready_by_bucket: dict[tuple[str, str], int] | None = None,
     target_ready_per_bucket: int = 8,
     max_generate_per_bucket: int = 4,
 ) -> dict[str, Any]:
@@ -1854,7 +2092,8 @@ async def prewarm_shared_translation_sentence_pool(
             "elapsed_ms": 0,
         }
 
-    conn = get_db_connection()
+    with db_acquire_scope("shared_sentence_pool_prewarm"):
+        conn = get_db_connection()
     cursor = conn.cursor()
     skill_catalog: list[dict[str, str]] | None = None
     bucket_results: list[dict[str, Any]] = []
@@ -1862,7 +2101,25 @@ async def prewarm_shared_translation_sentence_pool(
     upserted_total = 0
     try:
         for focus in candidate_focuses:
+            focus_key = str(focus.get("key") or "").strip()
             for level_key in normalized_levels:
+                bucket_key = (focus_key, level_key)
+                min_ready_for_bucket = max(
+                    1,
+                    int(
+                        (min_ready_by_bucket or {}).get(bucket_key)
+                        or (min_ready_by_focus or {}).get(focus_key)
+                        or target_ready_per_bucket
+                    ),
+                )
+                target_ready_for_bucket = max(
+                    int(min_ready_for_bucket),
+                    int(
+                        (target_ready_by_bucket or {}).get(bucket_key)
+                        or (target_ready_by_focus or {}).get(focus_key)
+                        or target_ready_per_bucket
+                    ),
+                )
                 ready_before = _count_shared_sentence_pool_entries_with_cursor(
                     cursor,
                     focus=focus,
@@ -1870,15 +2127,17 @@ async def prewarm_shared_translation_sentence_pool(
                     source_lang=source_lang,
                     target_lang=target_lang,
                 )
-                if ready_before >= int(target_ready_per_bucket):
+                if ready_before >= int(target_ready_for_bucket):
                     bucket_results.append(
                         {
-                            "focus_key": str(focus.get("key") or "").strip(),
+                            "focus_key": focus_key,
                             "level": level_key,
                             "ready_before": int(ready_before),
                             "ready_after": int(ready_before),
                             "generated": 0,
                             "upserted": 0,
+                            "min_ready": int(min_ready_for_bucket),
+                            "target_ready": int(target_ready_for_bucket),
                             "skipped": "already_ready",
                         }
                     )
@@ -1896,52 +2155,75 @@ async def prewarm_shared_translation_sentence_pool(
                     source_lang=source_lang,
                     target_lang=target_lang,
                 )
-                requested_count = max(
-                    1,
-                    min(
-                        int(max_generate_per_bucket),
-                        int(target_ready_per_bucket) - int(ready_before),
-                    ),
-                )
-                generated_entries = await _generate_legacy_sentence_entries_with_profiles(
-                    topic=str(focus.get("prompt_topic") or focus.get("label") or "Grammar practice").strip(),
-                    level=level_key,
-                    target_count=requested_count,
-                    skill_catalog=skill_catalog,
-                    focus_hint=focus,
-                )
-                filtered_entries = _filter_sentence_entries_for_session(
-                    generated_entries,
-                    level=level_key,
-                    excluded_sentence_keys=existing_sentence_keys,
-                )
-                upserted = _upsert_shared_sentence_pool_entries_with_cursor(
-                    cursor,
-                    focus=focus,
-                    level=level_key,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    entries=filtered_entries,
-                )
-                conn.commit()
-                ready_after = _count_shared_sentence_pool_entries_with_cursor(
-                    cursor,
-                    focus=focus,
-                    level=level_key,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
-                generated_total += int(len(filtered_entries))
-                upserted_total += int(upserted)
+                remaining_budget = max(1, int(max_generate_per_bucket))
+                ready_after = int(ready_before)
+                generated_for_bucket = 0
+                upserted_for_bucket = 0
+                requested_total = 0
+                generation_attempts = 0
+                while ready_after < int(target_ready_for_bucket) and remaining_budget > 0:
+                    generation_attempts += 1
+                    needed = max(1, int(target_ready_for_bucket) - int(ready_after))
+                    requested_count = max(1, min(int(remaining_budget), int(needed)))
+                    requested_total += int(requested_count)
+                    generated_entries = await _generate_legacy_sentence_entries_with_profiles(
+                        topic=str(focus.get("prompt_topic") or focus.get("label") or "Grammar practice").strip(),
+                        level=level_key,
+                        target_count=requested_count,
+                        skill_catalog=skill_catalog,
+                        focus_hint=focus,
+                    )
+                    filtered_entries = _filter_sentence_entries_for_session(
+                        generated_entries,
+                        level=level_key,
+                        excluded_sentence_keys=existing_sentence_keys,
+                    )
+                    if not filtered_entries:
+                        break
+                    upserted = _upsert_shared_sentence_pool_entries_with_cursor(
+                        cursor,
+                        focus=focus,
+                        level=level_key,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        entries=filtered_entries,
+                    )
+                    conn.commit()
+                    generated_for_bucket += int(len(filtered_entries))
+                    upserted_for_bucket += int(upserted)
+                    remaining_budget = max(0, int(remaining_budget) - int(len(filtered_entries)))
+                    existing_sentence_keys.update(
+                        _normalize_sentence_text_key(str((entry or {}).get("sentence") or "").strip())
+                        for entry in filtered_entries
+                        if str((entry or {}).get("sentence") or "").strip()
+                    )
+                    next_ready_after = _count_shared_sentence_pool_entries_with_cursor(
+                        cursor,
+                        focus=focus,
+                        level=level_key,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                    if int(next_ready_after) <= int(ready_after):
+                        break
+                    ready_after = int(next_ready_after)
+                    if generation_attempts >= 3 and ready_after < int(target_ready_for_bucket):
+                        break
+                generated_total += int(generated_for_bucket)
+                upserted_total += int(upserted_for_bucket)
                 bucket_results.append(
                     {
-                        "focus_key": str(focus.get("key") or "").strip(),
+                        "focus_key": focus_key,
                         "level": level_key,
                         "ready_before": int(ready_before),
                         "ready_after": int(ready_after),
-                        "generated": int(len(filtered_entries)),
-                        "upserted": int(upserted),
-                        "requested": int(requested_count),
+                        "generated": int(generated_for_bucket),
+                        "upserted": int(upserted_for_bucket),
+                        "requested": int(requested_total),
+                        "generation_attempts": int(generation_attempts),
+                        "min_ready": int(min_ready_for_bucket),
+                        "target_ready": int(target_ready_for_bucket),
+                        "demand_score": int(focus.get("_demand_score") or 0),
                     }
                 )
         return {
@@ -2538,16 +2820,28 @@ async def _generate_sentence_entries_with_profiles(
     target_count: int,
     level: str | None,
     valid_skill_ids: set[str],
+    allow_partial_return: bool = False,
 ) -> list[dict[str, Any]]:
     level_key = _normalize_level(level)
+    best_partial_entries: list[dict[str, Any]] = []
     for attempt in range(5):
         try:
-            content = await llm_execute(
-                task_name=task_name,
-                system_instruction_key=system_instruction_key,
-                user_message=user_message,
-                poll_interval_seconds=1.0,
-            )
+            async with _sentence_generation_slot(task_name) as wait_duration_ms:
+                if wait_duration_ms >= 500:
+                    logging.info(
+                        "Sentence profile generation backpressure: task=%s waited_ms=%s target_count=%s level=%s attempt=%s",
+                        task_name,
+                        wait_duration_ms,
+                        int(target_count or 0),
+                        level_key,
+                        attempt + 1,
+                    )
+                content = await llm_execute(
+                    task_name=task_name,
+                    system_instruction_key=system_instruction_key,
+                    user_message=user_message,
+                    poll_interval_seconds=1.0,
+                )
             parsed_entries = _parse_generated_sentence_entries_payload(
                 content,
                 valid_skill_ids=valid_skill_ids,
@@ -2559,14 +2853,22 @@ async def _generate_sentence_entries_with_profiles(
                 if item.get("sentence")
                 and _filter_sentences_for_level([str(item.get("sentence") or "")], level_key)
             ]
-            if len(filtered_entries) >= target_count and all(item.get("tested_skill_profile") for item in filtered_entries[:target_count]):
-                return filtered_entries[:target_count]
+            valid_profile_entries = [
+                item for item in filtered_entries
+                if item.get("tested_skill_profile")
+            ]
+            if len(valid_profile_entries) > len(best_partial_entries):
+                best_partial_entries = valid_profile_entries[:target_count]
+            if allow_partial_return and valid_profile_entries:
+                return valid_profile_entries[:target_count]
+            if len(valid_profile_entries) >= target_count:
+                return valid_profile_entries[:target_count]
         except openai.RateLimitError:
             wait_time = (attempt + 1) * 2
             await asyncio.sleep(wait_time)
         except Exception:
             logging.exception("Structured sentence generation attempt failed")
-    return []
+    return best_partial_entries[:target_count]
 
 
 async def _generate_legacy_sentence_entries_with_profiles(
@@ -2576,6 +2878,7 @@ async def _generate_legacy_sentence_entries_with_profiles(
     target_count: int,
     skill_catalog: list[dict[str, str]],
     focus_hint: dict[str, Any] | None = None,
+    allow_partial_return: bool = False,
 ) -> list[dict[str, Any]]:
     level_key = _normalize_level(level)
     instruction_level_key = "a2" if level_key == "a1" else level_key
@@ -2609,6 +2912,7 @@ async def _generate_legacy_sentence_entries_with_profiles(
         target_count=target_count,
         level=level,
         valid_skill_ids={str(item.get("skill_id") or "").strip() for item in skill_catalog if str(item.get("skill_id") or "").strip()},
+        allow_partial_return=allow_partial_return,
     )
 
 
@@ -2624,6 +2928,7 @@ async def get_original_sentences_webapp(
     grammar_focus: dict[str, Any] | None = None,
     target_count: int = 7,
     diagnostics: dict[str, Any] | None = None,
+    progressive_fill_mode: bool = False,
 ) -> list[dict[str, Any]]:
     target_total = max(1, int(target_count or 7))
     level_key = _normalize_level(level)
@@ -2664,6 +2969,7 @@ async def get_original_sentences_webapp(
             target_count=num_sentences,
             skill_catalog=skill_catalog,
             focus_hint=generation_profile_seed,
+            allow_partial_return=bool(progressive_fill_mode),
         )
         generated_entries = _filter_sentence_entries_for_session(
             generated_entries,
@@ -2688,6 +2994,17 @@ async def get_original_sentences_webapp(
         sentence_entries = _normalize_sentence_entries(sentence_entries + generated_entries)
         llm_elapsed_ms += int((time.perf_counter() - llm_started_at) * 1000)
         llm_calls += 1
+        if progressive_fill_mode:
+            if diagnostics is not None:
+                diagnostics.update(seed_diagnostics)
+                diagnostics.update(
+                    {
+                        "llm_ms": int(llm_elapsed_ms),
+                        "llm_calls": int(llm_calls),
+                        "result_count": int(len(sentence_entries)),
+                    }
+                )
+            return sentence_entries[:target_total]
     attempts = 0
     while len(sentence_entries) < target_total and attempts < 3:
         needed = target_total - len(sentence_entries)
@@ -2698,6 +3015,7 @@ async def get_original_sentences_webapp(
             target_count=needed,
             skill_catalog=skill_catalog,
             focus_hint=generation_profile_seed,
+            allow_partial_return=bool(progressive_fill_mode),
         )
         extra_entries = _filter_sentence_entries_for_session(
             extra_entries,
@@ -2904,11 +3222,21 @@ def _get_recently_served_sentence_keys_with_cursor(
         ),
     )
     rows = cursor.fetchall() or []
-    return {
+    served_keys = {
         _normalize_sentence_text_key(row[0])
         for row in rows
         if row and row[0] and _normalize_sentence_text_key(row[0])
     }
+    served_keys.update(
+        _get_mastered_sentence_keys_with_cursor(
+            cursor,
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            limit=max(safe_limit * 20, 500),
+        )
+    )
+    return served_keys
 
 
 def _filter_sentence_entries_for_session(
@@ -2966,12 +3294,16 @@ def _summarize_sentence_entry_batch(
     sentence_entries: list[dict[str, Any]],
     *,
     existing_sentence_keys: set[str],
+    blocked_sentence_keys: set[str] | None = None,
     limit: int,
 ) -> dict[str, int]:
     normalized_entries = _normalize_sentence_entries(sentence_entries)
-    seen_keys = set(existing_sentence_keys or set())
+    existing_keys = set(existing_sentence_keys or set())
+    blocked_keys = set(blocked_sentence_keys or existing_keys)
+    seen_keys = set(blocked_keys)
     safe_limit = max(1, int(limit or 7))
     duplicate_existing = 0
+    duplicate_blocked = 0
     insertable = 0
     overflow = 0
 
@@ -2979,10 +3311,13 @@ def _summarize_sentence_entry_batch(
         sentence_key = _normalize_sentence_text_key(entry.get("sentence") or "")
         if not sentence_key:
             continue
-        if sentence_key in seen_keys:
+        if sentence_key in existing_keys:
             duplicate_existing += 1
             continue
-        if len(seen_keys) >= safe_limit:
+        if sentence_key in blocked_keys:
+            duplicate_blocked += 1
+            continue
+        if len(existing_keys) + insertable >= safe_limit:
             overflow += 1
             continue
         seen_keys.add(sentence_key)
@@ -2993,9 +3328,10 @@ def _summarize_sentence_entry_batch(
         "normalized_count": len(normalized_entries),
         "dropped_during_normalization": max(0, len(sentence_entries or []) - len(normalized_entries)),
         "duplicate_existing": duplicate_existing,
+        "duplicate_blocked": duplicate_blocked,
         "insertable": insertable,
         "overflow": overflow,
-        "remaining_slots": max(0, safe_limit - len(existing_sentence_keys or set())),
+        "remaining_slots": max(0, safe_limit - len(existing_keys)),
     }
 
 
@@ -3006,6 +3342,8 @@ def _insert_sentence_entries_into_session_with_cursor(
     session_id: int,
     source_lang: str,
     target_lang: str,
+    focus_key: str | None,
+    level: str | None,
     sentence_entries: list[dict[str, Any]],
     limit: int = 7,
 ) -> list[dict[str, Any]]:
@@ -3023,12 +3361,21 @@ def _insert_sentence_entries_into_session_with_cursor(
         (int(user_id), int(session_id), source_lang, target_lang),
     )
     existing_rows = cursor.fetchall() or []
-    existing_sentence_keys = {
+    session_sentence_keys = {
         _normalize_sentence_text_key(row[1])
         for row in existing_rows
         if row and row[1]
     }
-    if len(existing_sentence_keys) >= safe_limit:
+    blocked_sentence_keys = set(session_sentence_keys)
+    blocked_sentence_keys.update(
+        _get_mastered_sentence_keys_with_cursor(
+            cursor,
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    )
+    if len(existing_rows) >= safe_limit:
         return []
 
     cursor.execute(
@@ -3052,9 +3399,9 @@ def _insert_sentence_entries_into_session_with_cursor(
         if not sentence:
             continue
         sentence_key = _normalize_sentence_text_key(sentence)
-        if not sentence_key or sentence_key in existing_sentence_keys:
+        if not sentence_key or sentence_key in blocked_sentence_keys:
             continue
-        if len(existing_sentence_keys) >= safe_limit:
+        if len(existing_rows) + len(inserted_items) >= safe_limit:
             break
 
         cursor.execute(
@@ -3087,12 +3434,24 @@ def _insert_sentence_entries_into_session_with_cursor(
                 session_id,
                 id_for_mistake_table,
                 source_lang,
-                target_lang
+                target_lang,
+                focus_key,
+                level
             )
-            VALUES (CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id;
             """,
-            (sentence, next_unique_id, int(user_id), int(session_id), id_for_mistake_table, source_lang, target_lang),
+            (
+                sentence,
+                next_unique_id,
+                int(user_id),
+                int(session_id),
+                id_for_mistake_table,
+                source_lang,
+                target_lang,
+                str(focus_key or "").strip() or None,
+                _normalize_level(level),
+            ),
         )
         inserted_row = cursor.fetchone()
         if not inserted_row or not inserted_row[0]:
@@ -3111,13 +3470,23 @@ def _insert_sentence_entries_into_session_with_cursor(
                 "source_session_id": str(session_id),
             }
         )
-        existing_sentence_keys.add(sentence_key)
+        session_sentence_keys.add(sentence_key)
+        blocked_sentence_keys.add(sentence_key)
         next_unique_id += 1
 
     _insert_sentence_skill_targets_for_entries_with_cursor(
         cursor,
         sentence_profiles=created_sentence_profiles,
     )
+    if inserted_items:
+        _record_translation_bucket_demand_with_cursor(
+            cursor,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            focus_key=focus_key,
+            level=level,
+            sentences_assigned_delta=len(inserted_items),
+        )
     return inserted_items
 
 
@@ -3153,13 +3522,16 @@ async def fill_translation_session_webapp(
     tested_skill_profile_seed: dict[str, Any] | None = None,
     grammar_focus: dict[str, Any] | None = None,
     target_count: int = 7,
-    max_rounds: int = 4,
+    max_rounds: int = 6,
 ) -> dict[str, Any]:
-    conn = get_db_connection()
+    with db_acquire_scope("translation_session_fill"):
+        conn = get_db_connection()
     cursor = conn.cursor()
     advisory_lock_acquired = False
     round_diagnostics: list[dict[str, Any]] = []
     try:
+        resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
+        focus_key = str(resolved_focus.get("key") or "").strip() if isinstance(resolved_focus, dict) else ""
         cursor.execute("SELECT pg_try_advisory_lock(%s);", (int(session_id),))
         lock_row = cursor.fetchone()
         advisory_lock_acquired = bool(lock_row and lock_row[0])
@@ -3214,6 +3586,7 @@ async def fill_translation_session_webapp(
                     grammar_focus=grammar_focus,
                     target_count=missing_count,
                     diagnostics=generation_diagnostics,
+                    progressive_fill_mode=False,
                 )
             else:
                 generation_diagnostics = {}
@@ -3246,6 +3619,14 @@ async def fill_translation_session_webapp(
             batch_summary = _summarize_sentence_entry_batch(
                 candidate_entries,
                 existing_sentence_keys=existing_sentence_keys,
+                blocked_sentence_keys=existing_sentence_keys.union(
+                    _get_mastered_sentence_keys_with_cursor(
+                        cursor,
+                        user_id=int(user_id),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                ),
                 limit=int(target_count),
             )
             inserted_items = _insert_sentence_entries_into_session_with_cursor(
@@ -3254,6 +3635,8 @@ async def fill_translation_session_webapp(
                 session_id=int(session_id),
                 source_lang=source_lang,
                 target_lang=target_lang,
+                focus_key=focus_key,
+                level=level,
                 sentence_entries=candidate_entries,
                 limit=int(target_count),
             )
@@ -3264,6 +3647,7 @@ async def fill_translation_session_webapp(
                 "candidate_normalized_count": int(batch_summary["normalized_count"]),
                 "candidate_dropped_during_normalization": int(batch_summary["dropped_during_normalization"]),
                 "candidate_duplicate_existing": int(batch_summary["duplicate_existing"]),
+                "candidate_duplicate_blocked": int(batch_summary.get("duplicate_blocked") or 0),
                 "candidate_insertable": int(batch_summary["insertable"]),
                 "candidate_overflow": int(batch_summary["overflow"]),
                 "remaining_slots": int(batch_summary["remaining_slots"]),
@@ -3277,8 +3661,8 @@ async def fill_translation_session_webapp(
             round_diagnostics.append(round_info)
             logging.info(
                 "translation fill round: user_id=%s session_id=%s round=%s before_count=%s candidate_raw=%s normalized=%s "
-                "dropped_norm=%s duplicate_existing=%s insertable=%s overflow=%s inserted=%s target=%s requested=%s "
-                "personal_ms=%s pool_ms=%s llm_ms=%s llm_calls=%s",
+                "dropped_norm=%s duplicate_existing=%s duplicate_blocked=%s insertable=%s overflow=%s inserted=%s "
+                "target=%s requested=%s personal_ms=%s pool_ms=%s llm_ms=%s llm_calls=%s",
                 int(user_id),
                 int(session_id),
                 round_info["round"],
@@ -3287,6 +3671,7 @@ async def fill_translation_session_webapp(
                 round_info["candidate_normalized_count"],
                 round_info["candidate_dropped_during_normalization"],
                 round_info["candidate_duplicate_existing"],
+                round_info["candidate_duplicate_blocked"],
                 round_info["candidate_insertable"],
                 round_info["candidate_overflow"],
                 round_info["inserted_count"],
@@ -3300,7 +3685,7 @@ async def fill_translation_session_webapp(
             if not inserted_items:
                 logging.warning(
                     "translation fill stopped without inserts: user_id=%s session_id=%s round=%s before_count=%s target=%s "
-                    "candidate_raw=%s normalized=%s duplicate_existing=%s insertable=%s",
+                    "candidate_raw=%s normalized=%s duplicate_existing=%s duplicate_blocked=%s insertable=%s",
                     int(user_id),
                     int(session_id),
                     round_info["round"],
@@ -3309,6 +3694,7 @@ async def fill_translation_session_webapp(
                     round_info["candidate_raw_count"],
                     round_info["candidate_normalized_count"],
                     round_info["candidate_duplicate_existing"],
+                    round_info["candidate_duplicate_blocked"],
                     round_info["candidate_insertable"],
                 )
                 continue
@@ -3370,41 +3756,33 @@ async def start_translation_session_webapp(
         source_lang=source_lang,
         target_lang=target_lang,
     )
-    conn = get_db_connection()
+    with db_acquire_scope("translation_session_start"):
+        conn = get_db_connection()
     cursor = conn.cursor()
+    phase_metrics: dict[str, int] = {
+        "active_lookup_ms": 0,
+        "session_state_ms": 0,
+        "close_empty_active_ms": 0,
+        "feature_limit_ms": 0,
+        "session_insert_ms": 0,
+        "recent_keys_ms": 0,
+        "seed_collect_ms": 0,
+        "seed_topup_ms": 0,
+        "seed_insert_ms": 0,
+        "commit_ms": 0,
+    }
 
     try:
+        active_lookup_started_at = time.perf_counter()
         active_session_id = _get_active_session_id(
             cursor,
             user_id,
             source_lang=source_lang,
             target_lang=target_lang,
         )
-        if not active_session_id:
-            # Recover sessions that were accidentally marked as completed but
-            # still have pending sentences.
-            recovered_session_id = _get_latest_pending_session_id(
-                cursor,
-                user_id,
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
-            if recovered_session_id:
-                cursor.execute(
-                    """
-                    UPDATE bt_3_user_progress
-                    SET
-                        completed = FALSE,
-                        end_time = NULL,
-                        active_started_at = NULL,
-                        active_running = FALSE
-                    WHERE user_id = %s AND session_id = %s;
-                    """,
-                    (user_id, recovered_session_id),
-                )
-                conn.commit()
-                active_session_id = recovered_session_id
+        phase_metrics["active_lookup_ms"] = int((time.perf_counter() - active_lookup_started_at) * 1000)
         if active_session_id:
+            session_state_started_at = time.perf_counter()
             session_state = _get_translation_session_state_with_cursor(
                 cursor,
                 user_id=int(user_id),
@@ -3412,6 +3790,7 @@ async def start_translation_session_webapp(
                 source_lang=source_lang,
                 target_lang=target_lang,
             )
+            phase_metrics["session_state_ms"] = int((time.perf_counter() - session_state_started_at) * 1000)
             has_stored_sentences = session_state["stored_count"] > 0
             if has_stored_sentences:
                 completion_required = (
@@ -3426,6 +3805,7 @@ async def start_translation_session_webapp(
                     "pending_count": int(session_state["pending_count"]),
                     "translated_count": int(session_state["translated_count"]),
                     "shown_count": int(session_state["shown_count"]),
+                    "phase_metrics": dict(phase_metrics),
                 }
             if force_new_session:
                 logging.info(
@@ -3435,46 +3815,31 @@ async def start_translation_session_webapp(
                 )
             # Auto-close stale empty session and allow creating a fresh one.
             if not has_stored_sentences:
+                close_empty_started_at = time.perf_counter()
                 _close_user_progress_session(
                     cursor,
                     user_id=int(user_id),
                     session_id=active_session_id,
                 )
+                phase_metrics["close_empty_active_ms"] = int((time.perf_counter() - close_empty_started_at) * 1000)
+                commit_started_at = time.perf_counter()
                 conn.commit()
+                phase_metrics["commit_ms"] += int((time.perf_counter() - commit_started_at) * 1000)
 
+        feature_limit_started_at = time.perf_counter()
         translation_limit_error = enforce_feature_limit(
             user_id=int(user_id),
             feature_code="translation_daily_sets",
             requested_units=1.0,
             tz="Europe/Vienna",
         )
+        phase_metrics["feature_limit_ms"] = int((time.perf_counter() - feature_limit_started_at) * 1000)
         if translation_limit_error:
+            translation_limit_error["phase_metrics"] = dict(phase_metrics)
             return translation_limit_error
 
-        cursor.execute(
-            """
-            UPDATE bt_3_user_progress
-            SET
-                active_seconds = COALESCE(active_seconds, 0)
-                    + CASE
-                        WHEN COALESCE(active_running, FALSE) = TRUE
-                         AND active_started_at IS NOT NULL
-                            THEN GREATEST(
-                                0,
-                                EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
-                            )
-                        ELSE 0
-                    END,
-                active_started_at = NULL,
-                active_running = FALSE,
-                end_time = NOW(),
-                completed = TRUE
-            WHERE user_id = %s AND start_time::date < CURRENT_DATE AND completed = FALSE;
-            """,
-            (user_id,),
-        )
-
         session_id = int(hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest(), 16) % (10**12)
+        session_insert_started_at = time.perf_counter()
         cursor.execute(
             """
             INSERT INTO bt_3_user_progress (
@@ -3490,19 +3855,25 @@ async def start_translation_session_webapp(
             """,
             (session_id, user_id, username),
         )
+        phase_metrics["session_insert_ms"] = int((time.perf_counter() - session_insert_started_at) * 1000)
 
         immediate_entries: list[dict[str, Any]] = []
+        focus_key = ""
         seed_started_at = time.perf_counter()
         seed_diagnostics: dict[str, Any] = {}
         if _is_legacy_ru_de_pair(source_lang, target_lang):
             level_key = _normalize_level(level)
             resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
+            focus_key = str(resolved_focus.get("key") or "").strip()
+            recent_keys_started_at = time.perf_counter()
             recent_sentence_keys = _get_recently_served_sentence_keys_with_cursor(
                 cursor,
                 user_id=int(user_id),
                 source_lang=source_lang,
                 target_lang=target_lang,
             )
+            phase_metrics["recent_keys_ms"] = int((time.perf_counter() - recent_keys_started_at) * 1000)
+            seed_collect_started_at = time.perf_counter()
             immediate_entries = _collect_seed_sentence_entries_with_cursor(
                 cursor,
                 user_id=int(user_id),
@@ -3514,29 +3885,59 @@ async def start_translation_session_webapp(
                 target_count=7,
                 diagnostics=seed_diagnostics,
             )
-            immediate_entries, topup_diagnostics = await _top_up_immediate_sentence_entries_with_cursor(
-                cursor,
-                topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
-                level=level,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                resolved_focus=resolved_focus,
-                target_min_ready=2,
-                existing_entries=immediate_entries,
-                recent_sentence_keys=recent_sentence_keys,
-            )
-            seed_diagnostics.update(topup_diagnostics)
+            phase_metrics["seed_collect_ms"] = int((time.perf_counter() - seed_collect_started_at) * 1000)
+            if _translation_sentence_fill_async_enabled():
+                seed_diagnostics.update(
+                    {
+                        "quick_topup_ms": 0,
+                        "quick_topup_requested": 0,
+                        "quick_topup_generated": 0,
+                        "quick_topup_added": 0,
+                        "quick_topup_skipped_async": 1,
+                    }
+                )
+            else:
+                seed_topup_started_at = time.perf_counter()
+                immediate_entries, topup_diagnostics = await _top_up_immediate_sentence_entries_with_cursor(
+                    cursor,
+                    topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
+                    level=level,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    resolved_focus=resolved_focus,
+                    target_min_ready=2,
+                    existing_entries=immediate_entries,
+                    recent_sentence_keys=recent_sentence_keys,
+                    tested_skill_profile_seed=tested_skill_profile_seed,
+                )
+                phase_metrics["seed_topup_ms"] = int((time.perf_counter() - seed_topup_started_at) * 1000)
+                seed_diagnostics.update(topup_diagnostics)
 
+        seed_insert_started_at = time.perf_counter()
         inserted_items = _insert_sentence_entries_into_session_with_cursor(
             cursor,
             user_id=int(user_id),
             session_id=int(session_id),
             source_lang=source_lang,
             target_lang=target_lang,
+            focus_key=focus_key,
+            level=level,
             sentence_entries=immediate_entries,
             limit=7,
         )
+        if focus_key:
+            _record_translation_bucket_demand_with_cursor(
+                cursor,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                focus_key=focus_key,
+                level=level,
+                sessions_started_delta=1,
+            )
+        phase_metrics["seed_insert_ms"] = int((time.perf_counter() - seed_insert_started_at) * 1000)
+        commit_started_at = time.perf_counter()
         conn.commit()
+        phase_metrics["commit_ms"] += int((time.perf_counter() - commit_started_at) * 1000)
         ready_count = len(inserted_items)
         immediate_batch_summary = _summarize_sentence_entry_batch(
             immediate_entries,
@@ -3582,6 +3983,7 @@ async def start_translation_session_webapp(
             "ready_count": int(ready_count),
             "expected_total": 7,
             "remaining_count": max(0, 7 - int(ready_count)),
+            "phase_metrics": dict(phase_metrics),
         }
     finally:
         cursor.close()
@@ -3958,7 +4360,9 @@ def get_daily_translation_history(
     source_lang: str = "ru",
     target_lang: str = "de",
 ) -> list[dict[str, Any]]:
-    with get_db_connection() as conn:
+    with db_acquire_scope("daily_translation_history"):
+        conn = get_db_connection()
+    with conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -5256,7 +5660,7 @@ async def log_translation_mistake(
     target_lang: str = "de",
 ) -> None:
     applied_pairs: list[tuple[str, str]] = []
-    with get_db_connection_context() as conn:
+    with db_acquire_scope("translation_mistake_log"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             applied_pairs = _log_translation_mistake_with_cursor(
                 cursor,
@@ -5303,7 +5707,8 @@ async def apply_translation_result_side_effects(
 ) -> None:
     success_pairs: list[tuple[str, str]] = []
     fail_pairs: list[tuple[str, str]] = []
-    with get_db_connection_context() as conn:
+    mastered_now = False
+    with db_acquire_scope("translation_result_side_effects"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -5339,6 +5744,7 @@ async def apply_translation_result_side_effects(
 
             if was_in_mistakes:
                 if score_value >= 85:
+                    mastered_now = True
                     cursor.execute(
                         """
                         SELECT DISTINCT
@@ -5418,6 +5824,7 @@ async def apply_translation_result_side_effects(
                     )
             else:
                 if score_value >= 80:
+                    mastered_now = True
                     cursor.execute(
                         """
                         INSERT INTO bt_3_successful_translations (user_id, sentence_id, score, attempt, date)
@@ -5455,6 +5862,31 @@ async def apply_translation_result_side_effects(
                             source_lang=source_lang or "ru",
                             target_lang=target_lang or "de",
                         )
+                    )
+
+            _record_translation_sentence_user_state_with_cursor(
+                cursor,
+                user_id=int(user_id),
+                source_lang=source_lang or "ru",
+                target_lang=target_lang or "de",
+                sentence_text=original_text,
+                score_value=int(score_value or 0),
+                session_id=int(session_id) if session_id is not None else None,
+                mastered=bool(mastered_now),
+            )
+            if sentence_pk_id and mastered_now:
+                bucket_info = _load_sentence_bucket_info_with_cursor(
+                    cursor,
+                    sentence_id=int(sentence_pk_id),
+                )
+                if bucket_info:
+                    _record_translation_bucket_demand_with_cursor(
+                        cursor,
+                        source_lang=source_lang or "ru",
+                        target_lang=target_lang or "de",
+                        focus_key=bucket_info.get("focus_key"),
+                        level=bucket_info.get("level"),
+                        sentences_mastered_delta=1,
                     )
 
             if sentence_pk_id:
@@ -5570,7 +6002,7 @@ async def check_user_translation_webapp_item(
     normalized_target_lang = target_lang or "de"
     latest_session_id = _normalize_translation_session_id(daily_session_id)
 
-    with get_db_connection_context() as conn:
+    with db_acquire_scope("translation_webapp_item_lookup"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             if latest_session_id is None:
                 latest_session_id = _resolve_latest_translation_session_id(
@@ -5639,17 +6071,6 @@ async def check_user_translation_webapp_item(
             "correct_translation": None,
             "feedback": str(existing_translation[3] or "").strip(),
         }
-        if checkpoint_item_id is not None:
-            update_translation_check_item_result(
-                item_id=int(checkpoint_item_id),
-                status="running",
-                result_json=result_item,
-                result_text=str(result_item.get("feedback") or "").strip() or None,
-                error_text=None,
-                webapp_check_id=result_item.get("translation_id"),
-                started=True,
-                finished=False,
-            )
         return result_item, None
 
     try:
@@ -5673,7 +6094,7 @@ async def check_user_translation_webapp_item(
     stored_score_value = score_value
     stored_feedback = feedback
     inserted_new_row = False
-    with get_db_connection_context() as conn:
+    with db_acquire_scope("translation_webapp_item_store"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -5747,18 +6168,21 @@ async def check_user_translation_webapp_item(
             "source_lang": normalized_source_lang,
             "target_lang": normalized_target_lang,
         }
-        await apply_translation_result_side_effects(**deferred_payload)
-    if checkpoint_item_id is not None:
-        update_translation_check_item_result(
-            item_id=int(checkpoint_item_id),
-            status="running",
-            result_json=result_item,
-            result_text=str(result_item.get("feedback") or "").strip() or None,
-            error_text=str(result_item.get("error") or "").strip() or None,
-            webapp_check_id=result_item.get("translation_id"),
-            started=True,
-            finished=False,
-        )
+        if _translation_result_side_effects_async_enabled():
+            try:
+                from backend.job_queue import enqueue_translation_result_side_effects_job
+
+                enqueue_translation_result_side_effects_job(**deferred_payload)
+            except Exception:
+                logging.warning(
+                    "translation_result_side_effects enqueue failed; running inline user_id=%s sentence_id_for_mistake=%s",
+                    user_id,
+                    sentence_id_for_mistake,
+                    exc_info=True,
+                )
+                await apply_translation_result_side_effects(**deferred_payload)
+        else:
+            await apply_translation_result_side_effects(**deferred_payload)
     return result_item, None
 
 
@@ -5777,7 +6201,7 @@ async def check_user_translation_webapp(
     normalized_target_lang = target_lang or "de"
     latest_session_id = _normalize_translation_session_id(daily_session_id)
     if latest_session_id is None:
-        with get_db_connection_context() as conn:
+        with db_acquire_scope("translation_webapp_batch"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 latest_session_id = _resolve_latest_translation_session_id(
                     cursor,
@@ -5807,21 +6231,61 @@ async def check_user_translation_webapp(
 
 
 def finish_translation_webapp(user_id: int) -> dict[str, Any]:
-    conn = get_db_connection()
+    with db_acquire_scope("translation_session_finish"):
+        conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
         cursor.execute(
             """
-            SELECT session_id
-            FROM bt_3_user_progress
-            WHERE user_id = %s AND completed = FALSE
-            ORDER BY start_time DESC
+            WITH active_sessions AS (
+                SELECT session_id, start_time
+                FROM bt_3_user_progress
+                WHERE user_id = %s
+                  AND completed = FALSE
+            ),
+            latest_session AS (
+                SELECT session_id
+                FROM active_sessions
+                ORDER BY start_time DESC NULLS LAST, session_id DESC
+                LIMIT 1
+            )
+            SELECT
+                (SELECT session_id FROM latest_session) AS latest_session_id,
+                ARRAY(
+                    SELECT session_id
+                    FROM active_sessions
+                    WHERE session_id IS NOT NULL
+                ) AS active_session_ids,
+                COALESCE(
+                    (
+                        SELECT COUNT(*)
+                        FROM bt_3_daily_sentences ds
+                        WHERE ds.user_id = %s
+                          AND ds.session_id = (SELECT session_id FROM latest_session)
+                          AND COALESCE(ds.shown_to_user, FALSE) = TRUE
+                    ),
+                    0
+                ) AS total_sentences,
+                COALESCE(
+                    (
+                        SELECT COUNT(DISTINCT t.sentence_id)
+                        FROM bt_3_translations t
+                        JOIN bt_3_daily_sentences ds
+                          ON ds.id = t.sentence_id
+                         AND ds.user_id = t.user_id
+                        WHERE t.user_id = %s
+                          AND t.session_id = (SELECT session_id FROM latest_session)
+                          AND COALESCE(ds.shown_to_user, FALSE) = TRUE
+                    ),
+                    0
+                ) AS translated_count
+            ;
             """,
-            (user_id,),
+            (user_id, user_id, user_id),
         )
-        session_rows = cursor.fetchall() or []
-        if not session_rows:
+        session_row = cursor.fetchone()
+        if not session_row or session_row[0] is None:
             return {
                 "message": (
                     "❌ У вас нет активных сессий! Используйте кнопки: "
@@ -5829,41 +6293,18 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
                 ),
                 "status": "no_session",
             }
-        active_session_ids = [row[0] for row in session_rows if row and row[0] is not None]
-        session_id = active_session_ids[0]
+
+        session_id = session_row[0]
+        raw_active_session_ids = list(session_row[1] or [])
+        active_session_ids = [item for item in raw_active_session_ids if item is not None]
+        total_sentences = int(session_row[2] or 0)
+        translated_count = int(session_row[3] or 0)
         if len(active_session_ids) > 1:
             logging.warning(
                 "finish_translation_webapp: multiple active sessions detected for user_id=%s sessions=%s; closing all.",
                 user_id,
                 active_session_ids,
             )
-
-        cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM bt_3_daily_sentences
-            WHERE user_id = %s
-              AND session_id = %s
-              AND COALESCE(shown_to_user, FALSE) = TRUE;
-            """,
-            (user_id, session_id),
-        )
-        total_sentences = cursor.fetchone()[0] or 0
-
-        cursor.execute(
-            """
-            SELECT COUNT(DISTINCT t.sentence_id)
-            FROM bt_3_translations t
-            JOIN bt_3_daily_sentences ds
-              ON ds.id = t.sentence_id
-             AND ds.user_id = t.user_id
-            WHERE t.user_id = %s
-              AND t.session_id = %s
-              AND COALESCE(ds.shown_to_user, FALSE) = TRUE;
-            """,
-            (user_id, session_id),
-        )
-        translated_count = cursor.fetchone()[0] or 0
 
         cursor.execute(
             """
@@ -5883,9 +6324,10 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
                 active_running = FALSE,
                 end_time = NOW(),
                 completed = TRUE
-            WHERE user_id = %s AND completed = FALSE;
+            WHERE user_id = %s
+              AND session_id = ANY(%s);
             """,
-            (user_id,),
+            (user_id, active_session_ids),
         )
         conn.commit()
         try:
@@ -5924,6 +6366,7 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
         return {
             "message": message,
             "status": "completed",
+            "session_id": str(session_id or "").strip() or None,
             "total_sentences": total_sentences,
             "translated_count": translated_count,
         }
@@ -5933,7 +6376,9 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
 
 
 def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
-    with get_db_connection() as conn:
+    with db_acquire_scope("daily_summary_build"):
+        conn = get_db_connection()
+    with conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""

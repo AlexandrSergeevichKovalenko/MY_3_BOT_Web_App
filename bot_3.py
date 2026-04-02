@@ -11,6 +11,7 @@ from datetime import datetime, time, date, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update, Poll
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes, ApplicationHandlerStop, ExtBot, ChatMemberHandler
+from telegram.request import HTTPXRequest
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
@@ -40,9 +41,11 @@ from backend.backend_server import (
     _build_tts_prewarm_quota_control_text,
     _build_video_search_queries,
     _get_user_language_pair,
-    _youtube_search_videos,
+    _is_youtube_short_like,
+    _parse_iso8601_duration_to_seconds,
+    _video_conflicts_with_target_language,
+    _youtube_search_videos_manual,
     _youtube_fill_view_counts,
-    _filter_videos_for_today_task,
     _sanitize_focus_topic,
     get_or_create_tts_clip,
     chunk_sentence_llm_de,
@@ -130,6 +133,17 @@ from backend.database import (
     upsert_active_quiz,
     get_active_quiz,
     delete_active_quiz,
+    store_prepared_telegram_quiz,
+    count_prepared_telegram_quizzes,
+    claim_prepared_telegram_quiz,
+    claim_next_ready_image_quiz_template,
+    create_image_quiz_dispatch,
+    mark_image_quiz_dispatch_sent,
+    mark_image_quiz_dispatch_failed,
+    get_image_quiz_dispatch,
+    get_image_quiz_template,
+    record_image_quiz_answer,
+    mark_image_quiz_answer_feedback_sent,
     list_top_weak_topics,
 )
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
@@ -142,7 +156,9 @@ from backend.config_mistakes_data import VALID_CATEGORIES, VALID_SUBCATEGORIES, 
 application = None
 
 QUIZ_SCHEDULE_HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
-QUIZ_SCHEDULE_MINUTES = [0, 30]
+QUIZ_SCHEDULE_MINUTES = [0]
+QUIZ_SCHEDULE_TZ_NAME = (os.getenv("QUIZ_SCHEDULE_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+QUIZ_IMAGE_SLOT_TIMES = {(9, 0), (12, 0), (18, 0)}
 QUIZ_FEEDBACK_TTL_SECONDS = 120
 QUIZ_CACHE_TTL_SECONDS = 60 * 60 * 24
 QUIZ_FREEFORM_OPTION = "keine korrekte Antworten"
@@ -154,6 +170,9 @@ QUIZ_REPEAT_ACCURACY_THRESHOLD = min(
     max(0.0, float(os.getenv("QUIZ_REPEAT_ACCURACY_THRESHOLD", "0.5"))),
 )
 QUIZ_REPEAT_CANDIDATE_LIMIT = max(1, int(os.getenv("QUIZ_REPEAT_CANDIDATE_LIMIT", "8")))
+QUIZ_PREPARED_TARGET_PER_TYPE = max(2, int((os.getenv("QUIZ_PREPARED_TARGET_PER_TYPE") or "8").strip() or "8"))
+QUIZ_PREPARED_STARTUP_DELAY_SECONDS = max(10, int((os.getenv("QUIZ_PREPARED_STARTUP_DELAY_SECONDS") or "45").strip() or "45"))
+QUIZ_PREPARED_HOURLY_TOPUP_MINUTE = max(0, min(59, int((os.getenv("QUIZ_PREPARED_HOURLY_TOPUP_MINUTE") or "35").strip() or "35")))
 FLASHCARD_REMINDER_TIMES = [(7, 0), (16, 30)]
 active_quizzes = {}
 pending_quiz_freeform = {}
@@ -170,6 +189,119 @@ pending_dictionary_lookup_inflight = set()
 pending_feel_requests_inflight = set()
 pending_tts_listen_requests_inflight = set()
 pending_quiz_phrase_requests_inflight = set()
+scheduled_quiz_delivery_suppress_until = {}
+recent_message_activity_logged = {}
+SYNTHETIC_TELEGRAM_USER_ID_MIN = max(
+    1,
+    int((os.getenv("SYNTHETIC_TELEGRAM_USER_ID_MIN") or "9100000001").strip() or "9100000001"),
+)
+MESSAGE_ACTIVITY_LOG_MIN_INTERVAL_SECONDS = max(
+    300,
+    int((os.getenv("MESSAGE_ACTIVITY_LOG_MIN_INTERVAL_SECONDS") or "21600").strip() or "21600"),
+)
+BOT_DEBUG_LOG_ALL_MESSAGES = (os.getenv("BOT_DEBUG_LOG_ALL_MESSAGES") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+QUIZ_DELIVERY_SUPPRESS_SECONDS = max(
+    900,
+    int((os.getenv("QUIZ_DELIVERY_SUPPRESS_SECONDS") or "21600").strip()),
+)
+
+
+def _purge_expired_quiz_delivery_suppressions() -> None:
+    now_ts = pytime.time()
+    expired = [chat_id for chat_id, until_ts in scheduled_quiz_delivery_suppress_until.items() if float(until_ts or 0) <= now_ts]
+    for chat_id in expired:
+        scheduled_quiz_delivery_suppress_until.pop(chat_id, None)
+
+
+def _suppress_quiz_delivery_target(chat_id: int, *, seconds: int | None = None) -> None:
+    ttl = max(60, int(seconds if seconds is not None else QUIZ_DELIVERY_SUPPRESS_SECONDS))
+    scheduled_quiz_delivery_suppress_until[int(chat_id)] = pytime.time() + ttl
+
+
+def _is_quiz_delivery_target_suppressed(chat_id: int) -> bool:
+    _purge_expired_quiz_delivery_suppressions()
+    until_ts = scheduled_quiz_delivery_suppress_until.get(int(chat_id))
+    return bool(until_ts and float(until_ts) > pytime.time())
+
+
+def _is_permanent_quiz_delivery_error(exc: Exception) -> bool:
+    if isinstance(exc, Forbidden):
+        return True
+    if not isinstance(exc, BadRequest):
+        return False
+    message = str(exc or "").strip().lower()
+    permanent_fragments = (
+        "chat not found",
+        "bot was kicked",
+        "user is deactivated",
+        "need administrator rights",
+        "have no rights",
+        "polls can't be sent",
+        "poll can't be stopped",
+        "not enough rights",
+        "group chat was upgraded",
+    )
+    return any(fragment in message for fragment in permanent_fragments)
+
+
+def _get_quiz_schedule_now() -> datetime:
+    try:
+        tz = ZoneInfo(QUIZ_SCHEDULE_TZ_NAME)
+    except Exception:
+        tz = ZoneInfo("Europe/Vienna")
+    return datetime.now(tz)
+
+
+def _is_image_quiz_slot(slot_dt: datetime) -> bool:
+    return (int(slot_dt.hour), int(slot_dt.minute)) in QUIZ_IMAGE_SLOT_TIMES
+
+
+def _format_quiz_delivery_slot(slot_dt: datetime) -> str:
+    return f"{int(slot_dt.hour):02d}:{int(slot_dt.minute):02d}"
+
+
+def _is_synthetic_telegram_user_id(user_id: int) -> bool:
+    try:
+        candidate = int(user_id)
+    except Exception:
+        return False
+    return candidate >= SYNTHETIC_TELEGRAM_USER_ID_MIN
+
+
+def _should_persist_message_activity(user_id: int) -> bool:
+    now_ts = pytime.time()
+    safe_user_id = int(user_id)
+    stale_before = now_ts - (MESSAGE_ACTIVITY_LOG_MIN_INTERVAL_SECONDS * 2)
+    expired = [item for item, ts in recent_message_activity_logged.items() if float(ts or 0.0) < stale_before]
+    for item in expired:
+        recent_message_activity_logged.pop(item, None)
+    last_logged_at = float(recent_message_activity_logged.get(safe_user_id) or 0.0)
+    if last_logged_at > 0 and (now_ts - last_logged_at) < MESSAGE_ACTIVITY_LOG_MIN_INTERVAL_SECONDS:
+        return False
+    recent_message_activity_logged[safe_user_id] = now_ts
+    return True
+
+
+def _persist_message_activity_touch(user_id: int, username: str) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO bt_3_messages (user_id, username, message)
+            VALUES(%s, %s, %s)
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                username = EXCLUDED.username,
+                timestamp = NOW();
+            """,
+            (int(user_id), str(username or "").strip(), "user_message"),
+        )
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
 pending_language_tutor_input = {}
 pending_tts_budget_custom = {}
 TTS_BUDGET_CUSTOM_TTL_SECONDS = 60 * 5
@@ -221,6 +353,44 @@ success=load_dotenv(dotenv_path=Path(__file__).parent/".env")
 
 # Никогда не используем прокси для Telegram API
 os.environ.setdefault("NO_PROXY", "api.telegram.org,telegram.org")
+
+
+def _normalize_runtime_service_name(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def _should_start_bot_scheduler() -> bool:
+    override = str(os.getenv("BOT_SCHEDULER_ENABLED") or "").strip().lower()
+    if override:
+        return override in {"1", "true", "yes", "on"}
+    railway_service_name = str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip()
+    if not railway_service_name:
+        return True
+    allowed_raw = str(os.getenv("PRIMARY_TELEGRAM_BOT_SERVICE_NAMES") or "MY_3_BOT").strip()
+    allowed_names = {
+        _normalize_runtime_service_name(item)
+        for item in allowed_raw.split(",")
+        if str(item).strip()
+    }
+    normalized_service_name = _normalize_runtime_service_name(railway_service_name)
+    return normalized_service_name in allowed_names
+
+
+def _should_run_primary_telegram_bot_process() -> bool:
+    override = str(os.getenv("BOT_POLLING_ENABLED") or "").strip().lower()
+    if override:
+        return override in {"1", "true", "yes", "on"}
+    railway_service_name = str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip()
+    if not railway_service_name:
+        return True
+    allowed_raw = str(os.getenv("PRIMARY_TELEGRAM_BOT_SERVICE_NAMES") or "MY_3_BOT").strip()
+    allowed_names = {
+        _normalize_runtime_service_name(item)
+        for item in allowed_raw.split(",")
+        if str(item).strip()
+    }
+    normalized_service_name = _normalize_runtime_service_name(railway_service_name)
+    return normalized_service_name in allowed_names
 
 
 # Buttons in Telegramm
@@ -814,6 +984,8 @@ initialise_database()
 
 async def log_all_messages(update: Update, context: CallbackContext):
     """Логируем ВСЕ текстовые сообщения для отладки."""
+    if not BOT_DEBUG_LOG_ALL_MESSAGES:
+        return
     try:
         if update.message and update.message.text:
             logging.info(f"📩 Бот получил сообщение: {update.message.text}")
@@ -1340,28 +1512,22 @@ def _resolve_dictionary_speech_payload(payload: dict, *, user_id: int) -> tuple[
         or ""
     ).strip()
     target_text = _extract_lookup_primary_target_text(lookup)
-    pronunciation = lookup.get("pronunciation") if isinstance(lookup.get("pronunciation"), dict) else {}
-    pronunciation_audio_text = str(pronunciation.get("audio_text") or "").strip()
-
-    _profile_source_lang, profile_target_lang = _language_tutor_pair_for_user(int(user_id))
-
     chosen_lang = ""
     chosen_text = ""
-    if source_lang == profile_target_lang and source_text:
-        chosen_lang, chosen_text = source_lang, source_text
-    elif target_lang == profile_target_lang and target_text:
-        chosen_lang, chosen_text = target_lang, target_text
-    elif source_lang == "de" and source_text:
+    if source_lang == "de" and source_text:
         chosen_lang, chosen_text = source_lang, source_text
     elif target_lang == "de" and target_text:
         chosen_lang, chosen_text = target_lang, target_text
-    elif target_text and target_lang:
-        chosen_lang, chosen_text = target_lang, target_text
-    elif source_text and source_lang:
-        chosen_lang, chosen_text = source_lang, source_text
-
-    if pronunciation_audio_text and chosen_lang in {"de", "en", "es", "it"}:
-        chosen_text = pronunciation_audio_text
+    else:
+        _profile_source_lang, profile_target_lang = _language_tutor_pair_for_user(int(user_id))
+        if source_lang == profile_target_lang and source_text:
+            chosen_lang, chosen_text = source_lang, source_text
+        elif target_lang == profile_target_lang and target_text:
+            chosen_lang, chosen_text = target_lang, target_text
+        elif target_text and target_lang:
+            chosen_lang, chosen_text = target_lang, target_text
+        elif source_text and source_lang:
+            chosen_lang, chosen_text = source_lang, source_text
 
     return chosen_lang, chosen_text
 
@@ -1371,6 +1537,10 @@ def _resolve_quiz_speech_payload(payload: dict) -> tuple[str, str]:
     target_lang = str(payload.get("target_lang") or "").strip().lower()
     source_text = str(payload.get("source_text") or "").strip()
     target_text = str(payload.get("target_text") or "").strip()
+    if source_lang == "de" and source_text:
+        return source_lang, source_text
+    if target_lang == "de" and target_text:
+        return target_lang, target_text
     if source_text and source_lang:
         return source_lang, source_text
     if target_text and target_lang:
@@ -1423,6 +1593,13 @@ async def _synthesize_telegram_tts_voice(lang: str, text: str) -> tuple[io.Bytes
     normalized_text = re.sub(r"\s+", " ", str(text or "").strip())
     if not normalized_text:
         raise ValueError("empty_tts_text")
+    preview = normalized_text[:120] + ("..." if len(normalized_text) > 120 else "")
+    logging.info(
+        "🔊 Bot TTS request: lang=%s chars=%s text_preview=%s",
+        normalized_lang,
+        len(normalized_text),
+        preview,
+    )
     audio_segment = await asyncio.to_thread(get_or_create_tts_clip, normalized_lang, normalized_text, 0.95)
     voice_bytes = await asyncio.to_thread(_audiosegment_to_ogg_opus_bytes, audio_segment)
     voice_buffer = io.BytesIO(voice_bytes)
@@ -2549,6 +2726,11 @@ def _format_google_translate_budget_status_text(status: dict) -> str:
     return "\n".join(lines)
 
 
+def _resolve_budget_report_period_start(now_local: datetime) -> date:
+    current_month_start = date(int(now_local.year), int(now_local.month), 1)
+    return current_month_start - timedelta(days=1)
+
+
 def _format_budget_command_help_lines() -> list[str]:
     return [
         "Commands:",
@@ -2565,9 +2747,17 @@ def _format_budget_command_help_lines() -> list[str]:
     ]
 
 
-async def _format_all_translation_budget_status_text() -> str:
-    tts_status = await asyncio.to_thread(get_google_tts_monthly_budget_status)
-    google_translate_status = await asyncio.to_thread(get_google_translate_monthly_budget_status)
+async def _format_all_translation_budget_status_text(*, period_month: date | None = None, tz_name: str = "Europe/Vienna") -> str:
+    tts_status = await asyncio.to_thread(
+        get_google_tts_monthly_budget_status,
+        period_month=period_month,
+        tz=tz_name,
+    )
+    google_translate_status = await asyncio.to_thread(
+        get_google_translate_monthly_budget_status,
+        period_month=period_month,
+        tz=tz_name,
+    )
     parts: list[str] = []
     if tts_status:
         parts.append(_format_google_tts_budget_status_text(tts_status))
@@ -2589,12 +2779,16 @@ async def send_monthly_budget_report(context: CallbackContext):
     except Exception:
         tz_name = "UTC"
         now_local = datetime.now(timezone.utc)
-    run_period = now_local.strftime("%Y-%m")
+    report_period_month = _resolve_budget_report_period_start(now_local)
+    run_period = report_period_month.strftime("%Y-%m")
     admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
     if not admin_ids:
         logging.warning("⚠️ Нет admin ID для monthly budget report.")
         return
-    summary_text = await _format_all_translation_budget_status_text()
+    summary_text = await _format_all_translation_budget_status_text(
+        period_month=report_period_month,
+        tz_name=tz_name,
+    )
     message_text = (
         "🗓 Ежемесячный budget report\n"
         f"Period: {run_period}\n"
@@ -2636,8 +2830,12 @@ async def send_monthly_budget_report_now(context: CallbackContext, admin_chat_id
     except Exception:
         tz_name = "UTC"
         now_local = datetime.now(timezone.utc)
-    run_period = now_local.strftime("%Y-%m")
-    summary_text = await _format_all_translation_budget_status_text()
+    report_period_month = _resolve_budget_report_period_start(now_local)
+    run_period = report_period_month.strftime("%Y-%m")
+    summary_text = await _format_all_translation_budget_status_text(
+        period_month=report_period_month,
+        tz_name=tz_name,
+    )
     message_text = (
         "🧪 Budget report (manual send)\n"
         f"Period: {run_period}\n"
@@ -3115,31 +3313,20 @@ async def log_message(update: Update, context: CallbackContext):
     message_text = update.message.text.strip() if update.message else "" #сам текст сообщения.
 
     if not message_text:
-        print("⚠️ Пустое сообщение — пропускаем логирование.")
         return
-    
+    if not user:
+        return
+    safe_user_id = int(user.id)
+    if _is_synthetic_telegram_user_id(safe_user_id):
+        return
+    if not _should_persist_message_activity(safe_user_id):
+        return
+
     username = user.username or f"{user.first_name or ''} {user.last_name or ''}".strip()
-    # Логируем данные для диагностики
-    print(f"📥 Получено сообщение от {username} ({user.id}): {message_text}")
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try: 
-        cursor.execute("""
-            INSERT INTO bt_3_messages (user_id, username, message)
-            VALUES(%s, %s, %s)
-            ON CONFLICT (user_id)
-            DO UPDATE SET timestamp = NOW();
-            """,
-            (user.id, username, 'user_message')
-        )
-
-        conn.commit()
-    except Exception as e:
-        print(f"❌ Ошибка при записи в базу: {e}")
-    finally:
-        cursor.close()
-        conn.close()
+    try:
+        await asyncio.to_thread(_persist_message_activity_touch, safe_user_id, username)
+    except Exception:
+        logging.warning("⚠️ Ошибка при записи bt_3_messages activity for user_id=%s", safe_user_id, exc_info=True)
 
 # утреннее приветствие членом группы
 async def send_morning_reminder(context:CallbackContext):
@@ -3806,6 +3993,25 @@ def _build_dictionary_pair_selection_text(source_text: str) -> str:
         f"Запрос: {source_text.strip()}\n\n"
         "Выберите языковую пару для перевода:"
     )
+
+
+def _build_dictionary_mode_selection_text(source_text: str, source_lang: str, target_lang: str) -> str:
+    return (
+        f"Запрос: {source_text.strip()}\n"
+        f"Пара: {source_lang.upper()} -> {target_lang.upper()}\n\n"
+        "Выберите формат ответа:\n"
+        "• Быстрый перевод: короткий ответ и кнопки быстрого сохранения\n"
+        "• Расширенный перевод: полный разбор, как сейчас"
+    )
+
+
+def _build_dictionary_mode_keyboard(request_key: str, source_lang: str, target_lang: str) -> InlineKeyboardMarkup:
+    pair = f"{source_lang}-{target_lang}"
+    rows = [
+        [InlineKeyboardButton("⚡ Быстрый перевод", callback_data=f"dictmode:{request_key}:{pair}:quick")],
+        [InlineKeyboardButton("🧠 Расширенный перевод", callback_data=f"dictmode:{request_key}:{pair}:full")],
+    ]
+    return InlineKeyboardMarkup(rows)
 
 
 def _extract_lookup_input_from_pair_message_text(message_text: str) -> str:
@@ -4627,18 +4833,6 @@ def _build_dictionary_card_text(
             cleaned = form_line.replace("- ", "", 1)
             lines.append(f"   - {_esc(cleaned)}")
 
-    usage_lines = []
-    if notes["usage_note"]:
-        usage_lines.append(f"• Базовый контекст: {_esc(notes['usage_note'])}")
-    if notes["real_life_usage"]:
-        usage_lines.append(f"• В реальной жизни: {_esc(notes['real_life_usage'])}")
-    if notes["register_note"]:
-        usage_lines.append(f"• Регистр / стиль: {_esc(notes['register_note'])}")
-    if usage_lines:
-        lines.append("")
-        lines.append("🌍 <b>Как используется в жизни</b>")
-        lines.extend(usage_lines)
-
     note_lines = []
     if notes["etymology_note"]:
         note_lines.append(f"• Происхождение: {_esc(notes['etymology_note'])}")
@@ -4754,6 +4948,46 @@ def _build_save_variants_text(source_lang: str, target_lang: str, options: list[
         lines.append(f"   <b>{target_lang.upper()}:</b> {_esc(target)}")
         lines.append("")
     return "\n".join(lines)
+
+
+def _build_quick_dictionary_result_text(
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+    options: list[dict],
+    *,
+    original_query: str = "",
+) -> str:
+    def _esc(value: str) -> str:
+        return html.escape(str(value or "").strip())
+
+    query_text = str(original_query or source_text).strip() or source_text
+    lines = [
+        "⚡ <b>Быстрый перевод</b>",
+        f"🌐 <b>{source_lang.upper()} → {target_lang.upper()}</b>",
+        "",
+        f"• <b>Запрос:</b> <code>{_esc(query_text)}</code>",
+        "",
+        "📌 <b>Варианты для сохранения</b>",
+        "",
+    ]
+    for idx, opt in enumerate(options[:2], start=1):
+        source = (opt.get("source") or "").strip() or source_text or "—"
+        target = (opt.get("target") or "").strip() or "—"
+        lines.append(f"{idx}. <b>{source_lang.upper()}:</b> {_esc(source)}")
+        lines.append(f"   <b>{target_lang.upper()}:</b> {_esc(target)}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _build_quick_dictionary_save_keyboard(option_key: str, options: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if options:
+        rows.append([InlineKeyboardButton("✅ Сохранить 1", callback_data=f"dictquicksave:{option_key}:0")])
+    if len(options) >= 2:
+        rows.append([InlineKeyboardButton("✅ Сохранить 2", callback_data=f"dictquicksave:{option_key}:1")])
+        rows.append([InlineKeyboardButton("✅ Сохранить оба", callback_data=f"dictquicksave:{option_key}:all")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _format_flashcard_feel_html_for_bot(feel_text: str) -> str:
@@ -4947,8 +5181,6 @@ def _render_dictionary_card_png(
         tip_rows: list[tuple[str, str]] = []
         if notes["etymology_note"]:
             tip_rows.append(("body", f"Происхождение: {notes['etymology_note']}"))
-        if notes["usage_note"]:
-            tip_rows.append(("body", f"Контекст использования: {notes['usage_note']}"))
         if notes["memory_tip"]:
             tip_rows.append(("body", f"Фишка запоминания: {notes['memory_tip']}"))
         if not tip_rows:
@@ -5312,7 +5544,13 @@ async def _send_dictionary_lookup_result(
 ) -> None:
     lookup_input = (lookup_input or "").strip()
     try:
-        lookup = await _run_dictionary_lookup_for_pair(lookup_input, source_lang, target_lang)
+        prepared = await _prepare_dictionary_lookup_response(
+            user_id=int(user_id),
+            lookup_input=lookup_input,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            max_options=3,
+        )
     except Exception as exc:
         logging.exception(
             "❌ Ошибка словарного поиска для '%s' (%s->%s, %s): %r",
@@ -5325,14 +5563,48 @@ async def _send_dictionary_lookup_result(
         await message.reply_text("Не удалось получить перевод. Попробуйте снова через несколько секунд.")
         return
 
+    card_text = _build_dictionary_card_text(
+        source_lang,
+        target_lang,
+        prepared["source_text"],
+        prepared["lookup"],
+        original_query=lookup_input,
+    )
+    variants_text = _build_save_variants_text(source_lang, target_lang, prepared["options"])
+    full_text = f"{card_text}\n\n{variants_text}"
+    keyboard = _build_save_variant_keyboard(
+        prepared["option_key"],
+        prepared["options"],
+        selected=[],
+        feel_card_key=prepared["card_key"],
+        speak_card_key=prepared["card_key"],
+        question_request_key=prepared["question_request_key"],
+    )
+    msg = await message.reply_text(
+        full_text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+    add_service_msg_id(context, msg.message_id)
+
+
+async def _prepare_dictionary_lookup_response(
+    *,
+    user_id: int,
+    lookup_input: str,
+    source_lang: str,
+    target_lang: str,
+    max_options: int = 3,
+) -> dict:
+    lookup = await _run_dictionary_lookup_for_pair(lookup_input, source_lang, target_lang)
     if not isinstance(lookup, dict):
-        await message.reply_text("Не удалось разобрать ответ словаря. Попробуйте ещё раз.")
-        return
+        raise ValueError("lookup result is not a dict")
 
     lookup["original_query"] = str(lookup.get("original_query") or lookup_input).strip()
     source_text = (lookup.get("word_source") or lookup_input).strip()
     card_key = _store_pending_dictionary_card(
-        user_id,
+        int(user_id),
         source_lang,
         target_lang,
         source_text,
@@ -5368,35 +5640,69 @@ async def _send_dictionary_lookup_result(
     if not options:
         options = [_resolve_default_dictionary_option({"source_text": source_text, "lookup": lookup})]
 
+    trimmed_options = [item for item in (options or []) if isinstance(item, dict)]
+    trimmed_options = trimmed_options[: max(1, int(max_options or 1))]
     option_key = _store_pending_dictionary_save_options(
         user_id=int(user_id),
         card_key=card_key,
-        options=options,
+        options=trimmed_options,
         lookup=lookup,
         source_lang=source_lang,
         target_lang=target_lang,
         question_request_key=question_request_key,
     )
+    return {
+        "lookup": lookup,
+        "source_text": source_text,
+        "card_key": card_key,
+        "question_request_key": question_request_key,
+        "options": trimmed_options,
+        "option_key": option_key,
+    }
 
-    card_text = _build_dictionary_card_text(
+
+async def _send_dictionary_lookup_quick_result(
+    message,
+    context: CallbackContext,
+    user_id: int,
+    lookup_input: str,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    lookup_input = (lookup_input or "").strip()
+    try:
+        prepared = await _prepare_dictionary_lookup_response(
+            user_id=int(user_id),
+            lookup_input=lookup_input,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            max_options=2,
+        )
+    except Exception as exc:
+        logging.exception(
+            "❌ Ошибка быстрого словарного поиска для '%s' (%s->%s, %s): %r",
+            lookup_input,
+            source_lang,
+            target_lang,
+            type(exc).__name__,
+            exc,
+        )
+        await message.reply_text("Не удалось получить быстрый перевод. Попробуйте снова через несколько секунд.")
+        return
+
+    quick_text = _build_quick_dictionary_result_text(
         source_lang,
         target_lang,
-        source_text,
-        lookup,
+        prepared["source_text"],
+        prepared["options"],
         original_query=lookup_input,
     )
-    variants_text = _build_save_variants_text(source_lang, target_lang, options)
-    full_text = f"{card_text}\n\n{variants_text}"
-    keyboard = _build_save_variant_keyboard(
-        option_key,
-        options,
-        selected=[],
-        feel_card_key=card_key,
-        speak_card_key=card_key,
-        question_request_key=question_request_key,
+    keyboard = _build_quick_dictionary_save_keyboard(
+        prepared["option_key"],
+        prepared["options"],
     )
     msg = await message.reply_text(
-        full_text,
+        quick_text,
         reply_markup=keyboard,
         parse_mode="HTML",
         disable_web_page_preview=True,
@@ -5429,23 +5735,36 @@ async def _process_dictionary_pair_selection(
     lookup_input: str,
     source_lang: str,
     target_lang: str,
+    response_mode: str = "full",
 ) -> None:
     try:
-        await _send_dictionary_lookup_result(
-            message=message,
-            context=context,
-            user_id=user_id,
-            lookup_input=lookup_input,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
+        normalized_mode = str(response_mode or "full").strip().lower()
+        if normalized_mode == "quick":
+            await _send_dictionary_lookup_quick_result(
+                message=message,
+                context=context,
+                user_id=user_id,
+                lookup_input=lookup_input,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        else:
+            await _send_dictionary_lookup_result(
+                message=message,
+                context=context,
+                user_id=user_id,
+                lookup_input=lookup_input,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
     except Exception as exc:
         logging.exception(
-            "❌ Dictionary pair processing failed user_id=%s key=%s pair=%s-%s: %s",
+            "❌ Dictionary pair processing failed user_id=%s key=%s pair=%s-%s mode=%s: %s",
             user_id,
             request_key,
             source_lang,
             target_lang,
+            response_mode,
             exc,
         )
         try:
@@ -5508,12 +5827,68 @@ async def handle_dictionary_pair_callback(update: Update, context: CallbackConte
         await query.answer("Запрос пустой. Отправьте слово снова.", show_alert=True)
         return
 
+    await query.answer(f"Пара выбрана ({source_lang.upper()} -> {target_lang.upper()})")
+    try:
+        await query.edit_message_text(
+            _build_dictionary_mode_selection_text(lookup_input, source_lang, target_lang),
+            reply_markup=_build_dictionary_mode_keyboard(request_key, source_lang, target_lang),
+        )
+    except Exception:
+        pass
+
+
+async def handle_dictionary_mode_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    if not query.message:
+        await query.answer("Сообщение недоступно. Отправьте запрос заново.", show_alert=True)
+        return
+
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 4:
+        await query.answer("Неверный формат режима.", show_alert=True)
+        return
+
+    request_key = parts[1].strip()
+    pair = parts[2].strip().lower()
+    response_mode = parts[3].strip().lower()
+    if response_mode not in {"quick", "full"}:
+        await query.answer("Неизвестный режим ответа.", show_alert=True)
+        return
+    if "-" not in pair:
+        await query.answer("Неверный формат языковой пары.", show_alert=True)
+        return
+    source_lang, target_lang = [chunk.strip() for chunk in pair.split("-", 1)]
+    if (source_lang, target_lang) not in _dictionary_language_pairs():
+        await query.answer("Эта языковая пара не поддерживается.", show_alert=True)
+        return
+
+    payload = pending_dictionary_lookup_requests.get(request_key)
+    user = query.from_user
+    if not user:
+        await query.answer("Пользователь не найден. Повторите запрос.", show_alert=True)
+        return
+    if not payload:
+        await query.answer("Запрос устарел. Отправьте слово снова.", show_alert=True)
+        return
+    if int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Выбор доступен только автору запроса.", show_alert=True)
+        return
+
+    lookup_input = str(payload.get("text") or "").strip()
+    if not lookup_input:
+        await query.answer("Запрос пустой. Отправьте слово снова.", show_alert=True)
+        return
+
     if request_key in pending_dictionary_lookup_inflight:
         await query.answer("Этот запрос уже обрабатывается. Подождите немного.", show_alert=True)
         return
     pending_dictionary_lookup_inflight.add(request_key)
 
-    await query.answer(f"Запустил перевод ({source_lang.upper()} -> {target_lang.upper()})")
+    mode_label = "быстрый" if response_mode == "quick" else "расширенный"
+    await query.answer(f"Запустил {mode_label} перевод")
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
@@ -5528,6 +5903,7 @@ async def handle_dictionary_pair_callback(update: Update, context: CallbackConte
             lookup_input=lookup_input,
             source_lang=source_lang,
             target_lang=target_lang,
+            response_mode=response_mode,
         )
     )
 
@@ -5684,6 +6060,9 @@ async def handle_dictionary_speak_callback(update: Update, context: CallbackCont
     pending_tts_listen_requests_inflight.add(inflight_key)
 
     try:
+        if _is_synthetic_telegram_user_id(int(user.id)):
+            await query.answer("Озвучка отключена для load-test user.", show_alert=True)
+            return
         speak_lang, speak_text = _resolve_dictionary_speech_payload(payload, user_id=int(user.id))
         if not speak_lang or not speak_text:
             await query.answer("Не удалось определить фразу для озвучки.", show_alert=True)
@@ -5841,6 +6220,9 @@ async def handle_quiz_speak_callback(update: Update, context: CallbackContext) -
     pending_tts_listen_requests_inflight.add(inflight_key)
 
     try:
+        if _is_synthetic_telegram_user_id(int(user.id)):
+            await query.answer("Озвучка отключена для load-test user.", show_alert=True)
+            return
         speak_lang, speak_text = _resolve_quiz_speech_payload(payload)
         if not speak_lang or not speak_text:
             await query.answer("Не удалось определить фразу для озвучки.", show_alert=True)
@@ -6521,6 +6903,78 @@ async def handle_dictionary_save_confirm_callback(update: Update, context: Callb
         pass
     await query.answer("✅ Сохранено")
     await query.message.reply_text("✅ Сохранены варианты:\n" + "\n".join(saved_lines))
+
+
+async def handle_dictionary_quick_save_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 3:
+        await query.answer("Неверный формат сохранения.", show_alert=True)
+        return
+
+    option_key = parts[1].strip()
+    selector = parts[2].strip().lower()
+    payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        await query.answer("Варианты устарели. Запросите перевод снова.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Сохранение доступно только автору карточки.", show_alert=True)
+        return
+
+    options = payload.get("options") or []
+    if not options:
+        await query.answer("Нет вариантов для сохранения.", show_alert=True)
+        return
+
+    if selector == "all":
+        selected_idxs = list(range(min(2, len(options))))
+    else:
+        try:
+            selected_idx = int(selector)
+        except ValueError:
+            await query.answer("Неверный вариант для сохранения.", show_alert=True)
+            return
+        if selected_idx < 0 or selected_idx >= len(options):
+            await query.answer("Выбранный вариант не найден.", show_alert=True)
+            return
+        selected_idxs = [selected_idx]
+
+    saved_lines: list[str] = []
+    for idx in selected_idxs:
+        chosen = options[idx]
+        save_ok, save_msg = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+        if not save_ok:
+            logging.warning("Quick dictionary save skipped idx=%s: %s", idx, save_msg)
+            continue
+        source = (chosen.get("source") or "").strip()
+        target = (chosen.get("target") or "").strip()
+        saved_lines.append(f"• {source} -> {target}")
+
+    if not saved_lines:
+        await query.answer("Не удалось сохранить выбранные варианты.", show_alert=True)
+        return
+
+    card_key = payload.get("card_key")
+    card_payload = pending_dictionary_cards.get(card_key or "")
+    if isinstance(card_payload, dict):
+        card_payload["saved"] = True
+        pending_dictionary_cards[card_key] = card_payload
+    pending_dictionary_save_options.pop(option_key, None)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await query.answer("✅ Сохранено")
+    if len(saved_lines) == 1:
+        await query.message.reply_text("✅ Сохранён вариант:\n" + saved_lines[0])
+    else:
+        await query.message.reply_text("✅ Сохранены варианты:\n" + "\n".join(saved_lines))
 
 
 async def delete_message_with_retry(bot, chat_id, message_id, retries=3, delay=2):
@@ -7971,10 +8425,28 @@ def search_youtube_videous(
         f"main='{main_category}' sub='{sub_category}' queries={queries}"
     )
 
+    def _filter_weekly_recommendation_videos(videos):
+        filtered = []
+        for item in videos or []:
+            video = dict(item or {})
+            if _is_youtube_short_like(video):
+                continue
+            if _video_conflicts_with_target_language(video, target_lang=target_lang, native_lang=""):
+                continue
+            duration_seconds = int(video.get("duration_seconds") or 0)
+            if duration_seconds <= 0:
+                duration_seconds = _parse_iso8601_duration_to_seconds(video.get("duration"))
+                if duration_seconds > 0:
+                    video["duration_seconds"] = duration_seconds
+            if 0 < duration_seconds < 120:
+                continue
+            filtered.append(video)
+        return filtered
+
     collected_videos = {}
     for query in queries:
         try:
-            videos = _youtube_search_videos(
+            videos, provider_name = _youtube_search_videos_manual(
                 query,
                 max_results=max_results,
                 target_lang=target_lang,
@@ -7982,7 +8454,14 @@ def search_youtube_videous(
             if not videos:
                 continue
             videos = _youtube_fill_view_counts(videos, billing_target_lang=target_lang)
-            videos = _filter_videos_for_today_task(videos, target_lang=target_lang)
+            filtered_videos = _filter_weekly_recommendation_videos(videos)
+            if filtered_videos:
+                videos = filtered_videos
+            else:
+                print(
+                    f"ℹ️ Weekly YouTube search fallback keeps raw provider results: "
+                    f"query='{query}' provider='{provider_name}' raw={len(videos)}"
+                )
             for video in videos:
                 video_id = str(video.get("video_id") or "").strip()
                 if not video_id:
@@ -7993,6 +8472,7 @@ def search_youtube_videous(
                     "title": str(video.get("title") or "").strip(),
                     "views": int(video.get("views") or 0),
                     "query": query,
+                    "provider": provider_name,
                 }
                 if not existing or candidate["views"] > int(existing.get("views") or 0):
                     collected_videos[video_id] = candidate
@@ -8293,6 +8773,7 @@ async def _collect_scheduler_candidate_user_ids(
 ) -> list[int]:
     safe_days = max(1, int(lookback_days or 30))
     user_ids: set[int] = set()
+    skipped_synthetic = 0
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -8320,6 +8801,11 @@ async def _collect_scheduler_candidate_user_ids(
                     candidate = int(row[0])
                 except Exception:
                     continue
+                if candidate <= 0:
+                    continue
+                if _is_synthetic_telegram_user_id(candidate):
+                    skipped_synthetic += 1
+                    continue
                 if candidate > 0:
                     user_ids.add(candidate)
 
@@ -8333,6 +8819,11 @@ async def _collect_scheduler_candidate_user_ids(
                 candidate = int((row or {}).get("user_id") or 0)
             except Exception:
                 continue
+            if candidate <= 0:
+                continue
+            if _is_synthetic_telegram_user_id(candidate):
+                skipped_synthetic += 1
+                continue
             if candidate > 0:
                 user_ids.add(candidate)
 
@@ -8345,6 +8836,11 @@ async def _collect_scheduler_candidate_user_ids(
             if candidate > 0:
                 user_ids.add(candidate)
 
+    if skipped_synthetic > 0:
+        logging.info(
+            "ℹ️ scheduler candidate collection skipped %s synthetic load-test user id(s)",
+            skipped_synthetic,
+        )
     return sorted(user_ids)
 
 
@@ -8449,6 +8945,7 @@ async def _send_analytics_message_with_fallback(
 async def send_me_analytics_and_recommend_me(context: CallbackContext):
     task_name = "send_me_analytics_and_recommend_me"
     system_instruction_key = "send_me_analytics_and_recommend_me"
+    skipped_synthetic_users = 0
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -8456,7 +8953,8 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
                 """
                 SELECT DISTINCT user_id
                 FROM bt_3_translations
-                WHERE timestamp >= NOW() - INTERVAL '6 days';
+                WHERE timestamp >= NOW() - INTERVAL '6 days'
+                  AND user_id IS NOT NULL;
                 """
             )
             user_ids = cursor.fetchall()
@@ -8467,6 +8965,9 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
 
     for user_id, in user_ids:
         safe_user_id = int(user_id)
+        if _is_synthetic_telegram_user_id(safe_user_id):
+            skipped_synthetic_users += 1
+            continue
         delivery_chat_id = await _resolve_user_delivery_chat_id(
             context,
             safe_user_id,
@@ -8608,6 +9109,12 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
             user_id=safe_user_id,
             target_chat_id=delivery_chat_id,
             text=no_activity_text,
+        )
+
+    if skipped_synthetic_users > 0:
+        logging.info(
+            "ℹ️ send_me_analytics_and_recommend_me skipped %s synthetic load-test user id(s)",
+            skipped_synthetic_users,
         )
 
 
@@ -10773,7 +11280,11 @@ async def generate_word_order_quiz(entry: dict) -> dict | None:
     return None
 
 
-def _extract_prefix_candidates_from_text(raw_text: str) -> list[str]:
+def _extract_prefix_candidates_from_text(
+    raw_text: str,
+    *,
+    allow_joined_prefix_variant: bool = False,
+) -> list[str]:
     cleaned = str(raw_text or "").strip()
     if not cleaned:
         return []
@@ -10782,36 +11293,69 @@ def _extract_prefix_candidates_from_text(raw_text: str) -> list[str]:
     variants: list[str] = []
     seen: set[str] = set()
     for token in tokens:
+        if not _is_valid_prefix_quiz_verb(token):
+            continue
         normalized = token.lower()
-        if normalized not in seen:
-            seen.add(normalized)
-            variants.append(normalized)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        variants.append(normalized)
+    if not allow_joined_prefix_variant:
+        return variants
     for idx in range(len(tokens) - 1):
-        combined = f"{tokens[idx]}{tokens[idx + 1]}".lower()
-        if combined not in seen:
-            seen.add(combined)
-            variants.append(combined)
-    compact = "".join(tokens).lower()
-    if compact and compact not in seen:
-        seen.add(compact)
-        variants.append(compact)
+        prefix_token = tokens[idx]
+        stem_token = tokens[idx + 1]
+        prefix = prefix_token.lower()
+        if prefix not in _SEPARABLE_PREFIXES:
+            continue
+        if not re.fullmatch(r"[A-Za-zÄÖÜäöüß]+", stem_token):
+            continue
+        if stem_token[:1].isupper():
+            continue
+        combined = f"{prefix}{stem_token.lower()}"
+        if not _is_valid_prefix_quiz_verb(combined):
+            continue
+        if combined in seen:
+            continue
+        seen.add(combined)
+        variants.append(combined)
     return variants
 
 
 def _is_valid_prefix_quiz_verb(raw_word: str) -> bool:
-    word = _to_letters_only_word(raw_word).lower()
+    token = str(raw_word or "").strip()
+    if not token or " " in token:
+        return False
+    if not re.fullmatch(r"[A-Za-zÄÖÜäöüß]+", token):
+        return False
+    if token[:1].isupper():
+        return False
+    word = token.lower()
     if not word:
         return False
     if len(word) < 5 or len(word) > 28:
         return False
-    if not word.endswith("en"):
-        return False
-    if not re.fullmatch(r"[a-zäöüß]+", word):
+    if not (word.endswith("en") or word.endswith("eln") or word.endswith("ern")):
         return False
     for prefix in _SEPARABLE_PREFIXES:
         if word.startswith(prefix) and len(word) - len(prefix) >= 3:
             return True
     return False
+
+
+def _is_prefix_candidate_source_text(raw_text: str) -> bool:
+    text = re.sub(r"\s+", " ", str(raw_text or "").strip())
+    if not text:
+        return False
+    if bool(re.search(r"[.!?;:,()\"«»]", text)):
+        return False
+    tokens = [token for token in text.split(" ") if token]
+    return len(tokens) <= 2
+
+
+def _response_json_part_of_speech_is_verb(response_json: dict) -> bool:
+    part_of_speech = str((response_json or {}).get("part_of_speech") or "").strip().lower()
+    return "verb" in part_of_speech
 
 
 def _extract_prefix_variants(response_json: dict) -> list[str]:
@@ -10825,7 +11369,10 @@ def _extract_prefix_variants(response_json: dict) -> list[str]:
             raw_variant = str(item.get("variant") or "").strip()
             if not raw_variant:
                 continue
-            for candidate in _extract_prefix_candidates_from_text(raw_variant):
+            for candidate in _extract_prefix_candidates_from_text(
+                raw_variant,
+                allow_joined_prefix_variant=True,
+            ):
                 if candidate in seen:
                     continue
                 if not _is_valid_prefix_quiz_verb(candidate):
@@ -10836,6 +11383,17 @@ def _extract_prefix_variants(response_json: dict) -> list[str]:
 
 
 def _extract_prefix_correct_word(entry: dict, response_json: dict) -> str | None:
+    explicit_variants = _extract_prefix_variants(response_json)
+    if explicit_variants:
+        response_word = str(response_json.get("word_de") or response_json.get("translation_de") or "").strip()
+        response_word_letters = _to_letters_only_word(response_word).lower()
+        if response_word_letters and response_word_letters in explicit_variants:
+            return response_word_letters
+        return explicit_variants[0]
+
+    if not _response_json_part_of_speech_is_verb(response_json):
+        return None
+
     primary = _extract_german_word({
         "translation_de": entry.get("translation_de"),
         "word_de": entry.get("word_de"),
@@ -10854,7 +11412,10 @@ def _extract_prefix_correct_word(entry: dict, response_json: dict) -> str | None
         response_json.get("target_text"),
     ]
     for raw_field in fields:
-        for candidate in _extract_prefix_candidates_from_text(str(raw_field or "")):
+        field_text = str(raw_field or "").strip()
+        if not _is_prefix_candidate_source_text(field_text):
+            continue
+        for candidate in _extract_prefix_candidates_from_text(field_text):
             if _is_valid_prefix_quiz_verb(candidate):
                 return candidate
     return None
@@ -11087,13 +11648,17 @@ def _toggle_quiz_delivery_mode(mode: str | None) -> str:
     return "new" if str(mode or "").strip().lower() == "repeat" else "repeat"
 
 
-def _get_scheduled_quiz_generators(context: CallbackContext) -> list[tuple[str, Callable[..., Any]]]:
-    generator_order = [
+def _get_quiz_generator_catalog() -> list[tuple[str, Callable[..., Any]]]:
+    return [
         ("word_order", generate_word_order_quiz),
         ("prefix", generate_prefix_quiz),
         ("anagram", generate_anagram_quiz),
         ("word", generate_word_quiz),
     ]
+
+
+def _get_scheduled_quiz_generators(context: CallbackContext) -> list[tuple[str, Callable[..., Any]]]:
+    generator_order = _get_quiz_generator_catalog()
     rotation_idx = int(context.application.bot_data.get("quiz_rotation_idx", 0)) % len(generator_order)
     context.application.bot_data["quiz_rotation_idx"] = rotation_idx + 1
     return generator_order[rotation_idx:] + generator_order[:rotation_idx]
@@ -11182,6 +11747,36 @@ async def _select_new_scheduled_quiz(
     return None
 
 
+async def _select_prepared_scheduled_quiz(
+    ordered_generators: list[tuple[str, Callable[..., Any]]],
+) -> dict | None:
+    preferred_types = [quiz_type for quiz_type, _ in ordered_generators]
+    try:
+        prepared = await asyncio.to_thread(
+            claim_prepared_telegram_quiz,
+            preferred_types,
+            source_lang="ru",
+            target_lang="de",
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось получить prepared scheduled quiz", exc_info=True)
+        return None
+    if not prepared:
+        return None
+    quiz = dict(prepared.get("payload") or {})
+    resolved_quiz_type = str(prepared.get("quiz_type") or quiz.get("quiz_type") or "generated")
+    if not quiz.get("quiz_type"):
+        quiz["quiz_type"] = resolved_quiz_type
+    if not quiz.get("word_ru") and prepared.get("word_ru"):
+        quiz["word_ru"] = prepared.get("word_ru")
+    return {
+        "entry": {"word_ru": quiz.get("word_ru") or prepared.get("word_ru")},
+        "quiz": quiz,
+        "resolved_quiz_type": resolved_quiz_type,
+        "used_mode": "new_prepared",
+    }
+
+
 async def _select_repeat_scheduled_quiz(
     target_chat_id: int,
     ordered_generators: list[tuple[str, Callable[..., Any]]],
@@ -11227,15 +11822,91 @@ async def _select_scheduled_quiz_for_target(
     if desired_mode == "repeat":
         selection = await _select_repeat_scheduled_quiz(int(target_chat_id), ordered_generators)
         if not selection:
+            selection = await _select_prepared_scheduled_quiz(ordered_generators)
+        if not selection:
             selection = await _select_new_scheduled_quiz(ordered_generators)
     else:
-        selection = await _select_new_scheduled_quiz(ordered_generators)
+        selection = await _select_prepared_scheduled_quiz(ordered_generators)
+        if not selection:
+            selection = await _select_new_scheduled_quiz(ordered_generators)
         if not selection:
             selection = await _select_repeat_scheduled_quiz(int(target_chat_id), ordered_generators)
     if not selection:
         return None
     selection["desired_mode"] = desired_mode
     return selection
+
+
+async def prepare_scheduled_quiz_pool(context: CallbackContext, target_per_type: int | None = None) -> None:
+    desired_per_type = max(1, int(target_per_type or QUIZ_PREPARED_TARGET_PER_TYPE))
+    generator_catalog = _get_quiz_generator_catalog()
+    summary: list[str] = []
+    for quiz_type, generator in generator_catalog:
+        try:
+            ready_before = await asyncio.to_thread(
+                count_prepared_telegram_quizzes,
+                quiz_type,
+                source_lang="ru",
+                target_lang="de",
+            )
+        except Exception:
+            logging.warning("⚠️ Не удалось посчитать prepared quizzes для type=%s", quiz_type, exc_info=True)
+            continue
+        missing = max(0, desired_per_type - int(ready_before or 0))
+        if missing <= 0:
+            summary.append(f"{quiz_type}:ok({ready_before})")
+            continue
+        added = 0
+        attempts = 0
+        max_attempts = max(6, missing * 6)
+        seen_words: set[str] = set()
+        while added < missing and attempts < max_attempts:
+            attempts += 1
+            entry = get_random_dictionary_entry_for_quiz_type(
+                quiz_type,
+                cooldown_days=5,
+                source_lang="ru",
+                target_lang="de",
+            )
+            if not entry:
+                entry = get_random_dictionary_entry(
+                    cooldown_days=5,
+                    source_lang="ru",
+                    target_lang="de",
+                )
+            if not entry or not _is_ru_de_quiz_entry(entry):
+                continue
+            word_key = str(entry.get("word_ru") or "").strip().lower()
+            if word_key and word_key in seen_words:
+                continue
+            try:
+                quiz = await generator(entry)
+            except Exception as exc:
+                logging.warning("⚠️ Prepared quiz generator '%s' failed: %s", quiz_type, exc)
+                quiz = None
+            if not quiz:
+                continue
+            if not quiz.get("quiz_type"):
+                quiz["quiz_type"] = quiz_type
+            if not quiz.get("word_ru"):
+                quiz["word_ru"] = entry.get("word_ru")
+            try:
+                await asyncio.to_thread(
+                    store_prepared_telegram_quiz,
+                    quiz_type,
+                    quiz,
+                    word_ru=(quiz.get("word_ru") or entry.get("word_ru") or None),
+                    source_lang="ru",
+                    target_lang="de",
+                )
+            except Exception:
+                logging.warning("⚠️ Не удалось сохранить prepared scheduled quiz type=%s", quiz_type, exc_info=True)
+                continue
+            if word_key:
+                seen_words.add(word_key)
+            added += 1
+        summary.append(f"{quiz_type}:+{added}/{missing}")
+    logging.info("✅ prepared scheduled quiz pool updated: %s", ", ".join(summary))
 
 
 async def delete_temporary_message(context: CallbackContext) -> None:
@@ -11247,20 +11918,226 @@ async def delete_temporary_message(context: CallbackContext) -> None:
 
 async def _collect_quiz_delivery_targets(context: CallbackContext) -> list[int]:
     try:
-        return await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_scheduled_quiz")
+        targets = await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_scheduled_quiz")
+        filtered_targets = [int(chat_id) for chat_id in targets if not _is_quiz_delivery_target_suppressed(int(chat_id))]
+        skipped = len(targets) - len(filtered_targets)
+        if skipped > 0:
+            logging.info("ℹ️ scheduled quiz: suppressed %s permanently failing target(s)", skipped)
+        return filtered_targets
     except Exception:
         logging.warning("⚠️ Не удалось собрать targets для scheduled quiz", exc_info=True)
         return []
 
 
+async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[dict]:
+    try:
+        user_ids = await _collect_scheduler_candidate_user_ids(
+            lookback_days=30,
+            include_allowed=True,
+            include_admins=True,
+        )
+        delivery_map = await _build_user_delivery_map(context, user_ids, job_name="send_scheduled_quiz")
+        grouped: dict[int, list[int]] = {}
+        skipped = 0
+        for user_id, chat_id in sorted(delivery_map.items(), key=lambda item: (int(item[1]), int(item[0]))):
+            safe_chat_id = int(chat_id)
+            if _is_quiz_delivery_target_suppressed(safe_chat_id):
+                skipped += 1
+                continue
+            grouped.setdefault(safe_chat_id, []).append(int(user_id))
+        if skipped > 0:
+            logging.info("ℹ️ scheduled quiz: suppressed %s user target(s) before chat grouping", skipped)
+        return [
+            {
+                "chat_id": int(chat_id),
+                "user_ids": [int(user_id) for user_id in user_ids_for_chat],
+            }
+            for chat_id, user_ids_for_chat in sorted(grouped.items(), key=lambda item: int(item[0]))
+        ]
+    except Exception:
+        logging.warning("⚠️ Не удалось собрать user targets для scheduled quiz", exc_info=True)
+        return []
+
+
+def _build_image_quiz_keyboard(dispatch_id: int, answer_options: list[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for idx, option in enumerate(answer_options[:4]):
+        current_row.append(
+            InlineKeyboardButton(
+                str(option),
+                callback_data=f"iq:{int(dispatch_id)}:{int(idx)}",
+            )
+        )
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_image_quiz_caption(template: dict) -> str:
+    question = str(template.get("question_de") or "").strip()
+    if question:
+        return question
+    return "Was passt zum Bild?"
+
+
+async def _send_image_quiz_for_target(
+    context: CallbackContext,
+    *,
+    target_chat_id: int,
+    candidate_user_ids: list[int],
+    delivery_slot: str,
+    delivery_date_local: date,
+) -> bool:
+    chosen_user_id: int | None = None
+    chosen_template: dict | None = None
+    for user_id in candidate_user_ids:
+        try:
+            template = await asyncio.to_thread(
+                claim_next_ready_image_quiz_template,
+                user_id=int(user_id),
+                source_lang="ru",
+                target_lang="de",
+            )
+        except Exception:
+            logging.warning(
+                "⚠️ Не удалось claim ready image quiz template user_id=%s chat_id=%s",
+                int(user_id),
+                int(target_chat_id),
+                exc_info=True,
+            )
+            continue
+        if template:
+            chosen_user_id = int(user_id)
+            chosen_template = template
+            break
+
+    if chosen_user_id is None or not chosen_template:
+        return False
+
+    answer_options = [str(option).strip() for option in (chosen_template.get("answer_options") or []) if str(option).strip()]
+    correct_option_index = chosen_template.get("correct_option_index")
+    image_url = str(chosen_template.get("image_url") or "").strip()
+    if len(answer_options) != 4 or correct_option_index is None or not image_url:
+        logging.warning(
+            "⚠️ Ready image quiz template is incomplete template_id=%s user_id=%s chat_id=%s",
+            chosen_template.get("id"),
+            chosen_user_id,
+            int(target_chat_id),
+        )
+        return False
+
+    delivery_scope = "group" if int(target_chat_id) < 0 else "private"
+    dispatch = None
+    try:
+        dispatch = await asyncio.to_thread(
+            create_image_quiz_dispatch,
+            template_id=int(chosen_template["id"]),
+            target_user_id=int(chosen_user_id),
+            chat_id=int(target_chat_id),
+            delivery_scope=delivery_scope,
+            delivery_slot=delivery_slot,
+            delivery_date_local=delivery_date_local,
+            status="claimed",
+        )
+    except Exception:
+        logging.warning(
+            "⚠️ Не удалось создать image quiz dispatch template_id=%s user_id=%s chat_id=%s slot=%s date=%s",
+            chosen_template.get("id"),
+            chosen_user_id,
+            int(target_chat_id),
+            delivery_slot,
+            delivery_date_local,
+            exc_info=True,
+        )
+        return False
+
+    if not dispatch or not dispatch.get("id"):
+        logging.warning(
+            "⚠️ Image quiz dispatch was not created template_id=%s user_id=%s chat_id=%s",
+            chosen_template.get("id"),
+            chosen_user_id,
+            int(target_chat_id),
+        )
+        return False
+
+    dispatch_id = int(dispatch["id"])
+    try:
+        photo_message = await context.bot.send_photo(
+            chat_id=int(target_chat_id),
+            photo=image_url,
+            caption=_build_image_quiz_caption(chosen_template),
+            reply_markup=_build_image_quiz_keyboard(dispatch_id, answer_options),
+        )
+    except Exception as exc:
+        try:
+            await asyncio.to_thread(mark_image_quiz_dispatch_failed, dispatch_id)
+        except Exception:
+            logging.warning("⚠️ Не удалось отметить failed image quiz dispatch id=%s", dispatch_id, exc_info=True)
+        logging.warning(
+            "⚠️ Не удалось отправить image quiz template_id=%s dispatch_id=%s user_id=%s chat_id=%s: %s",
+            chosen_template.get("id"),
+            dispatch_id,
+            chosen_user_id,
+            int(target_chat_id),
+            exc,
+        )
+        return False
+
+    try:
+        await asyncio.to_thread(
+            mark_image_quiz_dispatch_sent,
+            dispatch_id,
+            message_id=int(photo_message.message_id),
+        )
+    except Exception:
+        logging.warning(
+            "⚠️ Не удалось отметить sent image quiz dispatch id=%s template_id=%s chat_id=%s",
+            dispatch_id,
+            chosen_template.get("id"),
+            int(target_chat_id),
+            exc_info=True,
+        )
+
+    logging.info(
+        "✅ Image quiz sent: chat_id=%s user_id=%s dispatch_id=%s template_id=%s slot=%s",
+        int(target_chat_id),
+        int(chosen_user_id),
+        dispatch_id,
+        int(chosen_template["id"]),
+        delivery_slot,
+    )
+    return True
+
+
 async def send_scheduled_quiz(context: CallbackContext) -> None:
     ordered = _get_scheduled_quiz_generators(context)
-    delivery_targets = await _collect_quiz_delivery_targets(context)
+    delivery_targets = await _collect_quiz_delivery_user_targets(context)
     if not delivery_targets:
         logging.info("ℹ️ scheduled quiz: нет targets для рассылки")
         return
+    slot_now = _get_quiz_schedule_now()
+    delivery_slot = _format_quiz_delivery_slot(slot_now)
+    delivery_date_local = slot_now.date()
+    image_slot = _is_image_quiz_slot(slot_now)
     sent_count = 0
-    for target_chat_id in delivery_targets:
+    for target in delivery_targets:
+        target_chat_id = int(target.get("chat_id") or 0)
+        target_user_ids = [int(user_id) for user_id in (target.get("user_ids") or []) if int(user_id) > 0]
+        if image_slot:
+            image_sent = await _send_image_quiz_for_target(
+                context,
+                target_chat_id=int(target_chat_id),
+                candidate_user_ids=target_user_ids,
+                delivery_slot=delivery_slot,
+                delivery_date_local=delivery_date_local,
+            )
+            if image_sent:
+                sent_count += 1
+                continue
         selection = await _select_scheduled_quiz_for_target(int(target_chat_id), ordered)
         if not selection:
             logging.warning("⚠️ Не удалось подобрать scheduled quiz для chat_id=%s", target_chat_id)
@@ -11284,6 +12161,14 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
                 allows_multiple_answers=False,
             )
         except Exception as exc:
+            if _is_permanent_quiz_delivery_error(exc):
+                _suppress_quiz_delivery_target(int(target_chat_id))
+                logging.warning(
+                    "⚠️ suppressing scheduled quiz target chat_id=%s for %ss after permanent sendPoll failure: %s",
+                    int(target_chat_id),
+                    QUIZ_DELIVERY_SUPPRESS_SECONDS,
+                    exc,
+                )
             logging.warning(
                 "⚠️ Не удалось отправить quiz в chat_id=%s: %s",
                 target_chat_id,
@@ -11359,7 +12244,7 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
     if sent_count <= 0:
         logging.warning("⚠️ Scheduled quiz run finished without successful deliveries.")
     else:
-        logging.warning("⚠️ Квиз сгенерирован, но не был отправлен ни в один чат.")
+        logging.info("✅ Scheduled quiz run completed with successful deliveries: %s", sent_count)
 
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -11473,16 +12358,126 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+async def handle_image_quiz_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    raw_data = str(query.data or "").strip()
+    match = re.match(r"^iq:(\d+):(\d+)$", raw_data)
+    if not match:
+        await query.answer("Quiz unavailable")
+        return
+
+    dispatch_id = int(match.group(1))
+    selected_option_index = int(match.group(2))
+    try:
+        dispatch = await asyncio.to_thread(get_image_quiz_dispatch, dispatch_id)
+    except Exception:
+        logging.warning("⚠️ Не удалось загрузить image quiz dispatch id=%s", dispatch_id, exc_info=True)
+        dispatch = None
+    if not dispatch or str(dispatch.get("status") or "").strip().lower() != "sent":
+        await query.answer("Quiz unavailable")
+        return
+
+    try:
+        template = await asyncio.to_thread(get_image_quiz_template, int(dispatch.get("template_id") or 0))
+    except Exception:
+        logging.warning(
+            "⚠️ Не удалось загрузить image quiz template для dispatch id=%s template_id=%s",
+            dispatch_id,
+            dispatch.get("template_id"),
+            exc_info=True,
+        )
+        template = None
+    if not template:
+        await query.answer("Quiz unavailable")
+        return
+
+    answer_options = [str(option).strip() for option in (template.get("answer_options") or []) if str(option).strip()]
+    correct_option_index = template.get("correct_option_index")
+    if (
+        selected_option_index < 0
+        or selected_option_index >= len(answer_options)
+        or correct_option_index is None
+    ):
+        await query.answer("Quiz unavailable")
+        return
+
+    selected_text = answer_options[selected_option_index]
+    is_correct = int(selected_option_index) == int(correct_option_index)
+    try:
+        answer = await asyncio.to_thread(
+            record_image_quiz_answer,
+            dispatch_id=int(dispatch_id),
+            user_id=int(user.id),
+            selected_option_index=int(selected_option_index),
+            selected_text=selected_text,
+            is_correct=bool(is_correct),
+        )
+    except Exception:
+        logging.warning(
+            "⚠️ Не удалось записать image quiz answer dispatch_id=%s user_id=%s",
+            dispatch_id,
+            int(user.id),
+            exc_info=True,
+        )
+        await query.answer("Quiz unavailable")
+        return
+
+    if not answer:
+        await query.answer("Quiz unavailable")
+        return
+
+    if not bool(answer.get("created")):
+        await query.answer("Already answered")
+        return
+
+    try:
+        await asyncio.to_thread(
+            mark_image_quiz_answer_feedback_sent,
+            int(dispatch_id),
+            int(user.id),
+        )
+    except Exception:
+        logging.warning(
+            "⚠️ Не удалось отметить feedback sent для image quiz dispatch_id=%s user_id=%s",
+            dispatch_id,
+            int(user.id),
+            exc_info=True,
+        )
+
+    await query.answer("✅ Correct" if is_correct else "❌ Incorrect")
+
+
 
 def main():
     global application
+
+    bot_polling_enabled = _should_run_primary_telegram_bot_process()
+    logging.info(
+        "Bot runtime process: polling_enabled=%s railway_service=%s",
+        bot_polling_enabled,
+        str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
+    )
+    if not bot_polling_enabled:
+        logging.info("Non-primary bot service detected; keeping process idle to avoid duplicate Telegram polling")
+        while True:
+            pytime.sleep(3600)
     
     # Инициализация базы данных from database.py 
     init_db()
     ensure_webapp_tables()
 
     #defaults = Defaults(timeout=60)  # увеличили таймаут до 60 секунд
-    tracking_bot = TrackingExtBot(token=TELEGRAM_Deutsch_BOT_TOKEN)
+    telegram_request = HTTPXRequest(
+        connection_pool_size=max(32, int((os.getenv("TELEGRAM_HTTP_POOL_SIZE") or "64").strip())),
+        pool_timeout=max(5.0, float((os.getenv("TELEGRAM_HTTP_POOL_TIMEOUT") or "30").strip())),
+        read_timeout=max(10.0, float((os.getenv("TELEGRAM_HTTP_READ_TIMEOUT") or "60").strip())),
+        write_timeout=max(10.0, float((os.getenv("TELEGRAM_HTTP_WRITE_TIMEOUT") or "60").strip())),
+        connect_timeout=max(5.0, float((os.getenv("TELEGRAM_HTTP_CONNECT_TIMEOUT") or "20").strip())),
+    )
+    tracking_bot = TrackingExtBot(token=TELEGRAM_Deutsch_BOT_TOKEN, request=telegram_request)
     application = Application.builder().bot(tracking_bot).build()
     application.bot.request.timeout = 60
 
@@ -11525,25 +12520,37 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_speak_callback, pattern=r"^dictspeak:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_feel_callback, pattern=r"^dictfeel:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_pair_callback, pattern=r"^dictpair:"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_mode_callback, pattern=r"^dictmode:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_toggle_callback, pattern=r"^dictseltoggle:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_all_callback, pattern=r"^dictselall:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_confirm_callback, pattern=r"^dictsaveconfirm:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_option_callback, pattern=r"^dictsaveopt:"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_quick_save_callback, pattern=r"^dictquicksave:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
     application.add_handler(CallbackQueryHandler(handle_group_enrollment_callback, pattern=r"^groupenroll:confirm$"))
     application.add_handler(CallbackQueryHandler(handle_language_tutor_callback, pattern=r"^langgpt:(ask|continue)$"))
+    application.add_handler(CallbackQueryHandler(handle_image_quiz_callback, pattern=r"^iq:\d+:\d+$"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_translation_from_text, block=False), group=1)  # ✅ Проверяем переводы
 
 
     application.add_handler(CallbackQueryHandler(topic_selected)) #Он ждет любые нажатия на inline-кнопки.
-    application.add_handler(MessageHandler(filters.TEXT, log_all_messages, block=False), group=2)  # 👈 Добавляем в main()
+    if BOT_DEBUG_LOG_ALL_MESSAGES:
+        application.add_handler(MessageHandler(filters.TEXT, log_all_messages, block=False), group=2)
     application.add_handler(PollAnswerHandler(handle_poll_answer))
 
     application.add_error_handler(error_handler)
-    if application.job_queue:
+    bot_scheduler_enabled = _should_start_bot_scheduler()
+    logging.info(
+        "Bot scheduler runtime: enabled=%s railway_service=%s",
+        bot_scheduler_enabled,
+        str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
+    )
+    if application.job_queue and bot_scheduler_enabled:
         application.job_queue.run_once(backfill_group_enrollment_prompts, when=20)
+        application.job_queue.run_once(prepare_scheduled_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS)
+    elif application.job_queue:
+        logging.info("Skipping bot startup run_once jobs in this process")
     
     # --- НОВЫЕ ОБРАБОТЧИКИ ДЛЯ LIVEKIT КНОПОК ---
     #application.add_handler(MessageHandler(filters.Regex(r'🎙 Начать урок'), start_lesson)) # Теперь обрабатываем текст кнопки
@@ -11562,8 +12569,6 @@ def main():
     # except Exception as e:
     #     logging.critical(f"❌ Не удалось инициализировать Sales Assistant: {e}", exc_info=True)
 
-
-    scheduler = BackgroundScheduler()
 
     # 3) APScheduler → вкидываем корутину в тот же loop
     def submit_async(async_func, context=None, *args, **kwargs):
@@ -11607,31 +12612,43 @@ def main():
 
 
     # ✅ Добавляем задачу в `scheduler` ДЛЯ УТРА
-    print("📌 Добавляем задачу в scheduler...")
-    scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
-    scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
-    scheduler.add_job(
-        lambda: submit_async(backfill_group_enrollment_prompts, CallbackContext(application=application)),
-        "cron",
-        hour=4,
-        minute=20,
-    )
-    for hour, minute in FLASHCARD_REMINDER_TIMES:
-        scheduler.add_job(
-            lambda: submit_async(send_flashcard_reminder, CallbackContext(application=application)),
-            "cron",
-            hour=hour,
-            minute=minute,
-        )
+    scheduler = BackgroundScheduler() if bot_scheduler_enabled else None
 
-    for hour in QUIZ_SCHEDULE_HOURS:
-        for minute in QUIZ_SCHEDULE_MINUTES:
+    if scheduler is not None:
+        print("📌 Добавляем задачу в scheduler...")
+        scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
+        scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
+        scheduler.add_job(
+            lambda: submit_async(backfill_group_enrollment_prompts, CallbackContext(application=application)),
+            "cron",
+            hour=4,
+            minute=20,
+        )
+        for hour, minute in FLASHCARD_REMINDER_TIMES:
             scheduler.add_job(
-                lambda: submit_async(send_scheduled_quiz, CallbackContext(application=application)),
+                lambda: submit_async(send_flashcard_reminder, CallbackContext(application=application)),
                 "cron",
                 hour=hour,
                 minute=minute,
             )
+
+        for hour in QUIZ_SCHEDULE_HOURS:
+            for minute in QUIZ_SCHEDULE_MINUTES:
+                scheduler.add_job(
+                    lambda: submit_async(send_scheduled_quiz, CallbackContext(application=application)),
+                    "cron",
+                    hour=hour,
+                    minute=minute,
+                )
+        scheduler.add_job(
+            lambda: submit_async(
+                prepare_scheduled_quiz_pool,
+                CallbackContext(application=application),
+                QUIZ_PREPARED_TARGET_PER_TYPE,
+            ),
+            "cron",
+            minute=QUIZ_PREPARED_HOURLY_TOPUP_MINUTE,
+        )
 
     # scheduler.add_job(
     #     lambda: submit_async(send_german_news, CallbackContext(application=application)), 
@@ -11642,19 +12659,19 @@ def main():
     #     day_of_week = "mon, fri"
     # )
     
-    scheduler.add_job(lambda: submit_async(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="fri", hour=15, minute=15)
-    scheduler.add_job(lambda: submit_async(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="mon", hour=6, minute=5) 
+        scheduler.add_job(lambda: submit_async(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="fri", hour=15, minute=15)
+        scheduler.add_job(lambda: submit_async(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="mon", hour=6, minute=5) 
     #scheduler.add_job(lambda: run_async_job(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="sun", hour=7, minute=7)
     
     # Legacy auto-close disabled.
     # Session auto-close now lives in backend/backend_server.py and runs via
     # TRANSLATION_SESSIONS_AUTO_CLOSE_* on TODAY_PLAN_TZ at 23:59 by default.
     
-    scheduler.add_job(lambda: submit_async(send_daily_summary), "cron", hour=20, minute=52)
-    scheduler.add_job(lambda: submit_async(send_weekly_summary), "cron", day_of_week="sun", hour=20, minute=55)
+        scheduler.add_job(lambda: submit_async(send_daily_summary), "cron", hour=20, minute=52)
+        scheduler.add_job(lambda: submit_async(send_weekly_summary), "cron", day_of_week="sun", hour=20, minute=55)
 
-    for hour in [7,12,16]:
-        scheduler.add_job(lambda: submit_async(send_progress_report), "cron", hour=hour, minute=5)
+        for hour in [7,12,16]:
+            scheduler.add_job(lambda: submit_async(send_progress_report), "cron", hour=hour, minute=5)
 
     #scheduler.add_job(lambda: submit_async(get_yesterdays_mistakes_for_audio_message, CallbackContext(application=application)), "cron", hour=4, minute=15)
 
@@ -11670,54 +12687,56 @@ def main():
     # scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="half_year"), "cron", day="last", month="6,12", hour= 10, minute=2)
 
     # scheduler.add_job(lambda: submit_async(send_users_comparison_bar_chart, CallbackContext(application=application), period="quarter"), "cron", day="last", month="12", hour= 23, minute=2)
-    scheduler.add_job(
-        lambda: submit_async(cleanup_system_messages, CallbackContext(application=application)),
-        "cron",
-        hour=SYSTEM_MESSAGE_CLEANUP_HOUR,
-        minute=SYSTEM_MESSAGE_CLEANUP_MINUTE,
-    )
-    try:
-        user_removal_review_timezone = ZoneInfo(USER_REMOVAL_REVIEW_TZ)
-    except Exception:
-        user_removal_review_timezone = ZoneInfo("UTC")
-    scheduler.add_job(
-        lambda: submit_async(_notify_admins_due_user_removals, CallbackContext(application=application)),
-        "cron",
-        minute=USER_REMOVAL_REVIEW_MINUTE,
-        timezone=user_removal_review_timezone,
-    )
-    try:
-        user_removal_weekly_timezone = ZoneInfo(USER_REMOVAL_WEEKLY_REPORT_TZ)
-    except Exception:
-        user_removal_weekly_timezone = ZoneInfo("UTC")
-    scheduler.add_job(
-        lambda: submit_async(send_weekly_user_removal_digest, CallbackContext(application=application)),
-        "cron",
-        day_of_week=USER_REMOVAL_WEEKLY_REPORT_DAY,
-        hour=USER_REMOVAL_WEEKLY_REPORT_HOUR,
-        minute=USER_REMOVAL_WEEKLY_REPORT_MINUTE,
-        timezone=user_removal_weekly_timezone,
-    )
-    budget_report_enabled = (os.getenv("BUDGET_REPORT_SCHEDULER_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
-    if budget_report_enabled:
-        budget_report_day = max(1, min(28, int((os.getenv("BUDGET_REPORT_SCHEDULER_DAY") or "1").strip())))
-        budget_report_hour = max(0, min(23, int((os.getenv("BUDGET_REPORT_SCHEDULER_HOUR") or "9").strip())))
-        budget_report_minute = max(0, min(59, int((os.getenv("BUDGET_REPORT_SCHEDULER_MINUTE") or "0").strip())))
-        budget_report_tz = (os.getenv("BUDGET_REPORT_SCHEDULER_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
         try:
-            budget_report_timezone = ZoneInfo(budget_report_tz)
+            user_removal_review_timezone = ZoneInfo(USER_REMOVAL_REVIEW_TZ)
         except Exception:
-            budget_report_timezone = ZoneInfo("UTC")
+            user_removal_review_timezone = ZoneInfo("UTC")
         scheduler.add_job(
-            lambda: submit_async(send_monthly_budget_report, CallbackContext(application=application)),
+            lambda: submit_async(cleanup_system_messages, CallbackContext(application=application)),
             "cron",
-            day=budget_report_day,
-            hour=budget_report_hour,
-            minute=budget_report_minute,
-            timezone=budget_report_timezone,
+            hour=SYSTEM_MESSAGE_CLEANUP_HOUR,
+            minute=SYSTEM_MESSAGE_CLEANUP_MINUTE,
         )
-    
-    scheduler.start()
+        scheduler.add_job(
+            lambda: submit_async(_notify_admins_due_user_removals, CallbackContext(application=application)),
+            "cron",
+            minute=USER_REMOVAL_REVIEW_MINUTE,
+            timezone=user_removal_review_timezone,
+        )
+        try:
+            user_removal_weekly_timezone = ZoneInfo(USER_REMOVAL_WEEKLY_REPORT_TZ)
+        except Exception:
+            user_removal_weekly_timezone = ZoneInfo("UTC")
+        scheduler.add_job(
+            lambda: submit_async(send_weekly_user_removal_digest, CallbackContext(application=application)),
+            "cron",
+            day_of_week=USER_REMOVAL_WEEKLY_REPORT_DAY,
+            hour=USER_REMOVAL_WEEKLY_REPORT_HOUR,
+            minute=USER_REMOVAL_WEEKLY_REPORT_MINUTE,
+            timezone=user_removal_weekly_timezone,
+        )
+        budget_report_enabled = (os.getenv("BUDGET_REPORT_SCHEDULER_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+        if budget_report_enabled:
+            budget_report_day = max(1, min(28, int((os.getenv("BUDGET_REPORT_SCHEDULER_DAY") or "1").strip())))
+            budget_report_hour = max(0, min(23, int((os.getenv("BUDGET_REPORT_SCHEDULER_HOUR") or "9").strip())))
+            budget_report_minute = max(0, min(59, int((os.getenv("BUDGET_REPORT_SCHEDULER_MINUTE") or "0").strip())))
+            budget_report_tz = (os.getenv("BUDGET_REPORT_SCHEDULER_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+            try:
+                budget_report_timezone = ZoneInfo(budget_report_tz)
+            except Exception:
+                budget_report_timezone = ZoneInfo("UTC")
+            scheduler.add_job(
+                lambda: submit_async(send_monthly_budget_report, CallbackContext(application=application)),
+                "cron",
+                day=budget_report_day,
+                hour=budget_report_hour,
+                minute=budget_report_minute,
+                timezone=budget_report_timezone,
+            )
+
+        scheduler.start()
+    else:
+        logging.info("Skipping APScheduler startup in this bot process")
     print("🚀 Бот запущен! Ожидаем сообщения...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

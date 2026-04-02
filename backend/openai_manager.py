@@ -40,6 +40,8 @@ _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant_multilang",
     "dictionary_assistant_multilang_core_fast",
     "dictionary_enrichment_multilang",
+    "dictionary_enrichment_multilang_word_compact",
+    "dictionary_enrichment_multilang_phrase_compact",
     "dictionary_assistant_multilang_reader",
     "dictionary_collocations",
     "dictionary_collocations_multilang",
@@ -60,6 +62,9 @@ _DEFAULT_RESPONSES_TASKS = {
     "generate_sentences_multilang",
     "generate_mystery_story",
     "generate_word_quiz",
+    "image_quiz_sentence_fallback",
+    "image_quiz_visual_screen",
+    "image_quiz_blueprint",
     "tts_chunk_de",
     "translate_subtitles_ru",
     "translate_subtitles_multilang",
@@ -1647,9 +1652,6 @@ Return STRICT JSON with these fields:
   "correction_applied": true,
   "corrected_form": "corrected Russian form or null",
   "etymology_note": "string|null",
-  "usage_note": "string|null",
-  "real_life_usage": "string|null",
-  "register_note": "string|null",
   "memory_tip": "string|null",
   "expression_note": "string|null",
   "part_of_speech_note": "string|null",
@@ -1705,7 +1707,6 @@ Output rules:
 - If verb: provide separable/inseparable when relevant, up to 3 useful government patterns, and key forms.
 - If adjective: provide comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is idiomatic, fixed, formal/informal, spoken/written.
-- real_life_usage must explain where native speakers actually use it.
 - memory_tip must help the learner feel and remember the word vividly.
 - save_worthy_options must contain exactly 3 practical items whenever possible:
   1) the base word or expression,
@@ -1765,9 +1766,6 @@ Return STRICT JSON with these fields:
   "correction_applied": true,
   "corrected_form": "corrected German form or null",
   "etymology_note": "string|null",
-  "usage_note": "string|null",
-  "real_life_usage": "string|null",
-  "register_note": "string|null",
   "memory_tip": "string|null",
   "expression_note": "string|null",
   "part_of_speech_note": "string|null",
@@ -1817,7 +1815,6 @@ Output rules:
 - If verb: include separable/inseparable info, up to 3 useful constructions (preposition + case + example), and important forms.
 - If adjective: include comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
-- real_life_usage must explain where native speakers actually use it.
 - memory_tip must help the learner remember the word vividly.
 - save_worthy_options must contain exactly 3 practical items whenever possible:
   1) base word/expression,
@@ -1886,7 +1883,6 @@ Task:
 - Detect whether "word" belongs to source_language or target_language.
 - Translate to the opposite language.
 - Provide a structured learner-friendly lexical explanation.
-- Focus on practical real-life usage, not abstract theory.
 - Distinguish MAIN meanings from ADDITIONAL meanings.
 - If slang meaning is common in modern speech, include it.
 - If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
@@ -1922,9 +1918,6 @@ Return STRICT JSON with keys:
   "correction_applied": true,
   "corrected_form": "string|null",
   "etymology_note": "string|null",
-  "usage_note": "string|null",
-  "real_life_usage": "string|null",
-  "register_note": "string|null",
   "memory_tip": "string|null",
   "expression_note": "string|null",
   "part_of_speech_note": "string|null",
@@ -1973,8 +1966,8 @@ Rules:
 - Use source_language as the explanation language by default, except when target_language is clearly the learner language from the input context.
 - All explanatory fields must be written consistently in that explanation language:
   translations[].value, translations[].context, meanings.primary.value, meanings.primary.context,
-  meanings.secondary[].value, meanings.secondary[].context, etymology_note, usage_note,
-  real_life_usage, register_note, memory_tip, expression_note, part_of_speech_note, raw_text.
+  meanings.secondary[].value, meanings.secondary[].context, etymology_note,
+  memory_tip, expression_note, part_of_speech_note, raw_text.
 - Examples must help the learner read target language:
   meanings.primary.example_target and meanings.secondary[].example_target must be in target_language.
   meanings.primary.example_source and meanings.secondary[].example_source must be in source_language.
@@ -2235,6 +2228,130 @@ Rules:
 - Return up to 3 save_worthy_options whenever possible.
 - If information is unknown, use null.
 """,
+"dictionary_enrichment_multilang_word_compact": """
+You enrich an already created multilingual dictionary card for a SINGLE WORD or short lexical item.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "word": "<original user input>",
+  "core_result": {
+    "detected_language": "source|target",
+    "word_source": "...",
+    "word_target": "...",
+    "part_of_speech": "...",
+    "article": "..."
+  }
+}
+
+Task:
+- Keep the core translation intact unless it is clearly wrong.
+- Return only the highest-value learner details.
+- Be compact, practical, and fast to scan.
+
+Return STRICT JSON with keys:
+{
+  "word_source": "string|null",
+  "word_target": "string|null",
+  "translations": [
+    {"value": "...", "context": "...", "is_primary": true}
+  ],
+  "usage_note": "string|null",
+  "register_note": "string|null",
+  "part_of_speech_note": "string|null",
+  "article": "string|null",
+  "forms": {
+    "plural": "string|null",
+    "present_3sg": "string|null",
+    "praeteritum": "string|null",
+    "perfekt": "string|null",
+    "comparative": "string|null",
+    "superlative": "string|null"
+  },
+  "usage_examples": [
+    {"source": "...", "target": "..."},
+    {"source": "...", "target": "..."}
+  ],
+  "save_worthy_options": [
+    {"source": "...", "target": "...", "kind": "base|collocation|phrase"},
+    {"source": "...", "target": "...", "kind": "base|collocation|phrase"}
+  ],
+  "raw_text": "<optional short practical note>"
+}
+
+Rules:
+- Output ONLY JSON.
+- Return at most 2 translation variants.
+- Return at most 2 usage examples.
+- Return at most 2 save_worthy_options.
+- Include only the most useful form fields; leave the rest null.
+- Keep usage_note/register_note/part_of_speech_note short and practical.
+- Do not include long etymology, memory tips, pronunciation blocks, collocation lists, government patterns, or encyclopedic detail.
+- If information is unknown, use null.
+""",
+"dictionary_enrichment_multilang_phrase_compact": """
+You enrich an already created multilingual dictionary card for a PHRASE or SENTENCE.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "word": "<original user input>",
+  "core_result": {
+    "detected_language": "source|target",
+    "word_source": "...",
+    "word_target": "...",
+    "part_of_speech": "phrase|other"
+  }
+}
+
+Task:
+- Keep the main translation intact unless it is clearly wrong.
+- Focus on meaning, nuance, tone, and natural usage.
+- Do NOT turn this into a word-level dictionary card.
+
+Return STRICT JSON with keys:
+{
+  "word_source": "string|null",
+  "word_target": "string|null",
+  "translations": [
+    {"value": "...", "context": "...", "is_primary": true}
+  ],
+  "meanings": {
+    "primary": {
+      "value": "...",
+      "context": "...",
+      "example_source": "...",
+      "example_target": "..."
+    },
+    "secondary": []
+  },
+  "usage_note": "string|null",
+  "real_life_usage": "string|null",
+  "register_note": "string|null",
+  "usage_examples": [
+    {"source": "...", "target": "..."},
+    {"source": "...", "target": "..."}
+  ],
+  "save_worthy_options": [
+    {"source": "...", "target": "...", "kind": "phrase"},
+    {"source": "...", "target": "...", "kind": "phrase"}
+  ],
+  "raw_text": "<optional short practical note>"
+}
+
+Rules:
+- Output ONLY JSON.
+- Return at most 2 translation variants.
+- Return exactly the most important primary meaning/nuance; do not add broad secondary meaning lists.
+- Return at most 2 usage examples.
+- Return at most 2 natural alternative variants.
+- Keep usage_note, real_life_usage, and register_note short and practical.
+- Do not include article, forms, pronunciation, collocation lists, government patterns, etymology, memory tips, or deep lexical commentary.
+- For sentence input, translations[0].value must be the full sentence translation.
+- If information is unknown, use null.
+""",
 "translate_subtitles_ru": """
 You translate short subtitle lines from German to Russian.
 Input JSON: { "lines": [ "...", "...", ... ] }
@@ -2271,6 +2388,103 @@ Make the question tricky and high-level. Use one of these formats:
 Ensure the correct answer is fully correct in meaning, register, collocation, and word order.
 Use the provided usage_examples for context if available.
 Return STRICT JSON with keys: question, options (array of strings), correct_option_id (0-based int), quiz_type.
+""",
+"image_quiz_sentence_fallback": """
+You help build a visual language-learning quiz.
+
+Input JSON:
+{
+  "source_language": "...",
+  "target_language": "...",
+  "source_text": "...",
+  "target_text": "...",
+  "answer_language": "de",
+  "usage_hint": "..."
+}
+
+Task:
+- Produce one short natural sentence in answer_language that clearly and concretely uses the saved word/phrase meaning.
+- The sentence must describe a visualizable real-world scene.
+- Avoid abstract, metaphorical, idiomatic, ambiguous, or multi-scene situations.
+- Prefer one clause and 5-12 words.
+- If no good visual sentence can be produced safely, reject it.
+
+Return STRICT JSON:
+{
+  "visual_status": "valid" | "rejected",
+  "source_sentence": "...",
+  "reason": "..."
+}
+
+Rules:
+- source_sentence must be in answer_language.
+- If visual_status is "rejected", source_sentence may be empty.
+- Output ONLY JSON.
+""",
+"image_quiz_visual_screen": """
+You are a strict visualizability filter for a Telegram image quiz.
+
+Input JSON:
+{
+  "answer_language": "de",
+  "source_text": "...",
+  "target_text": "...",
+  "source_sentence": "..."
+}
+
+Task:
+- Decide whether the sentence can be shown as one clear, concrete, unambiguous image.
+- Reject cases that are abstract, idiomatic, metaphorical, multi-step, internally ambiguous, or visually weak.
+- Be conservative: reject borderline cases.
+
+Return STRICT JSON:
+{
+  "visual_status": "valid" | "rejected",
+  "reason": "..."
+}
+
+Rules:
+- Keep reason short.
+- Output ONLY JSON.
+""",
+"image_quiz_blueprint": """
+You create the blueprint for a Telegram image quiz for German learners.
+
+Input JSON:
+{
+  "answer_language": "de",
+  "source_language": "...",
+  "target_language": "...",
+  "source_text": "...",
+  "target_text": "...",
+  "source_sentence": "..."
+}
+
+Task:
+- Use source_sentence as the scene to be illustrated.
+- Produce a short image prompt describing one concrete scene.
+- Produce exactly 4 answer options in answer_language.
+- One option must be the correct short German answer for the shown scene.
+- The other 3 must be plausible but wrong.
+- Wrong options should be semantically close enough to be believable, but clearly incorrect for the exact scene.
+- Keep options short: usually 1-5 words.
+
+Return STRICT JSON:
+{
+  "source_sentence": "...",
+  "image_prompt": "...",
+  "question_de": "Was zeigt das Bild?",
+  "answer_options": ["...", "...", "...", "..."],
+  "correct_option_index": 0,
+  "explanation": "..."
+}
+
+Rules:
+- answer_options must contain exactly 4 distinct strings.
+- correct_option_index must be 0-based.
+- The correct option must be the best match for the image prompt and source_sentence.
+- explanation should be short and optional in spirit, but always include a brief string.
+- Output ONLY JSON.
 """,
 "check_translation_multilang": """
 You are a strict translation evaluator.
@@ -3826,15 +4040,29 @@ async def run_dictionary_enrichment_multilang(
     target_lang: str,
     core_result: dict | None = None,
 ) -> dict:
+    normalized_word = str(word or "").strip()
+    core = core_result if isinstance(core_result, dict) else {}
+    normalized_pos = str(core.get("part_of_speech") or "").strip().lower()
+    token_count = len([part for part in re.split(r"\s+", normalized_word) if part.strip()])
+    phrase_like = (
+        normalized_pos == "phrase"
+        or token_count > 1
+        or bool(re.search(r"[,.!?;:()\u2013\u2014\"']", normalized_word))
+    )
+    task_name = (
+        "dictionary_enrichment_multilang_phrase_compact"
+        if phrase_like
+        else "dictionary_enrichment_multilang_word_compact"
+    )
     return await run_dictionary_lookup_multilang(
         word=word,
         source_lang=source_lang,
         target_lang=target_lang,
-        task_name="dictionary_enrichment_multilang",
-        system_instruction_key="dictionary_enrichment_multilang",
+        task_name=task_name,
+        system_instruction_key=task_name,
         allow_quick_translate_fallback=False,
         extra_payload={
-            "core_result": core_result if isinstance(core_result, dict) else {},
+            "core_result": core,
         },
     )
 
@@ -4057,6 +4285,33 @@ async def run_generate_word_quiz(prompt_payload: dict) -> dict:
         return json.loads(content)
     except json.JSONDecodeError:
         return {}
+
+
+async def run_image_quiz_sentence_fallback(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="image_quiz_sentence_fallback",
+        system_instruction_key="image_quiz_sentence_fallback",
+        payload=payload or {},
+        poll_delay_sec=1.2,
+    )
+
+
+async def run_image_quiz_visual_screen(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="image_quiz_visual_screen",
+        system_instruction_key="image_quiz_visual_screen",
+        payload=payload or {},
+        poll_delay_sec=1.0,
+    )
+
+
+async def run_image_quiz_blueprint(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="image_quiz_blueprint",
+        system_instruction_key="image_quiz_blueprint",
+        payload=payload or {},
+        poll_delay_sec=1.2,
+    )
 
 
 async def _run_json_assistant_task(

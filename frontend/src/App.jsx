@@ -15,6 +15,7 @@ const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
 const SINGLE_INSTANCE_STALE_MS = 5000;
 const TTS_CACHE_MAX_ENTRIES = 60;
 const READER_IDLE_TIMEOUT_MS = 60000;
+const WEEKLY_SUMMARY_VISITS_ENABLED = false;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
 const ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY = 'translation_draft_debug';
 const ANDROID_TRANSLATION_DRAFT_VARIANT_QUERY_KEY = 'translation_draft_variant';
@@ -110,6 +111,30 @@ function formatEconomicsCompactNumber(value) {
   return numeric.toFixed(3);
 }
 
+function formatBillingPriceLabel(plan, uiLang, fallbackLabel = '') {
+  const amountValue = Number(plan?.amount_value);
+  const currency = String(plan?.currency || '').trim().toUpperCase();
+  const interval = String(plan?.recurring_interval || '').trim().toLowerCase();
+  const intervalCount = Number(plan?.recurring_interval_count || 1);
+  if (!Number.isFinite(amountValue) || amountValue < 0 || !currency) {
+    return String(fallbackLabel || '').trim();
+  }
+  const amountText = `${amountValue.toFixed(2)} ${currency}`;
+  if (!interval) {
+    return amountText;
+  }
+  const intervalLabels = uiLang === 'de'
+    ? { day: 'Tag', week: 'Woche', month: 'Monat', year: 'Jahr' }
+    : { day: 'день', week: 'неделя', month: 'месяц', year: 'год' };
+  const intervalLabel = intervalLabels[interval] || interval;
+  if (intervalCount > 1) {
+    return uiLang === 'de'
+      ? `${amountText} / ${intervalCount} ${intervalLabel}`
+      : `${amountText} / ${intervalCount} ${intervalLabel}`;
+  }
+  return `${amountText} / ${intervalLabel}`;
+}
+
 function formatDateInputValue(value) {
   const date = value instanceof Date ? new Date(value) : new Date(value || Date.now());
   if (Number.isNaN(date.getTime())) {
@@ -185,6 +210,38 @@ function formatAnalyticsCalendarDisplayDate(value, locale = 'ru-RU') {
     month: '2-digit',
     year: 'numeric',
   }).format(safeDate);
+}
+
+const HOME_SNAPSHOT_AUTO_REFRESH_MAX_AGE_MS = 30 * 60 * 1000;
+
+function parseIsoTimestampMs(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return null;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isSnapshotRefreshDue(value, maxAgeMs = HOME_SNAPSHOT_AUTO_REFRESH_MAX_AGE_MS) {
+  const timestampMs = parseIsoTimestampMs(value);
+  if (!Number.isFinite(timestampMs)) {
+    return true;
+  }
+  return (Date.now() - timestampMs) >= maxAgeMs;
+}
+
+function formatSnapshotDateTime(value, locale = 'ru-RU') {
+  const timestampMs = parseIsoTimestampMs(value);
+  if (!Number.isFinite(timestampMs)) {
+    return '';
+  }
+  return new Intl.DateTimeFormat(locale, {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(timestampMs));
 }
 
 const SKILL_CATEGORY_LOCALIZATION = {
@@ -2385,7 +2442,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 type="button"
                 className="secondary-button"
                 onClick={applyTodayTranslationRecommendation}
-                disabled={webappLoading || topicsLoading}
+                disabled={webappLoading || topicsLoading || showPreparingTranslationEmptyState}
               >
                 {tr('Применить рекомендацию', 'Empfehlung anwenden')}
               </button>
@@ -2396,13 +2453,13 @@ const TranslationsSection = React.memo(function TranslationsSection({
           </div>
         )}
         {showTranslationStartConfigurator && (
-          <div className="webapp-translation-start">
+          <div className={`webapp-translation-start ${isAndroidTelegramClient ? 'is-android-layout' : ''}`}>
             <label className="webapp-field">
               <span>{tr('Грамматический фокус тренировки', 'Grammatikfokus fuer das Training')}</span>
               <select
                 value={selectedTopic}
                 onChange={handleTopicChange}
-                disabled={topicsLoading || webappLoading}
+                disabled={topicsLoading || webappLoading || showPreparingTranslationEmptyState}
               >
                 {topics.map((topic) => (
                   <option key={topic} value={topic}>
@@ -2419,7 +2476,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                   value={customTopicInput}
                   onChange={(event) => setCustomTopicInput(event.target.value)}
                   placeholder={tr('Например: Genitiv, Passiv mit Modalverben, nicht vs kein', 'Zum Beispiel: Genitiv, Passiv mit Modalverben, nicht vs kein')}
-                  disabled={webappLoading}
+                  disabled={webappLoading || showPreparingTranslationEmptyState}
                 />
               </label>
             )}
@@ -2429,7 +2486,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 <select
                   value={selectedLevel}
                   onChange={(event) => setSelectedLevel(event.target.value)}
-                  disabled={webappLoading}
+                  disabled={webappLoading || showPreparingTranslationEmptyState}
                 >
                   <option value="a1">A1</option>
                   <option value="a2">A2</option>
@@ -2506,9 +2563,16 @@ const TranslationsSection = React.memo(function TranslationsSection({
               type="button"
               className="primary-button translation-start-cta"
               onClick={selectedTopicIsStoryTopic ? handleStartStory : handleStartTranslation}
-              disabled={webappLoading || topicsLoading || (selectedTopicIsCustomTopic && !customTopicInput.trim())}
+              disabled={
+                webappLoading
+                || topicsLoading
+                || showPreparingTranslationEmptyState
+                || (selectedTopicIsCustomTopic && !customTopicInput.trim())
+              }
             >
-              {webappLoading ? tr('Запускаем...', 'Starten...') : tr('🚀 Начать перевод', '🚀 Uebersetzung starten')}
+              {(webappLoading || showPreparingTranslationEmptyState)
+                ? tr('Загружаем...', 'Laden...')
+                : tr('🚀 Начать перевод', '🚀 Uebersetzung starten')}
             </button>
           </div>
         )}
@@ -2844,6 +2908,8 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   weeklyPlanSaving,
   weeklyPlanLoading,
   weeklyPlanError,
+  weeklyPlanSnapshotTone,
+  refreshWeeklyPlan,
   planAnalyticsMetrics,
   planAnalyticsRange,
   planAnalyticsError,
@@ -2854,14 +2920,14 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   todayPlanLoadedOnce,
   todayPlanLoading,
   todayPlanError,
+  todayPlanSnapshotTone,
   todayItemLoading,
   todayTimerNowMs,
   regenerateTodayPlan,
   loadTodayPlan,
-  sendTodayReminderTest,
-  todayTestSending,
   startTodayTask,
   submitTodayVideoFeedback,
+  getTodayItemDisplayElapsedSeconds,
   getTodayItemElapsedSeconds,
   getTodayItemProgressPercent,
   getTodayTranslationProgress,
@@ -2871,6 +2937,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   skillReportLoadedOnce,
   skillReportLoading,
   skillReportError,
+  skillReportSnapshotTone,
   skillPracticeLoading,
   loadSkillReport,
   startSkillPractice,
@@ -2944,6 +3011,19 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
     ? useLivePlanAnalyticsMetrics
     : (useLivePlanAnalyticsMetrics || hasWeeklyMetricRows);
   const showWeeklyPlanSkeleton = !weeklyPlanError && !canRenderWeeklyMetrics;
+  const uiLocale = uiLang === 'de' ? 'de-DE' : 'ru-RU';
+  const weeklyPlanUpdatedLabel = formatSnapshotDateTime(weeklyPlan?.snapshot_saved_at, uiLocale);
+  const todayPlanUpdatedLabel = formatSnapshotDateTime(todayPlan?.snapshot_saved_at, uiLocale);
+  const skillReportUpdatedLabel = formatSnapshotDateTime(skillReport?.snapshot_saved_at, uiLocale);
+  const weeklyPlanSnapshotLabel = weeklyPlanUpdatedLabel
+    ? tr(`Данные на ${weeklyPlanUpdatedLabel}`, `Stand: ${weeklyPlanUpdatedLabel}`)
+    : tr('Данные обновятся при первом запросе', 'Daten werden beim ersten Abruf geladen');
+  const todayPlanSnapshotLabel = todayPlanUpdatedLabel
+    ? tr(`Данные на ${todayPlanUpdatedLabel}`, `Stand: ${todayPlanUpdatedLabel}`)
+    : tr('Данные обновятся при первом запросе', 'Daten werden beim ersten Abruf geladen');
+  const skillReportSnapshotLabel = skillReportUpdatedLabel
+    ? tr(`Данные на ${skillReportUpdatedLabel}`, `Stand: ${skillReportUpdatedLabel}`)
+    : tr('Данные обновятся при первом запросе', 'Daten werden beim ersten Abruf geladen');
   const weeklyWeekLabel = (weeklyPlanUsesDeferredAnalytics || useLivePlanAnalyticsMetrics)
     ? (
       planAnalyticsRange?.start_date && planAnalyticsRange?.end_date
@@ -3048,11 +3128,38 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
       <>
         <section className="weekly-plan-panel">
           <div className="weekly-plan-head">
-            <div>
-              <h2>{tr('План на неделю', 'Wochenplan')}</h2>
-              <p>{tr('Личные цели и факт с прогнозом до конца недели', 'Persoenliche Ziele mit Ist-Werten und Prognose bis Wochenende')}</p>
+            <div className="home-panel-head-main">
+              <div className="home-panel-head-copy">
+                <h2>{tr('План на неделю', 'Wochenplan')}</h2>
+                <p>{tr('Личные цели и факт с прогнозом до конца недели', 'Persoenliche Ziele mit Ist-Werten und Prognose bis Wochenende')}</p>
+                <small className={`home-panel-snapshot-meta is-${weeklyPlanSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{weeklyPlanSnapshotLabel}</small>
+              </div>
+              <div className="home-panel-head-actions">
+                <button
+                  type="button"
+                  className="secondary-button home-panel-icon-button"
+                  onClick={refreshWeeklyPlan}
+                  disabled={weeklyPlanLoading || planAnalyticsLoading}
+                  title={tr('Актуализировать данные', 'Daten aktualisieren')}
+                  aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
+                >
+                  <span className="home-panel-icon-glyph" aria-hidden="true">
+                    {(weeklyPlanLoading || planAnalyticsLoading) ? '…' : '↻'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button home-panel-icon-button"
+                  onClick={() => setWeeklyPlanCollapsed((prev) => !prev)}
+                  title={weeklyPlanCollapsed ? tr('Развернуть блок', 'Block aufklappen') : tr('Свернуть блок', 'Block einklappen')}
+                  aria-label={weeklyPlanCollapsed ? tr('Развернуть блок', 'Block aufklappen') : tr('Свернуть блок', 'Block einklappen')}
+                  aria-pressed={!weeklyPlanCollapsed}
+                >
+                  <span className="home-panel-icon-glyph" aria-hidden="true">{weeklyPlanCollapsed ? '⌄' : '⌃'}</span>
+                </button>
+              </div>
             </div>
-            <div className="weekly-plan-head-actions">
+            <div className="weekly-plan-head-toolbar">
               <label className="weekly-plan-period-select">
                 <span>{tr('Период', 'Zeitraum')}</span>
                 <select
@@ -3070,13 +3177,6 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
               {weeklyWeekLabel && (
                 <span className="weekly-plan-period">{planPeriodLabel}: {weeklyWeekLabel}</span>
               )}
-              <button
-                type="button"
-                className="secondary-button weekly-plan-collapse-btn"
-                onClick={() => setWeeklyPlanCollapsed((prev) => !prev)}
-              >
-                {weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
-              </button>
             </div>
           </div>
 
@@ -3255,47 +3355,38 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
 
         <section className="today-plan-panel">
           <div className="today-plan-head">
-            <div className="today-plan-title-wrap">
-              <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
-              <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persoenlicher Plan fuer heute')}</p>
+            <div className="home-panel-head-main">
+              <div className="today-plan-title-wrap">
+                <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
+                <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persoenlicher Plan fuer heute')}</p>
+                <small className={`home-panel-snapshot-meta is-${todayPlanSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{todayPlanSnapshotLabel}</small>
+              </div>
+              <div className="home-panel-head-actions today-plan-head-actions">
+                <button
+                  type="button"
+                  className="secondary-button home-panel-icon-button"
+                  onClick={regenerateTodayPlan}
+                  disabled={todayPlanLoading}
+                  title={tr('Пересобрать задачи', 'Aufgaben neu erstellen')}
+                  aria-label={tr('Пересобрать задачи', 'Aufgaben neu erstellen')}
+                >
+                  <span className="home-panel-icon-glyph" aria-hidden="true">{todayPlanLoading ? '…' : '✦'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button home-panel-icon-button"
+                  onClick={() => loadTodayPlan({ manual: true })}
+                  disabled={todayPlanLoading}
+                  title={tr('Актуализировать данные', 'Daten aktualisieren')}
+                  aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
+                >
+                  <span className="home-panel-icon-glyph" aria-hidden="true">{todayPlanLoading ? '…' : '↻'}</span>
+                </button>
+              </div>
             </div>
-            <span className="today-plan-total">
-              {tr('Всего', 'Gesamt')}: {todayPlan?.total_minutes || 0} {tr('мин', 'Min')}
-            </span>
-          </div>
-          <div className="today-plan-toolbar">
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={regenerateTodayPlan}
-              disabled={todayPlanLoading}
-            >
-              {todayPlanLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить план', 'Plan aktualisieren')}
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={loadTodayPlan}
-              disabled={todayPlanLoading}
-            >
-              {todayPlanLoading ? tr('Загружаем...', 'Laden...') : tr('Показать план', 'Plan zeigen')}
-            </button>
-            <button
-              type="button"
-              className="secondary-button today-plan-mail-check-btn"
-              onClick={sendTodayReminderTest}
-              disabled={todayTestSending}
-            >
-              {todayTestSending ? tr('Отправка...', 'Senden...') : tr('Проверить личку', 'Privat testen')}
-            </button>
           </div>
           {showTodayPlanSkeleton && (
             <div className="today-plan-skeleton" aria-hidden="true">
-              <div className="today-plan-skeleton-toolbar">
-                <span className="home-panel-skeleton home-panel-skeleton-pill" />
-                <span className="home-panel-skeleton home-panel-skeleton-pill" />
-                <span className="home-panel-skeleton home-panel-skeleton-pill is-compact" />
-              </div>
               {[0, 1, 2].map((index) => (
                 <div className="today-plan-skeleton-card" key={`today-plan-skeleton-${index}`}>
                   <div className="today-plan-skeleton-main">
@@ -3328,7 +3419,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                 const taskType = String(item?.task_type || '').toLowerCase();
                 const isTranslationTask = taskType === 'translation';
                 const isVideoTask = taskType === 'video' || taskType === 'youtube';
-                const elapsedSeconds = getTodayItemElapsedSeconds(item, todayTimerNowMs);
+                const elapsedSeconds = getTodayItemDisplayElapsedSeconds(item, todayTimerNowMs);
                 const progressPercent = getTodayItemProgressPercent(item, todayTimerNowMs);
                 const translationProgress = isTranslationTask ? getTodayTranslationProgress(item) : null;
                 const doneByProgress = progressPercent >= 100;
@@ -3427,16 +3518,23 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
 
         <section className="skill-report-panel">
           <div className="skill-report-head">
-            <h3>{tr('Карта навыков', 'Skill-Ringe')}</h3>
-            <div className="skill-report-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={loadSkillReport}
-                disabled={skillReportLoading}
-              >
-                {skillReportLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
-              </button>
+            <div className="home-panel-head-main">
+              <div className="home-panel-head-copy">
+                <h3>{tr('Карта навыков', 'Skill-Ringe')}</h3>
+                <small className={`home-panel-snapshot-meta is-${skillReportSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{skillReportSnapshotLabel}</small>
+              </div>
+              <div className="home-panel-head-actions">
+                <button
+                  type="button"
+                  className="secondary-button home-panel-icon-button"
+                  onClick={() => loadSkillReport({ manual: true })}
+                  disabled={skillReportLoading}
+                  title={tr('Актуализировать данные', 'Daten aktualisieren')}
+                  aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
+                >
+                  <span className="home-panel-icon-glyph" aria-hidden="true">{skillReportLoading ? '…' : '↻'}</span>
+                </button>
+              </div>
             </div>
           </div>
           {showSkillReportSkeleton && (
@@ -3598,6 +3696,9 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
 });
 
 function AppInner() {
+  const GERMAN_ONLY_MODE = true;
+  const GERMAN_ONLY_PROFILE = { native_language: 'ru', learning_language: 'de' };
+  const GERMAN_ONLY_PAIR = { source_lang: 'ru', target_lang: 'de' };
   const telegramApp = useMemo(() => window.Telegram?.WebApp, []);
   const [appMode, setAppMode] = useState(() => detectAppMode());
   const [singleInstanceBlocked, setSingleInstanceBlocked] = useState(false);
@@ -3825,6 +3926,7 @@ function AppInner() {
   const [readerFontSize, setReaderFontSize] = useState(18);
   const [readerFontWeight, setReaderFontWeight] = useState(500);
   const [readerDragSelectionMeta, setReaderDragSelectionMeta] = useState(null);
+  const [youtubeDragSelectionMeta, setYoutubeDragSelectionMeta] = useState(null);
   const [selectionText, setSelectionText] = useState('');
   const [selectionPos, setSelectionPos] = useState(null);
   const [selectionType, setSelectionType] = useState('');
@@ -3884,6 +3986,7 @@ function AppInner() {
   const [todayPlanLoadedOnce, setTodayPlanLoadedOnce] = useState(false);
   const [todayPlanLoading, setTodayPlanLoading] = useState(false);
   const [todayPlanError, setTodayPlanError] = useState('');
+  const [todayPlanSnapshotTone, setTodayPlanSnapshotTone] = useState('snapshot');
   const [todayTranslationRecommendation, setTodayTranslationRecommendation] = useState(null);
   const [todayTestSending, setTodayTestSending] = useState(false);
   const [todayItemLoading, setTodayItemLoading] = useState({});
@@ -3903,6 +4006,7 @@ function AppInner() {
   const [skillReportLoadedOnce, setSkillReportLoadedOnce] = useState(false);
   const [skillReportLoading, setSkillReportLoading] = useState(false);
   const [skillReportError, setSkillReportError] = useState('');
+  const [skillReportSnapshotTone, setSkillReportSnapshotTone] = useState('snapshot');
   const [skillPracticeLoading, setSkillPracticeLoading] = useState({});
   const [skillTrainingLoading, setSkillTrainingLoading] = useState(false);
   const [skillTrainingError, setSkillTrainingError] = useState('');
@@ -3916,6 +4020,7 @@ function AppInner() {
   const [weeklyPlanLoading, setWeeklyPlanLoading] = useState(false);
   const [weeklyPlanSaving, setWeeklyPlanSaving] = useState(false);
   const [weeklyPlanError, setWeeklyPlanError] = useState('');
+  const [weeklyPlanSnapshotTone, setWeeklyPlanSnapshotTone] = useState('snapshot');
   const [weeklyPlanDraft, setWeeklyPlanDraft] = useState({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '', reading_minutes_goal: '' });
   const [weeklyPlanCollapsed, setWeeklyPlanCollapsed] = useState(false);
   const [startupPhase2Ready, setStartupPhase2Ready] = useState(false);
@@ -4013,12 +4118,85 @@ function AppInner() {
   const handleTopicChange = useCallback((event) => {
     setSelectedTopic(normalizeSelectedTopicValue(event?.target?.value));
   }, [normalizeSelectedTopicValue]);
+  const inferTranslationRecommendationLevelFloor = useCallback((examples) => {
+    const items = Array.isArray(examples) ? examples : [];
+    const normalizeText = (value) => String(value || '').trim().replace(/\s+/g, ' ');
+    const wordCount = (value) => {
+      const matches = normalizeText(value).match(/[A-Za-zÀ-ÿА-Яа-яЁё0-9]+(?:[-'][A-Za-zÀ-ÿА-Яа-яЁё0-9]+)*/gu);
+      return Array.isArray(matches) ? matches.length : 0;
+    };
+    const hasAnyMarker = (value, markers) => {
+      const lowered = ` ${normalizeText(value).toLowerCase()} `;
+      return markers.some((marker) => lowered.includes(marker));
+    };
+    const sentenceFitsLevel = (sentence, level) => {
+      const text = normalizeText(sentence);
+      if (!text) return false;
+      const words = wordCount(text);
+      const commaCount = (text.match(/,/g) || []).length;
+      const hardPunctuation = (text.match(/[;:()]/g) || []).length;
+      const dashCount = (text.match(/ — | - /g) || []).length;
+      const mediumMarkers = [
+        ' если ', ' когда ', ' потому что ', ' чтобы ', ' который', ' которая', ' которые',
+        ' although ', ' because ', ' when ', ' if ', ' that ', ' which ',
+        ' obwohl ', ' weil ', ' wenn ', ' dass ', ' damit ',
+      ];
+      const advancedMarkers = [
+        ' несмотря на', ' в то время как', ' едва ', ' поскольку ', ' хотя ', ' так как ',
+        ' whereby ', ' whereas ', ' provided that ', ' unless ', ' however ',
+        ' während ', ' nachdem ', ' sofern ', ' indem ', ' weshalb ',
+      ];
+      const hasMedium = hasAnyMarker(text, mediumMarkers);
+      const hasAdvanced = hasAnyMarker(text, advancedMarkers);
+      if (level === 'a2') {
+        return words >= 4 && words <= 12 && commaCount === 0 && hardPunctuation === 0 && dashCount === 0 && !hasMedium && !hasAdvanced;
+      }
+      if (level === 'b1') {
+        return words >= 6 && words <= 18 && commaCount <= 2 && hardPunctuation <= 1 && !(hasAdvanced && words > 14);
+      }
+      if (level === 'b2') {
+        return words >= 9 && words <= 24 && commaCount <= 3 && hardPunctuation <= 2 && (hasMedium || hasAdvanced || words >= 12);
+      }
+      if (level === 'c1') {
+        return words >= 12 && words <= 30 && !(commaCount < 1 && !hasMedium && !hasAdvanced && words < 16);
+      }
+      if (level === 'c2') {
+        return words >= 15 && words <= 36 && !(commaCount < 1 && !hasAdvanced && words < 20);
+      }
+      return false;
+    };
+    const rank = { a2: 1, b1: 2, b2: 3, c1: 4, c2: 5 };
+    const observed = [];
+    const seen = new Set();
+    items.forEach((raw) => {
+      const text = normalizeText(raw);
+      if (!text) return;
+      const key = text.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      for (const levelKey of ['c2', 'c1', 'b2', 'b1', 'a2']) {
+        if (sentenceFitsLevel(text, levelKey)) {
+          observed.push(levelKey);
+          break;
+        }
+      }
+    });
+    if (!observed.length) return '';
+    return observed.reduce((best, current) => (rank[current] > rank[best] ? current : best), observed[0]);
+  }, []);
+  const maxTranslationRecommendationLevel = useCallback((...levels) => {
+    const rank = { a2: 1, b1: 2, b2: 3, c1: 4, c2: 5 };
+    const normalized = levels
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter((value) => ['a2', 'b1', 'b2', 'c1', 'c2'].includes(value));
+    if (!normalized.length) return 'b1';
+    return normalized.reduce((best, current) => (rank[current] > rank[best] ? current : best), normalized[0]);
+  }, []);
   const buildTodayTranslationRecommendation = useCallback((item) => {
     if (!item || String(item?.task_type || '').toLowerCase() !== 'translation') {
       return null;
     }
     const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
-    const recommendedLevel = String(payload?.recommended_level || payload?.level || selectedLevel || 'b1').trim().toLowerCase() || 'b1';
     const recommendedTopicLabel = String(payload?.recommended_topic_label || '').trim();
     const recommendedCustomFocus = String(
       payload?.recommended_custom_focus
@@ -4030,6 +4208,12 @@ function AppInner() {
     const reasonExamples = Array.isArray(payload?.recommended_reason_examples)
       ? payload.recommended_reason_examples
       : (Array.isArray(payload?.examples) ? payload.examples : []);
+    const recommendedLevel = maxTranslationRecommendationLevel(
+      payload?.recommended_level,
+      payload?.level,
+      inferTranslationRecommendationLevelFloor(reasonExamples),
+      selectedLevel || 'b1',
+    );
     const skillTitle = String(payload?.skill_title || '').trim();
     const subCategory = String(payload?.sub_category || '').trim();
     const mainCategory = String(payload?.main_category || '').trim();
@@ -4061,7 +4245,7 @@ function AppInner() {
         .slice(0, 2),
       createdAt: Date.now(),
     };
-  }, [selectedLevel, tr, uiLang]);
+  }, [inferTranslationRecommendationLevelFloor, maxTranslationRecommendationLevel, selectedLevel, tr, uiLang]);
   const applyTodayTranslationRecommendation = useCallback(() => {
     if (!todayTranslationRecommendation) return;
     const recommendedLevel = String(todayTranslationRecommendation?.level || '').trim().toLowerCase();
@@ -4107,8 +4291,11 @@ function AppInner() {
     sessionId: null,
     readyCount: 0,
     expectedTotal: 7,
+    status: 'idle',
+    error: '',
   });
   const [pageVisible, setPageVisible] = useState(() => (typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'));
+  const [homeSnapshotResumeTick, setHomeSnapshotResumeTick] = useState(0);
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
   const [flashcardStats, setFlashcardStats] = useState({ total: 0, correct: 0, wrong: 0 });
@@ -4213,6 +4400,7 @@ function AppInner() {
   const SRS_NEXT_DEDUP_WINDOW_MS = 900;
   const SRS_EASY_LOCK_AFTER_SEC = 5;
   const SRS_GOOD_LOCK_AFTER_SEC = 7;
+  const QUICK_TRANSLATE_CACHE_TTL_MS = 5 * 60 * 1000;
   const srsEasyLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_EASY_LOCK_AFTER_SEC;
   const srsGoodLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_GOOD_LOCK_AFTER_SEC;
 
@@ -4231,9 +4419,14 @@ function AppInner() {
   const youtubePlayerShellRef = useRef(null);
   const youtubeTimeIntervalRef = useRef(null);
   const youtubeCurrentTimeRef = useRef(0);
+  const youtubeInputDraftRef = useRef('');
   const youtubeResumeAppliedForVideoRef = useRef('');
   const youtubeResumeLastSavedSecondRef = useRef(-1);
   const youtubeResumeLastSyncedSecondRef = useRef(-1);
+  const youtubePhraseGestureRef = useRef(null);
+  const youtubeDragSelectionMetaRef = useRef(null);
+  const youtubeSuppressWordTapRef = useRef(0);
+  const youtubeSuppressSentenceTapRef = useRef(0);
   const youtubeTranslateInFlightRef = useRef(false);
   const youtubeTranslateIndexRef = useRef(-1);
   const autoAdvanceTimeoutRef = useRef(null);
@@ -4270,6 +4463,7 @@ function AppInner() {
   const ttsCurrentAudioRef = useRef(null);
   const ttsPlaybackSeqRef = useRef(0);
   const dictionaryLookupPollTokenRef = useRef(0);
+  const analyticsScopeRequestRef = useRef(null);
   const translationActivityRunningRef = useRef(false);
   const translationActivityInFlightRef = useRef(false);
   const translationActivitySessionRef = useRef('');
@@ -4298,6 +4492,8 @@ function AppInner() {
   const youtubeAutoFolderCacheRef = useRef(new Map());
   const youtubeAutoFolderPendingRef = useRef(new Map());
   const ttsPendingKeysRef = useRef(new Set());
+  const quickTranslateCacheRef = useRef(new Map());
+  const quickTranslateInFlightRef = useRef(new Map());
   const flashcardFeelQueueRef = useRef(new Map());
   const flashcardFeelDispatchInFlightRef = useRef(false);
   const singleInstanceTokenRef = useRef(`inst_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
@@ -4403,6 +4599,9 @@ function AppInner() {
   const startupPhase3TimerRef = useRef(null);
   const startupSequenceTokenRef = useRef(0);
   const startupLoadedLanguagePairRef = useRef('');
+  const todayPlanStartupRefreshDoneRef = useRef(false);
+  const skillReportStartupRefreshDoneRef = useRef(false);
+  const weeklyPlanStartupRefreshDoneRef = useRef(false);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.webp`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
@@ -5008,7 +5207,7 @@ function AppInner() {
         keepalive: Boolean(options?.keepalive),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка старта', 'Startfehler'));
       }
       return await response.json();
     } catch (error) {
@@ -5054,6 +5253,12 @@ function AppInner() {
       // ignore sync errors; local cache already has the latest position
     }
   }, [initData, persistYoutubeResumeState, youtubeId, youtubeInput]);
+  const commitYoutubeInputDraft = useCallback((nextValue = youtubeInputDraftRef.current) => {
+    const normalized = String(nextValue ?? '');
+    youtubeInputDraftRef.current = normalized;
+    setYoutubeInput((previous) => (previous === normalized ? previous : normalized));
+    return normalized;
+  }, []);
   const normalizeSkillTrainingSnapshot = (value) => {
     if (!value || typeof value !== 'object') return null;
     const pack = value?.package && typeof value.package === 'object' ? value.package : null;
@@ -5129,7 +5334,11 @@ function AppInner() {
       digits: 0,
     },
   ]), [tr]);
-  const weeklySummaryVisitConfig = useMemo(() => buildWeeklySummaryVisitConfig({
+  const weeklySummaryVisitConfig = useMemo(() => {
+    if (!WEEKLY_SUMMARY_VISITS_ENABLED) {
+      return null;
+    }
+    return buildWeeklySummaryVisitConfig({
     now: new Date(),
     locale: uiLang === 'de' ? 'de-AT' : 'ru-RU',
     labels: {
@@ -5140,7 +5349,8 @@ function AppInner() {
       wednesdayComparisonLabel: tr('Пн-Вт этой недели vs Пн-Вт прошлой недели', 'Mo-Di dieser Woche vs Mo-Di der letzten Woche'),
       fridayComparisonLabel: tr('Пн-Чт этой недели vs Пн-Чт прошлой недели', 'Mo-Do dieser Woche vs Mo-Do der letzten Woche'),
     },
-  }), [tr, uiLang]);
+    });
+  }, [tr, uiLang]);
   const weeklySummaryDismissStorageKey = useMemo(() => {
     if (!weeklySummaryVisitConfig?.visitDateKey) return '';
     return `weekly_summary_modal_dismissed_${weeklySummaryStableUserId}_${weeklySummaryVisitConfig.visitDateKey}`;
@@ -5416,18 +5626,15 @@ function AppInner() {
       eyebrow: tr('Текущий флагман', 'Aktuelles Flaggschiff'),
       title: tr('Pro', 'Pro'),
       blurb: tr('Полный доступ без дневного лимита.', 'Voller Zugang ohne Tageslimit.'),
-      priceLabel: '3.50 EUR / месяц',
-      priceLabelDe: '3.50 EUR / Monat',
+      priceLabel: '',
+      priceLabelDe: '',
     },
     support_coffee: {
       eyebrow: tr('Лёгкая поддержка', 'Leichte Unterstuetzung'),
       title: tr('Поддержать разработчика: кофе ☕️', 'Entwickler unterstuetzen: Kaffee ☕️'),
-      blurb: tr(
-        'Я делал это приложение 1 год и 3 месяца и продолжаю улучшать его каждый день.',
-        'Ich habe diese App 1 Jahr und 3 Monate lang gebaut und verbessere sie weiterhin jeden Tag.'
-      ),
-      priceLabel: '3.50 EUR / месяц',
-      priceLabelDe: '3.50 EUR / Monat',
+      blurb: '',
+      priceLabel: '',
+      priceLabelDe: '',
     },
     support_cheesecake: {
       eyebrow: tr('Расширенная поддержка', 'Erweiterte Unterstuetzung'),
@@ -5436,8 +5643,8 @@ function AppInner() {
         'Если хочешь поддержать проект сильнее, этот тариф помогает оплачивать развитие и инфраструктуру.',
         'Wenn du das Projekt staerker unterstuetzen willst, hilft dieser Tarif bei Weiterentwicklung und Infrastruktur.'
       ),
-      priceLabel: '4.99 EUR / месяц',
-      priceLabelDe: '4.99 EUR / Monat',
+      priceLabel: '',
+      priceLabelDe: '',
     },
   }), [tr]);
   const billingPlanCards = useMemo(() => {
@@ -5460,9 +5667,13 @@ function AppInner() {
           title: String(meta.title || item.name || planCode).trim(),
           eyebrow: String(meta.eyebrow || tr('Тариф', 'Tarif')).trim(),
           blurb: String(meta.blurb || '').trim(),
-          priceLabel: uiLang === 'de'
-            ? String(meta.priceLabelDe || meta.priceLabel || '').trim()
-            : String(meta.priceLabel || '').trim(),
+          priceLabel: formatBillingPriceLabel(
+            item,
+            uiLang,
+            uiLang === 'de'
+              ? String(meta.priceLabelDe || meta.priceLabel || '').trim()
+              : String(meta.priceLabel || '').trim(),
+          ),
           sortOrder: Number.isFinite(order[planCode]) ? order[planCode] : 500,
         };
       })
@@ -5887,8 +6098,8 @@ function AppInner() {
         if (!headers.has('X-Webapp-Instance-Id')) {
           headers.set('X-Webapp-Instance-Id', singleInstanceTokenRef.current);
         }
-        if (sessionId && !headers.has('X-Webapp-Session-Id')) {
-          headers.set('X-Webapp-Session-Id', String(sessionId));
+        if (translationSessionId && !headers.has('X-Webapp-Session-Id')) {
+          headers.set('X-Webapp-Session-Id', String(translationSessionId));
         }
         if (appMode && !headers.has('X-Webapp-App-Context')) {
           headers.set('X-Webapp-App-Context', String(appMode));
@@ -5925,7 +6136,7 @@ function AppInner() {
     inspectInitDataAuthFailureResponse,
     inspectSingleInstanceConflictResponse,
     isWebAppMode,
-    sessionId,
+    translationSessionId,
     telegramApp,
   ]);
   const fetchGetWithRetry = useCallback(async (url, timeoutMs = 45000) => {
@@ -5985,14 +6196,9 @@ function AppInner() {
   }, [fetchWithTimeout, isRetryablePostError]);
   const learningLanguageOptions = [
     { value: 'de', label: tr('Немецкий', 'Deutsch') },
-    { value: 'en', label: tr('Английский', 'Englisch') },
-    { value: 'es', label: tr('Испанский', 'Spanisch') },
-    { value: 'it', label: tr('Итальянский', 'Italienisch') },
   ];
   const nativeLanguageOptions = [
     { value: 'ru', label: tr('Русский', 'Russisch') },
-    { value: 'en', label: tr('Английский', 'Englisch') },
-    { value: 'de', label: tr('Немецкий', 'Deutsch') },
   ];
   const needsLanguageProfileChoice = Boolean(isWebAppMode && initData && !languageProfileLoading && !languageProfile?.has_profile);
   const languageProfileGateOpen = needsLanguageProfileChoice || languageProfileModalOpen;
@@ -7271,7 +7477,10 @@ function AppInner() {
         return null;
       }
       return {
-        plan,
+        plan: {
+          ...plan,
+          snapshot_saved_at: String(parsed?.saved_at || plan?.snapshot_saved_at || '').trim() || null,
+        },
         draft: draft || buildWeeklyPlanDraftFromPlan(plan),
       };
     } catch (_error) {
@@ -7314,7 +7523,10 @@ function AppInner() {
       if (String(plan?.date || '').trim() && String(plan.date).trim() !== currentLocalDateKey) {
         return null;
       }
-      return plan;
+      return {
+        ...plan,
+        snapshot_saved_at: String(parsed?.saved_at || plan?.snapshot_saved_at || '').trim() || null,
+      };
     } catch (_error) {
       return null;
     }
@@ -7354,19 +7566,29 @@ function AppInner() {
       if (snapshotDateKey && snapshotDateKey !== currentLocalDateKey) {
         return null;
       }
-      return normalizeSkillReportSnapshot(parsed?.report);
+      const report = normalizeSkillReportSnapshot(parsed?.report);
+      if (!report) return null;
+      return {
+        ...report,
+        snapshot_saved_at: String(parsed?.saved_at || report?.snapshot_saved_at || '').trim() || null,
+      };
     } catch (_error) {
       return null;
     }
   }, [currentLocalDateKey, isWebAppMode, normalizeSkillReportSnapshot, skillReportSnapshotStorageKey]);
 
-  const loadTodayPlan = async () => {
+  const loadTodayPlan = async (options = {}) => {
     if (!initData) return;
     const requestId = beginAsyncGuard(todayPlanRequestIdRef);
+    const tone = options?.manual ? 'manual' : 'snapshot';
     try {
       setTodayPlanLoading(true);
       setTodayPlanError('');
-      const response = await fetchGetWithRetry(`/api/today?initData=${encodeURIComponent(initData)}`, 45000);
+      const pairHint = getWebappLanguagePairHint();
+      const query = new URLSearchParams({ initData });
+      if (pairHint?.source_lang) query.set('source_lang', pairHint.source_lang);
+      if (pairHint?.target_lang) query.set('target_lang', pairHint.target_lang);
+      const response = await fetchGetWithRetry(`/api/today?${query.toString()}`, 45000);
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки плана на сегодня', 'Fehler beim Laden des Tagesplans'));
       }
@@ -7378,8 +7600,10 @@ function AppInner() {
         date: data?.date || null,
         total_minutes: data?.total_minutes || 0,
         items: Array.isArray(data?.items) ? data.items : [],
+        snapshot_saved_at: new Date().toISOString(),
       };
       setTodayPlan(nextPlan);
+      setTodayPlanSnapshotTone(tone);
       persistTodayPlanSnapshot(nextPlan);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
@@ -7399,13 +7623,18 @@ function AppInner() {
     }
   };
 
-  const loadSkillReport = async () => {
+  const loadSkillReport = async (options = {}) => {
     if (!initData) return;
     const requestId = beginAsyncGuard(skillReportRequestIdRef);
+    const tone = options?.manual ? 'manual' : 'snapshot';
     try {
       setSkillReportLoading(true);
       setSkillReportError('');
-      const response = await fetchGetWithRetry(`/api/progress/skills?period=7d&initData=${encodeURIComponent(initData)}`, 45000);
+      const pairHint = getWebappLanguagePairHint();
+      const query = new URLSearchParams({ period: '7d', initData });
+      if (pairHint?.source_lang) query.set('source_lang', pairHint.source_lang);
+      if (pairHint?.target_lang) query.set('target_lang', pairHint.target_lang);
+      const response = await fetchGetWithRetry(`/api/progress/skills?${query.toString()}`, 45000);
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки отчета по навыкам', 'Fehler beim Laden des Skills-Reports'));
       }
@@ -7421,8 +7650,10 @@ function AppInner() {
         skill_training_status: data?.skill_training_status && typeof data.skill_training_status === 'object'
           ? data.skill_training_status
           : {},
+        snapshot_saved_at: new Date().toISOString(),
       };
       setSkillReport(nextReport);
+      setSkillReportSnapshotTone(tone);
       persistSkillReportSnapshot(nextReport);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
@@ -7442,9 +7673,10 @@ function AppInner() {
     }
   };
 
-  const loadWeeklyPlan = async () => {
+  const loadWeeklyPlan = async (options = {}) => {
     if (!initData) return;
     const requestId = beginAsyncGuard(weeklyPlanRequestIdRef);
+    const tone = options?.manual ? 'manual' : 'snapshot';
     try {
       setWeeklyPlanLoading(true);
       setWeeklyPlanError('');
@@ -7460,8 +7692,10 @@ function AppInner() {
         week: data?.week || null,
         plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
         metrics: data?.metrics || {},
+        snapshot_saved_at: new Date().toISOString(),
       };
       setWeeklyPlan(plan);
+      setWeeklyPlanSnapshotTone(tone);
       setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(plan));
       persistWeeklyPlanSnapshot(plan);
     } catch (error) {
@@ -7603,8 +7837,10 @@ function AppInner() {
         week: data?.week || null,
         plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
         metrics: data?.metrics || {},
+        snapshot_saved_at: new Date().toISOString(),
       };
       setWeeklyPlan(plan);
+      setWeeklyPlanSnapshotTone('manual');
       setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(plan));
       persistWeeklyPlanSnapshot(plan);
       setWeeklyPlanCollapsed(true);
@@ -7614,7 +7850,9 @@ function AppInner() {
         agent_minutes: false,
         reading_minutes: false,
       });
-      loadPlanAnalytics();
+      if (planAnalyticsPeriod !== 'week') {
+        loadPlanAnalytics();
+      }
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -7849,11 +8087,16 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка пересборки плана', 'Fehler beim Aktualisieren des Plans'));
       }
       const data = await response.json();
-      setTodayPlan({
+      const nextPlan = {
         date: data?.date || null,
         total_minutes: data?.total_minutes || 0,
         items: Array.isArray(data?.items) ? data.items : [],
-      });
+        snapshot_saved_at: new Date().toISOString(),
+      };
+      setTodayPlan(nextPlan);
+      setTodayPlanSnapshotTone('manual');
+      persistTodayPlanSnapshot(nextPlan);
+      setTodayPlanLoadedOnce(true);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -7937,6 +8180,11 @@ function AppInner() {
     item?.payload && typeof item.payload === 'object' ? item.payload : {}
   );
 
+  const getTodayItemStoredElapsedSeconds = (item) => {
+    const payload = getTodayItemTimerPayload(item);
+    return Math.max(0, Math.floor(Number(payload?.timer_seconds || 0)));
+  };
+
   const getTodayItemGoalSeconds = (item) => {
     const payload = getTodayItemTimerPayload(item);
     const explicitGoal = Number(payload?.timer_goal_seconds || 0);
@@ -7946,7 +8194,7 @@ function AppInner() {
 
   const getTodayItemElapsedSeconds = (item, nowMs = Date.now()) => {
     const payload = getTodayItemTimerPayload(item);
-    const baseSeconds = Math.max(0, Math.floor(Number(payload?.timer_seconds || 0)));
+    const baseSeconds = getTodayItemStoredElapsedSeconds(item);
     const isDone = String(item?.status || '').toLowerCase() === 'done';
     if (isDone) return baseSeconds;
     const timerRunning = Boolean(payload?.timer_running);
@@ -7991,6 +8239,36 @@ function AppInner() {
     const payload = getTodayItemTimerPayload(item);
     return Boolean(payload?.timer_running) && String(item?.status || '').toLowerCase() !== 'done';
   };
+
+  const isTodayItemSectionVisible = useCallback((item) => {
+    const taskType = String(item?.task_type || '').toLowerCase();
+    if (taskType === 'cards') {
+      return flashcardsOnly || selectedSections.has('flashcards');
+    }
+    if (taskType === 'translation') {
+      return !flashcardsOnly && selectedSections.has('translations');
+    }
+    if (taskType === 'theory') {
+      return !flashcardsOnly && selectedSections.has('theory');
+    }
+    if (taskType === 'video' || taskType === 'youtube') {
+      return !flashcardsOnly && selectedSections.has('youtube');
+    }
+    return false;
+  }, [flashcardsOnly, selectedSections]);
+
+  const getTodayItemDisplayElapsedSeconds = useCallback((item, nowMs = Date.now()) => {
+    if (!isTodayItemTimerRunning(item)) {
+      return getTodayItemElapsedSeconds(item, nowMs);
+    }
+    if (!isTodayItemSectionVisible(item)) {
+      return getTodayItemStoredElapsedSeconds(item);
+    }
+    return getTodayItemElapsedSeconds(item, nowMs);
+  }, [
+    getTodayItemElapsedSeconds,
+    isTodayItemSectionVisible,
+  ]);
 
   const syncTodayItemTimer = async (item, action, options = {}) => {
     if (!initData || !item?.id) return null;
@@ -8260,111 +8538,31 @@ function AppInner() {
     if (!item?.id) return;
     const initialTaskType = String(item?.task_type || '').toLowerCase();
     if (initialTaskType === 'translation') {
-      if (translationStartInFlightRef.current) {
-        return;
-      }
-      if (!initData) {
-        setWebappError(initDataMissingMsg);
-        return;
-      }
-      translationStartInFlightRef.current = true;
-      translationProgressiveFillPollTokenRef.current += 1;
-      setTranslationProgressiveFill({
-        active: false,
-        sessionId: null,
-        readyCount: 0,
-        expectedTotal: 7,
-      });
-      setTodayItemLoading((prev) => ({ ...prev, [item.id]: 'start' }));
-      setWebappLoading(true);
       setWebappError('');
       setTodayPlanError('');
-      setFinishMessage('');
-      setFinishStatus('idle');
-      setTranslationCheckProgress({ active: false, done: 0, total: 0 });
-      try {
-        const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
-        const level = String(payload?.recommended_level || payload?.level || selectedLevel || 'b1').trim().toLowerCase() || 'b1';
-        const response = await fetch(`/api/today/items/${item.id}/translation/start`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            initData,
-            level,
-          }),
+      openSingleSectionAndScroll('translations', translationsRef);
+      setTodayTranslationRecommendation(buildTodayTranslationRecommendation(item));
+      void (async () => {
+        const sessionInfo = await loadSessionInfo();
+        const restoredSessionId = String(
+          sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
+        ).trim();
+        await loadSentences({
+          sessionId: restoredSessionId || undefined,
+          preserveFinishMessage: true,
         });
-        if (!response.ok) {
-          throw new Error(await readApiError(response, 'Ошибка запуска переводов по задаче дня', 'Fehler beim Start der Tages-Uebersetzungen'));
-        }
-        const data = await response.json();
-        const updatedItem = data?.item && typeof data.item === 'object' ? data.item : item;
-        setTodayPlan((prev) => {
-          if (!prev || !Array.isArray(prev.items)) return prev;
-          return {
-            ...prev,
-            items: prev.items.map((planItem) => (planItem.id === updatedItem.id ? { ...planItem, ...updatedItem } : planItem)),
-          };
-        });
-        await syncTodayItemTimer(updatedItem, 'start', {
-          elapsedSeconds: getTodayItemElapsedSeconds(updatedItem, Date.now()),
-          running: true,
-        });
-
-        const nextSessionType = String(data?.type || 'regular').trim() || 'regular';
-        const nextSessionId = nextSessionType === 'regular' ? String(data?.session_id || '').trim() || null : null;
-        const nextItems = Array.isArray(data?.items) ? data.items : [];
-        const expectedTotal = Math.max(1, Number(data?.expected_total || 7));
-        const readyCount = Number(data?.ready_count || nextItems.length || 0);
-        const generationInProgress = Boolean(data?.generation_in_progress) && readyCount < expectedTotal;
-
-        openSingleSectionAndScroll('translations', translationsRef);
-        setTodayTranslationRecommendation(buildTodayTranslationRecommendation(updatedItem));
-        setSessionType(nextSessionType);
-        translationSessionIdRef.current = nextSessionId || '';
-        setTranslationSessionId(nextSessionId);
-        setSentences(nextItems);
-        setResults([]);
-        setTranslationAudioGrammarOptIn({});
-        setTranslationAudioGrammarSaving({});
-        setExplanations({});
-        setExplanationLoading({});
-        setTranslationProgressiveFill({
-          active: generationInProgress,
-          sessionId: nextSessionId,
-          readyCount,
-          expectedTotal,
-        });
-        if (data?.blocked) {
+        if (String(sessionInfo?.type || '').trim() === 'regular' && restoredSessionId) {
           setFinishMessage(activeTranslationSessionWarning);
+          showInlineToast(
+            tr(
+              'Сначала закончите или допереведите текущую сессию. Текущие предложения уже показаны в разделе переводов.',
+              'Bitte zuerst die aktuelle Session beenden oder fertig uebersetzen. Die aktuellen Saetze sind bereits im Uebersetzungsbereich sichtbar.'
+            ),
+            5000,
+          );
         }
-        if (generationInProgress && nextSessionId) {
-          const pollToken = translationProgressiveFillPollTokenRef.current + 1;
-          translationProgressiveFillPollTokenRef.current = pollToken;
-          void pollTranslationProgressiveFill({
-            sessionId: nextSessionId,
-            expectedTotal,
-            pollToken,
-          });
-        }
-        return;
-      } catch (error) {
-        const friendly = normalizeNetworkErrorMessage(
-          error,
-          'Не удалось запустить переводы по задаче дня.',
-          'Tages-Uebersetzungen konnten nicht gestartet werden.'
-        );
-        setTodayPlanError(friendly);
-        setWebappError(friendly);
-        return;
-      } finally {
-        translationStartInFlightRef.current = false;
-        setWebappLoading(false);
-        setTodayItemLoading((prev) => {
-          const next = { ...prev };
-          delete next[item.id];
-          return next;
-        });
-      }
+      })();
+      return;
     }
 
     if (initialTaskType === 'video' || initialTaskType === 'youtube') {
@@ -8660,29 +8858,12 @@ function AppInner() {
     const hasRunning = items.some((item) => isTodayItemTimerRunning(item));
     if (!hasRunning) return undefined;
 
-    const isTaskVisible = (item) => {
-      const taskType = String(item?.task_type || '').toLowerCase();
-      if (taskType === 'cards') {
-        return flashcardsOnly || selectedSections.has('flashcards');
-      }
-      if (taskType === 'translation') {
-        return !flashcardsOnly && selectedSections.has('translations');
-      }
-      if (taskType === 'theory') {
-        return !flashcardsOnly && selectedSections.has('theory');
-      }
-      if (taskType === 'video' || taskType === 'youtube') {
-        return !flashcardsOnly && selectedSections.has('youtube');
-      }
-      return false;
-    };
-
     const intervalId = window.setInterval(() => {
       const nowMs = Date.now();
       items.forEach((item) => {
         if (!item?.id) return;
         if (!isTodayItemTimerRunning(item)) return;
-        if (!isTaskVisible(item)) return;
+        if (!isTodayItemSectionVisible(item)) return;
         void syncTodayItemTimer(item, 'sync', {
           elapsedSeconds: getTodayItemElapsedSeconds(item, nowMs),
           running: true,
@@ -8691,7 +8872,7 @@ function AppInner() {
     }, 15000);
 
     return () => window.clearInterval(intervalId);
-  }, [todayPlan, flashcardsOnly, selectedSections]);
+  }, [todayPlan, getTodayItemElapsedSeconds, isTodayItemSectionVisible, isTodayItemTimerRunning, syncTodayItemTimer]);
 
   const drainSrsReviewBuffer = useCallback(async () => {
     if (!initData || srsReviewDrainInFlightRef.current) return;
@@ -9105,8 +9286,8 @@ function AppInner() {
       setLanguageProfile(profile);
       if (profile) {
         setLanguageProfileDraft({
-          learning_language: profile.learning_language || 'de',
-          native_language: profile.native_language || 'ru',
+          learning_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.learning_language : (profile.learning_language || 'de'),
+          native_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.native_language : (profile.native_language || 'ru'),
         });
       }
       return profile;
@@ -9133,8 +9314,8 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          learning_language: languageProfileDraft.learning_language,
-          native_language: languageProfileDraft.native_language,
+          learning_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.learning_language : languageProfileDraft.learning_language,
+          native_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.native_language : languageProfileDraft.native_language,
         }),
       });
       if (!response.ok) {
@@ -9179,8 +9360,13 @@ function AppInner() {
           setTranslationDrafts({});
           safeStorageRemove(translationDraftStorageKey);
           void clearTranslationDraftsOnServer([], { clearAll: true, silent: true });
-          await loadSessionInfo();
-          await loadSentences();
+          const sessionInfo = await loadSessionInfo();
+          const restoredSessionId = String(
+            sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
+          ).trim();
+          await loadSentences({
+            sessionId: restoredSessionId || undefined,
+          });
           if (!flashcardsOnly && isSectionVisible('flashcards')) {
             await loadSrsNextCard();
           }
@@ -9229,6 +9415,7 @@ function AppInner() {
   };
   const youtubeSectionVisible = isSectionVisible('youtube');
   const dictionarySectionVisible = isSectionVisible('dictionary');
+  const readerSectionVisible = !flashcardsOnly && isSectionVisible('reader');
   const supportSectionVisible = !flashcardsOnly && isSectionVisible('support');
   const isSkillTrainingReady = Boolean(skillTrainingData?.package);
 
@@ -10380,6 +10567,17 @@ function AppInner() {
     }
     return ids;
   }, [selectedMeta, readerDragSelectionMeta]);
+  const youtubeSelectedWordKeySet = useMemo(() => {
+    const ids = new Set();
+    const meta = youtubeDragSelectionMeta;
+    if (!meta || !Number.isInteger(meta.lineIndex)) return ids;
+    const startIndex = Math.max(0, Number(meta.startWordIndex || 0));
+    const endIndex = Math.max(startIndex, Number(meta.endWordIndex || startIndex));
+    for (let index = startIndex; index <= endIndex; index += 1) {
+      ids.add(`${meta.lineIndex}:${index}`);
+    }
+    return ids;
+  }, [youtubeDragSelectionMeta]);
   const readerBookmarkPage = readerPageCount > 0
     ? Math.max(1, Math.min(readerPageCount, Math.round((Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0))) / 100) * readerPageCount) || 1))
     : 0;
@@ -12196,8 +12394,6 @@ function AppInner() {
 
     const prevVisibility = sectionVisibilitySnapshotRef.current;
     sectionVisibilitySnapshotRef.current = sectionVisibility;
-    if (!prevVisibility) return;
-
     const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
     const findTodayTaskByTypesLocal = (types = []) => {
       const normalizedTypes = new Set(types.map((entry) => String(entry || '').toLowerCase()));
@@ -12214,8 +12410,36 @@ function AppInner() {
     };
 
     const nowMs = Date.now();
-    const timerSyncCalls = [];
     const managedSections = ['flashcards', 'translations', 'theory', 'youtube'];
+    if (!prevVisibility) {
+      const initialPauseCalls = [];
+      managedSections.forEach((sectionKey) => {
+        if (sectionVisibility[sectionKey]) return;
+        const item = getSectionTask(sectionKey);
+        if (!item?.id) return;
+        const status = String(item?.status || '').toLowerCase();
+        if (status === 'done') {
+          autoPausedTodayTimerIdsRef.current.delete(item.id);
+          return;
+        }
+        if (!isTodayItemTimerRunning(item)) return;
+        if (sectionKey !== 'youtube') {
+          autoPausedTodayTimerIdsRef.current.add(item.id);
+        }
+        initialPauseCalls.push(
+          syncTodayItemTimer(item, 'pause', {
+            elapsedSeconds: getTodayItemElapsedSeconds(item, nowMs),
+            running: false,
+          })
+        );
+      });
+      if (initialPauseCalls.length > 0) {
+        void Promise.allSettled(initialPauseCalls);
+      }
+      return;
+    }
+
+    const timerSyncCalls = [];
     let pausedByNavigation = false;
     let resumedByNavigation = false;
 
@@ -12499,6 +12723,7 @@ function AppInner() {
     }
     let cancelled = false;
     const requestId = beginAsyncGuard(bootstrapRequestIdRef);
+    const WEBAPP_BOOTSTRAP_TIMEOUT_MS = 60000;
 
     const bootstrap = async () => {
       try {
@@ -12508,7 +12733,7 @@ function AppInner() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ initData }),
-        }, 30000);
+        }, WEBAPP_BOOTSTRAP_TIMEOUT_MS);
         if (!response.ok) {
           throw new Error(await readApiError(response, 'Ошибка инициализации', 'Initialisierungsfehler'));
         }
@@ -12569,8 +12794,14 @@ function AppInner() {
       startupPhase3TimerRef.current = null;
     }
     startupLoadedLanguagePairRef.current = '';
+    todayPlanStartupRefreshDoneRef.current = false;
+    skillReportStartupRefreshDoneRef.current = false;
+    weeklyPlanStartupRefreshDoneRef.current = false;
     setTodayPlanLoadedOnce(false);
     setSkillReportLoadedOnce(false);
+    setTodayPlanSnapshotTone('snapshot');
+    setSkillReportSnapshotTone('snapshot');
+    setWeeklyPlanSnapshotTone('snapshot');
     setStartupPhase2Ready(false);
     setStartupPhase3Ready(false);
     setStarterDictionaryOffer(null);
@@ -12605,8 +12836,6 @@ function AppInner() {
           if (startupSequenceTokenRef.current !== sequenceToken) return;
           setStartupPhase2Ready(true);
         }, 0);
-        void loadWeeklyPlan();
-        void loadTodayPlan();
         startupPhase3TimerRef.current = window.setTimeout(() => {
           if (startupSequenceTokenRef.current !== sequenceToken) return;
           setStartupPhase3Ready(true);
@@ -12657,6 +12886,7 @@ function AppInner() {
     const snapshot = readWeeklyPlanSnapshot();
     if (!snapshot?.plan) return;
     setWeeklyPlan(snapshot.plan);
+    setWeeklyPlanSnapshotTone('snapshot');
     setWeeklyPlanDraft(snapshot.draft || buildWeeklyPlanDraftFromPlan(snapshot.plan));
   }, [buildWeeklyPlanDraftFromPlan, initData, isWebAppMode, readWeeklyPlanSnapshot, weeklyPlan]);
 
@@ -12667,6 +12897,7 @@ function AppInner() {
     const snapshot = readTodayPlanSnapshot();
     if (!snapshot) return;
     setTodayPlan(snapshot);
+    setTodayPlanSnapshotTone('snapshot');
     setTodayPlanLoadedOnce(true);
   }, [initData, isWebAppMode, readTodayPlanSnapshot, todayPlan]);
 
@@ -12677,6 +12908,7 @@ function AppInner() {
     const snapshot = readSkillReportSnapshot();
     if (!snapshot) return;
     setSkillReport(snapshot);
+    setSkillReportSnapshotTone('snapshot');
     setSkillReportLoadedOnce(true);
   }, [initData, isWebAppMode, readSkillReportSnapshot, skillReport]);
 
@@ -12715,9 +12947,75 @@ function AppInner() {
       setSkillReportError('');
       return;
     }
-    if (!startupPhase2Ready) return;
-    void loadSkillReport();
   }, [isWebAppMode, initData, startupPhase2Ready]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      todayPlanStartupRefreshDoneRef.current = false;
+      skillReportStartupRefreshDoneRef.current = false;
+      weeklyPlanStartupRefreshDoneRef.current = false;
+      return;
+    }
+    if (!pageVisible) {
+      todayPlanStartupRefreshDoneRef.current = false;
+      skillReportStartupRefreshDoneRef.current = false;
+      weeklyPlanStartupRefreshDoneRef.current = false;
+    }
+  }, [initData, isWebAppMode, pageVisible]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || !pageVisible || !startupPhase2Ready || todayPlanStartupRefreshDoneRef.current) {
+      return undefined;
+    }
+    const snapshot = readTodayPlanSnapshot();
+    const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
+    if (!shouldRefresh) {
+      todayPlanStartupRefreshDoneRef.current = true;
+      return undefined;
+    }
+    const delayMs = snapshot ? 1600 : 350;
+    const timerId = window.setTimeout(() => {
+      todayPlanStartupRefreshDoneRef.current = true;
+      void loadTodayPlan();
+    }, delayMs);
+    return () => window.clearTimeout(timerId);
+  }, [homeSnapshotResumeTick, initData, isWebAppMode, loadTodayPlan, pageVisible, readTodayPlanSnapshot, startupPhase2Ready]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready || weeklyPlanStartupRefreshDoneRef.current) {
+      return undefined;
+    }
+    const snapshot = readWeeklyPlanSnapshot();
+    const shouldRefresh = !snapshot?.plan || isSnapshotRefreshDue(snapshot?.plan?.snapshot_saved_at);
+    if (!shouldRefresh) {
+      weeklyPlanStartupRefreshDoneRef.current = true;
+      return undefined;
+    }
+    const delayMs = snapshot?.plan ? 2400 : 1100;
+    const timerId = window.setTimeout(() => {
+      weeklyPlanStartupRefreshDoneRef.current = true;
+      void loadWeeklyPlan();
+    }, delayMs);
+    return () => window.clearTimeout(timerId);
+  }, [homeSnapshotResumeTick, initData, isWebAppMode, loadWeeklyPlan, pageVisible, readWeeklyPlanSnapshot, startupPhase3Ready]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready || skillReportStartupRefreshDoneRef.current) {
+      return undefined;
+    }
+    const snapshot = readSkillReportSnapshot();
+    const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
+    if (!shouldRefresh) {
+      skillReportStartupRefreshDoneRef.current = true;
+      return undefined;
+    }
+    const delayMs = snapshot ? 3200 : 1800;
+    const timerId = window.setTimeout(() => {
+      skillReportStartupRefreshDoneRef.current = true;
+      void loadSkillReport();
+    }, delayMs);
+    return () => window.clearTimeout(timerId);
+  }, [homeSnapshotResumeTick, initData, isWebAppMode, loadSkillReport, pageVisible, readSkillReportSnapshot, startupPhase3Ready]);
 
   useEffect(() => {
     if (!isWebAppMode) {
@@ -12842,11 +13140,15 @@ function AppInner() {
       setReaderLibraryError('');
       return;
     }
-    void loadReaderLibrary();
-  }, [isWebAppMode, initData, startupPhase3Ready, readerIncludeArchived]);
+  }, [isWebAppMode, initData, startupPhase3Ready]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData || !startupPhase3Ready) return;
+    if (!isWebAppMode || !initData || !startupPhase3Ready || !readerSectionVisible) return;
+    void loadReaderLibrary();
+  }, [initData, isWebAppMode, readerIncludeArchived, readerSectionVisible, startupPhase3Ready]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || !startupPhase3Ready || planAnalyticsPeriod === 'week') return;
     void loadPlanAnalytics(planAnalyticsPeriod);
   }, [planAnalyticsPeriod, isWebAppMode, initData, startupPhase3Ready]);
 
@@ -12873,7 +13175,6 @@ function AppInner() {
       if (languageProfile?.has_profile) {
         void loadStarterDictionaryStatus();
       }
-      void loadReaderLibrary();
       if (planAnalyticsPeriod !== 'week') {
         void loadPlanAnalytics(planAnalyticsPeriod);
       }
@@ -13215,8 +13516,16 @@ function AppInner() {
 
   useEffect(() => {
     if (!flashcardsOnly || !flashcardActiveMode || !isSectionVisible('flashcards')) return;
+    if (todayPlanLoading && !todayPlanLoadedOnce) return;
     void ensureFlashcardsTaskTimerRunning();
-  }, [flashcardsOnly, flashcardActiveMode, selectedSections]);
+  }, [
+    flashcardsOnly,
+    flashcardActiveMode,
+    selectedSections,
+    todayPlan,
+    todayPlanLoading,
+    todayPlanLoadedOnce,
+  ]);
 
   useEffect(() => {
     if (!initData || !isSectionVisible('flashcards') || !flashcardsVisible || flashcardActiveMode !== 'fsrs') return;
@@ -13468,21 +13777,55 @@ function AppInner() {
       if (!options?.preserveFinishMessage) {
         setFinishMessage('');
       }
+      const sessionId = String(options?.sessionId || translationSessionIdRef.current || '').trim();
+      const languagePairHint = getWebappLanguagePairHint();
       const response = await fetch('/api/webapp/sentences', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, limit: 7 }),
+        body: JSON.stringify({
+          initData,
+          limit: 7,
+          session_id: sessionId || undefined,
+          language_pair: languagePairHint || undefined,
+        }),
       });
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки предложений', 'Fehler beim Laden der Saetze'));
       }
       const data = await response.json();
-      setSentences(data.items || []);
+      if (data?.language_pair) {
+        setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
+      }
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const readyCount = Number(data?.ready_count || items.length || 0);
+      const expectedTotal = Math.max(1, Number(data?.expected_total || 7));
+      const generationStatus = String(
+        data?.generation_status
+        || (Boolean(data?.generation_in_progress) && readyCount < expectedTotal ? 'running' : readyCount >= expectedTotal ? 'ready' : 'idle')
+      ).trim().toLowerCase() || 'idle';
+      const generationError = String(data?.generation_error || '').trim();
+      setSentences(items);
       if (!options?.preserveResults) {
         setResults([]);
         setTranslationAudioGrammarOptIn({});
         setTranslationAudioGrammarSaving({});
         setFinishStatus('idle');
+      }
+      if (String(options?.sessionId || translationSessionIdRef.current || '').trim()) {
+        setTranslationProgressiveFill((prev) => ({
+          ...prev,
+          active: ['pending', 'running'].includes(generationStatus) && readyCount < expectedTotal,
+          sessionId: String(options?.sessionId || translationSessionIdRef.current || '').trim() || prev.sessionId || null,
+          readyCount,
+          expectedTotal,
+          status: generationStatus,
+          error: generationError,
+        }));
+      }
+      if (generationStatus === 'failed' && generationError && !options?.suppressError) {
+        setWebappError(
+          `${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Saetze')}: ${generationError}`
+        );
       }
       return data;
     } catch (error) {
@@ -13510,28 +13853,46 @@ function AppInner() {
         preserveResults: true,
         preserveFinishMessage: true,
         suppressError: true,
+        sessionId,
       });
       if (translationProgressiveFillPollTokenRef.current !== pollToken) {
         return;
       }
       const items = Array.isArray(data?.items) ? data.items : [];
       const readyCount = Number(data?.ready_count || items.length || 0);
+      const generationStatus = String(
+        data?.generation_status
+        || (Boolean(data?.generation_in_progress) && readyCount < expectedTotal ? 'running' : readyCount >= expectedTotal ? 'ready' : 'idle')
+      ).trim().toLowerCase() || 'idle';
+      const generationError = String(data?.generation_error || '').trim();
       if (translationSessionIdRef.current !== String(sessionId || '').trim()) {
         setTranslationProgressiveFill({
           active: false,
           sessionId: null,
           readyCount: 0,
           expectedTotal: 7,
+          status: 'idle',
+          error: '',
         });
         return;
       }
-      const shouldContinue = readyCount < expectedTotal && attempts < 72;
+      const shouldContinue = ['pending', 'running'].includes(generationStatus) && readyCount < expectedTotal && attempts < 72;
       setTranslationProgressiveFill({
         active: shouldContinue,
         sessionId: String(sessionId || '').trim() || null,
         readyCount,
         expectedTotal,
+        status: generationStatus,
+        error: generationError,
       });
+      if (generationStatus === 'failed') {
+        setWebappError(
+          generationError
+            ? `${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Saetze')}: ${generationError}`
+            : tr('Не удалось подготовить предложения для перевода.', 'Die Uebersetzungssaetze konnten nicht vorbereitet werden.')
+        );
+        return;
+      }
       if (!shouldContinue) {
         return;
       }
@@ -13595,38 +13956,10 @@ function AppInner() {
     if (missingAckIds.length === 0) {
       return undefined;
     }
-
-    let cancelled = false;
-    const frameId = window.requestAnimationFrame(() => {
-      window.setTimeout(async () => {
-        if (cancelled) return;
-        try {
-          const response = await fetch('/api/webapp/sentences/ack', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              initData,
-              source_session_id: sourceSessionId,
-              sentence_ids: missingAckIds,
-            }),
-            keepalive: true,
-          });
-          if (!response.ok) {
-            return;
-          }
-          const nextAcked = new Set(translationShownAckedRef.current.get(sourceSessionId) || []);
-          missingAckIds.forEach((id) => nextAcked.add(id));
-          translationShownAckedRef.current.set(sourceSessionId, nextAcked);
-        } catch (_error) {
-          // best effort
-        }
-      }, 0);
-    });
-
-    return () => {
-      cancelled = true;
-      window.cancelAnimationFrame(frameId);
-    };
+    const nextAcked = new Set(currentAcked);
+    missingAckIds.forEach((id) => nextAcked.add(id));
+    translationShownAckedRef.current.set(sourceSessionId, nextAcked);
+    return undefined;
   }, [initData, sentences]);
 
   useEffect(() => {
@@ -13769,11 +14102,24 @@ function AppInner() {
   ]);
 
   useEffect(() => {
-    if (isWebAppMode && initData) {
-      loadTopics();
-      loadSentences();
-      loadSessionInfo();
+    if (!isWebAppMode || !initData) {
+      return;
     }
+    let cancelled = false;
+    loadTopics();
+    (async () => {
+      const sessionInfo = await loadSessionInfo();
+      if (cancelled) return;
+      const restoredSessionId = String(
+        sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
+      ).trim();
+      await loadSentences({
+        sessionId: restoredSessionId || undefined,
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [initData, isWebAppMode]);
 
   const syncTranslationSessionActivity = useCallback(async (action, options = {}) => {
@@ -13871,33 +14217,55 @@ function AppInner() {
           sessionId: null,
           readyCount: 0,
           expectedTotal: 7,
+          status: 'idle',
+          error: '',
         };
       });
     }
   }, [sessionType, translationSessionId]);
 
   useEffect(() => {
+    const resetHomeSnapshotStartupRefresh = () => {
+      todayPlanStartupRefreshDoneRef.current = false;
+      skillReportStartupRefreshDoneRef.current = false;
+      weeklyPlanStartupRefreshDoneRef.current = false;
+    };
+    const markHomeSnapshotForeground = () => {
+      resetHomeSnapshotStartupRefresh();
+      setHomeSnapshotResumeTick((value) => value + 1);
+    };
     const onVisibilityChange = () => {
       const visible = document.visibilityState !== 'hidden';
       setPageVisible(visible);
       if (!visible) {
+        resetHomeSnapshotStartupRefresh();
         translationActivityRunningRef.current = false;
         void syncTranslationSessionActivity('pause', { force: true, keepalive: true });
+      } else {
+        markHomeSnapshotForeground();
       }
     };
     const onPageHide = () => {
       setPageVisible(false);
+      resetHomeSnapshotStartupRefresh();
       translationActivityRunningRef.current = false;
       void syncTranslationSessionActivity('pause', { force: true, keepalive: true });
     };
     const onPageShow = () => {
       setPageVisible(document.visibilityState !== 'hidden');
+      markHomeSnapshotForeground();
+    };
+    const onWindowFocus = () => {
+      setPageVisible(true);
+      markHomeSnapshotForeground();
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', onWindowFocus);
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('pageshow', onPageShow);
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', onWindowFocus);
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('pageshow', onPageShow);
     };
@@ -13984,6 +14352,10 @@ function AppInner() {
       cancelled = true;
     };
   }, [initData, writeYoutubeResumeToLocalCache, youtubeResumeStorageKey]);
+
+  useEffect(() => {
+    youtubeInputDraftRef.current = String(youtubeInput || '');
+  }, [youtubeInput]);
 
   const buildTranslationResultFromCheckItem = (item) => {
     if (!item || typeof item !== 'object') return null;
@@ -14087,16 +14459,18 @@ function AppInner() {
   };
 
   const pollTranslationCheckStatus = async ({ checkSessionId: checkSessionIdParam, pollToken }) => {
-    const getCheckStatusPollDelayMs = (attempt) => {
+    const getCheckStatusPollDelayMs = (attempt, suggestedDelayMs = 0) => {
       if (attempt <= 1) return 0;
-      const backoffBase = attempt <= 3 ? 900 : Math.min(4000, 900 * (1.28 ** (attempt - 3)));
-      const jitterMs = Math.floor(Math.random() * 250);
-      return Math.round(backoffBase + jitterMs);
+      const backoffBase = attempt <= 3 ? 1600 : Math.min(7200, 1600 * (1.22 ** (attempt - 3)));
+      const recommended = Math.max(backoffBase, Number.isFinite(Number(suggestedDelayMs)) ? Number(suggestedDelayMs) : 0);
+      const jitterMs = Math.floor(Math.random() * 420);
+      return Math.round(recommended + jitterMs);
     };
     let attempt = 0;
+    let suggestedDelayMs = 0;
     while (!translationCheckUnmountedRef.current && translationCheckPollTokenRef.current === pollToken) {
       if (attempt > 0) {
-        await new Promise((resolve) => setTimeout(resolve, getCheckStatusPollDelayMs(attempt)));
+        await new Promise((resolve) => setTimeout(resolve, getCheckStatusPollDelayMs(attempt, suggestedDelayMs)));
       }
       attempt += 1;
       let response;
@@ -14108,6 +14482,7 @@ function AppInner() {
             initData,
             check_session_id: checkSessionIdParam,
             poll_count: attempt,
+            language_pair: getWebappLanguagePairHint() || undefined,
           }),
         });
       } catch (error) {
@@ -14127,6 +14502,7 @@ function AppInner() {
       }
 
       const data = await response.json();
+      suggestedDelayMs = Number(data?.polling?.suggested_delay_ms || 0);
       const nextState = applyTranslationCheckStatusPayload(data);
       if (!nextState.sessionId) {
         throw new Error(tr('Сессия проверки не найдена.', 'Pruefungssession wurde nicht gefunden.'));
@@ -14149,6 +14525,7 @@ function AppInner() {
         body: JSON.stringify({
           initData,
           active_only: true,
+          language_pair: getWebappLanguagePairHint() || undefined,
         }),
       });
       if (!response.ok) {
@@ -14191,6 +14568,11 @@ function AppInner() {
   const handleWebappSubmit = async (event) => {
     event.preventDefault();
     const liveDrafts = getActiveTranslationDraftMap();
+    const sourceSessionId = String(
+      translationSessionIdRef.current
+      || sentences[0]?.source_session_id
+      || ''
+    ).trim();
     if (translationSubmitInFlightRef.current) {
       return;
     }
@@ -14238,12 +14620,13 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          session_id: sessionId,
+          session_id: sourceSessionId || undefined,
           translations: submittedEntries.map((item) => ({
             id_for_mistake_table: item.id,
             translation: item.translation,
           })),
           send_private_grammar_text: translationPrivateGrammarTextOptIn,
+          language_pair: getWebappLanguagePairHint() || undefined,
         }),
       });
       if (!startResponse.ok) {
@@ -14296,6 +14679,13 @@ function AppInner() {
     if (translationStartInFlightRef.current) {
       return;
     }
+    if (
+      Boolean(translationProgressiveFill?.active)
+      && !sentences.length
+      && String(translationProgressiveFill?.sessionId || translationSessionIdRef.current || '').trim()
+    ) {
+      return;
+    }
     if (!initData) {
       setWebappError(initDataMissingMsg);
       return;
@@ -14311,6 +14701,8 @@ function AppInner() {
       sessionId: null,
       readyCount: 0,
       expectedTotal: 7,
+      status: 'idle',
+      error: '',
     });
     setWebappLoading(true);
     setWebappError('');
@@ -14326,19 +14718,28 @@ function AppInner() {
           topic: selectedTopic,
           custom_focus: isCustomTopic(selectedTopic) ? customTopicInput.trim() : '',
           level: selectedLevel,
+          language_pair: getWebappLanguagePairHint() || undefined,
         }),
       });
       if (!response.ok) {
         throw new Error(await response.text());
       }
       const data = await response.json();
+      if (data?.language_pair) {
+        setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
+      }
       setTodayTranslationRecommendation(null);
       const nextSessionType = String(data?.type || 'regular').trim() || 'regular';
       const nextSessionId = nextSessionType === 'regular' ? String(data?.session_id || '').trim() || null : null;
       const nextItems = Array.isArray(data?.items) ? data.items : [];
       const expectedTotal = Math.max(1, Number(data?.expected_total || 7));
       const readyCount = Number(data?.ready_count || nextItems.length || 0);
-      const generationInProgress = Boolean(data?.generation_in_progress) && readyCount < expectedTotal;
+      const generationStatus = String(
+        data?.generation_status
+        || (Boolean(data?.generation_in_progress) && readyCount < expectedTotal ? 'running' : readyCount >= expectedTotal ? 'ready' : 'idle')
+      ).trim().toLowerCase() || 'idle';
+      const generationError = String(data?.generation_error || '').trim();
+      const generationInProgress = ['pending', 'running'].includes(generationStatus) && readyCount < expectedTotal;
       setSessionType(nextSessionType);
       translationSessionIdRef.current = nextSessionId || '';
       setTranslationSessionId(nextSessionId);
@@ -14353,9 +14754,14 @@ function AppInner() {
         sessionId: nextSessionId,
         readyCount,
         expectedTotal,
+        status: generationStatus,
+        error: generationError,
       });
       if (data.blocked) {
         setFinishMessage(activeTranslationSessionWarning);
+      }
+      if (generationStatus === 'failed' && generationError) {
+        setWebappError(`${tr('Ошибка старта', 'Startfehler')}: ${generationError}`);
       }
       if (generationInProgress && nextSessionId) {
         const pollToken = translationProgressiveFillPollTokenRef.current + 1;
@@ -14434,6 +14840,8 @@ function AppInner() {
       sessionId: null,
       readyCount: 0,
       expectedTotal: 7,
+      status: 'idle',
+      error: '',
     });
     setWebappError('');
     setFinishMessage('');
@@ -14504,6 +14912,8 @@ function AppInner() {
       sessionId: null,
       readyCount: 0,
       expectedTotal: 7,
+      status: 'idle',
+      error: '',
     });
     setWebappError('');
     setFinishMessage('');
@@ -14921,6 +15331,9 @@ function AppInner() {
   };
   const getMovieLanguageCode = (item) => normalizeLangCode(item?.language || '').slice(0, 2) || 'unknown';
   const resolveLanguagePairForUI = (pair) => {
+    if (GERMAN_ONLY_MODE) {
+      return { ...GERMAN_ONLY_PAIR };
+    }
     const source = normalizeLangCode(pair?.source_lang);
     const target = normalizeLangCode(pair?.target_lang);
     if (source && target) return { source_lang: source, target_lang: target };
@@ -14928,6 +15341,16 @@ function AppInner() {
     const profileTarget = normalizeLangCode(languageProfile?.learning_language) || 'de';
     return { source_lang: profileSource, target_lang: profileTarget };
   };
+  const buildWebappLanguagePairHint = (pair) => {
+    if (GERMAN_ONLY_MODE) {
+      return { ...GERMAN_ONLY_PAIR };
+    }
+    const source = normalizeLangCode(pair?.source_lang);
+    const target = normalizeLangCode(pair?.target_lang);
+    if (!source || !target) return null;
+    return { source_lang: source, target_lang: target };
+  };
+  const getWebappLanguagePairHint = () => buildWebappLanguagePairHint(resolveLanguagePairForUI(dictionaryLanguagePair));
   const getDictionaryDirectionLabel = () => {
     const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
     const source = String(pair.source_lang || '').toUpperCase();
@@ -15014,6 +15437,52 @@ function AppInner() {
       return source || target;
     }
     return '';
+  };
+  const formatDictionaryBilingualExample = (source, target) => {
+    const sourceText = String(source || '').trim();
+    const targetText = String(target || '').trim();
+    if (sourceText && targetText) return `${sourceText} → ${targetText}`;
+    return sourceText || targetText || '';
+  };
+  const formatDictionaryMeaningText = (meaning) => {
+    if (!meaning || typeof meaning !== 'object') return '';
+    const value = String(meaning.value || '').trim();
+    const context = String(meaning.context || '').trim();
+    if (value && context) return `${value} — ${context}`;
+    return value || context || '';
+  };
+  const getDictionaryPrimaryMeaning = (item) => {
+    const primary = item?.meanings?.primary;
+    return primary && typeof primary === 'object' ? primary : null;
+  };
+  const getDictionarySecondaryMeanings = (item) => {
+    const secondary = item?.meanings?.secondary;
+    return Array.isArray(secondary) ? secondary.filter((entry) => entry && typeof entry === 'object') : [];
+  };
+  const getDictionaryPronunciationRows = (item) => {
+    const pronunciation = item?.pronunciation;
+    if (!pronunciation || typeof pronunciation !== 'object') return [];
+    return [
+      { label: 'IPA', value: String(pronunciation.ipa || '').trim() },
+      { label: tr('Ударение', 'Betonung'), value: String(pronunciation.stress || '').trim() },
+      { label: tr('Читать как', 'Aussprache'), value: String(pronunciation.audio_text || '').trim() },
+    ].filter((row) => row.value);
+  };
+  const getDictionaryNoteRows = (item) => ([
+    { label: tr('Ассоциация', 'Merkhilfe'), value: String(item?.memory_tip || '').trim() },
+    { label: tr('Выражение / нюанс', 'Ausdruck / Nuance'), value: String(item?.expression_note || '').trim() },
+    { label: tr('Пояснение по части речи', 'Hinweis zur Wortart'), value: String(item?.part_of_speech_note || '').trim() },
+    { label: tr('Происхождение', 'Herkunft'), value: String(item?.etymology_note || '').trim() },
+  ]).filter((row) => row.value);
+  const formatDictionaryGovernmentPattern = (entry) => {
+    if (!entry || typeof entry !== 'object') return '';
+    const pattern = String(entry.pattern || '').trim();
+    const preposition = String(entry.preposition || '').trim();
+    const caseName = String(entry.case || '').trim();
+    const head = [pattern, preposition, caseName].filter(Boolean).join(' · ');
+    const example = formatDictionaryBilingualExample(entry.example_source, entry.example_target);
+    if (head && example) return `${head} — ${example}`;
+    return head || example || '';
   };
   const buildDictionaryShareText = (item) => {
     const { sourceText, targetText } = getDictionarySourceTarget(item, dictionaryDirection);
@@ -15192,6 +15661,8 @@ function AppInner() {
     setSelectionInlineMode(false);
     setSelectionLookupLoading(false);
     setSelectionInlineLookup({ loading: false, word: '', translation: '', direction: '', provider: '' });
+    youtubeDragSelectionMetaRef.current = null;
+    setYoutubeDragSelectionMeta(null);
   };
 
   const normalizeForLookup = async (rawText) => {
@@ -15242,31 +15713,58 @@ function AppInner() {
 
   const requestQuickTranslation = async (rawText) => {
     const { cleaned, sourceLangHint, targetLang } = resolveQuickTranslateParams(rawText);
-    const response = await fetch('/api/translate/quick', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        initData: initData || undefined,
-        text: cleaned,
-        source_lang: sourceLangHint || null,
-        target_lang: targetLang,
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(await readApiError(response, 'Ошибка быстрого перевода', 'Fehler bei Schnelluebersetzung'));
+    const cacheKey = [
+      String(sourceLangHint || '').toLowerCase(),
+      String(targetLang || '').toLowerCase(),
+      cleaned.toLowerCase(),
+    ].join('|');
+    const nowTs = Date.now();
+    const cached = quickTranslateCacheRef.current.get(cacheKey);
+    if (cached && nowTs - Number(cached.ts || 0) <= QUICK_TRANSLATE_CACHE_TTL_MS) {
+      return { ...cached.payload };
     }
-    const data = await response.json();
-    const translation = String(data?.translation || '').trim();
-    const provider = String(data?.provider || '').trim();
-    const detectedSource = normalizeLangCode(data?.detected_source_lang || sourceLangHint || '') || sourceLangHint || '';
-    return {
-      cleaned,
-      translation,
-      provider,
-      sourceLangHint,
-      targetLang,
-      detectedSource,
-    };
+    const inFlight = quickTranslateInFlightRef.current.get(cacheKey);
+    if (inFlight) {
+      return inFlight;
+    }
+    const requestPromise = (async () => {
+      const response = await fetch('/api/translate/quick', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData: initData || undefined,
+          text: cleaned,
+          source_lang: sourceLangHint || null,
+          target_lang: targetLang,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка быстрого перевода', 'Fehler bei Schnelluebersetzung'));
+      }
+      const data = await response.json();
+      const payload = {
+        cleaned,
+        translation: String(data?.translation || '').trim(),
+        provider: String(data?.provider || '').trim(),
+        sourceLangHint,
+        targetLang,
+        detectedSource: normalizeLangCode(data?.detected_source_lang || sourceLangHint || '') || sourceLangHint || '',
+      };
+      quickTranslateCacheRef.current.set(cacheKey, { ts: Date.now(), payload });
+      if (quickTranslateCacheRef.current.size > 200) {
+        const firstKey = quickTranslateCacheRef.current.keys().next().value;
+        if (firstKey) {
+          quickTranslateCacheRef.current.delete(firstKey);
+        }
+      }
+      return payload;
+    })();
+    quickTranslateInFlightRef.current.set(cacheKey, requestPromise);
+    try {
+      return await requestPromise;
+    } finally {
+      quickTranslateInFlightRef.current.delete(cacheKey);
+    }
   };
 
   const loadSelectionInlineLookup = async (rawText) => {
@@ -15362,7 +15860,7 @@ function AppInner() {
         scrollToDictionary();
       }
       const saveOriginProcess = inlineMode
-        ? (isYoutubeInline ? 'youtube' : (isTranslationsInline ? 'translations' : 'reader'))
+        ? (isYoutubeInline ? 'youtube' : (isTranslationsInline ? 'translations_block' : 'reader'))
         : 'webapp_dictionary_save';
       const saveOriginMeta = {
         endpoint: '/api/webapp/dictionary/save',
@@ -15629,7 +16127,7 @@ function AppInner() {
         target_lang: resolvedTargetLang || undefined,
         direction: resolvedDirection || undefined,
         folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
-        origin_process: 'reader_selection_gpt_save',
+        origin_process: 'reader',
         origin_meta: {
           endpoint: '/api/webapp/dictionary/save',
           flow: 'reader_gpt_sheet',
@@ -16360,7 +16858,7 @@ function AppInner() {
     return bits.join(' • ');
   };
 
-  async function loadReaderLibrary(includeArchivedOverride = readerIncludeArchived) {
+  const loadReaderLibrary = useCallback(async (includeArchivedOverride = readerIncludeArchived) => {
     if (!initData) return;
     try {
       setReaderLibraryLoading(true);
@@ -16380,7 +16878,7 @@ function AppInner() {
     } finally {
       setReaderLibraryLoading(false);
     }
-  }
+  }, [initData, normalizeNetworkErrorMessage, readApiError, readerIncludeArchived]);
 
   const openReaderArchive = async () => {
     setReaderArchiveOpen(true);
@@ -17411,17 +17909,26 @@ function AppInner() {
     const selectionTypeOption = String(options.selectionType || '').trim();
     const stopPropagation = Boolean(options.stopPropagation);
     const keyPrefix = options.keyPrefix || 'w';
+    const youtubeLineIndex = Number(options.lineIndex);
+    const isYoutubeWordSelection = selectionTypeOption.startsWith('youtube_') && Number.isInteger(youtubeLineIndex) && youtubeLineIndex >= 0;
     if (!text) return null;
     return text.split(/\s+/).map((word, index) => {
       const cleaned = word.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё'’-]/g, '');
+      const isYoutubeSelected = isYoutubeWordSelection && youtubeSelectedWordKeySet.has(`${youtubeLineIndex}:${index}`);
       if (!cleaned) {
         return <span key={`${keyPrefix}-${index}`}>{word} </span>;
       }
       return (
         <span
           key={`${keyPrefix}-${index}`}
-          className={className}
+          className={isYoutubeSelected ? `${className} is-selected` : className}
+          data-youtube-line-index={isYoutubeWordSelection ? youtubeLineIndex : undefined}
+          data-youtube-word-index={isYoutubeWordSelection ? index : undefined}
+          onTouchStart={isYoutubeWordSelection ? handleYoutubeWordTouchStart : undefined}
           onClick={(event) => {
+            if (isYoutubeWordSelection && (Date.now() - Number(youtubeSuppressWordTapRef.current || 0)) < 420) {
+              return;
+            }
             if (stopPropagation) {
               event.stopPropagation();
             }
@@ -17439,7 +17946,130 @@ function AppInner() {
     });
   };
 
+  const getYoutubeSubtitleWordElementByPoint = (clientX, clientY) => {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY) || typeof document === 'undefined') return null;
+    const target = document.elementFromPoint(clientX, clientY);
+    if (!(target instanceof Element)) return null;
+    return target.closest('[data-youtube-line-index][data-youtube-word-index]');
+  };
+
+  const buildYoutubePhraseSelection = useCallback((lineIndex, anchorIndex, currentIndex) => {
+    const numericLineIndex = Number(lineIndex);
+    const numericAnchorIndex = Number(anchorIndex);
+    const numericCurrentIndex = Number(currentIndex);
+    if (!Number.isInteger(numericLineIndex) || numericLineIndex < 0) return null;
+    const rawText = String(youtubeTranscript[numericLineIndex]?.text || '').trim();
+    const normalized = normalizeSubtitleText(rawText);
+    if (!normalized) return null;
+    const words = normalized.split(/\s+/).filter(Boolean);
+    if (!words.length) return null;
+    const startIndex = Math.max(0, Math.min(numericAnchorIndex, numericCurrentIndex));
+    const endIndex = Math.min(words.length - 1, Math.max(numericAnchorIndex, numericCurrentIndex));
+    if (endIndex < startIndex) return null;
+    const selectedWords = words.slice(startIndex, endIndex + 1);
+    if (!selectedWords.length) return null;
+    return {
+      lineIndex: numericLineIndex,
+      startWordIndex: startIndex,
+      endWordIndex: endIndex,
+      wordCount: selectedWords.length,
+      text: selectedWords.join(' '),
+    };
+  }, [youtubeTranscript]);
+
+  const resetYoutubePhraseGesture = (clearMeta = true) => {
+    youtubePhraseGestureRef.current = null;
+    if (clearMeta) {
+      youtubeDragSelectionMetaRef.current = null;
+      setYoutubeDragSelectionMeta(null);
+    }
+  };
+
+  const handleYoutubeWordTouchStart = (event) => {
+    const touch = event?.touches?.[0];
+    const target = event?.target;
+    if (!touch || !(target instanceof Element)) {
+      resetYoutubePhraseGesture();
+      return;
+    }
+    const wordEl = target.closest('[data-youtube-line-index][data-youtube-word-index]');
+    if (!wordEl) {
+      resetYoutubePhraseGesture();
+      return;
+    }
+    const lineIndex = Number(wordEl.getAttribute('data-youtube-line-index'));
+    const wordIndex = Number(wordEl.getAttribute('data-youtube-word-index'));
+    if (!Number.isInteger(lineIndex) || !Number.isInteger(wordIndex)) {
+      resetYoutubePhraseGesture();
+      return;
+    }
+    youtubePhraseGestureRef.current = {
+      active: true,
+      lineIndex,
+      anchorIndex: wordIndex,
+      currentIndex: wordIndex,
+      moved: false,
+      startX: touch.clientX,
+      startY: touch.clientY,
+    };
+    youtubeDragSelectionMetaRef.current = null;
+    setYoutubeDragSelectionMeta(null);
+  };
+
+  const handleYoutubeSubtitlesTouchMove = (event) => {
+    const gesture = youtubePhraseGestureRef.current;
+    if (!gesture?.active) return;
+    const touch = event?.touches?.[0];
+    if (!touch) return;
+    const dx = touch.clientX - Number(gesture.startX || 0);
+    const dy = touch.clientY - Number(gesture.startY || 0);
+    if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
+    const wordEl = getYoutubeSubtitleWordElementByPoint(touch.clientX, touch.clientY);
+    if (!wordEl) return;
+    const lineIndex = Number(wordEl.getAttribute('data-youtube-line-index'));
+    const wordIndex = Number(wordEl.getAttribute('data-youtube-word-index'));
+    if (!Number.isInteger(lineIndex) || !Number.isInteger(wordIndex) || lineIndex !== gesture.lineIndex) return;
+    if (wordIndex === gesture.currentIndex) return;
+    const nextMeta = buildYoutubePhraseSelection(lineIndex, gesture.anchorIndex, wordIndex);
+    youtubePhraseGestureRef.current = {
+      ...gesture,
+      currentIndex: wordIndex,
+      moved: Math.abs(wordIndex - gesture.anchorIndex) >= 1,
+    };
+    youtubeDragSelectionMetaRef.current = nextMeta;
+    setYoutubeDragSelectionMeta(nextMeta);
+  };
+
+  const handleYoutubeSubtitlesTouchEnd = (event) => {
+    const gesture = youtubePhraseGestureRef.current;
+    const previewMeta = youtubeDragSelectionMetaRef.current;
+    const touch = event?.changedTouches?.[0];
+    if (gesture?.active && gesture.moved && previewMeta?.wordCount >= 2) {
+      const selectionEvent = touch
+        ? { clientX: touch.clientX, clientY: touch.clientY }
+        : event;
+      handleSelection(selectionEvent, previewMeta.text, {
+        compact: true,
+        inlineLookup: true,
+        lookupLang: getNormalizeLookupLang(),
+        selectionType: 'youtube_phrase',
+      });
+      youtubeSuppressWordTapRef.current = Date.now();
+      youtubeSuppressSentenceTapRef.current = Date.now();
+      resetYoutubePhraseGesture(false);
+      return;
+    }
+    resetYoutubePhraseGesture();
+  };
+
+  const handleYoutubeSubtitlesTouchCancel = () => {
+    resetYoutubePhraseGesture();
+  };
+
   const openYoutubeSentenceSelection = (event, text, selectionType = 'youtube_sentence') => {
+    if ((Date.now() - Number(youtubeSuppressSentenceTapRef.current || 0)) < 420) {
+      return;
+    }
     const normalized = normalizeSubtitleText(text);
     if (!normalized) return;
     handleSelection(event, normalized, {
@@ -17450,16 +18080,20 @@ function AppInner() {
     });
   };
 
-  const renderSubtitleText = (text, selectionType = (youtubeOverlayEnabled ? 'youtube_overlay_word' : 'youtube_word')) => renderClickableText(
-    normalizeSubtitleText(text),
-    {
-      lookupLang: getNormalizeLookupLang(),
-      compact: true,
-      inlineLookup: true,
-      selectionType,
-      stopPropagation: true,
-    }
-  );
+  const renderSubtitleText = (text, selectionType = (youtubeOverlayEnabled ? 'youtube_overlay_word' : 'youtube_word'), lineIndex = null) => {
+    const normalized = normalizeSubtitleText(text);
+    return renderClickableText(
+      normalized,
+      {
+        lookupLang: getNormalizeLookupLang(),
+        compact: true,
+        inlineLookup: true,
+        selectionType,
+        stopPropagation: true,
+        lineIndex: Number.isInteger(lineIndex) ? lineIndex : undefined,
+      }
+    );
+  };
 
   const showTranslationClickableWordsHint = () => {
     const title = tr('Подсказка', 'Hinweis');
@@ -17758,6 +18392,8 @@ function AppInner() {
       sessionId: null,
       readyCount: 0,
       expectedTotal: 7,
+      status: 'idle',
+      error: '',
     });
     setWebappLoading(true);
     setWebappError('');
@@ -17810,11 +18446,6 @@ function AppInner() {
       setTranslationAudioGrammarSaving({});
       translationCheckPollTokenRef.current += 1;
       setTranslationCheckProgress({ active: false, done: 0, total: 0 });
-      await Promise.allSettled([
-        loadSessionInfo(),
-        loadTodayPlan(),
-        loadSkillReport(),
-      ]);
     } catch (error) {
       setWebappError(`${tr('Ошибка завершения', 'Abschlussfehler')}: ${error.message}`);
     } finally {
@@ -18810,12 +19441,22 @@ function AppInner() {
         const pollToken = dictionaryLookupPollTokenRef.current + 1;
         dictionaryLookupPollTokenRef.current = pollToken;
         const pollStatus = async () => {
-          let attempts = 0;
+          const pollIntervalMs = 1000;
+          const pollDeadlineMs = Date.now() + 45000;
+          let firstPass = true;
+          let transientErrorCount = 0;
           while (dictionaryLookupPollTokenRef.current === pollToken) {
-            if (attempts > 0) {
-              await new Promise((resolve) => window.setTimeout(resolve, 900));
+            if (Date.now() > pollDeadlineMs) {
+              setDictionaryLookupProgress((prev) => ({
+                ...prev,
+                error: tr('GPT-разбор всё ещё уточняется. Попробуйте открыть слово позже.', 'GPT-Analyse wird noch geladen. Versuche es spaeter erneut.'),
+              }));
+              return;
             }
-            attempts += 1;
+            if (!firstPass) {
+              await new Promise((resolve) => window.setTimeout(resolve, pollIntervalMs));
+            }
+            firstPass = false;
             try {
               const statusResponse = await fetch('/api/webapp/dictionary/status', {
                 method: 'POST',
@@ -18835,6 +19476,7 @@ function AppInner() {
               const statusValue = String(statusData.status || 'enriching').trim().toLowerCase() || 'enriching';
               const statusLookupId = String(statusData.lookup_id || nextLookupId).trim() || nextLookupId;
               const statusSaveLocked = Boolean(statusData.save_locked ?? (statusValue !== 'ready'));
+              transientErrorCount = 0;
               setDictionaryLookupProgress({
                 lookupId: statusLookupId,
                 status: statusValue,
@@ -18858,22 +19500,18 @@ function AppInner() {
                 setDictionaryError(failureMessage);
                 return;
               }
-              if (attempts >= 18) {
-                setDictionaryLookupProgress((prev) => ({
-                  ...prev,
-                  error: tr('GPT-разбор всё ещё уточняется. Попробуйте открыть слово позже.', 'GPT-Analyse wird noch geladen. Versuche es spaeter erneut.'),
-                }));
-                return;
-              }
             } catch (statusError) {
               if (dictionaryLookupPollTokenRef.current !== pollToken) {
                 return;
               }
+              transientErrorCount += 1;
               setDictionaryLookupProgress((prev) => ({
                 ...prev,
                 error: String(statusError?.message || tr('Ошибка статуса словаря', 'Woerterbuch-Statusfehler')),
               }));
-              return;
+              if (transientErrorCount >= 5) {
+                return;
+              }
             }
           }
         };
@@ -19335,8 +19973,11 @@ function AppInner() {
     }
   }, [tr, writeYoutubeResumeToLocalCache, youtubeInput, youtubeResumeStorageKey]);
 
-  const searchYoutubeVideos = async () => {
-    const query = youtubeInput.trim();
+  const searchYoutubeVideos = async (overrideQuery = null) => {
+    const committedInput = commitYoutubeInputDraft(
+      overrideQuery == null ? youtubeInputDraftRef.current : overrideQuery
+    );
+    const query = committedInput.trim();
     if (!query) return;
     if (!initData) {
       setYoutubeSearchError(initDataMissingMsg);
@@ -19356,7 +19997,12 @@ function AppInner() {
       const response = await fetch('/api/webapp/youtube/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, query, limit: 8 }),
+        body: JSON.stringify({
+          initData,
+          query,
+          limit: 8,
+          language_pair: getWebappLanguagePairHint() || undefined,
+        }),
       });
       if (!response.ok) {
         let message = await response.text();
@@ -19382,6 +20028,46 @@ function AppInner() {
     }
   };
 
+  const applyYoutubeTranscriptPayload = (data) => {
+    const items = data?.items || [];
+    setYoutubeTranscript(items);
+    setYoutubeTranslations(data?.translations || {});
+    const hasTiming = items.some((item) => Number(item?.start) > 0);
+    setYoutubeTranscriptHasTiming(hasTiming);
+    setManualTranscript('');
+  };
+
+  const pollYoutubeTranscriptStatus = async ({ videoId, lang }) => {
+    const maxAttempts = 25;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 800 : 1200));
+      const response = await fetch('/api/webapp/youtube/transcript/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          videoId,
+          lang,
+        }),
+      });
+      if (response.status === 202) {
+        continue;
+      }
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (_error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      return await response.json();
+    }
+    throw new Error(tr('Субтитры всё ещё подготавливаются. Попробуйте ещё раз.', 'Untertitel werden noch vorbereitet. Bitte erneut versuchen.'));
+  };
+
   const fetchTranscript = async () => {
     if (!youtubeId) return;
     if (!initData) {
@@ -19392,15 +20078,21 @@ function AppInner() {
     setYoutubeTranscriptLoading(true);
     setYoutubeTranscriptError('');
     try {
+      const requestedLang = normalizeLangCode(languageProfile?.learning_language) || 'de';
       const response = await fetch('/api/webapp/youtube/transcript', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
           videoId: youtubeId,
-          lang: normalizeLangCode(languageProfile?.learning_language) || 'de',
+          lang: requestedLang,
         }),
       });
+      if (response.status === 202) {
+        const data = await pollYoutubeTranscriptStatus({ videoId: youtubeId, lang: requestedLang });
+        applyYoutubeTranscriptPayload(data);
+        return;
+      }
       if (!response.ok) {
         let message = await response.text();
         try {
@@ -19412,12 +20104,7 @@ function AppInner() {
         throw new Error(message);
       }
       const data = await response.json();
-      const items = data.items || [];
-      setYoutubeTranscript(items);
-      setYoutubeTranslations(data.translations || {});
-      const hasTiming = items.some((item) => Number(item?.start) > 0);
-      setYoutubeTranscriptHasTiming(hasTiming);
-      setManualTranscript('');
+      applyYoutubeTranscriptPayload(data);
     } catch (error) {
       setYoutubeTranscript([]);
       setYoutubeTranscriptError(`${tr('Авто-субтитры недоступны', 'Auto-Untertitel nicht verfuegbar')}: ${error.message}`);
@@ -19825,8 +20512,8 @@ function AppInner() {
     const activeIndex = getActiveSubtitleIndex();
     if (activeIndex < 0) return;
     if (youtubeTranslateInFlightRef.current) return;
-    const aheadLimit = 50;
-    const minBuffer = 25;
+    const aheadLimit = 30;
+    const minBuffer = 15;
     let available = 0;
     for (let i = activeIndex; i < youtubeTranscript.length; i += 1) {
       const idx = String(i);
@@ -19853,6 +20540,7 @@ function AppInner() {
         videoId: youtubeId,
         start_index: startIndex,
         lines,
+        language_pair: getWebappLanguagePairHint() || undefined,
       }),
     })
       .then((res) => res.ok ? res.json() : Promise.reject(res))
@@ -19932,9 +20620,16 @@ function AppInner() {
   const saveWeeklyPlanStable = useStableCallback(saveWeeklyPlan);
   const regenerateTodayPlanStable = useStableCallback(regenerateTodayPlan);
   const loadTodayPlanStable = useStableCallback(loadTodayPlan);
+  const refreshWeeklyPlanStable = useStableCallback(async () => {
+    await loadWeeklyPlan({ manual: true });
+    if (planAnalyticsPeriod !== 'week') {
+      await loadPlanAnalytics(planAnalyticsPeriod);
+    }
+  });
   const sendTodayReminderTestStable = useStableCallback(sendTodayReminderTest);
   const startTodayTaskStable = useStableCallback(startTodayTask);
   const submitTodayVideoFeedbackStable = useStableCallback(submitTodayVideoFeedback);
+  const getTodayItemDisplayElapsedSecondsStable = useStableCallback(getTodayItemDisplayElapsedSeconds);
   const getTodayItemElapsedSecondsStable = useStableCallback(getTodayItemElapsedSeconds);
   const getTodayTranslationProgressStable = useStableCallback(getTodayTranslationProgress);
   const getTodayItemProgressPercentStable = useStableCallback(getTodayItemProgressPercent);
@@ -20037,35 +20732,44 @@ function AppInner() {
       return null;
     }
 
+    if (analyticsScopeRequestRef.current) {
+      return analyticsScopeRequestRef.current;
+    }
+
     if (!silent) {
       setAnalyticsScopeLoading(true);
       setAnalyticsScopeError('');
     }
 
-    try {
-      const scopeContext = buildAnalyticsScopeContextPayload();
-      const body = { initData };
-      if (Object.keys(scopeContext).length > 0) {
-        body.scope_context = scopeContext;
+    const requestPromise = (async () => {
+      try {
+        const scopeContext = buildAnalyticsScopeContextPayload();
+        const body = { initData };
+        if (Object.keys(scopeContext).length > 0) {
+          body.scope_context = scopeContext;
+        }
+        const response = await postJsonWithRetry('/api/webapp/analytics/scope', body);
+        if (!response.ok) {
+          throw new Error(await readApiError(response, 'Ошибка загрузки режима участия', 'Fehler beim Laden des Teilnahme-Modus'));
+        }
+        const data = await response.json();
+        applyAnalyticsScopePayload(data);
+        return data;
+      } catch (error) {
+        if (!silent) {
+          const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить режим участия.', 'Teilnahme-Modus konnte nicht geladen werden.');
+          setAnalyticsScopeError(`${tr('Ошибка режима участия', 'Fehler beim Teilnahme-Modus')}: ${friendly}`);
+        }
+        return null;
+      } finally {
+        analyticsScopeRequestRef.current = null;
+        if (!silent) {
+          setAnalyticsScopeLoading(false);
+        }
       }
-      const response = await postJsonWithRetry('/api/webapp/analytics/scope', body);
-      if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки режима участия', 'Fehler beim Laden des Teilnahme-Modus'));
-      }
-      const data = await response.json();
-      applyAnalyticsScopePayload(data);
-      return data;
-    } catch (error) {
-      if (!silent) {
-        const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить режим участия.', 'Teilnahme-Modus konnte nicht geladen werden.');
-        setAnalyticsScopeError(`${tr('Ошибка режима участия', 'Fehler beim Teilnahme-Modus')}: ${friendly}`);
-      }
-      return null;
-    } finally {
-      if (!silent) {
-        setAnalyticsScopeLoading(false);
-      }
-    }
+    })();
+    analyticsScopeRequestRef.current = requestPromise;
+    return requestPromise;
   };
 
   const loadProgressResetStatus = async ({ silent = false } = {}) => {
@@ -20489,7 +21193,8 @@ function AppInner() {
     setBillingStatusLoading(true);
     setBillingStatusError('');
     try {
-      const response = await fetch('/api/billing/status', {
+      const response = await fetch(`/api/billing/status?ts=${Date.now()}`, {
+        cache: 'no-store',
         headers: { 'X-Telegram-InitData': initData },
       });
       if (!response.ok) {
@@ -20711,7 +21416,7 @@ function AppInner() {
       loadBillingStatus();
       loadBillingPlans();
     }
-  }, [initData, isWebAppMode, selectedSections, flashcardsOnly]);
+  }, [initData, isWebAppMode, selectedSections, flashcardsOnly, billingReturnContext.kind, billingReturnContext.shouldHandle]);
 
   useEffect(() => {
     if (!weeklySummaryModalOpen || !weeklySummaryVisitConfig) {
@@ -22112,6 +22817,7 @@ function AppInner() {
                 weeklyPlanSaving={weeklyPlanSaving}
                 weeklyPlanLoading={weeklyPlanLoading}
                 weeklyPlanError={weeklyPlanError}
+                refreshWeeklyPlan={refreshWeeklyPlanStable}
                 planAnalyticsMetrics={planAnalyticsMetrics}
                 planAnalyticsRange={planAnalyticsRange}
                 planAnalyticsError={planAnalyticsError}
@@ -22122,14 +22828,14 @@ function AppInner() {
                 todayPlanLoadedOnce={todayPlanLoadedOnce}
                 todayPlanLoading={todayPlanLoading}
                 todayPlanError={todayPlanError}
+                todayPlanSnapshotTone={todayPlanSnapshotTone}
                 todayItemLoading={todayItemLoading}
                 todayTimerNowMs={todayTimerNowMs}
                 regenerateTodayPlan={regenerateTodayPlanStable}
                 loadTodayPlan={loadTodayPlanStable}
-                sendTodayReminderTest={sendTodayReminderTestStable}
-                todayTestSending={todayTestSending}
                 startTodayTask={startTodayTaskStable}
                 submitTodayVideoFeedback={submitTodayVideoFeedbackStable}
+                getTodayItemDisplayElapsedSeconds={getTodayItemDisplayElapsedSecondsStable}
                 getTodayItemElapsedSeconds={getTodayItemElapsedSecondsStable}
                 getTodayItemProgressPercent={getTodayItemProgressPercentStable}
                 getTodayTranslationProgress={getTodayTranslationProgressStable}
@@ -22139,6 +22845,7 @@ function AppInner() {
                 skillReportLoadedOnce={skillReportLoadedOnce}
                 skillReportLoading={skillReportLoading}
                 skillReportError={skillReportError}
+                skillReportSnapshotTone={skillReportSnapshotTone}
                 skillPracticeLoading={skillPracticeLoading}
                 loadSkillReport={loadSkillReportStable}
                 uiLang={uiLang}
@@ -22146,6 +22853,7 @@ function AppInner() {
                 resumeSkillPractice={resumeSkillPracticeStable}
                 skillTrainingStatusMap={homeSkillTrainingStatusMap}
                 getStoredSkillTrainingSnapshot={getStoredSkillTrainingSnapshot}
+                weeklyPlanSnapshotTone={weeklyPlanSnapshotTone}
               />
             )}
 
@@ -22868,7 +23576,7 @@ function AppInner() {
                               className="youtube-command-action"
                               onClick={() => {
                                 setYoutubeForceShowPanel(true);
-                                if (youtubeInput.trim()) searchYoutubeVideos();
+                                searchYoutubeVideos();
                               }}
                               disabled={youtubeSearchLoading}
                             >
@@ -23135,40 +23843,23 @@ function AppInner() {
                     {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
                     {youtubeSearchExpanded && (
                       <div className="webapp-video-form youtube-setup-form">
-                        <label className="webapp-field">
-                          <span>{tr('Ссылка, ID или поисковый запрос', 'Link, Video-ID oder Suchanfrage')}</span>
-                          <div className="input-clear-wrap">
-                            <input
-                              type="text"
-                              className="input-clear-field"
-                              value={youtubeInput}
-                              onChange={(event) => setYoutubeInput(event.target.value)}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
-                                  event.preventDefault();
-                                  searchYoutubeVideos();
-                                }
-                              }}
-                              placeholder={tr('https://youtu.be/VIDEO_ID или Deutsch Grammatik B1', 'https://youtu.be/VIDEO_ID oder Deutsch Grammatik B1')}
-                            />
-                            {youtubeInput && (
-                              <button
-                                type="button"
-                                className="input-clear-btn"
-                                onClick={() => setYoutubeInput('')}
-                                aria-label={tr('Очистить', 'Loeschen')}
-                              >
-                                ×
-                              </button>
-                            )}
-                          </div>
-                        </label>
+                        <YoutubeQueryInputField
+                          value={youtubeInput}
+                          label={tr('Ссылка, ID или поисковый запрос', 'Link, Video-ID oder Suchanfrage')}
+                          placeholder={tr('https://youtu.be/VIDEO_ID или Deutsch Grammatik B1', 'https://youtu.be/VIDEO_ID oder Deutsch Grammatik B1')}
+                          clearLabel={tr('Очистить', 'Loeschen')}
+                          onDraftChange={(nextValue) => {
+                            youtubeInputDraftRef.current = String(nextValue ?? '');
+                          }}
+                          onCommit={commitYoutubeInputDraft}
+                          onSubmit={searchYoutubeVideos}
+                        />
                         <div className="webapp-video-actions">
                           <button
                             type="button"
                             className="secondary-button"
-                            onClick={searchYoutubeVideos}
-                            disabled={!youtubeInput.trim() || youtubeSearchLoading}
+                            onClick={() => searchYoutubeVideos()}
+                            disabled={youtubeSearchLoading}
                           >
                             {youtubeSearchLoading
                               ? tr('Ищем в YouTube...', 'Suche auf YouTube...')
@@ -23229,7 +23920,13 @@ function AppInner() {
                               <div className="youtube-subtitles-card-head-spacer" aria-hidden="true" />
                             </div>
                             <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
-                              <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
+                              <div
+                                className="webapp-subtitles-list"
+                                onMouseUp={handleSelection}
+                                onTouchMove={handleYoutubeSubtitlesTouchMove}
+                                onTouchEnd={handleYoutubeSubtitlesTouchEnd}
+                                onTouchCancel={handleYoutubeSubtitlesTouchCancel}
+                              >
                                 {(() => {
                                   const activeIndex = getActiveSubtitleIndex();
                                   return youtubeTranscript.map((item, index) => (
@@ -23238,7 +23935,7 @@ function AppInner() {
                                       className={index === activeIndex ? 'is-active' : ''}
                                       onClick={(event) => openYoutubeSentenceSelection(event, item.text, 'youtube_sentence')}
                                     >
-                                      {renderSubtitleText(item.text)}
+                                      {renderSubtitleText(item.text, 'youtube_word', index)}
                                     </p>
                                   ));
                                 })()}
@@ -23251,7 +23948,7 @@ function AppInner() {
                                 <span>{getNativeSubtitleCode()}</span>
                               </div>
                               <div className="webapp-subtitles is-translation">
-                                <div className="webapp-subtitles-list">
+                                <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
                                   {(() => {
                                     const activeIndex = getActiveSubtitleIndex();
                                     return youtubeTranscript.map((item, index) => {
@@ -23308,8 +24005,8 @@ function AppInner() {
                             <button
                               type="button"
                               className="youtube-settings-row"
-                              onClick={searchYoutubeVideos}
-                              disabled={!youtubeInput.trim() || youtubeSearchLoading}
+                              onClick={() => searchYoutubeVideos()}
+                              disabled={youtubeSearchLoading}
                             >
                               <span>{tr('Искать в YouTube', 'Search on YouTube')}</span>
                               <span>{youtubeSearchLoading ? tr('Загрузка...', 'Loading...') : tr('Запустить', 'Run')}</span>
@@ -23652,6 +24349,54 @@ function AppInner() {
                             ))}
                           </div>
                         )}
+                        {getDictionaryPronunciationRows(dictionaryResult).length > 0 && (
+                          <div className="dictionary-forms">
+                            {getDictionaryPronunciationRows(dictionaryResult).map((row) => (
+                              <div key={row.label}><strong>{row.label}:</strong> {row.value}</div>
+                            ))}
+                          </div>
+                        )}
+                        {getDictionaryPrimaryMeaning(dictionaryResult) && (
+                          <div className="dictionary-examples">
+                            <strong>{tr('Главный смысл:', 'Hauptbedeutung:')}</strong>
+                            <ul>
+                              <li>{formatDictionaryMeaningText(getDictionaryPrimaryMeaning(dictionaryResult))}</li>
+                              {formatDictionaryBilingualExample(
+                                getDictionaryPrimaryMeaning(dictionaryResult)?.example_source,
+                                getDictionaryPrimaryMeaning(dictionaryResult)?.example_target,
+                              ) && (
+                                <li>
+                                  <em>{formatDictionaryBilingualExample(
+                                    getDictionaryPrimaryMeaning(dictionaryResult)?.example_source,
+                                    getDictionaryPrimaryMeaning(dictionaryResult)?.example_target,
+                                  )}</em>
+                                </li>
+                              )}
+                            </ul>
+                          </div>
+                        )}
+                        {getDictionarySecondaryMeanings(dictionaryResult).length > 0 && (
+                          <div className="dictionary-examples">
+                            <strong>{tr('Дополнительные смыслы:', 'Weitere Bedeutungen:')}</strong>
+                            <ul>
+                              {getDictionarySecondaryMeanings(dictionaryResult).map((meaning, index) => (
+                                <li key={`meaning-${index}`}>
+                                  {formatDictionaryMeaningText(meaning)}
+                                  {formatDictionaryBilingualExample(meaning?.example_source, meaning?.example_target) && (
+                                    <div><em>{formatDictionaryBilingualExample(meaning?.example_source, meaning?.example_target)}</em></div>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {getDictionaryNoteRows(dictionaryResult).length > 0 && (
+                          <div className="dictionary-forms">
+                            {getDictionaryNoteRows(dictionaryResult).map((row) => (
+                              <div key={row.label}><strong>{row.label}:</strong> {row.value}</div>
+                            ))}
+                          </div>
+                        )}
 
                         {Array.isArray(dictionaryResult.prefixes) && dictionaryResult.prefixes.length > 0 && (
                           <div className="dictionary-prefixes">
@@ -23678,6 +24423,42 @@ function AppInner() {
                                 const exampleText = formatDictionaryExampleText(example);
                                 if (!exampleText) return null;
                                 return <li key={`example-${index}-${exampleText}`}>{exampleText}</li>;
+                              })}
+                            </ul>
+                          </div>
+                        )}
+                        {Array.isArray(dictionaryResult.common_collocations) && dictionaryResult.common_collocations.length > 0 && (
+                          <div className="dictionary-examples">
+                            <strong>{tr('Частые сочетания:', 'Haeufige Kollokationen:')}</strong>
+                            <ul>
+                              {dictionaryResult.common_collocations.map((item, index) => {
+                                const text = String(item || '').trim();
+                                if (!text) return null;
+                                return <li key={`collocation-${index}-${text}`}>{text}</li>;
+                              })}
+                            </ul>
+                          </div>
+                        )}
+                        {Array.isArray(dictionaryResult.government_patterns) && dictionaryResult.government_patterns.length > 0 && (
+                          <div className="dictionary-examples">
+                            <strong>{tr('Управление и паттерны:', 'Rektion und Muster:')}</strong>
+                            <ul>
+                              {dictionaryResult.government_patterns.map((entry, index) => {
+                                const text = formatDictionaryGovernmentPattern(entry);
+                                if (!text) return null;
+                                return <li key={`government-${index}`}>{text}</li>;
+                              })}
+                            </ul>
+                          </div>
+                        )}
+                        {Array.isArray(dictionaryResult.save_worthy_options) && dictionaryResult.save_worthy_options.length > 0 && (
+                          <div className="dictionary-examples">
+                            <strong>{tr('Что стоит сохранить:', 'Speicherwerte Varianten:')}</strong>
+                            <ul>
+                              {dictionaryResult.save_worthy_options.map((entry, index) => {
+                                const text = formatDictionaryBilingualExample(entry?.source, entry?.target);
+                                if (!text) return null;
+                                return <li key={`save-option-${index}`}>{text}</li>;
                               })}
                             </ul>
                           </div>
@@ -26113,8 +26894,12 @@ function AppInner() {
                           : null;
                         const selectedPlanCode = String(billingStatus?.plan_code || '').trim().toLowerCase();
                         const selectedEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
-                        const isCurrentPlan = selectedPlanCode === offer.planCode
-                          || (selectedEffectiveMode === 'pro' && offer.planCode === 'pro');
+                        const selectedStatus = String(billingStatus?.status || '').trim().toLowerCase();
+                        const hasActivePaidSubscription = selectedStatus === 'active' || selectedStatus === 'trialing';
+                        const isCurrentPlan = hasActivePaidSubscription && (
+                          selectedPlanCode === offer.planCode
+                          || (selectedEffectiveMode === 'pro' && offer.planCode === 'pro')
+                        );
                         const isPaidPlan = Boolean(planMeta?.is_paid);
                         const isInactivePlan = Boolean(planMeta && planMeta.is_active === false);
                         const canSelect = !isCurrentPlan && isPaidPlan && !isInactivePlan;
@@ -26581,6 +27366,79 @@ if (!token) {
     </Suspense>
   );
 }
+
+const YoutubeQueryInputField = React.memo(function YoutubeQueryInputField({
+  value,
+  label,
+  placeholder,
+  clearLabel,
+  onCommit,
+  onDraftChange,
+  onSubmit,
+}) {
+  const [draft, setDraft] = useState(String(value || ''));
+
+  useEffect(() => {
+    setDraft(String(value || ''));
+  }, [value]);
+
+  const commitDraft = useCallback((rawValue) => {
+    const nextValue = String(rawValue ?? '');
+    if (typeof onDraftChange === 'function') {
+      onDraftChange(nextValue);
+    }
+    if (typeof onCommit === 'function') {
+      onCommit(nextValue);
+    }
+    return nextValue;
+  }, [onCommit, onDraftChange]);
+
+  return (
+    <label className="webapp-field">
+      <span>{label}</span>
+      <div className="input-clear-wrap">
+        <input
+          type="text"
+          className="input-clear-field"
+          value={draft}
+          onChange={(event) => {
+            const nextValue = event.target.value;
+            setDraft(nextValue);
+            if (typeof onDraftChange === 'function') {
+              onDraftChange(nextValue);
+            }
+          }}
+          onBlur={() => {
+            commitDraft(draft);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              const nextValue = commitDraft(draft);
+              if (typeof onSubmit === 'function') {
+                onSubmit(nextValue);
+              }
+            }
+          }}
+          placeholder={placeholder}
+        />
+        {draft && (
+          <button
+            type="button"
+            className="input-clear-btn"
+            onClick={() => {
+              setDraft('');
+              commitDraft('');
+            }}
+            aria-label={clearLabel}
+          >
+            ×
+          </button>
+        )}
+      </div>
+    </label>
+  );
+});
 
 export default function App() {
   return (

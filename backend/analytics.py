@@ -1173,7 +1173,8 @@ def fetch_comparison_leaderboard(
     cohort_user_ids: list[int] | tuple[int, ...] | set[int] | None = None,
 ) -> list[dict[str, Any]]:
     normalized_cohort_user_ids = _normalize_user_ids(cohort_user_ids)
-    if normalized_cohort_user_ids:
+    if len(normalized_cohort_user_ids) == 1:
+        cohort_user_id = int(normalized_cohort_user_ids[0])
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -1194,24 +1195,22 @@ def fetch_comparison_leaderboard(
             if row and row[0] is not None
         }
         processed: list[dict[str, Any]] = []
-        for cohort_user_id in normalized_cohort_user_ids:
-            summary = fetch_user_summary(
-                cohort_user_id,
-                start_date,
-                end_date,
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
-            row = {
-                "user_id": int(cohort_user_id),
-                "username": username_map.get(int(cohort_user_id), "Unknown"),
-                **summary,
-            }
-            if not any(
-                float(row.get(key) or 0) > 0
-                for key in ("translation_attempts", "covered_sentences", "total_time_min", "assigned_sentences", "missed_days")
-            ):
-                continue
+        summary = fetch_user_summary(
+            cohort_user_id,
+            start_date,
+            end_date,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        row = {
+            "user_id": cohort_user_id,
+            "username": username_map.get(cohort_user_id, "Unknown"),
+            **summary,
+        }
+        if any(
+            float(row.get(key) or 0) > 0
+            for key in ("translation_attempts", "covered_sentences", "total_time_min", "assigned_sentences", "missed_days")
+        ):
             processed.append(row)
         _attach_compare_window_metadata(
             processed,
@@ -1229,6 +1228,7 @@ def fetch_comparison_leaderboard(
     learned_words_user_filter = " AND l.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
     learned_words_query_user_filter = " AND q.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
     errors_user_filter = " AND dm.user_id = ANY(%s)" if normalized_cohort_user_ids else ""
+    latest_name_user_filter = "WHERE user_id = ANY(%s)" if normalized_cohort_user_ids else ""
 
     sql = f"""
         WITH base AS (
@@ -1432,6 +1432,7 @@ def fetch_comparison_leaderboard(
                 user_id,
                 username
             FROM bt_3_user_progress
+            {latest_name_user_filter}
             ORDER BY user_id, start_time DESC
         )
         SELECT
@@ -1523,6 +1524,8 @@ def fetch_comparison_leaderboard(
             target_lang,
         ]
     )
+    if normalized_cohort_user_ids:
+        params.append(normalized_cohort_user_ids)
     if normalized_cohort_user_ids:
         params.append(normalized_cohort_user_ids)
 

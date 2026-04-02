@@ -16,7 +16,7 @@ python-dotenv
 
 gunicorn
 youtube-transcript-api>=0.6.3
-yt-dlp==2024.12.23
+yt-dlp==2026.03.17
 spacy==3.7.4
 reportlab==4.2.5
 APScheduler==3.11.0
@@ -31,3 +31,5 @@ boto3>=1.34.0
 requests>=2.32.3,<3
 urllib3>=2,<3
 chardet<6
+redis>=5.2.1
+dramatiq[redis]>=1.17.1

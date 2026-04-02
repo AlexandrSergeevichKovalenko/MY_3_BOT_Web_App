@@ -169,6 +169,23 @@ def get_grammar_focus_by_label(label: str | None) -> dict[str, Any] | None:
     return None
 
 
+def get_grammar_focus_by_key(key: str | None) -> dict[str, Any] | None:
+    normalized = str(key or "").strip()
+    if not normalized:
+        return None
+    for item in GRAMMAR_FOCUS_PRESETS:
+        if str(item.get("key") or "").strip() == normalized:
+            return {
+                "kind": "preset",
+                "key": str(item.get("key") or "").strip(),
+                "label": str(item.get("label") or "").strip(),
+                "prompt_topic": str(item.get("prompt_topic") or "").strip(),
+                "main_categories": [str(value).strip() for value in (item.get("main_categories") or []) if str(value).strip()],
+                "subcategories": [str(value).strip() for value in (item.get("subcategories") or []) if str(value).strip()],
+            }
+    return None
+
+
 def recommend_webapp_focus_for_error_pair(
     main_category: str | None,
     sub_category: str | None,

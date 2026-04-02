@@ -45,6 +45,9 @@ RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 \
 # 2) Копируем backend-код
 COPY backend/ /app/backend/
 
+# 2.1) Копируем operational scripts, которые вызываются scheduler-ами в runtime
+COPY scripts/ /app/scripts/
+
 # 3) Кладём собранный фронт (dist) внутрь образа
 # Важно: Flask у тебя ищет /app/frontend/dist
 COPY --from=frontend_builder /app/frontend/dist /app/frontend/dist

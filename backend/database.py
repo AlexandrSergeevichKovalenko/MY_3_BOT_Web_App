@@ -48,6 +48,7 @@ DB_POOL_ACQUIRE_TIMEOUT_MS = max(0, int(os.getenv("DB_POOL_ACQUIRE_TIMEOUT_MS", 
 DB_POOL_ACQUIRE_RETRY_MS = max(10, int(os.getenv("DB_POOL_ACQUIRE_RETRY_MS", "50")))
 DB_POOL_LOG_SLOW_ACQUIRE_MS = max(0, int(os.getenv("DB_POOL_LOG_SLOW_ACQUIRE_MS", "100")))
 DB_POOL_ALLOW_DIRECT_FALLBACK = str(os.getenv("DB_POOL_ALLOW_DIRECT_FALLBACK", "0")).strip().lower() in {"1", "true", "yes", "on"}
+BILLING_PLAN_CACHE_TTL_SEC = max(5, min(3600, int(os.getenv("BILLING_PLAN_CACHE_TTL_SEC", "300"))))
 READER_SESSION_AUTOCLOSE_MAX_SECONDS = max(
     300,
     int(os.getenv("READER_SESSION_AUTOCLOSE_MAX_SECONDS", "10800")),
@@ -58,13 +59,24 @@ _ENSURE_WEBAPP_TABLES_DONE = False
 _DB_POOL_LOCK = threading.Lock()
 _DB_POOL: ThreadedConnectionPool | None = None
 _DB_ACQUIRE_LOCAL = threading.local()
+_BILLING_PLAN_CACHE_LOCK = threading.Lock()
+_BILLING_PLAN_CACHE: dict[str, tuple[float, dict | None]] = {}
 PHASE1_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase1_schema"
 PHASE2_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase2_schema"
 SKILL_MASTERY_GROUPS_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_mastery_groups_schema"
+DICTIONARY_CANONICAL_SCHEMA_MIGRATION_KEY = "2026_04_02_dictionary_canonical_v1"
 SUPPORTED_LEARNING_LANGUAGES = {"de", "en", "es", "it"}
 SUPPORTED_NATIVE_LANGUAGES = {"ru", "en", "de"}
 DEFAULT_LEARNING_LANGUAGE = "de"
 DEFAULT_NATIVE_LANGUAGE = "ru"
+IMAGE_QUIZ_TEMPLATE_REUSE_COOLDOWN_HOURS = max(
+    1,
+    int((os.getenv("IMAGE_QUIZ_TEMPLATE_REUSE_COOLDOWN_HOURS") or "168").strip() or "168"),
+)
+IMAGE_QUIZ_RENDERING_STALE_MINUTES = max(
+    5,
+    int((os.getenv("IMAGE_QUIZ_RENDERING_STALE_MINUTES") or "45").strip() or "45"),
+)
 USER_REMOVAL_GRACE_DAYS = max(1, int(os.getenv("USER_REMOVAL_GRACE_DAYS", "30")))
 SKILL_STATE_V2_RECENT_TAU_DAYS = 10.0
 SKILL_STATE_V2_CONFIDENCE_SPREAD = 12.0
@@ -136,8 +148,157 @@ def _semantic_benchmark_sentence_hash(
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
+def _normalize_image_quiz_generation_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"pending", "blueprint_ready", "rendering", "ready", "failed"}:
+        return normalized
+    return "pending"
+
+
+def _normalize_image_quiz_visual_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"unknown", "valid", "rejected"}:
+        return normalized
+    return "unknown"
+
+
+def _normalize_image_quiz_dispatch_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"claimed", "sent", "failed"}:
+        return normalized
+    return "claimed"
+
+
+def _normalize_image_quiz_delivery_scope(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"private", "group"}:
+        return normalized
+    return "private"
+
+
+def _normalize_image_quiz_options(options: list[str] | tuple[str, ...] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in options or []:
+        value = str(raw or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _map_image_quiz_template_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    raw_options = row[11]
+    if isinstance(raw_options, str):
+        try:
+            raw_options = json.loads(raw_options)
+        except Exception:
+            raw_options = []
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]),
+        "source_dictionary_entry_id": int(row[2]) if row[2] is not None else None,
+        "canonical_entry_id": int(row[3]) if row[3] is not None else None,
+        "source_lang": str(row[4] or "").strip().lower(),
+        "target_lang": str(row[5] or "").strip().lower(),
+        "source_text": str(row[6] or ""),
+        "target_text": str(row[7] or ""),
+        "source_sentence": str(row[8] or ""),
+        "image_prompt": str(row[9] or ""),
+        "question_de": str(row[10] or ""),
+        "answer_options": [str(item) for item in (raw_options or []) if str(item or "").strip()],
+        "correct_option_index": int(row[12]) if row[12] is not None else None,
+        "explanation": str(row[13] or "") or None,
+        "provider_name": str(row[14] or "") or None,
+        "provider_meta": row[15] if isinstance(row[15], dict) else {},
+        "image_object_key": str(row[16] or "") or None,
+        "image_url": str(row[17] or "") or None,
+        "generation_status": _normalize_image_quiz_generation_status(row[18]),
+        "visual_status": _normalize_image_quiz_visual_status(row[19]),
+        "last_error": str(row[20] or "") or None,
+        "prepared_at": row[21].isoformat() if row[21] else None,
+        "last_used_at": row[22].isoformat() if row[22] else None,
+        "use_count": int(row[23] or 0),
+        "created_at": row[24].isoformat() if row[24] else None,
+        "updated_at": row[25].isoformat() if row[25] else None,
+    }
+
+
+def _map_image_quiz_dispatch_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "template_id": int(row[1]),
+        "target_user_id": int(row[2]),
+        "chat_id": int(row[3]),
+        "message_id": int(row[4]) if row[4] is not None else None,
+        "delivery_scope": _normalize_image_quiz_delivery_scope(row[5]),
+        "delivery_slot": str(row[6] or "") or None,
+        "delivery_date_local": row[7].isoformat() if row[7] else None,
+        "status": _normalize_image_quiz_dispatch_status(row[8]),
+        "created_at": row[9].isoformat() if row[9] else None,
+        "sent_at": row[10].isoformat() if row[10] else None,
+        "updated_at": row[11].isoformat() if row[11] else None,
+    }
+
+
+def _map_image_quiz_answer_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "dispatch_id": int(row[1]),
+        "user_id": int(row[2]),
+        "selected_option_index": int(row[3]),
+        "selected_text": str(row[4] or ""),
+        "is_correct": bool(row[5]),
+        "answered_at": row[6].isoformat() if row[6] else None,
+        "feedback_sent_at": row[7].isoformat() if row[7] else None,
+    }
+
+
+def _map_image_quiz_candidate_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    response_json = _coerce_json_object(row[9])
+    source_lang = _normalize_lang_code(row[7]) or "ru"
+    target_lang = _normalize_lang_code(row[8]) or "de"
+    source_text, target_text = _resolve_dictionary_source_target_texts(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        word_ru=row[3],
+        translation_de=row[4],
+        word_de=row[5],
+        translation_ru=row[6],
+        response_json=response_json,
+    )
+    return {
+        "entry_id": int(row[0]),
+        "user_id": int(row[1]),
+        "canonical_entry_id": int(row[2]) if row[2] is not None else None,
+        "word_ru": str(row[3] or "") or None,
+        "translation_de": str(row[4] or "") or None,
+        "word_de": str(row[5] or "") or None,
+        "translation_ru": str(row[6] or "") or None,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "response_json": response_json,
+        "source_text": source_text,
+        "target_text": target_text,
+        "created_at": row[10].isoformat() if row[10] else None,
+    }
+
+
 def _normalize_dictionary_origin_process(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
+    if normalized == "translations":
+        normalized = "translations_block"
+    elif normalized == "reader_selection_gpt_save":
+        normalized = "reader"
     if normalized in DICTIONARY_ORIGIN_ALLOWED:
         return normalized
     return "unknown"
@@ -293,6 +454,641 @@ def _resolve_dictionary_source_target_texts(
         target_text = str(translation_de or payload.get("translation_de") or "").strip()
 
     return source_text, target_text
+
+
+def _dedupe_webapp_dictionary_entry_after_insert(
+    conn,
+    *,
+    keep_entry_id: int,
+    user_id: int,
+    source_lang: str | None,
+    target_lang: str | None,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict | None,
+) -> int:
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    source_text, target_text = _resolve_dictionary_source_target_texts(
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+        word_ru=word_ru,
+        translation_de=translation_de,
+        word_de=word_de,
+        translation_ru=translation_ru,
+        response_json=response_json,
+    )
+    normalized_source_text = _normalize_dictionary_text_key(source_text)
+    normalized_target_text = _normalize_dictionary_text_key(target_text)
+    if not normalized_source_text or not normalized_target_text:
+        return 0
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                word_ru,
+                translation_de,
+                word_de,
+                translation_ru,
+                response_json,
+                is_learned
+            FROM bt_3_webapp_dictionary_queries
+            WHERE user_id = %s
+              AND id <> %s
+              AND COALESCE(source_lang, '') = %s
+              AND COALESCE(target_lang, '') = %s;
+            """,
+            (
+                int(user_id),
+                int(keep_entry_id),
+                normalized_source_lang,
+                normalized_target_lang,
+            ),
+        )
+        rows = cursor.fetchall() or []
+
+        duplicate_ids: list[int] = []
+        preserve_learned = False
+        for row in rows:
+            existing_source_text, existing_target_text = _resolve_dictionary_source_target_texts(
+                source_lang=normalized_source_lang,
+                target_lang=normalized_target_lang,
+                word_ru=row[1],
+                translation_de=row[2],
+                word_de=row[3],
+                translation_ru=row[4],
+                response_json=_coerce_json_object(row[5]),
+            )
+            if (
+                _normalize_dictionary_text_key(existing_source_text) == normalized_source_text
+                and _normalize_dictionary_text_key(existing_target_text) == normalized_target_text
+            ):
+                duplicate_ids.append(int(row[0]))
+                preserve_learned = preserve_learned or bool(row[6])
+
+        if preserve_learned:
+            cursor.execute(
+                """
+                UPDATE bt_3_webapp_dictionary_queries
+                SET is_learned = TRUE
+                WHERE id = %s;
+                """,
+                (int(keep_entry_id),),
+            )
+
+        if duplicate_ids:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_webapp_dictionary_queries
+                WHERE user_id = %s
+                  AND id = ANY(%s);
+                """,
+                (int(user_id), duplicate_ids),
+            )
+
+    return len(duplicate_ids)
+
+
+def _upsert_dictionary_canonical_entry_with_cursor(
+    cursor,
+    *,
+    source_lang: str | None,
+    target_lang: str | None,
+    source_text: str | None,
+    target_text: str | None,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict | None,
+) -> int:
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    resolved_source_text = str(source_text or "").strip()
+    resolved_target_text = str(target_text or "").strip()
+    normalized_source_text = _normalize_dictionary_text_key(resolved_source_text)
+    normalized_target_text = _normalize_dictionary_text_key(resolved_target_text)
+    if not normalized_source_lang or not normalized_target_lang:
+        raise ValueError("dictionary canonical entry requires language pair")
+    if not normalized_source_text or not normalized_target_text:
+        raise ValueError("dictionary canonical entry requires source and target text")
+    payload = _coerce_json_object(response_json)
+    cursor.execute(
+        """
+        INSERT INTO bt_3_dictionary_entries (
+            source_lang,
+            target_lang,
+            source_text,
+            target_text,
+            source_text_norm,
+            target_text_norm,
+            word_ru,
+            translation_de,
+            word_de,
+            translation_ru,
+            response_json,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (source_lang, target_lang, source_text_norm, target_text_norm)
+        DO UPDATE SET
+            source_text = COALESCE(NULLIF(bt_3_dictionary_entries.source_text, ''), EXCLUDED.source_text),
+            target_text = COALESCE(NULLIF(bt_3_dictionary_entries.target_text, ''), EXCLUDED.target_text),
+            word_ru = COALESCE(NULLIF(bt_3_dictionary_entries.word_ru, ''), EXCLUDED.word_ru),
+            translation_de = COALESCE(NULLIF(bt_3_dictionary_entries.translation_de, ''), EXCLUDED.translation_de),
+            word_de = COALESCE(NULLIF(bt_3_dictionary_entries.word_de, ''), EXCLUDED.word_de),
+            translation_ru = COALESCE(NULLIF(bt_3_dictionary_entries.translation_ru, ''), EXCLUDED.translation_ru),
+            response_json = COALESCE(bt_3_dictionary_entries.response_json, EXCLUDED.response_json),
+            updated_at = NOW()
+        RETURNING id;
+        """,
+        (
+            normalized_source_lang,
+            normalized_target_lang,
+            resolved_source_text,
+            resolved_target_text,
+            normalized_source_text,
+            normalized_target_text,
+            str(word_ru or "").strip() or None,
+            str(translation_de or "").strip() or None,
+            str(word_de or "").strip() or None,
+            str(translation_ru or "").strip() or None,
+            Json(payload) if payload else None,
+        ),
+    )
+    row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def _create_or_attach_user_dictionary_entry_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict,
+    folder_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    canonical_entry_id: int | None = None,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
+) -> tuple[int, bool]:
+    normalized_origin = _normalize_dictionary_origin_process(origin_process)
+    normalized_meta = _coerce_json_object(origin_meta)
+    normalized_response_json = _coerce_json_object(response_json)
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    if canonical_entry_id:
+        cursor.execute(
+            """
+            INSERT INTO bt_3_webapp_dictionary_queries (
+                user_id,
+                word_ru,
+                folder_id,
+                translation_de,
+                word_de,
+                translation_ru,
+                source_lang,
+                target_lang,
+                canonical_entry_id,
+                origin_process,
+                origin_meta,
+                response_json
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id, canonical_entry_id) WHERE canonical_entry_id IS NOT NULL
+            DO UPDATE SET
+                folder_id = COALESCE(EXCLUDED.folder_id, bt_3_webapp_dictionary_queries.folder_id),
+                origin_process = EXCLUDED.origin_process,
+                origin_meta = COALESCE(EXCLUDED.origin_meta, bt_3_webapp_dictionary_queries.origin_meta),
+                response_json = COALESCE(bt_3_webapp_dictionary_queries.response_json, EXCLUDED.response_json),
+                word_ru = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.word_ru, ''), EXCLUDED.word_ru),
+                translation_de = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.translation_de, ''), EXCLUDED.translation_de),
+                word_de = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.word_de, ''), EXCLUDED.word_de),
+                translation_ru = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.translation_ru, ''), EXCLUDED.translation_ru),
+                source_lang = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.source_lang, ''), EXCLUDED.source_lang),
+                target_lang = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.target_lang, ''), EXCLUDED.target_lang),
+                canonical_entry_id = COALESCE(bt_3_webapp_dictionary_queries.canonical_entry_id, EXCLUDED.canonical_entry_id),
+                is_learned = COALESCE(bt_3_webapp_dictionary_queries.is_learned, FALSE) OR COALESCE(EXCLUDED.is_learned, FALSE)
+            RETURNING id, (xmax = 0) AS inserted;
+            """,
+            (
+                int(user_id),
+                str(word_ru or "").strip() or None,
+                int(folder_id) if folder_id is not None else None,
+                str(translation_de or "").strip() or None,
+                str(word_de or "").strip() or None,
+                str(translation_ru or "").strip() or None,
+                normalized_source_lang,
+                normalized_target_lang,
+                int(canonical_entry_id),
+                normalized_origin,
+                Json(normalized_meta) if normalized_meta else None,
+                Json(normalized_response_json),
+            ),
+        )
+        row = cursor.fetchone()
+        return (
+            int(row[0]) if row and row[0] is not None else 0,
+            bool(row[1]) if row and len(row) > 1 else False,
+        )
+
+    cursor.execute(
+        """
+        INSERT INTO bt_3_webapp_dictionary_queries (
+            user_id,
+            word_ru,
+            folder_id,
+            translation_de,
+            word_de,
+            translation_ru,
+            source_lang,
+            target_lang,
+            canonical_entry_id,
+            origin_process,
+            origin_meta,
+            response_json
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s)
+        RETURNING id;
+        """,
+        (
+            int(user_id),
+            str(word_ru or "").strip() or None,
+            int(folder_id) if folder_id is not None else None,
+            str(translation_de or "").strip() or None,
+            str(word_de or "").strip() or None,
+            str(translation_ru or "").strip() or None,
+            normalized_source_lang,
+            normalized_target_lang,
+            normalized_origin,
+            Json(normalized_meta) if normalized_meta else None,
+            Json(normalized_response_json),
+        ),
+    )
+    row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0, True
+
+
+def _save_webapp_dictionary_query_returning_id_with_conn(
+    conn,
+    *,
+    user_id: int,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict,
+    folder_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
+) -> tuple[int, bool]:
+    normalized_response_json = _coerce_json_object(response_json)
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    source_text, target_text = _resolve_dictionary_source_target_texts(
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+        word_ru=word_ru,
+        translation_de=translation_de,
+        word_de=word_de,
+        translation_ru=translation_ru,
+        response_json=normalized_response_json,
+    )
+    with conn.cursor() as cursor:
+        canonical_entry_id = None
+        if source_text and target_text and normalized_source_lang and normalized_target_lang:
+            canonical_entry_id = _upsert_dictionary_canonical_entry_with_cursor(
+                cursor,
+                source_lang=normalized_source_lang,
+                target_lang=normalized_target_lang,
+                source_text=source_text,
+                target_text=target_text,
+                word_ru=word_ru,
+                translation_de=translation_de,
+                word_de=word_de,
+                translation_ru=translation_ru,
+                response_json=normalized_response_json,
+            )
+        return _create_or_attach_user_dictionary_entry_with_cursor(
+            cursor,
+            user_id=int(user_id),
+            word_ru=word_ru,
+            translation_de=translation_de,
+            word_de=word_de,
+            translation_ru=translation_ru,
+            response_json=normalized_response_json,
+            folder_id=folder_id,
+            source_lang=normalized_source_lang,
+            target_lang=normalized_target_lang,
+            canonical_entry_id=canonical_entry_id,
+            origin_process=origin_process,
+            origin_meta=origin_meta,
+        )
+
+
+def _run_dictionary_canonical_schema_migration(conn, *, batch_size: int = 250) -> None:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM bt_3_schema_migrations
+            WHERE migration_key = %s
+            LIMIT 1;
+            """,
+            (DICTIONARY_CANONICAL_SCHEMA_MIGRATION_KEY,),
+        )
+        if cursor.fetchone():
+            return
+
+    safe_batch_size = max(50, min(int(batch_size or 250), 1000))
+    while True:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    user_id,
+                    word_ru,
+                    translation_de,
+                    word_de,
+                    translation_ru,
+                    source_lang,
+                    target_lang,
+                    response_json
+                FROM bt_3_webapp_dictionary_queries
+                WHERE canonical_entry_id IS NULL
+                ORDER BY id ASC
+                LIMIT %s;
+                """,
+                (safe_batch_size,),
+            )
+            rows = cursor.fetchall() or []
+        if not rows:
+            break
+        processed_count = 0
+        for row in rows:
+            entry_id = int(row[0])
+            response_payload = _coerce_json_object(row[8])
+            normalized_source_lang = _normalize_lang_code(row[6])
+            normalized_target_lang = _normalize_lang_code(row[7])
+            source_text, target_text = _resolve_dictionary_source_target_texts(
+                source_lang=normalized_source_lang,
+                target_lang=normalized_target_lang,
+                word_ru=row[2],
+                translation_de=row[3],
+                word_de=row[4],
+                translation_ru=row[5],
+                response_json=response_payload,
+            )
+            if not normalized_source_lang or not normalized_target_lang or not source_text or not target_text:
+                continue
+            with conn.cursor() as cursor:
+                canonical_entry_id = _upsert_dictionary_canonical_entry_with_cursor(
+                    cursor,
+                    source_lang=normalized_source_lang,
+                    target_lang=normalized_target_lang,
+                    source_text=source_text,
+                    target_text=target_text,
+                    word_ru=row[2],
+                    translation_de=row[3],
+                    word_de=row[4],
+                    translation_ru=row[5],
+                    response_json=response_payload,
+                )
+                cursor.execute(
+                    """
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET canonical_entry_id = %s
+                    WHERE id = %s;
+                    """,
+                    (int(canonical_entry_id), entry_id),
+                )
+            processed_count += 1
+        if processed_count <= 0:
+            break
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            WITH ranked AS (
+                SELECT
+                    id,
+                    user_id,
+                    canonical_entry_id,
+                    FIRST_VALUE(id) OVER (
+                        PARTITION BY user_id, canonical_entry_id
+                        ORDER BY created_at DESC NULLS LAST, id DESC
+                    ) AS keep_id,
+                    BOOL_OR(COALESCE(is_learned, FALSE)) OVER (
+                        PARTITION BY user_id, canonical_entry_id
+                    ) AS any_learned,
+                    FIRST_VALUE(folder_id) OVER (
+                        PARTITION BY user_id, canonical_entry_id
+                        ORDER BY CASE WHEN folder_id IS NULL THEN 1 ELSE 0 END, created_at DESC NULLS LAST, id DESC
+                    ) AS preferred_folder_id
+                FROM bt_3_webapp_dictionary_queries
+                WHERE canonical_entry_id IS NOT NULL
+            ),
+            keep_rows AS (
+                SELECT DISTINCT keep_id, any_learned, preferred_folder_id
+                FROM ranked
+            )
+            UPDATE bt_3_webapp_dictionary_queries AS q
+            SET
+                is_learned = COALESCE(keep_rows.any_learned, FALSE),
+                folder_id = COALESCE(q.folder_id, keep_rows.preferred_folder_id)
+            FROM keep_rows
+            WHERE q.id = keep_rows.keep_id;
+            """
+        )
+        cursor.execute(
+            """
+            WITH ranked AS (
+                SELECT
+                    id,
+                    FIRST_VALUE(id) OVER (
+                        PARTITION BY user_id, canonical_entry_id
+                        ORDER BY created_at DESC NULLS LAST, id DESC
+                    ) AS keep_id
+                FROM bt_3_webapp_dictionary_queries
+                WHERE canonical_entry_id IS NOT NULL
+            )
+            DELETE FROM bt_3_webapp_dictionary_queries AS q
+            USING ranked
+            WHERE q.id = ranked.id
+              AND ranked.id <> ranked.keep_id;
+            """
+        )
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_webapp_dictionary_queries_user_canonical
+            ON bt_3_webapp_dictionary_queries (user_id, canonical_entry_id)
+            WHERE canonical_entry_id IS NOT NULL;
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO bt_3_schema_migrations (migration_key)
+            VALUES (%s)
+            ON CONFLICT (migration_key) DO NOTHING;
+            """,
+            (DICTIONARY_CANONICAL_SCHEMA_MIGRATION_KEY,),
+        )
+
+
+def get_translation_focus_pool_bucket_counts(
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> list[dict[str, Any]]:
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    focus_key,
+                    COALESCE(NULLIF(MAX(focus_label), ''), focus_key) AS focus_label,
+                    level,
+                    COUNT(*)::BIGINT AS ready_count
+                FROM bt_3_translation_sentence_pool
+                WHERE source_lang = %s
+                  AND target_lang = %s
+                  AND is_active = TRUE
+                GROUP BY focus_key, level
+                ORDER BY focus_key, level;
+                """,
+                (normalized_source_lang, normalized_target_lang),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "focus_key": str(row[0] or "").strip(),
+            "focus_label": str(row[1] or row[0] or "").strip(),
+            "level": str(row[2] or "").strip().lower(),
+            "ready_count": int(row[3] or 0),
+        }
+        for row in rows
+        if str(row[0] or "").strip() and str(row[2] or "").strip()
+    ]
+
+
+def upsert_translation_focus_pool_daily_snapshot(
+    *,
+    snapshot_date: date,
+    source_lang: str,
+    target_lang: str,
+    rows: list[dict[str, Any]],
+) -> int:
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    payload_rows: list[tuple[Any, ...]] = []
+    for item in list(rows or []):
+        focus_key = str((item or {}).get("focus_key") or "").strip()
+        level = str((item or {}).get("level") or "").strip().lower()
+        if not focus_key or not level:
+            continue
+        payload_rows.append(
+            (
+                snapshot_date,
+                normalized_source_lang,
+                normalized_target_lang,
+                focus_key,
+                str((item or {}).get("focus_label") or focus_key).strip(),
+                level,
+                int((item or {}).get("ready_count") or 0),
+                int((item or {}).get("low_watermark") or 0),
+                int((item or {}).get("target_ready") or 0),
+            )
+        )
+    if not payload_rows:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO bt_3_translation_focus_pool_daily_snapshots (
+                    snapshot_date,
+                    source_lang,
+                    target_lang,
+                    focus_key,
+                    focus_label,
+                    level,
+                    ready_count,
+                    low_watermark,
+                    target_ready
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (snapshot_date, source_lang, target_lang, focus_key, level) DO UPDATE
+                SET focus_label = EXCLUDED.focus_label,
+                    ready_count = EXCLUDED.ready_count,
+                    low_watermark = EXCLUDED.low_watermark,
+                    target_ready = EXCLUDED.target_ready,
+                    recorded_at = NOW();
+                """,
+                payload_rows,
+            )
+    return len(payload_rows)
+
+
+def get_translation_focus_pool_daily_snapshot(
+    *,
+    snapshot_date: date,
+    source_lang: str,
+    target_lang: str,
+) -> list[dict[str, Any]]:
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    focus_key,
+                    focus_label,
+                    level,
+                    ready_count,
+                    low_watermark,
+                    target_ready,
+                    recorded_at
+                FROM bt_3_translation_focus_pool_daily_snapshots
+                WHERE snapshot_date = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                ORDER BY focus_key, level;
+                """,
+                (
+                    snapshot_date,
+                    normalized_source_lang,
+                    normalized_target_lang,
+                ),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "focus_key": str(row[0] or "").strip(),
+            "focus_label": str(row[1] or row[0] or "").strip(),
+            "level": str(row[2] or "").strip().lower(),
+            "ready_count": int(row[3] or 0),
+            "low_watermark": int(row[4] or 0),
+            "target_ready": int(row[5] or 0),
+            "recorded_at": row[6].isoformat() if row[6] else None,
+        }
+        for row in rows
+        if str(row[0] or "").strip() and str(row[2] or "").strip()
+    ]
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1641,6 +2437,17 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_user_progress_resets_updated
                 ON bt_3_user_progress_resets (updated_at DESC);
             """)
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF to_regclass('public.bt_3_user_progress') IS NOT NULL THEN
+                        CREATE INDEX IF NOT EXISTS idx_bt_3_user_progress_user_completed_started
+                        ON bt_3_user_progress (user_id, completed, start_time DESC);
+                    END IF;
+                END $$;
+                """
+            )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_scope_state (
                     user_id BIGINT PRIMARY KEY,
@@ -1726,6 +2533,30 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_webapp_instance_leases (last_seen_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_user_api_snapshots (
+                    user_id BIGINT NOT NULL,
+                    snapshot_kind TEXT NOT NULL,
+                    snapshot_key TEXT NOT NULL,
+                    source_lang TEXT,
+                    target_lang TEXT,
+                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    fresh_until_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    stale_until_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, snapshot_kind, snapshot_key)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_user_api_snapshots_kind_fresh
+                ON bt_3_user_api_snapshots (snapshot_kind, fresh_until_at DESC, updated_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_user_api_snapshots_user_updated
+                ON bt_3_user_api_snapshots (user_id, updated_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_checks (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -1771,6 +2602,10 @@ def ensure_webapp_tables() -> None:
                     original_text_bundle TEXT,
                     user_translation_bundle TEXT,
                     last_error TEXT,
+                    dispatched_job_id TEXT,
+                    dispatched_at TIMESTAMPTZ,
+                    worker_job_id TEXT,
+                    heartbeat_at TIMESTAMPTZ,
                     started_at TIMESTAMPTZ,
                     finished_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1788,6 +2623,26 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_translation_check_sessions_status_created
                 ON bt_3_translation_check_sessions (status, created_at DESC);
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_translation_check_sessions
+                ADD COLUMN IF NOT EXISTS dispatched_job_id TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_translation_check_sessions
+                ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_translation_check_sessions
+                ADD COLUMN IF NOT EXISTS worker_job_id TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_translation_check_sessions
+                ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_check_sessions_status_heartbeat
+                ON bt_3_translation_check_sessions (status, heartbeat_at ASC NULLS FIRST, created_at ASC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_translation_check_items (
@@ -1882,6 +2737,40 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_webapp_dictionary_queries
                 ADD COLUMN IF NOT EXISTS is_learned BOOLEAN NOT NULL DEFAULT FALSE;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS canonical_entry_id BIGINT;
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_dictionary_entries (
+                    id BIGSERIAL PRIMARY KEY,
+                    source_lang TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    source_text TEXT NOT NULL,
+                    target_text TEXT NOT NULL,
+                    source_text_norm TEXT NOT NULL,
+                    target_text_norm TEXT NOT NULL,
+                    word_ru TEXT,
+                    translation_de TEXT,
+                    word_de TEXT,
+                    translation_ru TEXT,
+                    response_json JSONB,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_dictionary_entries_pair_text
+                ON bt_3_dictionary_entries (source_lang, target_lang, source_text_norm, target_text_norm);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_entries_pair_updated
+                ON bt_3_dictionary_entries (source_lang, target_lang, updated_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_canonical
+                ON bt_3_webapp_dictionary_queries (canonical_entry_id);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_folders (
@@ -2731,6 +3620,8 @@ def ensure_webapp_tables() -> None:
                     IF to_regclass('public.bt_3_daily_sentences') IS NOT NULL THEN
                         ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS source_lang TEXT;
                         ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS target_lang TEXT;
+                        ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS focus_key TEXT;
+                        ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS level TEXT;
                         ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS shown_to_user BOOLEAN;
                         ALTER TABLE bt_3_daily_sentences ADD COLUMN IF NOT EXISTS shown_to_user_at TIMESTAMPTZ;
                         UPDATE bt_3_daily_sentences
@@ -2742,10 +3633,32 @@ def ensure_webapp_tables() -> None:
                         ON bt_3_daily_sentences (user_id, date, source_lang, target_lang);
                         CREATE INDEX IF NOT EXISTS idx_bt_3_daily_sentences_user_session_shown
                         ON bt_3_daily_sentences (user_id, session_id, shown_to_user, unique_id);
+                        CREATE INDEX IF NOT EXISTS idx_bt_3_daily_sentences_user_session_lang
+                        ON bt_3_daily_sentences (user_id, session_id, source_lang, target_lang);
+                        CREATE INDEX IF NOT EXISTS idx_bt_3_daily_sentences_focus_level_date
+                        ON bt_3_daily_sentences (source_lang, target_lang, focus_key, level, date DESC);
                     END IF;
                 END $$;
                 """
             )
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_translation_bucket_daily_demand (
+                    demand_date DATE NOT NULL,
+                    source_lang TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    focus_key TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    sessions_started BIGINT NOT NULL DEFAULT 0,
+                    sentences_assigned BIGINT NOT NULL DEFAULT 0,
+                    sentences_mastered BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (demand_date, source_lang, target_lang, focus_key, level)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_bucket_daily_demand_lookup
+                ON bt_3_translation_bucket_daily_demand (source_lang, target_lang, focus_key, level, demand_date DESC);
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_quiz_history (
                     id SERIAL PRIMARY KEY,
@@ -2805,6 +3718,152 @@ def ensure_webapp_tables() -> None:
                     next_mode TEXT NOT NULL DEFAULT 'new',
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_prepared_telegram_quizzes (
+                    id BIGSERIAL PRIMARY KEY,
+                    quiz_type TEXT NOT NULL,
+                    word_ru TEXT,
+                    payload JSONB NOT NULL,
+                    source_lang TEXT NOT NULL DEFAULT 'ru',
+                    target_lang TEXT NOT NULL DEFAULT 'de',
+                    prepared_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_used_at TIMESTAMPTZ,
+                    use_count INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_prepared_tg_quizzes_lookup
+                ON bt_3_prepared_telegram_quizzes (
+                    source_lang,
+                    target_lang,
+                    quiz_type,
+                    last_used_at,
+                    prepared_at DESC
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_image_quiz_templates (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    source_dictionary_entry_id BIGINT,
+                    canonical_entry_id BIGINT,
+                    source_lang TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    source_text TEXT NOT NULL DEFAULT '',
+                    target_text TEXT NOT NULL DEFAULT '',
+                    source_sentence TEXT NOT NULL DEFAULT '',
+                    image_prompt TEXT NOT NULL DEFAULT '',
+                    question_de TEXT NOT NULL DEFAULT '',
+                    answer_options JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    correct_option_index INTEGER,
+                    explanation TEXT,
+                    provider_name TEXT,
+                    provider_meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    image_object_key TEXT,
+                    image_url TEXT,
+                    generation_status TEXT NOT NULL DEFAULT 'pending',
+                    visual_status TEXT NOT NULL DEFAULT 'unknown',
+                    last_error TEXT,
+                    prepared_at TIMESTAMPTZ,
+                    last_used_at TIMESTAMPTZ,
+                    use_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (generation_status IN ('pending', 'blueprint_ready', 'rendering', 'ready', 'failed')),
+                    CHECK (visual_status IN ('unknown', 'valid', 'rejected'))
+                );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_image_quiz_templates
+                DROP CONSTRAINT IF EXISTS bt_3_image_quiz_templates_generation_status_check;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_image_quiz_templates
+                ADD CONSTRAINT bt_3_image_quiz_templates_generation_status_check
+                CHECK (generation_status IN ('pending', 'blueprint_ready', 'rendering', 'ready', 'failed'));
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_templates_ready_lookup
+                ON bt_3_image_quiz_templates (
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    generation_status,
+                    visual_status,
+                    last_used_at,
+                    prepared_at DESC,
+                    created_at DESC
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_templates_canonical
+                ON bt_3_image_quiz_templates (canonical_entry_id, user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_templates_source_entry
+                ON bt_3_image_quiz_templates (source_dictionary_entry_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_templates_user_source_status
+                ON bt_3_image_quiz_templates (user_id, source_dictionary_entry_id, generation_status, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_image_quiz_dispatches (
+                    id BIGSERIAL PRIMARY KEY,
+                    template_id BIGINT NOT NULL,
+                    target_user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    message_id BIGINT,
+                    delivery_scope TEXT NOT NULL DEFAULT 'private',
+                    delivery_slot TEXT,
+                    delivery_date_local DATE,
+                    status TEXT NOT NULL DEFAULT 'claimed',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sent_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (delivery_scope IN ('private', 'group')),
+                    CHECK (status IN ('claimed', 'sent', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_dispatches_target_time
+                ON bt_3_image_quiz_dispatches (target_user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_dispatches_template_target
+                ON bt_3_image_quiz_dispatches (template_id, target_user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_dispatches_chat_time
+                ON bt_3_image_quiz_dispatches (chat_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_image_quiz_dispatches_user_slot
+                ON bt_3_image_quiz_dispatches (target_user_id, delivery_date_local, delivery_slot)
+                WHERE delivery_date_local IS NOT NULL
+                  AND delivery_slot IS NOT NULL;
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_image_quiz_answers (
+                    id BIGSERIAL PRIMARY KEY,
+                    dispatch_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    selected_option_index INTEGER NOT NULL,
+                    selected_text TEXT,
+                    is_correct BOOLEAN NOT NULL DEFAULT FALSE,
+                    answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    feedback_sent_at TIMESTAMPTZ,
+                    UNIQUE (dispatch_id, user_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_answers_dispatch_time
+                ON bt_3_image_quiz_answers (dispatch_id, answered_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_answers_user_time
+                ON bt_3_image_quiz_answers (user_id, answered_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_cache (
@@ -2975,6 +4034,28 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_bt_3_admin_scheduler_runs_unique
                 ON bt_3_admin_scheduler_runs (job_key, run_period, target_chat_id);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_scheduler_run_guards (
+                    id BIGSERIAL PRIMARY KEY,
+                    job_key TEXT NOT NULL,
+                    run_period TEXT NOT NULL,
+                    target_scope TEXT NOT NULL DEFAULT 'global',
+                    status TEXT NOT NULL DEFAULT 'running',
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    finished_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (status IN ('running', 'completed', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_bt_3_scheduler_run_guards_unique
+                ON bt_3_scheduler_run_guards (job_key, run_period, target_scope);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_scheduler_run_guards_status
+                ON bt_3_scheduler_run_guards (status, updated_at DESC);
             """)
             cursor.execute(
                 """
@@ -4018,6 +5099,49 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_translation_sentence_pool (source_lang, target_lang, focus_key, level, is_active, last_used_at DESC, created_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_translation_focus_pool_daily_snapshots (
+                    snapshot_date DATE NOT NULL,
+                    source_lang TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    focus_key TEXT NOT NULL,
+                    focus_label TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    ready_count BIGINT NOT NULL DEFAULT 0,
+                    low_watermark BIGINT NOT NULL DEFAULT 0,
+                    target_ready BIGINT NOT NULL DEFAULT 0,
+                    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (snapshot_date, source_lang, target_lang, focus_key, level)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_focus_pool_daily_snapshots_lookup
+                ON bt_3_translation_focus_pool_daily_snapshots (source_lang, target_lang, snapshot_date DESC, focus_key, level);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_translation_sentence_user_state (
+                    user_id BIGINT NOT NULL,
+                    source_lang TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    sentence_hash TEXT NOT NULL,
+                    sentence_text TEXT NOT NULL,
+                    seen_count BIGINT NOT NULL DEFAULT 0,
+                    best_score INT,
+                    last_score INT,
+                    mastered BOOLEAN NOT NULL DEFAULT FALSE,
+                    mastered_at TIMESTAMPTZ,
+                    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_session_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, source_lang, target_lang, sentence_hash)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_sentence_user_state_mastered
+                ON bt_3_translation_sentence_user_state (user_id, source_lang, target_lang, mastered, updated_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_tts_object_cache (
                     cache_key TEXT PRIMARY KEY,
                     status TEXT NOT NULL DEFAULT 'pending',
@@ -4200,6 +5324,7 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_detailed_mistakes (user_id, sentence_id);
             """)
             cursor.close()
+            _run_dictionary_canonical_schema_migration(conn)
         missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
         if missing_phase1_objects:
             raise RuntimeError(
@@ -6194,6 +7319,171 @@ def release_webapp_instance_lease(*, user_id: int, instance_id: str) -> bool:
             return bool(cursor.rowcount)
 
 
+def _map_user_api_snapshot_row(row) -> dict | None:
+    if not row:
+        return None
+    return {
+        "user_id": int(row[0]),
+        "snapshot_kind": str(row[1] or "").strip(),
+        "snapshot_key": str(row[2] or "").strip(),
+        "source_lang": str(row[3] or "").strip() or None,
+        "target_lang": str(row[4] or "").strip() or None,
+        "payload": row[5] if isinstance(row[5], dict) else {},
+        "meta": row[6] if isinstance(row[6], dict) else {},
+        "refreshed_at": row[7].isoformat() if row[7] else None,
+        "fresh_until_at": row[8].isoformat() if row[8] else None,
+        "stale_until_at": row[9].isoformat() if row[9] else None,
+        "updated_at": row[10].isoformat() if row[10] else None,
+    }
+
+
+def get_user_api_snapshot(
+    *,
+    user_id: int,
+    snapshot_kind: str,
+    snapshot_key: str,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    user_id,
+                    snapshot_kind,
+                    snapshot_key,
+                    source_lang,
+                    target_lang,
+                    payload,
+                    meta,
+                    refreshed_at,
+                    fresh_until_at,
+                    stale_until_at,
+                    updated_at
+                FROM bt_3_user_api_snapshots
+                WHERE user_id = %s
+                  AND snapshot_kind = %s
+                  AND snapshot_key = %s
+                LIMIT 1;
+                """,
+                (int(user_id), str(snapshot_kind or "").strip(), str(snapshot_key or "").strip()),
+            )
+            return _map_user_api_snapshot_row(cursor.fetchone())
+
+
+def upsert_user_api_snapshot(
+    *,
+    user_id: int,
+    snapshot_kind: str,
+    snapshot_key: str,
+    payload: dict,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    meta: dict | None = None,
+    fresh_ttl_seconds: int = 30,
+    stale_ttl_seconds: int = 300,
+) -> dict | None:
+    normalized_kind = str(snapshot_kind or "").strip()
+    normalized_key = str(snapshot_key or "").strip()
+    if not normalized_kind or not normalized_key:
+        raise ValueError("snapshot_kind and snapshot_key are required")
+    safe_payload = payload if isinstance(payload, dict) else {}
+    safe_meta = meta if isinstance(meta, dict) else {}
+    safe_fresh_ttl = max(1, int(fresh_ttl_seconds or 1))
+    safe_stale_ttl = max(safe_fresh_ttl, int(stale_ttl_seconds or safe_fresh_ttl))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_user_api_snapshots (
+                    user_id,
+                    snapshot_kind,
+                    snapshot_key,
+                    source_lang,
+                    target_lang,
+                    payload,
+                    meta,
+                    refreshed_at,
+                    fresh_until_at,
+                    stale_until_at,
+                    updated_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
+                    NOW(),
+                    NOW() + (%s * INTERVAL '1 second'),
+                    NOW() + (%s * INTERVAL '1 second'),
+                    NOW()
+                )
+                ON CONFLICT (user_id, snapshot_kind, snapshot_key) DO UPDATE
+                SET
+                    source_lang = EXCLUDED.source_lang,
+                    target_lang = EXCLUDED.target_lang,
+                    payload = EXCLUDED.payload,
+                    meta = EXCLUDED.meta,
+                    refreshed_at = EXCLUDED.refreshed_at,
+                    fresh_until_at = EXCLUDED.fresh_until_at,
+                    stale_until_at = EXCLUDED.stale_until_at,
+                    updated_at = NOW()
+                RETURNING
+                    user_id,
+                    snapshot_kind,
+                    snapshot_key,
+                    source_lang,
+                    target_lang,
+                    payload,
+                    meta,
+                    refreshed_at,
+                    fresh_until_at,
+                    stale_until_at,
+                    updated_at;
+                """,
+                (
+                    int(user_id),
+                    normalized_kind,
+                    normalized_key,
+                    str(source_lang or "").strip() or None,
+                    str(target_lang or "").strip() or None,
+                    json.dumps(safe_payload, ensure_ascii=False),
+                    json.dumps(safe_meta, ensure_ascii=False),
+                    safe_fresh_ttl,
+                    safe_stale_ttl,
+                ),
+            )
+            return _map_user_api_snapshot_row(cursor.fetchone())
+
+
+def mark_user_api_snapshots_stale(
+    *,
+    user_id: int,
+    snapshot_kind: str | None = None,
+    snapshot_key: str | None = None,
+) -> int:
+    conditions = ["user_id = %s"]
+    params: list[Any] = [int(user_id)]
+    normalized_kind = str(snapshot_kind or "").strip()
+    normalized_key = str(snapshot_key or "").strip()
+    if normalized_kind:
+        conditions.append("snapshot_kind = %s")
+        params.append(normalized_kind)
+    if normalized_key:
+        conditions.append("snapshot_key = %s")
+        params.append(normalized_key)
+    where_sql = " AND ".join(conditions)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE bt_3_user_api_snapshots
+                SET
+                    fresh_until_at = LEAST(fresh_until_at, NOW() - INTERVAL '1 second'),
+                    updated_at = NOW()
+                WHERE {where_sql};
+                """,
+                params,
+            )
+            return int(cursor.rowcount or 0)
+
+
 def get_webapp_scope_state(user_id: int) -> dict:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -6822,6 +8112,50 @@ def _map_translation_check_session_row(row) -> dict | None:
     }
 
 
+def _map_translation_check_session_status_row(row) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]),
+        "username": str(row[2] or "") or None,
+        "source_session_id": str(row[3] or "") or None,
+        "source_lang": str(row[4] or "") or None,
+        "target_lang": str(row[5] or "") or None,
+        "status": str(row[6] or "queued"),
+        "total_items": int(row[7] or 0),
+        "completed_items": int(row[8] or 0),
+        "failed_items": int(row[9] or 0),
+        "send_private_grammar_text": bool(row[10]),
+        "original_text_bundle": None,
+        "user_translation_bundle": None,
+        "last_error": str(row[11] or "") or None,
+        "started_at": row[12].isoformat() if row[12] else None,
+        "finished_at": row[13].isoformat() if row[13] else None,
+        "created_at": row[14].isoformat() if row[14] else None,
+        "updated_at": row[15].isoformat() if row[15] else None,
+    }
+
+
+def _map_translation_check_session_runtime_row(row) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]),
+        "status": str(row[2] or "queued"),
+        "last_error": str(row[3] or "") or None,
+        "dispatched_job_id": str(row[4] or "") or None,
+        "dispatched_at": row[5].isoformat() if row[5] else None,
+        "worker_job_id": str(row[6] or "") or None,
+        "heartbeat_at": row[7].isoformat() if row[7] else None,
+        "started_at": row[8].isoformat() if row[8] else None,
+        "finished_at": row[9].isoformat() if row[9] else None,
+        "created_at": row[10].isoformat() if row[10] else None,
+        "updated_at": row[11].isoformat() if row[11] else None,
+    }
+
+
 def _map_translation_check_item_row(row) -> dict | None:
     if not row:
         return None
@@ -6965,6 +8299,48 @@ def get_translation_check_session(*, session_id: int, user_id: int | None = None
     return _map_translation_check_session_row(row)
 
 
+def get_translation_check_session_status(*, session_id: int, user_id: int | None = None) -> dict | None:
+    where_sql = "WHERE id = %s"
+    params: list = [int(session_id)]
+    if user_id is not None:
+        where_sql += " AND user_id = %s"
+        params.append(int(user_id))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    last_error, started_at, finished_at, created_at, updated_at
+                FROM bt_3_translation_check_sessions
+                {where_sql}
+                LIMIT 1;
+                """,
+                params,
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_status_row(row)
+
+
+def get_translation_check_session_runtime(*, session_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id, user_id, status, last_error, dispatched_job_id, dispatched_at,
+                    worker_job_id, heartbeat_at, started_at, finished_at, created_at, updated_at
+                FROM bt_3_translation_check_sessions
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(session_id),),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_runtime_row(row)
+
+
 def list_translation_check_items(*, session_id: int) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -7056,6 +8432,32 @@ def get_latest_translation_check_session(
     return _map_translation_check_session_row(row)
 
 
+def get_latest_translation_check_session_status(
+    *,
+    user_id: int,
+    only_active: bool = False,
+) -> dict | None:
+    status_sql = "AND status IN ('queued', 'running')" if only_active else ""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    last_error, started_at, finished_at, created_at, updated_at
+                FROM bt_3_translation_check_sessions
+                WHERE user_id = %s
+                  {status_sql}
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_status_row(row)
+
+
 def get_latest_translation_check_session_with_items(
     *,
     user_id: int,
@@ -7134,6 +8536,149 @@ def update_translation_check_session_status(
                     bool(started),
                     bool(finished),
                     int(session_id),
+                ),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
+
+
+def mark_translation_check_session_dispatched(
+    *,
+    session_id: int,
+    dispatch_job_id: str,
+) -> dict | None:
+    normalized_dispatch_job_id = str(dispatch_job_id or "").strip() or None
+    if not normalized_dispatch_job_id:
+        raise ValueError("dispatch_job_id is required")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions
+                SET
+                    status = 'queued',
+                    dispatched_job_id = %s,
+                    dispatched_at = NOW(),
+                    worker_job_id = NULL,
+                    heartbeat_at = NULL,
+                    last_error = NULL,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status NOT IN ('done', 'failed', 'canceled')
+                RETURNING
+                    id, user_id, status, last_error, dispatched_job_id, dispatched_at,
+                    worker_job_id, heartbeat_at, started_at, finished_at, created_at, updated_at;
+                """,
+                (normalized_dispatch_job_id, int(session_id)),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_runtime_row(row)
+
+
+def claim_translation_check_session_runner(
+    *,
+    session_id: int,
+    dispatch_job_id: str,
+) -> dict | None:
+    normalized_dispatch_job_id = str(dispatch_job_id or "").strip() or None
+    if not normalized_dispatch_job_id:
+        raise ValueError("dispatch_job_id is required")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions
+                SET
+                    status = 'running',
+                    worker_job_id = %s,
+                    heartbeat_at = NOW(),
+                    started_at = COALESCE(started_at, NOW()),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status = 'queued'
+                  AND finished_at IS NULL
+                  AND COALESCE(dispatched_job_id, '') = %s
+                RETURNING
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at;
+                """,
+                (
+                    normalized_dispatch_job_id,
+                    int(session_id),
+                    normalized_dispatch_job_id,
+                ),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
+
+
+def touch_translation_check_session_heartbeat(
+    *,
+    session_id: int,
+    worker_job_id: str,
+) -> bool:
+    normalized_worker_job_id = str(worker_job_id or "").strip() or None
+    if not normalized_worker_job_id:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions
+                SET
+                    heartbeat_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status = 'running'
+                  AND finished_at IS NULL
+                  AND COALESCE(worker_job_id, '') = %s;
+                """,
+                (int(session_id), normalized_worker_job_id),
+            )
+            return cursor.rowcount > 0
+
+
+def complete_translation_check_session(
+    *,
+    session_id: int,
+    worker_job_id: str,
+    status: str,
+    last_error: str | None = None,
+) -> dict | None:
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"done", "failed", "canceled"}:
+        raise ValueError("Invalid translation check terminal status")
+    normalized_worker_job_id = str(worker_job_id or "").strip() or None
+    if not normalized_worker_job_id:
+        raise ValueError("worker_job_id is required")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions
+                SET
+                    status = %s,
+                    last_error = %s,
+                    finished_at = NOW(),
+                    heartbeat_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status = 'running'
+                  AND finished_at IS NULL
+                  AND COALESCE(worker_job_id, '') = %s
+                RETURNING
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at;
+                """,
+                (
+                    normalized_status,
+                    str(last_error or "").strip() or None,
+                    int(session_id),
+                    normalized_worker_job_id,
                 ),
             )
             row = cursor.fetchone()
@@ -7276,6 +8821,107 @@ def finalize_translation_check_item(
     }
 
 
+def finalize_translation_check_items_batch(
+    *,
+    session_id: int,
+    item_results: list[dict[str, object]],
+    worker_job_id: str | None = None,
+) -> dict | None:
+    normalized_rows: list[tuple[int, str, object | None, str | None, str | None, int | None]] = []
+    for raw in item_results or []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            item_id = int(raw.get("item_id"))
+        except Exception:
+            continue
+        status = str(raw.get("item_status") or "").strip().lower()
+        if status not in {"done", "failed"}:
+            continue
+        result_json = raw.get("result_json") if isinstance(raw.get("result_json"), dict) else None
+        result_text = str(raw.get("result_text") or "").strip() or None
+        error_text = str(raw.get("error_text") or "").strip() or None
+        webapp_check_id = raw.get("webapp_check_id")
+        try:
+            normalized_webapp_check_id = int(webapp_check_id) if webapp_check_id is not None else None
+        except Exception:
+            normalized_webapp_check_id = None
+        normalized_rows.append(
+            (
+                item_id,
+                status,
+                Json(result_json) if isinstance(result_json, dict) else None,
+                result_text,
+                error_text,
+                normalized_webapp_check_id,
+            )
+        )
+
+    if not normalized_rows:
+        return get_translation_check_session(session_id=int(session_id))
+
+    normalized_worker_job_id = str(worker_job_id or "").strip() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            execute_values(
+                cursor,
+                f"""
+                WITH incoming(item_id, status, result_json, result_text, error_text, webapp_check_id) AS (
+                    VALUES %s
+                )
+                UPDATE bt_3_translation_check_items AS items
+                SET
+                    status = incoming.status,
+                    result_json = incoming.result_json,
+                    result_text = incoming.result_text,
+                    error_text = incoming.error_text,
+                    webapp_check_id = incoming.webapp_check_id,
+                    started_at = COALESCE(items.started_at, NOW()),
+                    finished_at = NOW(),
+                    updated_at = NOW()
+                FROM incoming
+                WHERE items.id = incoming.item_id
+                  AND items.check_session_id = {int(session_id)}
+                  AND items.status NOT IN ('done', 'failed');
+                """,
+                normalized_rows,
+                template="(%s, %s, %s::jsonb, %s, %s, %s)",
+                page_size=200,
+            )
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions s
+                SET
+                    total_items = counts.total_items,
+                    completed_items = counts.completed_items,
+                    failed_items = counts.failed_items,
+                    updated_at = NOW()
+                FROM (
+                    SELECT
+                        check_session_id,
+                        COUNT(*) AS total_items,
+                        COUNT(*) FILTER (WHERE status = 'done') AS completed_items,
+                        COUNT(*) FILTER (WHERE status = 'failed') AS failed_items
+                    FROM bt_3_translation_check_items
+                    WHERE check_session_id = %s
+                    GROUP BY check_session_id
+                ) AS counts
+                WHERE s.id = counts.check_session_id
+                  AND s.status = 'running'
+                  AND s.finished_at IS NULL
+                  AND (%s IS NULL OR COALESCE(s.worker_job_id, '') = %s)
+                RETURNING
+                    s.id, s.user_id, s.username, s.source_session_id, s.source_lang, s.target_lang,
+                    s.status, s.total_items, s.completed_items, s.failed_items, s.send_private_grammar_text,
+                    s.original_text_bundle, s.user_translation_bundle, s.last_error, s.started_at,
+                    s.finished_at, s.created_at, s.updated_at;
+                """,
+                (int(session_id), normalized_worker_job_id, normalized_worker_job_id),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
+
+
 def increment_translation_check_session_counters(
     *,
     session_id: int,
@@ -7355,38 +9001,19 @@ def save_webapp_dictionary_query(
     origin_process: str | None = None,
     origin_meta: dict | None = None,
 ) -> None:
-    normalized_origin = _normalize_dictionary_origin_process(origin_process)
-    normalized_meta = _coerce_json_object(origin_meta)
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO bt_3_webapp_dictionary_queries (
-                    user_id,
-                    word_ru,
-                    folder_id,
-                    translation_de,
-                    word_de,
-                    translation_ru,
-                    source_lang,
-                    target_lang,
-                    origin_process,
-                    origin_meta,
-                    response_json
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """, (
-                user_id,
-                word_ru,
-                folder_id,
-                translation_de,
-                word_de,
-                translation_ru,
-                source_lang,
-                target_lang,
-                normalized_origin,
-                json.dumps(normalized_meta, ensure_ascii=False) if normalized_meta else None,
-                json.dumps(response_json, ensure_ascii=False),
-            ))
+    save_webapp_dictionary_query_returning_id(
+        user_id=user_id,
+        word_ru=word_ru,
+        translation_de=translation_de,
+        word_de=word_de,
+        translation_ru=translation_ru,
+        response_json=response_json,
+        folder_id=folder_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        origin_process=origin_process,
+        origin_meta=origin_meta,
+    )
 
 
 def save_webapp_dictionary_query_returning_id(
@@ -7402,44 +9029,22 @@ def save_webapp_dictionary_query_returning_id(
     origin_process: str | None = None,
     origin_meta: dict | None = None,
 ) -> int:
-    normalized_origin = _normalize_dictionary_origin_process(origin_process)
-    normalized_meta = _coerce_json_object(origin_meta)
     with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO bt_3_webapp_dictionary_queries (
-                    user_id,
-                    word_ru,
-                    folder_id,
-                    translation_de,
-                    word_de,
-                    translation_ru,
-                    source_lang,
-                    target_lang,
-                    origin_process,
-                    origin_meta,
-                    response_json
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id;
-                """,
-                (
-                    user_id,
-                    word_ru,
-                    folder_id,
-                    translation_de,
-                    word_de,
-                    translation_ru,
-                    source_lang,
-                    target_lang,
-                    normalized_origin,
-                    json.dumps(normalized_meta, ensure_ascii=False) if normalized_meta else None,
-                    json.dumps(response_json, ensure_ascii=False),
-                ),
-            )
-            row = cursor.fetchone()
-            return int(row[0]) if row and row[0] is not None else 0
+        inserted_id, _inserted = _save_webapp_dictionary_query_returning_id_with_conn(
+            conn,
+            user_id=int(user_id),
+            word_ru=word_ru,
+            translation_de=translation_de,
+            word_de=word_de,
+            translation_ru=translation_ru,
+            response_json=response_json,
+            folder_id=folder_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            origin_process=origin_process,
+            origin_meta=origin_meta,
+        )
+    return inserted_id if inserted_id > 0 else 0
 
 
 def get_webapp_dictionary_entries(
@@ -7975,8 +9580,8 @@ def import_starter_dictionary_snapshot(
                 )
 
             skipped_existing_count = 0
+            inserted_count = 0
             import_started_at = datetime.now(timezone.utc)
-            rows_to_insert: list[tuple[Any, ...]] = []
             for item in candidates:
                 if item["key"] in existing_keys:
                     skipped_existing_count += 1
@@ -7989,45 +9594,25 @@ def import_starter_dictionary_snapshot(
                     "source_lang": pair_source,
                     "target_lang": pair_target,
                 }
-                rows_to_insert.append(
-                    (
-                        target_user,
-                        item["word_ru"],
-                        folder_id,
-                        item["translation_de"],
-                        item["word_de"],
-                        item["translation_ru"],
-                        pair_source,
-                        pair_target,
-                        "import",
-                        Json(origin_meta),
-                        Json(item["response_json"]),
-                    )
+                _entry_id, inserted = _save_webapp_dictionary_query_returning_id_with_conn(
+                    conn,
+                    user_id=int(target_user),
+                    word_ru=item["word_ru"],
+                    translation_de=item["translation_de"],
+                    word_de=item["word_de"],
+                    translation_ru=item["translation_ru"],
+                    response_json=item["response_json"],
+                    folder_id=int(folder_id) if folder_id is not None else None,
+                    source_lang=pair_source,
+                    target_lang=pair_target,
+                    origin_process="import",
+                    origin_meta=origin_meta,
                 )
+                if inserted:
+                    inserted_count += 1
+                else:
+                    skipped_existing_count += 1
                 existing_keys.add(item["key"])
-            if rows_to_insert:
-                execute_values(
-                    cursor,
-                    """
-                    INSERT INTO bt_3_webapp_dictionary_queries (
-                        user_id,
-                        word_ru,
-                        folder_id,
-                        translation_de,
-                        word_de,
-                        translation_ru,
-                        source_lang,
-                        target_lang,
-                        origin_process,
-                        origin_meta,
-                        response_json
-                    )
-                    VALUES %s;
-                    """,
-                    rows_to_insert,
-                    page_size=250,
-                )
-            inserted_count = len(rows_to_insert)
 
     return {
         "source_user_id": source_user,
@@ -8248,7 +9833,10 @@ def get_random_dictionary_entry_for_quiz_type(
 
     where_by_type = {
         "word_order": f"{usage_examples_count_expr} > 0",
-        "prefix": f"({prefixes_count_expr} > 0 OR {base_word_expr} IS NOT NULL)",
+        # Prefix quizzes rely on explicit prefix metadata. Falling back to any
+        # non-empty German field lets full phrases/sentences leak into the
+        # prefix generator, which then produces malformed glued pseudo-verbs.
+        "prefix": f"{prefixes_count_expr} > 0",
         "anagram": f"{letters_only_len_expr} >= 4",
         "word": "COALESCE(NULLIF(translation_de, ''), NULLIF(response_json->>'translation_de', '')) IS NOT NULL",
     }
@@ -11077,6 +12665,82 @@ def mark_admin_scheduler_run(
                     str(run_period or "").strip()[:32],
                     int(target_chat_id),
                     Json(payload),
+                ),
+            )
+
+
+def claim_scheduler_run_guard(
+    *,
+    job_key: str,
+    run_period: str,
+    target_scope: str = "global",
+    metadata: dict | None = None,
+) -> bool:
+    payload = metadata if isinstance(metadata, dict) else {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_scheduler_run_guards (
+                    job_key,
+                    run_period,
+                    target_scope,
+                    status,
+                    metadata,
+                    claimed_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, 'running', %s::jsonb, NOW(), NOW())
+                ON CONFLICT (job_key, run_period, target_scope) DO NOTHING
+                RETURNING id;
+                """,
+                (
+                    str(job_key or "").strip()[:80],
+                    str(run_period or "").strip()[:32],
+                    str(target_scope or "global").strip()[:80] or "global",
+                    Json(payload),
+                ),
+            )
+            row = cursor.fetchone()
+    return bool(row)
+
+
+def finish_scheduler_run_guard(
+    *,
+    job_key: str,
+    run_period: str,
+    target_scope: str = "global",
+    status: str = "completed",
+    metadata: dict | None = None,
+) -> None:
+    normalized_status = str(status or "completed").strip().lower()
+    if normalized_status not in {"completed", "failed", "running"}:
+        normalized_status = "completed"
+    payload = metadata if isinstance(metadata, dict) else {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_scheduler_run_guards
+                SET
+                    status = %s,
+                    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                    finished_at = CASE
+                        WHEN %s = 'running' THEN finished_at
+                        ELSE NOW()
+                    END,
+                    updated_at = NOW()
+                WHERE job_key = %s
+                  AND run_period = %s
+                  AND target_scope = %s;
+                """,
+                (
+                    normalized_status,
+                    Json(payload),
+                    normalized_status,
+                    str(job_key or "").strip()[:80],
+                    str(run_period or "").strip()[:32],
+                    str(target_scope or "global").strip()[:80] or "global",
                 ),
             )
 
@@ -16289,6 +17953,13 @@ def get_billing_plan(plan_code: str) -> dict | None:
     code = str(plan_code or "").strip().lower()
     if not code:
         return None
+    now_ts = time.time()
+    with _BILLING_PLAN_CACHE_LOCK:
+        cached = _BILLING_PLAN_CACHE.get(code)
+        if cached is not None:
+            cached_at_ts, cached_value = cached
+            if now_ts - cached_at_ts <= float(BILLING_PLAN_CACHE_TTL_SEC):
+                return dict(cached_value) if isinstance(cached_value, dict) else None
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -16310,9 +17981,7 @@ def get_billing_plan(plan_code: str) -> dict | None:
                 (code,),
             )
             row = cursor.fetchone()
-    if not row:
-        return None
-    return {
+    plan = {
         "plan_code": str(row[0] or ""),
         "name": str(row[1] or ""),
         "is_paid": bool(row[2]),
@@ -16322,7 +17991,14 @@ def get_billing_plan(plan_code: str) -> dict | None:
         "is_active": bool(row[6]),
         "created_at": row[7].isoformat() if row[7] else None,
         "updated_at": row[8].isoformat() if row[8] else None,
-    }
+    } if row else None
+    with _BILLING_PLAN_CACHE_LOCK:
+        _BILLING_PLAN_CACHE[code] = (now_ts, dict(plan) if isinstance(plan, dict) else None)
+        if len(_BILLING_PLAN_CACHE) > 64:
+            stale_keys = sorted(_BILLING_PLAN_CACHE.items(), key=lambda item: item[1][0])[:16]
+            for stale_key, _value in stale_keys:
+                _BILLING_PLAN_CACHE.pop(stale_key, None)
+    return dict(plan) if isinstance(plan, dict) else None
 
 
 def _subscription_row_to_dict(row) -> dict:
@@ -16793,6 +18469,43 @@ def get_today_cost_eur(user_id: int, tz: str = TRIAL_POLICY_TZ) -> float:
     return float(total_eur)
 
 
+def get_today_cost_eur_fast(
+    user_id: int,
+    tz: str = TRIAL_POLICY_TZ,
+    *,
+    max_age_sec: int = 90,
+) -> float:
+    user_id_value = int(user_id)
+    tz_name = str(tz or TRIAL_POLICY_TZ).strip() or TRIAL_POLICY_TZ
+    tzinfo = _resolve_timezone(tz_name)
+    day_local = datetime.now(timezone.utc).astimezone(tzinfo).date()
+    max_age_value = max(0, int(max_age_sec or 0))
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT total_cost_eur, updated_at
+                FROM daily_cost_rollup
+                WHERE user_id = %s
+                  AND day = %s
+                LIMIT 1;
+                """,
+                (user_id_value, day_local),
+            )
+            row = cursor.fetchone()
+
+    if row:
+        total_cost_eur = float(row[0] or 0.0)
+        updated_at = _to_aware_datetime(row[1]) if row[1] else None
+        if updated_at is not None:
+            age_sec = max(0.0, (datetime.now(timezone.utc) - updated_at).total_seconds())
+            if age_sec <= float(max_age_value):
+                return total_cost_eur
+
+    return get_today_cost_eur(user_id_value, tz=tz_name)
+
+
 def _next_local_midnight_iso(now_ts_utc: datetime | None = None, tz: str = TRIAL_POLICY_TZ) -> str:
     tzinfo = _resolve_timezone(tz)
     now_utc = _to_aware_datetime(now_ts_utc)
@@ -16818,10 +18531,11 @@ def resolve_entitlement(
     user_id: int,
     now_ts_utc: datetime | None = None,
     tz: str = TRIAL_POLICY_TZ,
+    subscription: dict | None = None,
 ) -> dict:
     now_utc = _to_aware_datetime(now_ts_utc)
-    subscription = get_user_subscription(int(user_id))
-    if not subscription:
+    subscription_row = dict(subscription) if isinstance(subscription, dict) else get_user_subscription(int(user_id))
+    if not subscription_row:
         subscription = {
             "user_id": int(user_id),
             "plan_code": "free",
@@ -16833,6 +18547,8 @@ def resolve_entitlement(
             "created_at": None,
             "updated_at": None,
         }
+    else:
+        subscription = subscription_row
 
     plan_code = str(subscription.get("plan_code") or "free").strip().lower() or "free"
     status = _normalize_subscription_status(subscription.get("status"))
@@ -17650,6 +19366,1161 @@ def delete_active_quiz(poll_id: str) -> bool:
             return cursor.rowcount > 0
 
 
+def store_prepared_telegram_quiz(
+    quiz_type: str,
+    payload: dict,
+    *,
+    word_ru: str | None = None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> int:
+    normalized_type = str(quiz_type or "").strip().lower() or "generated"
+    payload_value = payload if isinstance(payload, dict) else {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_prepared_telegram_quizzes (
+                    quiz_type,
+                    word_ru,
+                    payload,
+                    source_lang,
+                    target_lang,
+                    prepared_at,
+                    last_used_at,
+                    use_count
+                )
+                VALUES (%s, %s, %s, %s, %s, NOW(), NULL, 0)
+                RETURNING id;
+                """,
+                (
+                    normalized_type,
+                    (word_ru or None),
+                    Json(payload_value),
+                    str(source_lang or "ru").strip().lower() or "ru",
+                    str(target_lang or "de").strip().lower() or "de",
+                ),
+            )
+            row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def count_prepared_telegram_quizzes(
+    quiz_type: str | None = None,
+    *,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> int:
+    normalized_type = str(quiz_type or "").strip().lower()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if normalized_type:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bt_3_prepared_telegram_quizzes
+                    WHERE source_lang = %s
+                      AND target_lang = %s
+                      AND quiz_type = %s;
+                    """,
+                    (
+                        str(source_lang or "ru").strip().lower() or "ru",
+                        str(target_lang or "de").strip().lower() or "de",
+                        normalized_type,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bt_3_prepared_telegram_quizzes
+                    WHERE source_lang = %s
+                      AND target_lang = %s;
+                    """,
+                    (
+                        str(source_lang or "ru").strip().lower() or "ru",
+                        str(target_lang or "de").strip().lower() or "de",
+                    ),
+                )
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def claim_prepared_telegram_quiz(
+    preferred_quiz_types: list[str] | tuple[str, ...] | None = None,
+    *,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> dict | None:
+    preferred = [
+        str(item or "").strip().lower()
+        for item in (preferred_quiz_types or [])
+        if str(item or "").strip()
+    ]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH selected AS (
+                    SELECT id
+                    FROM bt_3_prepared_telegram_quizzes
+                    WHERE source_lang = %s
+                      AND target_lang = %s
+                    ORDER BY
+                        COALESCE(array_position(%s::text[], quiz_type), 2147483647),
+                        COALESCE(last_used_at, to_timestamp(0)) ASC,
+                        prepared_at ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE bt_3_prepared_telegram_quizzes q
+                SET
+                    last_used_at = NOW(),
+                    use_count = q.use_count + 1
+                FROM selected
+                WHERE q.id = selected.id
+                RETURNING q.id, q.quiz_type, q.word_ru, q.payload, q.source_lang, q.target_lang, q.prepared_at, q.last_used_at, q.use_count;
+                """,
+                (
+                    str(source_lang or "ru").strip().lower() or "ru",
+                    str(target_lang or "de").strip().lower() or "de",
+                    preferred,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    payload = row[3]
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    return {
+        "id": int(row[0]),
+        "quiz_type": str(row[1] or ""),
+        "word_ru": row[2] or None,
+        "payload": payload if isinstance(payload, dict) else {},
+        "source_lang": str(row[4] or "ru"),
+        "target_lang": str(row[5] or "de"),
+        "prepared_at": row[6].isoformat() if row[6] else None,
+        "last_used_at": row[7].isoformat() if row[7] else None,
+        "use_count": int(row[8] or 0),
+    }
+
+
+def create_image_quiz_template(
+    *,
+    user_id: int,
+    source_dictionary_entry_id: int | None = None,
+    canonical_entry_id: int | None = None,
+    source_lang: str,
+    target_lang: str,
+    source_text: str | None = None,
+    target_text: str | None = None,
+    source_sentence: str | None = None,
+    image_prompt: str | None = None,
+    question_de: str | None = None,
+    answer_options: list[str] | tuple[str, ...] | None = None,
+    correct_option_index: int | None = None,
+    explanation: str | None = None,
+    provider_name: str | None = None,
+    provider_meta: dict | None = None,
+    image_object_key: str | None = None,
+    image_url: str | None = None,
+    generation_status: str = "pending",
+    visual_status: str = "unknown",
+    last_error: str | None = None,
+    prepared_at: datetime | None = None,
+) -> int:
+    safe_options = _normalize_image_quiz_options(answer_options)
+    safe_correct_index = int(correct_option_index) if correct_option_index is not None else None
+    if safe_correct_index is not None and (safe_correct_index < 0 or safe_correct_index >= len(safe_options)):
+        raise ValueError("correct_option_index is out of range for answer_options")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_image_quiz_templates (
+                    user_id,
+                    source_dictionary_entry_id,
+                    canonical_entry_id,
+                    source_lang,
+                    target_lang,
+                    source_text,
+                    target_text,
+                    source_sentence,
+                    image_prompt,
+                    question_de,
+                    answer_options,
+                    correct_option_index,
+                    explanation,
+                    provider_name,
+                    provider_meta,
+                    image_object_key,
+                    image_url,
+                    generation_status,
+                    visual_status,
+                    last_error,
+                    prepared_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, NOW(), NOW()
+                )
+                RETURNING id;
+                """,
+                (
+                    int(user_id),
+                    int(source_dictionary_entry_id) if source_dictionary_entry_id is not None else None,
+                    int(canonical_entry_id) if canonical_entry_id is not None else None,
+                    str(source_lang or "").strip().lower(),
+                    str(target_lang or "").strip().lower(),
+                    str(source_text or "").strip(),
+                    str(target_text or "").strip(),
+                    str(source_sentence or "").strip(),
+                    str(image_prompt or "").strip(),
+                    str(question_de or "").strip(),
+                    json.dumps(safe_options, ensure_ascii=False),
+                    safe_correct_index,
+                    str(explanation or "").strip() or None,
+                    str(provider_name or "").strip() or None,
+                    Json(provider_meta if isinstance(provider_meta, dict) else {}),
+                    str(image_object_key or "").strip() or None,
+                    str(image_url or "").strip() or None,
+                    _normalize_image_quiz_generation_status(generation_status),
+                    _normalize_image_quiz_visual_status(visual_status),
+                    str(last_error or "").strip() or None,
+                    prepared_at,
+                ),
+            )
+            row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def get_image_quiz_template(template_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    user_id,
+                    source_dictionary_entry_id,
+                    canonical_entry_id,
+                    source_lang,
+                    target_lang,
+                    source_text,
+                    target_text,
+                    source_sentence,
+                    image_prompt,
+                    question_de,
+                    answer_options,
+                    correct_option_index,
+                    explanation,
+                    provider_name,
+                    provider_meta,
+                    image_object_key,
+                    image_url,
+                    generation_status,
+                    visual_status,
+                    last_error,
+                    prepared_at,
+                    last_used_at,
+                    use_count,
+                    created_at,
+                    updated_at
+                FROM bt_3_image_quiz_templates
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(template_id),),
+            )
+            return _map_image_quiz_template_row(cursor.fetchone())
+
+
+def update_image_quiz_template_status(
+    template_id: int,
+    *,
+    generation_status: str | None = None,
+    visual_status: str | None = None,
+    source_sentence: str | None = None,
+    image_object_key: str | None = None,
+    image_url: str | None = None,
+    provider_name: str | None = None,
+    provider_meta: dict | None = None,
+    image_prompt: str | None = None,
+    question_de: str | None = None,
+    answer_options: list[str] | tuple[str, ...] | None = None,
+    correct_option_index: int | None = None,
+    explanation: str | None = None,
+    last_error: str | None = None,
+    prepared_at: datetime | None = None,
+) -> dict | None:
+    safe_generation_status = (
+        _normalize_image_quiz_generation_status(generation_status)
+        if generation_status is not None
+        else None
+    )
+    safe_visual_status = (
+        _normalize_image_quiz_visual_status(visual_status)
+        if visual_status is not None
+        else None
+    )
+    safe_options = _normalize_image_quiz_options(answer_options) if answer_options is not None else None
+    safe_correct_index = int(correct_option_index) if correct_option_index is not None else None
+    if safe_options is not None and safe_correct_index is not None and (
+        safe_correct_index < 0 or safe_correct_index >= len(safe_options)
+    ):
+        raise ValueError("correct_option_index is out of range for answer_options")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_image_quiz_templates
+                SET
+                    generation_status = COALESCE(%s, generation_status),
+                    visual_status = COALESCE(%s, visual_status),
+                    source_sentence = COALESCE(%s, source_sentence),
+                    image_object_key = COALESCE(%s, image_object_key),
+                    image_url = COALESCE(%s, image_url),
+                    provider_name = COALESCE(%s, provider_name),
+                    provider_meta = CASE
+                        WHEN %s IS NULL THEN provider_meta
+                        ELSE COALESCE(provider_meta, '{}'::jsonb) || %s::jsonb
+                    END,
+                    image_prompt = COALESCE(%s, image_prompt),
+                    question_de = COALESCE(%s, question_de),
+                    answer_options = CASE
+                        WHEN %s IS NULL THEN answer_options
+                        ELSE %s::jsonb
+                    END,
+                    correct_option_index = COALESCE(%s, correct_option_index),
+                    explanation = COALESCE(%s, explanation),
+                    last_error = CASE
+                        WHEN %s IS NULL THEN last_error
+                        ELSE %s
+                    END,
+                    prepared_at = CASE
+                        WHEN %s IS NOT NULL THEN %s
+                        WHEN COALESCE(%s, generation_status) = 'ready' AND prepared_at IS NULL THEN NOW()
+                        ELSE prepared_at
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING
+                    id,
+                    user_id,
+                    source_dictionary_entry_id,
+                    canonical_entry_id,
+                    source_lang,
+                    target_lang,
+                    source_text,
+                    target_text,
+                    source_sentence,
+                    image_prompt,
+                    question_de,
+                    answer_options,
+                    correct_option_index,
+                    explanation,
+                    provider_name,
+                    provider_meta,
+                    image_object_key,
+                    image_url,
+                    generation_status,
+                    visual_status,
+                    last_error,
+                    prepared_at,
+                    last_used_at,
+                    use_count,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    safe_generation_status,
+                    safe_visual_status,
+                    str(source_sentence or "").strip() or None,
+                    str(image_object_key or "").strip() or None,
+                    str(image_url or "").strip() or None,
+                    str(provider_name or "").strip() or None,
+                    Json(provider_meta) if isinstance(provider_meta, dict) else None,
+                    Json(provider_meta) if isinstance(provider_meta, dict) else None,
+                    str(image_prompt or "").strip() or None,
+                    str(question_de or "").strip() or None,
+                    json.dumps(safe_options, ensure_ascii=False) if safe_options is not None else None,
+                    json.dumps(safe_options, ensure_ascii=False) if safe_options is not None else None,
+                    safe_correct_index,
+                    str(explanation or "").strip() or None,
+                    str(last_error or "").strip() if last_error is not None else None,
+                    str(last_error or "").strip() if last_error is not None else None,
+                    prepared_at,
+                    prepared_at,
+                    safe_generation_status,
+                    int(template_id),
+                ),
+            )
+            return _map_image_quiz_template_row(cursor.fetchone())
+
+
+def mark_image_quiz_template_ready(
+    template_id: int,
+    *,
+    source_sentence: str | None = None,
+    image_object_key: str,
+    image_url: str,
+    provider_name: str | None = None,
+    provider_meta: dict | None = None,
+    image_prompt: str | None = None,
+    question_de: str | None = None,
+    answer_options: list[str] | tuple[str, ...] | None = None,
+    correct_option_index: int | None = None,
+    explanation: str | None = None,
+) -> dict | None:
+    return update_image_quiz_template_status(
+        int(template_id),
+        generation_status="ready",
+        visual_status="valid",
+        source_sentence=source_sentence,
+        image_object_key=image_object_key,
+        image_url=image_url,
+        provider_name=provider_name,
+        provider_meta=provider_meta,
+        image_prompt=image_prompt,
+        question_de=question_de,
+        answer_options=answer_options,
+        correct_option_index=correct_option_index,
+        explanation=explanation,
+        last_error="",
+    )
+
+
+def mark_image_quiz_template_failed(
+    template_id: int,
+    *,
+    last_error: str | None = None,
+    visual_status: str | None = None,
+    provider_name: str | None = None,
+    provider_meta: dict | None = None,
+) -> dict | None:
+    return update_image_quiz_template_status(
+        int(template_id),
+        generation_status="failed",
+        visual_status=visual_status,
+        provider_name=provider_name,
+        provider_meta=provider_meta,
+        last_error=last_error,
+    )
+
+
+def mark_image_quiz_template_visual_status(
+    template_id: int,
+    *,
+    visual_status: str,
+    provider_name: str | None = None,
+    provider_meta: dict | None = None,
+    last_error: str | None = None,
+) -> dict | None:
+    return update_image_quiz_template_status(
+        int(template_id),
+        visual_status=visual_status,
+        provider_name=provider_name,
+        provider_meta=provider_meta,
+        last_error=last_error,
+    )
+
+
+def store_image_quiz_template_blueprint(
+    template_id: int,
+    *,
+    source_sentence: str,
+    image_prompt: str,
+    question_de: str,
+    answer_options: list[str] | tuple[str, ...],
+    correct_option_index: int,
+    explanation: str | None = None,
+    provider_name: str | None = None,
+    provider_meta: dict | None = None,
+) -> dict | None:
+    return update_image_quiz_template_status(
+        int(template_id),
+        generation_status="blueprint_ready",
+        source_sentence=source_sentence,
+        image_prompt=image_prompt,
+        question_de=question_de,
+        answer_options=answer_options,
+        correct_option_index=correct_option_index,
+        explanation=explanation,
+        provider_name=provider_name,
+        provider_meta=provider_meta,
+        last_error="",
+    )
+
+
+def claim_image_quiz_template_candidate(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    normalized_source_lang = str(source_lang or "").strip().lower() or "ru"
+    normalized_target_lang = str(target_lang or "").strip().lower() or "de"
+    usage_examples_count_expr = (
+        "CASE WHEN jsonb_typeof(q.response_json->'usage_examples') = 'array' "
+        "THEN jsonb_array_length(q.response_json->'usage_examples') ELSE 0 END"
+    )
+    sentence_like_expr = (
+        "CASE WHEN "
+        "COALESCE(NULLIF(q.response_json->>'source_text', ''), NULLIF(q.word_ru, ''), NULLIF(q.word_de, ''), '') ~ '[.!?]' "
+        "OR COALESCE(NULLIF(q.response_json->>'target_text', ''), NULLIF(q.translation_de, ''), NULLIF(q.translation_ru, ''), '') ~ '[.!?]' "
+        "THEN 1 ELSE 0 END"
+    )
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    q.id,
+                    q.user_id,
+                    q.canonical_entry_id,
+                    q.word_ru,
+                    q.translation_de,
+                    q.word_de,
+                    q.translation_ru,
+                    q.source_lang,
+                    q.target_lang,
+                    q.response_json,
+                    q.created_at
+                FROM bt_3_webapp_dictionary_queries q
+                WHERE q.user_id = %s
+                  AND COALESCE(
+                        NULLIF(q.source_lang, ''),
+                        NULLIF(q.response_json->>'source_lang', ''),
+                        NULLIF(q.response_json#>>'{{language_pair,source_lang}}', ''),
+                        'ru'
+                  ) = %s
+                  AND COALESCE(
+                        NULLIF(q.target_lang, ''),
+                        NULLIF(q.response_json->>'target_lang', ''),
+                        NULLIF(q.response_json#>>'{{language_pair,target_lang}}', ''),
+                        'de'
+                  ) = %s
+                  AND q.response_json IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM bt_3_image_quiz_templates t
+                      WHERE t.user_id = q.user_id
+                        AND t.source_dictionary_entry_id = q.id
+                  )
+                ORDER BY
+                    CASE
+                        WHEN {usage_examples_count_expr} > 0 THEN 0
+                        WHEN {sentence_like_expr} = 1 THEN 1
+                        ELSE 2
+                    END,
+                    q.created_at DESC,
+                    q.id DESC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED;
+                """,
+                (
+                    int(user_id),
+                    normalized_source_lang,
+                    normalized_target_lang,
+                ),
+            )
+            candidate_row = cursor.fetchone()
+            candidate = _map_image_quiz_candidate_row(candidate_row)
+            if candidate is None:
+                return None
+            cursor.execute(
+                """
+                INSERT INTO bt_3_image_quiz_templates (
+                    user_id,
+                    source_dictionary_entry_id,
+                    canonical_entry_id,
+                    source_lang,
+                    target_lang,
+                    source_text,
+                    target_text,
+                    generation_status,
+                    visual_status,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', 'unknown', NOW(), NOW())
+                RETURNING
+                    id,
+                    user_id,
+                    source_dictionary_entry_id,
+                    canonical_entry_id,
+                    source_lang,
+                    target_lang,
+                    source_text,
+                    target_text,
+                    source_sentence,
+                    image_prompt,
+                    question_de,
+                    answer_options,
+                    correct_option_index,
+                    explanation,
+                    provider_name,
+                    provider_meta,
+                    image_object_key,
+                    image_url,
+                    generation_status,
+                    visual_status,
+                    last_error,
+                    prepared_at,
+                    last_used_at,
+                    use_count,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    int(user_id),
+                    int(candidate["entry_id"]),
+                    int(candidate["canonical_entry_id"]) if candidate.get("canonical_entry_id") is not None else None,
+                    normalized_source_lang,
+                    normalized_target_lang,
+                    str(candidate.get("source_text") or "").strip(),
+                    str(candidate.get("target_text") or "").strip(),
+                ),
+            )
+            template = _map_image_quiz_template_row(cursor.fetchone())
+            if template is None:
+                return None
+            return {
+                "template": template,
+                "candidate": candidate,
+            }
+
+
+def claim_next_ready_template(
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    t.id,
+                    t.user_id,
+                    t.source_dictionary_entry_id,
+                    t.canonical_entry_id,
+                    t.source_lang,
+                    t.target_lang,
+                    t.source_text,
+                    t.target_text,
+                    t.source_sentence,
+                    t.image_prompt,
+                    t.question_de,
+                    t.answer_options,
+                    t.correct_option_index,
+                    t.explanation,
+                    t.provider_name,
+                    t.provider_meta,
+                    t.image_object_key,
+                    t.image_url,
+                    t.generation_status,
+                    t.visual_status,
+                    t.last_error,
+                    t.prepared_at,
+                    t.last_used_at,
+                    t.use_count,
+                    t.created_at,
+                    t.updated_at
+                FROM bt_3_image_quiz_templates t
+                WHERE t.user_id = %s
+                  AND t.source_lang = %s
+                  AND t.target_lang = %s
+                  AND t.generation_status = 'ready'
+                  AND t.visual_status = 'valid'
+                  AND (t.last_used_at IS NULL OR t.last_used_at <= NOW() - (%s || ' hours')::interval)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM bt_3_image_quiz_dispatches d
+                      WHERE d.template_id = t.id
+                        AND d.target_user_id = %s
+                  )
+                ORDER BY
+                    COALESCE(t.last_used_at, to_timestamp(0)) ASC,
+                    COALESCE(t.prepared_at, t.created_at) ASC,
+                    t.id ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED;
+                """,
+                (
+                    int(user_id),
+                    str(source_lang or "").strip().lower(),
+                    str(target_lang or "").strip().lower(),
+                    str(max(1, int(IMAGE_QUIZ_TEMPLATE_REUSE_COOLDOWN_HOURS or 1))),
+                    int(user_id),
+                ),
+            )
+            return _map_image_quiz_template_row(cursor.fetchone())
+
+
+def claim_next_ready_image_quiz_template(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    return claim_next_ready_template(
+        int(user_id),
+        str(source_lang or "").strip().lower() or "ru",
+        str(target_lang or "").strip().lower() or "de",
+    )
+
+
+def claim_next_blueprint_ready_template(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    provider_name: str | None = None,
+    provider_meta: dict | None = None,
+) -> dict | None:
+    normalized_provider_name = str(provider_name or "").strip() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH selected AS (
+                    SELECT t.id
+                    FROM bt_3_image_quiz_templates t
+                    WHERE t.user_id = %s
+                      AND t.source_lang = %s
+                      AND t.target_lang = %s
+                      AND t.generation_status = 'blueprint_ready'
+                      AND t.visual_status = 'valid'
+                      AND COALESCE(NULLIF(t.image_prompt, ''), '') <> ''
+                    ORDER BY
+                        COALESCE(t.prepared_at, t.created_at) ASC,
+                        t.id ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE bt_3_image_quiz_templates t
+                SET
+                    generation_status = 'rendering',
+                    provider_name = COALESCE(%s, t.provider_name),
+                    provider_meta = CASE
+                        WHEN %s IS NULL THEN t.provider_meta
+                        ELSE COALESCE(t.provider_meta, '{}'::jsonb) || %s::jsonb
+                    END,
+                    last_error = NULL,
+                    updated_at = NOW()
+                FROM selected
+                WHERE t.id = selected.id
+                RETURNING
+                    t.id,
+                    t.user_id,
+                    t.source_dictionary_entry_id,
+                    t.canonical_entry_id,
+                    t.source_lang,
+                    t.target_lang,
+                    t.source_text,
+                    t.target_text,
+                    t.source_sentence,
+                    t.image_prompt,
+                    t.question_de,
+                    t.answer_options,
+                    t.correct_option_index,
+                    t.explanation,
+                    t.provider_name,
+                    t.provider_meta,
+                    t.image_object_key,
+                    t.image_url,
+                    t.generation_status,
+                    t.visual_status,
+                    t.last_error,
+                    t.prepared_at,
+                    t.last_used_at,
+                    t.use_count,
+                    t.created_at,
+                    t.updated_at;
+                """,
+                (
+                    int(user_id),
+                    str(source_lang or "").strip().lower(),
+                    str(target_lang or "").strip().lower(),
+                    normalized_provider_name,
+                    Json(provider_meta) if isinstance(provider_meta, dict) else None,
+                    Json(provider_meta) if isinstance(provider_meta, dict) else None,
+                ),
+            )
+            return _map_image_quiz_template_row(cursor.fetchone())
+
+
+def fail_stale_rendering_image_quiz_templates(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    stale_after_minutes: int,
+    provider_name: str | None = None,
+    provider_meta: dict | None = None,
+    limit: int = 25,
+) -> list[dict]:
+    normalized_provider_name = str(provider_name or "").strip() or None
+    safe_limit = max(1, min(int(limit or 25), 500))
+    safe_stale_after_minutes = max(5, int(stale_after_minutes or 30))
+    failure_reason = f"stale_rendering_timeout:{safe_stale_after_minutes}m"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH stale_templates AS (
+                    SELECT t.id
+                    FROM bt_3_image_quiz_templates t
+                    WHERE t.user_id = %s
+                      AND t.source_lang = %s
+                      AND t.target_lang = %s
+                      AND t.generation_status = 'rendering'
+                      AND t.updated_at <= NOW() - (%s || ' minutes')::interval
+                    ORDER BY t.updated_at ASC, t.id ASC
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE bt_3_image_quiz_templates t
+                SET
+                    generation_status = 'failed',
+                    provider_name = COALESCE(%s, t.provider_name),
+                    provider_meta = CASE
+                        WHEN %s IS NULL THEN COALESCE(t.provider_meta, '{}'::jsonb)
+                        ELSE COALESCE(t.provider_meta, '{}'::jsonb) || %s::jsonb
+                    END,
+                    last_error = %s,
+                    updated_at = NOW()
+                FROM stale_templates
+                WHERE t.id = stale_templates.id
+                RETURNING
+                    t.id,
+                    t.user_id,
+                    t.source_dictionary_entry_id,
+                    t.canonical_entry_id,
+                    t.source_lang,
+                    t.target_lang,
+                    t.source_text,
+                    t.target_text,
+                    t.source_sentence,
+                    t.image_prompt,
+                    t.question_de,
+                    t.answer_options,
+                    t.correct_option_index,
+                    t.explanation,
+                    t.provider_name,
+                    t.provider_meta,
+                    t.image_object_key,
+                    t.image_url,
+                    t.generation_status,
+                    t.visual_status,
+                    t.last_error,
+                    t.prepared_at,
+                    t.last_used_at,
+                    t.use_count,
+                    t.created_at,
+                    t.updated_at;
+                """,
+                (
+                    int(user_id),
+                    str(source_lang or "").strip().lower() or "ru",
+                    str(target_lang or "").strip().lower() or "de",
+                    str(safe_stale_after_minutes),
+                    safe_limit,
+                    normalized_provider_name,
+                    Json(provider_meta) if isinstance(provider_meta, dict) else None,
+                    Json(provider_meta) if isinstance(provider_meta, dict) else None,
+                    failure_reason,
+                ),
+            )
+            return [_map_image_quiz_template_row(row) for row in cursor.fetchall() or [] if row]
+
+
+def create_image_quiz_dispatch(
+    *,
+    template_id: int,
+    target_user_id: int,
+    chat_id: int,
+    message_id: int | None = None,
+    delivery_scope: str = "private",
+    delivery_slot: str | None = None,
+    delivery_date_local: date | None = None,
+    status: str = "claimed",
+    sent_at: datetime | None = None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_image_quiz_dispatches (
+                    template_id,
+                    target_user_id,
+                    chat_id,
+                    message_id,
+                    delivery_scope,
+                    delivery_slot,
+                    delivery_date_local,
+                    status,
+                    created_at,
+                    sent_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, NOW())
+                RETURNING
+                    id,
+                    template_id,
+                    target_user_id,
+                    chat_id,
+                    message_id,
+                    delivery_scope,
+                    delivery_slot,
+                    delivery_date_local,
+                    status,
+                    created_at,
+                    sent_at,
+                    updated_at;
+                """,
+                (
+                    int(template_id),
+                    int(target_user_id),
+                    int(chat_id),
+                    int(message_id) if message_id is not None else None,
+                    _normalize_image_quiz_delivery_scope(delivery_scope),
+                    str(delivery_slot or "").strip() or None,
+                    delivery_date_local,
+                    _normalize_image_quiz_dispatch_status(status),
+                    sent_at,
+                ),
+            )
+            return _map_image_quiz_dispatch_row(cursor.fetchone())
+
+
+def mark_image_quiz_dispatch_sent(
+    dispatch_id: int,
+    *,
+    message_id: int,
+    sent_at: datetime | None = None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH updated_dispatch AS (
+                    UPDATE bt_3_image_quiz_dispatches
+                    SET
+                        message_id = %s,
+                        status = 'sent',
+                        sent_at = COALESCE(%s, NOW()),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING
+                        id,
+                        template_id,
+                        target_user_id,
+                        chat_id,
+                        message_id,
+                        delivery_scope,
+                        delivery_slot,
+                        delivery_date_local,
+                        status,
+                        created_at,
+                        sent_at,
+                        updated_at
+                )
+                UPDATE bt_3_image_quiz_templates t
+                SET
+                    last_used_at = COALESCE((SELECT sent_at FROM updated_dispatch), NOW()),
+                    use_count = t.use_count + 1,
+                    updated_at = NOW()
+                FROM updated_dispatch
+                WHERE t.id = updated_dispatch.template_id;
+                """,
+                (
+                    int(message_id),
+                    sent_at,
+                    int(dispatch_id),
+                ),
+            )
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    template_id,
+                    target_user_id,
+                    chat_id,
+                    message_id,
+                    delivery_scope,
+                    delivery_slot,
+                    delivery_date_local,
+                    status,
+                    created_at,
+                    sent_at,
+                    updated_at
+                FROM bt_3_image_quiz_dispatches
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(dispatch_id),),
+            )
+            return _map_image_quiz_dispatch_row(cursor.fetchone())
+
+
+def mark_image_quiz_dispatch_failed(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_image_quiz_dispatches
+                SET
+                    status = 'failed',
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING
+                    id,
+                    template_id,
+                    target_user_id,
+                    chat_id,
+                    message_id,
+                    delivery_scope,
+                    delivery_slot,
+                    delivery_date_local,
+                    status,
+                    created_at,
+                    sent_at,
+                    updated_at;
+                """,
+                (int(dispatch_id),),
+            )
+            return _map_image_quiz_dispatch_row(cursor.fetchone())
+
+
+def get_image_quiz_dispatch(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    template_id,
+                    target_user_id,
+                    chat_id,
+                    message_id,
+                    delivery_scope,
+                    delivery_slot,
+                    delivery_date_local,
+                    status,
+                    created_at,
+                    sent_at,
+                    updated_at
+                FROM bt_3_image_quiz_dispatches
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(dispatch_id),),
+            )
+            return _map_image_quiz_dispatch_row(cursor.fetchone())
+
+
+def record_image_quiz_answer(
+    *,
+    dispatch_id: int,
+    user_id: int,
+    selected_option_index: int,
+    selected_text: str | None = None,
+    is_correct: bool,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_image_quiz_answers (
+                    dispatch_id,
+                    user_id,
+                    selected_option_index,
+                    selected_text,
+                    is_correct,
+                    answered_at
+                )
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (dispatch_id, user_id) DO NOTHING
+                RETURNING
+                    id,
+                    dispatch_id,
+                    user_id,
+                    selected_option_index,
+                    selected_text,
+                    is_correct,
+                    answered_at,
+                    feedback_sent_at;
+                """,
+                (
+                    int(dispatch_id),
+                    int(user_id),
+                    int(selected_option_index),
+                    str(selected_text or "").strip() or None,
+                    bool(is_correct),
+                ),
+            )
+            row = cursor.fetchone()
+            if row:
+                answer = _map_image_quiz_answer_row(row)
+                if answer is not None:
+                    answer["created"] = True
+                return answer
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    dispatch_id,
+                    user_id,
+                    selected_option_index,
+                    selected_text,
+                    is_correct,
+                    answered_at,
+                    feedback_sent_at
+                FROM bt_3_image_quiz_answers
+                WHERE dispatch_id = %s
+                  AND user_id = %s
+                LIMIT 1;
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            answer = _map_image_quiz_answer_row(cursor.fetchone())
+            if answer is not None:
+                answer["created"] = False
+            return answer
+
+
+def mark_image_quiz_answer_feedback_sent(dispatch_id: int, user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_image_quiz_answers
+                SET
+                    feedback_sent_at = COALESCE(feedback_sent_at, NOW())
+                WHERE dispatch_id = %s
+                  AND user_id = %s
+                RETURNING
+                    id,
+                    dispatch_id,
+                    user_id,
+                    selected_option_index,
+                    selected_text,
+                    is_correct,
+                    answered_at,
+                    feedback_sent_at;
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            return _map_image_quiz_answer_row(cursor.fetchone())
+
+
 def list_skills(category: str | None = None, language_code: str | None = None) -> list[dict]:
     lang = (language_code or "").strip().lower()
     with get_db_connection_context() as conn:
@@ -18272,6 +21143,7 @@ def get_pending_daily_sentences(
     source_lang: str = "ru",
     target_lang: str = "de",
     close_stale_sessions: bool = True,
+    session_id: str | int | None = None,
 ) -> list[dict]:
     try:
         safe_limit = int(limit or 7)
@@ -18284,70 +21156,52 @@ def get_pending_daily_sentences(
             source_lang=source_lang,
             target_lang=target_lang,
         )
+    normalized_session_id = str(session_id or "").strip() or None
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT up.session_id
-                FROM bt_3_user_progress up
-                WHERE up.user_id = %s
-                  AND up.completed = FALSE
-                  AND EXISTS (
-                    SELECT 1
+            latest_session_id = normalized_session_id
+            if latest_session_id:
+                cursor.execute(
+                    """
+                    SELECT ds.id_for_mistake_table, ds.sentence, ds.unique_id
                     FROM bt_3_daily_sentences ds
-                    WHERE ds.user_id = up.user_id
-                      AND ds.session_id = up.session_id
+                    LEFT JOIN bt_3_translations tr
+                        ON tr.user_id = ds.user_id
+                        AND tr.sentence_id = ds.id
+                        AND tr.session_id = ds.session_id
+                        AND COALESCE(tr.source_lang, 'ru') = %s
+                        AND COALESCE(tr.target_lang, 'de') = %s
+                    WHERE ds.user_id = %s
+                      AND ds.session_id = %s
                       AND ds.date = CURRENT_DATE
                       AND COALESCE(ds.source_lang, 'ru') = %s
                       AND COALESCE(ds.target_lang, 'de') = %s
-                  )
-                ORDER BY up.start_time DESC
-                LIMIT 1;
-                """,
-                (user_id, source_lang, target_lang),
-            )
-            latest_session = cursor.fetchone()
-            latest_session_id = latest_session[0] if latest_session else None
-            if not latest_session_id:
-                return []
+                      AND tr.id IS NULL
+                    ORDER BY ds.unique_id ASC
+                    LIMIT %s;
+                    """,
+                    (
+                        source_lang,
+                        target_lang,
+                        int(user_id),
+                        latest_session_id,
+                        source_lang,
+                        target_lang,
+                        safe_limit,
+                    ),
+                )
+                rows = cursor.fetchall()
+                return [
+                    {
+                        "id_for_mistake_table": row[0],
+                        "sentence": row[1],
+                        "unique_id": row[2],
+                        "source_session_id": str(latest_session_id),
+                    }
+                    for row in rows
+                ]
 
-            cursor.execute("""
-                SELECT ds.id_for_mistake_table, ds.sentence, ds.unique_id
-                FROM bt_3_daily_sentences ds
-                LEFT JOIN bt_3_translations tr
-                    ON tr.user_id = ds.user_id
-                    AND tr.sentence_id = ds.id
-                    AND tr.session_id = %s
-                    AND COALESCE(tr.source_lang, 'ru') = %s
-                    AND COALESCE(tr.target_lang, 'de') = %s
-                WHERE ds.user_id = %s
-                  AND ds.session_id = %s
-                  AND ds.date = CURRENT_DATE
-                  AND COALESCE(ds.source_lang, 'ru') = %s
-                  AND COALESCE(ds.target_lang, 'de') = %s
-                  AND tr.id IS NULL
-                ORDER BY ds.unique_id ASC
-                LIMIT %s;
-            """, (
-                latest_session_id,
-                source_lang,
-                target_lang,
-                user_id,
-                latest_session_id,
-                source_lang,
-                target_lang,
-                safe_limit,
-            ))
-            rows = cursor.fetchall()
-            return [
-                {
-                    "id_for_mistake_table": row[0],
-                    "sentence": row[1],
-                    "unique_id": row[2],
-                    "source_session_id": str(latest_session_id),
-                }
-                for row in rows
-            ]
+            return []
 
 
 def mark_translation_sentences_shown(

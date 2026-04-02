@@ -218,6 +218,8 @@ python-dotenv==1.1.0
 # LiveKit Agent & Server SDK
 livekit
 livekit-agents
+redis>=5.2.1
+dramatiq[redis]>=1.17.1
 livekit-plugins-openai
 livekit-plugins-silero
 

@@ -237,7 +237,7 @@ async def _run_generation(args: argparse.Namespace) -> dict[str, Any]:
         except Exception as exc:
             queue_row = update_semantic_benchmark_queue_item(
                 queue_id=queue_id,
-                queue_status="failed",
+                queue_status="error",
                 last_error=str(exc)[:500],
                 metadata={
                     "prompt_version": PROMPT_VERSION,
@@ -249,7 +249,7 @@ async def _run_generation(args: argparse.Namespace) -> dict[str, Any]:
                     "queue_id": queue_id,
                     "case_id": case_id,
                     "source_sentence": source_sentence,
-                    "status": "failed",
+                    "status": "error",
                     "error": str(exc),
                     "queue": queue_row,
                 }
@@ -264,7 +264,7 @@ async def _run_generation(args: argparse.Namespace) -> dict[str, Any]:
         "skill_catalog_count": len(skill_catalog),
         "processed_count": len(results),
         "ready_count": sum(1 for item in results if item.get("status") == "ready"),
-        "failed_count": sum(1 for item in results if item.get("status") == "failed"),
+        "failed_count": sum(1 for item in results if item.get("status") in {"failed", "error"}),
         "dry_run_count": sum(1 for item in results if item.get("status") == "dry_run"),
         "items": results,
     }

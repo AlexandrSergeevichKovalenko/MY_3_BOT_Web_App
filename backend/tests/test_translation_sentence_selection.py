@@ -64,10 +64,86 @@ if "psycopg2" not in sys.modules:
     psycopg2_pool_stub.PoolError = _PoolError
     sys.modules["psycopg2.pool"] = psycopg2_pool_stub
 
-from backend.translation_workflow import _filter_sentence_entries_for_session
+from backend.translation_workflow import (
+    _filter_sentence_entries_for_session,
+    _insert_sentence_entries_into_session_with_cursor,
+    _translation_fill_reached_target,
+)
 
 
 class TranslationSentenceSelectionTests(unittest.TestCase):
+    def test_insert_limit_does_not_count_mastered_sentences_against_session_capacity(self):
+        class _Cursor:
+            def __init__(self):
+                self._fetchone = None
+                self._fetchall = []
+                self.inserted_rows = []
+
+            def execute(self, query, params=None):
+                normalized = " ".join(str(query).split())
+                if "SELECT id, sentence FROM bt_3_daily_sentences" in normalized:
+                    self._fetchall = []
+                    return
+                if "SELECT COALESCE(MAX(unique_id), 0)" in normalized:
+                    self._fetchone = (0,)
+                    return
+                if "SELECT id_for_mistake_table FROM bt_3_daily_sentences" in normalized:
+                    self._fetchone = None
+                    return
+                if "SELECT MAX(id_for_mistake_table) FROM bt_3_daily_sentences" in normalized:
+                    self._fetchone = (9000 + len(self.inserted_rows),)
+                    return
+                if "INSERT INTO bt_3_daily_sentences" in normalized:
+                    self.inserted_rows.append(tuple(params or ()))
+                    self._fetchone = (len(self.inserted_rows),)
+                    return
+                self._fetchone = None
+                self._fetchall = []
+
+            def fetchall(self):
+                return list(self._fetchall)
+
+            def fetchone(self):
+                return self._fetchone
+
+        cursor = _Cursor()
+        entries = [
+            {"sentence": f"Новое предложение {index}.", "tested_skill_profile": []}
+            for index in range(1, 8)
+        ]
+
+        from unittest.mock import patch
+
+        with patch(
+            "backend.translation_workflow._get_mastered_sentence_keys_with_cursor",
+            return_value={"mastered a", "mastered b"},
+        ), patch(
+            "backend.translation_workflow._insert_sentence_skill_targets_for_entries_with_cursor",
+            return_value=None,
+        ), patch(
+            "backend.translation_workflow._record_translation_bucket_demand_with_cursor",
+            return_value=None,
+        ):
+            inserted = _insert_sentence_entries_into_session_with_cursor(
+                cursor,
+                user_id=117649764,
+                session_id=123456,
+                source_lang="ru",
+                target_lang="de",
+                focus_key="main_clause_v2",
+                level="c1",
+                sentence_entries=entries,
+                limit=7,
+            )
+
+        self.assertEqual(len(inserted), 7)
+        self.assertEqual(len(cursor.inserted_rows), 7)
+
+    def test_translation_fill_reached_target_only_when_ready_count_meets_expected_total(self):
+        self.assertTrue(_translation_fill_reached_target({"ready_count": 7, "expected_total": 7}))
+        self.assertFalse(_translation_fill_reached_target({"ready_count": 5, "expected_total": 7}))
+        self.assertFalse(_translation_fill_reached_target({"ready_count": 0, "expected_total": 0}))
+
     def test_filters_recently_served_sentences(self):
         entries = [
             {"sentence": "Я живу в Вене.", "tested_skill_profile": [{"skill_id": "a"}]},

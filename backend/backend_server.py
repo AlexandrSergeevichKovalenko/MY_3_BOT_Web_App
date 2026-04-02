@@ -58,6 +58,7 @@
 import subprocess
 import copy
 import ast
+import math
 import hashlib
 import io
 import queue
@@ -97,6 +98,23 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import HTTPException
 from backend.database import get_db_connection_context, db_acquire_scope, summarize_db_acquire_events
+from backend.hotpath_cache import HotPathCacheManager
+from backend.job_queue import (
+    can_enqueue_background_jobs,
+    enqueue_finish_daily_summary_job,
+    enqueue_translation_check_job,
+    enqueue_translation_fill_job,
+    enqueue_translation_focus_pool_refill_job,
+    enqueue_youtube_transcript_job,
+    get_translation_check_job_status,
+    set_translation_check_job_status,
+    get_translation_fill_job_status,
+    get_redis_client,
+    is_translation_check_async_enabled,
+    is_translation_sentence_fill_async_enabled,
+    get_youtube_transcript_job_status,
+    is_youtube_transcript_async_enabled,
+)
 from backend.translation_workflow import _extract_correct_translation
 from livekit.api import AccessToken, VideoGrants
 from pathlib import Path
@@ -269,6 +287,9 @@ from backend.database import (
     get_webapp_instance_lease,
     claim_webapp_instance_lease,
     release_webapp_instance_lease,
+    get_user_api_snapshot,
+    upsert_user_api_snapshot,
+    mark_user_api_snapshots_stale,
     upsert_webapp_group_context,
     list_webapp_group_contexts,
     list_webapp_group_member_user_ids,
@@ -316,6 +337,7 @@ from backend.database import (
     enforce_feature_limit,
     enforce_reader_audio_pro_monthly_limit,
     get_today_cost_eur,
+    get_today_cost_eur_fast,
     get_google_translate_monthly_budget_status,
     get_google_tts_monthly_budget_status,
     get_provider_monthly_budget_status,
@@ -324,6 +346,8 @@ from backend.database import (
     set_provider_budget_block_state,
     has_admin_scheduler_run,
     mark_admin_scheduler_run,
+    claim_scheduler_run_guard,
+    finish_scheduler_run_guard,
     get_today_reminder_settings,
     upsert_today_reminder_settings,
     list_today_reminder_users,
@@ -338,6 +362,9 @@ from backend.database import (
     upsert_audio_grammar_settings,
     get_tts_prewarm_settings,
     upsert_tts_prewarm_settings,
+    get_translation_focus_pool_bucket_counts,
+    get_translation_focus_pool_daily_snapshot,
+    upsert_translation_focus_pool_daily_snapshot,
     update_translation_audio_grammar_opt_in,
     get_starter_dictionary_state,
     upsert_starter_dictionary_state,
@@ -364,13 +391,17 @@ from backend.database import (
     delete_reader_library_document,
     create_translation_check_session,
     get_translation_check_session,
+    get_translation_check_session_status,
+    get_translation_check_session_runtime,
     list_translation_check_items,
     get_latest_translation_check_session,
+    get_latest_translation_check_session_status,
     get_latest_translation_check_session_with_items,
     update_translation_check_session_status,
-    update_translation_check_item_result,
-    finalize_translation_check_item,
-    refresh_translation_check_session_counters,
+    claim_translation_check_session_runner,
+    touch_translation_check_session_heartbeat,
+    complete_translation_check_session,
+    finalize_translation_check_items_batch,
     close_stale_open_translation_sessions_for_user,
     mark_translation_sentences_shown,
     FLASHCARD_RECENT_SEEN_HOURS,
@@ -385,6 +416,7 @@ from backend.grammar_focuses import (
     GRAMMAR_FOCUS_PRESETS,
     WEBAPP_TOPICS,
     focus_matches_error_pair,
+    get_grammar_focus_by_key,
     resolve_webapp_focus,
     recommend_webapp_focus_for_error_pair,
 )
@@ -402,6 +434,8 @@ from backend.translation_workflow import (
     get_story_history_webapp,
     get_active_session_type,
     prewarm_shared_translation_sentence_pool,
+    _normalize_level as _normalize_translation_level,
+    _sentence_fits_level as _translation_sentence_fits_level,
 )
 from backend.analytics import (
     _calculate_final_score,
@@ -448,16 +482,34 @@ _YT_RETRY_SLEEP_MAX = 3.0
 _YT_REQUEST_JITTER_MIN = 1.9
 _YT_REQUEST_JITTER_MAX = 1.9
 _YT_OEMBED_CACHE: dict[str, dict] = {}
+_YOUTUBE_MANUAL_SEARCH_CACHE: dict[str, dict] = {}
+_YOUTUBE_MANUAL_SEARCH_CACHE_LOCK = threading.Lock()
+_YOUTUBE_MANUAL_SEARCH_CACHE_TTL_SEC = max(60, int((os.getenv("YOUTUBE_MANUAL_SEARCH_CACHE_TTL_SEC") or "600").strip()))
 _TRANSLATION_CHECK_RUNNERS: set[int] = set()
 _TRANSLATION_CHECK_RUNNERS_LOCK = threading.Lock()
 _TRANSLATION_SESSION_FILL_RUNNERS: set[int] = set()
 _TRANSLATION_SESSION_FILL_RUNNERS_LOCK = threading.Lock()
-_TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY = 3
+_TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY = max(
+    1,
+    min(4, int((os.getenv("TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY") or "2").strip() or "2")),
+)
+_TRANSLATION_CHECK_INLINE_FALLBACK_ENABLED = str(
+    os.getenv("TRANSLATION_CHECK_INLINE_FALLBACK_ENABLED") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+_TRANSLATION_CHECK_INLINE_FALLBACK_QUEUED_STALE_MS = max(
+    15000,
+    int((os.getenv("TRANSLATION_CHECK_INLINE_FALLBACK_QUEUED_STALE_MS") or "45000").strip() or "45000"),
+)
+_TRANSLATION_CHECK_INLINE_FALLBACK_RUNNING_STALE_MS = max(
+    30000,
+    int((os.getenv("TRANSLATION_CHECK_INLINE_FALLBACK_RUNNING_STALE_MS") or "180000").strip() or "180000"),
+)
 _OBSERVABILITY_LOCK = threading.Lock()
 _TTS_URL_POLL_ATTEMPTS: dict[str, int] = {}
 _TRANSLATION_CHECK_STATUS_POLLS: dict[int, int] = {}
 _BILLING_EVENT_SKIP_COUNTS: dict[str, int] = {}
 _TRANSLATION_CHECK_ACCEPTED_AT_MS: dict[int, int] = {}
+_TRANSLATION_SESSION_FILL_LAUNCHED_AT_MS: dict[int, int] = {}
 
 _audio_scheduler = None
 _audio_scheduler_lock = None
@@ -536,7 +588,7 @@ SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST = max(1, int((os.getenv("SEN
 SENTENCE_TRAINING_LOOKUP_LIMIT = max(100, int((os.getenv("SENTENCE_TRAINING_LOOKUP_LIMIT") or "600").strip()))
 SENTENCE_TRAINING_LLM_MAX_PER_REQUEST = max(0, int((os.getenv("SENTENCE_TRAINING_LLM_MAX_PER_REQUEST") or "10").strip()))
 SENTENCE_GAP_CACHE_VERSION = 3
-SENTENCE_PREWARM_ENABLED = str(os.getenv("SENTENCE_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+SENTENCE_PREWARM_ENABLED = str(os.getenv("SENTENCE_PREWARM_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
 SENTENCE_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("SENTENCE_PREWARM_INTERVAL_MINUTES") or "60").strip()))
 SENTENCE_PREWARM_LOOKBACK_HOURS = max(1, min(24 * 90, int((os.getenv("SENTENCE_PREWARM_LOOKBACK_HOURS") or "168").strip())))
 SENTENCE_PREWARM_MAX_USERS = max(1, min(500, int((os.getenv("SENTENCE_PREWARM_MAX_USERS") or "40").strip())))
@@ -548,12 +600,48 @@ TRANSLATION_FOCUS_POOL_PREWARM_ENABLED = str(os.getenv("TRANSLATION_FOCUS_POOL_P
 TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS = max(1, min(180, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS") or "30").strip())))
 TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT = max(1, min(15, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT") or "6").strip())))
 TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET = max(2, min(30, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET") or "8").strip())))
+TRANSLATION_FOCUS_POOL_PREWARM_BASE_TARGET_PER_BUCKET = max(
+    int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET),
+    min(60, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_BASE_TARGET_PER_BUCKET") or "16").strip())),
+)
+TRANSLATION_FOCUS_POOL_PREWARM_TARGET_BONUS_CAP = max(
+    0,
+    min(60, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_TARGET_BONUS_CAP") or "16").strip())),
+)
+TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_LOOKBACK_DAYS = max(
+    3,
+    min(60, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_LOOKBACK_DAYS") or "14").strip())),
+)
+TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_TARGET_CAP = max(
+    int(TRANSLATION_FOCUS_POOL_PREWARM_BASE_TARGET_PER_BUCKET),
+    min(120, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_TARGET_CAP") or "60").strip())),
+)
 TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET = max(1, min(10, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET") or "4").strip())))
 TRANSLATION_FOCUS_POOL_PREWARM_LEVELS = [
     str(item or "").strip().lower()
     for item in str(os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_LEVELS") or "b1,b2,c1").split(",")
     if str(item or "").strip()
 ]
+TRANSLATION_FOCUS_POOL_HOT_BUCKET_OVERRIDES: dict[tuple[str, str], dict[str, int]] = {
+    ("subordinate_clause_word_order", "b1"): {
+        "min_ready": 24,
+        "target_ready": 48,
+    },
+}
+TRANSLATION_FOCUS_POOL_REFILL_ENABLED = str(os.getenv("TRANSLATION_FOCUS_POOL_REFILL_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TRANSLATION_FOCUS_POOL_REFILL_HOUR = max(0, min(23, int((os.getenv("TRANSLATION_FOCUS_POOL_REFILL_HOUR") or "2").strip() or "2")))
+TRANSLATION_FOCUS_POOL_REFILL_MINUTE = max(0, min(59, int((os.getenv("TRANSLATION_FOCUS_POOL_REFILL_MINUTE") or "15").strip() or "15")))
+TRANSLATION_FOCUS_POOL_REFILL_TZ = (os.getenv("TRANSLATION_FOCUS_POOL_REFILL_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+TRANSLATION_FOCUS_POOL_ADMIN_REPORT_ENABLED = str(os.getenv("TRANSLATION_FOCUS_POOL_ADMIN_REPORT_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TRANSLATION_FOCUS_POOL_ADMIN_REPORT_HOUR = max(0, min(23, int((os.getenv("TRANSLATION_FOCUS_POOL_ADMIN_REPORT_HOUR") or "6").strip() or "6")))
+TRANSLATION_FOCUS_POOL_ADMIN_REPORT_MINUTE = max(0, min(59, int((os.getenv("TRANSLATION_FOCUS_POOL_ADMIN_REPORT_MINUTE") or "15").strip() or "15")))
+TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TZ = (os.getenv("TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+TRANSLATION_FOCUS_POOL_ADMIN_REPORT_SOURCE_LANG = (os.getenv("TRANSLATION_FOCUS_POOL_ADMIN_REPORT_SOURCE_LANG") or "ru").strip().lower() or "ru"
+TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TARGET_LANG = (os.getenv("TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TARGET_LANG") or "de").strip().lower() or "de"
+TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TOP_THEMES = max(
+    1,
+    min(10, int((os.getenv("TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TOP_THEMES") or "3").strip() or "3")),
+)
 _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_URL_PENDING_RETRY_MS = max(150, int((os.getenv("TTS_URL_PENDING_RETRY_MS") or "350").strip() or "350"))
@@ -567,7 +655,7 @@ TTS_GENERATION_ENQUEUE_TIMEOUT_MS = max(
     50,
     min(10000, int((os.getenv("TTS_GENERATION_ENQUEUE_TIMEOUT_MS") or "250").strip() or "250")),
 )
-TTS_GENERATION_RECOVERY_ENABLED = str(os.getenv("TTS_GENERATION_RECOVERY_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+TTS_GENERATION_RECOVERY_ENABLED = str(os.getenv("TTS_GENERATION_RECOVERY_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
 TTS_GENERATION_RECOVERY_INTERVAL_MINUTES = max(
     1,
     min(120, int((os.getenv("TTS_GENERATION_RECOVERY_INTERVAL_MINUTES") or "2").strip() or "2")),
@@ -608,7 +696,19 @@ QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC = max(
     1.0,
     min(12.0, float((os.getenv("QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC") or "3.5").strip() or "3.5")),
 )
-TTS_PREWARM_ENABLED = str(os.getenv("TTS_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+QUICK_TRANSLATE_CACHE_TTL_SEC = max(
+    15,
+    min(3600, int((os.getenv("QUICK_TRANSLATE_CACHE_TTL_SEC") or "900").strip() or "900")),
+)
+QUICK_TRANSLATE_CACHE_MAX_ITEMS = max(
+    100,
+    min(10000, int((os.getenv("QUICK_TRANSLATE_CACHE_MAX_ITEMS") or "2000").strip() or "2000")),
+)
+QUICK_TRANSLATE_COALESCE_WAIT_TIMEOUT_SEC = max(
+    0.5,
+    min(10.0, float((os.getenv("QUICK_TRANSLATE_COALESCE_WAIT_TIMEOUT_SEC") or "3.0").strip() or "3.0")),
+)
+TTS_PREWARM_ENABLED = str(os.getenv("TTS_PREWARM_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
 TTS_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("TTS_PREWARM_INTERVAL_MINUTES") or "60").strip()))
 TTS_PREWARM_BATCH_SIZE = max(10, min(500, int((os.getenv("TTS_PREWARM_BATCH_SIZE") or "120").strip())))
 TTS_PREWARM_MAX_CHARS_PER_RUN = max(500, min(200000, int((os.getenv("TTS_PREWARM_MAX_CHARS_PER_RUN") or "12000").strip())))
@@ -665,7 +765,7 @@ TTS_ADMIN_ALERT_PENDING_THRESHOLD = max(1, min(5000, int((os.getenv("TTS_ADMIN_A
 TTS_ADMIN_ALERT_PENDING_AGE_MINUTES = max(1, min(240, int((os.getenv("TTS_ADMIN_ALERT_PENDING_AGE_MINUTES") or "10").strip() or "10")))
 TTS_ADMIN_ALERT_CHECK_INTERVAL_MINUTES = max(2, min(120, int((os.getenv("TTS_ADMIN_ALERT_CHECK_INTERVAL_MINUTES") or "10").strip() or "10")))
 TTS_ADMIN_ALERT_COOLDOWN_MINUTES = max(5, min(240, int((os.getenv("TTS_ADMIN_ALERT_COOLDOWN_MINUTES") or "30").strip() or "30")))
-SKILL_STATE_V2_AGGREGATION_ENABLED = str(os.getenv("SKILL_STATE_V2_AGGREGATION_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+SKILL_STATE_V2_AGGREGATION_ENABLED = str(os.getenv("SKILL_STATE_V2_AGGREGATION_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
 SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS = max(
     10,
     min(3600, int((os.getenv("SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS") or "30").strip() or "30")),
@@ -707,6 +807,14 @@ SEMANTIC_AUDIT_MIN_ATTEMPTS = max(1, min(50, int((os.getenv("SEMANTIC_AUDIT_MIN_
 SEMANTIC_AUDIT_ALL_USERS = str(os.getenv("SEMANTIC_AUDIT_ALL_USERS") or "1").strip().lower() in {"1", "true", "yes", "on"}
 SEMANTIC_AUDIT_LOCAL_REPLAY_TARGETING = str(os.getenv("SEMANTIC_AUDIT_LOCAL_REPLAY_TARGETING") or "0").strip().lower() in {"1", "true", "yes", "on"}
 SEMANTIC_AUDIT_TARGET_CHAT_IDS_RAW = str(os.getenv("SEMANTIC_AUDIT_TARGET_CHAT_IDS") or "").strip()
+SEMANTIC_BENCHMARK_PREP_SCHEDULER_ENABLED = str(os.getenv("SEMANTIC_BENCHMARK_PREP_SCHEDULER_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+SEMANTIC_BENCHMARK_PREP_SCHEDULER_TZ = (os.getenv("SEMANTIC_BENCHMARK_PREP_SCHEDULER_TZ") or SEMANTIC_AUDIT_SCHEDULER_TZ).strip() or SEMANTIC_AUDIT_SCHEDULER_TZ
+SEMANTIC_BENCHMARK_PREP_SCHEDULER_HOUR = max(0, min(23, int((os.getenv("SEMANTIC_BENCHMARK_PREP_SCHEDULER_HOUR") or "4").strip() or "4")))
+SEMANTIC_BENCHMARK_PREP_SCHEDULER_MINUTE = max(0, min(59, int((os.getenv("SEMANTIC_BENCHMARK_PREP_SCHEDULER_MINUTE") or "15").strip() or "15")))
+SEMANTIC_BENCHMARK_PREP_DAYS_BACK = max(1, min(31, int((os.getenv("SEMANTIC_BENCHMARK_PREP_DAYS_BACK") or str(SEMANTIC_AUDIT_DAYS_BACK)).strip() or str(SEMANTIC_AUDIT_DAYS_BACK))))
+SEMANTIC_BENCHMARK_PREP_QUEUE_LIMIT = max(10, min(5000, int((os.getenv("SEMANTIC_BENCHMARK_PREP_QUEUE_LIMIT") or str(SEMANTIC_AUDIT_QUEUE_LIMIT)).strip() or str(SEMANTIC_AUDIT_QUEUE_LIMIT))))
+SEMANTIC_BENCHMARK_PREP_GENERATION_LIMIT = max(1, min(500, int((os.getenv("SEMANTIC_BENCHMARK_PREP_GENERATION_LIMIT") or str(max(SEMANTIC_AUDIT_GENERATION_LIMIT, 20))).strip() or str(max(SEMANTIC_AUDIT_GENERATION_LIMIT, 20)))))
+SEMANTIC_BENCHMARK_PREP_MIN_ATTEMPTS = max(1, min(50, int((os.getenv("SEMANTIC_BENCHMARK_PREP_MIN_ATTEMPTS") or str(SEMANTIC_AUDIT_MIN_ATTEMPTS)).strip() or str(SEMANTIC_AUDIT_MIN_ATTEMPTS))))
 SEMANTIC_AUDIT_REPORTS_DIR = BASE_DIR / "reports" / "semantic_audit"
 _TTS_PREWARM_LOCK = threading.Lock()
 _TTS_GENERATION_JOBS_LOCK = threading.Lock()
@@ -717,10 +825,226 @@ _DICTIONARY_LOOKUP_CACHE_LOCK = threading.Lock()
 _DICTIONARY_LOOKUP_CACHE: dict[str, dict] = {}
 _DICTIONARY_LOOKUP_INFLIGHT_LOCK = threading.Lock()
 _DICTIONARY_LOOKUP_INFLIGHT: dict[str, dict[str, Any]] = {}
+_QUICK_TRANSLATE_CACHE_LOCK = threading.Lock()
+_QUICK_TRANSLATE_CACHE: dict[str, dict] = {}
+_QUICK_TRANSLATE_INFLIGHT: dict[str, threading.Event] = {}
 _DICTIONARY_ENRICHMENT_LOCK = threading.Lock()
 _DICTIONARY_ENRICHMENT_JOBS: dict[str, dict[str, Any]] = {}
 _DICTIONARY_ENRICHMENT_CACHE_TO_LOOKUP_ID: dict[str, str] = {}
 _DICTIONARY_ENRICHMENT_JOB_TTL_SEC = 1800.0
+
+
+def _dictionary_enrichment_job_redis_key(lookup_id: str) -> str:
+    return f"dict:enrichment:job:{str(lookup_id or '').strip()}"
+
+
+def _dictionary_enrichment_cache_redis_key(cache_key: str) -> str:
+    return f"dict:enrichment:cache:{str(cache_key or '').strip()}"
+
+
+def _set_shared_dictionary_enrichment_job(job: dict[str, Any]) -> None:
+    client = get_redis_client()
+    lookup_id = str((job or {}).get("lookup_id") or "").strip()
+    if client is None or not lookup_id:
+        return
+    payload = copy.deepcopy(job if isinstance(job, dict) else {})
+    client.setex(
+        _dictionary_enrichment_job_redis_key(lookup_id),
+        int(_DICTIONARY_ENRICHMENT_JOB_TTL_SEC),
+        json.dumps(payload, ensure_ascii=False),
+    )
+    for key_name in ("cache_key", "cache_key_shared"):
+        cache_key = str(payload.get(key_name) or "").strip()
+        if cache_key:
+            client.setex(
+                _dictionary_enrichment_cache_redis_key(cache_key),
+                int(_DICTIONARY_ENRICHMENT_JOB_TTL_SEC),
+                lookup_id,
+            )
+
+
+def _get_shared_dictionary_enrichment_job_by_lookup_id(lookup_id: str) -> dict[str, Any] | None:
+    client = get_redis_client()
+    normalized_lookup_id = str(lookup_id or "").strip()
+    if client is None or not normalized_lookup_id:
+        return None
+    raw = client.get(_dictionary_enrichment_job_redis_key(normalized_lookup_id))
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _get_shared_dictionary_enrichment_job_for_cache_keys(*cache_keys: str) -> dict[str, Any] | None:
+    client = get_redis_client()
+    if client is None:
+        return None
+    for cache_key in (str(item or "").strip() for item in cache_keys if str(item or "").strip()):
+        lookup_id = str(client.get(_dictionary_enrichment_cache_redis_key(cache_key)) or "").strip()
+        if not lookup_id:
+            continue
+        payload = _get_shared_dictionary_enrichment_job_by_lookup_id(lookup_id)
+        if isinstance(payload, dict):
+            return payload
+    return None
+HOTPATH_FRONT_CACHE_MAX_ENTRIES = max(
+    1000,
+    min(200000, int((os.getenv("HOTPATH_FRONT_CACHE_MAX_ENTRIES") or "20000").strip() or "20000")),
+)
+HOTPATH_REFRESH_WORKERS = max(
+    1,
+    min(32, int((os.getenv("HOTPATH_REFRESH_WORKERS") or "4").strip() or "4")),
+)
+TRANSLATION_CHECK_GLOBAL_ITEM_CONCURRENCY = max(
+    1,
+    min(64, int((os.getenv("TRANSLATION_CHECK_GLOBAL_ITEM_CONCURRENCY") or "8").strip() or "8")),
+)
+TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC = max(
+    5,
+    min(3600, int((os.getenv("TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC") or "30").strip() or "30")),
+)
+TODAY_PLAN_SNAPSHOT_STALE_TTL_SEC = max(
+    TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+    min(7200, int((os.getenv("TODAY_PLAN_SNAPSHOT_STALE_TTL_SEC") or "300").strip() or "300")),
+)
+SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC = max(
+    5,
+    min(3600, int((os.getenv("SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC") or "30").strip() or "30")),
+)
+SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC = max(
+    SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+    min(7200, int((os.getenv("SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC") or "300").strip() or "300")),
+)
+WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC = max(
+    5,
+    min(3600, int((os.getenv("WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC") or "30").strip() or "30")),
+)
+WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC = max(
+    WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+    min(7200, int((os.getenv("WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC") or "300").strip() or "300")),
+)
+PLAN_ANALYTICS_SNAPSHOT_FRESH_TTL_SEC = max(
+    5,
+    min(3600, int((os.getenv("PLAN_ANALYTICS_SNAPSHOT_FRESH_TTL_SEC") or "30").strip() or "30")),
+)
+PLAN_ANALYTICS_SNAPSHOT_STALE_TTL_SEC = max(
+    PLAN_ANALYTICS_SNAPSHOT_FRESH_TTL_SEC,
+    min(7200, int((os.getenv("PLAN_ANALYTICS_SNAPSHOT_STALE_TTL_SEC") or "300").strip() or "300")),
+)
+WEBAPP_ALLOWLIST_CACHE_TTL_SEC = max(
+    5,
+    min(900, int((os.getenv("WEBAPP_ALLOWLIST_CACHE_TTL_SEC") or "30").strip() or "30")),
+)
+WEBAPP_ALLOWLIST_CACHE_STALE_TTL_SEC = max(
+    WEBAPP_ALLOWLIST_CACHE_TTL_SEC,
+    min(3600, int((os.getenv("WEBAPP_ALLOWLIST_CACHE_STALE_TTL_SEC") or "300").strip() or "300")),
+)
+WEBAPP_INSTANCE_LEASE_CACHE_TTL_SEC = max(
+    2,
+    min(120, int((os.getenv("WEBAPP_INSTANCE_LEASE_CACHE_TTL_SEC") or "5").strip() or "5")),
+)
+WEBAPP_INSTANCE_LEASE_CACHE_STALE_TTL_SEC = max(
+    WEBAPP_INSTANCE_LEASE_CACHE_TTL_SEC,
+    min(600, int((os.getenv("WEBAPP_INSTANCE_LEASE_CACHE_STALE_TTL_SEC") or "45").strip() or "45")),
+)
+ANALYTICS_SCOPE_CACHE_TTL_SEC = max(
+    2,
+    min(300, int((os.getenv("ANALYTICS_SCOPE_CACHE_TTL_SEC") or "15").strip() or "15")),
+)
+ANALYTICS_SCOPE_CACHE_STALE_TTL_SEC = max(
+    ANALYTICS_SCOPE_CACHE_TTL_SEC,
+    min(900, int((os.getenv("ANALYTICS_SCOPE_CACHE_STALE_TTL_SEC") or "60").strip() or "60")),
+)
+ANALYTICS_SUMMARY_CACHE_TTL_SEC = max(
+    2,
+    min(300, int((os.getenv("ANALYTICS_SUMMARY_CACHE_TTL_SEC") or "15").strip() or "15")),
+)
+ANALYTICS_SUMMARY_CACHE_STALE_TTL_SEC = max(
+    ANALYTICS_SUMMARY_CACHE_TTL_SEC,
+    min(900, int((os.getenv("ANALYTICS_SUMMARY_CACHE_STALE_TTL_SEC") or "60").strip() or "60")),
+)
+ANALYTICS_COMPARE_CACHE_TTL_SEC = max(
+    2,
+    min(300, int((os.getenv("ANALYTICS_COMPARE_CACHE_TTL_SEC") or "15").strip() or "15")),
+)
+ANALYTICS_COMPARE_CACHE_STALE_TTL_SEC = max(
+    ANALYTICS_COMPARE_CACHE_TTL_SEC,
+    min(900, int((os.getenv("ANALYTICS_COMPARE_CACHE_STALE_TTL_SEC") or "60").strip() or "60")),
+)
+BILLING_PLANS_CACHE_TTL_SEC = max(
+    5,
+    min(3600, int((os.getenv("BILLING_PLANS_CACHE_TTL_SEC") or "300").strip() or "300")),
+)
+BILLING_PLANS_CACHE_STALE_TTL_SEC = max(
+    BILLING_PLANS_CACHE_TTL_SEC,
+    min(7200, int((os.getenv("BILLING_PLANS_CACHE_STALE_TTL_SEC") or "900").strip() or "900")),
+)
+BILLING_STATUS_CACHE_TTL_SEC = max(
+    2,
+    min(300, int((os.getenv("BILLING_STATUS_CACHE_TTL_SEC") or "10").strip() or "10")),
+)
+BILLING_STATUS_CACHE_STALE_TTL_SEC = max(
+    BILLING_STATUS_CACHE_TTL_SEC,
+    min(900, int((os.getenv("BILLING_STATUS_CACHE_STALE_TTL_SEC") or "30").strip() or "30")),
+)
+WEBAPP_SINGLE_INSTANCE_GUARD_ENABLED = str(
+    os.getenv("WEBAPP_SINGLE_INSTANCE_GUARD_ENABLED") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+GERMAN_ONLY_MODE = str((os.getenv("GERMAN_ONLY_MODE") or "1")).strip().lower() in {"1", "true", "yes", "on"}
+GERMAN_ONLY_NATIVE_LANGUAGE = "ru"
+GERMAN_ONLY_LEARNING_LANGUAGE = "de"
+_HOTPATH_TODAY_CACHE = HotPathCacheManager(
+    name="today_snapshot",
+    max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+    refresh_workers=HOTPATH_REFRESH_WORKERS,
+)
+_HOTPATH_SKILL_PROGRESS_CACHE = HotPathCacheManager(
+    name="skill_progress_snapshot",
+    max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+    refresh_workers=HOTPATH_REFRESH_WORKERS,
+)
+_HOTPATH_WEEKLY_PLAN_CACHE = HotPathCacheManager(
+    name="weekly_plan_snapshot",
+    max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+    refresh_workers=HOTPATH_REFRESH_WORKERS,
+)
+_HOTPATH_PLAN_ANALYTICS_CACHE = HotPathCacheManager(
+    name="plan_analytics_snapshot",
+    max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+    refresh_workers=HOTPATH_REFRESH_WORKERS,
+)
+_TRANSLATION_CHECK_GLOBAL_ITEM_SEMAPHORE = threading.BoundedSemaphore(TRANSLATION_CHECK_GLOBAL_ITEM_CONCURRENCY)
+_HOTPATH_ALLOWLIST_CACHE = HotPathCacheManager(
+    name="allowlist_hot",
+    max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+)
+_HOTPATH_INSTANCE_LEASE_CACHE = HotPathCacheManager(
+    name="instance_lease_hot",
+    max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+)
+_HOTPATH_ANALYTICS_SCOPE_CACHE = HotPathCacheManager(
+    name="analytics_scope_hot",
+    max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+)
+_HOTPATH_ANALYTICS_SUMMARY_CACHE = HotPathCacheManager(
+    name="analytics_summary_hot",
+    max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+)
+_HOTPATH_ANALYTICS_COMPARE_CACHE = HotPathCacheManager(
+    name="analytics_compare_hot",
+    max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+)
+_HOTPATH_BILLING_PLANS_CACHE = HotPathCacheManager(
+    name="billing_plans_hot",
+    max_entries=max(8, HOTPATH_FRONT_CACHE_MAX_ENTRIES // 4),
+)
+_HOTPATH_BILLING_STATUS_CACHE = HotPathCacheManager(
+    name="billing_status_hot",
+    max_entries=max(32, HOTPATH_FRONT_CACHE_MAX_ENTRIES // 2),
+)
 
 if STRIPE_SECRET_KEY and stripe is not None:
     stripe.api_key = STRIPE_SECRET_KEY
@@ -749,13 +1073,14 @@ TELEGRAM_GROUP_CHAT_ID = os.getenv("TELEGRAM_GROUP_CHAT_ID") or os.getenv("BOT_G
 DELIVERY_ROUTE_DEBUG_ENABLED = (os.getenv("DELIVERY_ROUTE_DEBUG") or "1").strip().lower() in {"1", "true", "yes", "on"}
 
 if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
-    raise RuntimeError("LIVEKIT_API_KEY и LIVEKIT_API_SECRET должны быть установлены")
+    logging.warning("⚠️ LIVEKIT_API_KEY/LIVEKIT_API_SECRET не заданы. LiveKit token endpoints будут недоступны в этом процессе.")
 
 if not TELEGRAM_Deutsch_BOT_TOKEN:
-    raise RuntimeError("TELEGRAM_Deutsch_BOT_TOKEN должен быть установлен")
+    logging.warning("⚠️ TELEGRAM_Deutsch_BOT_TOKEN не задан. Telegram auth/admin endpoints будут недоступны в этом процессе.")
 
 _argv_joined = " ".join(sys.argv).lower()
 _imported_by_bot_process = "bot_3.py" in _argv_joined
+_railway_service_name = str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip()
 _force_backend_schema_bootstrap = str(
     os.getenv("FORCE_BACKEND_SCHEMA_BOOTSTRAP_ON_IMPORT", "0")
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -763,6 +1088,56 @@ _BACKEND_SCHEMA_BOOTSTRAP_LOCK = threading.Lock()
 _BACKEND_SCHEMA_READY = False
 _BACKEND_SCHEMA_BOOTSTRAP_RETRIES = 3
 _BACKEND_SCHEMA_BOOTSTRAP_RETRY_DELAY_SECONDS = 1.0
+_BACKEND_SCHEMA_BOOTSTRAP_BEFORE_REQUEST_ENABLED = str(
+    os.getenv("BACKEND_SCHEMA_BOOTSTRAP_BEFORE_REQUEST_ENABLED", "0")
+).strip().lower() in {"1", "true", "yes", "on"}
+_BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED = str(
+    os.getenv("BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED", "0")
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_runtime_service_name(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def _ensure_livekit_config() -> None:
+    if LIVEKIT_API_KEY and LIVEKIT_API_SECRET:
+        return
+    raise RuntimeError("LIVEKIT_API_KEY и LIVEKIT_API_SECRET должны быть установлены")
+
+
+def _ensure_telegram_bot_token() -> str:
+    if TELEGRAM_Deutsch_BOT_TOKEN:
+        return TELEGRAM_Deutsch_BOT_TOKEN
+    raise RuntimeError("TELEGRAM_Deutsch_BOT_TOKEN должен быть установлен")
+
+
+def _should_start_backend_runtime_side_effects() -> bool:
+    override = str(os.getenv("BACKEND_RUNTIME_SIDE_EFFECTS_ENABLED") or "").strip().lower()
+    if override:
+        return override in {"1", "true", "yes", "on"}
+    if _imported_by_bot_process:
+        return False
+
+    normalized_service_name = _normalize_runtime_service_name(_railway_service_name)
+    if normalized_service_name:
+        if normalized_service_name in {
+            "background_jobs",
+            "aux_background_worker",
+            "translation_check_worker",
+            "agent_worker",
+            "load_runner",
+            "my_3_bot",
+        }:
+            return False
+        if normalized_service_name.startswith("backend_web"):
+            return True
+
+    if "gunicorn" in _argv_joined:
+        return True
+    if __name__ == "__main__":
+        return True
+    return False
 
 
 def _is_retryable_schema_bootstrap_error(exc: Exception) -> bool:
@@ -804,12 +1179,14 @@ def _bootstrap_backend_schema_or_raise() -> None:
             raise last_error
 
 
-if _force_backend_schema_bootstrap or not _imported_by_bot_process:
+if _force_backend_schema_bootstrap or (_BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED and not _imported_by_bot_process):
     _bootstrap_backend_schema_or_raise()
 
 
 @app.before_request
 def _ensure_backend_schema_before_request():
+    if not _BACKEND_SCHEMA_BOOTSTRAP_BEFORE_REQUEST_ENABLED:
+        return None
     if _BACKEND_SCHEMA_READY:
         return None
     _bootstrap_backend_schema_or_raise()
@@ -861,16 +1238,138 @@ def _is_webapp_allowlist_bypass_enabled() -> bool:
     return str(os.getenv("WEBAPP_DISABLE_ALLOWLIST") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _is_webapp_user_allowed(user_id: int) -> bool:
+def _allowlist_cache_key(user_id: int) -> tuple[str, int]:
+    return ("allowlist", int(user_id))
+
+
+def _instance_lease_cache_key(user_id: int) -> tuple[str, int]:
+    return ("instance_lease", int(user_id))
+
+
+def _cache_webapp_allowlist(user_id: int, allowed: bool) -> None:
+    _HOTPATH_ALLOWLIST_CACHE.put(
+        _allowlist_cache_key(user_id),
+        bool(allowed),
+        fresh_ttl_sec=WEBAPP_ALLOWLIST_CACHE_TTL_SEC,
+        stale_ttl_sec=WEBAPP_ALLOWLIST_CACHE_STALE_TTL_SEC,
+    )
+
+
+def _resolve_webapp_user_allowed(user_id: int) -> tuple[bool, str]:
     if _is_webapp_allowlist_bypass_enabled():
-        return True
-    return is_telegram_user_allowed(int(user_id))
+        return True, "bypass"
+    cache_key = _allowlist_cache_key(user_id)
+    cached = _HOTPATH_ALLOWLIST_CACHE.get(cache_key, allow_stale=True)
+    if cached is not None:
+        return bool(cached.get("payload")), "cache"
+    allowed = bool(is_telegram_user_allowed(int(user_id)))
+    _cache_webapp_allowlist(int(user_id), allowed)
+    return allowed, "db"
+
+
+def _get_cached_webapp_instance_lease(user_id: int, *, allow_stale: bool = True) -> dict | None:
+    cache_key = _instance_lease_cache_key(user_id)
+    cached = _HOTPATH_INSTANCE_LEASE_CACHE.get(cache_key, allow_stale=allow_stale)
+    if cached and isinstance(cached.get("payload"), dict):
+        return dict(cached.get("payload") or {})
+    lease = get_webapp_instance_lease(int(user_id))
+    if lease:
+        _HOTPATH_INSTANCE_LEASE_CACHE.put(
+            cache_key,
+            dict(lease),
+            fresh_ttl_sec=WEBAPP_INSTANCE_LEASE_CACHE_TTL_SEC,
+            stale_ttl_sec=WEBAPP_INSTANCE_LEASE_CACHE_STALE_TTL_SEC,
+        )
+    else:
+        _HOTPATH_INSTANCE_LEASE_CACHE.invalidate(cache_key)
+    return lease
+
+
+def _resolve_cached_webapp_instance_lease(user_id: int) -> tuple[dict | None, str]:
+    cache_key = _instance_lease_cache_key(user_id)
+    cached = _HOTPATH_INSTANCE_LEASE_CACHE.get(cache_key, allow_stale=True)
+    if cached and isinstance(cached.get("payload"), dict):
+        return dict(cached.get("payload") or {}), "cache"
+    return _get_cached_webapp_instance_lease(int(user_id), allow_stale=True), "db"
+
+
+def _cache_webapp_instance_lease(user_id: int, lease: dict | None) -> None:
+    cache_key = _instance_lease_cache_key(user_id)
+    if isinstance(lease, dict) and lease:
+        _HOTPATH_INSTANCE_LEASE_CACHE.put(
+            cache_key,
+            dict(lease),
+            fresh_ttl_sec=WEBAPP_INSTANCE_LEASE_CACHE_TTL_SEC,
+            stale_ttl_sec=WEBAPP_INSTANCE_LEASE_CACHE_STALE_TTL_SEC,
+        )
+        return
+    _HOTPATH_INSTANCE_LEASE_CACHE.invalidate(cache_key)
+
+
+def _is_webapp_user_allowed(user_id: int) -> bool:
+    allowed, _source = _resolve_webapp_user_allowed(int(user_id))
+    return bool(allowed)
+
+
+def _is_synthetic_telegram_user_id(user_id: int) -> bool:
+    try:
+        candidate = int(user_id)
+    except Exception:
+        return False
+    synthetic_floor = max(
+        0,
+        int((os.getenv("SYNTHETIC_TELEGRAM_USER_ID_MIN") or "9100000001").strip() or "9100000001"),
+    )
+    return candidate >= synthetic_floor
+
+
+def _supported_learning_languages_for_mode() -> list[str]:
+    if GERMAN_ONLY_MODE:
+        return [GERMAN_ONLY_LEARNING_LANGUAGE]
+    return sorted(SUPPORTED_LEARNING_LANGUAGES)
+
+
+def _supported_native_languages_for_mode() -> list[str]:
+    if GERMAN_ONLY_MODE:
+        return [GERMAN_ONLY_NATIVE_LANGUAGE]
+    return sorted(SUPPORTED_NATIVE_LANGUAGES)
+
+
+def _normalize_language_profile_for_mode(
+    *,
+    native_language: str | None,
+    learning_language: str | None,
+) -> tuple[str, str]:
+    native = str(native_language or "").strip().lower()
+    learning = str(learning_language or "").strip().lower()
+    if GERMAN_ONLY_MODE:
+        return GERMAN_ONLY_NATIVE_LANGUAGE, GERMAN_ONLY_LEARNING_LANGUAGE
+    if native not in SUPPORTED_NATIVE_LANGUAGES:
+        native = GERMAN_ONLY_NATIVE_LANGUAGE
+    if learning not in SUPPORTED_LEARNING_LANGUAGES:
+        learning = GERMAN_ONLY_LEARNING_LANGUAGE
+    return native, learning
+
+
+def _normalize_language_profile_payload_for_mode(profile: dict | None, *, user_id: int) -> dict:
+    payload = dict(profile or {})
+    native, learning = _normalize_language_profile_for_mode(
+        native_language=payload.get("native_language"),
+        learning_language=payload.get("learning_language"),
+    )
+    payload["user_id"] = int(user_id)
+    payload["native_language"] = native
+    payload["learning_language"] = learning
+    payload["has_profile"] = bool(payload.get("has_profile"))
+    return payload
 
 
 @app.before_request
 def enforce_webapp_access():
     path = request.path or ""
     # Backward compatibility for legacy frontend/API paths without /api prefix.
+    if path in {"/webapp", "/webapp/"}:
+        return None
     if path in _LEGACY_API_EXACT_PATHS or path.startswith(_LEGACY_API_PREFIXES):
         return redirect(f"/api{path}", code=307)
 
@@ -893,17 +1392,21 @@ def enforce_webapp_access():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     with db_acquire_scope("request_guard_access"):
-        if not _is_webapp_user_allowed(int(user_id)):
+        is_allowed, allowlist_cache_source = _resolve_webapp_user_allowed(int(user_id))
+        if not is_allowed:
             return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
 
     g.telegram_user_id = int(user_id)
     g.telegram_user = user_data
     g.telegram_init_data = parsed
+    g.webapp_access_guard_cache_source = allowlist_cache_source
     return None
 
 
 @app.before_request
 def enforce_webapp_single_instance():
+    if not WEBAPP_SINGLE_INSTANCE_GUARD_ENABLED:
+        return None
     path = request.path or ""
     is_protected = path.startswith("/api/webapp/") or path in _ACCESS_PROTECTED_EXACT_PATHS
     if not is_protected or path in _ACCESS_PUBLIC_WEBAPP_PATHS:
@@ -920,17 +1423,13 @@ def enforce_webapp_single_instance():
         return None
 
     with db_acquire_scope("request_guard_instance"):
-        active_lease = get_webapp_instance_lease(int(user_id))
-        if not active_lease or not _webapp_instance_lease_is_fresh(active_lease):
-            claim_webapp_instance_lease(
-                user_id=int(user_id),
-                instance_id=instance_id,
-                session_id=request.headers.get("X-Webapp-Session-Id"),
-                platform=request.headers.get("X-Webapp-Platform"),
-                app_context=request.headers.get("X-Webapp-App-Context"),
-            )
-            g.webapp_instance_id = instance_id
-            return None
+        active_lease, instance_cache_source = _resolve_cached_webapp_instance_lease(int(user_id))
+
+    g.webapp_instance_guard_cache_source = instance_cache_source
+    g.webapp_instance_guard_auto_claimed = False
+    if not active_lease or not _webapp_instance_lease_is_fresh(active_lease):
+        g.webapp_instance_id = instance_id
+        return None
 
     active_instance_id = str(active_lease.get("instance_id") or "").strip()
     if active_instance_id and active_instance_id != instance_id:
@@ -961,6 +1460,12 @@ def enforce_billing_guards():
 
 
 # === Раздача фронта ===
+@app.route("/webapp")
+@app.route("/webapp/")
+def serve_webapp_entry():
+    return send_from_directory(FRONTEND_DIST, "index.html")
+
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):
@@ -990,6 +1495,7 @@ def get_token_api():
     if voice_limit_state.get("error"):
         return jsonify(voice_limit_state.get("error")), 429
 
+    _ensure_livekit_config()
     grant = VideoGrants(
         room_join=True,
         room="sales-assistant-room",
@@ -1102,14 +1608,17 @@ def user_language_profile():
         return jsonify({"error": error}), status
 
     if request.method == "GET":
-        profile = get_user_language_profile(user_id=user_id)
+        profile = _normalize_language_profile_payload_for_mode(
+            get_user_language_profile(user_id=user_id),
+            user_id=int(user_id),
+        )
         return jsonify(
             {
                 "ok": True,
                 "profile": profile,
                 "supported": {
-                    "learning_language": sorted(SUPPORTED_LEARNING_LANGUAGES),
-                    "native_language": sorted(SUPPORTED_NATIVE_LANGUAGES),
+                    "learning_language": _supported_learning_languages_for_mode(),
+                    "native_language": _supported_native_languages_for_mode(),
                 },
             }
         )
@@ -1120,14 +1629,17 @@ def user_language_profile():
 
     # Allow POST read-mode to avoid query-string issues with large initData in WebView.
     if not learning_language and not native_language:
-        profile = get_user_language_profile(user_id=user_id)
+        profile = _normalize_language_profile_payload_for_mode(
+            get_user_language_profile(user_id=user_id),
+            user_id=int(user_id),
+        )
         return jsonify(
             {
                 "ok": True,
                 "profile": profile,
                 "supported": {
-                    "learning_language": sorted(SUPPORTED_LEARNING_LANGUAGES),
-                    "native_language": sorted(SUPPORTED_NATIVE_LANGUAGES),
+                    "learning_language": _supported_learning_languages_for_mode(),
+                    "native_language": _supported_native_languages_for_mode(),
                 },
             }
         )
@@ -1135,15 +1647,25 @@ def user_language_profile():
     if not learning_language or not native_language:
         return jsonify({"error": "learning_language и native_language обязательны"}), 400
     try:
-        old_profile = get_user_language_profile(user_id=user_id)
+        native_language, learning_language = _normalize_language_profile_for_mode(
+            native_language=native_language,
+            learning_language=learning_language,
+        )
+        old_profile = _normalize_language_profile_payload_for_mode(
+            get_user_language_profile(user_id=user_id),
+            user_id=int(user_id),
+        )
         old_pair = (
             str(old_profile.get("native_language") or "ru").strip().lower(),
             str(old_profile.get("learning_language") or "de").strip().lower(),
         )
-        profile = upsert_user_language_profile(
-            user_id=user_id,
-            learning_language=learning_language,
-            native_language=native_language,
+        profile = _normalize_language_profile_payload_for_mode(
+            upsert_user_language_profile(
+                user_id=user_id,
+                learning_language=learning_language,
+                native_language=native_language,
+            ),
+            user_id=int(user_id),
         )
         _invalidate_user_language_pair_cache(user_id)
         new_pair = (
@@ -1155,7 +1677,7 @@ def user_language_profile():
             # Switching language pair must start from a clean translation screen.
             # Unfinished sentences remain untranslated in DB (counted in analytics),
             # while active sessions are closed to avoid cross-pair leakage in UI.
-            with get_db_connection_context() as conn:
+            with db_acquire_scope("user_language_profile_reset"), get_db_connection_context() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
@@ -1170,13 +1692,17 @@ def user_language_profile():
             {
                 "error": str(exc),
                 "supported": {
-                    "learning_language": sorted(SUPPORTED_LEARNING_LANGUAGES),
-                    "native_language": sorted(SUPPORTED_NATIVE_LANGUAGES),
+                    "learning_language": _supported_learning_languages_for_mode(),
+                    "native_language": _supported_native_languages_for_mode(),
                 },
             }
         ), 400
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения language profile: {exc}"}), 500
+    _mark_today_plan_snapshot_stale(user_id=int(user_id))
+    _mark_skill_progress_snapshot_stale(user_id=int(user_id))
+    _mark_weekly_plan_snapshot_stale(user_id=int(user_id))
+    _mark_plan_analytics_snapshot_stale(user_id=int(user_id))
     return jsonify({"ok": True, "profile": profile, "reset_sessions": reset_sessions})
 
 
@@ -1388,10 +1914,11 @@ def _build_telegram_data_check_string(init_data: str) -> str:
 def _telegram_hash_is_valid(init_data: str) -> bool:
     if not _telegram_init_data_auth_date_is_fresh(init_data):
         return False
+    telegram_bot_token = _ensure_telegram_bot_token()
     data_check_string = _build_telegram_data_check_string(init_data)
     secret_key = hmac.new(
         b"WebAppData",
-        TELEGRAM_Deutsch_BOT_TOKEN.encode("utf-8"),
+        telegram_bot_token.encode("utf-8"),
         hashlib.sha256,
     ).digest()
     calculated_hash = hmac.new(
@@ -1443,6 +1970,7 @@ def _telegram_login_hash_is_valid(payload: dict) -> bool:
     received_hash = str(payload.get("hash") or "").strip()
     if not received_hash:
         return False
+    telegram_bot_token = _ensure_telegram_bot_token()
     data = {}
     for key, value in payload.items():
         if key == "hash":
@@ -1451,7 +1979,7 @@ def _telegram_login_hash_is_valid(payload: dict) -> bool:
             continue
         data[str(key)] = str(value)
     data_check_string = "\n".join(f"{key}={data[key]}" for key in sorted(data.keys()))
-    secret_key = hashlib.sha256(TELEGRAM_Deutsch_BOT_TOKEN.encode("utf-8")).digest()
+    secret_key = hashlib.sha256(telegram_bot_token.encode("utf-8")).digest()
     calculated_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
     return hmac.compare_digest(calculated_hash, received_hash)
 
@@ -1459,6 +1987,7 @@ def _telegram_login_hash_is_valid(payload: dict) -> bool:
 def _build_signed_init_data_for_user(user_data: dict, auth_date: int | None = None) -> str:
     if not user_data:
         return ""
+    telegram_bot_token = _ensure_telegram_bot_token()
     compact_user = {
         "id": int(user_data.get("id")),
         "first_name": str(user_data.get("first_name") or "").strip(),
@@ -1475,7 +2004,7 @@ def _build_signed_init_data_for_user(user_data: dict, auth_date: int | None = No
     data_check_string = "\n".join(f"{key}={payload[key]}" for key in sorted(payload.keys()))
     secret_key = hmac.new(
         b"WebAppData",
-        TELEGRAM_Deutsch_BOT_TOKEN.encode("utf-8"),
+        telegram_bot_token.encode("utf-8"),
         hashlib.sha256,
     ).digest()
     payload["hash"] = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -1516,6 +2045,17 @@ def _extract_webapp_instance_id(payload: dict | None = None) -> str | None:
         return None
     cleaned = re.sub(r"[^a-zA-Z0-9._:-]+", "-", raw).strip("-")
     return cleaned[:128] if cleaned else None
+
+
+def _extract_webapp_session_id(payload: dict | None = None) -> str | None:
+    body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    raw = str(
+        body.get("sessionId")
+        or body.get("session_id")
+        or request.headers.get("X-Webapp-Session-Id")
+        or ""
+    ).strip()
+    return raw[:128] if raw else None
 
 
 def _webapp_instance_lease_is_fresh(lease: dict | None) -> bool:
@@ -1661,6 +2201,64 @@ def _estimate_json_payload_size_bytes(payload: Any) -> int | None:
         return None
 
 
+def _snapshot_age_ms(snapshot: dict | None) -> int | None:
+    refreshed_at = _parse_iso_datetime((snapshot or {}).get("refreshed_at"))
+    if refreshed_at is None:
+        return None
+    now_utc = datetime.now(timezone.utc)
+    refreshed_utc = refreshed_at if refreshed_at.tzinfo else refreshed_at.replace(tzinfo=timezone.utc)
+    return max(0, int((now_utc - refreshed_utc).total_seconds() * 1000))
+
+
+def _snapshot_is_fresh(snapshot: dict | None) -> bool:
+    fresh_until_at = _parse_iso_datetime((snapshot or {}).get("fresh_until_at"))
+    if fresh_until_at is None:
+        return False
+    fresh_until_utc = fresh_until_at if fresh_until_at.tzinfo else fresh_until_at.replace(tzinfo=timezone.utc)
+    return fresh_until_utc > datetime.now(timezone.utc)
+
+
+def _snapshot_is_servable_stale(snapshot: dict | None) -> bool:
+    stale_until_at = _parse_iso_datetime((snapshot or {}).get("stale_until_at"))
+    if stale_until_at is None:
+        return False
+    stale_until_utc = stale_until_at if stale_until_at.tzinfo else stale_until_at.replace(tzinfo=timezone.utc)
+    return stale_until_utc > datetime.now(timezone.utc)
+
+
+def _store_snapshot_in_front_cache(
+    cache_manager: HotPathCacheManager,
+    *,
+    front_key: tuple,
+    snapshot: dict | None,
+    fresh_ttl_sec: int,
+    stale_ttl_sec: int,
+) -> None:
+    if not isinstance(snapshot, dict):
+        return
+    payload = snapshot.get("payload") if isinstance(snapshot.get("payload"), dict) else {}
+    meta = dict(snapshot.get("meta") or {}) if isinstance(snapshot.get("meta"), dict) else {}
+    meta["_snapshot_refreshed_at"] = snapshot.get("refreshed_at")
+    meta["_snapshot_fresh_until_at"] = snapshot.get("fresh_until_at")
+    meta["_snapshot_stale_until_at"] = snapshot.get("stale_until_at")
+    refreshed_at = _parse_iso_datetime(snapshot.get("refreshed_at"))
+    refreshed_at_ts = (
+        (refreshed_at if refreshed_at and refreshed_at.tzinfo else refreshed_at.replace(tzinfo=timezone.utc)).timestamp()
+        if refreshed_at is not None
+        else None
+    )
+    cache_manager.put(
+        front_key,
+        payload,
+        fresh_ttl_sec=fresh_ttl_sec,
+        stale_ttl_sec=stale_ttl_sec,
+        meta=meta,
+        refreshed_at_ts=refreshed_at_ts,
+    )
+    if not _snapshot_is_fresh(snapshot):
+        cache_manager.mark_stale(front_key)
+
+
 def _log_billing_skip_warning(*, provider: str, action_type: str, units_type: str, exc: Exception) -> None:
     key = "|".join([
         str(provider or "").strip().lower(),
@@ -1731,9 +2329,35 @@ def _clear_translation_check_status_poll(session_id: int) -> None:
         _TRANSLATION_CHECK_STATUS_POLLS.pop(int(session_id), None)
 
 
+def _remember_translation_session_fill_launched_at(session_id: int, launched_at_ms: int) -> None:
+    with _OBSERVABILITY_LOCK:
+        _TRANSLATION_SESSION_FILL_LAUNCHED_AT_MS[int(session_id)] = int(launched_at_ms)
+        if len(_TRANSLATION_SESSION_FILL_LAUNCHED_AT_MS) > 10000:
+            _TRANSLATION_SESSION_FILL_LAUNCHED_AT_MS.clear()
+
+
+def _pop_translation_session_fill_launched_at(session_id: int) -> int | None:
+    with _OBSERVABILITY_LOCK:
+        return _TRANSLATION_SESSION_FILL_LAUNCHED_AT_MS.pop(int(session_id), None)
+
+
+def _translation_session_fill_runner_is_active(session_id: int | None) -> bool:
+    if session_id is None:
+        return False
+    with _TRANSLATION_SESSION_FILL_RUNNERS_LOCK:
+        return int(session_id) in _TRANSLATION_SESSION_FILL_RUNNERS
+
+
 def _translation_check_runner_lock_key(session_id: int) -> int:
     # Namespace lock key to avoid collisions with other advisory lock users.
     return (5401 << 32) + (int(session_id) & 0xFFFFFFFF)
+
+
+def _translation_check_runtime_age_ms(value: Any) -> int | None:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return None
+    return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds() * 1000))
 
 
 def _normalize_scope_kind_payload(value) -> str:
@@ -1854,7 +2478,7 @@ def _sum_billing_units_today(
         return 0.0
     day_local = _today_local_date(tz_name=tz_name)
     try:
-        with get_db_connection_context() as conn:
+        with db_acquire_scope("billing_units_today"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
@@ -2026,18 +2650,46 @@ def _is_reader_doc_expired_for_free(doc: dict | None) -> tuple[bool, str | None]
 def _get_user_language_pair(user_id: int) -> tuple[str, str, dict]:
     user_key = int(user_id)
     now_ts = time.time()
+    cached_entry: dict | None = None
     with _LANGUAGE_PAIR_CACHE_LOCK:
         cached = _LANGUAGE_PAIR_CACHE.get(user_key)
+        if isinstance(cached, dict):
+            cached_entry = dict(cached)
         if cached and float(cached.get("expires_at") or 0.0) > now_ts:
-            return (
-                str(cached.get("source_lang") or "ru"),
-                str(cached.get("target_lang") or "de"),
-                dict(cached.get("profile") or {}),
+            native_language, learning_language = _normalize_language_profile_for_mode(
+                native_language=cached.get("source_lang"),
+                learning_language=cached.get("target_lang"),
             )
+            return (
+                native_language,
+                learning_language,
+                _normalize_language_profile_payload_for_mode(
+                    dict(cached.get("profile") or {}),
+                    user_id=user_key,
+                ),
+            )
+    if cached_entry:
+        native_language, learning_language = _normalize_language_profile_for_mode(
+            native_language=cached_entry.get("source_lang"),
+            learning_language=cached_entry.get("target_lang"),
+        )
+        return (
+            native_language,
+            learning_language,
+            _normalize_language_profile_payload_for_mode(
+                cached_entry.get("profile") or {},
+                user_id=user_key,
+            ),
+        )
 
-    profile = get_user_language_profile(user_id=user_key)
-    native_language = str(profile.get("native_language") or "ru").strip().lower() or "ru"
-    learning_language = str(profile.get("learning_language") or "de").strip().lower() or "de"
+    profile = _normalize_language_profile_payload_for_mode(
+        get_user_language_profile(user_id=user_key),
+        user_id=user_key,
+    )
+    native_language, learning_language = _normalize_language_profile_for_mode(
+        native_language=profile.get("native_language"),
+        learning_language=profile.get("learning_language"),
+    )
     with _LANGUAGE_PAIR_CACHE_LOCK:
         _LANGUAGE_PAIR_CACHE[user_key] = {
             "source_lang": native_language,
@@ -2046,6 +2698,139 @@ def _get_user_language_pair(user_id: int) -> tuple[str, str, dict]:
             "expires_at": now_ts + float(LANGUAGE_PAIR_CACHE_TTL_SEC),
         }
     return native_language, learning_language, profile
+
+
+def _extract_webapp_language_pair_hint(payload: dict | None = None) -> tuple[str, str] | None:
+    body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    pair_payload = body.get("language_pair") if isinstance(body.get("language_pair"), dict) else {}
+    source_lang = _normalize_short_lang_code(
+        request.headers.get("X-Webapp-Source-Lang")
+        or request.args.get("source_lang")
+        or pair_payload.get("source_lang")
+        or body.get("source_lang"),
+        fallback="",
+    )
+    target_lang = _normalize_short_lang_code(
+        request.headers.get("X-Webapp-Target-Lang")
+        or request.args.get("target_lang")
+        or pair_payload.get("target_lang")
+        or body.get("target_lang"),
+        fallback="",
+    )
+    if source_lang not in SUPPORTED_NATIVE_LANGUAGES:
+        return None
+    if target_lang not in SUPPORTED_LEARNING_LANGUAGES:
+        return None
+    return source_lang, target_lang
+
+
+def _remember_user_language_pair_hint(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    cached_profile: dict | None = None,
+) -> dict:
+    safe_user_id = int(user_id)
+    profile_payload = dict(cached_profile or {})
+    if not profile_payload:
+        profile_payload = {
+            "user_id": safe_user_id,
+            "native_language": str(source_lang or "ru").strip().lower() or "ru",
+            "learning_language": str(target_lang or "de").strip().lower() or "de",
+            "updated_at": None,
+            "has_profile": False,
+        }
+    now_ts = time.time()
+    with _LANGUAGE_PAIR_CACHE_LOCK:
+        _LANGUAGE_PAIR_CACHE[safe_user_id] = {
+            "source_lang": str(source_lang or "ru").strip().lower() or "ru",
+            "target_lang": str(target_lang or "de").strip().lower() or "de",
+            "profile": dict(profile_payload),
+            "expires_at": now_ts + float(LANGUAGE_PAIR_CACHE_TTL_SEC),
+        }
+    return dict(profile_payload)
+
+
+def _get_user_language_pair_for_webapp_request(
+    user_id: int,
+    *,
+    payload: dict | None = None,
+) -> tuple[str, str, dict, str]:
+    safe_user_id = int(user_id)
+    hint_pair = _extract_webapp_language_pair_hint(payload)
+    if hint_pair:
+        source_lang, target_lang = _normalize_language_profile_for_mode(
+            native_language=hint_pair[0],
+            learning_language=hint_pair[1],
+        )
+        cached_profile: dict | None = None
+        with _LANGUAGE_PAIR_CACHE_LOCK:
+            cached = _LANGUAGE_PAIR_CACHE.get(safe_user_id)
+            if cached:
+                cached_profile = _normalize_language_profile_payload_for_mode(
+                    dict(cached.get("profile") or {}),
+                    user_id=safe_user_id,
+                )
+        profile = _remember_user_language_pair_hint(
+            user_id=safe_user_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            cached_profile=cached_profile,
+        )
+        return source_lang, target_lang, profile, "request_hint"
+
+    user_key = safe_user_id
+    now_ts = time.time()
+    cached_entry: dict | None = None
+    with _LANGUAGE_PAIR_CACHE_LOCK:
+        cached = _LANGUAGE_PAIR_CACHE.get(user_key)
+        if isinstance(cached, dict):
+            cached_entry = dict(cached)
+        if cached and float(cached.get("expires_at") or 0.0) > now_ts:
+            native_language, learning_language = _normalize_language_profile_for_mode(
+                native_language=cached.get("source_lang"),
+                learning_language=cached.get("target_lang"),
+            )
+            return (
+                native_language,
+                learning_language,
+                _normalize_language_profile_payload_for_mode(
+                    dict(cached.get("profile") or {}),
+                    user_id=safe_user_id,
+                ),
+                "memory_cache",
+            )
+    if cached_entry:
+        native_language, learning_language = _normalize_language_profile_for_mode(
+            native_language=cached_entry.get("source_lang"),
+            learning_language=cached_entry.get("target_lang"),
+        )
+        return (
+            native_language,
+            learning_language,
+            _normalize_language_profile_payload_for_mode(
+                cached_entry.get("profile") or {},
+                user_id=safe_user_id,
+            ),
+            "stale_memory_cache",
+        )
+
+    profile = _normalize_language_profile_payload_for_mode(
+        get_user_language_profile(user_id=user_key),
+        user_id=user_key,
+    )
+    native_language, learning_language = _normalize_language_profile_for_mode(
+        native_language=profile.get("native_language"),
+        learning_language=profile.get("learning_language"),
+    )
+    _remember_user_language_pair_hint(
+        user_id=user_key,
+        source_lang=native_language,
+        target_lang=learning_language,
+        cached_profile=profile,
+    )
+    return native_language, learning_language, profile, "db_profile"
 
 
 def _invalidate_user_language_pair_cache(user_id: int) -> None:
@@ -2296,6 +3081,87 @@ def _set_cached_dictionary_lookup(cache_key: str, payload: dict) -> None:
         _prune_dictionary_lookup_cache(now_ts)
 
 
+def _build_quick_translate_cache_key(*, text: str, source_lang: str | None, target_lang: str) -> str:
+    safe_text = str(text or "").strip()
+    safe_source_lang = _normalize_short_lang_code(source_lang, fallback="") or ""
+    safe_target_lang = _normalize_short_lang_code(target_lang, fallback="de")
+    text_hash = hashlib.sha1(safe_text.encode("utf-8", "ignore")).hexdigest()
+    return f"{safe_source_lang}:{safe_target_lang}:{text_hash}"
+
+
+def _prune_quick_translate_cache(now_ts: float) -> None:
+    expired_keys = [
+        key
+        for key, payload in _QUICK_TRANSLATE_CACHE.items()
+        if float((payload or {}).get("expires_at") or 0.0) <= now_ts
+    ]
+    for key in expired_keys:
+        _QUICK_TRANSLATE_CACHE.pop(key, None)
+
+    while len(_QUICK_TRANSLATE_CACHE) > QUICK_TRANSLATE_CACHE_MAX_ITEMS:
+        oldest_key = min(
+            _QUICK_TRANSLATE_CACHE.items(),
+            key=lambda item: float((item[1] or {}).get("created_at") or 0.0),
+        )[0]
+        _QUICK_TRANSLATE_CACHE.pop(oldest_key, None)
+
+
+def _get_cached_quick_translate(cache_key: str) -> dict | None:
+    safe_cache_key = str(cache_key or "").strip()
+    if not safe_cache_key:
+        return None
+    now_ts = time.time()
+    with _QUICK_TRANSLATE_CACHE_LOCK:
+        cached = _QUICK_TRANSLATE_CACHE.get(safe_cache_key)
+        if not cached:
+            return None
+        if float(cached.get("expires_at") or 0.0) <= now_ts:
+            _QUICK_TRANSLATE_CACHE.pop(safe_cache_key, None)
+            return None
+        cached["last_hit_at"] = now_ts
+        payload = copy.deepcopy(cached.get("payload") or {})
+    return payload if isinstance(payload, dict) else None
+
+
+def _set_cached_quick_translate(cache_key: str, payload: dict) -> None:
+    safe_cache_key = str(cache_key or "").strip()
+    if not safe_cache_key or not isinstance(payload, dict):
+        return
+    now_ts = time.time()
+    cache_payload = copy.deepcopy(payload)
+    with _QUICK_TRANSLATE_CACHE_LOCK:
+        _QUICK_TRANSLATE_CACHE[safe_cache_key] = {
+            "payload": cache_payload,
+            "created_at": now_ts,
+            "last_hit_at": now_ts,
+            "expires_at": now_ts + float(QUICK_TRANSLATE_CACHE_TTL_SEC),
+        }
+        _prune_quick_translate_cache(now_ts)
+
+
+def _acquire_quick_translate_inflight_slot(cache_key: str) -> tuple[bool, threading.Event | None]:
+    safe_cache_key = str(cache_key or "").strip()
+    if not safe_cache_key:
+        return True, None
+    with _QUICK_TRANSLATE_CACHE_LOCK:
+        existing = _QUICK_TRANSLATE_INFLIGHT.get(safe_cache_key)
+        if existing is not None:
+            return False, existing
+        event = threading.Event()
+        _QUICK_TRANSLATE_INFLIGHT[safe_cache_key] = event
+        return True, event
+
+
+def _release_quick_translate_inflight_slot(cache_key: str) -> None:
+    safe_cache_key = str(cache_key or "").strip()
+    if not safe_cache_key:
+        return
+    with _QUICK_TRANSLATE_CACHE_LOCK:
+        event = _QUICK_TRANSLATE_INFLIGHT.pop(safe_cache_key, None)
+    if event is not None:
+        event.set()
+
+
 def _get_cached_dictionary_lookup_with_tier(cache_key: str) -> tuple[dict | None, str]:
     cached = _get_cached_dictionary_lookup(cache_key)
     if cached:
@@ -2398,6 +3264,9 @@ def _get_dictionary_enrichment_job_by_lookup_id(lookup_id: str) -> dict[str, Any
     normalized_lookup_id = str(lookup_id or "").strip()
     if not normalized_lookup_id:
         return None
+    shared_job = _get_shared_dictionary_enrichment_job_by_lookup_id(normalized_lookup_id)
+    if isinstance(shared_job, dict):
+        return _clone_dictionary_enrichment_job(shared_job)
     with _DICTIONARY_ENRICHMENT_LOCK:
         _prune_dictionary_enrichment_jobs_locked()
         return _clone_dictionary_enrichment_job(_DICTIONARY_ENRICHMENT_JOBS.get(normalized_lookup_id))
@@ -2407,6 +3276,9 @@ def _get_dictionary_enrichment_job_for_cache_keys(*cache_keys: str) -> dict[str,
     normalized_keys = [str(item or "").strip() for item in cache_keys if str(item or "").strip()]
     if not normalized_keys:
         return None
+    shared_job = _get_shared_dictionary_enrichment_job_for_cache_keys(*normalized_keys)
+    if isinstance(shared_job, dict):
+        return _clone_dictionary_enrichment_job(shared_job)
     with _DICTIONARY_ENRICHMENT_LOCK:
         _prune_dictionary_enrichment_jobs_locked()
         for cache_key in normalized_keys:
@@ -2466,7 +3338,20 @@ def _create_dictionary_enrichment_job(
             _DICTIONARY_ENRICHMENT_CACHE_TO_LOOKUP_ID[job["cache_key"]] = str(lookup_id)
         if job["cache_key_shared"]:
             _DICTIONARY_ENRICHMENT_CACHE_TO_LOOKUP_ID[job["cache_key_shared"]] = str(lookup_id)
-        return _clone_dictionary_enrichment_job(job) or {}
+        cloned = _clone_dictionary_enrichment_job(job) or {}
+    logging.info(
+        "Dictionary enrichment queued: lookup_id=%s user_id=%s word=%r direction=%s source_lang=%s target_lang=%s query_source_lang=%s query_target_lang=%s",
+        str(lookup_id),
+        int(user_id),
+        str(word or ""),
+        str(direction or "").strip().lower(),
+        str(source_lang or "").strip().lower(),
+        str(target_lang or "").strip().lower(),
+        str(query_source_lang or "").strip().lower(),
+        str(query_target_lang or "").strip().lower(),
+    )
+    _set_shared_dictionary_enrichment_job(cloned)
+    return cloned
 
 
 def _update_dictionary_enrichment_job(
@@ -2495,6 +3380,7 @@ def _update_dictionary_enrichment_job(
             job["error"] = str(error or "").strip()
         job["updated_at"] = time.time()
         job["expires_at"] = job["updated_at"] + _DICTIONARY_ENRICHMENT_JOB_TTL_SEC
+        _set_shared_dictionary_enrichment_job(job)
 
 
 def _resolve_dictionary_query_languages(
@@ -2770,6 +3656,72 @@ def _extract_plan_code_from_stripe_payload(payload_obj, default: str = "pro") ->
     metadata = payload_obj.get("metadata") or {}
     value = str(metadata.get("plan_code") or payload_obj.get("plan_code") or default).strip().lower()
     return value or default
+
+
+def _get_live_billing_price_snapshot(stripe_price_id: str | None) -> dict:
+    price_id_value = str(stripe_price_id or "").strip()
+    if not price_id_value:
+        return {
+            "amount_minor": None,
+            "amount_value": None,
+            "currency": None,
+            "recurring_interval": None,
+            "recurring_interval_count": None,
+            "price_source": "missing_price_id",
+        }
+    if stripe is None or not STRIPE_SECRET_KEY:
+        return {
+            "amount_minor": None,
+            "amount_value": None,
+            "currency": None,
+            "recurring_interval": None,
+            "recurring_interval_count": None,
+            "price_source": "stripe_unavailable",
+        }
+    try:
+        price_obj = stripe.Price.retrieve(price_id_value)
+        amount_minor = getattr(price_obj, "unit_amount", None)
+        if amount_minor is None and hasattr(price_obj, "get"):
+            amount_minor = price_obj.get("unit_amount")
+        currency_value = getattr(price_obj, "currency", None)
+        if currency_value is None and hasattr(price_obj, "get"):
+            currency_value = price_obj.get("currency")
+        recurring = getattr(price_obj, "recurring", None)
+        if recurring is None and hasattr(price_obj, "get"):
+            recurring = price_obj.get("recurring")
+        recurring_interval = None
+        recurring_interval_count = None
+        if recurring:
+            if hasattr(recurring, "get"):
+                recurring_interval = recurring.get("interval")
+                recurring_interval_count = recurring.get("interval_count")
+            else:
+                recurring_interval = getattr(recurring, "interval", None)
+                recurring_interval_count = getattr(recurring, "interval_count", None)
+        amount_value = None
+        if amount_minor is not None:
+            try:
+                amount_value = float(amount_minor) / 100.0
+            except Exception:
+                amount_value = None
+        return {
+            "amount_minor": int(amount_minor) if amount_minor is not None else None,
+            "amount_value": amount_value,
+            "currency": str(currency_value or "").upper() or None,
+            "recurring_interval": str(recurring_interval or "").strip().lower() or None,
+            "recurring_interval_count": int(recurring_interval_count or 0) or None,
+            "price_source": "stripe_live",
+        }
+    except Exception as exc:
+        logging.warning("stripe price retrieve failed price_id=%s: %s", price_id_value, exc)
+        return {
+            "amount_minor": None,
+            "amount_value": None,
+            "currency": None,
+            "recurring_interval": None,
+            "recurring_interval_count": None,
+            "price_source": "stripe_error",
+        }
 
 
 def _stripe_subscription_value(subscription_obj, field: str, default=None):
@@ -3119,6 +4071,32 @@ def _resolve_dictionary_save_pair(
             return rj_dir_pair
 
     return profile_forward
+
+
+def _is_missing_dictionary_schema_error(exc: Exception) -> bool:
+    message = str(exc or "").strip().lower()
+    if not message:
+        return False
+    return (
+        "bt_3_dictionary_entries" in message
+        or "canonical_entry_id" in message
+        or exc.__class__.__name__ in {"UndefinedTable", "UndefinedColumn"}
+    )
+
+
+def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
+    try:
+        save_webapp_dictionary_query(**kwargs)
+        return
+    except Exception as exc:
+        if not _is_missing_dictionary_schema_error(exc):
+            raise
+        logging.warning(
+            "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
+            exc,
+        )
+        ensure_webapp_tables()
+    save_webapp_dictionary_query(**kwargs)
 
 
 def _align_dictionary_legacy_ru_de_columns(
@@ -3873,6 +4851,7 @@ def _youtube_search_videos(
     *,
     max_results: int = 5,
     target_lang: str = "de",
+    prefer_curated_channels: bool = True,
     billing_user_id: int | None = None,
     billing_source_lang: str | None = None,
     billing_target_lang: str | None = None,
@@ -3897,28 +4876,29 @@ def _youtube_search_videos(
             "maxResults": max_results,
             "key": YOUTUBE_API_KEY,
         }
-        for channel_id in _TODAY_PREFERRED_CHANNELS:
-            params = {**common_params, "channelId": channel_id}
-            resp = requests.get(base_url, params=params, timeout=12)
-            _billing_log_youtube_quota_usage(
-                user_id=billing_user_id,
-                source_lang=billing_source_lang,
-                target_lang=billing_target_lang or target_lang,
-                action_type="youtube_api_search",
-                endpoint="search",
-                quota_units=100.0,
-                metadata={"query": query[:120], "scope": "preferred_channel"},
-            )
-            if resp.status_code >= 400:
-                continue
-            data = resp.json() if resp.content else {}
-            for item in data.get("items", []):
-                video_id = ((item.get("id") or {}).get("videoId") or "").strip()
-                title = ((item.get("snippet") or {}).get("title") or "").strip()
-                if not video_id:
+        if prefer_curated_channels:
+            for channel_id in _TODAY_PREFERRED_CHANNELS:
+                params = {**common_params, "channelId": channel_id}
+                resp = requests.get(base_url, params=params, timeout=12)
+                _billing_log_youtube_quota_usage(
+                    user_id=billing_user_id,
+                    source_lang=billing_source_lang,
+                    target_lang=billing_target_lang or target_lang,
+                    action_type="youtube_api_search",
+                    endpoint="search",
+                    quota_units=100.0,
+                    metadata={"query": query[:120], "scope": "preferred_channel"},
+                )
+                if resp.status_code >= 400:
                     continue
-                collected.append({"video_id": video_id, "title": title})
-                preferred_hits += 1
+                data = resp.json() if resp.content else {}
+                for item in data.get("items", []):
+                    video_id = ((item.get("id") or {}).get("videoId") or "").strip()
+                    title = ((item.get("snippet") or {}).get("title") or "").strip()
+                    if not video_id:
+                        continue
+                    collected.append({"video_id": video_id, "title": title})
+                    preferred_hits += 1
         if not collected:
             lang_code = _normalize_short_lang_code(target_lang, fallback="de")
             region_map = {
@@ -3962,8 +4942,9 @@ def _youtube_search_videos(
         if vid and vid not in unique:
             unique[vid] = {"video_id": vid, "title": row.get("title") or ""}
     logging.info(
-        "YT search query='%s' preferred_hits=%s fallback_hits=%s unique=%s",
+        "YT search query='%s' prefer_curated=%s preferred_hits=%s fallback_hits=%s unique=%s",
         query,
+        prefer_curated_channels,
         preferred_hits,
         fallback_hits,
         len(unique),
@@ -3971,6 +4952,238 @@ def _youtube_search_videos(
     if unique:
         return list(unique.values())
     return []
+
+
+def _build_youtube_manual_search_cache_key(query: str, target_lang: str, max_results: int) -> str:
+    normalized_query = " ".join(str(query or "").strip().lower().split())
+    normalized_lang = _normalize_short_lang_code(target_lang, fallback="de")
+    normalized_limit = max(1, int(max_results or 0))
+    return f"{normalized_lang}|{normalized_limit}|{normalized_query}"
+
+
+def _get_cached_youtube_manual_search(query: str, target_lang: str, max_results: int) -> list[dict] | None:
+    cache_key = _build_youtube_manual_search_cache_key(query, target_lang, max_results)
+    now_ts = time.time()
+    with _YOUTUBE_MANUAL_SEARCH_CACHE_LOCK:
+        cached = _YOUTUBE_MANUAL_SEARCH_CACHE.get(cache_key)
+        if not cached:
+            return None
+        if now_ts - float(cached.get("ts") or 0) > _YOUTUBE_MANUAL_SEARCH_CACHE_TTL_SEC:
+            _YOUTUBE_MANUAL_SEARCH_CACHE.pop(cache_key, None)
+            return None
+        return [dict(item) for item in (cached.get("items") or [])]
+
+
+def _set_cached_youtube_manual_search(query: str, target_lang: str, max_results: int, items: list[dict]) -> None:
+    cache_key = _build_youtube_manual_search_cache_key(query, target_lang, max_results)
+    payload = {
+        "ts": time.time(),
+        "items": [dict(item) for item in (items or [])],
+    }
+    with _YOUTUBE_MANUAL_SEARCH_CACHE_LOCK:
+        _YOUTUBE_MANUAL_SEARCH_CACHE[cache_key] = payload
+        if len(_YOUTUBE_MANUAL_SEARCH_CACHE) > 128:
+            oldest_key = min(
+                _YOUTUBE_MANUAL_SEARCH_CACHE.keys(),
+                key=lambda key: float((_YOUTUBE_MANUAL_SEARCH_CACHE.get(key) or {}).get("ts") or 0),
+            )
+            _YOUTUBE_MANUAL_SEARCH_CACHE.pop(oldest_key, None)
+
+
+def _extract_youtube_initial_data(html_text: str) -> dict | None:
+    raw_html = str(html_text or "")
+    if not raw_html:
+        return None
+    patterns = [
+        r"var ytInitialData = (\{.*?\});",
+        r"window\[['\"]ytInitialData['\"]\]\s*=\s*(\{.*?\});",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, raw_html, re.DOTALL)
+        if not match:
+            continue
+        try:
+            return json.loads(match.group(1))
+        except Exception:
+            continue
+    return None
+
+
+def _iter_youtube_video_renderers(node: Any):
+    if isinstance(node, dict):
+        video_renderer = node.get("videoRenderer")
+        if isinstance(video_renderer, dict):
+            yield video_renderer
+        for value in node.values():
+            yield from _iter_youtube_video_renderers(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_youtube_video_renderers(item)
+
+
+def _extract_text_from_youtube_runs(payload: Any) -> str:
+    if isinstance(payload, dict):
+        simple_text = payload.get("simpleText")
+        if isinstance(simple_text, str) and simple_text.strip():
+            return simple_text.strip()
+        runs = payload.get("runs")
+        if isinstance(runs, list):
+            parts = [str(item.get("text") or "") for item in runs if isinstance(item, dict)]
+            return "".join(parts).strip()
+    elif isinstance(payload, str):
+        return payload.strip()
+    return ""
+
+
+def _youtube_search_videos_web(query: str, *, max_results: int = 8, target_lang: str = "de") -> list[dict]:
+    normalized_query = " ".join(str(query or "").strip().split())
+    if not normalized_query:
+        return []
+    cached = _get_cached_youtube_manual_search(normalized_query, target_lang, max_results)
+    if cached is not None:
+        return cached
+
+    lang_code = _normalize_short_lang_code(target_lang, fallback="de")
+    request_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+            "Mobile/15E148 Safari/604.1"
+        ),
+        "Accept-Language": f"{lang_code},{lang_code}-{lang_code.upper()};q=0.9,en;q=0.7",
+    }
+    response = requests.get(
+        "https://www.youtube.com/results",
+        params={"search_query": normalized_query, "hl": lang_code},
+        headers=request_headers,
+        timeout=8,
+    )
+    response.raise_for_status()
+    initial_data = _extract_youtube_initial_data(response.text)
+    if not initial_data:
+        raise RuntimeError("youtube_initial_data_missing")
+
+    items: list[dict] = []
+    seen_ids: set[str] = set()
+    for renderer in _iter_youtube_video_renderers(initial_data):
+        video_id = str(renderer.get("videoId") or "").strip()
+        if not video_id or video_id in seen_ids:
+            continue
+        title = _extract_text_from_youtube_runs(renderer.get("title")) or video_id
+        thumbnails = ((renderer.get("thumbnail") or {}).get("thumbnails") or [])
+        thumbnail = ""
+        if isinstance(thumbnails, list) and thumbnails:
+            thumbnail = str((thumbnails[-1] or {}).get("url") or "").strip()
+        channel_title = _extract_text_from_youtube_runs(renderer.get("ownerText"))
+        items.append(
+            {
+                "video_id": video_id,
+                "title": title,
+                "video_url": f"https://www.youtube.com/watch?v={video_id}",
+                "thumbnail": thumbnail or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                "channel_title": channel_title,
+                "views": 0,
+            }
+        )
+        seen_ids.add(video_id)
+        if len(items) >= max_results:
+            break
+
+    _set_cached_youtube_manual_search(normalized_query, target_lang, max_results, items)
+    return items
+
+
+def _youtube_search_videos_api_manual(query: str, *, max_results: int = 8, target_lang: str = "de") -> list[dict]:
+    normalized_query = " ".join(str(query or "").strip().split())
+    if not normalized_query:
+        return []
+    cached = _get_cached_youtube_manual_search(normalized_query, target_lang, max_results)
+    if cached is not None:
+        return cached
+
+    items = _youtube_search_videos(
+        normalized_query,
+        max_results=max_results,
+        target_lang=target_lang,
+        prefer_curated_channels=False,
+    )
+    _set_cached_youtube_manual_search(normalized_query, target_lang, max_results, items)
+    return items
+
+
+def _youtube_search_videos_ytdlp(query: str, *, max_results: int = 8, target_lang: str = "de") -> list[dict]:
+    normalized_query = " ".join(str(query or "").strip().split())
+    if not normalized_query:
+        return []
+    cached = _get_cached_youtube_manual_search(normalized_query, target_lang, max_results)
+    if cached is not None:
+        return cached
+
+    from yt_dlp import YoutubeDL
+
+    lang_code = _normalize_short_lang_code(target_lang, fallback="de")
+    search_expr = f"ytsearch{max(1, int(max_results or 1))}:{normalized_query}"
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": True,
+        "socket_timeout": 8,
+        "default_search": "ytsearch",
+        "noplaylist": True,
+        "playlist_items": f"1:{max(1, int(max_results or 1))}",
+        "geo_bypass": True,
+        "extractor_args": {
+            "youtube": {
+                "lang": [lang_code],
+                "player_client": ["android"],
+            }
+        },
+    }
+    info = YoutubeDL(ydl_opts).extract_info(search_expr, download=False) or {}
+    entries = info.get("entries") or []
+    items: list[dict] = []
+    seen_ids: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        video_id = str(entry.get("id") or "").strip()
+        if not video_id or video_id in seen_ids:
+            continue
+        seen_ids.add(video_id)
+        items.append(
+            {
+                "video_id": video_id,
+                "title": str(entry.get("title") or video_id).strip(),
+                "video_url": str(entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}").strip(),
+                "thumbnail": str(entry.get("thumbnail") or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg").strip(),
+                "channel_title": str(entry.get("channel") or entry.get("uploader") or "").strip(),
+                "views": int(entry.get("view_count") or 0),
+            }
+        )
+        if len(items) >= max_results:
+            break
+    _set_cached_youtube_manual_search(normalized_query, target_lang, max_results, items)
+    return items
+
+
+def _youtube_search_videos_manual(query: str, *, max_results: int = 8, target_lang: str = "de") -> tuple[list[dict], str]:
+    providers = [
+        ("youtube_api_search", _youtube_search_videos_api_manual),
+        ("youtube_web_search", _youtube_search_videos_web),
+        ("yt_dlp_search", _youtube_search_videos_ytdlp),
+    ]
+    last_error: Exception | None = None
+    for provider_name, provider_fn in providers:
+        try:
+            items = provider_fn(query, max_results=max_results, target_lang=target_lang)
+            return items, provider_name
+        except Exception as exc:
+            last_error = exc
+            logging.exception("youtube_manual_search provider=%s failed query=%r", provider_name, query)
+    if last_error is not None:
+        raise last_error
+    return [], "none"
 
 
 def _youtube_fill_view_counts(
@@ -5549,7 +6762,7 @@ def _ensure_min_allowed_skill_resource_domains(
 
 def _start_skill_resource_domain_autoseed() -> None:
     global _SKILL_RESOURCE_AUTOSEED_STARTED
-    enabled = str(os.getenv("SKILL_RESOURCE_AUTOSEED_ON_STARTUP") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    enabled = str(os.getenv("SKILL_RESOURCE_AUTOSEED_ON_STARTUP") or "0").strip().lower() in {"1", "true", "yes", "on"}
     if not enabled:
         logging.info("Skill resources [autoseed]: startup autoseed disabled by env")
         return
@@ -5777,7 +6990,7 @@ def _theory_needs_native_language_retry(theory: dict, native_lang: str) -> bool:
 
 
 def _ensure_skill_training_daily_table() -> None:
-    with get_db_connection_context() as conn:
+    with db_acquire_scope("skill_training_daily_ensure"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -5839,7 +7052,7 @@ def _upsert_skill_training_seed(user_id: int, skill_id: str, required_urls: list
     _ensure_skill_training_daily_table()
     plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
     required_normalized = _decode_json_list(required_urls)
-    with get_db_connection_context() as conn:
+    with db_acquire_scope("skill_training_seed_upsert"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -5888,7 +7101,7 @@ def _record_skill_training_event(
         return {"state": "idle", "is_complete": False, "opened_count": 0, "required_count": 0, "practice_submitted": False}
     _ensure_skill_training_daily_table()
     plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
-    with get_db_connection_context() as conn:
+    with db_acquire_scope("skill_training_event"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -5950,7 +7163,7 @@ def _get_skill_training_status_map(user_id: int) -> dict[str, dict]:
     _ensure_skill_training_daily_table()
     plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
     result: dict[str, dict] = {}
-    with get_db_connection_context() as conn:
+    with db_acquire_scope("skill_training_status_map"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -6011,7 +7224,7 @@ def _get_youtube_daily_quota_status() -> dict | None:
         quota_tz = timezone.utc
     quota_day = datetime.now(timezone.utc).astimezone(quota_tz).date()
     used_units = 0.0
-    with get_db_connection_context() as conn:
+    with db_acquire_scope("youtube_daily_quota_status"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -6724,6 +7937,40 @@ def _build_today_plan_for_user(
     source_lang: str,
     target_lang: str,
 ) -> dict:
+    level_rank = {"a2": 1, "b1": 2, "b2": 3, "c1": 4, "c2": 5}
+
+    def _max_translation_level(*levels: object) -> str:
+        normalized_levels = [
+            _normalize_translation_level(str(level or "").strip().lower())
+            for level in levels
+            if str(level or "").strip()
+        ]
+        if not normalized_levels:
+            return "b1"
+        return max(normalized_levels, key=lambda item: level_rank.get(item, 0))
+
+    def _infer_translation_level_floor_from_examples(examples: list[str] | None) -> str | None:
+        observed_levels: list[str] = []
+        seen_sentences: set[str] = set()
+        for raw_sentence in list(examples or []):
+            sentence = " ".join(str(raw_sentence or "").strip().split())
+            if not sentence:
+                continue
+            sentence_key = sentence.lower()
+            if sentence_key in seen_sentences:
+                continue
+            seen_sentences.add(sentence_key)
+            matched_level = None
+            for level_key in ("c2", "c1", "b2", "b1", "a2"):
+                if _translation_sentence_fits_level(sentence, level_key):
+                    matched_level = level_key
+                    break
+            if matched_level:
+                observed_levels.append(matched_level)
+        if not observed_levels:
+            return None
+        return max(observed_levels, key=lambda item: level_rank.get(item, 0))
+
     def _recommend_today_translation_level(skill_mastery: object) -> str:
         try:
             mastery = float(skill_mastery)
@@ -6838,8 +8085,11 @@ def _build_today_plan_for_user(
         weak_topic.get("main_category") if weak_topic else None,
         weak_topic.get("sub_category") if weak_topic else None,
     )
-    recommended_level = _recommend_today_translation_level(
-        weakest_skill.get("mastery") if isinstance(weakest_skill, dict) else None,
+    recommended_level = _max_translation_level(
+        _recommend_today_translation_level(
+            weakest_skill.get("mastery") if isinstance(weakest_skill, dict) else None,
+        ),
+        _infer_translation_level_floor_from_examples(weak_sentences[:7]),
     )
     items.append(
         {
@@ -8596,6 +9846,29 @@ def _build_multilang_dictionary_result(
         "usage_examples": examples,
         "raw_text": raw.get("raw_text"),
     }
+    passthrough_keys = (
+        "translations",
+        "meanings",
+        "correction_applied",
+        "corrected_form",
+        "etymology_note",
+        "usage_note",
+        "real_life_usage",
+        "register_note",
+        "memory_tip",
+        "expression_note",
+        "part_of_speech_note",
+        "is_separable",
+        "common_collocations",
+        "government_patterns",
+        "pronunciation",
+        "save_worthy_options",
+    )
+    for key in passthrough_keys:
+        value = raw.get(key)
+        if value in (None, "", [], {}):
+            continue
+        result[key] = copy.deepcopy(value)
     return result, detected, source_value, target_value
 
 
@@ -8838,6 +10111,7 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
     job = _get_dictionary_enrichment_job_by_lookup_id(lookup_id)
     if not isinstance(job, dict):
         return
+    started_at = time.perf_counter()
     try:
         core_raw = job.get("core_raw") if isinstance(job.get("core_raw"), dict) else {}
         enrichment_raw = asyncio.run(
@@ -8895,6 +10169,14 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
             error="",
         )
         user_id = int(job.get("user_id") or 0) if job.get("user_id") is not None else 0
+        logging.info(
+            "Dictionary enrichment ready: lookup_id=%s user_id=%s word=%r direction=%s duration_ms=%s",
+            str(lookup_id),
+            user_id,
+            str(job.get("word") or ""),
+            str(final_direction or "").strip().lower(),
+            int((time.perf_counter() - started_at) * 1000),
+        )
         if user_id > 0:
             _billing_log_openai_usage(
                 user_id=user_id,
@@ -8914,6 +10196,14 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
             lookup_id,
             status="failed",
             error=str(exc),
+        )
+        logging.warning(
+            "Dictionary enrichment failed final: lookup_id=%s user_id=%s word=%r duration_ms=%s error=%s",
+            str(lookup_id),
+            int(job.get("user_id") or 0) if job.get("user_id") is not None else 0,
+            str(job.get("word") or ""),
+            int((time.perf_counter() - started_at) * 1000),
+            str(exc),
         )
 
 
@@ -9129,6 +10419,37 @@ def _dedupe_sentences(items: list[dict]) -> list[dict]:
         seen.add(key)
         result.append({**item, "sentence": normalized})
     return result
+
+
+def _mark_translation_sentences_delivered(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    items: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    normalized_items = list(items or [])
+    if not normalized_items:
+        return None
+    source_session_id = str(normalized_items[0].get("source_session_id") or "").strip()
+    if not source_session_id:
+        return None
+    sentence_ids = sorted(
+        {
+            int(item.get("id_for_mistake_table") or 0)
+            for item in normalized_items
+            if int(item.get("id_for_mistake_table") or 0) > 0
+        }
+    )
+    if not sentence_ids:
+        return None
+    return mark_translation_sentences_shown(
+        user_id=int(user_id),
+        source_session_id=source_session_id,
+        sentence_ids=sentence_ids,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
 
 
 def _send_group_message(
@@ -10964,14 +12285,29 @@ def _get_silence(ms: int) -> AudioSegment:
 
 def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAULT) -> AudioSegment:
     voice = _TTS_VOICES.get(lang, _TTS_VOICES["de"])
+    language_code = _TTS_LANG_CODES.get(lang, "en-US")
     key = _tts_cache_key(lang, voice, speed, text)
     if key in _TTS_CACHE:
+        logging.info(
+            "🔊 TTS clip selected: lang=%s language_code=%s voice=%s cache=memory chars=%s",
+            lang,
+            language_code,
+            voice,
+            len(str(text or "").strip()),
+        )
         return _TTS_CACHE[key]
 
     cached_db = get_tts_audio_cache(key)
     if cached_db:
         audio = AudioSegment.from_file(io.BytesIO(cached_db), format="mp3")
         _TTS_CACHE[key] = audio
+        logging.info(
+            "🔊 TTS clip selected: lang=%s language_code=%s voice=%s cache=db chars=%s",
+            lang,
+            language_code,
+            voice,
+            len(str(text or "").strip()),
+        )
         return audio
 
     cache_dir = "/tmp/tts_cache"
@@ -10992,9 +12328,22 @@ def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAU
                 )
         except Exception as exc:
             logging.warning("Failed to sync /tmp TTS cache to DB: %s", exc)
+        logging.info(
+            "🔊 TTS clip selected: lang=%s language_code=%s voice=%s cache=tmp chars=%s",
+            lang,
+            language_code,
+            voice,
+            len(str(text or "").strip()),
+        )
         return audio
-    language = _TTS_LANG_CODES.get(lang, "en-US")
-    audio_bytes = _synthesize_mp3(text, language=language, voice=voice, speed=speed)
+    logging.info(
+        "🔊 TTS clip selected: lang=%s language_code=%s voice=%s cache=miss chars=%s",
+        lang,
+        language_code,
+        voice,
+        len(str(text or "").strip()),
+    )
+    audio_bytes = _synthesize_mp3(text, language=language_code, voice=voice, speed=speed)
     audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
     audio.export(cache_path, format="mp3", bitrate="192k")
     try:
@@ -11108,7 +12457,11 @@ def _list_tts_prewarm_active_user_ids(*, lookback_days: int, limit: int) -> list
                 (safe_days, safe_days, safe_days, safe_limit),
             )
             rows = cursor.fetchall() or []
-    return [int(row[0]) for row in rows if row and row[0] is not None]
+    return [
+        int(row[0])
+        for row in rows
+        if row and row[0] is not None and not _is_synthetic_telegram_user_id(int(row[0]))
+    ]
 
 
 def _get_tts_prewarm_user_activity_map(
@@ -11423,6 +12776,8 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
         for user_id in active_user_ids:
             user_id_int = int(user_id or 0)
             if user_id_int <= 0:
+                continue
+            if _is_synthetic_telegram_user_id(user_id_int):
                 continue
             if not _is_webapp_user_allowed(user_id_int):
                 continue
@@ -11952,7 +13307,777 @@ def _list_translation_focus_pool_prewarm_candidates(
             ordered_focus_keys.append(fallback_key)
     if not ordered_focus_keys:
         ordered_focus_keys = [key for key in preset_payloads.keys()]
-    return [preset_payloads[key] for key in ordered_focus_keys[:safe_limit]]
+    max_score = max((int(scores.get(key) or 0) for key in ordered_focus_keys), default=0)
+    candidates: list[dict[str, Any]] = []
+    for key in ordered_focus_keys[:safe_limit]:
+        payload = dict(preset_payloads[key])
+        payload["_demand_score"] = int(scores.get(key) or 0)
+        payload["_max_demand_score"] = int(max_score or 0)
+        candidates.append(payload)
+    return candidates
+
+
+def _load_translation_focus_pool_history_by_bucket(
+    *,
+    focus_keys: list[str],
+    levels: list[str],
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    lookback_days: int | None = None,
+) -> dict[tuple[str, str], dict[str, int]]:
+    normalized_focus_keys = [str(item or "").strip() for item in list(focus_keys or []) if str(item or "").strip()]
+    normalized_levels = [str(item or "").strip().lower() for item in list(levels or []) if str(item or "").strip()]
+    if not normalized_focus_keys or not normalized_levels:
+        return {}
+    safe_lookback_days = max(1, int(lookback_days or TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_LOOKBACK_DAYS))
+    result: dict[tuple[str, str], dict[str, int]] = {}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        focus_key,
+                        level,
+                        COUNT(*)::BIGINT AS active_days,
+                        COALESCE(SUM(sentences_assigned), 0)::BIGINT AS total_assigned,
+                        COALESCE(MAX(sentences_assigned), 0)::BIGINT AS max_assigned,
+                        COALESCE(SUM(sentences_mastered), 0)::BIGINT AS total_mastered,
+                        COALESCE(MAX(sentences_mastered), 0)::BIGINT AS max_mastered
+                    FROM bt_3_translation_bucket_daily_demand
+                    WHERE source_lang = %s
+                      AND target_lang = %s
+                      AND focus_key = ANY(%s)
+                      AND level = ANY(%s)
+                      AND demand_date >= CURRENT_DATE - (%s::int - 1)
+                    GROUP BY focus_key, level;
+                    """,
+                    (
+                        str(source_lang or "").strip().lower() or "ru",
+                        str(target_lang or "").strip().lower() or "de",
+                        normalized_focus_keys,
+                        normalized_levels,
+                        safe_lookback_days,
+                    ),
+                )
+                for focus_key, level, active_days, total_assigned, max_assigned, total_mastered, max_mastered in cursor.fetchall() or []:
+                    result[(str(focus_key or "").strip(), str(level or "").strip().lower())] = {
+                        "active_days": int(active_days or 0),
+                        "total_assigned": int(total_assigned or 0),
+                        "max_assigned": int(max_assigned or 0),
+                        "total_mastered": int(total_mastered or 0),
+                        "max_mastered": int(max_mastered or 0),
+                    }
+    except Exception:
+        logging.exception("Failed to load translation focus pool history forecast")
+    return result
+
+
+def _build_translation_focus_pool_bucket_targets(
+    focuses: list[dict[str, Any]] | None,
+    *,
+    levels: list[str] | None = None,
+) -> tuple[dict[tuple[str, str], int], dict[tuple[str, str], int]]:
+    low_watermark_by_bucket: dict[tuple[str, str], int] = {}
+    target_ready_by_bucket: dict[tuple[str, str], int] = {}
+    safe_low_watermark = int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET)
+    safe_base_target = int(TRANSLATION_FOCUS_POOL_PREWARM_BASE_TARGET_PER_BUCKET)
+    safe_bonus_cap = int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_BONUS_CAP)
+    safe_forecast_cap = int(TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_TARGET_CAP)
+    normalized_levels = [str(item or "").strip().lower() for item in list(levels or TRANSLATION_FOCUS_POOL_PREWARM_LEVELS) if str(item or "").strip()]
+    max_score = max(
+        (int((focus or {}).get("_max_demand_score") or 0) for focus in (focuses or [])),
+        default=0,
+    )
+    history_by_bucket = _load_translation_focus_pool_history_by_bucket(
+        focus_keys=[str((focus or {}).get("key") or "").strip() for focus in list(focuses or [])],
+        levels=normalized_levels,
+        source_lang="ru",
+        target_lang="de",
+    )
+    for focus in list(focuses or []):
+        focus_key = str((focus or {}).get("key") or "").strip()
+        if not focus_key:
+            continue
+        demand_score = int((focus or {}).get("_demand_score") or 0)
+        bonus = 0
+        if max_score > 0 and safe_bonus_cap > 0 and demand_score > 0:
+            bonus = int(round((float(demand_score) / float(max_score)) * float(safe_bonus_cap)))
+        default_target = max(safe_base_target, safe_low_watermark) + max(0, bonus)
+        for level in normalized_levels:
+            history = history_by_bucket.get((focus_key, level), {})
+            active_days = max(0, int(history.get("active_days") or 0))
+            total_assigned = max(0, int(history.get("total_assigned") or 0))
+            max_assigned = max(0, int(history.get("max_assigned") or 0))
+            total_mastered = max(0, int(history.get("total_mastered") or 0))
+            avg_assigned = (float(total_assigned) / float(active_days)) if active_days > 0 else 0.0
+            avg_mastered = (float(total_mastered) / float(active_days)) if active_days > 0 else 0.0
+            history_target = max(
+                float(default_target),
+                avg_assigned * 1.35,
+                float(max_assigned),
+                avg_mastered * 1.5,
+            )
+            bucket_key = (focus_key, level)
+            low_watermark = safe_low_watermark
+            target_ready = max(
+                int(low_watermark),
+                min(safe_forecast_cap, int(math.ceil(history_target))),
+            )
+            override = TRANSLATION_FOCUS_POOL_HOT_BUCKET_OVERRIDES.get(bucket_key) or {}
+            if override:
+                low_watermark = max(low_watermark, int(override.get("min_ready") or 0))
+                target_ready = max(target_ready, int(override.get("target_ready") or 0))
+            low_watermark_by_bucket[bucket_key] = low_watermark
+            target_ready_by_bucket[bucket_key] = max(
+                int(low_watermark_by_bucket[bucket_key]),
+                int(target_ready),
+            )
+    return low_watermark_by_bucket, target_ready_by_bucket
+
+
+def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
+    if not (TRANSLATION_FOCUS_POOL_PREWARM_ENABLED or force):
+        return {"ok": True, "skipped": True, "reason": "disabled", "generated": 0, "upserted": 0, "focuses": 0}
+    if not force and not _should_run_sentence_prewarm_now(tz_name):
+        return {"ok": True, "skipped": True, "reason": "outside_offpeak_window", "generated": 0, "upserted": 0, "focuses": 0}
+    try:
+        focus_candidates = _list_translation_focus_pool_prewarm_candidates(
+            limit=TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT,
+            lookback_days=TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS,
+        )
+        if not focus_candidates:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "no_focus_candidates",
+                "generated": 0,
+                "upserted": 0,
+                "focuses": 0,
+            }
+        low_watermark_by_bucket, target_ready_by_bucket = _build_translation_focus_pool_bucket_targets(
+            focus_candidates,
+            levels=TRANSLATION_FOCUS_POOL_PREWARM_LEVELS,
+        )
+        focus_pool_result = asyncio.run(
+            prewarm_shared_translation_sentence_pool(
+                focuses=focus_candidates,
+                levels=TRANSLATION_FOCUS_POOL_PREWARM_LEVELS,
+                source_lang="ru",
+                target_lang="de",
+                min_ready_by_bucket=low_watermark_by_bucket,
+                target_ready_by_bucket=target_ready_by_bucket,
+                target_ready_per_bucket=TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET,
+                max_generate_per_bucket=TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET,
+            )
+        )
+        focus_pool_result["skipped"] = False
+        return focus_pool_result
+    except Exception:
+        logging.exception("Translation focus pool refill failed")
+        return {
+            "ok": False,
+            "skipped": False,
+            "reason": "exception",
+            "generated": 0,
+            "upserted": 0,
+            "focuses": 0,
+        }
+
+
+def _translation_focus_pool_report_level_rank(level_value: str) -> int:
+    ordered = {"a1": 1, "a2": 2, "b1": 3, "b2": 4, "c1": 5, "c2": 6}
+    return int(ordered.get(str(level_value or "").strip().lower(), 99))
+
+
+def _build_translation_focus_pool_report_themes(
+    rows: list[dict[str, Any]],
+    *,
+    top_limit: int,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in list(rows or []):
+        focus_key = str(row.get("focus_key") or "").strip()
+        if not focus_key:
+            continue
+        theme = grouped.setdefault(
+            focus_key,
+            {
+                "focus_key": focus_key,
+                "focus_label": str(row.get("focus_label") or focus_key).strip() or focus_key,
+                "is_candidate": bool(row.get("is_candidate")),
+                "candidate_rank": int(row.get("candidate_rank") or 999),
+                "demand_score": int(row.get("demand_score") or 0),
+                "today_total": 0,
+                "yesterday_total": 0,
+                "delta_total": 0,
+                "target_total": 0,
+                "low_total": 0,
+                "buckets_below_target": 0,
+                "levels": [],
+            },
+        )
+        theme["is_candidate"] = bool(theme["is_candidate"] or row.get("is_candidate"))
+        theme["candidate_rank"] = min(int(theme.get("candidate_rank") or 999), int(row.get("candidate_rank") or 999))
+        theme["demand_score"] = max(int(theme.get("demand_score") or 0), int(row.get("demand_score") or 0))
+        today_ready = int(row.get("today_ready") or 0)
+        yesterday_ready = int(row.get("yesterday_ready") or 0)
+        target_ready = int(row.get("target_ready") or 0)
+        low_watermark = int(row.get("low_watermark") or 0)
+        delta_value = int(row.get("delta") or (today_ready - yesterday_ready))
+        if target_ready > 0 and today_ready < target_ready:
+            theme["buckets_below_target"] = int(theme.get("buckets_below_target") or 0) + 1
+        theme["today_total"] = int(theme.get("today_total") or 0) + today_ready
+        theme["yesterday_total"] = int(theme.get("yesterday_total") or 0) + yesterday_ready
+        theme["delta_total"] = int(theme.get("delta_total") or 0) + delta_value
+        theme["target_total"] = int(theme.get("target_total") or 0) + target_ready
+        theme["low_total"] = int(theme.get("low_total") or 0) + low_watermark
+        theme["levels"].append(
+            {
+                "level": str(row.get("level") or "").strip().lower(),
+                "today_ready": today_ready,
+                "yesterday_ready": yesterday_ready,
+                "delta": delta_value,
+                "target_ready": target_ready,
+                "low_watermark": low_watermark,
+            }
+        )
+    ordered_themes: list[dict[str, Any]] = []
+    for theme in grouped.values():
+        theme["levels"] = sorted(
+            list(theme.get("levels") or []),
+            key=lambda item: _translation_focus_pool_report_level_rank(str(item.get("level") or "").strip().lower()),
+        )
+        theme["deficit_total"] = max(0, int(theme.get("target_total") or 0) - int(theme.get("today_total") or 0))
+        ordered_themes.append(theme)
+    ordered_themes.sort(
+        key=lambda item: (
+            0 if bool(item.get("is_candidate")) else 1,
+            -int(item.get("deficit_total") or 0),
+            -int(item.get("buckets_below_target") or 0),
+            -abs(int(item.get("delta_total") or 0)),
+            int(item.get("candidate_rank") or 999),
+            -int(item.get("demand_score") or 0),
+            str(item.get("focus_label") or "").casefold(),
+        )
+    )
+    return ordered_themes[: max(1, int(top_limit or 1))]
+
+
+def _build_translation_focus_pool_report_rows(
+    *,
+    snapshot_date: date,
+    source_lang: str,
+    target_lang: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    normalized_source_lang = str(source_lang or "").strip().lower() or "ru"
+    normalized_target_lang = str(target_lang or "").strip().lower() or "de"
+    current_rows = get_translation_focus_pool_bucket_counts(
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+    )
+    previous_rows = get_translation_focus_pool_daily_snapshot(
+        snapshot_date=snapshot_date - timedelta(days=1),
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+    )
+    current_map = {
+        (str(item.get("focus_key") or "").strip(), str(item.get("level") or "").strip().lower()): item
+        for item in current_rows
+        if str(item.get("focus_key") or "").strip() and str(item.get("level") or "").strip()
+    }
+    previous_map = {
+        (str(item.get("focus_key") or "").strip(), str(item.get("level") or "").strip().lower()): item
+        for item in previous_rows
+        if str(item.get("focus_key") or "").strip() and str(item.get("level") or "").strip()
+    }
+    preset_by_key = {
+        str((preset or {}).get("key") or "").strip(): dict(preset or {})
+        for preset in GRAMMAR_FOCUS_PRESETS
+        if str((preset or {}).get("key") or "").strip()
+    }
+    candidate_focuses = _list_translation_focus_pool_prewarm_candidates(
+        limit=TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT,
+        lookback_days=TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS,
+    )
+    candidate_map = {
+        str((focus or {}).get("key") or "").strip(): dict(focus or {})
+        for focus in candidate_focuses
+        if str((focus or {}).get("key") or "").strip()
+    }
+    candidate_rank_map = {
+        str((focus or {}).get("key") or "").strip(): index
+        for index, focus in enumerate(candidate_focuses)
+        if str((focus or {}).get("key") or "").strip()
+    }
+    ordered_focus_keys: list[str] = []
+    seen_focus_keys: set[str] = set()
+    for focus in candidate_focuses:
+        focus_key = str((focus or {}).get("key") or "").strip()
+        if focus_key and focus_key not in seen_focus_keys:
+            ordered_focus_keys.append(focus_key)
+            seen_focus_keys.add(focus_key)
+    for focus_key, _level in sorted(
+        set(current_map.keys()) | set(previous_map.keys()),
+        key=lambda item: (
+            str(
+                (current_map.get(item) or {}).get("focus_label")
+                or (previous_map.get(item) or {}).get("focus_label")
+                or (preset_by_key.get(item[0]) or {}).get("label")
+                or item[0]
+            ).casefold(),
+            _translation_focus_pool_report_level_rank(item[1]),
+        ),
+    ):
+        if focus_key and focus_key not in seen_focus_keys:
+            ordered_focus_keys.append(focus_key)
+            seen_focus_keys.add(focus_key)
+
+    normalized_levels = []
+    seen_levels: set[str] = set()
+    for level in list(TRANSLATION_FOCUS_POOL_PREWARM_LEVELS or []):
+        normalized_level = str(level or "").strip().lower()
+        if normalized_level and normalized_level not in seen_levels:
+            normalized_levels.append(normalized_level)
+            seen_levels.add(normalized_level)
+    for _focus_key, level in sorted(
+        set(current_map.keys()) | set(previous_map.keys()),
+        key=lambda item: _translation_focus_pool_report_level_rank(item[1]),
+    ):
+        normalized_level = str(level or "").strip().lower()
+        if normalized_level and normalized_level not in seen_levels:
+            normalized_levels.append(normalized_level)
+            seen_levels.add(normalized_level)
+
+    focus_payloads_for_targets: list[dict[str, Any]] = []
+    for focus_key in ordered_focus_keys:
+        base_payload = dict(candidate_map.get(focus_key) or preset_by_key.get(focus_key) or {})
+        if not base_payload:
+            continue
+        base_payload["key"] = focus_key
+        if not str(base_payload.get("label") or "").strip():
+            base_payload["label"] = focus_key
+        focus_payloads_for_targets.append(base_payload)
+    low_watermark_by_bucket, target_ready_by_bucket = _build_translation_focus_pool_bucket_targets(
+        focus_payloads_for_targets,
+        levels=normalized_levels,
+    )
+
+    report_rows: list[dict[str, Any]] = []
+    for focus_key in ordered_focus_keys:
+        preset_payload = candidate_map.get(focus_key) or preset_by_key.get(focus_key) or {}
+        focus_label = str(preset_payload.get("label") or focus_key).strip() or focus_key
+        focus_is_candidate = focus_key in candidate_map
+        for level in normalized_levels:
+            bucket_key = (focus_key, level)
+            current_row = current_map.get(bucket_key) or {}
+            previous_row = previous_map.get(bucket_key) or {}
+            today_ready = int(current_row.get("ready_count") or 0)
+            yesterday_ready = int(previous_row.get("ready_count") or 0)
+            target_ready = int(
+                target_ready_by_bucket.get(bucket_key)
+                or previous_row.get("target_ready")
+                or 0
+            )
+            low_watermark = int(
+                low_watermark_by_bucket.get(bucket_key)
+                or previous_row.get("low_watermark")
+                or 0
+            )
+            if not focus_is_candidate and today_ready <= 0 and yesterday_ready <= 0 and target_ready <= 0 and low_watermark <= 0:
+                continue
+            resolved_label = str(
+                current_row.get("focus_label")
+                or previous_row.get("focus_label")
+                or focus_label
+                or focus_key
+            ).strip() or focus_key
+            report_rows.append(
+                {
+                    "focus_key": focus_key,
+                    "focus_label": resolved_label,
+                    "level": level,
+                    "today_ready": today_ready,
+                    "yesterday_ready": yesterday_ready,
+                    "delta": today_ready - yesterday_ready,
+                    "target_ready": target_ready,
+                    "low_watermark": low_watermark,
+                    "is_candidate": focus_is_candidate,
+                    "candidate_rank": int(candidate_rank_map.get(focus_key, 999)),
+                    "demand_score": int((candidate_map.get(focus_key) or {}).get("_demand_score") or 0),
+                    "label_display": f"{resolved_label} · {level.upper()}",
+                }
+            )
+
+    snapshot_rows = [
+        {
+            "focus_key": row["focus_key"],
+            "focus_label": row["focus_label"],
+            "level": row["level"],
+            "ready_count": row["today_ready"],
+            "low_watermark": row["low_watermark"],
+            "target_ready": row["target_ready"],
+        }
+        for row in report_rows
+    ]
+    snapshot_upserted = upsert_translation_focus_pool_daily_snapshot(
+        snapshot_date=snapshot_date,
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+        rows=snapshot_rows,
+    )
+    total_today = sum(int(row.get("today_ready") or 0) for row in report_rows)
+    total_yesterday = sum(int(row.get("yesterday_ready") or 0) for row in report_rows)
+    at_or_above_target = sum(
+        1
+        for row in report_rows
+        if int(row.get("target_ready") or 0) > 0 and int(row.get("today_ready") or 0) >= int(row.get("target_ready") or 0)
+    )
+    summary = {
+        "snapshot_date": snapshot_date.isoformat(),
+        "source_lang": normalized_source_lang,
+        "target_lang": normalized_target_lang,
+        "rows": len(report_rows),
+        "snapshot_upserted": int(snapshot_upserted),
+        "total_today": int(total_today),
+        "total_yesterday": int(total_yesterday),
+        "delta_total": int(total_today - total_yesterday),
+        "at_or_above_target": int(at_or_above_target),
+        "with_target": int(sum(1 for row in report_rows if int(row.get("target_ready") or 0) > 0)),
+        "candidate_focuses": int(len(candidate_map)),
+        "missing_previous_snapshot": not bool(previous_rows),
+    }
+    return report_rows, summary
+
+
+def _build_translation_focus_pool_admin_report_png(
+    *,
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+    snapshot_date: date,
+    tz_name: str,
+) -> bytes | None:
+    if plt is None or not rows:
+        return None
+    top_themes = _build_translation_focus_pool_report_themes(
+        rows,
+        top_limit=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TOP_THEMES,
+    )
+    if not top_themes:
+        return None
+    max_value = max(
+        [
+            float(int(item.get("today_ready") or 0))
+            for theme in top_themes
+            for item in list(theme.get("levels") or [])
+        ]
+        + [
+            float(int(item.get("yesterday_ready") or 0))
+            for theme in top_themes
+            for item in list(theme.get("levels") or [])
+        ]
+        + [
+            float(int(item.get("target_ready") or 0))
+            for theme in top_themes
+            for item in list(theme.get("levels") or [])
+        ]
+        + [1.0]
+    )
+    figure_height = max(7.2, min(16.0, 2.8 + 1.9 * len(top_themes) + 0.5 * sum(len(theme.get("levels") or []) for theme in top_themes)))
+    fig, axes = plt.subplots(
+        nrows=len(top_themes) + 1,
+        ncols=1,
+        figsize=(13.4, figure_height),
+        dpi=150,
+        gridspec_kw={"height_ratios": [0.9] + [1.55] * len(top_themes)},
+    )
+    fig.patch.set_facecolor("#fffaf2")
+    if not isinstance(axes, (list, tuple)):
+        try:
+            axes = list(axes)
+        except TypeError:
+            axes = [axes]
+    summary_ax = axes[0]
+    summary_ax.set_facecolor("#fffaf2")
+    summary_ax.axis("off")
+    rendered_today = sum(int(theme.get("today_total") or 0) for theme in top_themes)
+    rendered_yesterday = sum(int(theme.get("yesterday_total") or 0) for theme in top_themes)
+    rendered_delta = rendered_today - rendered_yesterday
+    rendered_below_target = sum(int(theme.get("buckets_below_target") or 0) for theme in top_themes)
+    rendered_bucket_count = sum(len(list(theme.get("levels") or [])) for theme in top_themes)
+    summary_ax.text(
+        0.0,
+        0.90,
+        f"Top {len(top_themes)} grammar themes by priority/deficit",
+        ha="left",
+        va="top",
+        fontsize=13,
+        fontweight="bold",
+        color="#111827",
+        transform=summary_ax.transAxes,
+    )
+    summary_ax.text(
+        0.0,
+        0.48,
+        (
+            f"Rendered buckets: {rendered_bucket_count} | "
+            f"Today {rendered_today} | Yesterday {rendered_yesterday} | Delta {rendered_delta:+d} | "
+            f"Below target {rendered_below_target}"
+        ),
+        ha="left",
+        va="top",
+        fontsize=10,
+        color="#374151",
+        transform=summary_ax.transAxes,
+    )
+    summary_ax.text(
+        0.0,
+        0.10,
+        (
+            f"Global totals: Today {int(summary.get('total_today') or 0)} | "
+            f"Yesterday {int(summary.get('total_yesterday') or 0)} | "
+            f"Delta {int(summary.get('delta_total') or 0):+d} | "
+            f"Target ok {int(summary.get('at_or_above_target') or 0)}/{int(summary.get('with_target') or 0)}"
+        ),
+        ha="left",
+        va="top",
+        fontsize=9,
+        color="#6b7280",
+        transform=summary_ax.transAxes,
+    )
+
+    for theme_index, theme in enumerate(top_themes, start=1):
+        ax = axes[theme_index]
+        levels = list(theme.get("levels") or [])
+        labels = [str(item.get("level") or "").strip().upper() for item in levels]
+        y_positions = list(range(len(levels)))
+        y_positions_yesterday = [value + 0.18 for value in y_positions]
+        y_positions_today = [value - 0.18 for value in y_positions]
+        yesterday_values = [float(int(item.get("yesterday_ready") or 0)) for item in levels]
+        today_values = [float(int(item.get("today_ready") or 0)) for item in levels]
+        ax.set_facecolor("#fffdf8")
+        ax.barh(y_positions_yesterday, yesterday_values, height=0.30, color="#d4c4ab", edgecolor="none", label="Yesterday" if theme_index == 1 else None)
+        ax.barh(y_positions_today, today_values, height=0.30, color="#4f7cff", edgecolor="none", label="Today" if theme_index == 1 else None)
+        for level_index, item in enumerate(levels):
+            low_watermark = float(int(item.get("low_watermark") or 0))
+            target_ready = float(int(item.get("target_ready") or 0))
+            if low_watermark > 0:
+                ax.plot([low_watermark, low_watermark], [level_index - 0.32, level_index + 0.32], color="#f59e0b", linewidth=1.5, alpha=0.85)
+            if target_ready > 0:
+                ax.plot([target_ready, target_ready], [level_index - 0.32, level_index + 0.32], color="#16a34a", linewidth=2.1, alpha=0.95)
+            delta_value = int(item.get("delta") or 0)
+            delta_color = "#16a34a" if delta_value > 0 else ("#dc2626" if delta_value < 0 else "#6b7280")
+            today_ready = int(item.get("today_ready") or 0)
+            yesterday_ready = int(item.get("yesterday_ready") or 0)
+            target_label = int(item.get("target_ready") or 0)
+            ax.text(
+                max_value * 1.03,
+                level_index,
+                f"{today_ready} vs {yesterday_ready} ({delta_value:+d}) · T {target_label}",
+                va="center",
+                ha="left",
+                fontsize=8.5,
+                color=delta_color,
+                fontweight="semibold",
+            )
+        focus_title = (
+            f"{theme_index}. {str(theme.get('focus_label') or '').strip()}  |  "
+            f"Today {int(theme.get('today_total') or 0)}  "
+            f"Yesterday {int(theme.get('yesterday_total') or 0)}  "
+            f"Delta {int(theme.get('delta_total') or 0):+d}  "
+            f"Gap {int(theme.get('deficit_total') or 0)}"
+        )
+        ax.set_title(
+            focus_title,
+            loc="left",
+            fontsize=11,
+            fontweight="bold",
+            color="#111827",
+            pad=10,
+        )
+        ax.text(
+            0.0,
+            1.02,
+            (
+                f"Below target buckets: {int(theme.get('buckets_below_target') or 0)} | "
+                f"Demand score: {int(theme.get('demand_score') or 0)}"
+            ),
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=8.5,
+            color="#6b7280",
+        )
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(labels, fontsize=9, color="#1f2937")
+        ax.invert_yaxis()
+        ax.set_xlim(0, max_value * 1.30)
+        ax.tick_params(axis="x", labelsize=8.5, colors="#4b5563")
+        ax.tick_params(axis="y", length=0)
+        ax.grid(axis="x", linestyle="--", linewidth=0.7, alpha=0.22, color="#64748b")
+        ax.set_axisbelow(True)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.spines["bottom"].set_color("#d6c7b2")
+        ax.set_xlabel("Ready sentences", fontsize=9, color="#374151")
+
+    title = (
+        f"Translation Focus Pool Report · {str(summary.get('source_lang') or '').upper()} -> "
+        f"{str(summary.get('target_lang') or '').upper()}"
+    )
+    subtitle = (
+        f"Snapshot: {snapshot_date.isoformat()} 06:15 {tz_name} | "
+        f"Today {int(summary.get('total_today') or 0)} | "
+        f"Yesterday {int(summary.get('total_yesterday') or 0)} | "
+        f"Delta {int(summary.get('delta_total') or 0):+d} | "
+        f"Target ok {int(summary.get('at_or_above_target') or 0)}/{int(summary.get('with_target') or 0)} | "
+        f"Showing top {len(top_themes)} themes"
+    )
+    fig.suptitle(title, x=0.125, y=0.985, ha="left", fontsize=16, fontweight="bold", color="#111827")
+    fig.text(0.125, 0.957, subtitle, ha="left", va="top", fontsize=10, color="#4b5563")
+    if bool(summary.get("missing_previous_snapshot")):
+        fig.text(
+            0.125,
+            0.936,
+            "Previous day snapshot missing: delta is compared against an empty baseline.",
+            ha="left",
+            va="top",
+            fontsize=9,
+            color="#b45309",
+        )
+    if len(axes) > 1:
+        axes[1].legend(loc="lower right", frameon=False, fontsize=9)
+    fig.subplots_adjust(top=0.88, left=0.16, right=0.92, bottom=0.07, hspace=0.72)
+
+    buff = BytesIO()
+    fig.savefig(buff, format="png", facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close(fig)
+    buff.seek(0)
+    return buff.getvalue()
+
+
+def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[str, Any]:
+    tz_name = TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TZ
+    snapshot_date = _today_local_date(tz_name)
+    run_period = snapshot_date.isoformat()
+    if not force:
+        if not claim_scheduler_run_guard(
+            job_key="translation_focus_pool_admin_report",
+            run_period=run_period,
+            target_scope="global",
+            metadata={
+                "tz": tz_name,
+                "source_lang": TRANSLATION_FOCUS_POOL_ADMIN_REPORT_SOURCE_LANG,
+                "target_lang": TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TARGET_LANG,
+            },
+        ):
+            return {"ok": True, "skipped": True, "reason": "already_sent", "snapshot_date": run_period}
+
+    try:
+        rows, summary = _build_translation_focus_pool_report_rows(
+            snapshot_date=snapshot_date,
+            source_lang=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_SOURCE_LANG,
+            target_lang=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TARGET_LANG,
+        )
+        admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+        if not admin_ids:
+            result = {"ok": False, "sent": 0, "reason": "no_admin_ids", "snapshot_date": run_period, **summary}
+            if not force:
+                finish_scheduler_run_guard(
+                    job_key="translation_focus_pool_admin_report",
+                    run_period=run_period,
+                    target_scope="global",
+                    status="failed",
+                    metadata=result,
+                )
+            return result
+        if not rows:
+            message_text = (
+                f"📊 Translation focus pool report\n"
+                f"Date: {run_period}\n"
+                f"Pair: {TRANSLATION_FOCUS_POOL_ADMIN_REPORT_SOURCE_LANG.upper()} -> {TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TARGET_LANG.upper()}\n"
+                f"No active buckets were found."
+            )
+            sent = 0
+            errors: list[str] = []
+            for admin_id in admin_ids:
+                try:
+                    _send_private_message(int(admin_id), message_text)
+                    sent += 1
+                except Exception as exc:
+                    errors.append(f"admin {admin_id}: {exc}")
+            result = {"ok": not errors, "sent": sent, "errors": errors, "snapshot_date": run_period, **summary}
+            if not force:
+                finish_scheduler_run_guard(
+                    job_key="translation_focus_pool_admin_report",
+                    run_period=run_period,
+                    target_scope="global",
+                    status="completed" if not errors else "failed",
+                    metadata=result,
+                )
+            return result
+
+        chart_png = _build_translation_focus_pool_admin_report_png(
+            rows=rows,
+            summary=summary,
+            snapshot_date=snapshot_date,
+            tz_name=tz_name,
+        )
+        caption = (
+            f"📊 Translation focus pool\n"
+            f"Date: {run_period}\n"
+            f"Pair: {str(summary.get('source_lang') or '').upper()} -> {str(summary.get('target_lang') or '').upper()}\n"
+            f"Today: {int(summary.get('total_today') or 0)} | "
+            f"Yesterday: {int(summary.get('total_yesterday') or 0)} | "
+            f"Delta: {int(summary.get('delta_total') or 0):+d}"
+        )
+        sent = 0
+        errors: list[str] = []
+        for admin_id in admin_ids:
+            try:
+                if chart_png:
+                    _send_private_photo(
+                        user_id=int(admin_id),
+                        image_bytes=chart_png,
+                        filename=f"translation_focus_pool_{run_period}.png",
+                        caption=caption,
+                    )
+                else:
+                    _send_private_message(int(admin_id), caption)
+                sent += 1
+            except Exception as exc:
+                errors.append(f"admin {admin_id}: {exc}")
+                logging.warning("Failed to send translation focus pool report admin_id=%s", admin_id, exc_info=True)
+        result = {"ok": not errors, "sent": sent, "errors": errors, "snapshot_date": run_period, **summary}
+        if not force:
+            finish_scheduler_run_guard(
+                job_key="translation_focus_pool_admin_report",
+                run_period=run_period,
+                target_scope="global",
+                status="completed" if not errors else "failed",
+                metadata=result,
+            )
+        return result
+    except Exception as exc:
+        result = {"ok": False, "snapshot_date": run_period, "error": str(exc)[:1000]}
+        if not force:
+            finish_scheduler_run_guard(
+                job_key="translation_focus_pool_admin_report",
+                run_period=run_period,
+                target_scope="global",
+                status="failed",
+                metadata=result,
+            )
+        raise
+
+
+def _run_translation_focus_pool_admin_report_scheduler_job() -> None:
+    try:
+        result = _send_translation_focus_pool_admin_report(force=False)
+        logging.info("✅ Translation focus pool admin report finished: %s", result)
+    except Exception:
+        logging.exception("❌ Translation focus pool admin report scheduler failed")
 
 
 def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
@@ -12023,42 +14148,10 @@ def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN
                 logging.exception("Sentence prewarm failed for user_id=%s", user_id)
 
         if TRANSLATION_FOCUS_POOL_PREWARM_ENABLED or force:
-            try:
-                focus_candidates = _list_translation_focus_pool_prewarm_candidates(
-                    limit=TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT,
-                    lookback_days=TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS,
-                )
-                if focus_candidates:
-                    focus_pool_result = asyncio.run(
-                        prewarm_shared_translation_sentence_pool(
-                            focuses=focus_candidates,
-                            levels=TRANSLATION_FOCUS_POOL_PREWARM_LEVELS,
-                            source_lang="ru",
-                            target_lang="de",
-                            target_ready_per_bucket=TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET,
-                            max_generate_per_bucket=TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET,
-                        )
-                    )
-                    focus_pool_result["skipped"] = False
-                else:
-                    focus_pool_result = {
-                        "ok": True,
-                        "skipped": True,
-                        "reason": "no_focus_candidates",
-                        "generated": 0,
-                        "upserted": 0,
-                        "focuses": 0,
-                    }
-            except Exception:
-                focus_pool_result = {
-                    "ok": False,
-                    "skipped": False,
-                    "reason": "exception",
-                    "generated": 0,
-                    "upserted": 0,
-                    "focuses": 0,
-                }
-                logging.exception("Translation focus pool prewarm failed")
+            focus_pool_result = _dispatch_translation_focus_pool_refill(
+                force=bool(force),
+                tz_name=tz_name,
+            )
 
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         result = {
@@ -12089,6 +14182,29 @@ def _run_sentence_prewarm_scheduler_job() -> None:
         _dispatch_sentence_prewarm(force=False, tz_name=tz_name)
     except Exception:
         logging.exception("❌ Sentence prewarm scheduler failed")
+
+
+def _run_translation_focus_pool_refill_scheduler_job() -> None:
+    try:
+        if can_enqueue_background_jobs():
+            enqueue_translation_focus_pool_refill_job(
+                force=False,
+                tz_name=TRANSLATION_FOCUS_POOL_REFILL_TZ,
+            )
+            logging.info(
+                "✅ Translation focus pool refill enqueued: %02d:%02d %s",
+                int(TRANSLATION_FOCUS_POOL_REFILL_HOUR),
+                int(TRANSLATION_FOCUS_POOL_REFILL_MINUTE),
+                TRANSLATION_FOCUS_POOL_REFILL_TZ,
+            )
+        else:
+            result = _dispatch_translation_focus_pool_refill(
+                force=False,
+                tz_name=TRANSLATION_FOCUS_POOL_REFILL_TZ,
+            )
+            logging.info("✅ Translation focus pool refill executed inline: %s", result)
+    except Exception:
+        logging.exception("❌ Translation focus pool refill scheduler failed")
 
 
 def _chain_cache_key(chunks: list[str], lang: str, speed: float) -> str:
@@ -13176,6 +15292,19 @@ def _fetch_with_ytdlp(video_id: str, proxy_url: str | None, lang: str | None) ->
     cookies_path = (os.getenv("YOUTUBE_COOKIES_PATH") or "").strip() or None
     user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
     accept_lang = "en-US,en;q=0.9,ru;q=0.8,de;q=0.7"
+    extractor_args = {"youtube": {"player_client": ["android", "web"]}}
+    fatal_ytdlp_markers = (
+        "requested format is not available",
+        "video unavailable",
+        "private video",
+        "this video is unavailable",
+    )
+
+    def _is_fatal_ytdlp_error(raw: str | None) -> bool:
+        text = str(raw or "").strip().lower()
+        if not text:
+            return False
+        return any(marker in text for marker in fatal_ytdlp_markers)
 
     def _run_ytdlp_python(tmpdir_path: str, mode_flag: str, code: str) -> bool:
         try:
@@ -13190,6 +15319,9 @@ def _fetch_with_ytdlp(video_id: str, proxy_url: str | None, lang: str | None) ->
             "outtmpl": "%(id)s.%(ext)s",
             "user_agent": user_agent,
             "http_headers": {"Accept-Language": accept_lang},
+            "socket_timeout": 8,
+            "geo_bypass": True,
+            "extractor_args": extractor_args,
         }
         if mode_flag == "--write-subs":
             ydl_opts["writesubtitles"] = True
@@ -13206,7 +15338,9 @@ def _fetch_with_ytdlp(video_id: str, proxy_url: str | None, lang: str | None) ->
             with YoutubeDL(ydl_opts) as ydl:
                 ydl.download([base_url])
             return True
-        except Exception:
+        except Exception as exc:
+            if _is_fatal_ytdlp_error(str(exc)):
+                raise RuntimeError(str(exc))
             return False
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -13221,9 +15355,12 @@ def _fetch_with_ytdlp(video_id: str, proxy_url: str | None, lang: str | None) ->
                         "--quiet",
                         "--user-agent", user_agent,
                         "--add-headers", f"Accept-Language:{accept_lang}",
+                        "--geo-bypass",
+                        "--extractor-args", "youtube:player_client=android,web",
                         mode_flag,
                         "--sub-langs", code,
                         "--convert-subs", "vtt",
+                        "--socket-timeout", "8",
                         "-o", "%(id)s.%(ext)s",
                         base_url,
                     ]
@@ -13233,9 +15370,21 @@ def _fetch_with_ytdlp(video_id: str, proxy_url: str | None, lang: str | None) ->
                         cmd += ["--cookies", cookies_path]
 
                     try:
-                        subprocess.run(cmd, cwd=tmpdir, check=True)
+                        subprocess.run(
+                            cmd,
+                            cwd=tmpdir,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        )
                     except FileNotFoundError:
                         cli_missing = True
+                    except subprocess.CalledProcessError as exc:
+                        combined = " ".join(
+                            part for part in (exc.stderr, exc.stdout) if isinstance(part, str) and part.strip()
+                        )
+                        if _is_fatal_ytdlp_error(combined):
+                            raise RuntimeError(combined.strip() or "yt-dlp fatal transcript error")
                     except Exception:
                         pass
 
@@ -13257,6 +15406,24 @@ def _fetch_with_ytdlp(video_id: str, proxy_url: str | None, lang: str | None) ->
     raise RuntimeError("yt-dlp fallback failed to obtain VTT subtitles")
 
 
+def _build_youtube_transcript_result(
+    *,
+    source: str,
+    items: list[dict],
+    language: str | None,
+    is_generated: bool | None,
+    ip_country: str | None = None,
+) -> dict:
+    return {
+        "success": True,
+        "source": source,
+        "ip_country": ip_country,
+        "language": language,
+        "is_generated": is_generated,
+        "items": items,
+    }
+
+
 def _fetch_youtube_transcript(
     video_id: str,
     lang: str | None = None,
@@ -13265,10 +15432,10 @@ def _fetch_youtube_transcript(
 ) -> dict:
     """
     Production pipeline:
-    1) Webshare rotation + DE/AT filter (only if allow_proxy=True)
-    2) Generic proxy + DE/AT filter (only if allow_proxy=True)
-    3) Direct
-    4) yt-dlp fallback (proxy only when allow_proxy=True)
+    1) Direct
+    2) yt-dlp direct
+    3) Webshare rotation + DE/AT filter (only if allow_proxy=True)
+    4) Generic proxy + DE/AT filter (only if allow_proxy=True)
     """
 
     errors: list[str] = []
@@ -13290,17 +15457,49 @@ def _fetch_youtube_transcript(
     )
 
     # ----------------------------
-    # 1) Webshare rotation (DE/AT)
+    # 1) Direct
+    # ----------------------------
+    try:
+        for code in lang_order:
+            try:
+                subs = _fetch_with_yta(video_id, code, proxy_config=None)
+                return _build_youtube_transcript_result(
+                    source="direct",
+                    items=subs,
+                    language=code,
+                    is_generated=None,
+                )
+            except Exception:
+                continue
+        raise RuntimeError(f"direct: no transcripts for language order {tuple(lang_order)}")
+    except Exception as e:
+        errors.append(f"direct: {e}")
+
+    # ----------------------------
+    # 2) yt-dlp direct
+    # ----------------------------
+    try:
+        items, detected_lang, is_generated = _fetch_with_ytdlp(video_id, None, lang)
+        return _build_youtube_transcript_result(
+            source="yt-dlp",
+            items=items,
+            language=detected_lang,
+            is_generated=is_generated,
+        )
+    except Exception as e:
+        errors.append(f"yt-dlp: {e}")
+
+    # ----------------------------
+    # 3) Webshare rotation (DE/AT)
     # ----------------------------
     if allow_proxy and webshare_proxy:
         p = urlparse(webshare_proxy)
         ws_user = p.username or ""
         ws_pass = p.password or ""
-
-        max_attempts = 5
-        delay_seconds = 10
+        max_attempts = 3
 
         for attempt in range(1, max_attempts + 1):
+            proxy_config = None
             try:
                 # WebshareProxyConfig performs location-aware rotation itself.
                 # The raw gateway IP can resolve to a non-DE/AT country even when
@@ -13313,23 +15512,30 @@ def _fetch_youtube_transcript(
                 for code in lang_order:
                     try:
                         subs = _fetch_with_yta(video_id, code, proxy_config=proxy_config)
-                        return {
-                            "success": True,
-                            "source": "webshare",
-                            "ip_country": None,
-                            "language": code,
-                            "is_generated": None,
-                            "items": subs,
-                        }
+                        return _build_youtube_transcript_result(
+                            source="webshare",
+                            items=subs,
+                            language=code,
+                            is_generated=None,
+                        )
                     except Exception:
                         continue
                 raise RuntimeError(f"webshare: no transcripts for language order {tuple(lang_order)}")
             except Exception as e:
                 errors.append(f"webshare attempt {attempt}: {e}")
-                time.sleep(delay_seconds)
+            try:
+                items, detected_lang, is_generated = _fetch_with_ytdlp(video_id, webshare_proxy, lang)
+                return _build_youtube_transcript_result(
+                    source="webshare-yt-dlp",
+                    items=items,
+                    language=detected_lang,
+                    is_generated=is_generated,
+                )
+            except Exception as e:
+                errors.append(f"webshare yt-dlp attempt {attempt}: {e}")
 
     # ----------------------------
-    # 2) Generic proxy (DE/AT)
+    # 4) Generic proxy (DE/AT)
     # ----------------------------
     if allow_proxy and generic_proxy:
         country = _check_ip_country(generic_proxy)
@@ -13339,61 +15545,77 @@ def _fetch_youtube_transcript(
                 for code in lang_order:
                     try:
                         subs = _fetch_with_yta(video_id, code, proxy_config=proxy_config)
-                        return {
-                            "success": True,
-                            "source": "generic",
-                            "ip_country": country,
-                            "language": code,
-                            "is_generated": None,
-                            "items": subs,
-                        }
+                        return _build_youtube_transcript_result(
+                            source="generic",
+                            items=subs,
+                            language=code,
+                            is_generated=None,
+                            ip_country=country,
+                        )
                     except Exception:
                         continue
                 raise RuntimeError(f"generic: no transcripts for language order {tuple(lang_order)}")
             except Exception as e:
                 errors.append(f"generic: {e}")
+            try:
+                items, detected_lang, is_generated = _fetch_with_ytdlp(video_id, generic_proxy, lang)
+                return _build_youtube_transcript_result(
+                    source="generic-yt-dlp",
+                    items=items,
+                    language=detected_lang,
+                    is_generated=is_generated,
+                    ip_country=country,
+                )
+            except Exception as e:
+                errors.append(f"generic yt-dlp: {e}")
         else:
             errors.append(f"generic rejected country {country}")
 
-    # ----------------------------
-    # 3) Direct
-    # ----------------------------
-    try:
-        for code in lang_order:
-            try:
-                subs = _fetch_with_yta(video_id, code, proxy_config=None)
-                return {
-                    "success": True,
-                    "source": "direct",
-                    "ip_country": None,
-                    "language": code,
-                    "is_generated": None,
-                    "items": subs,
-                }
-            except Exception:
-                continue
-        raise RuntimeError(f"direct: no transcripts for language order {tuple(lang_order)}")
-    except Exception as e:
-        errors.append(f"direct: {e}")
-
-    # ----------------------------
-    # 4) yt-dlp fallback
-    # ----------------------------
-    try:
-        proxy_for_ytdlp = (webshare_proxy or generic_proxy) if allow_proxy else None
-        items, detected_lang, is_generated = _fetch_with_ytdlp(video_id, proxy_for_ytdlp, lang)
-        return {
-            "success": True,
-            "source": "yt-dlp",
-            "ip_country": _check_ip_country(proxy_for_ytdlp) if proxy_for_ytdlp else None,
-            "language": detected_lang,
-            "is_generated": is_generated,
-            "items": items,
-        }
-    except Exception as e:
-        errors.append(f"yt-dlp: {e}")
-
     raise RuntimeError("; ".join(errors) if errors else "Не удалось получить субтитры")
+
+
+def _format_youtube_transcript_user_error(raw_error: Exception | str | None) -> str:
+    text = str(raw_error or "").strip()
+    lowered = text.lower()
+    if not lowered:
+        return "Авто-субтитры сейчас недоступны. Попробуйте другой ролик или добавьте субтитры вручную."
+
+    if any(
+        marker in lowered
+        for marker in (
+            "private video",
+            "video unavailable",
+            "this video is unavailable",
+            "age restricted",
+            "unplayable",
+        )
+    ):
+        return "YouTube не отдаёт субтитры для этого видео. Попробуйте другой ролик или добавьте субтитры вручную."
+
+    if any(
+        marker in lowered
+        for marker in (
+            "no transcripts for language order",
+            "fallback failed to obtain vtt subtitles",
+            "transcripts disabled",
+            "subtitles are disabled",
+        )
+    ):
+        return "Для этого видео не удалось получить авто-субтитры. Попробуйте другой ролик или добавьте субтитры вручную."
+
+    if any(
+        marker in lowered
+        for marker in (
+            "requested format is not available",
+            "failed to extract any player response",
+            "sign in to confirm you're not a bot",
+            "http error 403",
+            "too many requests",
+        )
+    ):
+        return "YouTube временно не отдал авто-субтитры. Попробуйте ещё раз чуть позже."
+
+    return "Авто-субтитры сейчас недоступны. Попробуйте другой ролик или добавьте субтитры вручную."
 
 
 
@@ -14010,6 +16232,10 @@ def bootstrap_webapp_session():
         parsed_user_id = _safe_int(parsed_user.get("id"))
         if parsed_user_id is not None and parsed_user_id > 0:
             starter_dictionary = _build_starter_dictionary_offer(user_id=int(parsed_user_id))
+            _prime_webapp_home_snapshots_async(
+                user_id=int(parsed_user_id),
+                username=_extract_display_name(parsed_user),
+            )
     except Exception as exc:
         logging.warning("Starter dictionary bootstrap payload failed: %s", exc)
     return jsonify(
@@ -14044,7 +16270,7 @@ def claim_webapp_instance():
         return jsonify({"error": "instanceId обязателен"}), 400
 
     reason = str(payload.get("reason") or "heartbeat").strip().lower() or "heartbeat"
-    previous_lease = get_webapp_instance_lease(int(user_id))
+    previous_lease = _get_cached_webapp_instance_lease(int(user_id))
     previous_active = bool(previous_lease and _webapp_instance_lease_is_fresh(previous_lease))
     previous_instance_id = str(previous_lease.get("instance_id") or "").strip() if isinstance(previous_lease, dict) else ""
     if previous_active and previous_instance_id and previous_instance_id != instance_id and reason != "claim":
@@ -14056,6 +16282,7 @@ def claim_webapp_instance():
         platform=str(payload.get("platform") or request.headers.get("X-Webapp-Platform") or request.user_agent.string or "").strip()[:64] or None,
         app_context=str(payload.get("appContext") or request.headers.get("X-Webapp-App-Context") or "").strip()[:64] or None,
     )
+    _cache_webapp_instance_lease(int(user_id), lease)
     return jsonify(
         {
             "ok": True,
@@ -14089,6 +16316,8 @@ def release_webapp_instance():
         return jsonify({"error": "instanceId обязателен"}), 400
 
     released = release_webapp_instance_lease(user_id=int(user_id), instance_id=instance_id)
+    if released:
+        _cache_webapp_instance_lease(int(user_id), None)
     return jsonify({"ok": True, "released": bool(released)})
 
 
@@ -14097,16 +16326,56 @@ def _load_user_translation_sentence_map(
     *,
     source_lang: str,
     target_lang: str,
+    source_session_id: str | None = None,
 ) -> tuple[str | None, dict[int, dict[str, Any]]]:
     normalized_source_lang = source_lang or "ru"
     normalized_target_lang = target_lang or "de"
-    close_stale_open_translation_sessions_for_user(
-        user_id=int(user_id),
-        source_lang=normalized_source_lang,
-        target_lang=normalized_target_lang,
-    )
+    requested_session_id = str(source_session_id or "").strip() or None
+    if requested_session_id and not requested_session_id.isdigit():
+        requested_session_id = None
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            if requested_session_id:
+                cursor.execute(
+                    """
+                    SELECT unique_id, id_for_mistake_table, id, sentence, session_id
+                    FROM bt_3_daily_sentences
+                    WHERE session_id = %s
+                      AND user_id = %s
+                      AND COALESCE(source_lang, 'ru') = %s
+                      AND COALESCE(target_lang, 'de') = %s;
+                    """,
+                    (
+                        requested_session_id,
+                        int(user_id),
+                        normalized_source_lang,
+                        normalized_target_lang,
+                    ),
+                )
+                requested_rows = cursor.fetchall() or []
+                if requested_rows:
+                    rows = requested_rows
+                    selected_session_id = requested_session_id
+                    allowed_by_mistake_id: dict[int, dict[str, Any]] = {}
+                    for row in rows:
+                        try:
+                            mistake_id = int(row[1])
+                        except Exception:
+                            continue
+                        allowed_by_mistake_id[mistake_id] = {
+                            "sentence_number": int(row[0]) if row[0] is not None else None,
+                            "id_for_mistake_table": mistake_id,
+                            "sentence_id": int(row[2]) if row[2] is not None else None,
+                            "original_text": str(row[3] or "").strip(),
+                            "source_session_id": str(row[4] or "").strip() or selected_session_id,
+                        }
+                    return selected_session_id, allowed_by_mistake_id
+
+            close_stale_open_translation_sessions_for_user(
+                user_id=int(user_id),
+                source_lang=normalized_source_lang,
+                target_lang=normalized_target_lang,
+            )
             cursor.execute(
                 """
                 SELECT up.session_id
@@ -14251,22 +16520,69 @@ def _build_translation_check_payload(
     source_lang: str,
     target_lang: str,
     include_items: bool = True,
+    status_poll_count: int = 0,
 ) -> dict[str, Any]:
     normalized_items = items or []
     response_items = normalized_items if include_items else []
-    running_items = sum(1 for item in normalized_items if str(item.get("status") or "") == "running")
-    pending_items = sum(1 for item in normalized_items if str(item.get("status") or "") == "pending")
+    compact_session = None
+    if isinstance(session, dict):
+        compact_session = {
+            "id": int(session.get("id") or 0) if session.get("id") is not None else None,
+            "user_id": int(session.get("user_id") or 0) if session.get("user_id") is not None else None,
+            "source_session_id": str(session.get("source_session_id") or "").strip() or None,
+            "source_lang": str(session.get("source_lang") or "").strip() or None,
+            "target_lang": str(session.get("target_lang") or "").strip() or None,
+            "status": str(session.get("status") or "").strip().lower() or "queued",
+            "total_items": int(session.get("total_items") or 0),
+            "completed_items": int(session.get("completed_items") or 0),
+            "failed_items": int(session.get("failed_items") or 0),
+            "last_error": str(session.get("last_error") or "").strip() or None,
+            "started_at": session.get("started_at"),
+            "finished_at": session.get("finished_at"),
+            "created_at": session.get("created_at"),
+            "updated_at": session.get("updated_at"),
+        }
+    total_items = int((session or {}).get("total_items") or len(normalized_items))
+    completed_items = int((session or {}).get("completed_items") or 0)
+    failed_items = int((session or {}).get("failed_items") or 0)
+    session_status = str((session or {}).get("status") or "").strip().lower()
+    if include_items:
+        running_items = sum(1 for item in normalized_items if str(item.get("status") or "") == "running")
+        pending_items = sum(1 for item in normalized_items if str(item.get("status") or "") == "pending")
+    else:
+        running_items = 0
+        pending_items = max(0, total_items - completed_items - failed_items)
+    processed_items = max(0, completed_items + failed_items)
+    progress_ratio = (float(processed_items) / float(total_items)) if total_items > 0 else 0.0
+    if session_status in {"done", "failed", "canceled"}:
+        suggested_poll_after_ms = 0
+    elif session_status in {"queued", "pending"}:
+        suggested_poll_after_ms = 5200 if total_items <= 7 else 6500
+        if status_poll_count >= 10:
+            suggested_poll_after_ms = max(suggested_poll_after_ms, 7000)
+    elif progress_ratio >= 0.85:
+        suggested_poll_after_ms = 1800
+    elif progress_ratio >= 0.50:
+        suggested_poll_after_ms = 3200
+    else:
+        suggested_poll_after_ms = 4200
+        if status_poll_count >= 10:
+            suggested_poll_after_ms = max(suggested_poll_after_ms, 5200)
     return {
         "ok": True,
-        "check_session": session,
+        "check_session": compact_session,
         "items": response_items,
         "items_included": bool(include_items),
         "progress": {
-            "total": int((session or {}).get("total_items") or len(normalized_items)),
-            "completed": int((session or {}).get("completed_items") or 0),
-            "failed": int((session or {}).get("failed_items") or 0),
+            "total": total_items,
+            "completed": completed_items,
+            "failed": failed_items,
             "running": running_items,
             "pending": pending_items,
+        },
+        "polling": {
+            "suggested_delay_ms": int(suggested_poll_after_ms),
+            "terminal": bool(session_status in {"done", "failed", "canceled"}),
         },
         "language_pair": _build_language_pair_payload(source_lang, target_lang),
     }
@@ -14371,9 +16687,8 @@ def _process_translation_check_session_item(
     item_id = int(item["id"])
     item_order = int(item.get("item_order") or 0)
     item_started_perf = time.perf_counter()
-    mark_item_running_duration_ms = 0
     check_duration_ms = None
-    finalize_item_duration_ms = 0
+    global_wait_duration_ms = 0
     result_item: dict[str, Any] | None = item.get("result_json") if isinstance(item.get("result_json"), dict) else None
 
     try:
@@ -14384,30 +16699,25 @@ def _process_translation_check_session_item(
             or item.get("error_text")
         )
         if not checkpoint_present:
-            mark_item_running_started_perf = time.perf_counter()
-            update_translation_check_item_result(
-                item_id=item_id,
-                status="running",
-                started=True,
-            )
-            mark_item_running_duration_ms = _elapsed_ms_since(mark_item_running_started_perf)
-
-            check_started_perf = time.perf_counter()
-            result_item, _ = asyncio.run(
-                check_user_translation_webapp_item(
-                    int(session["user_id"]),
-                    session.get("username"),
-                    {
-                        "id_for_mistake_table": item.get("sentence_id_for_mistake_table"),
-                        "translation": item.get("user_translation"),
-                    },
-                    source_lang=str(session.get("source_lang") or "ru"),
-                    target_lang=str(session.get("target_lang") or "de"),
-                    daily_session_id=session.get("source_session_id"),
-                    checkpoint_item_id=item_id,
+            semaphore_wait_started_perf = time.perf_counter()
+            with _TRANSLATION_CHECK_GLOBAL_ITEM_SEMAPHORE:
+                global_wait_duration_ms = _elapsed_ms_since(semaphore_wait_started_perf)
+                check_started_perf = time.perf_counter()
+                result_item, _ = asyncio.run(
+                    check_user_translation_webapp_item(
+                        int(session["user_id"]),
+                        session.get("username"),
+                        {
+                            "id_for_mistake_table": item.get("sentence_id_for_mistake_table"),
+                            "translation": item.get("user_translation"),
+                        },
+                        source_lang=str(session.get("source_lang") or "ru"),
+                        target_lang=str(session.get("target_lang") or "de"),
+                        daily_session_id=session.get("source_session_id"),
+                        checkpoint_item_id=None,
+                    )
                 )
-            )
-            check_duration_ms = _elapsed_ms_since(check_started_perf)
+                check_duration_ms = _elapsed_ms_since(check_started_perf)
 
         result_item = result_item or {
             "sentence_number": item.get("sentence_number"),
@@ -14415,33 +16725,20 @@ def _process_translation_check_session_item(
         }
         item_error = str(result_item.get("error") or "").strip()
 
-        finalize_item_started_perf = time.perf_counter()
-        finalize_result = finalize_translation_check_item(
-            item_id=item_id,
-            status="failed" if item_error else "done",
-            result_json=result_item if isinstance(result_item, dict) else None,
-            result_text=str(result_item.get("feedback") or item_error or "").strip() or None,
-            error_text=item_error or None,
-            webapp_check_id=result_item.get("translation_id") if isinstance(result_item, dict) else None,
-        )
-        finalize_item_duration_ms = _elapsed_ms_since(finalize_item_started_perf)
-
-        if finalize_result.get("finalized") and not item_error and bool(session.get("send_private_grammar_text")):
-            _queue_private_grammar_explanation_for_result(
-                user_id=int(session["user_id"]),
-                result_item=result_item,
-                source_lang=str(session.get("source_lang") or "ru"),
-                target_lang=str(session.get("target_lang") or "de"),
-            )
-
         return {
             "item_id": item_id,
             "item_order": item_order,
             "per_item_duration_ms": _elapsed_ms_since(item_started_perf),
             "item_processing_duration_ms": check_duration_ms,
-            "db_update_duration_ms": mark_item_running_duration_ms + finalize_item_duration_ms,
+            "global_backpressure_wait_ms": global_wait_duration_ms,
+            "db_update_duration_ms": 0,
             "item_status": "failed" if item_error else "done",
             "item_outcome": "error" if item_error else "success",
+            "result_json": result_item if isinstance(result_item, dict) else None,
+            "result_text": str(result_item.get("feedback") or item_error or "").strip() or None,
+            "error_text": item_error or None,
+            "webapp_check_id": result_item.get("translation_id") if isinstance(result_item, dict) else None,
+            "queue_private_grammar_text": bool(not item_error and session.get("send_private_grammar_text")),
         }
     except Exception as exc:
         logging.error(
@@ -14451,33 +16748,27 @@ def _process_translation_check_session_item(
             exc,
             exc_info=True,
         )
-        try:
-            finalize_item_started_perf = time.perf_counter()
-            finalize_translation_check_item(
-                item_id=item_id,
-                status="failed",
-                result_json=result_item if isinstance(result_item, dict) else None,
-                result_text=str((result_item or {}).get("feedback") or "").strip() or None,
-                error_text=f"Ошибка проверки: {exc}",
-            )
-            finalize_item_duration_ms = _elapsed_ms_since(finalize_item_started_perf)
-        except Exception:
-            logging.exception("Failed to finalize translation check item failure: session=%s item=%s", session_id, item_id)
-
         return {
             "item_id": item_id,
             "item_order": item_order,
             "per_item_duration_ms": _elapsed_ms_since(item_started_perf),
             "item_processing_duration_ms": check_duration_ms,
-            "db_update_duration_ms": mark_item_running_duration_ms + finalize_item_duration_ms,
+            "global_backpressure_wait_ms": global_wait_duration_ms,
+            "db_update_duration_ms": 0,
             "item_status": "failed",
             "item_outcome": "error",
+            "result_json": result_item if isinstance(result_item, dict) else None,
+            "result_text": str((result_item or {}).get("feedback") or "").strip() or None,
+            "error_text": f"Ошибка проверки: {exc}",
+            "webapp_check_id": (result_item or {}).get("translation_id") if isinstance(result_item, dict) else None,
+            "queue_private_grammar_text": False,
         }
 
 
 def _run_translation_check_session(
     session_id: int,
     *,
+    dispatch_job_id: str | None = None,
     correlation_id: str | None = None,
     request_id: str | None = None,
     accepted_at_ms: int | None = None,
@@ -14494,44 +16785,46 @@ def _run_translation_check_session(
     runner_start_delay_ms: int | None = None
     terminal_outcome = "error"
     total_completion_duration_ms: int | None = None
-    runner_lock_conn = None
-    runner_lock_acquired = False
+    worker_job_id = str(dispatch_job_id or "").strip() or None
+
+    def _touch_worker_heartbeat() -> None:
+        if not worker_job_id:
+            return
+        touch_translation_check_session_heartbeat(
+            session_id=int(session_id),
+            worker_job_id=worker_job_id,
+        )
+        set_translation_check_job_status(
+            int(session_id),
+            status="running",
+            job_id=worker_job_id,
+        )
+
     try:
-        runner_lock_key = _translation_check_runner_lock_key(int(session_id))
-        runner_lock_conn = get_translation_workflow_db_connection()
-        with runner_lock_conn.cursor() as runner_lock_cursor:
-            runner_lock_cursor.execute("SELECT pg_try_advisory_lock(%s);", (int(runner_lock_key),))
-            lock_row = runner_lock_cursor.fetchone()
-            runner_lock_acquired = bool(lock_row and lock_row[0])
-        if not runner_lock_acquired:
+        if not worker_job_id:
+            worker_job_id = uuid4().hex
+        claim_started_perf = time.perf_counter()
+        session = claim_translation_check_session_runner(
+            session_id=int(session_id),
+            dispatch_job_id=worker_job_id,
+        )
+        claim_duration_ms = _elapsed_ms_since(claim_started_perf)
+        if not session:
             terminal_outcome = "skipped_lock"
             _log_flow_observation(
                 "translation_check",
-                "runner_lock_skipped",
+                "runner_claim_skipped",
                 request_id=resolved_request_id,
                 correlation_id=resolved_correlation_id,
                 session_id=int(session_id),
                 check_id=int(session_id),
                 terminal_outcome=terminal_outcome,
+                db_update_duration_ms=claim_duration_ms,
                 duration_ms=_elapsed_ms_since(runner_started_perf),
             )
             return
-        session_lookup_started_perf = time.perf_counter()
-        session = get_translation_check_session(session_id=int(session_id))
-        session_lookup_duration_ms = _elapsed_ms_since(session_lookup_started_perf)
-        if not session:
-            _log_flow_observation(
-                "translation_check",
-                "runner_session_missing",
-                request_id=resolved_request_id,
-                correlation_id=resolved_correlation_id,
-                session_id=int(session_id),
-                check_id=int(session_id),
-                db_lookup_duration_ms=session_lookup_duration_ms,
-                terminal_outcome="error",
-                duration_ms=_elapsed_ms_since(runner_started_perf),
-            )
-            return
+        _touch_worker_heartbeat()
+        session_lookup_duration_ms = claim_duration_ms
         session_user_id = int(session.get("user_id") or 0) or None
         if accepted_at_ms_value is None:
             created_dt = _parse_iso_datetime(session.get("created_at"))
@@ -14560,12 +16853,11 @@ def _run_translation_check_session(
         items_lookup_duration_ms = _elapsed_ms_since(items_lookup_started_perf)
         if not items:
             session_status_update_started_perf = time.perf_counter()
-            update_translation_check_session_status(
+            complete_translation_check_session(
                 session_id=int(session_id),
+                worker_job_id=worker_job_id,
                 status="failed",
                 last_error="Пустая сессия проверки перевода.",
-                started=True,
-                finished=True,
             )
             session_status_update_duration_ms = _elapsed_ms_since(session_status_update_started_perf)
             terminal_outcome = "error"
@@ -14587,11 +16879,7 @@ def _run_translation_check_session(
             return
 
         mark_running_started_perf = time.perf_counter()
-        update_translation_check_session_status(
-            session_id=int(session_id),
-            status="running",
-            started=True,
-        )
+        _touch_worker_heartbeat()
         mark_running_duration_ms = _elapsed_ms_since(mark_running_started_perf)
         _log_flow_observation(
             "translation_check",
@@ -14612,6 +16900,7 @@ def _run_translation_check_session(
             for item in items
             if str(item.get("status") or "").strip().lower() not in {"done", "failed"}
         ]
+        processed_item_metrics: list[dict[str, Any]] = []
         item_max_workers = max(1, min(_TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY, len(pending_items) or 1))
         with ThreadPoolExecutor(max_workers=item_max_workers) as item_executor:
             item_futures = {
@@ -14625,32 +16914,70 @@ def _run_translation_check_session(
             }
 
             for future in as_completed(item_futures):
-                item_metrics = future.result()
-                _log_flow_observation(
-                    "translation_check",
-                    "item_processed",
-                    request_id=resolved_request_id,
-                    correlation_id=resolved_correlation_id,
-                    user_id=session_user_id,
-                    session_id=int(session_id),
-                    check_id=int(session_id),
-                    **item_metrics,
-                )
+                processed_item_metrics.append(future.result())
+                _touch_worker_heartbeat()
 
-        final_counters_refresh_started_perf = time.perf_counter()
-        session = refresh_translation_check_session_counters(session_id=int(session_id))
-        final_counters_refresh_duration_ms = _elapsed_ms_since(final_counters_refresh_started_perf)
+        batch_finalize_started_perf = time.perf_counter()
+        with db_acquire_scope("translation_check_session_finalize_batch"):
+            session = finalize_translation_check_items_batch(
+                session_id=int(session_id),
+                item_results=processed_item_metrics,
+                worker_job_id=worker_job_id,
+            )
+        batch_finalize_duration_ms = _elapsed_ms_since(batch_finalize_started_perf)
+
+        for item_metrics in sorted(processed_item_metrics, key=lambda entry: int(entry.get("item_order") or 0)):
+            item_log_metrics = dict(item_metrics)
+            item_log_metrics["db_update_duration_ms"] = int(item_log_metrics.get("db_update_duration_ms") or 0) + batch_finalize_duration_ms
+            _log_flow_observation(
+                "translation_check",
+                "item_processed",
+                request_id=resolved_request_id,
+                correlation_id=resolved_correlation_id,
+                user_id=session_user_id,
+                session_id=int(session_id),
+                check_id=int(session_id),
+                **item_log_metrics,
+            )
+            if bool(item_metrics.get("queue_private_grammar_text")):
+                result_payload = item_metrics.get("result_json")
+                if isinstance(result_payload, dict):
+                    _queue_private_grammar_explanation_for_result(
+                        user_id=int(session["user_id"]),
+                        result_item=result_payload,
+                        source_lang=str(session.get("source_lang") or "ru"),
+                        target_lang=str(session.get("target_lang") or "de"),
+                    )
+
         last_error = None
         if session and int(session.get("failed_items") or 0) >= int(session.get("total_items") or 0) and int(session.get("total_items") or 0) > 0:
             last_error = "Все элементы проверки завершились с ошибкой."
         finalize_session_started_perf = time.perf_counter()
-        session = update_translation_check_session_status(
+        final_status = "done"
+        session = complete_translation_check_session(
             session_id=int(session_id),
-            status="done",
+            worker_job_id=worker_job_id,
+            status=final_status,
             last_error=last_error,
-            finished=True,
         )
         finalize_session_duration_ms = _elapsed_ms_since(finalize_session_started_perf)
+        if not session:
+            terminal_outcome = "stale_worker"
+            _log_flow_observation(
+                "translation_check",
+                "runner_finished",
+                request_id=resolved_request_id,
+                correlation_id=resolved_correlation_id,
+                user_id=session_user_id,
+                session_id=int(session_id),
+                check_id=int(session_id),
+                runner_start_delay_ms=runner_start_delay_ms,
+                db_update_duration_ms=batch_finalize_duration_ms + finalize_session_duration_ms,
+                terminal_outcome=terminal_outcome,
+                error_code="stale_worker_lease",
+                duration_ms=_elapsed_ms_since(runner_started_perf),
+            )
+            return
         total_items = int((session or {}).get("total_items") or 0)
         completed_items = int((session or {}).get("completed_items") or 0)
         failed_items = int((session or {}).get("failed_items") or 0)
@@ -14677,7 +17004,7 @@ def _run_translation_check_session(
             items_failed=failed_items,
             runner_start_delay_ms=runner_start_delay_ms,
             session_completion_duration_ms=total_completion_duration_ms,
-            db_update_duration_ms=final_counters_refresh_duration_ms + finalize_session_duration_ms,
+            db_update_duration_ms=batch_finalize_duration_ms + finalize_session_duration_ms,
             terminal_outcome=terminal_outcome,
             duration_ms=_elapsed_ms_since(runner_started_perf),
         )
@@ -14701,12 +17028,11 @@ def _run_translation_check_session(
         logging.error("Translation check session failed: session=%s error=%s", session_id, exc, exc_info=True)
         try:
             fail_update_started_perf = time.perf_counter()
-            failed_session = update_translation_check_session_status(
+            failed_session = complete_translation_check_session(
                 session_id=int(session_id),
+                worker_job_id=worker_job_id or "",
                 status="failed",
                 last_error=f"Ошибка фоновой проверки: {exc}",
-                started=True,
-                finished=True,
             )
             fail_update_duration_ms = _elapsed_ms_since(fail_update_started_perf)
             total_completion_duration_ms = _duration_between_ms(
@@ -14731,17 +17057,6 @@ def _run_translation_check_session(
         except Exception:
             logging.exception("Failed to mark translation check session as failed: %s", session_id)
     finally:
-        if runner_lock_conn is not None:
-            if runner_lock_acquired:
-                try:
-                    with runner_lock_conn.cursor() as runner_lock_cursor:
-                        runner_lock_cursor.execute("SELECT pg_advisory_unlock(%s);", (int(_translation_check_runner_lock_key(int(session_id))),))
-                except Exception:
-                    logging.debug("Failed to release translation check advisory lock for session=%s", session_id, exc_info=True)
-            try:
-                runner_lock_conn.close()
-            except Exception:
-                pass
         with _TRANSLATION_CHECK_RUNNERS_LOCK:
             _TRANSLATION_CHECK_RUNNERS.discard(int(session_id))
         if terminal_outcome in {"success", "partial", "error"}:
@@ -14774,10 +17089,19 @@ def _list_active_translation_check_session_ids(limit: int = 50) -> list[int]:
 def _start_translation_check_runner(
     session_id: int,
     *,
+    dispatch_job_id: str | None = None,
     correlation_id: str | None = None,
     request_id: str | None = None,
     accepted_at_ms: int | None = None,
 ) -> None:
+    if is_translation_check_async_enabled() and not dispatch_job_id:
+        enqueue_translation_check_job(
+            int(session_id),
+            correlation_id=correlation_id,
+            request_id=request_id,
+            accepted_at_ms=accepted_at_ms,
+        )
+        return
     with _TRANSLATION_CHECK_RUNNERS_LOCK:
         if int(session_id) in _TRANSLATION_CHECK_RUNNERS:
             return
@@ -14786,12 +17110,78 @@ def _start_translation_check_runner(
         target=_run_translation_check_session,
         kwargs={
             "session_id": int(session_id),
+            "dispatch_job_id": str(dispatch_job_id or "").strip() or None,
             "correlation_id": correlation_id,
             "request_id": request_id,
             "accepted_at_ms": accepted_at_ms,
         },
         daemon=True,
     ).start()
+
+
+def _maybe_start_inline_translation_check_runner(
+    session: dict[str, Any],
+    *,
+    correlation_id: str | None = None,
+) -> bool:
+    if not _TRANSLATION_CHECK_INLINE_FALLBACK_ENABLED:
+        return False
+    session_id = session.get("id")
+    if not session_id:
+        return False
+    try:
+        runtime = get_translation_check_session_runtime(session_id=int(session_id)) or {}
+    except Exception:
+        logging.warning("Translation check inline fallback runtime lookup failed: session=%s", session_id, exc_info=True)
+        return False
+    runtime_status = str(runtime.get("status") or session.get("status") or "").strip().lower()
+    dispatched_age_ms = _translation_check_runtime_age_ms(runtime.get("dispatched_at"))
+    heartbeat_age_ms = _translation_check_runtime_age_ms(runtime.get("heartbeat_at"))
+    is_stale_queued = runtime_status == "queued" and (
+        dispatched_age_ms is None or dispatched_age_ms >= _TRANSLATION_CHECK_INLINE_FALLBACK_QUEUED_STALE_MS
+    )
+    is_stale_running = runtime_status == "running" and (
+        heartbeat_age_ms is None or heartbeat_age_ms >= _TRANSLATION_CHECK_INLINE_FALLBACK_RUNNING_STALE_MS
+    )
+    if not is_stale_queued and not is_stale_running:
+        return False
+
+    resolved_correlation_id = correlation_id or _build_observability_correlation_id(
+        fallback_seed=f"session-{int(session_id)}",
+        prefix="translation_check",
+    )
+    try:
+        job_status = enqueue_translation_check_job(
+            int(session_id),
+            correlation_id=resolved_correlation_id,
+        ) or {}
+    except Exception:
+        logging.warning(
+            "Translation check inline fallback enqueue refresh failed: session=%s status=%s",
+            session_id,
+            runtime_status,
+            exc_info=True,
+        )
+        job_status = {}
+    dispatch_job_id = (
+        str(job_status.get("job_id") or "").strip()
+        or str(runtime.get("dispatched_job_id") or "").strip()
+    )
+    if not dispatch_job_id:
+        return False
+    logging.warning(
+        "Translation check inline fallback activated: session=%s runtime_status=%s dispatched_age_ms=%s heartbeat_age_ms=%s",
+        int(session_id),
+        runtime_status,
+        dispatched_age_ms,
+        heartbeat_age_ms,
+    )
+    _start_translation_check_runner(
+        int(session_id),
+        dispatch_job_id=dispatch_job_id,
+        correlation_id=resolved_correlation_id,
+    )
+    return True
 
 
 def _resume_translation_check_session_if_needed(session: dict[str, Any] | None) -> None:
@@ -14801,12 +17191,15 @@ def _resume_translation_check_session_if_needed(session: dict[str, Any] | None) 
     session_id = session.get("id")
     if status not in {"queued", "running"} or not session_id:
         return
+    correlation_id = _build_observability_correlation_id(
+        fallback_seed=f"session-{int(session_id)}",
+        prefix="translation_check",
+    )
+    if _maybe_start_inline_translation_check_runner(session, correlation_id=correlation_id):
+        return
     _start_translation_check_runner(
         int(session_id),
-        correlation_id=_build_observability_correlation_id(
-            fallback_seed=f"session-{int(session_id)}",
-            prefix="translation_check",
-        ),
+        correlation_id=correlation_id,
     )
 
 
@@ -14959,12 +17352,17 @@ def start_webapp_translation_check():
         )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    source_lang, target_lang, _profile, language_pair_lookup_mode = _get_user_language_pair_for_webapp_request(
+        int(user_id),
+        payload=payload,
+    )
+    requested_source_session_id = str(payload.get("session_id") or "").strip() or None
     map_load_started_perf = time.perf_counter()
     source_session_id, allowed_by_mistake_id = _load_user_translation_sentence_map(
         int(user_id),
         source_lang=source_lang,
         target_lang=target_lang,
+        source_session_id=requested_source_session_id,
     )
     map_load_duration_ms = _elapsed_ms_since(map_load_started_perf)
     sentence_map_size = len(allowed_by_mistake_id)
@@ -14983,6 +17381,7 @@ def start_webapp_translation_check():
             user_id=int(user_id),
             items_requested=len(translations),
             items_normalized=0,
+            requested_source_session_id=requested_source_session_id,
             source_session_id=source_session_id,
             db_lookup_duration_ms=map_load_duration_ms,
             normalize_duration_ms=normalize_duration_ms,
@@ -15013,6 +17412,7 @@ def start_webapp_translation_check():
             items=existing_items,
             source_lang=source_lang,
             target_lang=target_lang,
+            include_items=False,
         )
         _log_flow_observation(
             "translation_check",
@@ -15025,11 +17425,13 @@ def start_webapp_translation_check():
             source_session_id=source_session_id,
             items_requested=len(translations),
             items_normalized=len(normalized_items),
+            requested_source_session_id=requested_source_session_id,
             items_total=len(existing_items),
             db_lookup_duration_ms=map_load_duration_ms + existing_lookup_duration_ms,
             sentence_map_size=sentence_map_size,
             existing_session_lookup_duration_ms=existing_lookup_duration_ms,
             normalize_duration_ms=normalize_duration_ms,
+            language_pair_lookup_mode=language_pair_lookup_mode,
             response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
             final_status="reused",
             duration_ms=_elapsed_ms_since(started_perf),
@@ -15059,12 +17461,14 @@ def start_webapp_translation_check():
             user_id=int(user_id),
             items_requested=len(translations),
             items_normalized=len(normalized_items),
+            requested_source_session_id=requested_source_session_id,
             source_session_id=source_session_id,
             db_lookup_duration_ms=map_load_duration_ms + existing_lookup_duration_ms,
             sentence_map_size=sentence_map_size,
             existing_session_lookup_duration_ms=existing_lookup_duration_ms,
             normalize_duration_ms=normalize_duration_ms,
             db_update_duration_ms=create_session_duration_ms,
+            language_pair_lookup_mode=language_pair_lookup_mode,
             final_status="error",
             duration_ms=_elapsed_ms_since(started_perf),
             http_status=500,
@@ -15087,14 +17491,12 @@ def start_webapp_translation_check():
         accepted_at_ms=accepted_at_ms,
     )
     runner_dispatch_duration_ms = _elapsed_ms_since(runner_dispatch_started_perf)
-    list_items_started_perf = time.perf_counter()
-    items = list_translation_check_items(session_id=int(session["id"]))
-    list_items_duration_ms = _elapsed_ms_since(list_items_started_perf)
     response_payload = _build_translation_check_payload(
         session=session,
-        items=items,
+        items=[],
         source_lang=source_lang,
         target_lang=target_lang,
+        include_items=False,
     )
     _log_flow_observation(
         "translation_check",
@@ -15104,18 +17506,20 @@ def start_webapp_translation_check():
         user_id=int(user_id),
         session_id=session_id,
         check_id=session_id,
+        requested_source_session_id=requested_source_session_id,
         source_session_id=source_session_id,
         items_requested=len(translations),
         items_normalized=len(normalized_items),
-        items_total=len(items),
+        items_total=int(session.get("total_items") or 0),
         start_accepted_ts_ms=accepted_at_ms,
-        db_lookup_duration_ms=map_load_duration_ms + list_items_duration_ms,
+        db_lookup_duration_ms=map_load_duration_ms + existing_lookup_duration_ms,
         sentence_map_size=sentence_map_size,
         existing_session_lookup_duration_ms=existing_lookup_duration_ms,
-        items_list_duration_ms=list_items_duration_ms,
+        items_list_duration_ms=0,
         normalize_duration_ms=normalize_duration_ms,
         db_update_duration_ms=create_session_duration_ms,
         runner_dispatch_duration_ms=runner_dispatch_duration_ms,
+        language_pair_lookup_mode=language_pair_lookup_mode,
         response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
         final_status="accepted",
         duration_ms=_elapsed_ms_since(started_perf),
@@ -15174,13 +17578,16 @@ def get_webapp_translation_check_status():
         )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    source_lang, target_lang, _profile, language_pair_lookup_mode = _get_user_language_pair_for_webapp_request(
+        int(user_id),
+        payload=payload,
+    )
     session = None
     session_lookup_duration_ms = 0
     if requested_session_id is not None:
         try:
             session_lookup_started_perf = time.perf_counter()
-            session = get_translation_check_session(
+            session = get_translation_check_session_status(
                 session_id=int(requested_session_id),
                 user_id=int(user_id),
             )
@@ -15204,11 +17611,11 @@ def get_webapp_translation_check_status():
             return jsonify({"error": "Сессия проверки не найдена."}), 404
     else:
         active_lookup_started_perf = time.perf_counter()
-        session = get_latest_translation_check_session(user_id=int(user_id), only_active=True)
+        session = get_latest_translation_check_session_status(user_id=int(user_id), only_active=True)
         session_lookup_duration_ms += _elapsed_ms_since(active_lookup_started_perf)
         if session is None and not active_only:
             fallback_lookup_started_perf = time.perf_counter()
-            session = get_latest_translation_check_session(user_id=int(user_id), only_active=False)
+            session = get_latest_translation_check_session_status(user_id=int(user_id), only_active=False)
             session_lookup_duration_ms += _elapsed_ms_since(fallback_lookup_started_perf)
 
     session_id = int(session["id"]) if session else None
@@ -15231,6 +17638,8 @@ def get_webapp_translation_check_status():
     should_include_items = False
     if session:
         session_status = str((session or {}).get("status") or "").strip().lower()
+        if session_status in {"queued", "running"}:
+            _resume_translation_check_session_if_needed(session)
         should_include_items = include_items or session_status in {"done", "failed", "canceled"}
         if should_include_items:
             list_items_started_perf = time.perf_counter()
@@ -15251,6 +17660,7 @@ def get_webapp_translation_check_status():
         source_lang=source_lang,
         target_lang=target_lang,
         include_items=should_include_items,
+        status_poll_count=status_poll_count,
     )
     _log_flow_observation(
         "translation_check",
@@ -15265,6 +17675,7 @@ def get_webapp_translation_check_status():
         status_polling_count_client=payload_poll_count,
         items_total=len(items),
         items_included=should_include_items,
+        language_pair_lookup_mode=language_pair_lookup_mode,
         session_lookup_duration_ms=session_lookup_duration_ms,
         items_lookup_duration_ms=list_items_duration_ms,
         db_lookup_duration_ms=session_lookup_duration_ms + list_items_duration_ms,
@@ -15437,111 +17848,79 @@ def _parse_iso_date(value: str | None):
 
 @app.route("/api/webapp/analytics/scope", methods=["POST"])
 def get_webapp_analytics_scope():
-    payload = request.get_json(silent=True) or {}
-    init_data = _extract_request_init_data(payload)
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
-    if error:
-        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
-        return jsonify({"error": error}), status
-
-    try:
-        scope_context = _extract_scope_context_from_payload(init_data=init_data, payload=payload)
-        if scope_context.get("has_group_context"):
-            upsert_webapp_group_context(
-                user_id=int(user_id),
-                chat_id=int(scope_context["chat_id"]),
-                chat_type=scope_context.get("chat_type"),
-                chat_title=scope_context.get("chat_title"),
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="analytics_scope")
+    with db_acquire_scope("analytics_scope") as db_acquire_events:
+        payload = request.get_json(silent=True) or {}
+        init_data = _extract_request_init_data(payload)
+        user_id, _username, error = _get_authenticated_user_from_request_init_data()
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation(
+                "analytics_scope",
+                "scope_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="auth_error",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=status,
+                **summarize_db_acquire_events(db_acquire_events),
             )
-        known_groups = list_webapp_group_contexts(
-            user_id=int(user_id),
-            limit=50,
-            only_confirmed=True,
-        )
-        known_group_title_map = {
-            int(item.get("chat_id")): (str(item.get("chat_title") or "").strip() or None)
+            return jsonify({"error": error}), status
+
+        try:
+            scope_started_at = time.perf_counter()
+            scope, scope_cache_meta = _resolve_analytics_scope_for_request(
+                user_id=int(user_id),
+                init_data=init_data,
+                payload=payload,
+                include_member_user_ids=False,
+            )
+            scope_context = scope.get("scope_context") if isinstance(scope.get("scope_context"), dict) else {}
+            known_groups = list(scope.get("available_groups") or [])
+            saved_scope = scope.get("saved_scope") if isinstance(scope.get("saved_scope"), dict) else {}
+            effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
+            scope_resolve_duration_ms = int((time.perf_counter() - scope_started_at) * 1000)
+        except Exception as exc:
+            logging.exception("analytics scope resolve failed for user_id=%s", user_id)
+            _log_flow_observation(
+                "analytics_scope",
+                "scope_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=500,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": f"Не удалось вычислить analytics scope: {exc}"}), 500
+        known_group_ids = {
+            int(item.get("chat_id"))
             for item in known_groups
+            if isinstance(item, dict) and item.get("chat_id") is not None
         }
-        known_group_ids = {int(item.get("chat_id")) for item in known_groups if item.get("chat_id") is not None}
-        saved_scope = get_webapp_scope_state(user_id=int(user_id))
-        if (
-            str(saved_scope.get("scope_kind")) == "group"
-            and saved_scope.get("scope_chat_id") is not None
-            and not saved_scope.get("scope_chat_title")
-        ):
-            saved_scope["scope_chat_title"] = known_group_title_map.get(int(saved_scope["scope_chat_id"]))
-    except Exception as exc:
-        logging.exception("analytics scope resolve failed for user_id=%s", user_id)
-        return jsonify({"error": f"Не удалось вычислить analytics scope: {exc}"}), 500
-
-    effective_kind = "personal"
-    effective_chat_id = None
-    effective_reason = "default_personal"
-    effective_chat_title = None
-
-    if scope_context.get("has_group_context"):
-        effective_kind = "group"
-        effective_chat_id = int(scope_context["chat_id"])
-        effective_reason = "telegram_group_context"
-        effective_chat_title = (
-            str(scope_context.get("chat_title") or "").strip()
-            or known_group_title_map.get(effective_chat_id)
+        effective_kind = str(effective_scope.get("scope_kind") or "personal").strip().lower() or "personal"
+        effective_chat_id = _safe_int(effective_scope.get("scope_chat_id"))
+        context_chat_id = int(scope_context["chat_id"]) if scope_context.get("has_group_context") else None
+        group_confirmation_required = bool(context_chat_id is not None and context_chat_id not in known_group_ids)
+        selector_required = bool(
+            not scope_context.get("has_group_context")
+            and len(known_groups) >= 2
         )
-    elif (
-        str(saved_scope.get("scope_kind")) == "group"
-        and saved_scope.get("scope_chat_id") is not None
-    ):
-        effective_kind = "group"
-        effective_chat_id = int(saved_scope["scope_chat_id"])
-        effective_reason = "saved_scope"
-        effective_chat_title = (
-            str(saved_scope.get("scope_chat_title") or "").strip()
-            or known_group_title_map.get(effective_chat_id)
+        selector_recommended = bool(
+            not scope_context.get("has_group_context")
+            and len(known_groups) >= 1
         )
-    elif (
-        not bool(saved_scope.get("has_state"))
-        and len(known_groups) == 1
-    ):
-        effective_kind = "group"
-        effective_chat_id = int(known_groups[0]["chat_id"])
-        effective_reason = "single_known_group_default"
-        effective_chat_title = str(known_groups[0].get("chat_title") or "").strip() or None
-    elif bool(saved_scope.get("has_state")):
-        effective_reason = "saved_scope"
 
-    if effective_kind == "group":
-        if effective_chat_id is None or int(effective_chat_id) not in known_group_ids:
-            effective_kind = "personal"
-            effective_chat_id = None
-            effective_chat_title = None
-            effective_reason = "group_participation_not_confirmed"
-
-    context_chat_id = int(scope_context["chat_id"]) if scope_context.get("has_group_context") else None
-    group_confirmation_required = bool(
-        context_chat_id is not None and context_chat_id not in known_group_ids
-    )
-
-    selector_required = bool(
-        not scope_context.get("has_group_context")
-        and len(known_groups) >= 2
-    )
-    selector_recommended = bool(
-        not scope_context.get("has_group_context")
-        and len(known_groups) >= 1
-    )
-
-    return jsonify(
-        {
+        response_payload = {
             "ok": True,
             "scope_context": scope_context,
             "saved_scope": saved_scope,
-            "effective_scope": {
-                "scope_kind": effective_kind,
-                "scope_chat_id": effective_chat_id,
-                "scope_chat_title": effective_chat_title,
-                "scope_key": f"group:{effective_chat_id}" if effective_kind == "group" else "personal",
-                "reason": effective_reason,
-            },
+            "effective_scope": effective_scope,
             "available_groups": known_groups,
             "selector": {
                 "required": selector_required,
@@ -15552,7 +17931,28 @@ def get_webapp_analytics_scope():
                 "context_chat_id": context_chat_id,
             },
         }
-    )
+        _log_flow_observation(
+            "analytics_scope",
+            "scope_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            scope_kind=effective_kind,
+            scope_chat_id=int(effective_chat_id) if effective_chat_id is not None else None,
+            available_groups_count=len(known_groups),
+            selector_required=bool(selector_required),
+            confirmation_required=bool(group_confirmation_required),
+            scope_resolve_duration_ms=scope_resolve_duration_ms,
+            cache_hit=bool(scope_cache_meta.get("cache_hit")),
+            cache_tier=scope_cache_meta.get("cache_tier"),
+            cache_state=scope_cache_meta.get("cache_state"),
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
 
 
 @app.route("/api/webapp/analytics/scope/select", methods=["POST"])
@@ -15624,6 +18024,7 @@ def select_webapp_analytics_scope():
         logging.exception("analytics scope save failed for user_id=%s", user_id)
         return jsonify({"error": f"Не удалось сохранить analytics scope: {exc}"}), 500
 
+    _invalidate_analytics_front_caches_for_user(int(user_id))
     return jsonify(
         {
             "ok": True,
@@ -15635,21 +18036,37 @@ def select_webapp_analytics_scope():
 
 @app.route("/api/webapp/progress-reset/status", methods=["POST"])
 def get_webapp_progress_reset_status():
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
-    if error:
-        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
-        return jsonify({"error": error}), status
-    user_id_int = int(user_id)
-    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
-    reset_info = get_user_progress_reset(
-        user_id=user_id_int,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
-    all_time_bounds = get_all_time_bounds(user_id_int)
-    today_local = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
-    return jsonify(
-        {
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="progress_reset_status")
+    with db_acquire_scope("progress_reset_status") as db_acquire_events:
+        user_id, _username, error = _get_authenticated_user_from_request_init_data()
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation(
+                "progress_reset_status",
+                "status_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="auth_error",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=status,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": error}), status
+        user_id_int = int(user_id)
+        lookup_started_at = time.perf_counter()
+        source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+        reset_info = get_user_progress_reset(
+            user_id=user_id_int,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        all_time_bounds = get_all_time_bounds(user_id_int)
+        lookup_duration_ms = int((time.perf_counter() - lookup_started_at) * 1000)
+        today_local = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+        response_payload = {
             "ok": True,
             "reset": reset_info,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
@@ -15659,7 +18076,25 @@ def get_webapp_progress_reset_status():
                 "today": today_local.isoformat(),
             },
         }
-    )
+        _log_flow_observation(
+            "progress_reset_status",
+            "status_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id_int,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            lookup_duration_ms=lookup_duration_ms,
+            has_reset=bool(reset_info),
+            min_date=response_payload["date_bounds"]["min_date"],
+            max_date=response_payload["date_bounds"]["max_date"],
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
 
 
 @app.route("/api/webapp/progress-reset/apply", methods=["POST"])
@@ -15691,6 +18126,7 @@ def apply_webapp_progress_reset():
     except Exception as exc:
         logging.exception("progress reset apply failed user_id=%s", user_id_int)
         return jsonify({"error": f"Не удалось сохранить reset progress: {exc}"}), 500
+    _invalidate_analytics_front_caches_for_user(user_id_int)
 
     return jsonify(
         {
@@ -15717,11 +18153,309 @@ def _parse_requested_analytics_scope(payload: dict | None) -> tuple[str, int | N
     return scope_kind, int(scope_chat_id) if scope_chat_id is not None else None
 
 
-def _resolve_analytics_scope_for_request(
+def _analytics_scope_context_cache_key(scope_context: dict | None) -> tuple[Any, ...]:
+    context = scope_context if isinstance(scope_context, dict) else {}
+    return (
+        bool(context.get("has_group_context")),
+        _safe_int(context.get("chat_id")) or 0,
+        str(context.get("chat_type") or "").strip().lower(),
+    )
+
+
+def _build_analytics_scope_cache_key(
     *,
     user_id: int,
     init_data: str,
     payload: dict | None = None,
+    include_member_user_ids: bool = True,
+) -> tuple[Any, ...]:
+    body = payload if isinstance(payload, dict) else {}
+    scope_context = _extract_scope_context_from_payload(init_data=init_data, payload=body)
+    requested_scope_kind, requested_scope_chat_id = _parse_requested_analytics_scope(body)
+    return (
+        "analytics_scope",
+        int(user_id),
+        "with_members" if include_member_user_ids else "base_only",
+        requested_scope_kind,
+        int(requested_scope_chat_id) if requested_scope_chat_id is not None else 0,
+        *_analytics_scope_context_cache_key(scope_context),
+    )
+
+
+def _build_analytics_summary_cache_key(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    scope_key: str,
+    period: str,
+    start_date: date,
+    end_date: date,
+) -> tuple[Any, ...]:
+    return (
+        "analytics_summary",
+        int(user_id),
+        str(source_lang or "").strip().lower(),
+        str(target_lang or "").strip().lower(),
+        str(scope_key or "personal").strip().lower() or "personal",
+        str(period or "week").strip().lower() or "week",
+        start_date.isoformat(),
+        end_date.isoformat(),
+    )
+
+
+def _build_analytics_compare_cache_key(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    scope_key: str,
+    period: str,
+    start_date: date,
+    end_date: date,
+    limit: int,
+) -> tuple[Any, ...]:
+    return (
+        "analytics_compare",
+        int(user_id),
+        str(source_lang or "").strip().lower(),
+        str(target_lang or "").strip().lower(),
+        str(scope_key or "personal").strip().lower() or "personal",
+        str(period or "week").strip().lower() or "week",
+        start_date.isoformat(),
+        end_date.isoformat(),
+        max(1, int(limit or 1)),
+    )
+
+
+def _build_billing_plans_cache_key() -> tuple[Any, ...]:
+    return ("billing_plans", "active_only")
+
+
+def _build_billing_status_cache_key(*, user_id: int) -> tuple[Any, ...]:
+    return ("billing_status", int(user_id), _billing_status_snapshot_key())
+
+
+def _billing_status_snapshot_key() -> str:
+    return "current"
+
+
+def _invalidate_billing_front_caches_for_user(user_id: int) -> None:
+    safe_user_id = int(user_id)
+    try:
+        mark_user_api_snapshots_stale(
+            user_id=safe_user_id,
+            snapshot_kind="billing_status",
+            snapshot_key=_billing_status_snapshot_key(),
+        )
+    except Exception:
+        logging.warning("Failed to mark billing status snapshot stale for user_id=%s", safe_user_id, exc_info=True)
+    try:
+        _HOTPATH_BILLING_STATUS_CACHE.mark_stale(("billing_status", safe_user_id, _billing_status_snapshot_key()))
+    except Exception:
+        logging.warning("Failed to invalidate billing status front cache for user_id=%s", safe_user_id, exc_info=True)
+
+
+def _invalidate_analytics_front_caches_for_user(user_id: int) -> None:
+    safe_user_id = int(user_id)
+    for manager, prefix in (
+        (_HOTPATH_ANALYTICS_SCOPE_CACHE, ("analytics_scope", safe_user_id)),
+        (_HOTPATH_ANALYTICS_SUMMARY_CACHE, ("analytics_summary", safe_user_id)),
+        (_HOTPATH_ANALYTICS_COMPARE_CACHE, ("analytics_compare", safe_user_id)),
+    ):
+        try:
+            manager.invalidate_prefix(prefix)
+        except Exception:
+            logging.warning("Failed to invalidate analytics front cache: prefix=%s", prefix, exc_info=True)
+
+
+def _build_billing_status_response_payload(*, user_id: int) -> tuple[dict, dict]:
+    now_utc = datetime.now(timezone.utc)
+    subscription_started_at = time.perf_counter()
+    subscription = get_user_subscription(int(user_id)) or {}
+    subscription_duration_ms = int((time.perf_counter() - subscription_started_at) * 1000)
+    entitlement_started_at = time.perf_counter()
+    entitlement = resolve_entitlement(
+        user_id=int(user_id),
+        now_ts_utc=now_utc,
+        tz="Europe/Vienna",
+        subscription=subscription,
+    )
+    entitlement_duration_ms = int((time.perf_counter() - entitlement_started_at) * 1000)
+    spent_started_at = time.perf_counter()
+    spent_today = float(get_today_cost_eur_fast(user_id=int(user_id), tz="Europe/Vienna"))
+    spent_today_duration_ms = int((time.perf_counter() - spent_started_at) * 1000)
+    plan_code = str(entitlement.get("plan_code") or "free")
+    plan_name = str(entitlement.get("plan_name") or plan_code)
+    status_value = str(entitlement.get("status") or "inactive")
+    effective_mode = str(entitlement.get("effective_mode") or "free")
+    cap_today = entitlement.get("cap_eur")
+    is_paid_active = effective_mode == "pro" and status_value in {"active", "trialing"}
+    has_billing_portal_context = bool(
+        str(subscription.get("stripe_customer_id") or "").strip()
+        or str(subscription.get("stripe_subscription_id") or "").strip()
+        or is_paid_active
+    )
+    response_payload = {
+        "plan_code": plan_code,
+        "plan_name": plan_name,
+        "status": status_value,
+        "effective_mode": effective_mode,
+        "trial_ends_at": entitlement.get("trial_ends_at"),
+        "current_period_end": subscription.get("current_period_end"),
+        "spent_today_eur": float(round(spent_today, 6)),
+        "cap_today_eur": float(cap_today) if cap_today is not None else None,
+        "currency": "EUR",
+        "reset_at": entitlement.get("reset_at"),
+        "upgrade": {
+            "available": not is_paid_active,
+            "endpoint": "/api/billing/create-checkout-session",
+        },
+        "manage": {
+            "available": has_billing_portal_context,
+            "endpoint": "/api/billing/create-portal-session",
+        },
+    }
+    meta = {
+        "plan_code": plan_code,
+        "billing_status": status_value,
+        "effective_mode": effective_mode,
+        "entitlement_duration_ms": entitlement_duration_ms,
+        "subscription_duration_ms": subscription_duration_ms,
+        "spent_today_duration_ms": spent_today_duration_ms,
+        "response_size_bytes": _estimate_json_payload_size_bytes(response_payload),
+    }
+    return response_payload, meta
+
+
+def _schedule_billing_status_snapshot_refresh(*, user_id: int) -> None:
+    snapshot_key = _billing_status_snapshot_key()
+    front_key = _build_billing_status_cache_key(user_id=int(user_id))
+
+    def _refresh() -> None:
+        with db_acquire_scope("billing_status_refresh"):
+            response_payload, meta = _build_billing_status_response_payload(user_id=int(user_id))
+            snapshot = upsert_user_api_snapshot(
+                user_id=int(user_id),
+                snapshot_kind="billing_status",
+                snapshot_key=snapshot_key,
+                payload=response_payload,
+                meta=meta,
+                fresh_ttl_seconds=BILLING_STATUS_CACHE_TTL_SEC,
+                stale_ttl_seconds=BILLING_STATUS_CACHE_STALE_TTL_SEC,
+            )
+            _store_snapshot_in_front_cache(
+                _HOTPATH_BILLING_STATUS_CACHE,
+                front_key=front_key,
+                snapshot=snapshot,
+                fresh_ttl_sec=BILLING_STATUS_CACHE_TTL_SEC,
+                stale_ttl_sec=BILLING_STATUS_CACHE_STALE_TTL_SEC,
+            )
+
+    _HOTPATH_BILLING_STATUS_CACHE.enqueue_refresh(front_key, _refresh)
+
+
+def _get_billing_status_response_cached(*, user_id: int) -> tuple[dict, dict]:
+    snapshot_key = _billing_status_snapshot_key()
+    front_key = _build_billing_status_cache_key(user_id=int(user_id))
+    fresh_front = _HOTPATH_BILLING_STATUS_CACHE.get(front_key)
+    if fresh_front is not None:
+        return (
+            dict(fresh_front.get("payload") or {}),
+            {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "fresh",
+                "snapshot_age_ms": _snapshot_age_ms({"refreshed_at": fresh_front.get("meta", {}).get("_snapshot_refreshed_at")}),
+                **(fresh_front.get("meta") or {}),
+            },
+        )
+
+    stale_front = _HOTPATH_BILLING_STATUS_CACHE.get(front_key, allow_stale=True)
+    if stale_front is not None:
+        _schedule_billing_status_snapshot_refresh(user_id=int(user_id))
+        return (
+            dict(stale_front.get("payload") or {}),
+            {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "stale",
+                "snapshot_age_ms": _snapshot_age_ms({"refreshed_at": stale_front.get("meta", {}).get("_snapshot_refreshed_at")}),
+                **(stale_front.get("meta") or {}),
+            },
+        )
+
+    snapshot = get_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="billing_status",
+        snapshot_key=snapshot_key,
+    )
+    if isinstance(snapshot, dict):
+        _store_snapshot_in_front_cache(
+            _HOTPATH_BILLING_STATUS_CACHE,
+            front_key=front_key,
+            snapshot=snapshot,
+            fresh_ttl_sec=BILLING_STATUS_CACHE_TTL_SEC,
+            stale_ttl_sec=BILLING_STATUS_CACHE_STALE_TTL_SEC,
+        )
+        if _snapshot_is_fresh(snapshot):
+            return (
+                dict(snapshot.get("payload") or {}),
+                {
+                    "cache_hit": True,
+                    "cache_tier": "db_snapshot",
+                    "cache_state": "fresh",
+                    "snapshot_age_ms": _snapshot_age_ms(snapshot),
+                    **(snapshot.get("meta") or {}),
+                },
+            )
+        if _snapshot_is_servable_stale(snapshot):
+            _schedule_billing_status_snapshot_refresh(user_id=int(user_id))
+            return (
+                dict(snapshot.get("payload") or {}),
+                {
+                    "cache_hit": True,
+                    "cache_tier": "db_snapshot",
+                    "cache_state": "stale",
+                    "snapshot_age_ms": _snapshot_age_ms(snapshot),
+                    **(snapshot.get("meta") or {}),
+                },
+            )
+
+    response_payload, meta = _build_billing_status_response_payload(user_id=int(user_id))
+    saved_snapshot = upsert_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="billing_status",
+        snapshot_key=snapshot_key,
+        payload=response_payload,
+        meta=meta,
+        fresh_ttl_seconds=BILLING_STATUS_CACHE_TTL_SEC,
+        stale_ttl_seconds=BILLING_STATUS_CACHE_STALE_TTL_SEC,
+    )
+    _store_snapshot_in_front_cache(
+        _HOTPATH_BILLING_STATUS_CACHE,
+        front_key=front_key,
+        snapshot=saved_snapshot,
+        fresh_ttl_sec=BILLING_STATUS_CACHE_TTL_SEC,
+        stale_ttl_sec=BILLING_STATUS_CACHE_STALE_TTL_SEC,
+    )
+    return (
+        response_payload,
+        {
+            "cache_hit": False,
+            "cache_tier": "miss",
+            "cache_state": "rebuilt",
+            **meta,
+        },
+    )
+
+
+def _resolve_analytics_scope_for_request_uncached(
+    *,
+    user_id: int,
+    init_data: str,
+    payload: dict | None = None,
+    include_member_user_ids: bool = True,
 ) -> dict:
     body = payload if isinstance(payload, dict) else {}
     scope_context = _extract_scope_context_from_payload(init_data=init_data, payload=body)
@@ -15787,7 +18521,7 @@ def _resolve_analytics_scope_for_request(
             or None
         )
 
-    if effective_kind == "group" and effective_chat_id is not None:
+    if include_member_user_ids and effective_kind == "group" and effective_chat_id is not None:
         member_user_ids = list_webapp_group_member_user_ids(
             chat_id=int(effective_chat_id),
             limit=5000,
@@ -15824,6 +18558,100 @@ def _resolve_analytics_scope_for_request(
             "scope_key": f"group:{int(effective_chat_id)}" if effective_kind == "group" and effective_chat_id is not None else "personal",
             "reason": reason,
         },
+    }
+
+
+def _resolve_analytics_scope_for_request(
+    *,
+    user_id: int,
+    init_data: str,
+    payload: dict | None = None,
+    include_member_user_ids: bool = True,
+) -> tuple[dict, dict]:
+    cache_key = _build_analytics_scope_cache_key(
+        user_id=int(user_id),
+        init_data=init_data,
+        payload=payload,
+        include_member_user_ids=bool(include_member_user_ids),
+    )
+    fresh_entry = _HOTPATH_ANALYTICS_SCOPE_CACHE.get(cache_key)
+    if fresh_entry is not None:
+        return dict(fresh_entry.get("payload") or {}), {
+            "cache_hit": True,
+            "cache_tier": "front",
+            "cache_state": "fresh",
+        }
+    stale_entry = _HOTPATH_ANALYTICS_SCOPE_CACHE.get(cache_key, allow_stale=True)
+    if stale_entry is not None:
+        return dict(stale_entry.get("payload") or {}), {
+            "cache_hit": True,
+            "cache_tier": "front",
+            "cache_state": "stale",
+        }
+    resolved = _resolve_analytics_scope_for_request_uncached(
+        user_id=int(user_id),
+        init_data=init_data,
+        payload=payload,
+        include_member_user_ids=bool(include_member_user_ids),
+    )
+    _HOTPATH_ANALYTICS_SCOPE_CACHE.put(
+        cache_key,
+        resolved,
+        fresh_ttl_sec=ANALYTICS_SCOPE_CACHE_TTL_SEC,
+        stale_ttl_sec=ANALYTICS_SCOPE_CACHE_STALE_TTL_SEC,
+    )
+    return resolved, {
+        "cache_hit": False,
+        "cache_tier": "miss",
+        "cache_state": "rebuilt",
+    }
+
+
+def _build_personal_compare_payload_from_summary(
+    *,
+    user_id: int,
+    username: str | None,
+    source_lang: str,
+    target_lang: str,
+    period: str,
+    start_date: date,
+    end_date: date,
+    scope: dict,
+    summary_payload: dict,
+) -> dict:
+    summary_row = summary_payload.get("summary") if isinstance(summary_payload.get("summary"), dict) else {}
+    reset_info = get_user_progress_reset(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    all_time_bounds = get_all_time_bounds(int(user_id))
+    reset_date_value = _parse_iso_date((reset_info or {}).get("reset_date")) if isinstance(reset_info, dict) else None
+    first_activity_date = all_time_bounds.start_date if isinstance(all_time_bounds.start_date, date) else None
+    effective_compare_start_date = start_date
+    if isinstance(reset_date_value, date):
+        effective_compare_start_date = max(effective_compare_start_date, reset_date_value)
+    if isinstance(first_activity_date, date):
+        effective_compare_start_date = max(effective_compare_start_date, first_activity_date)
+    item = {
+        "user_id": int(user_id),
+        "username": str(username or "").strip() or "Unknown",
+        **summary_row,
+        "progress_reset_date": reset_date_value.isoformat() if isinstance(reset_date_value, date) else None,
+        "first_activity_date": first_activity_date.isoformat() if isinstance(first_activity_date, date) else None,
+        "effective_compare_start_date": effective_compare_start_date.isoformat(),
+    }
+    return {
+        "ok": True,
+        "period": {
+            "period": period,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+        },
+        "items": [item],
+        "self": {"user_id": int(user_id), "rank": 1},
+        "scope": scope.get("effective_scope"),
+        "language_pair": _build_language_pair_payload(source_lang, target_lang),
     }
 
 
@@ -15869,56 +18697,70 @@ def _resolve_webapp_analytics_bounds(
 
 @app.route("/api/webapp/analytics/summary", methods=["POST"])
 def get_webapp_analytics_summary():
-    payload = request.get_json(silent=True) or {}
-    init_data = _extract_request_init_data(payload)
-    period = payload.get("period", "week")
-    start_date_raw = payload.get("start_date")
-    end_date_raw = payload.get("end_date")
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="analytics_summary")
+    with db_acquire_scope("analytics_summary") as db_acquire_events:
+        payload = request.get_json(silent=True) or {}
+        init_data = _extract_request_init_data(payload)
+        period = payload.get("period", "week")
+        start_date_raw = payload.get("start_date")
+        end_date_raw = payload.get("end_date")
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
+        if not init_data:
+            _log_flow_observation("analytics_summary", "summary_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="missing_init_data", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "initData обязателен"}), 400
 
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
+        if not _telegram_hash_is_valid(init_data):
+            _log_flow_observation("analytics_summary", "summary_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="invalid_init_data", duration_ms=_elapsed_ms_since(started_perf), http_status=401, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "initData не прошёл проверку"}), 401
 
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-    user_id_int = int(user_id)
-    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+        parsed = _parse_telegram_init_data(init_data)
+        user_data = parsed.get("user") or {}
+        user_id = user_data.get("id")
+        if not user_id:
+            _log_flow_observation("analytics_summary", "summary_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="missing_user_id", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "user_id отсутствует в initData"}), 400
+        user_id_int = int(user_id)
+        source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
 
-    try:
-        scope = _resolve_analytics_scope_for_request(
-            user_id=user_id_int,
-            init_data=init_data,
-            payload=payload,
+        try:
+            scope_started_at = time.perf_counter()
+            scope, scope_cache_meta = _resolve_analytics_scope_for_request(
+                user_id=user_id_int,
+                init_data=init_data,
+                payload=payload,
+            )
+            scope_user_ids = list(scope.get("member_user_ids") or [user_id_int])
+            scope_resolve_duration_ms = int((time.perf_counter() - scope_started_at) * 1000)
+        except Exception as exc:
+            logging.exception("analytics summary scope resolve failed for user_id=%s", user_id_int)
+            _log_flow_observation("analytics_summary", "summary_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code=exc.__class__.__name__, duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
+
+        try:
+            bounds_started_at = time.perf_counter()
+            period, start_date, end_date = _resolve_webapp_analytics_bounds(
+                period_value=period,
+                scope_user_ids=scope_user_ids,
+                start_date_raw=start_date_raw,
+                end_date_raw=end_date_raw,
+            )
+            bounds_resolve_duration_ms = int((time.perf_counter() - bounds_started_at) * 1000)
+        except ValueError as exc:
+            _log_flow_observation("analytics_summary", "summary_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code="invalid_period", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": str(exc)}), 400
+
+        fetch_started_at = time.perf_counter()
+        summary = fetch_scope_summary(
+            scope_user_ids,
+            start_date,
+            end_date,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
-        scope_user_ids = list(scope.get("member_user_ids") or [user_id_int])
-    except Exception as exc:
-        logging.exception("analytics summary scope resolve failed for user_id=%s", user_id_int)
-        return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
-
-    try:
-        period, start_date, end_date = _resolve_webapp_analytics_bounds(
-            period_value=period,
-            scope_user_ids=scope_user_ids,
-            start_date_raw=start_date_raw,
-            end_date_raw=end_date_raw,
-        )
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    summary = fetch_scope_summary(
-        scope_user_ids,
-        start_date,
-        end_date,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
-    return jsonify(
-        {
+        fetch_duration_ms = int((time.perf_counter() - fetch_started_at) * 1000)
+        response_payload = {
             "ok": True,
             "period": {
                 "period": period,
@@ -15929,64 +18771,120 @@ def get_webapp_analytics_summary():
             "scope": scope.get("effective_scope"),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
-    )
+        effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
+        summary_cache_key = _build_analytics_summary_cache_key(
+            user_id=user_id_int,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            scope_key=str(effective_scope.get("scope_key") or "personal"),
+            period=period,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        _HOTPATH_ANALYTICS_SUMMARY_CACHE.put(
+            summary_cache_key,
+            response_payload,
+            fresh_ttl_sec=ANALYTICS_SUMMARY_CACHE_TTL_SEC,
+            stale_ttl_sec=ANALYTICS_SUMMARY_CACHE_STALE_TTL_SEC,
+        )
+        _log_flow_observation(
+            "analytics_summary",
+            "summary_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id_int,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            scope_kind=str(effective_scope.get("scope_kind") or "personal"),
+            scope_chat_id=effective_scope.get("scope_chat_id"),
+            member_count=len(scope_user_ids),
+            period=period,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            scope_resolve_duration_ms=scope_resolve_duration_ms,
+            cache_hit=bool(scope_cache_meta.get("cache_hit")),
+            cache_tier=scope_cache_meta.get("cache_tier"),
+            cache_state=scope_cache_meta.get("cache_state"),
+            bounds_resolve_duration_ms=bounds_resolve_duration_ms,
+            fetch_duration_ms=fetch_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
 
 
 @app.route("/api/webapp/analytics/timeseries", methods=["POST"])
 def get_webapp_analytics_timeseries():
-    payload = request.get_json(silent=True) or {}
-    init_data = _extract_request_init_data(payload)
-    period = payload.get("period", "week")
-    granularity = payload.get("granularity")
-    start_date_raw = payload.get("start_date")
-    end_date_raw = payload.get("end_date")
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="analytics_timeseries")
+    with db_acquire_scope("analytics_timeseries") as db_acquire_events:
+        payload = request.get_json(silent=True) or {}
+        init_data = _extract_request_init_data(payload)
+        period = payload.get("period", "week")
+        granularity = payload.get("granularity")
+        start_date_raw = payload.get("start_date")
+        end_date_raw = payload.get("end_date")
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
+        if not init_data:
+            _log_flow_observation("analytics_timeseries", "timeseries_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="missing_init_data", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "initData обязателен"}), 400
 
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
+        if not _telegram_hash_is_valid(init_data):
+            _log_flow_observation("analytics_timeseries", "timeseries_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="invalid_init_data", duration_ms=_elapsed_ms_since(started_perf), http_status=401, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "initData не прошёл проверку"}), 401
 
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-    user_id_int = int(user_id)
-    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+        parsed = _parse_telegram_init_data(init_data)
+        user_data = parsed.get("user") or {}
+        user_id = user_data.get("id")
+        if not user_id:
+            _log_flow_observation("analytics_timeseries", "timeseries_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="missing_user_id", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "user_id отсутствует в initData"}), 400
+        user_id_int = int(user_id)
+        source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
 
-    try:
-        scope = _resolve_analytics_scope_for_request(
-            user_id=user_id_int,
-            init_data=init_data,
-            payload=payload,
+        try:
+            scope_started_at = time.perf_counter()
+            scope, scope_cache_meta = _resolve_analytics_scope_for_request(
+                user_id=user_id_int,
+                init_data=init_data,
+                payload=payload,
+            )
+            scope_user_ids = list(scope.get("member_user_ids") or [user_id_int])
+            scope_resolve_duration_ms = int((time.perf_counter() - scope_started_at) * 1000)
+        except Exception as exc:
+            logging.exception("analytics timeseries scope resolve failed for user_id=%s", user_id_int)
+            _log_flow_observation("analytics_timeseries", "timeseries_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code=exc.__class__.__name__, duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
+
+        try:
+            bounds_started_at = time.perf_counter()
+            period, start_date, end_date = _resolve_webapp_analytics_bounds(
+                period_value=period,
+                scope_user_ids=scope_user_ids,
+                start_date_raw=start_date_raw,
+                end_date_raw=end_date_raw,
+            )
+            granularity = _normalize_granularity(granularity)
+            bounds_resolve_duration_ms = int((time.perf_counter() - bounds_started_at) * 1000)
+        except ValueError as exc:
+            _log_flow_observation("analytics_timeseries", "timeseries_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code="invalid_period", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": str(exc)}), 400
+
+        fetch_started_at = time.perf_counter()
+        points = fetch_scope_timeseries(
+            scope_user_ids,
+            start_date,
+            end_date,
+            granularity,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
-        scope_user_ids = list(scope.get("member_user_ids") or [user_id_int])
-    except Exception as exc:
-        logging.exception("analytics timeseries scope resolve failed for user_id=%s", user_id_int)
-        return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
-
-    try:
-        period, start_date, end_date = _resolve_webapp_analytics_bounds(
-            period_value=period,
-            scope_user_ids=scope_user_ids,
-            start_date_raw=start_date_raw,
-            end_date_raw=end_date_raw,
-        )
-        granularity = _normalize_granularity(granularity)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    points = fetch_scope_timeseries(
-        scope_user_ids,
-        start_date,
-        end_date,
-        granularity,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
-    return jsonify(
-        {
+        fetch_duration_ms = int((time.perf_counter() - fetch_started_at) * 1000)
+        response_payload = {
             "ok": True,
             "period": {
                 "period": period,
@@ -15998,81 +18896,234 @@ def get_webapp_analytics_timeseries():
             "scope": scope.get("effective_scope"),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
-    )
+        effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
+        _log_flow_observation(
+            "analytics_timeseries",
+            "timeseries_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id_int,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            scope_kind=str(effective_scope.get("scope_kind") or "personal"),
+            scope_chat_id=effective_scope.get("scope_chat_id"),
+            member_count=len(scope_user_ids),
+            period=period,
+            granularity=granularity,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            points_count=len(points or []),
+            scope_resolve_duration_ms=scope_resolve_duration_ms,
+            cache_hit=bool(scope_cache_meta.get("cache_hit")),
+            cache_tier=scope_cache_meta.get("cache_tier"),
+            cache_state=scope_cache_meta.get("cache_state"),
+            bounds_resolve_duration_ms=bounds_resolve_duration_ms,
+            fetch_duration_ms=fetch_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
 
 
 @app.route("/api/webapp/analytics/compare", methods=["POST"])
 def get_webapp_analytics_compare():
-    payload = request.get_json(silent=True) or {}
-    init_data = _extract_request_init_data(payload)
-    period = payload.get("period", "week")
-    start_date_raw = payload.get("start_date")
-    end_date_raw = payload.get("end_date")
-    limit = int(payload.get("limit", 10))
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="analytics_compare")
+    with db_acquire_scope("analytics_compare") as db_acquire_events:
+        payload = request.get_json(silent=True) or {}
+        init_data = _extract_request_init_data(payload)
+        period = payload.get("period", "week")
+        start_date_raw = payload.get("start_date")
+        end_date_raw = payload.get("end_date")
+        limit = int(payload.get("limit", 10))
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
+        if not init_data:
+            _log_flow_observation("analytics_compare", "compare_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="missing_init_data", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "initData обязателен"}), 400
 
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
+        if not _telegram_hash_is_valid(init_data):
+            _log_flow_observation("analytics_compare", "compare_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="invalid_init_data", duration_ms=_elapsed_ms_since(started_perf), http_status=401, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "initData не прошёл проверку"}), 401
 
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-    user_id_int = int(user_id)
-    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+        parsed = _parse_telegram_init_data(init_data)
+        user_data = parsed.get("user") or {}
+        user_id = user_data.get("id")
+        if not user_id:
+            _log_flow_observation("analytics_compare", "compare_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="missing_user_id", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "user_id отсутствует в initData"}), 400
+        user_id_int = int(user_id)
+        source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
 
-    try:
-        scope = _resolve_analytics_scope_for_request(
+        try:
+            scope_started_at = time.perf_counter()
+            scope, scope_cache_meta = _resolve_analytics_scope_for_request(
+                user_id=user_id_int,
+                init_data=init_data,
+                payload=payload,
+            )
+            scope_user_ids = list(scope.get("member_user_ids") or [user_id_int])
+            scope_resolve_duration_ms = int((time.perf_counter() - scope_started_at) * 1000)
+        except Exception as exc:
+            logging.exception("analytics compare scope resolve failed for user_id=%s", user_id_int)
+            _log_flow_observation("analytics_compare", "compare_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code=exc.__class__.__name__, duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
+
+        try:
+            bounds_started_at = time.perf_counter()
+            period, start_date, end_date = _resolve_webapp_analytics_bounds(
+                period_value=period,
+                scope_user_ids=scope_user_ids,
+                start_date_raw=start_date_raw,
+                end_date_raw=end_date_raw,
+            )
+            bounds_resolve_duration_ms = int((time.perf_counter() - bounds_started_at) * 1000)
+        except ValueError as exc:
+            _log_flow_observation("analytics_compare", "compare_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code="invalid_period", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": str(exc)}), 400
+
+        effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
+        compare_cache_key = _build_analytics_compare_cache_key(
             user_id=user_id_int,
-            init_data=init_data,
-            payload=payload,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            scope_key=str(effective_scope.get("scope_key") or "personal"),
+            period=period,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
         )
-        scope_user_ids = list(scope.get("member_user_ids") or [user_id_int])
-    except Exception as exc:
-        logging.exception("analytics compare scope resolve failed for user_id=%s", user_id_int)
-        return jsonify({"error": f"Не удалось определить analytics scope: {exc}"}), 500
-
-    try:
-        period, start_date, end_date = _resolve_webapp_analytics_bounds(
-            period_value=period,
-            scope_user_ids=scope_user_ids,
-            start_date_raw=start_date_raw,
-            end_date_raw=end_date_raw,
-        )
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    leaderboard = fetch_comparison_leaderboard(
-        start_date,
-        end_date,
-        limit=limit,
-        source_lang=source_lang,
-        target_lang=target_lang,
-        cohort_user_ids=scope_user_ids,
-    )
-    user_rank = None
-    for index, item in enumerate(leaderboard, start=1):
-        if int(item.get("user_id")) == int(user_id_int):
-            user_rank = index
-            break
-
-    return jsonify(
-        {
-            "ok": True,
-            "period": {
-                "period": period,
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-            },
-            "items": leaderboard,
-            "self": {"user_id": user_id_int, "rank": user_rank},
-            "scope": scope.get("effective_scope"),
-            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        compare_cache_meta = {
+            "cache_hit": False,
+            "cache_tier": "miss",
+            "cache_state": "rebuilt",
         }
-    )
+        compare_build_mode = "db_fetch"
+        cached_compare = _HOTPATH_ANALYTICS_COMPARE_CACHE.get(compare_cache_key)
+        if cached_compare is None:
+            cached_compare = _HOTPATH_ANALYTICS_COMPARE_CACHE.get(compare_cache_key, allow_stale=True)
+            if cached_compare is not None:
+                compare_cache_meta = {
+                    "cache_hit": True,
+                    "cache_tier": "front",
+                    "cache_state": "stale",
+                }
+        else:
+            compare_cache_meta = {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "fresh",
+            }
+
+        if cached_compare is not None:
+            response_payload = dict(cached_compare.get("payload") or {})
+            leaderboard = list(response_payload.get("items") or [])
+            user_rank = _safe_int(((response_payload.get("self") or {}).get("rank")))
+            fetch_duration_ms = 0
+            compare_build_mode = "front_cache"
+        else:
+            fetch_started_at = time.perf_counter()
+            summary_cache_key = _build_analytics_summary_cache_key(
+                user_id=user_id_int,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                scope_key=str(effective_scope.get("scope_key") or "personal"),
+                period=period,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            summary_cached = _HOTPATH_ANALYTICS_SUMMARY_CACHE.get(summary_cache_key)
+            if summary_cached is None:
+                summary_cached = _HOTPATH_ANALYTICS_SUMMARY_CACHE.get(summary_cache_key, allow_stale=True)
+            if (
+                str(effective_scope.get("scope_kind") or "personal").strip().lower() == "personal"
+                and summary_cached is not None
+            ):
+                response_payload = _build_personal_compare_payload_from_summary(
+                    user_id=user_id_int,
+                    username=str(user_data.get("username") or "").strip() or None,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    period=period,
+                    start_date=start_date,
+                    end_date=end_date,
+                    scope=scope,
+                    summary_payload=dict(summary_cached.get("payload") or {}),
+                )
+                compare_build_mode = "summary_cache"
+            else:
+                leaderboard = fetch_comparison_leaderboard(
+                    start_date,
+                    end_date,
+                    limit=limit,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    cohort_user_ids=scope_user_ids,
+                )
+                user_rank = None
+                for index, item in enumerate(leaderboard, start=1):
+                    if int(item.get("user_id")) == int(user_id_int):
+                        user_rank = index
+                        break
+                response_payload = {
+                    "ok": True,
+                    "period": {
+                        "period": period,
+                        "start_date": start_date.isoformat(),
+                        "end_date": end_date.isoformat(),
+                    },
+                    "items": leaderboard,
+                    "self": {"user_id": user_id_int, "rank": user_rank},
+                    "scope": scope.get("effective_scope"),
+                    "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                }
+            fetch_duration_ms = int((time.perf_counter() - fetch_started_at) * 1000)
+            leaderboard = list(response_payload.get("items") or [])
+            user_rank = _safe_int(((response_payload.get("self") or {}).get("rank")))
+            _HOTPATH_ANALYTICS_COMPARE_CACHE.put(
+                compare_cache_key,
+                response_payload,
+                fresh_ttl_sec=ANALYTICS_COMPARE_CACHE_TTL_SEC,
+                stale_ttl_sec=ANALYTICS_COMPARE_CACHE_STALE_TTL_SEC,
+            )
+
+        _log_flow_observation(
+            "analytics_compare",
+            "compare_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id_int,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            scope_kind=str(effective_scope.get("scope_kind") or "personal"),
+            scope_chat_id=effective_scope.get("scope_chat_id"),
+            member_count=len(scope_user_ids),
+            period=period,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            leaderboard_count=len(leaderboard or []),
+            user_rank=user_rank,
+            limit=limit,
+            scope_resolve_duration_ms=scope_resolve_duration_ms,
+            cache_hit=bool(scope_cache_meta.get("cache_hit")),
+            cache_tier=scope_cache_meta.get("cache_tier"),
+            cache_state=scope_cache_meta.get("cache_state"),
+            bounds_resolve_duration_ms=bounds_resolve_duration_ms,
+            fetch_duration_ms=fetch_duration_ms,
+            compare_cache_hit=bool(compare_cache_meta.get("cache_hit")),
+            compare_cache_tier=compare_cache_meta.get("cache_tier"),
+            compare_cache_state=compare_cache_meta.get("cache_state"),
+            compare_build_mode=compare_build_mode,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
 
 @app.route("/api/economics/summary", methods=["GET"])
 def get_economics_summary():
@@ -16283,251 +19334,437 @@ def get_economics_summary():
 
 @app.route("/api/billing/plans", methods=["GET"])
 def get_billing_plans():
-    try:
-        plans = list_billing_plans(include_inactive=False)
-        return jsonify(
-            {
-                "plans": [
-                    {
-                        "plan_code": str(item.get("plan_code") or ""),
-                        "name": str(item.get("name") or ""),
-                        "is_paid": bool(item.get("is_paid")),
-                        "daily_cost_cap_eur": item.get("daily_cost_cap_eur"),
-                        "stripe_price_id": item.get("stripe_price_id") if bool(item.get("is_paid")) else None,
-                        "is_active": bool(item.get("is_active")),
-                    }
-                    for item in plans
-                ]
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="billing_plans")
+    with db_acquire_scope("billing_plans") as db_acquire_events:
+        cache_key = _build_billing_plans_cache_key()
+        list_plans_duration_ms = 0
+        live_price_duration_ms = 0
+        cache_meta = {
+            "cache_hit": False,
+            "cache_tier": "miss",
+            "cache_state": "rebuilt",
+        }
+        cached = _HOTPATH_BILLING_PLANS_CACHE.get(cache_key)
+        if cached is None:
+            cached = _HOTPATH_BILLING_PLANS_CACHE.get(cache_key, allow_stale=True)
+            if cached is not None:
+                cache_meta = {
+                    "cache_hit": True,
+                    "cache_tier": "front",
+                    "cache_state": "stale",
+                }
+        else:
+            cache_meta = {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "fresh",
             }
-        ), 200
-    except Exception as exc:
-        logging.exception("billing plans fetch failed: %s", exc)
-        return jsonify({"error": "Не удалось получить список billing plans"}), 500
+
+        if cached is not None:
+            response_payload = dict(cached.get("payload") or {})
+        else:
+            try:
+                list_started_at = time.perf_counter()
+                plans = list_billing_plans(include_inactive=False)
+                list_plans_duration_ms = int((time.perf_counter() - list_started_at) * 1000)
+                price_started_at = time.perf_counter()
+                payload_plans = []
+                for item in plans:
+                    is_paid = bool(item.get("is_paid"))
+                    stripe_price_id = item.get("stripe_price_id") if is_paid else None
+                    live_price = _get_live_billing_price_snapshot(stripe_price_id) if is_paid else {
+                        "amount_minor": None,
+                        "amount_value": None,
+                        "currency": "EUR",
+                        "recurring_interval": None,
+                        "recurring_interval_count": None,
+                        "price_source": "free_plan",
+                    }
+                    payload_plans.append(
+                        {
+                            "plan_code": str(item.get("plan_code") or ""),
+                            "name": str(item.get("name") or ""),
+                            "is_paid": is_paid,
+                            "daily_cost_cap_eur": item.get("daily_cost_cap_eur"),
+                            "stripe_price_id": stripe_price_id,
+                            "is_active": bool(item.get("is_active")),
+                            "amount_minor": live_price.get("amount_minor"),
+                            "amount_value": live_price.get("amount_value"),
+                            "currency": live_price.get("currency"),
+                            "recurring_interval": live_price.get("recurring_interval"),
+                            "recurring_interval_count": live_price.get("recurring_interval_count"),
+                            "price_source": live_price.get("price_source"),
+                        }
+                    )
+                live_price_duration_ms = int((time.perf_counter() - price_started_at) * 1000)
+                response_payload = {"plans": payload_plans}
+                _HOTPATH_BILLING_PLANS_CACHE.put(
+                    cache_key,
+                    response_payload,
+                    fresh_ttl_sec=BILLING_PLANS_CACHE_TTL_SEC,
+                    stale_ttl_sec=BILLING_PLANS_CACHE_STALE_TTL_SEC,
+                )
+            except Exception as exc:
+                logging.exception("billing plans fetch failed: %s", exc)
+                _log_flow_observation(
+                    "billing_plans",
+                    "plans_completed",
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    final_status="error",
+                    error_code=exc.__class__.__name__,
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    http_status=500,
+                    **summarize_db_acquire_events(db_acquire_events),
+                )
+                return jsonify({"error": "Не удалось получить список billing plans"}), 500
+
+        _log_flow_observation(
+            "billing_plans",
+            "plans_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            cache_hit=bool(cache_meta.get("cache_hit")),
+            cache_tier=cache_meta.get("cache_tier"),
+            cache_state=cache_meta.get("cache_state"),
+            list_plans_duration_ms=list_plans_duration_ms,
+            live_price_duration_ms=live_price_duration_ms,
+            plan_count=len(response_payload.get("plans") or []),
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload), 200
 
 
 @app.route("/api/billing/status", methods=["GET"])
 def get_billing_status():
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
-    if error:
-        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
-        return jsonify({"error": error}), status
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="billing_status")
+    with db_acquire_scope("billing_status") as db_acquire_events:
+        auth_started_at = time.perf_counter()
+        user_id, _username, error = _get_authenticated_user_from_request_init_data()
+        auth_duration_ms = int((time.perf_counter() - auth_started_at) * 1000)
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation(
+                "billing_status",
+                "status_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="auth_error",
+                auth_duration_ms=auth_duration_ms,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=status,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": error}), status
 
-    now_utc = datetime.now(timezone.utc)
-    entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz="Europe/Vienna")
-    subscription = get_user_subscription(int(user_id)) or {}
-    spent_today = float(get_today_cost_eur(user_id=int(user_id), tz="Europe/Vienna"))
-    plan_code = str(entitlement.get("plan_code") or "free")
-    plan_name = str(entitlement.get("plan_name") or plan_code)
-    status_value = str(entitlement.get("status") or "inactive")
-    effective_mode = str(entitlement.get("effective_mode") or "free")
-    cap_today = entitlement.get("cap_eur")
-    is_paid_active = effective_mode == "pro" and status_value in {"active", "trialing"}
-    has_billing_portal_context = bool(
-        str(subscription.get("stripe_customer_id") or "").strip()
-        or str(subscription.get("stripe_subscription_id") or "").strip()
-        or is_paid_active
-    )
-    return jsonify(
-        {
-            "plan_code": plan_code,
-            "plan_name": plan_name,
-            "status": status_value,
-            "effective_mode": effective_mode,
-            "trial_ends_at": entitlement.get("trial_ends_at"),
-            "current_period_end": subscription.get("current_period_end"),
-            "spent_today_eur": float(round(spent_today, 6)),
-            "cap_today_eur": float(cap_today) if cap_today is not None else None,
-            "currency": "EUR",
-            "reset_at": entitlement.get("reset_at"),
-            "upgrade": {
-                "available": not is_paid_active,
-                "endpoint": "/api/billing/create-checkout-session",
-            },
-            "manage": {
-                "available": has_billing_portal_context,
-                "endpoint": "/api/billing/create-portal-session",
-            },
-        }
-    ), 200
+        response_payload, cache_meta = _get_billing_status_response_cached(user_id=int(user_id))
+        plan_code = str(response_payload.get("plan_code") or "free")
+        status_value = str(response_payload.get("status") or "inactive")
+        effective_mode = str(response_payload.get("effective_mode") or "free")
+        entitlement_duration_ms = int(cache_meta.get("entitlement_duration_ms") or 0)
+        subscription_duration_ms = int(cache_meta.get("subscription_duration_ms") or 0)
+        spent_today_duration_ms = int(cache_meta.get("spent_today_duration_ms") or 0)
+        _log_flow_observation(
+            "billing_status",
+            "status_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            plan_code=plan_code,
+            billing_status=status_value,
+            effective_mode=effective_mode,
+            cache_hit=bool(cache_meta.get("cache_hit")),
+            cache_tier=cache_meta.get("cache_tier"),
+            cache_state=cache_meta.get("cache_state"),
+            snapshot_age_ms=cache_meta.get("snapshot_age_ms"),
+            auth_duration_ms=auth_duration_ms,
+            entitlement_duration_ms=entitlement_duration_ms,
+            subscription_duration_ms=subscription_duration_ms,
+            spent_today_duration_ms=spent_today_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload), 200
 
 
 @app.route("/api/billing/create-checkout-session", methods=["POST"])
 def create_billing_checkout_session():
-    user_id, username, error = _get_authenticated_user_from_request_init_data()
-    if error:
-        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
-        return jsonify({"error": error}), status
-
-    config_error = _require_stripe_config(require_webhook_secret=False)
-    if config_error:
-        return jsonify({"error": config_error}), 500
-    if not APP_BASE_URL:
-        return jsonify({"error": "APP_BASE_URL не задан"}), 500
-
-    payload = request.get_json(silent=True) or {}
-    requested_plan = str(payload.get("plan_code") or "").strip().lower()
-    if not requested_plan:
-        return jsonify({"error": "plan_code обязателен"}), 400
-
-    try:
-        resolved_plan_code, stripe_price_id = _resolve_billing_plan_checkout_config(requested_plan)
-        subscription_row = get_user_subscription(int(user_id)) or {}
-        current_plan_code = str(subscription_row.get("plan_code") or "").strip().lower()
-        current_status = str(subscription_row.get("status") or "").strip().lower()
-        current_subscription_id = str(subscription_row.get("stripe_subscription_id") or "").strip() or None
-
-        if current_plan_code == resolved_plan_code and current_status in {"active", "trialing"}:
-            return jsonify(
-                {
-                    "error": "Этот тариф уже активен. Используйте Stripe Portal для управления подпиской.",
-                    "code": "plan_already_active",
-                }
-            ), 409
-
-        stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
-        metadata = {"user_id": str(int(user_id)), "plan_code": resolved_plan_code}
-        subscription_data: dict = {"metadata": dict(metadata)}
-        checkout_state = "new_subscription"
-        switch_summary = {
-            "active_count": 0,
-            "cancel_scheduled_count": 0,
-            "already_scheduled_count": 0,
-            "failed_count": 0,
-            "latest_period_end_ts": 0,
-        }
-
-        if current_plan_code != resolved_plan_code:
-            try:
-                switch_summary = _schedule_customer_active_subscriptions_for_period_end(
-                    stripe_customer_id=stripe_customer_id,
-                )
-                current_period_end_ts = int(switch_summary.get("latest_period_end_ts") or 0)
-                now_ts = int(time.time())
-                if int(switch_summary.get("active_count") or 0) > 0 and current_period_end_ts > now_ts + 300:
-                    # Start the newly selected plan when all active paid plans naturally end.
-                    subscription_data["trial_end"] = current_period_end_ts
-                    checkout_state = "switch_at_period_end"
-            except Exception as switch_exc:
-                logging.warning(
-                    "billing switch pre-check failed user_id=%s customer=%s: %s",
-                    user_id,
-                    stripe_customer_id,
-                    switch_exc,
-                )
-                # Fallback to the legacy single-subscription switch path.
-                if current_subscription_id and current_status in {"active", "trialing"}:
-                    try:
-                        current_sub = stripe.Subscription.retrieve(current_subscription_id)
-                        current_sub_status = str(getattr(current_sub, "status", "") or current_sub.get("status") or "").strip().lower()
-                        current_period_end_ts = int(
-                            getattr(current_sub, "current_period_end", 0)
-                            or current_sub.get("current_period_end")
-                            or 0
-                        )
-                        now_ts = int(time.time())
-                        if current_sub_status in {"active", "trialing"} and current_period_end_ts > now_ts + 300:
-                            stripe.Subscription.modify(
-                                current_subscription_id,
-                                cancel_at_period_end=True,
-                                proration_behavior="none",
-                            )
-                            subscription_data["trial_end"] = current_period_end_ts
-                            checkout_state = "switch_at_period_end"
-                    except Exception as fallback_exc:
-                        logging.warning(
-                            "billing switch fallback failed user_id=%s sub_id=%s: %s",
-                            user_id,
-                            current_subscription_id,
-                            fallback_exc,
-                        )
-
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            customer=stripe_customer_id,
-            client_reference_id=str(int(user_id)),
-            metadata=metadata,
-            subscription_data=subscription_data,
-            line_items=[{"price": stripe_price_id, "quantity": 1}],
-            success_url=_build_billing_telegram_return_url("success", include_session_id=True),
-            cancel_url=_build_billing_telegram_return_url("cancel"),
-        )
-        checkout_url = str(getattr(session, "url", "") or "")
-        if not checkout_url:
-            return jsonify({"error": "Stripe checkout session URL отсутствует"}), 500
-        try:
-            user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
-            _billing_log_event_safe(
-                user_id=int(user_id),
-                action_type="stripe_checkout_session",
-                provider="stripe",
-                units_type="requests",
-                units_value=1.0,
-                source_lang=user_source_lang,
-                target_lang=user_target_lang,
-                idempotency_seed=f"stripe-checkout:{user_id}:{resolved_plan_code}:{int(time.time())}",
-                status="estimated",
-                metadata={
-                    "plan_code": resolved_plan_code,
-                    "checkout_state": checkout_state,
-                    "switch_active_count": int(switch_summary.get("active_count") or 0),
-                    "switch_cancel_scheduled_count": int(switch_summary.get("cancel_scheduled_count") or 0),
-                    "switch_already_scheduled_count": int(switch_summary.get("already_scheduled_count") or 0),
-                    "switch_failed_count": int(switch_summary.get("failed_count") or 0),
-                    "switch_latest_period_end_ts": int(switch_summary.get("latest_period_end_ts") or 0),
-                },
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="billing_checkout")
+    with db_acquire_scope("billing_checkout") as db_acquire_events:
+        auth_started_at = time.perf_counter()
+        user_id, username, error = _get_authenticated_user_from_request_init_data()
+        auth_duration_ms = int((time.perf_counter() - auth_started_at) * 1000)
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation(
+                "billing_checkout",
+                "checkout_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="auth_error",
+                auth_duration_ms=auth_duration_ms,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=status,
+                **summarize_db_acquire_events(db_acquire_events),
             )
-        except Exception:
-            logging.debug("stripe checkout billing event skipped", exc_info=True)
-        return jsonify({"url": checkout_url, "state": checkout_state, "plan_code": resolved_plan_code}), 200
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception as exc:
-        logging.exception("create checkout session failed user_id=%s: %s", user_id, exc)
-        return jsonify({"error": f"Не удалось создать checkout session: {exc}"}), 500
+            return jsonify({"error": error}), status
+
+        config_error = _require_stripe_config(require_webhook_secret=False)
+        if config_error:
+            _log_flow_observation("billing_checkout", "checkout_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), final_status="error", error_code="stripe_config", duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": config_error}), 500
+        if not APP_BASE_URL:
+            _log_flow_observation("billing_checkout", "checkout_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), final_status="error", error_code="missing_app_base_url", duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "APP_BASE_URL не задан"}), 500
+
+        payload = request.get_json(silent=True) or {}
+        requested_plan = str(payload.get("plan_code") or "").strip().lower()
+        if not requested_plan:
+            _log_flow_observation("billing_checkout", "checkout_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), final_status="error", error_code="missing_plan_code", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "plan_code обязателен"}), 400
+
+        resolve_plan_duration_ms = 0
+        stripe_customer_duration_ms = 0
+        stripe_session_duration_ms = 0
+        switch_duration_ms = 0
+        try:
+            plan_started_at = time.perf_counter()
+            resolved_plan_code, stripe_price_id = _resolve_billing_plan_checkout_config(requested_plan)
+            resolve_plan_duration_ms = int((time.perf_counter() - plan_started_at) * 1000)
+            subscription_row = get_user_subscription(int(user_id)) or {}
+            current_plan_code = str(subscription_row.get("plan_code") or "").strip().lower()
+            current_status = str(subscription_row.get("status") or "").strip().lower()
+            current_subscription_id = str(subscription_row.get("stripe_subscription_id") or "").strip() or None
+
+            if current_plan_code == resolved_plan_code and current_status in {"active", "trialing"}:
+                _log_flow_observation("billing_checkout", "checkout_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), requested_plan=requested_plan, resolved_plan_code=resolved_plan_code, final_status="error", error_code="plan_already_active", duration_ms=_elapsed_ms_since(started_perf), http_status=409, **summarize_db_acquire_events(db_acquire_events))
+                return jsonify(
+                    {
+                        "error": "Этот тариф уже активен. Используйте Stripe Portal для управления подпиской.",
+                        "code": "plan_already_active",
+                    }
+                ), 409
+
+            customer_started_at = time.perf_counter()
+            stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
+            stripe_customer_duration_ms = int((time.perf_counter() - customer_started_at) * 1000)
+            metadata = {"user_id": str(int(user_id)), "plan_code": resolved_plan_code}
+            subscription_data: dict = {"metadata": dict(metadata)}
+            checkout_state = "new_subscription"
+            switch_summary = {
+                "active_count": 0,
+                "cancel_scheduled_count": 0,
+                "already_scheduled_count": 0,
+                "failed_count": 0,
+                "latest_period_end_ts": 0,
+            }
+
+            if current_plan_code != resolved_plan_code:
+                switch_started_at = time.perf_counter()
+                try:
+                    switch_summary = _schedule_customer_active_subscriptions_for_period_end(
+                        stripe_customer_id=stripe_customer_id,
+                    )
+                    current_period_end_ts = int(switch_summary.get("latest_period_end_ts") or 0)
+                    now_ts = int(time.time())
+                    if int(switch_summary.get("active_count") or 0) > 0 and current_period_end_ts > now_ts + 300:
+                        subscription_data["trial_end"] = current_period_end_ts
+                        checkout_state = "switch_at_period_end"
+                except Exception as switch_exc:
+                    logging.warning(
+                        "billing switch pre-check failed user_id=%s customer=%s: %s",
+                        user_id,
+                        stripe_customer_id,
+                        switch_exc,
+                    )
+                    if current_subscription_id and current_status in {"active", "trialing"}:
+                        try:
+                            current_sub = stripe.Subscription.retrieve(current_subscription_id)
+                            current_sub_status = str(getattr(current_sub, "status", "") or current_sub.get("status") or "").strip().lower()
+                            current_period_end_ts = int(
+                                getattr(current_sub, "current_period_end", 0)
+                                or current_sub.get("current_period_end")
+                                or 0
+                            )
+                            now_ts = int(time.time())
+                            if current_sub_status in {"active", "trialing"} and current_period_end_ts > now_ts + 300:
+                                stripe.Subscription.modify(
+                                    current_subscription_id,
+                                    cancel_at_period_end=True,
+                                    proration_behavior="none",
+                                )
+                                subscription_data["trial_end"] = current_period_end_ts
+                                checkout_state = "switch_at_period_end"
+                        except Exception as fallback_exc:
+                            logging.warning(
+                                "billing switch fallback failed user_id=%s sub_id=%s: %s",
+                                user_id,
+                                current_subscription_id,
+                                fallback_exc,
+                            )
+                switch_duration_ms = int((time.perf_counter() - switch_started_at) * 1000)
+
+            stripe_session_started_at = time.perf_counter()
+            session = stripe.checkout.Session.create(
+                mode="subscription",
+                customer=stripe_customer_id,
+                client_reference_id=str(int(user_id)),
+                metadata=metadata,
+                subscription_data=subscription_data,
+                line_items=[{"price": stripe_price_id, "quantity": 1}],
+                success_url=_build_billing_telegram_return_url("success", include_session_id=True),
+                cancel_url=_build_billing_telegram_return_url("cancel"),
+            )
+            stripe_session_duration_ms = int((time.perf_counter() - stripe_session_started_at) * 1000)
+            checkout_url = str(getattr(session, "url", "") or "")
+            if not checkout_url:
+                _log_flow_observation("billing_checkout", "checkout_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), requested_plan=requested_plan, resolved_plan_code=resolved_plan_code, final_status="error", error_code="missing_checkout_url", duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+                return jsonify({"error": "Stripe checkout session URL отсутствует"}), 500
+            try:
+                user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
+                _billing_log_event_safe(
+                    user_id=int(user_id),
+                    action_type="stripe_checkout_session",
+                    provider="stripe",
+                    units_type="requests",
+                    units_value=1.0,
+                    source_lang=user_source_lang,
+                    target_lang=user_target_lang,
+                    idempotency_seed=f"stripe-checkout:{user_id}:{resolved_plan_code}:{int(time.time())}",
+                    status="estimated",
+                    metadata={
+                        "plan_code": resolved_plan_code,
+                        "checkout_state": checkout_state,
+                        "switch_active_count": int(switch_summary.get("active_count") or 0),
+                        "switch_cancel_scheduled_count": int(switch_summary.get("cancel_scheduled_count") or 0),
+                        "switch_already_scheduled_count": int(switch_summary.get("already_scheduled_count") or 0),
+                        "switch_failed_count": int(switch_summary.get("failed_count") or 0),
+                        "switch_latest_period_end_ts": int(switch_summary.get("latest_period_end_ts") or 0),
+                    },
+                )
+            except Exception:
+                logging.debug("stripe checkout billing event skipped", exc_info=True)
+            response_payload = {"url": checkout_url, "state": checkout_state, "plan_code": resolved_plan_code}
+            _log_flow_observation(
+                "billing_checkout",
+                "checkout_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                requested_plan=requested_plan,
+                resolved_plan_code=resolved_plan_code,
+                checkout_state=checkout_state,
+                auth_duration_ms=auth_duration_ms,
+                resolve_plan_duration_ms=resolve_plan_duration_ms,
+                stripe_customer_duration_ms=stripe_customer_duration_ms,
+                switch_duration_ms=switch_duration_ms,
+                stripe_session_duration_ms=stripe_session_duration_ms,
+                response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+                final_status="success",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(response_payload), 200
+        except ValueError as exc:
+            _log_flow_observation("billing_checkout", "checkout_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), requested_plan=requested_plan, final_status="error", error_code="invalid_plan", resolve_plan_duration_ms=resolve_plan_duration_ms, duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            logging.exception("create checkout session failed user_id=%s: %s", user_id, exc)
+            _log_flow_observation("billing_checkout", "checkout_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), requested_plan=requested_plan, final_status="error", error_code=exc.__class__.__name__, resolve_plan_duration_ms=resolve_plan_duration_ms, stripe_customer_duration_ms=stripe_customer_duration_ms, switch_duration_ms=switch_duration_ms, stripe_session_duration_ms=stripe_session_duration_ms, duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": f"Не удалось создать checkout session: {exc}"}), 500
 
 
 @app.route("/api/billing/create-portal-session", methods=["POST"])
 def create_billing_portal_session():
-    user_id, username, error = _get_authenticated_user_from_request_init_data()
-    if error:
-        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
-        return jsonify({"error": error}), status
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="billing_portal")
+    with db_acquire_scope("billing_portal") as db_acquire_events:
+        auth_started_at = time.perf_counter()
+        user_id, username, error = _get_authenticated_user_from_request_init_data()
+        auth_duration_ms = int((time.perf_counter() - auth_started_at) * 1000)
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation("billing_portal", "portal_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="auth_error", auth_duration_ms=auth_duration_ms, duration_ms=_elapsed_ms_since(started_perf), http_status=status, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": error}), status
 
-    config_error = _require_stripe_config(require_webhook_secret=False)
-    if config_error:
-        return jsonify({"error": config_error}), 500
-    if not APP_BASE_URL:
-        return jsonify({"error": "APP_BASE_URL не задан"}), 500
+        config_error = _require_stripe_config(require_webhook_secret=False)
+        if config_error:
+            _log_flow_observation("billing_portal", "portal_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), final_status="error", error_code="stripe_config", duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": config_error}), 500
+        if not APP_BASE_URL:
+            _log_flow_observation("billing_portal", "portal_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), final_status="error", error_code="missing_app_base_url", duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": "APP_BASE_URL не задан"}), 500
 
-    try:
-        stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
-        session = stripe.billing_portal.Session.create(
-            customer=stripe_customer_id,
-            return_url=_build_billing_telegram_return_url("portal"),
-        )
-        portal_url = str(getattr(session, "url", "") or "")
-        if not portal_url:
-            return jsonify({"error": "Stripe portal session URL отсутствует"}), 500
+        stripe_customer_duration_ms = 0
+        stripe_session_duration_ms = 0
         try:
-            user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
-            _billing_log_event_safe(
-                user_id=int(user_id),
-                action_type="stripe_portal_session",
-                provider="stripe",
-                units_type="requests",
-                units_value=1.0,
-                source_lang=user_source_lang,
-                target_lang=user_target_lang,
-                idempotency_seed=f"stripe-portal:{user_id}:{int(time.time())}",
-                status="estimated",
-                metadata={"customer_id": stripe_customer_id},
+            customer_started_at = time.perf_counter()
+            stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
+            stripe_customer_duration_ms = int((time.perf_counter() - customer_started_at) * 1000)
+            session_started_at = time.perf_counter()
+            session = stripe.billing_portal.Session.create(
+                customer=stripe_customer_id,
+                return_url=_build_billing_telegram_return_url("portal"),
             )
-        except Exception:
-            logging.debug("stripe portal billing event skipped", exc_info=True)
-        return jsonify({"url": portal_url}), 200
-    except Exception as exc:
-        logging.exception("create portal session failed user_id=%s: %s", user_id, exc)
-        return jsonify({"error": f"Не удалось создать portal session: {exc}"}), 500
+            stripe_session_duration_ms = int((time.perf_counter() - session_started_at) * 1000)
+            portal_url = str(getattr(session, "url", "") or "")
+            if not portal_url:
+                _log_flow_observation("billing_portal", "portal_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), final_status="error", error_code="missing_portal_url", duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+                return jsonify({"error": "Stripe portal session URL отсутствует"}), 500
+            try:
+                user_source_lang, user_target_lang, _profile = _get_user_language_pair(int(user_id))
+                _billing_log_event_safe(
+                    user_id=int(user_id),
+                    action_type="stripe_portal_session",
+                    provider="stripe",
+                    units_type="requests",
+                    units_value=1.0,
+                    source_lang=user_source_lang,
+                    target_lang=user_target_lang,
+                    idempotency_seed=f"stripe-portal:{user_id}:{int(time.time())}",
+                    status="estimated",
+                    metadata={"customer_id": stripe_customer_id},
+                )
+            except Exception:
+                logging.debug("stripe portal billing event skipped", exc_info=True)
+            response_payload = {"url": portal_url}
+            _log_flow_observation(
+                "billing_portal",
+                "portal_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                auth_duration_ms=auth_duration_ms,
+                stripe_customer_duration_ms=stripe_customer_duration_ms,
+                stripe_session_duration_ms=stripe_session_duration_ms,
+                response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+                final_status="success",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(response_payload), 200
+        except Exception as exc:
+            logging.exception("create portal session failed user_id=%s: %s", user_id, exc)
+            _log_flow_observation("billing_portal", "portal_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), final_status="error", error_code=exc.__class__.__name__, auth_duration_ms=auth_duration_ms, stripe_customer_duration_ms=stripe_customer_duration_ms, stripe_session_duration_ms=stripe_session_duration_ms, duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+            return jsonify({"error": f"Не удалось создать portal session: {exc}"}), 500
 
 
 @app.route("/billing/telegram-return", methods=["GET"])
@@ -16711,6 +19948,7 @@ def stripe_billing_webhook():
                     current_period_end_ts=(subscription_obj or {}).get("current_period_end"),
                     db_conn=db_conn,
                 )
+                _invalidate_billing_front_caches_for_user(int(user_id))
                 return jsonify({"ok": True}), 200
 
             if event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
@@ -16737,6 +19975,7 @@ def stripe_billing_webhook():
                     current_period_end_ts=data_object.get("current_period_end"),
                     db_conn=db_conn,
                 )
+                _invalidate_billing_front_caches_for_user(int(user_id))
                 return jsonify({"ok": True}), 200
 
             if event_type in {"invoice.payment_succeeded", "invoice.payment_failed"}:
@@ -16772,6 +20011,7 @@ def stripe_billing_webhook():
                     current_period_end_ts=(subscription_obj or {}).get("current_period_end"),
                     db_conn=db_conn,
                 )
+                _invalidate_billing_front_caches_for_user(int(user_id))
                 if event_type == "invoice.payment_succeeded":
                     try:
                         invoice_amount_minor = int(data_object.get("amount_paid") or data_object.get("amount_due") or 0)
@@ -17128,6 +20368,9 @@ def sync_economics_price_snapshots_from_env():
 
 @app.route("/api/translate/quick", methods=["POST"])
 def translate_quick():
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="quick_translate")
     payload = request.get_json(silent=True) or {}
     text = str(payload.get("text") or "").strip()
     source_lang_raw = payload.get("source_lang")
@@ -17137,10 +20380,42 @@ def translate_quick():
     user_id_for_billing: int | None = None
 
     if not text:
+        _log_flow_observation(
+            "quick_translate",
+            "quick_translate_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="missing_text",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "text обязателен"}), 400
     if not target_lang:
+        _log_flow_observation(
+            "quick_translate",
+            "quick_translate_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="missing_target_lang",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "target_lang обязателен"}), 400
     if source_lang and source_lang == target_lang:
+        _log_flow_observation(
+            "quick_translate",
+            "quick_translate_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            final_status="error",
+            error_code="same_language_pair",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "source_lang и target_lang не должны совпадать"}), 400
 
     if init_data and _telegram_hash_is_valid(init_data):
@@ -17152,7 +20427,58 @@ def translate_quick():
         except Exception:
             user_id_for_billing = None
 
+    cache_key = _build_quick_translate_cache_key(text=text, source_lang=source_lang, target_lang=target_lang)
+    cached_payload = _get_cached_quick_translate(cache_key)
+    if isinstance(cached_payload, dict) and str(cached_payload.get("translation") or "").strip():
+        response_payload = dict(cached_payload)
+        _log_flow_observation(
+            "quick_translate",
+            "quick_translate_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id_for_billing,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            text_chars=len(text),
+            provider=str(response_payload.get("provider") or "").strip().lower() or "unknown",
+            cache_hit=True,
+            cache_tier="memory",
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+        )
+        return jsonify(response_payload)
+
+    coalesced_wait_ms = 0
+    coalesced_owner, coalesced_event = _acquire_quick_translate_inflight_slot(cache_key)
+    if not coalesced_owner and coalesced_event is not None:
+        coalesced_wait_started_perf = time.perf_counter()
+        coalesced_event.wait(timeout=QUICK_TRANSLATE_COALESCE_WAIT_TIMEOUT_SEC)
+        coalesced_wait_ms = _elapsed_ms_since(coalesced_wait_started_perf)
+        cached_payload = _get_cached_quick_translate(cache_key)
+        if isinstance(cached_payload, dict) and str(cached_payload.get("translation") or "").strip():
+            response_payload = dict(cached_payload)
+            _log_flow_observation(
+                "quick_translate",
+                "quick_translate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id_for_billing,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                text_chars=len(text),
+                provider=str(response_payload.get("provider") or "").strip().lower() or "unknown",
+                cache_hit=True,
+                cache_tier="coalesced_memory",
+                coalesced_wait_ms=coalesced_wait_ms,
+                final_status="success",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=200,
+            )
+            return jsonify(response_payload)
+
     attempts: list[dict] = []
+    provider_timings_ms: dict[str, int] = {}
     providers = []
     if DEEPL_AUTH_KEY:
         providers.append(("deepl_free", _quick_translate_deepl))
@@ -17166,52 +20492,100 @@ def translate_quick():
         providers.append(("argos_offline", _quick_translate_argos))
     providers.append(("mymemory", _quick_translate_mymemory))
 
-    for provider_name, translate_func in providers:
-        try:
-            if provider_name == "google_translate":
-                _enforce_google_translate_monthly_budget(len(text))
-            result = translate_func(text, source_lang, target_lang)
-            result["provider"] = provider_name
-            if not result.get("detected_source_lang") and source_lang:
-                result["detected_source_lang"] = source_lang
-            if user_id_for_billing is not None and provider_name in {"google_translate", "deepl_free", "azure_translator"}:
-                provider_billing_map = {
-                    "google_translate": ("google_translate", "google_translate_chars"),
-                    "deepl_free": ("deepl_free", "deepl_chars"),
-                    "azure_translator": ("azure_translator", "azure_translate_chars"),
-                }
-                billing_provider, billing_sku = provider_billing_map[provider_name]
-                _billing_log_event_safe(
-                    user_id=int(user_id_for_billing),
-                    action_type="quick_translate_chars",
-                    provider=billing_provider,
-                    units_type="chars",
-                    units_value=float(len(text)),
+    try:
+        for provider_name, translate_func in providers:
+            provider_started_perf = time.perf_counter()
+            try:
+                if provider_name == "google_translate":
+                    _enforce_google_translate_monthly_budget(len(text))
+                result = translate_func(text, source_lang, target_lang)
+                provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
+                result["provider"] = provider_name
+                if not result.get("detected_source_lang") and source_lang:
+                    result["detected_source_lang"] = source_lang
+                if user_id_for_billing is not None and provider_name in {"google_translate", "deepl_free", "azure_translator"}:
+                    provider_billing_map = {
+                        "google_translate": ("google_translate", "google_translate_chars"),
+                        "deepl_free": ("deepl_free", "deepl_chars"),
+                        "azure_translator": ("azure_translator", "azure_translate_chars"),
+                    }
+                    billing_provider, billing_sku = provider_billing_map[provider_name]
+                    _billing_log_event_safe(
+                        user_id=int(user_id_for_billing),
+                        action_type="quick_translate_chars",
+                        provider=billing_provider,
+                        units_type="chars",
+                        units_value=float(len(text)),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        idempotency_seed=(
+                            "quick-translate:"
+                            f"{provider_name}:{source_lang}:{target_lang}:"
+                            f"{hashlib.sha1(text.encode('utf-8', 'ignore')).hexdigest()}:{time.time_ns()}"
+                        ),
+                        status="estimated",
+                        metadata={"cached": False, "price_sku": billing_sku},
+                    )
+                _set_cached_quick_translate(cache_key, result)
+                _log_flow_observation(
+                    "quick_translate",
+                    "quick_translate_completed",
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    user_id=user_id_for_billing,
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    idempotency_seed=(
-                        "quick-translate:"
-                        f"{provider_name}:{source_lang}:{target_lang}:"
-                        f"{hashlib.sha1(text.encode('utf-8', 'ignore')).hexdigest()}:{time.time_ns()}"
-                    ),
-                    status="estimated",
-                    metadata={"cached": False, "price_sku": billing_sku},
+                    text_chars=len(text),
+                    provider=provider_name,
+                    provider_duration_ms=provider_timings_ms.get(provider_name),
+                    provider_attempt_count=len(provider_timings_ms),
+                    provider_timings_ms=provider_timings_ms,
+                    cache_hit=False,
+                    cache_tier="miss",
+                    coalesced_wait_ms=coalesced_wait_ms,
+                    final_status="success",
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    http_status=200,
                 )
-            return jsonify(result)
-        except GoogleTranslateBudgetExceededError as exc:
-            attempts.append({"provider": provider_name, "error": str(exc), "error_code": "MONTHLY_LIMIT_REACHED"})
-        except requests.Timeout:
-            attempts.append({"provider": provider_name, "error": "timeout"})
-        except Exception as exc:
-            attempts.append({"provider": provider_name, "error": str(exc)})
+                return jsonify(result)
+            except GoogleTranslateBudgetExceededError as exc:
+                provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
+                attempts.append({"provider": provider_name, "error": str(exc), "error_code": "MONTHLY_LIMIT_REACHED"})
+            except requests.Timeout:
+                provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
+                attempts.append({"provider": provider_name, "error": "timeout"})
+            except Exception as exc:
+                provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
+                attempts.append({"provider": provider_name, "error": str(exc)})
 
-    return jsonify(
-        {
-            "error": "quick_translation_failed",
-            "error_code": "QUICK_TRANSLATION_FAILED",
-            "details": attempts,
-        }
-    ), 502
+        _log_flow_observation(
+            "quick_translate",
+            "quick_translate_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id_for_billing,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            text_chars=len(text),
+            provider_attempt_count=len(provider_timings_ms),
+            provider_timings_ms=provider_timings_ms,
+            cache_hit=False,
+            cache_tier="miss",
+            coalesced_wait_ms=coalesced_wait_ms,
+            final_status="error",
+            error_code="QUICK_TRANSLATION_FAILED",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=502,
+        )
+        return jsonify(
+            {
+                "error": "quick_translation_failed",
+                "error_code": "QUICK_TRANSLATION_FAILED",
+                "details": attempts,
+            }
+        ), 502
+    finally:
+        _release_quick_translate_inflight_slot(cache_key)
 
 
 @app.route("/api/webapp/dictionary", methods=["POST"])
@@ -17587,6 +20961,9 @@ def lookup_webapp_dictionary():
 
 @app.route("/api/webapp/dictionary/status", methods=["POST"])
 def get_webapp_dictionary_lookup_status():
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="dictionary_status")
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     lookup_id = str(payload.get("lookup_id") or "").strip()
@@ -17620,19 +20997,34 @@ def get_webapp_dictionary_lookup_status():
     elif isinstance(job.get("core_item"), dict):
         item = job.get("core_item")
 
-    return jsonify(
-        {
-            "ok": True,
-            "lookup_id": lookup_id,
-            "status": status,
-            "item": item,
-            "direction": str(job.get("direction") or "").strip().lower(),
-            "error": str(job.get("error") or "").strip() or None,
-            "enrichment_pending": status == "enriching",
-            "save_locked": status != "ready",
-            "language_pair": _build_language_pair_payload(source_lang, target_lang),
-        }
+    response_payload = {
+        "ok": True,
+        "lookup_id": lookup_id,
+        "status": status,
+        "item": item,
+        "direction": str(job.get("direction") or "").strip().lower(),
+        "error": str(job.get("error") or "").strip() or None,
+        "enrichment_pending": status == "enriching",
+        "save_locked": status != "ready",
+        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+    }
+    _log_flow_observation(
+        "dictionary_status",
+        "dictionary_status_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        lookup_id=lookup_id,
+        lookup_status=status,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        has_item=bool(item),
+        has_error=bool(response_payload.get("error")),
+        final_status="success" if status == "ready" else "error" if status == "failed" else "pending",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
     )
+    return jsonify(response_payload)
 
 
 @app.route("/api/mobile/dictionary/lookup", methods=["POST"])
@@ -17804,6 +21196,1034 @@ def get_mobile_dashboard():
     )
 
 
+def _today_plan_snapshot_key(plan_date: date) -> str:
+    return plan_date.isoformat()
+
+
+def _skill_progress_snapshot_key(lookback_days: int) -> str:
+    return f"{int(lookback_days)}d"
+
+
+def _weekly_plan_snapshot_key(anchor_date: date | None = None) -> str:
+    current_date = anchor_date or _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    week_start = current_date - timedelta(days=int(current_date.weekday()))
+    return week_start.isoformat()
+
+
+def _plan_analytics_snapshot_key(
+    *,
+    period: str,
+    week_start: date | None = None,
+    as_of_date: date | None = None,
+) -> str:
+    normalized_period = str(period or "week").strip().lower() or "week"
+    if normalized_period == "half_year":
+        normalized_period = "half-year"
+    week_part = week_start.isoformat() if isinstance(week_start, date) else "-"
+    as_of_part = as_of_date.isoformat() if isinstance(as_of_date, date) else _get_local_today_date(TODAY_PLAN_DEFAULT_TZ).isoformat()
+    return f"{normalized_period}:{week_part}:{as_of_part}"
+
+
+def _mark_today_plan_snapshot_stale(*, user_id: int, plan_date: date | None = None) -> None:
+    snapshot_key = _today_plan_snapshot_key(plan_date) if isinstance(plan_date, date) else None
+    try:
+        mark_user_api_snapshots_stale(
+            user_id=int(user_id),
+            snapshot_kind="today_plan",
+            snapshot_key=snapshot_key,
+        )
+    except Exception:
+        logging.warning("Failed to mark today snapshot stale: user_id=%s key=%s", user_id, snapshot_key, exc_info=True)
+    if snapshot_key:
+        _HOTPATH_TODAY_CACHE.mark_stale(("today_plan", int(user_id), snapshot_key))
+
+
+def _mark_skill_progress_snapshot_stale(*, user_id: int, lookback_days: int | None = None) -> None:
+    snapshot_key = _skill_progress_snapshot_key(lookback_days) if lookback_days is not None else None
+    try:
+        mark_user_api_snapshots_stale(
+            user_id=int(user_id),
+            snapshot_kind="skill_progress",
+            snapshot_key=snapshot_key,
+        )
+    except Exception:
+        logging.warning("Failed to mark skill progress snapshot stale: user_id=%s key=%s", user_id, snapshot_key, exc_info=True)
+    if snapshot_key:
+        _HOTPATH_SKILL_PROGRESS_CACHE.mark_stale(("skill_progress", int(user_id), snapshot_key))
+
+
+def _mark_weekly_plan_snapshot_stale(*, user_id: int, anchor_date: date | None = None) -> None:
+    snapshot_key = _weekly_plan_snapshot_key(anchor_date)
+    try:
+        mark_user_api_snapshots_stale(
+            user_id=int(user_id),
+            snapshot_kind="weekly_plan",
+            snapshot_key=snapshot_key,
+        )
+    except Exception:
+        logging.warning("Failed to mark weekly plan snapshot stale: user_id=%s key=%s", user_id, snapshot_key, exc_info=True)
+    _HOTPATH_WEEKLY_PLAN_CACHE.mark_stale(("weekly_plan", int(user_id), snapshot_key))
+
+
+def _mark_plan_analytics_snapshot_stale(*, user_id: int) -> None:
+    try:
+        mark_user_api_snapshots_stale(
+            user_id=int(user_id),
+            snapshot_kind="plan_analytics",
+            snapshot_key=None,
+        )
+    except Exception:
+        logging.warning("Failed to mark plan analytics snapshots stale: user_id=%s", user_id, exc_info=True)
+    try:
+        _HOTPATH_PLAN_ANALYTICS_CACHE.invalidate_prefix(("plan_analytics", int(user_id)))
+    except Exception:
+        logging.warning("Failed to invalidate plan analytics front cache: user_id=%s", user_id, exc_info=True)
+
+
+def _build_today_plan_response_payload(
+    *,
+    user_id: int,
+    username: str | None,
+    plan_date: date,
+) -> tuple[dict, dict]:
+    auto_opt_in = (os.getenv("TODAY_REMINDER_AUTO_OPT_IN") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    reminder_sync_started_perf = time.perf_counter()
+    if auto_opt_in:
+        try:
+            current = get_today_reminder_settings(int(user_id))
+            if not current.get("updated_at"):
+                upsert_today_reminder_settings(
+                    int(user_id),
+                    enabled=True,
+                    timezone_name=TODAY_PLAN_DEFAULT_TZ,
+                    reminder_hour=7,
+                    reminder_minute=0,
+                )
+        except Exception as exc:
+            logging.warning("Today reminder auto-opt-in skipped for user %s: %s", user_id, exc)
+    reminder_sync_duration_ms = _elapsed_ms_since(reminder_sync_started_perf)
+
+    language_pair_started_perf = time.perf_counter()
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+
+    plan_build_started_perf = time.perf_counter()
+    plan = _get_or_create_today_plan(
+        user_id=int(user_id),
+        plan_date=plan_date,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    plan = _normalize_stale_today_plan_timers(
+        user_id=int(user_id),
+        plan=plan,
+        stale_after_seconds=int((os.getenv("TODAY_PLAN_TIMER_STALE_AFTER_SECONDS") or "120").strip() or "120"),
+    )
+    plan = _sync_today_plan_translation_progress(
+        user_id=int(user_id),
+        username=username,
+        plan=plan,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        trigger="today_fetch",
+    )
+    plan_build_duration_ms = _elapsed_ms_since(plan_build_started_perf)
+
+    response_payload = _format_today_plan_response(plan)
+    response_payload.update(
+        {
+            "ok": True,
+            "user_id": int(user_id),
+            "username": username,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+    response_size_bytes = _estimate_json_payload_size_bytes(response_payload)
+    meta = {
+        "plan_date": response_payload.get("date"),
+        "items_count": len(response_payload.get("items") or []),
+        "total_minutes": int(response_payload.get("total_minutes") or 0),
+        "response_size_bytes": response_size_bytes,
+        "reminder_sync_duration_ms": reminder_sync_duration_ms,
+        "language_pair_lookup_duration_ms": language_pair_duration_ms,
+        "plan_build_duration_ms": plan_build_duration_ms,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+    }
+    return response_payload, meta
+
+
+def _build_skill_progress_response_payload(
+    *,
+    user_id: int,
+    username: str | None,
+    lookback_days: int,
+) -> tuple[dict, dict]:
+    language_pair_started_perf = time.perf_counter()
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+    report_warning: str | None = None
+    report_started_perf = time.perf_counter()
+    try:
+        report = get_skill_progress_report(
+            user_id=int(user_id),
+            lookback_days=int(lookback_days),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        logging.exception("Skill progress report failed user_id=%s", user_id)
+        report_warning = f"skill_progress_report_failed: {exc}"
+        report = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "period_days": int(lookback_days),
+            "top_weak": [],
+            "groups": [],
+            "total_skills": 0,
+            "skills_with_data": 0,
+        }
+    report_duration_ms = _elapsed_ms_since(report_started_perf)
+
+    training_status_started_perf = time.perf_counter()
+    try:
+        skill_training_status = _get_skill_training_status_map(int(user_id))
+    except Exception as exc:
+        logging.warning("Skill training status load failed: %s", exc)
+        skill_training_status = {}
+    training_status_duration_ms = _elapsed_ms_since(training_status_started_perf)
+
+    response_payload = {
+        "ok": True,
+        "user_id": int(user_id),
+        "username": username,
+        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        "skill_training_status": skill_training_status,
+        **({"warning": report_warning} if report_warning else {}),
+        **report,
+    }
+    response_size_bytes = _estimate_json_payload_size_bytes(response_payload)
+    meta = {
+        "lookback_days": int(lookback_days),
+        "groups_count": len(response_payload.get("groups") or []),
+        "total_skills": int(response_payload.get("total_skills") or 0),
+        "skills_with_data": int(response_payload.get("skills_with_data") or 0),
+        "language_pair_lookup_duration_ms": language_pair_duration_ms,
+        "report_duration_ms": report_duration_ms,
+        "training_status_duration_ms": training_status_duration_ms,
+        "response_size_bytes": response_size_bytes,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "final_status": "success" if not report_warning else "partial",
+    }
+    return response_payload, meta
+
+
+def _build_weekly_plan_response_payload(*, user_id: int) -> tuple[dict, dict]:
+    language_pair_started_perf = time.perf_counter()
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+
+    goals_started_perf = time.perf_counter()
+    goals = get_weekly_goals(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    ) or {
+        "translations_goal": 0,
+        "learned_words_goal": 0,
+        "agent_minutes_goal": 0,
+        "reading_minutes_goal": 0,
+    }
+    goals_duration_ms = _elapsed_ms_since(goals_started_perf)
+
+    progress_started_perf = time.perf_counter()
+    progress = get_weekly_plan_progress(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        mature_interval_days=MATURE_INTERVAL_DAYS,
+    )
+    progress_duration_ms = _elapsed_ms_since(progress_started_perf)
+
+    response_payload = {
+        "ok": True,
+        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        "week": {
+            "start_date": progress.get("week_start"),
+            "end_date": progress.get("week_end"),
+            "as_of_date": progress.get("as_of_date"),
+            "days_elapsed": int(progress.get("days_elapsed") or 1),
+            "days_total": int(progress.get("days_total") or 7),
+        },
+        "plan": {
+            "translations_goal": int(goals.get("translations_goal") or 0),
+            "learned_words_goal": int(goals.get("learned_words_goal") or 0),
+            "agent_minutes_goal": int(goals.get("agent_minutes_goal") or 0),
+            "reading_minutes_goal": int(goals.get("reading_minutes_goal") or 0),
+        },
+        "metrics": progress.get("metrics") or {},
+    }
+    response_size_bytes = _estimate_json_payload_size_bytes(response_payload)
+    meta = {
+        "snapshot_week_start": str(response_payload.get("week", {}).get("start_date") or _weekly_plan_snapshot_key()),
+        "language_pair_lookup_duration_ms": language_pair_duration_ms,
+        "goals_duration_ms": goals_duration_ms,
+        "progress_duration_ms": progress_duration_ms,
+        "response_size_bytes": response_size_bytes,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+    }
+    return response_payload, meta
+
+
+def _build_plan_analytics_response_payload(
+    *,
+    user_id: int,
+    period: str,
+    week_start: date | None = None,
+    as_of_date: date | None = None,
+) -> tuple[dict, dict]:
+    normalized_period = str(period or "week").strip().lower() or "week"
+    if normalized_period == "half_year":
+        normalized_period = "half-year"
+    language_pair_started_perf = time.perf_counter()
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+
+    progress_started_perf = time.perf_counter()
+    progress = get_plan_progress(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        mature_interval_days=MATURE_INTERVAL_DAYS,
+        period=normalized_period,
+        week_start=week_start,
+        as_of_date=as_of_date,
+    )
+    progress_duration_ms = _elapsed_ms_since(progress_started_perf)
+
+    response_payload = {
+        "ok": True,
+        "period": normalized_period,
+        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        "range": {
+            "start_date": progress.get("start_date"),
+            "end_date": progress.get("end_date"),
+            "as_of_date": progress.get("as_of_date"),
+            "days_elapsed": int(progress.get("days_elapsed") or 1),
+            "days_total": int(progress.get("days_total") or 1),
+        },
+        "metrics": progress.get("metrics") or {},
+    }
+    response_size_bytes = _estimate_json_payload_size_bytes(response_payload)
+    meta = {
+        "period": normalized_period,
+        "request_week_start": week_start.isoformat() if isinstance(week_start, date) else None,
+        "request_as_of_date": as_of_date.isoformat() if isinstance(as_of_date, date) else None,
+        "language_pair_lookup_duration_ms": language_pair_duration_ms,
+        "progress_duration_ms": progress_duration_ms,
+        "response_size_bytes": response_size_bytes,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+    }
+    return response_payload, meta
+
+
+def _schedule_today_plan_snapshot_refresh(*, user_id: int, username: str | None, plan_date: date) -> None:
+    snapshot_key = _today_plan_snapshot_key(plan_date)
+    front_key = ("today_plan", int(user_id), snapshot_key)
+
+    def _refresh() -> None:
+        with db_acquire_scope("today_plan_refresh"):
+            response_payload, meta = _build_today_plan_response_payload(
+                user_id=int(user_id),
+                username=username,
+                plan_date=plan_date,
+            )
+            snapshot = upsert_user_api_snapshot(
+                user_id=int(user_id),
+                snapshot_kind="today_plan",
+                snapshot_key=snapshot_key,
+                payload=response_payload,
+                source_lang=str(meta.get("source_lang") or "").strip() or None,
+                target_lang=str(meta.get("target_lang") or "").strip() or None,
+                meta=meta,
+                fresh_ttl_seconds=TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_seconds=TODAY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+            )
+            _store_snapshot_in_front_cache(
+                _HOTPATH_TODAY_CACHE,
+                front_key=front_key,
+                snapshot=snapshot,
+                fresh_ttl_sec=TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_sec=TODAY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+            )
+
+    _HOTPATH_TODAY_CACHE.enqueue_refresh(front_key, _refresh)
+
+
+def _schedule_skill_progress_snapshot_refresh(*, user_id: int, username: str | None, lookback_days: int) -> None:
+    snapshot_key = _skill_progress_snapshot_key(lookback_days)
+    front_key = ("skill_progress", int(user_id), snapshot_key)
+
+    def _refresh() -> None:
+        with db_acquire_scope("skill_progress_refresh"):
+            response_payload, meta = _build_skill_progress_response_payload(
+                user_id=int(user_id),
+                username=username,
+                lookback_days=int(lookback_days),
+            )
+            snapshot = upsert_user_api_snapshot(
+                user_id=int(user_id),
+                snapshot_kind="skill_progress",
+                snapshot_key=snapshot_key,
+                payload=response_payload,
+                source_lang=str(meta.get("source_lang") or "").strip() or None,
+                target_lang=str(meta.get("target_lang") or "").strip() or None,
+                meta=meta,
+                fresh_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+            )
+            _store_snapshot_in_front_cache(
+                _HOTPATH_SKILL_PROGRESS_CACHE,
+                front_key=front_key,
+                snapshot=snapshot,
+                fresh_ttl_sec=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_sec=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+            )
+
+    _HOTPATH_SKILL_PROGRESS_CACHE.enqueue_refresh(front_key, _refresh)
+
+
+def _schedule_weekly_plan_snapshot_refresh(*, user_id: int, anchor_date: date | None = None) -> None:
+    snapshot_key = _weekly_plan_snapshot_key(anchor_date)
+    front_key = ("weekly_plan", int(user_id), snapshot_key)
+
+    def _refresh() -> None:
+        with db_acquire_scope("weekly_plan_refresh"):
+            response_payload, meta = _build_weekly_plan_response_payload(user_id=int(user_id))
+            effective_snapshot_key = str(meta.get("snapshot_week_start") or snapshot_key)
+            snapshot = upsert_user_api_snapshot(
+                user_id=int(user_id),
+                snapshot_kind="weekly_plan",
+                snapshot_key=effective_snapshot_key,
+                payload=response_payload,
+                source_lang=str(meta.get("source_lang") or "").strip() or None,
+                target_lang=str(meta.get("target_lang") or "").strip() or None,
+                meta=meta,
+                fresh_ttl_seconds=WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_seconds=WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+            )
+            _store_snapshot_in_front_cache(
+                _HOTPATH_WEEKLY_PLAN_CACHE,
+                front_key=("weekly_plan", int(user_id), effective_snapshot_key),
+                snapshot=snapshot,
+                fresh_ttl_sec=WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_sec=WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+            )
+
+    _HOTPATH_WEEKLY_PLAN_CACHE.enqueue_refresh(front_key, _refresh)
+
+
+def _schedule_plan_analytics_snapshot_refresh(
+    *,
+    user_id: int,
+    period: str,
+    week_start: date | None = None,
+    as_of_date: date | None = None,
+) -> None:
+    snapshot_key = _plan_analytics_snapshot_key(period=period, week_start=week_start, as_of_date=as_of_date)
+    front_key = ("plan_analytics", int(user_id), snapshot_key)
+
+    def _refresh() -> None:
+        with db_acquire_scope("plan_analytics_refresh"):
+            response_payload, meta = _build_plan_analytics_response_payload(
+                user_id=int(user_id),
+                period=period,
+                week_start=week_start,
+                as_of_date=as_of_date,
+            )
+            effective_snapshot_key = _plan_analytics_snapshot_key(
+                period=str(meta.get("period") or period),
+                week_start=_parse_iso_date(meta.get("request_week_start")),
+                as_of_date=_parse_iso_date(meta.get("request_as_of_date")),
+            )
+            snapshot = upsert_user_api_snapshot(
+                user_id=int(user_id),
+                snapshot_kind="plan_analytics",
+                snapshot_key=effective_snapshot_key,
+                payload=response_payload,
+                source_lang=str(meta.get("source_lang") or "").strip() or None,
+                target_lang=str(meta.get("target_lang") or "").strip() or None,
+                meta=meta,
+                fresh_ttl_seconds=PLAN_ANALYTICS_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_seconds=PLAN_ANALYTICS_SNAPSHOT_STALE_TTL_SEC,
+            )
+            _store_snapshot_in_front_cache(
+                _HOTPATH_PLAN_ANALYTICS_CACHE,
+                front_key=("plan_analytics", int(user_id), effective_snapshot_key),
+                snapshot=snapshot,
+                fresh_ttl_sec=PLAN_ANALYTICS_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_sec=PLAN_ANALYTICS_SNAPSHOT_STALE_TTL_SEC,
+            )
+
+    _HOTPATH_PLAN_ANALYTICS_CACHE.enqueue_refresh(front_key, _refresh)
+
+
+def _prime_webapp_home_snapshots_async(*, user_id: int, username: str | None) -> None:
+    """Warm the most visible home-screen snapshots outside the request path."""
+    try:
+        plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+        _schedule_today_plan_snapshot_refresh(
+            user_id=int(user_id),
+            username=username,
+            plan_date=plan_date,
+        )
+        _schedule_skill_progress_snapshot_refresh(
+            user_id=int(user_id),
+            username=username,
+            lookback_days=7,
+        )
+        _schedule_weekly_plan_snapshot_refresh(
+            user_id=int(user_id),
+            anchor_date=plan_date,
+        )
+        _schedule_plan_analytics_snapshot_refresh(
+            user_id=int(user_id),
+            period="week",
+            week_start=None,
+            as_of_date=plan_date,
+        )
+    except Exception:
+        logging.warning("Failed to prime webapp home snapshots: user_id=%s", user_id, exc_info=True)
+
+
+def _get_today_plan_response_cached(
+    *,
+    user_id: int,
+    username: str | None,
+    plan_date: date,
+) -> tuple[dict, dict]:
+    snapshot_key = _today_plan_snapshot_key(plan_date)
+    front_key = ("today_plan", int(user_id), snapshot_key)
+    fresh_front = _HOTPATH_TODAY_CACHE.get(front_key)
+    if fresh_front is not None:
+        return (
+            dict(fresh_front.get("payload") or {}),
+            {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "fresh",
+                "snapshot_age_ms": _snapshot_age_ms({"refreshed_at": fresh_front.get("meta", {}).get("_snapshot_refreshed_at")}),
+                **(fresh_front.get("meta") or {}),
+            },
+        )
+
+    stale_front = _HOTPATH_TODAY_CACHE.get(front_key, allow_stale=True)
+    if stale_front is not None:
+        _schedule_today_plan_snapshot_refresh(user_id=int(user_id), username=username, plan_date=plan_date)
+        return (
+            dict(stale_front.get("payload") or {}),
+            {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "stale",
+                "snapshot_age_ms": _snapshot_age_ms({"refreshed_at": stale_front.get("meta", {}).get("_snapshot_refreshed_at")}),
+                **(stale_front.get("meta") or {}),
+            },
+        )
+
+    snapshot = get_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="today_plan",
+        snapshot_key=snapshot_key,
+    )
+    if isinstance(snapshot, dict):
+        _store_snapshot_in_front_cache(
+            _HOTPATH_TODAY_CACHE,
+            front_key=front_key,
+            snapshot=snapshot,
+            fresh_ttl_sec=TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+            stale_ttl_sec=TODAY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+        )
+        if _snapshot_is_fresh(snapshot):
+            return (
+                dict(snapshot.get("payload") or {}),
+                {
+                    "cache_hit": True,
+                    "cache_tier": "db_snapshot",
+                    "cache_state": "fresh",
+                    "snapshot_age_ms": _snapshot_age_ms(snapshot),
+                    **(snapshot.get("meta") or {}),
+                },
+            )
+        if _snapshot_is_servable_stale(snapshot):
+            _schedule_today_plan_snapshot_refresh(user_id=int(user_id), username=username, plan_date=plan_date)
+            return (
+                dict(snapshot.get("payload") or {}),
+                {
+                    "cache_hit": True,
+                    "cache_tier": "db_snapshot",
+                    "cache_state": "stale",
+                    "snapshot_age_ms": _snapshot_age_ms(snapshot),
+                    **(snapshot.get("meta") or {}),
+                },
+            )
+
+    response_payload, meta = _build_today_plan_response_payload(
+        user_id=int(user_id),
+        username=username,
+        plan_date=plan_date,
+    )
+    saved_snapshot = upsert_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="today_plan",
+        snapshot_key=snapshot_key,
+        payload=response_payload,
+        source_lang=str(meta.get("source_lang") or "").strip() or None,
+        target_lang=str(meta.get("target_lang") or "").strip() or None,
+        meta=meta,
+        fresh_ttl_seconds=TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_seconds=TODAY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+    )
+    _store_snapshot_in_front_cache(
+        _HOTPATH_TODAY_CACHE,
+        front_key=front_key,
+        snapshot=saved_snapshot,
+        fresh_ttl_sec=TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_sec=TODAY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+    )
+    return (
+        response_payload,
+        {
+            "cache_hit": False,
+            "cache_tier": "miss",
+            "cache_state": "rebuilt",
+            **meta,
+        },
+    )
+
+
+def _get_skill_progress_response_cached(
+    *,
+    user_id: int,
+    username: str | None,
+    lookback_days: int,
+) -> tuple[dict, dict]:
+    snapshot_key = _skill_progress_snapshot_key(lookback_days)
+    front_key = ("skill_progress", int(user_id), snapshot_key)
+    fresh_front = _HOTPATH_SKILL_PROGRESS_CACHE.get(front_key)
+    if fresh_front is not None:
+        return (
+            dict(fresh_front.get("payload") or {}),
+            {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "fresh",
+                "snapshot_age_ms": _snapshot_age_ms({"refreshed_at": fresh_front.get("meta", {}).get("_snapshot_refreshed_at")}),
+                **(fresh_front.get("meta") or {}),
+            },
+        )
+
+    stale_front = _HOTPATH_SKILL_PROGRESS_CACHE.get(front_key, allow_stale=True)
+    if stale_front is not None:
+        _schedule_skill_progress_snapshot_refresh(
+            user_id=int(user_id),
+            username=username,
+            lookback_days=int(lookback_days),
+        )
+        return (
+            dict(stale_front.get("payload") or {}),
+            {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "stale",
+                "snapshot_age_ms": _snapshot_age_ms({"refreshed_at": stale_front.get("meta", {}).get("_snapshot_refreshed_at")}),
+                **(stale_front.get("meta") or {}),
+            },
+        )
+
+    snapshot = get_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="skill_progress",
+        snapshot_key=snapshot_key,
+    )
+    if isinstance(snapshot, dict):
+        _store_snapshot_in_front_cache(
+            _HOTPATH_SKILL_PROGRESS_CACHE,
+            front_key=front_key,
+            snapshot=snapshot,
+            fresh_ttl_sec=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+            stale_ttl_sec=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+        )
+        if _snapshot_is_fresh(snapshot):
+            return (
+                dict(snapshot.get("payload") or {}),
+                {
+                    "cache_hit": True,
+                    "cache_tier": "db_snapshot",
+                    "cache_state": "fresh",
+                    "snapshot_age_ms": _snapshot_age_ms(snapshot),
+                    **(snapshot.get("meta") or {}),
+                },
+            )
+        if _snapshot_is_servable_stale(snapshot):
+            _schedule_skill_progress_snapshot_refresh(
+                user_id=int(user_id),
+                username=username,
+                lookback_days=int(lookback_days),
+            )
+            return (
+                dict(snapshot.get("payload") or {}),
+                {
+                    "cache_hit": True,
+                    "cache_tier": "db_snapshot",
+                    "cache_state": "stale",
+                    "snapshot_age_ms": _snapshot_age_ms(snapshot),
+                    **(snapshot.get("meta") or {}),
+                },
+            )
+
+    response_payload, meta = _build_skill_progress_response_payload(
+        user_id=int(user_id),
+        username=username,
+        lookback_days=int(lookback_days),
+    )
+    saved_snapshot = upsert_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="skill_progress",
+        snapshot_key=snapshot_key,
+        payload=response_payload,
+        source_lang=str(meta.get("source_lang") or "").strip() or None,
+        target_lang=str(meta.get("target_lang") or "").strip() or None,
+        meta=meta,
+        fresh_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+    )
+    _store_snapshot_in_front_cache(
+        _HOTPATH_SKILL_PROGRESS_CACHE,
+        front_key=front_key,
+        snapshot=saved_snapshot,
+        fresh_ttl_sec=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_sec=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+    )
+    return (
+        response_payload,
+        {
+            "cache_hit": False,
+            "cache_tier": "miss",
+            "cache_state": "rebuilt",
+            **meta,
+        },
+    )
+
+
+def _ensure_post_finish_hotpath_snapshots(
+    *,
+    user_id: int,
+    username: str | None,
+    plan_date: date,
+    lookback_days: int,
+) -> dict[str, bool]:
+    ensured = {
+        "today": False,
+        "skills": False,
+        "today_duration_ms": 0,
+        "skills_duration_ms": 0,
+    }
+    today_snapshot_key = _today_plan_snapshot_key(plan_date)
+    skill_snapshot_key = _skill_progress_snapshot_key(lookback_days)
+
+    if get_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="today_plan",
+        snapshot_key=today_snapshot_key,
+    ) is None:
+        today_started_perf = time.perf_counter()
+        with db_acquire_scope("today_plan_finish_seed"):
+            response_payload, meta = _build_today_plan_response_payload(
+                user_id=int(user_id),
+                username=username,
+                plan_date=plan_date,
+            )
+            snapshot = upsert_user_api_snapshot(
+                user_id=int(user_id),
+                snapshot_kind="today_plan",
+                snapshot_key=today_snapshot_key,
+                payload=response_payload,
+                source_lang=str(meta.get("source_lang") or "").strip() or None,
+                target_lang=str(meta.get("target_lang") or "").strip() or None,
+                meta=meta,
+                fresh_ttl_seconds=TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_seconds=TODAY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+            )
+            _store_snapshot_in_front_cache(
+                _HOTPATH_TODAY_CACHE,
+                front_key=("today_plan", int(user_id), today_snapshot_key),
+                snapshot=snapshot,
+                fresh_ttl_sec=TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_sec=TODAY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+            )
+            ensured["today"] = True
+        ensured["today_duration_ms"] = int((time.perf_counter() - today_started_perf) * 1000)
+
+    if get_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="skill_progress",
+        snapshot_key=skill_snapshot_key,
+    ) is None:
+        skills_started_perf = time.perf_counter()
+        with db_acquire_scope("skill_progress_finish_seed"):
+            response_payload, meta = _build_skill_progress_response_payload(
+                user_id=int(user_id),
+                username=username,
+                lookback_days=int(lookback_days),
+            )
+            snapshot = upsert_user_api_snapshot(
+                user_id=int(user_id),
+                snapshot_kind="skill_progress",
+                snapshot_key=skill_snapshot_key,
+                payload=response_payload,
+                source_lang=str(meta.get("source_lang") or "").strip() or None,
+                target_lang=str(meta.get("target_lang") or "").strip() or None,
+                meta=meta,
+                fresh_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+            )
+            _store_snapshot_in_front_cache(
+                _HOTPATH_SKILL_PROGRESS_CACHE,
+                front_key=("skill_progress", int(user_id), skill_snapshot_key),
+                snapshot=snapshot,
+                fresh_ttl_sec=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_sec=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+            )
+            ensured["skills"] = True
+        ensured["skills_duration_ms"] = int((time.perf_counter() - skills_started_perf) * 1000)
+
+    return ensured
+
+
+def _get_weekly_plan_response_cached(*, user_id: int, anchor_date: date | None = None) -> tuple[dict, dict]:
+    snapshot_key = _weekly_plan_snapshot_key(anchor_date)
+    front_key = ("weekly_plan", int(user_id), snapshot_key)
+    fresh_front = _HOTPATH_WEEKLY_PLAN_CACHE.get(front_key)
+    if fresh_front is not None:
+        return (
+            dict(fresh_front.get("payload") or {}),
+            {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "fresh",
+                "snapshot_age_ms": _snapshot_age_ms({"refreshed_at": fresh_front.get("meta", {}).get("_snapshot_refreshed_at")}),
+                **(fresh_front.get("meta") or {}),
+            },
+        )
+
+    stale_front = _HOTPATH_WEEKLY_PLAN_CACHE.get(front_key, allow_stale=True)
+    if stale_front is not None:
+        _schedule_weekly_plan_snapshot_refresh(user_id=int(user_id), anchor_date=anchor_date)
+        return (
+            dict(stale_front.get("payload") or {}),
+            {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "stale",
+                "snapshot_age_ms": _snapshot_age_ms({"refreshed_at": stale_front.get("meta", {}).get("_snapshot_refreshed_at")}),
+                **(stale_front.get("meta") or {}),
+            },
+        )
+
+    snapshot = get_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="weekly_plan",
+        snapshot_key=snapshot_key,
+    )
+    if isinstance(snapshot, dict):
+        _store_snapshot_in_front_cache(
+            _HOTPATH_WEEKLY_PLAN_CACHE,
+            front_key=front_key,
+            snapshot=snapshot,
+            fresh_ttl_sec=WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+            stale_ttl_sec=WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+        )
+        if _snapshot_is_fresh(snapshot):
+            return (
+                dict(snapshot.get("payload") or {}),
+                {
+                    "cache_hit": True,
+                    "cache_tier": "db_snapshot",
+                    "cache_state": "fresh",
+                    "snapshot_age_ms": _snapshot_age_ms(snapshot),
+                    **(snapshot.get("meta") or {}),
+                },
+            )
+        if _snapshot_is_servable_stale(snapshot):
+            _schedule_weekly_plan_snapshot_refresh(user_id=int(user_id), anchor_date=anchor_date)
+            return (
+                dict(snapshot.get("payload") or {}),
+                {
+                    "cache_hit": True,
+                    "cache_tier": "db_snapshot",
+                    "cache_state": "stale",
+                    "snapshot_age_ms": _snapshot_age_ms(snapshot),
+                    **(snapshot.get("meta") or {}),
+                },
+            )
+
+    response_payload, meta = _build_weekly_plan_response_payload(user_id=int(user_id))
+    effective_snapshot_key = str(meta.get("snapshot_week_start") or snapshot_key)
+    saved_snapshot = upsert_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="weekly_plan",
+        snapshot_key=effective_snapshot_key,
+        payload=response_payload,
+        source_lang=str(meta.get("source_lang") or "").strip() or None,
+        target_lang=str(meta.get("target_lang") or "").strip() or None,
+        meta=meta,
+        fresh_ttl_seconds=WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_seconds=WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+    )
+    _store_snapshot_in_front_cache(
+        _HOTPATH_WEEKLY_PLAN_CACHE,
+        front_key=("weekly_plan", int(user_id), effective_snapshot_key),
+        snapshot=saved_snapshot,
+        fresh_ttl_sec=WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_sec=WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+    )
+    return (
+        response_payload,
+        {
+            "cache_hit": False,
+            "cache_tier": "miss",
+            "cache_state": "rebuilt",
+            **meta,
+        },
+    )
+
+
+def _get_plan_analytics_response_cached(
+    *,
+    user_id: int,
+    period: str,
+    week_start: date | None = None,
+    as_of_date: date | None = None,
+) -> tuple[dict, dict]:
+    snapshot_key = _plan_analytics_snapshot_key(period=period, week_start=week_start, as_of_date=as_of_date)
+    front_key = ("plan_analytics", int(user_id), snapshot_key)
+    fresh_front = _HOTPATH_PLAN_ANALYTICS_CACHE.get(front_key)
+    if fresh_front is not None:
+        return (
+            dict(fresh_front.get("payload") or {}),
+            {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "fresh",
+                "snapshot_age_ms": _snapshot_age_ms({"refreshed_at": fresh_front.get("meta", {}).get("_snapshot_refreshed_at")}),
+                **(fresh_front.get("meta") or {}),
+            },
+        )
+
+    stale_front = _HOTPATH_PLAN_ANALYTICS_CACHE.get(front_key, allow_stale=True)
+    if stale_front is not None:
+        _schedule_plan_analytics_snapshot_refresh(
+            user_id=int(user_id),
+            period=period,
+            week_start=week_start,
+            as_of_date=as_of_date,
+        )
+        return (
+            dict(stale_front.get("payload") or {}),
+            {
+                "cache_hit": True,
+                "cache_tier": "front",
+                "cache_state": "stale",
+                "snapshot_age_ms": _snapshot_age_ms({"refreshed_at": stale_front.get("meta", {}).get("_snapshot_refreshed_at")}),
+                **(stale_front.get("meta") or {}),
+            },
+        )
+
+    snapshot = get_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="plan_analytics",
+        snapshot_key=snapshot_key,
+    )
+    if isinstance(snapshot, dict):
+        _store_snapshot_in_front_cache(
+            _HOTPATH_PLAN_ANALYTICS_CACHE,
+            front_key=front_key,
+            snapshot=snapshot,
+            fresh_ttl_sec=PLAN_ANALYTICS_SNAPSHOT_FRESH_TTL_SEC,
+            stale_ttl_sec=PLAN_ANALYTICS_SNAPSHOT_STALE_TTL_SEC,
+        )
+        if _snapshot_is_fresh(snapshot):
+            return (
+                dict(snapshot.get("payload") or {}),
+                {
+                    "cache_hit": True,
+                    "cache_tier": "db_snapshot",
+                    "cache_state": "fresh",
+                    "snapshot_age_ms": _snapshot_age_ms(snapshot),
+                    **(snapshot.get("meta") or {}),
+                },
+            )
+        if _snapshot_is_servable_stale(snapshot):
+            _schedule_plan_analytics_snapshot_refresh(
+                user_id=int(user_id),
+                period=period,
+                week_start=week_start,
+                as_of_date=as_of_date,
+            )
+            return (
+                dict(snapshot.get("payload") or {}),
+                {
+                    "cache_hit": True,
+                    "cache_tier": "db_snapshot",
+                    "cache_state": "stale",
+                    "snapshot_age_ms": _snapshot_age_ms(snapshot),
+                    **(snapshot.get("meta") or {}),
+                },
+            )
+
+    response_payload, meta = _build_plan_analytics_response_payload(
+        user_id=int(user_id),
+        period=period,
+        week_start=week_start,
+        as_of_date=as_of_date,
+    )
+    effective_snapshot_key = _plan_analytics_snapshot_key(
+        period=str(meta.get("period") or period),
+        week_start=_parse_iso_date(meta.get("request_week_start")),
+        as_of_date=_parse_iso_date(meta.get("request_as_of_date")),
+    )
+    saved_snapshot = upsert_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind="plan_analytics",
+        snapshot_key=effective_snapshot_key,
+        payload=response_payload,
+        source_lang=str(meta.get("source_lang") or "").strip() or None,
+        target_lang=str(meta.get("target_lang") or "").strip() or None,
+        meta=meta,
+        fresh_ttl_seconds=PLAN_ANALYTICS_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_seconds=PLAN_ANALYTICS_SNAPSHOT_STALE_TTL_SEC,
+    )
+    _store_snapshot_in_front_cache(
+        _HOTPATH_PLAN_ANALYTICS_CACHE,
+        front_key=("plan_analytics", int(user_id), effective_snapshot_key),
+        snapshot=saved_snapshot,
+        fresh_ttl_sec=PLAN_ANALYTICS_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_sec=PLAN_ANALYTICS_SNAPSHOT_STALE_TTL_SEC,
+    )
+    return (
+        response_payload,
+        {
+            "cache_hit": False,
+            "cache_tier": "miss",
+            "cache_state": "rebuilt",
+            **meta,
+        },
+    )
+
+
 @app.route("/api/today", methods=["GET"])
 def get_today_plan():
     started_perf = time.perf_counter()
@@ -17828,48 +22248,12 @@ def get_today_plan():
 
         requested_date = request.args.get("date")
         plan_date = _safe_plan_date(requested_date, TODAY_PLAN_DEFAULT_TZ)
-        auto_opt_in = (os.getenv("TODAY_REMINDER_AUTO_OPT_IN") or "1").strip().lower() in {"1", "true", "yes", "on"}
-        reminder_sync_started_perf = time.perf_counter()
-        if auto_opt_in:
-            try:
-                current = get_today_reminder_settings(int(user_id))
-                if not current.get("updated_at"):
-                    upsert_today_reminder_settings(
-                        int(user_id),
-                        enabled=True,
-                        timezone_name=TODAY_PLAN_DEFAULT_TZ,
-                        reminder_hour=7,
-                        reminder_minute=0,
-                    )
-            except Exception as exc:
-                logging.warning("Today reminder auto-opt-in skipped for user %s: %s", user_id, exc)
-        reminder_sync_duration_ms = _elapsed_ms_since(reminder_sync_started_perf)
-
-        language_pair_started_perf = time.perf_counter()
-        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
         try:
-            plan_build_started_perf = time.perf_counter()
-            plan = _get_or_create_today_plan(
-                user_id=int(user_id),
-                plan_date=plan_date,
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
-            plan = _normalize_stale_today_plan_timers(
-                user_id=int(user_id),
-                plan=plan,
-                stale_after_seconds=int((os.getenv("TODAY_PLAN_TIMER_STALE_AFTER_SECONDS") or "120").strip() or "120"),
-            )
-            plan = _sync_today_plan_translation_progress(
+            response_payload, cache_meta = _get_today_plan_response_cached(
                 user_id=int(user_id),
                 username=username,
-                plan=plan,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                trigger="today_fetch",
+                plan_date=plan_date,
             )
-            plan_build_duration_ms = _elapsed_ms_since(plan_build_started_perf)
         except Exception as exc:
             _log_flow_observation(
                 "today_plan",
@@ -17877,11 +22261,7 @@ def get_today_plan():
                 request_id=request_id,
                 correlation_id=correlation_id,
                 user_id=int(user_id),
-                source_lang=source_lang,
-                target_lang=target_lang,
                 plan_date=plan_date.isoformat() if hasattr(plan_date, "isoformat") else str(plan_date),
-                reminder_sync_duration_ms=reminder_sync_duration_ms,
-                language_pair_lookup_duration_ms=language_pair_duration_ms,
                 final_status="error",
                 error_code=exc.__class__.__name__,
                 duration_ms=_elapsed_ms_since(started_perf),
@@ -17890,15 +22270,8 @@ def get_today_plan():
             )
             return jsonify({"error": f"Ошибка формирования плана: {exc}"}), 500
 
-        response_payload = _format_today_plan_response(plan)
-        response_payload.update(
-            {
-                "ok": True,
-                "user_id": int(user_id),
-                "username": username,
-                "language_pair": _build_language_pair_payload(source_lang, target_lang),
-            }
-        )
+        source_lang = str(((response_payload.get("language_pair") or {}) if isinstance(response_payload.get("language_pair"), dict) else {}).get("source_lang") or cache_meta.get("source_lang") or "").strip() or None
+        target_lang = str(((response_payload.get("language_pair") or {}) if isinstance(response_payload.get("language_pair"), dict) else {}).get("target_lang") or cache_meta.get("target_lang") or "").strip() or None
         _log_flow_observation(
             "today_plan",
             "today_completed",
@@ -17910,10 +22283,14 @@ def get_today_plan():
             plan_date=response_payload.get("date"),
             items_count=len(response_payload.get("items") or []),
             total_minutes=int(response_payload.get("total_minutes") or 0),
-            reminder_sync_duration_ms=reminder_sync_duration_ms,
-            language_pair_lookup_duration_ms=language_pair_duration_ms,
-            plan_build_duration_ms=plan_build_duration_ms,
-            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            reminder_sync_duration_ms=cache_meta.get("reminder_sync_duration_ms"),
+            language_pair_lookup_duration_ms=cache_meta.get("language_pair_lookup_duration_ms"),
+            plan_build_duration_ms=cache_meta.get("plan_build_duration_ms"),
+            response_size_bytes=cache_meta.get("response_size_bytes") or _estimate_json_payload_size_bytes(response_payload),
+            cache_hit=bool(cache_meta.get("cache_hit")),
+            cache_tier=cache_meta.get("cache_tier"),
+            cache_state=cache_meta.get("cache_state"),
+            snapshot_age_ms=cache_meta.get("snapshot_age_ms"),
             final_status="success",
             duration_ms=_elapsed_ms_since(started_perf),
             http_status=200,
@@ -17973,12 +22350,14 @@ def regenerate_today_plan():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
+    _mark_today_plan_snapshot_stale(user_id=int(user_id), plan_date=plan_date)
+    _schedule_today_plan_snapshot_refresh(user_id=int(user_id), username=username, plan_date=plan_date)
     return jsonify(response_payload)
 
 
 @app.route("/api/today/items/<int:item_id>/start", methods=["POST"])
 def start_today_item(item_id: int):
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
@@ -17996,6 +22375,12 @@ def start_today_item(item_id: int):
 
     if not item:
         return jsonify({"error": "Задача не найдена"}), 404
+    _mark_today_plan_snapshot_stale(user_id=int(user_id), plan_date=_get_local_today_date(TODAY_PLAN_DEFAULT_TZ))
+    _schedule_today_plan_snapshot_refresh(
+        user_id=int(user_id),
+        username=username,
+        plan_date=_get_local_today_date(TODAY_PLAN_DEFAULT_TZ),
+    )
     return jsonify({"ok": True, "item": item})
 
 
@@ -18023,6 +22408,11 @@ def start_today_translation_item(item_id: int):
     main_category = str(task_payload.get("main_category") or "").strip()
     recommended_topic_label = str(task_payload.get("recommended_topic_label") or "").strip()
     recommended_custom_focus = str(task_payload.get("recommended_custom_focus") or "").strip()
+    task_examples = []
+    for key in ("recommended_reason_examples", "examples"):
+        raw_items = task_payload.get(key)
+        if isinstance(raw_items, list):
+            task_examples.extend(str(item or "").strip() for item in raw_items if str(item or "").strip())
     topic_label = sub_category or skill_title or main_category or "Weak skill practice"
     if skill_title and sub_category:
         topic_label = f"{skill_title}: {sub_category}"
@@ -18031,6 +22421,57 @@ def start_today_translation_item(item_id: int):
     resolved_focus = resolve_webapp_focus(
         recommended_topic_label or topic_label,
         recommended_custom_focus,
+    )
+    level_rank = {"a2": 1, "b1": 2, "b2": 3, "c1": 4, "c2": 5}
+
+    def _max_today_level(*levels: object) -> str:
+        normalized_levels = [
+            _normalize_translation_level(str(level or "").strip().lower())
+            for level in levels
+            if str(level or "").strip()
+        ]
+        if not normalized_levels:
+            return "b1"
+        return max(normalized_levels, key=lambda item: level_rank.get(item, 0))
+
+    def _infer_today_level_floor(examples: list[str]) -> str | None:
+        observed_levels: list[str] = []
+        seen_sentences: set[str] = set()
+        for raw_sentence in list(examples or []):
+            sentence = " ".join(str(raw_sentence or "").strip().split())
+            if not sentence:
+                continue
+            sentence_key = sentence.lower()
+            if sentence_key in seen_sentences:
+                continue
+            seen_sentences.add(sentence_key)
+            matched_level = None
+            for level_key in ("c2", "c1", "b2", "b1", "a2"):
+                if _translation_sentence_fits_level(sentence, level_key):
+                    matched_level = level_key
+                    break
+            if matched_level:
+                observed_levels.append(matched_level)
+        if not observed_levels:
+            return None
+        return max(observed_levels, key=lambda item: level_rank.get(item, 0))
+
+    level = _max_today_level(
+        requested_level or None,
+        task_payload.get("recommended_level"),
+        task_payload.get("level"),
+        _infer_today_level_floor(task_examples),
+    )
+    tested_skill_profile_seed = (
+        {
+            "primary_skill_id": skill_id,
+            "main_category": main_category or None,
+            "sub_category": sub_category or None,
+            "profile_source": "today_weakest_skill",
+            "profile_confidence": 0.9,
+        }
+        if skill_id
+        else None
     )
 
     try:
@@ -18042,17 +22483,7 @@ def start_today_translation_item(item_id: int):
                 level=level,
                 source_lang=source_lang,
                 target_lang=target_lang,
-                tested_skill_profile_seed=(
-                    {
-                        "primary_skill_id": skill_id,
-                        "main_category": main_category or None,
-                        "sub_category": sub_category or None,
-                        "profile_source": "today_weakest_skill",
-                        "profile_confidence": 0.9,
-                    }
-                    if skill_id
-                    else None
-                ),
+                tested_skill_profile_seed=tested_skill_profile_seed,
                 grammar_focus=resolved_focus,
             )
         )
@@ -18074,6 +22505,7 @@ def start_today_translation_item(item_id: int):
         topic=str(resolved_focus.get("prompt_topic") or topic_label).strip() or topic_label,
         level=level,
         grammar_focus=resolved_focus,
+        tested_skill_profile_seed=tested_skill_profile_seed,
     )
 
     session_id_value = _normalize_today_translation_session_id(session_payload.get("session_id"))
@@ -18104,6 +22536,12 @@ def start_today_translation_item(item_id: int):
         item_id=int(item_id),
         status="done" if completed_count >= target_count else "doing",
     ) or updated_item
+    _mark_today_plan_snapshot_stale(user_id=int(user_id), plan_date=_get_local_today_date(TODAY_PLAN_DEFAULT_TZ))
+    _schedule_today_plan_snapshot_refresh(
+        user_id=int(user_id),
+        username=username,
+        plan_date=_get_local_today_date(TODAY_PLAN_DEFAULT_TZ),
+    )
     return jsonify(
         {
             "ok": True,
@@ -18171,6 +22609,12 @@ def update_today_item_timer(item_id: int):
     except Exception:
         logging.warning("Today task completion group announcement failed (timer): user=%s item=%s", user_id, item_id, exc_info=True)
 
+    _mark_today_plan_snapshot_stale(user_id=int(user_id), plan_date=_get_local_today_date(TODAY_PLAN_DEFAULT_TZ))
+    _schedule_today_plan_snapshot_refresh(
+        user_id=int(user_id),
+        username=username,
+        plan_date=_get_local_today_date(TODAY_PLAN_DEFAULT_TZ),
+    )
     return jsonify({"ok": True, "item": item})
 
 
@@ -19364,47 +23808,17 @@ def get_skill_progress():
             except Exception:
                 lookback_days = 7
 
-        language_pair_started_perf = time.perf_counter()
-        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
-        report_warning: str | None = None
-        report_started_perf = time.perf_counter()
         try:
-            report = get_skill_progress_report(
+            response_payload, cache_meta = _get_skill_progress_response_cached(
                 user_id=int(user_id),
+                username=username,
                 lookback_days=lookback_days,
-                source_lang=source_lang,
-                target_lang=target_lang,
             )
         except Exception as exc:
-            logging.exception("Skill progress report failed user_id=%s", user_id)
-            report_warning = f"skill_progress_report_failed: {exc}"
-            report = {
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "period_days": int(lookback_days),
-                "top_weak": [],
-                "groups": [],
-                "total_skills": 0,
-                "skills_with_data": 0,
-            }
-        report_duration_ms = _elapsed_ms_since(report_started_perf)
-        training_status_started_perf = time.perf_counter()
-        try:
-            skill_training_status = _get_skill_training_status_map(int(user_id))
-        except Exception as exc:
-            logging.warning("Skill training status load failed: %s", exc)
-            skill_training_status = {}
-        training_status_duration_ms = _elapsed_ms_since(training_status_started_perf)
-
-        response_payload = {
-            "ok": True,
-            "user_id": int(user_id),
-            "username": username,
-            "language_pair": _build_language_pair_payload(source_lang, target_lang),
-            "skill_training_status": skill_training_status,
-            **({"warning": report_warning} if report_warning else {}),
-            **report,
-        }
+            logging.exception("Skill progress cached build failed user_id=%s", user_id)
+            return jsonify({"error": f"Ошибка расчёта прогресса навыков: {exc}"}), 500
+        source_lang = str(((response_payload.get("language_pair") or {}) if isinstance(response_payload.get("language_pair"), dict) else {}).get("source_lang") or cache_meta.get("source_lang") or "").strip() or None
+        target_lang = str(((response_payload.get("language_pair") or {}) if isinstance(response_payload.get("language_pair"), dict) else {}).get("target_lang") or cache_meta.get("target_lang") or "").strip() or None
         _log_flow_observation(
             "skill_progress",
             "skill_progress_completed",
@@ -19417,11 +23831,15 @@ def get_skill_progress():
             groups_count=len(response_payload.get("groups") or []),
             total_skills=int(response_payload.get("total_skills") or 0),
             skills_with_data=int(response_payload.get("skills_with_data") or 0),
-            language_pair_lookup_duration_ms=language_pair_duration_ms,
-            report_duration_ms=report_duration_ms,
-            training_status_duration_ms=training_status_duration_ms,
-            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
-            final_status="success" if not report_warning else "partial",
+            language_pair_lookup_duration_ms=cache_meta.get("language_pair_lookup_duration_ms"),
+            report_duration_ms=cache_meta.get("report_duration_ms"),
+            training_status_duration_ms=cache_meta.get("training_status_duration_ms"),
+            response_size_bytes=cache_meta.get("response_size_bytes") or _estimate_json_payload_size_bytes(response_payload),
+            cache_hit=bool(cache_meta.get("cache_hit")),
+            cache_tier=cache_meta.get("cache_tier"),
+            cache_state=cache_meta.get("cache_state"),
+            snapshot_age_ms=cache_meta.get("snapshot_age_ms"),
+            final_status=cache_meta.get("final_status") or "success",
             duration_ms=_elapsed_ms_since(started_perf),
             http_status=200,
             **summarize_db_acquire_events(db_acquire_events),
@@ -19431,7 +23849,7 @@ def get_skill_progress():
 
 @app.route("/api/progress/skills/<string:skill_id>/practice/event", methods=["POST"])
 def track_skill_practice_event(skill_id: str):
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
@@ -19452,132 +23870,309 @@ def track_skill_practice_event(skill_id: str):
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения события тренировки навыка: {exc}"}), 500
+    plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    _mark_today_plan_snapshot_stale(user_id=int(user_id), plan_date=plan_date)
+    _mark_skill_progress_snapshot_stale(user_id=int(user_id), lookback_days=7)
+    _mark_weekly_plan_snapshot_stale(user_id=int(user_id), anchor_date=plan_date)
+    _mark_plan_analytics_snapshot_stale(user_id=int(user_id))
+    _schedule_today_plan_snapshot_refresh(user_id=int(user_id), username=username, plan_date=plan_date)
+    _schedule_skill_progress_snapshot_refresh(user_id=int(user_id), username=username, lookback_days=7)
+    _schedule_weekly_plan_snapshot_refresh(user_id=int(user_id), anchor_date=plan_date)
+    _schedule_plan_analytics_snapshot_refresh(user_id=int(user_id), period="week", as_of_date=plan_date)
     return jsonify({"ok": True, "status": status_payload, "skill_id": normalized_skill_id})
 
 
 @app.route("/api/progress/weekly-plan", methods=["GET", "POST"])
 def weekly_plan_progress():
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
-    if error:
-        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
-        return jsonify({"error": error}), status
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="weekly_plan")
+    with db_acquire_scope("weekly_plan") as db_acquire_events:
+        user_id, _username, error = _get_authenticated_user_from_request_init_data()
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation(
+                "weekly_plan",
+                "weekly_plan_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="auth_error",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=status,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": error}), status
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        plan_anchor_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+        save_goals_duration_ms = 0
 
-    if request.method == "POST":
-        payload = request.get_json(silent=True) or {}
+        if request.method == "POST":
+            payload = request.get_json(silent=True) or {}
+            try:
+                translations_goal = max(0, int(payload.get("translations_goal", 0)))
+                learned_words_goal = max(0, int(payload.get("learned_words_goal", 0)))
+                agent_minutes_goal = max(0, int(payload.get("agent_minutes_goal", 0)))
+                reading_minutes_goal = max(0, int(payload.get("reading_minutes_goal", 0)))
+            except Exception:
+                _log_flow_observation(
+                    "weekly_plan",
+                    "weekly_plan_completed",
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    user_id=int(user_id),
+                    final_status="error",
+                    error_code="invalid_goal_values",
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    http_status=400,
+                    **summarize_db_acquire_events(db_acquire_events),
+                )
+                return jsonify({"error": "Значения плана должны быть целыми числами"}), 400
+            try:
+                language_pair_started_perf = time.perf_counter()
+                source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+                language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+                save_started_perf = time.perf_counter()
+                upsert_weekly_goals(
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    translations_goal=translations_goal,
+                    learned_words_goal=learned_words_goal,
+                    agent_minutes_goal=agent_minutes_goal,
+                    reading_minutes_goal=reading_minutes_goal,
+                )
+                save_goals_duration_ms = _elapsed_ms_since(save_started_perf)
+                _mark_weekly_plan_snapshot_stale(user_id=int(user_id), anchor_date=plan_anchor_date)
+                _mark_plan_analytics_snapshot_stale(user_id=int(user_id))
+                response_payload, meta = _build_weekly_plan_response_payload(user_id=int(user_id))
+                effective_snapshot_key = str(meta.get("snapshot_week_start") or _weekly_plan_snapshot_key(plan_anchor_date))
+                snapshot = upsert_user_api_snapshot(
+                    user_id=int(user_id),
+                    snapshot_kind="weekly_plan",
+                    snapshot_key=effective_snapshot_key,
+                    payload=response_payload,
+                    source_lang=str(meta.get("source_lang") or source_lang).strip() or None,
+                    target_lang=str(meta.get("target_lang") or target_lang).strip() or None,
+                    meta=meta,
+                    fresh_ttl_seconds=WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+                    stale_ttl_seconds=WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+                )
+                _store_snapshot_in_front_cache(
+                    _HOTPATH_WEEKLY_PLAN_CACHE,
+                    front_key=("weekly_plan", int(user_id), effective_snapshot_key),
+                    snapshot=snapshot,
+                    fresh_ttl_sec=WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+                    stale_ttl_sec=WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+                )
+                _log_flow_observation(
+                    "weekly_plan",
+                    "weekly_plan_completed",
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    user_id=int(user_id),
+                    cache_hit=False,
+                    cache_tier="miss",
+                    cache_state="rebuilt",
+                    language_pair_lookup_duration_ms=language_pair_duration_ms,
+                    goals_duration_ms=meta.get("goals_duration_ms"),
+                    progress_duration_ms=meta.get("progress_duration_ms"),
+                    save_goals_duration_ms=save_goals_duration_ms,
+                    snapshot_age_ms=0,
+                    response_size_bytes=meta.get("response_size_bytes") or _estimate_json_payload_size_bytes(response_payload),
+                    final_status="success",
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    http_status=200,
+                    **summarize_db_acquire_events(db_acquire_events),
+                )
+                return jsonify(response_payload)
+            except Exception as exc:
+                _log_flow_observation(
+                    "weekly_plan",
+                    "weekly_plan_completed",
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    user_id=int(user_id),
+                    final_status="error",
+                    error_code=exc.__class__.__name__,
+                    save_goals_duration_ms=save_goals_duration_ms,
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    http_status=500,
+                    **summarize_db_acquire_events(db_acquire_events),
+                )
+                return jsonify({"error": f"Ошибка сохранения недельного плана: {exc}"}), 500
+
         try:
-            translations_goal = max(0, int(payload.get("translations_goal", 0)))
-            learned_words_goal = max(0, int(payload.get("learned_words_goal", 0)))
-            agent_minutes_goal = max(0, int(payload.get("agent_minutes_goal", 0)))
-            reading_minutes_goal = max(0, int(payload.get("reading_minutes_goal", 0)))
-        except Exception:
-            return jsonify({"error": "Значения плана должны быть целыми числами"}), 400
-        try:
-            upsert_weekly_goals(
+            response_payload, cache_meta = _get_weekly_plan_response_cached(
                 user_id=int(user_id),
-                source_lang=source_lang,
-                target_lang=target_lang,
-                translations_goal=translations_goal,
-                learned_words_goal=learned_words_goal,
-                agent_minutes_goal=agent_minutes_goal,
-                reading_minutes_goal=reading_minutes_goal,
+                anchor_date=plan_anchor_date,
             )
         except Exception as exc:
-            return jsonify({"error": f"Ошибка сохранения недельного плана: {exc}"}), 500
+            _log_flow_observation(
+                "weekly_plan",
+                "weekly_plan_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=500,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": f"Ошибка расчёта недельного прогресса: {exc}"}), 500
 
-    try:
-        goals = get_weekly_goals(
+        _log_flow_observation(
+            "weekly_plan",
+            "weekly_plan_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
             user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-        ) or {
-            "translations_goal": 0,
-            "learned_words_goal": 0,
-            "agent_minutes_goal": 0,
-            "reading_minutes_goal": 0,
-        }
-        progress = get_weekly_plan_progress(
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            mature_interval_days=MATURE_INTERVAL_DAYS,
+            cache_hit=bool(cache_meta.get("cache_hit")),
+            cache_tier=cache_meta.get("cache_tier"),
+            cache_state=cache_meta.get("cache_state"),
+            snapshot_age_ms=cache_meta.get("snapshot_age_ms"),
+            language_pair_lookup_duration_ms=cache_meta.get("language_pair_lookup_duration_ms"),
+            goals_duration_ms=cache_meta.get("goals_duration_ms"),
+            progress_duration_ms=cache_meta.get("progress_duration_ms"),
+            save_goals_duration_ms=save_goals_duration_ms,
+            response_size_bytes=cache_meta.get("response_size_bytes") or _estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
         )
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка расчёта недельного прогресса: {exc}"}), 500
-
-    return jsonify(
-        {
-            "ok": True,
-            "language_pair": _build_language_pair_payload(source_lang, target_lang),
-            "week": {
-                "start_date": progress.get("week_start"),
-                "end_date": progress.get("week_end"),
-                "as_of_date": progress.get("as_of_date"),
-                "days_elapsed": int(progress.get("days_elapsed") or 1),
-                "days_total": int(progress.get("days_total") or 7),
-            },
-            "plan": {
-                "translations_goal": int(goals.get("translations_goal") or 0),
-                "learned_words_goal": int(goals.get("learned_words_goal") or 0),
-                "agent_minutes_goal": int(goals.get("agent_minutes_goal") or 0),
-                "reading_minutes_goal": int(goals.get("reading_minutes_goal") or 0),
-            },
-            "metrics": progress.get("metrics") or {},
-        }
-    )
+        return jsonify(response_payload)
 
 
 @app.route("/api/progress/plan-analytics", methods=["GET"])
 def get_plan_analytics():
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
-    if error:
-        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
-        return jsonify({"error": error}), status
-    raw_period = str(request.args.get("period") or "week").strip().lower()
-    if raw_period == "half_year":
-        raw_period = "half-year"
-    if raw_period not in {"week", "month", "quarter", "half-year", "year"}:
-        return jsonify({"error": "period must be one of: week, month, quarter, half-year, year"}), 400
-    week_start_raw = str(request.args.get("week_start") or "").strip()
-    as_of_date_raw = str(request.args.get("as_of_date") or "").strip()
-    week_start = _parse_iso_date(week_start_raw or None)
-    as_of_date = _parse_iso_date(as_of_date_raw or None)
-    if week_start_raw and week_start is None:
-        return jsonify({"error": "week_start must be an ISO date"}), 400
-    if as_of_date_raw and as_of_date is None:
-        return jsonify({"error": "as_of_date must be an ISO date"}), 400
-    if week_start is not None and raw_period != "week":
-        return jsonify({"error": "week_start is only supported for period=week"}), 400
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    try:
-        progress = get_plan_progress(
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            mature_interval_days=MATURE_INTERVAL_DAYS,
-            period=raw_period,
-            week_start=week_start,
-            as_of_date=as_of_date,
-        )
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка расчёта аналитики плана: {exc}"}), 500
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="plan_analytics")
+    with db_acquire_scope("plan_analytics") as db_acquire_events:
+        user_id, _username, error = _get_authenticated_user_from_request_init_data()
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation(
+                "plan_analytics",
+                "plan_analytics_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="auth_error",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=status,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": error}), status
+        raw_period = str(request.args.get("period") or "week").strip().lower()
+        if raw_period == "half_year":
+            raw_period = "half-year"
+        if raw_period not in {"week", "month", "quarter", "half-year", "year"}:
+            _log_flow_observation(
+                "plan_analytics",
+                "plan_analytics_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                final_status="error",
+                error_code="invalid_period",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "period must be one of: week, month, quarter, half-year, year"}), 400
+        week_start_raw = str(request.args.get("week_start") or "").strip()
+        as_of_date_raw = str(request.args.get("as_of_date") or "").strip()
+        week_start = _parse_iso_date(week_start_raw or None)
+        as_of_date = _parse_iso_date(as_of_date_raw or None)
+        if week_start_raw and week_start is None:
+            _log_flow_observation(
+                "plan_analytics",
+                "plan_analytics_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                final_status="error",
+                error_code="invalid_week_start",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "week_start must be an ISO date"}), 400
+        if as_of_date_raw and as_of_date is None:
+            _log_flow_observation(
+                "plan_analytics",
+                "plan_analytics_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                final_status="error",
+                error_code="invalid_as_of_date",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "as_of_date must be an ISO date"}), 400
+        if week_start is not None and raw_period != "week":
+            _log_flow_observation(
+                "plan_analytics",
+                "plan_analytics_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                final_status="error",
+                error_code="invalid_week_start_period_combo",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "week_start is only supported for period=week"}), 400
 
-    return jsonify(
-        {
-            "ok": True,
-            "period": raw_period,
-            "language_pair": _build_language_pair_payload(source_lang, target_lang),
-            "range": {
-                "start_date": progress.get("start_date"),
-                "end_date": progress.get("end_date"),
-                "as_of_date": progress.get("as_of_date"),
-                "days_elapsed": int(progress.get("days_elapsed") or 1),
-                "days_total": int(progress.get("days_total") or 1),
-            },
-            "metrics": progress.get("metrics") or {},
-        }
-    )
+        try:
+            response_payload, cache_meta = _get_plan_analytics_response_cached(
+                user_id=int(user_id),
+                period=raw_period,
+                week_start=week_start,
+                as_of_date=as_of_date,
+            )
+        except Exception as exc:
+            _log_flow_observation(
+                "plan_analytics",
+                "plan_analytics_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                period=raw_period,
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=500,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": f"Ошибка расчёта аналитики плана: {exc}"}), 500
+
+        _log_flow_observation(
+            "plan_analytics",
+            "plan_analytics_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            period=raw_period,
+            cache_hit=bool(cache_meta.get("cache_hit")),
+            cache_tier=cache_meta.get("cache_tier"),
+            cache_state=cache_meta.get("cache_state"),
+            snapshot_age_ms=cache_meta.get("snapshot_age_ms"),
+            language_pair_lookup_duration_ms=cache_meta.get("language_pair_lookup_duration_ms"),
+            progress_duration_ms=cache_meta.get("progress_duration_ms"),
+            response_size_bytes=cache_meta.get("response_size_bytes") or _estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
 
 
 @app.route("/api/progress/skills/<string:skill_id>/practice/start", methods=["POST"])
@@ -20393,7 +24988,7 @@ def save_webapp_dictionary_entry():
                 response_json["translation_de"] = resolved_translation_de
             if resolved_translation_ru:
                 response_json["translation_ru"] = resolved_translation_ru
-        save_webapp_dictionary_query(
+        _save_dictionary_entry_with_schema_retry(
             user_id=user_id,
             word_ru=resolved_word_ru if resolved_word_ru else None,
             translation_de=resolved_translation_de,
@@ -20546,7 +25141,7 @@ def save_mobile_dictionary_entry():
             if resolved_translation_ru:
                 response_json["translation_ru"] = resolved_translation_ru
 
-        save_webapp_dictionary_query(
+        _save_dictionary_entry_with_schema_retry(
             user_id=user_id,
             word_ru=resolved_word_ru if resolved_word_ru else None,
             translation_de=resolved_translation_de,
@@ -20982,7 +25577,7 @@ def get_next_srs_card():
         if fsrs_limit_state.get("error"):
             return jsonify(fsrs_limit_state.get("error")), 429
         now_utc = datetime.now(timezone.utc)
-        with get_db_connection_context() as conn:
+        with db_acquire_scope("srs_next"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 payload_next = _build_next_srs_payload(
                     user_id=int(user_id),
@@ -21037,7 +25632,7 @@ def get_srs_prefetch_cards():
     now_utc = datetime.now(timezone.utc)
 
     try:
-        with get_db_connection_context() as conn:
+        with db_acquire_scope("srs_prefetch"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 queue_info = _compute_srs_queue_info(
                     user_id=int(user_id),
@@ -21155,7 +25750,7 @@ def review_srs_card():
     payload_next = None
 
     try:
-        with get_db_connection_context() as conn:
+        with db_acquire_scope("srs_review"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 card = get_dictionary_entry_for_user(user_id=user_id, card_id=card_id, cursor=cursor)
                 if not card:
@@ -21373,7 +25968,7 @@ def _fetch_flashcard_feel_entries_for_user(
 ) -> dict[int, dict]:
     if not entry_ids:
         return {}
-    with get_db_connection_context() as conn:
+    with db_acquire_scope("flashcard_feel_batch"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -22893,131 +27488,352 @@ def enrich_flashcard_entry():
     )
 
 
-@app.route("/api/webapp/youtube/transcript", methods=["POST"])
-def get_youtube_transcript():
-    payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
-    video_id = (payload.get("videoId") or "").strip()
-    request_lang = (payload.get("lang") or "").strip()
-    lang = _normalize_short_lang_code(request_lang, fallback="") if request_lang else None
-
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
-    if not video_id:
-        return jsonify({"error": "videoId обязателен"}), 400
-
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    if not lang:
-        lang = _normalize_short_lang_code(target_lang, fallback="de")
-    proxy_allowed = has_youtube_proxy_subtitles_access(int(user_id))
-    subtitle_target_lang = _normalize_short_lang_code(source_lang, fallback="ru")
-
+def _load_cached_youtube_transcript_data(video_id: str) -> tuple[dict | None, str | None, int]:
     now = time.time()
-
     cached = _yt_transcript_cache.get(video_id)
     if cached and now - cached.get("ts", 0) < _YT_CACHE_TTL:
-        data = cached.get("data") or {}
-        visible_translations = _extract_youtube_translations_for_target(
-            data.get("translations") or {},
-            subtitle_target_lang,
-        )
-        return jsonify(
-            {
-                "ok": True,
-                "items": data.get("items", []),
-                "language": data.get("language"),
-                "is_generated": data.get("is_generated"),
-                "translations": visible_translations,
-                "translation_lang": subtitle_target_lang,
-                "source": data.get("source"),
-                "cached": True,
-                "proxy_allowed": bool(proxy_allowed),
-            }
-        )
+        return (cached.get("data") or {}), "memory", 0
+
+    cached_db_started_perf = time.perf_counter()
     cached_db = None
     try:
         cached_db = get_youtube_transcript_cache(video_id)
     except Exception:
         cached_db = None
+    cached_db_duration_ms = _elapsed_ms_since(cached_db_started_perf)
     if cached_db and cached_db.get("items"):
         data = {
             "items": cached_db.get("items", []),
             "language": cached_db.get("language"),
             "is_generated": cached_db.get("is_generated"),
             "translations": cached_db.get("translations") or {},
+            "source": cached_db.get("source"),
         }
         _yt_transcript_cache[video_id] = {"ts": now, "data": data}
-        visible_translations = _extract_youtube_translations_for_target(
-            data.get("translations") or {},
-            subtitle_target_lang,
-        )
-        return jsonify(
-            {
-                "ok": True,
-                "items": data.get("items", []),
-                "language": data.get("language"),
-                "is_generated": data.get("is_generated"),
-                "translations": visible_translations,
-                "translation_lang": subtitle_target_lang,
-                "source": data.get("source"),
-                "cached_db": True,
-                "proxy_allowed": bool(proxy_allowed),
-            }
-        )
+        return data, "db_cache", cached_db_duration_ms
+    return None, None, cached_db_duration_ms
 
-    err = _yt_transcript_errors.get(video_id)
-    if err and now - err.get("ts", 0) < _YT_ERROR_TTL:
-        return jsonify({"error": err.get("error", "Субтитры временно недоступны")}), 429
 
-    try:
-        data = _fetch_youtube_transcript(video_id, lang=lang, allow_proxy=proxy_allowed)
-    except Exception as exc:
-        logging.warning("YouTube transcript error for %s: %s", video_id, exc)
-        _yt_transcript_errors[video_id] = {"ts": now, "error": str(exc)}
-        return jsonify({"error": f"Не удалось получить субтитры: {exc}"}), 404
-
-    _billing_log_event_safe(
-        user_id=int(user_id),
-        action_type="youtube_transcript_fetch",
-        provider="youtube_proxy",
-        units_type="requests",
-        units_value=1.0,
-        source_lang=source_lang,
-        target_lang=target_lang,
-        idempotency_seed=f"yt_fetch:{user_id}:{video_id}:{int(now)}",
-        status="estimated",
-        metadata={
-            "video_id": video_id,
-            "requested_lang": lang,
-            "detected_language": data.get("language"),
-            "source": data.get("source"),
-            "proxy_allowed": bool(proxy_allowed),
-        },
+def _build_youtube_transcript_response_payload(
+    data: dict,
+    *,
+    subtitle_target_lang: str,
+    proxy_allowed: bool,
+    cache_tier: str | None = None,
+) -> dict:
+    visible_translations = _extract_youtube_translations_for_target(
+        data.get("translations") or {},
+        subtitle_target_lang,
     )
+    response_payload = {
+        "ok": True,
+        "status": "ready",
+        "items": data.get("items", []),
+        "language": data.get("language"),
+        "is_generated": data.get("is_generated"),
+        "translations": visible_translations,
+        "translation_lang": subtitle_target_lang,
+        "source": data.get("source"),
+        "proxy_allowed": bool(proxy_allowed),
+    }
+    if cache_tier == "memory":
+        response_payload["cached"] = True
+    elif cache_tier == "db_cache":
+        response_payload["cached_db"] = True
+    return response_payload
 
-    try:
-        upsert_youtube_transcript_cache(
-            video_id,
-            data.get("items", []),
-            data.get("language"),
-            data.get("is_generated"),
-            data.get("translations"),
+
+def _validate_youtube_transcript_request(
+    payload: dict,
+    *,
+    started_perf: float,
+    request_id: str,
+    correlation_id: str,
+    flow_name: str,
+    db_acquire_events: list | None = None,
+):
+    init_data = payload.get("initData")
+    video_id = (payload.get("videoId") or "").strip()
+    request_lang = (payload.get("lang") or "").strip()
+    lang = _normalize_short_lang_code(request_lang, fallback="") if request_lang else None
+
+    obs_kwargs = summarize_db_acquire_events(db_acquire_events) if db_acquire_events is not None else {}
+    if not init_data:
+        _log_flow_observation(
+            flow_name,
+            f"{flow_name}_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="missing_init_data",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+            **obs_kwargs,
         )
-    except Exception:
-        pass
-    _yt_transcript_cache[video_id] = {"ts": now, "data": data}
+        return None, jsonify({"error": "initData обязателен"}), 400
+    if not video_id:
+        _log_flow_observation(
+            flow_name,
+            f"{flow_name}_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="missing_video_id",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+            **obs_kwargs,
+        )
+        return None, jsonify({"error": "videoId обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        _log_flow_observation(
+            flow_name,
+            f"{flow_name}_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            video_id=video_id,
+            final_status="error",
+            error_code="invalid_init_data",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=401,
+            **obs_kwargs,
+        )
+        return None, jsonify({"error": "initData не прошёл проверку"}), 401
 
-    return jsonify(
-        {
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        _log_flow_observation(
+            flow_name,
+            f"{flow_name}_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            video_id=video_id,
+            final_status="error",
+            error_code="missing_user_id",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+            **obs_kwargs,
+        )
+        return None, jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    language_pair_started_perf = time.perf_counter()
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+    if not lang:
+        lang = _normalize_short_lang_code(target_lang, fallback="de")
+    proxy_started_perf = time.perf_counter()
+    proxy_allowed = has_youtube_proxy_subtitles_access(int(user_id))
+    proxy_lookup_duration_ms = _elapsed_ms_since(proxy_started_perf)
+    subtitle_target_lang = _normalize_short_lang_code(source_lang, fallback="ru")
+    return {
+        "user_id": int(user_id),
+        "video_id": video_id,
+        "lang": lang,
+        "subtitle_target_lang": subtitle_target_lang,
+        "proxy_allowed": bool(proxy_allowed),
+        "language_pair_duration_ms": language_pair_duration_ms,
+        "proxy_lookup_duration_ms": proxy_lookup_duration_ms,
+    }, None, None
+
+
+@app.route("/api/webapp/youtube/transcript", methods=["POST"])
+def get_youtube_transcript():
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="youtube_transcript")
+    with db_acquire_scope("youtube_transcript") as db_acquire_events:
+        payload = request.get_json(silent=True) or {}
+        validated, error_response, error_status = _validate_youtube_transcript_request(
+            payload,
+            started_perf=started_perf,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            flow_name="youtube_transcript",
+            db_acquire_events=db_acquire_events,
+        )
+        if validated is None:
+            return error_response, error_status
+        user_id = validated["user_id"]
+        video_id = validated["video_id"]
+        lang = validated["lang"]
+        subtitle_target_lang = validated["subtitle_target_lang"]
+        proxy_allowed = validated["proxy_allowed"]
+        language_pair_duration_ms = validated["language_pair_duration_ms"]
+        proxy_lookup_duration_ms = validated["proxy_lookup_duration_ms"]
+
+        data, cache_tier, cached_db_duration_ms = _load_cached_youtube_transcript_data(video_id)
+        if data:
+            response_payload = _build_youtube_transcript_response_payload(
+                data,
+                subtitle_target_lang=subtitle_target_lang,
+                proxy_allowed=proxy_allowed,
+                cache_tier=cache_tier,
+            )
+            _log_flow_observation(
+                "youtube_transcript",
+                "youtube_transcript_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id,
+                video_id=video_id,
+                requested_lang=lang,
+                subtitle_target_lang=subtitle_target_lang,
+                proxy_allowed=bool(proxy_allowed),
+                cache_hit=True,
+                cache_tier=cache_tier,
+                item_count=len(response_payload["items"] or []),
+                source=data.get("source"),
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                proxy_lookup_duration_ms=proxy_lookup_duration_ms,
+                cached_db_duration_ms=cached_db_duration_ms,
+                response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+                final_status="success",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(response_payload)
+
+        now = time.time()
+        err = _yt_transcript_errors.get(video_id)
+        if err and now - err.get("ts", 0) < _YT_ERROR_TTL:
+            error_message = _format_youtube_transcript_user_error(err.get("error"))
+            _log_flow_observation(
+                "youtube_transcript",
+                "youtube_transcript_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                video_id=video_id,
+                requested_lang=lang,
+                subtitle_target_lang=subtitle_target_lang,
+                proxy_allowed=bool(proxy_allowed),
+                cache_hit=False,
+                cache_tier="error_ttl",
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                proxy_lookup_duration_ms=proxy_lookup_duration_ms,
+                cached_db_duration_ms=cached_db_duration_ms,
+                final_status="error",
+                error_code="cached_error_ttl",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=429,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": error_message}), 429
+
+        if is_youtube_transcript_async_enabled():
+            job_status = get_youtube_transcript_job_status(video_id, lang)
+            current_job_status = str((job_status or {}).get("status") or "").strip().lower()
+            if current_job_status == "failed":
+                logging.info(
+                    "youtube_transcript_requeue_after_failed_job video_id=%s lang=%s",
+                    video_id,
+                    lang,
+                )
+                job_status = None
+                current_job_status = ""
+            if not job_status or current_job_status not in {"pending", "running"}:
+                try:
+                    job_status = enqueue_youtube_transcript_job(video_id, lang, allow_proxy=proxy_allowed)
+                except Exception as exc:
+                    logging.exception("youtube_transcript_enqueue_failed video_id=%s lang=%s", video_id, lang)
+                    return jsonify({"error": f"Не удалось поставить получение субтитров в очередь: {exc}"}), 500
+            response_payload = {
+                "ok": True,
+                "status": str(job_status.get("status") or "pending"),
+                "video_id": video_id,
+                "requested_lang": lang,
+                "proxy_allowed": bool(proxy_allowed),
+                "job_id": job_status.get("job_id"),
+            }
+            _log_flow_observation(
+                "youtube_transcript",
+                "youtube_transcript_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id,
+                video_id=video_id,
+                requested_lang=lang,
+                subtitle_target_lang=subtitle_target_lang,
+                proxy_allowed=bool(proxy_allowed),
+                cache_hit=False,
+                cache_tier="job_queue",
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                proxy_lookup_duration_ms=proxy_lookup_duration_ms,
+                cached_db_duration_ms=cached_db_duration_ms,
+                final_status=str(job_status.get("status") or "pending"),
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=202,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(response_payload), 202
+
+        fetch_started_perf = time.perf_counter()
+        try:
+            data = _fetch_youtube_transcript(video_id, lang=lang, allow_proxy=proxy_allowed)
+        except Exception as exc:
+            logging.warning("YouTube transcript error for %s: %s", video_id, exc)
+            _yt_transcript_errors[video_id] = {"ts": now, "error": str(exc)}
+            error_message = _format_youtube_transcript_user_error(exc)
+            _log_flow_observation(
+                "youtube_transcript",
+                "youtube_transcript_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                video_id=video_id,
+                requested_lang=lang,
+                subtitle_target_lang=subtitle_target_lang,
+                proxy_allowed=bool(proxy_allowed),
+                cache_hit=False,
+                cache_tier="miss",
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                proxy_lookup_duration_ms=proxy_lookup_duration_ms,
+                cached_db_duration_ms=cached_db_duration_ms,
+                fetch_duration_ms=_elapsed_ms_since(fetch_started_perf),
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=404,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": error_message}), 404
+        fetch_duration_ms = _elapsed_ms_since(fetch_started_perf)
+
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="youtube_transcript_fetch",
+            provider="youtube_proxy",
+            units_type="requests",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"yt_fetch:{user_id}:{video_id}:{int(now)}",
+            status="estimated",
+            metadata={
+                "video_id": video_id,
+                "requested_lang": lang,
+                "detected_language": data.get("language"),
+                "source": data.get("source"),
+                "proxy_allowed": bool(proxy_allowed),
+            },
+        )
+
+        persist_started_perf = time.perf_counter()
+        try:
+            upsert_youtube_transcript_cache(
+                video_id,
+                data.get("items", []),
+                data.get("language"),
+                data.get("is_generated"),
+                data.get("translations"),
+            )
+        except Exception:
+            pass
+        persist_duration_ms = _elapsed_ms_since(persist_started_perf)
+        _yt_transcript_cache[video_id] = {"ts": now, "data": data}
+        response_payload = {
             "ok": True,
             "items": data.get("items", []),
             "language": data.get("language"),
@@ -23030,53 +27846,322 @@ def get_youtube_transcript():
             "source": data.get("source"),
             "proxy_allowed": bool(proxy_allowed),
         }
+        _log_flow_observation(
+            "youtube_transcript",
+            "youtube_transcript_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            video_id=video_id,
+            requested_lang=lang,
+            subtitle_target_lang=subtitle_target_lang,
+            proxy_allowed=bool(proxy_allowed),
+            cache_hit=False,
+            cache_tier="miss",
+            item_count=len(response_payload["items"] or []),
+            source=data.get("source"),
+            language_pair_lookup_duration_ms=language_pair_duration_ms,
+            proxy_lookup_duration_ms=proxy_lookup_duration_ms,
+            cached_db_duration_ms=cached_db_duration_ms,
+            fetch_duration_ms=fetch_duration_ms,
+            persist_duration_ms=persist_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
+
+
+@app.route("/api/webapp/youtube/transcript/status", methods=["POST"])
+def get_youtube_transcript_status():
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="youtube_transcript_status")
+    payload = request.get_json(silent=True) or {}
+    validated, error_response, error_status = _validate_youtube_transcript_request(
+        payload,
+        started_perf=started_perf,
+        request_id=request_id,
+        correlation_id=correlation_id,
+        flow_name="youtube_transcript_status",
+        db_acquire_events=None,
     )
+    if validated is None:
+        return error_response, error_status
+    user_id = validated["user_id"]
+    video_id = validated["video_id"]
+    lang = validated["lang"]
+    subtitle_target_lang = validated["subtitle_target_lang"]
+    proxy_allowed = validated["proxy_allowed"]
+    language_pair_duration_ms = validated["language_pair_duration_ms"]
+    proxy_lookup_duration_ms = validated["proxy_lookup_duration_ms"]
+
+    data, cache_tier, cached_db_duration_ms = _load_cached_youtube_transcript_data(video_id)
+    if data:
+        response_payload = _build_youtube_transcript_response_payload(
+            data,
+            subtitle_target_lang=subtitle_target_lang,
+            proxy_allowed=proxy_allowed,
+            cache_tier=cache_tier,
+        )
+        _log_flow_observation(
+            "youtube_transcript_status",
+            "youtube_transcript_status_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id,
+            video_id=video_id,
+            requested_lang=lang,
+            subtitle_target_lang=subtitle_target_lang,
+            proxy_allowed=bool(proxy_allowed),
+            cache_hit=True,
+            cache_tier=cache_tier,
+            item_count=len(response_payload["items"] or []),
+            source=data.get("source"),
+            language_pair_lookup_duration_ms=language_pair_duration_ms,
+            proxy_lookup_duration_ms=proxy_lookup_duration_ms,
+            cached_db_duration_ms=cached_db_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+        )
+        return jsonify(response_payload)
+
+    job_status = get_youtube_transcript_job_status(video_id, lang) or {}
+    status = str(job_status.get("status") or "missing")
+    response_payload = {
+        "ok": status in {"pending", "running", "ready"},
+        "status": status,
+        "video_id": video_id,
+        "requested_lang": lang,
+        "job_id": job_status.get("job_id"),
+    }
+    if status == "failed":
+        response_payload["error"] = _format_youtube_transcript_user_error(job_status.get("error"))
+        _log_flow_observation(
+            "youtube_transcript_status",
+            "youtube_transcript_status_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=user_id,
+            video_id=video_id,
+            requested_lang=lang,
+            subtitle_target_lang=subtitle_target_lang,
+            proxy_allowed=bool(proxy_allowed),
+            cache_hit=False,
+            cache_tier="job_queue",
+            language_pair_lookup_duration_ms=language_pair_duration_ms,
+            proxy_lookup_duration_ms=proxy_lookup_duration_ms,
+            cached_db_duration_ms=cached_db_duration_ms,
+            final_status="error",
+            error_code="job_failed",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=503,
+        )
+        return jsonify(response_payload), 503
+
+    http_status = 202 if status in {"pending", "running"} else 404
+    _log_flow_observation(
+        "youtube_transcript_status",
+        "youtube_transcript_status_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=user_id,
+        video_id=video_id,
+        requested_lang=lang,
+        subtitle_target_lang=subtitle_target_lang,
+        proxy_allowed=bool(proxy_allowed),
+        cache_hit=False,
+        cache_tier="job_queue",
+        language_pair_lookup_duration_ms=language_pair_duration_ms,
+        proxy_lookup_duration_ms=proxy_lookup_duration_ms,
+        cached_db_duration_ms=cached_db_duration_ms,
+        final_status=status,
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=http_status,
+    )
+    return jsonify(response_payload), http_status
 
 
 @app.route("/api/webapp/youtube/state", methods=["POST"])
 def youtube_watch_state():
-    payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
-    video_id = str(payload.get("videoId") or "").strip()
-    input_text = str(payload.get("input") or "").strip()
-    current_time_seconds = payload.get("current_time_seconds")
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="youtube_state")
+    with db_acquire_scope("youtube_state") as db_acquire_events:
+        payload = request.get_json(silent=True) or {}
+        init_data = payload.get("initData")
+        video_id = str(payload.get("videoId") or "").strip()
+        input_text = str(payload.get("input") or "").strip()
+        current_time_seconds = payload.get("current_time_seconds")
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
+        if not init_data:
+            _log_flow_observation(
+                "youtube_state",
+                "youtube_state_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="missing_init_data",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "initData обязателен"}), 400
+        if not _telegram_hash_is_valid(init_data):
+            _log_flow_observation(
+                "youtube_state",
+                "youtube_state_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                video_id=video_id,
+                final_status="error",
+                error_code="invalid_init_data",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=401,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "initData не прошёл проверку"}), 401
 
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-    user_id_int = int(user_id)
+        parsed = _parse_telegram_init_data(init_data)
+        user_data = parsed.get("user") or {}
+        user_id = user_data.get("id")
+        if not user_id:
+            _log_flow_observation(
+                "youtube_state",
+                "youtube_state_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                video_id=video_id,
+                final_status="error",
+                error_code="missing_user_id",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "user_id отсутствует в initData"}), 400
+        user_id_int = int(user_id)
 
-    if current_time_seconds is None:
+        if current_time_seconds is None:
+            load_started_perf = time.perf_counter()
+            try:
+                state = get_youtube_watch_state(user_id_int, video_id) if video_id else get_latest_youtube_watch_state(user_id_int)
+            except Exception as exc:
+                _log_flow_observation(
+                    "youtube_state",
+                    "youtube_state_completed",
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    user_id=user_id_int,
+                    video_id=video_id,
+                    mode="load",
+                    lookup_duration_ms=_elapsed_ms_since(load_started_perf),
+                    final_status="error",
+                    error_code=exc.__class__.__name__,
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    http_status=500,
+                    **summarize_db_acquire_events(db_acquire_events),
+                )
+                return jsonify({"error": f"Ошибка загрузки прогресса YouTube: {exc}"}), 500
+            response_payload = {"ok": True, "state": state}
+            _log_flow_observation(
+                "youtube_state",
+                "youtube_state_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id_int,
+                video_id=video_id,
+                mode="load",
+                lookup_duration_ms=_elapsed_ms_since(load_started_perf),
+                response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+                final_status="success",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(response_payload)
+
+        if not video_id:
+            _log_flow_observation(
+                "youtube_state",
+                "youtube_state_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id_int,
+                mode="save",
+                final_status="error",
+                error_code="missing_video_id",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "videoId обязателен"}), 400
         try:
-            state = get_youtube_watch_state(user_id_int, video_id) if video_id else get_latest_youtube_watch_state(user_id_int)
+            safe_seconds = max(0, int(float(current_time_seconds or 0)))
+        except Exception:
+            _log_flow_observation(
+                "youtube_state",
+                "youtube_state_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id_int,
+                video_id=video_id,
+                mode="save",
+                final_status="error",
+                error_code="invalid_current_time_seconds",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "current_time_seconds должен быть числом"}), 400
+
+        save_started_perf = time.perf_counter()
+        try:
+            state = upsert_youtube_watch_state(
+                user_id=user_id_int,
+                video_id=video_id,
+                current_time_seconds=safe_seconds,
+                input_text=input_text or None,
+            )
         except Exception as exc:
-            return jsonify({"error": f"Ошибка загрузки прогресса YouTube: {exc}"}), 500
-        return jsonify({"ok": True, "state": state})
-
-    if not video_id:
-        return jsonify({"error": "videoId обязателен"}), 400
-    try:
-        safe_seconds = max(0, int(float(current_time_seconds or 0)))
-    except Exception:
-        return jsonify({"error": "current_time_seconds должен быть числом"}), 400
-
-    try:
-        state = upsert_youtube_watch_state(
+            _log_flow_observation(
+                "youtube_state",
+                "youtube_state_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id_int,
+                video_id=video_id,
+                mode="save",
+                current_time_seconds=safe_seconds,
+                save_duration_ms=_elapsed_ms_since(save_started_perf),
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=500,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": f"Ошибка сохранения прогресса YouTube: {exc}"}), 500
+        response_payload = {"ok": True, "state": state}
+        _log_flow_observation(
+            "youtube_state",
+            "youtube_state_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
             user_id=user_id_int,
             video_id=video_id,
+            mode="save",
             current_time_seconds=safe_seconds,
-            input_text=input_text or None,
+            save_duration_ms=_elapsed_ms_since(save_started_perf),
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
         )
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка сохранения прогресса YouTube: {exc}"}), 500
-    return jsonify({"ok": True, "state": state})
+        return jsonify(response_payload)
 
 
 @app.route("/api/webapp/translation/drafts", methods=["POST"])
@@ -23212,24 +28297,60 @@ def translation_draft_state():
 
 @app.route("/api/webapp/youtube/catalog", methods=["POST"])
 def get_youtube_catalog():
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="youtube_catalog")
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     limit = int(payload.get("limit", 60))
 
     if not init_data:
+        _log_flow_observation(
+            "youtube_catalog",
+            "youtube_catalog_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="missing_init_data",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "initData обязателен"}), 400
     if not _telegram_hash_is_valid(init_data):
+        _log_flow_observation(
+            "youtube_catalog",
+            "youtube_catalog_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="invalid_init_data",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=401,
+        )
         return jsonify({"error": "initData не прошёл проверку"}), 401
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
     if not user_id:
+        _log_flow_observation(
+            "youtube_catalog",
+            "youtube_catalog_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="missing_user_id",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    language_pair_started_perf = time.perf_counter()
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     learning_code = _normalize_short_lang_code(target_lang, fallback="de")
+    language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
 
+    query_started_perf = time.perf_counter()
     try:
-        with get_db_connection_context() as conn:
+        with db_acquire_scope("youtube_catalog"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
@@ -23246,9 +28367,25 @@ def get_youtube_catalog():
                 )
                 rows = cursor.fetchall()
     except Exception as exc:
+        _log_flow_observation(
+            "youtube_catalog",
+            "youtube_catalog_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            limit=limit,
+            language_pair_lookup_duration_ms=language_pair_duration_ms,
+            query_duration_ms=_elapsed_ms_since(query_started_perf),
+            final_status="error",
+            error_code=exc.__class__.__name__,
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=500,
+        )
         return jsonify({"error": f"Ошибка каталога: {exc}"}), 500
+    query_duration_ms = _elapsed_ms_since(query_started_perf)
 
     items = []
+    oembed_started_perf = time.perf_counter()
     for video_id, language, is_generated, updated_at, items_count in rows:
         language_code = _normalize_short_lang_code(language, fallback="")
         if learning_code and language_code and language_code != learning_code:
@@ -23271,13 +28408,33 @@ def get_youtube_catalog():
                 "updated_at": updated_at.isoformat() if updated_at else None,
             }
         )
-
-    return jsonify({"ok": True, "items": items})
+    oembed_duration_ms = _elapsed_ms_since(oembed_started_perf)
+    response_payload = {"ok": True, "items": items}
+    _log_flow_observation(
+        "youtube_catalog",
+        "youtube_catalog_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        limit=limit,
+        items_count=len(items or []),
+        language_pair_lookup_duration_ms=language_pair_duration_ms,
+        query_duration_ms=query_duration_ms,
+        oembed_duration_ms=oembed_duration_ms,
+        response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+        final_status="success",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+    )
+    return jsonify(response_payload)
 
 
 @app.route("/api/webapp/youtube/search", methods=["POST"])
 def search_youtube_videos():
+    started_perf = time.perf_counter()
     payload = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload)
+    correlation_id = _build_observability_correlation_id(payload=payload, prefix="youtube_search")
     init_data = payload.get("initData")
     query = str(payload.get("query") or "").strip()
     limit_raw = payload.get("limit", 8)
@@ -23301,38 +28458,78 @@ def search_youtube_videos():
         limit = 8
     limit = max(1, min(limit, 12))
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    videos = _youtube_search_videos(
-        query,
-        max_results=limit,
-        target_lang=target_lang,
-        billing_user_id=int(user_id),
-        billing_source_lang=source_lang,
-        billing_target_lang=target_lang,
-    )
-    videos = _youtube_fill_view_counts(
-        videos,
-        billing_user_id=int(user_id),
-        billing_source_lang=source_lang,
-        billing_target_lang=target_lang,
-    )
-
-    items = []
-    for row in videos[:limit]:
-        video_id = str(row.get("video_id") or "").strip()
-        if not video_id:
-            continue
-        items.append(
-            {
-                "video_id": video_id,
-                "title": str(row.get("title") or "").strip() or video_id,
-                "video_url": f"https://www.youtube.com/watch?v={video_id}",
-                "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
-                "views": int(row.get("views") or 0),
-            }
+    try:
+        language_pair_started_perf = time.perf_counter()
+        source_lang, target_lang, _profile, language_pair_lookup_mode = _get_user_language_pair_for_webapp_request(
+            int(user_id),
+            payload=payload,
         )
+        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+        search_started_at = time.perf_counter()
+        videos, provider_name = _youtube_search_videos_manual(
+            query,
+            max_results=limit,
+            target_lang=target_lang,
+        )
+        search_duration_ms = _elapsed_ms_since(search_started_at)
+        lookup_started_at = time.perf_counter()
+        videos = [dict(item) for item in (videos or [])]
+        lookup_duration_ms = _elapsed_ms_since(lookup_started_at)
 
-    return jsonify({"ok": True, "items": items})
+        items = []
+        for row in videos[:limit]:
+            video_id = str(row.get("video_id") or "").strip()
+            if not video_id:
+                continue
+            items.append(
+                {
+                    "video_id": video_id,
+                    "title": str(row.get("title") or "").strip() or video_id,
+                    "video_url": f"https://www.youtube.com/watch?v={video_id}",
+                    "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                    "views": int(row.get("views") or 0),
+                }
+            )
+
+        response_payload = {"ok": True, "items": items}
+        _log_flow_observation(
+            "youtube_search",
+            "youtube_search_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            query_length=len(query),
+            limit=limit,
+            provider=provider_name,
+            language_pair_lookup_mode=language_pair_lookup_mode,
+            language_pair_duration_ms=language_pair_duration_ms,
+            search_duration_ms=search_duration_ms,
+            videos_lookup_duration_ms=lookup_duration_ms,
+            items_count=len(items),
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+        )
+        return jsonify(response_payload)
+    except Exception as exc:
+        _log_flow_observation(
+            "youtube_search",
+            "youtube_search_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            query_length=len(query),
+            limit=limit,
+            provider="youtube_manual_search",
+            language_pair_lookup_mode="error_before_resolution",
+            final_status="error",
+            error_code=exc.__class__.__name__,
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=500,
+        )
+        logging.exception("youtube_search_failed query=%r user_id=%s", query, user_id)
+        return jsonify({"error": "Ошибка поиска YouTube. Попробуйте ещё раз."}), 500
 
 
 @app.route("/api/webapp/youtube/manual", methods=["POST"])
@@ -23395,123 +28592,271 @@ def save_manual_youtube_transcript():
 
 @app.route("/api/webapp/youtube/translate", methods=["POST"])
 def translate_youtube_subtitles():
-    payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
-    video_id = (payload.get("videoId") or "").strip()
-    start_index = payload.get("start_index")
-    lines = payload.get("lines") or []
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="youtube_translate")
+    with db_acquire_scope("youtube_translate") as db_acquire_events:
+        payload = request.get_json(silent=True) or {}
+        init_data = payload.get("initData")
+        video_id = (payload.get("videoId") or "").strip()
+        start_index = payload.get("start_index")
+        lines = payload.get("lines") or []
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
-    if not video_id:
-        return jsonify({"error": "videoId обязателен"}), 400
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-    if not isinstance(lines, list):
-        return jsonify({"error": "lines должен быть массивом"}), 400
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    subtitle_target_lang = _normalize_short_lang_code(source_lang, fallback="ru")
+        if not init_data:
+            _log_flow_observation(
+                "youtube_translate",
+                "youtube_translate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="missing_init_data",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "initData обязателен"}), 400
+        if not video_id:
+            _log_flow_observation(
+                "youtube_translate",
+                "youtube_translate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="missing_video_id",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "videoId обязателен"}), 400
+        if not _telegram_hash_is_valid(init_data):
+            _log_flow_observation(
+                "youtube_translate",
+                "youtube_translate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                video_id=video_id,
+                final_status="error",
+                error_code="invalid_init_data",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=401,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "initData не прошёл проверку"}), 401
+        if not isinstance(lines, list):
+            _log_flow_observation(
+                "youtube_translate",
+                "youtube_translate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                video_id=video_id,
+                final_status="error",
+                error_code="invalid_lines",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "lines должен быть массивом"}), 400
+        parsed = _parse_telegram_init_data(init_data)
+        user_data = parsed.get("user") or {}
+        user_id = user_data.get("id")
+        if not user_id:
+            _log_flow_observation(
+                "youtube_translate",
+                "youtube_translate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                video_id=video_id,
+                final_status="error",
+                error_code="missing_user_id",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "user_id отсутствует в initData"}), 400
+        language_pair_started_perf = time.perf_counter()
+        source_lang, target_lang, _profile, language_pair_lookup_mode = _get_user_language_pair_for_webapp_request(
+            int(user_id),
+            payload=payload,
+        )
+        subtitle_target_lang = _normalize_short_lang_code(source_lang, fallback="ru")
+        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
 
-    try:
-        start_index = int(start_index) if start_index is not None else 0
-    except Exception:
-        start_index = 0
+        try:
+            start_index = int(start_index) if start_index is not None else 0
+        except Exception:
+            start_index = 0
 
-    lines = [str(line) for line in lines][:50]
-    if not lines:
-        return jsonify({"ok": True, "translations": []})
+        lines = [str(line) for line in lines][:50]
+        if not lines:
+            response_payload = {"ok": True, "translations": []}
+            _log_flow_observation(
+                "youtube_translate",
+                "youtube_translate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                video_id=video_id,
+                start_index=start_index,
+                requested_lines_count=0,
+                target_subtitle_lang=subtitle_target_lang,
+                language_pair_lookup_mode=language_pair_lookup_mode,
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                cache_hit=True,
+                cache_tier="empty",
+                final_status="success",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(response_payload)
 
-    translations_map = {}
-    try:
-        cached_db = get_youtube_transcript_cache(video_id) or {}
-        translations_map = cached_db.get("translations") or {}
-    except Exception:
+        cache_read_started_perf = time.perf_counter()
         translations_map = {}
-
-    results = []
-    missing_lines = []
-    missing_indices = []
-    for offset, line in enumerate(lines):
-        line_clean = str(line).strip()
-        idx_int = start_index + offset
-        idx = str(idx_int)
-        lang_key = _youtube_translation_key(subtitle_target_lang, idx)
-        cached = translations_map.get(lang_key)
-        if cached is None and subtitle_target_lang == "ru":
-            cached = translations_map.get(idx)
-        if cached:
-            results.append(cached)
-        elif not line_clean:
-            results.append("")
-        else:
-            results.append("")
-            missing_lines.append(line_clean)
-            missing_indices.append(idx_int)
-
-    if missing_lines:
-        detected_source_lang = "de"
         try:
             cached_db = get_youtube_transcript_cache(video_id) or {}
-            detected_source_lang = _normalize_short_lang_code(cached_db.get("language"), fallback="de")
+            translations_map = cached_db.get("translations") or {}
         except Exception:
-            detected_source_lang = "de"
-        try:
-            if subtitle_target_lang == "ru" and detected_source_lang == "de":
-                translated = asyncio.run(run_translate_subtitles_ru(missing_lines))
-            else:
-                translated = asyncio.run(
-                    run_translate_subtitles_multilang(
-                        lines=missing_lines,
-                        source_lang=detected_source_lang,
-                        target_lang=subtitle_target_lang,
-                    )
-                )
-        except Exception as exc:
-            return jsonify({"error": f"translation error: {exc}"}), 500
-        usage_subtitles = get_last_llm_usage(reset=True)
-        _billing_log_openai_usage(
-            user_id=int(user_id),
-            action_type="youtube_subtitles_translate",
-            source_lang=source_lang,
-            target_lang=target_lang,
-            usage=usage_subtitles,
-            seed=f"yt_subtitles:{user_id}:{video_id}:{start_index}:{len(missing_lines)}:{time.time_ns()}",
-            metadata={
-                "video_id": video_id,
-                "source_subtitle_lang": detected_source_lang,
-                "target_subtitle_lang": subtitle_target_lang,
-                "lines_count": len(missing_lines),
-            },
-        )
-        update_map = {}
-        for idx_int, text in zip(missing_indices, translated):
-            idx = str(idx_int)
-            update_map[_youtube_translation_key(subtitle_target_lang, idx)] = text
-            if subtitle_target_lang == "ru":
-                update_map[idx] = text
-        translations_map.update(update_map)
-        try:
-            upsert_youtube_translations(video_id, update_map)
-        except Exception:
-            pass
-        for idx_int in missing_indices:
-            pos = idx_int - start_index
-            idx = str(idx_int)
-            if 0 <= pos < len(results):
-                results[pos] = update_map.get(
-                    _youtube_translation_key(subtitle_target_lang, idx),
-                    "",
-                )
-        cached = _yt_transcript_cache.get(video_id)
-        if cached and cached.get("data"):
-            cached["data"]["translations"] = translations_map
+            translations_map = {}
+        cache_read_duration_ms = _elapsed_ms_since(cache_read_started_perf)
 
-    return jsonify({"ok": True, "translations": results, "translation_lang": subtitle_target_lang})
+        results = []
+        missing_lines = []
+        missing_indices = []
+        cached_hits = 0
+        for offset, line in enumerate(lines):
+            line_clean = str(line).strip()
+            idx_int = start_index + offset
+            idx = str(idx_int)
+            lang_key = _youtube_translation_key(subtitle_target_lang, idx)
+            cached = translations_map.get(lang_key)
+            if cached is None and subtitle_target_lang == "ru":
+                cached = translations_map.get(idx)
+            if cached:
+                cached_hits += 1
+                results.append(cached)
+            elif not line_clean:
+                results.append("")
+            else:
+                results.append("")
+                missing_lines.append(line_clean)
+                missing_indices.append(idx_int)
+
+        llm_translate_duration_ms = 0
+        persist_duration_ms = 0
+        if missing_lines:
+            detected_source_lang = "de"
+            try:
+                cached_db = get_youtube_transcript_cache(video_id) or {}
+                detected_source_lang = _normalize_short_lang_code(cached_db.get("language"), fallback="de")
+            except Exception:
+                detected_source_lang = "de"
+            llm_started_perf = time.perf_counter()
+            try:
+                if subtitle_target_lang == "ru" and detected_source_lang == "de":
+                    translated = asyncio.run(run_translate_subtitles_ru(missing_lines))
+                else:
+                    translated = asyncio.run(
+                        run_translate_subtitles_multilang(
+                            lines=missing_lines,
+                            source_lang=detected_source_lang,
+                            target_lang=subtitle_target_lang,
+                        )
+                    )
+            except Exception as exc:
+                _log_flow_observation(
+                    "youtube_translate",
+                    "youtube_translate_completed",
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    user_id=int(user_id),
+                    video_id=video_id,
+                    start_index=start_index,
+                    requested_lines_count=len(lines),
+                    missing_lines_count=len(missing_lines),
+                    cached_hits=cached_hits,
+                    target_subtitle_lang=subtitle_target_lang,
+                    source_subtitle_lang=detected_source_lang,
+                    language_pair_lookup_mode=language_pair_lookup_mode,
+                    language_pair_lookup_duration_ms=language_pair_duration_ms,
+                    cache_read_duration_ms=cache_read_duration_ms,
+                    llm_translate_duration_ms=_elapsed_ms_since(llm_started_perf),
+                    cache_hit=False,
+                    cache_tier="miss",
+                    final_status="error",
+                    error_code=exc.__class__.__name__,
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    http_status=500,
+                    **summarize_db_acquire_events(db_acquire_events),
+                )
+                return jsonify({"error": f"translation error: {exc}"}), 500
+            llm_translate_duration_ms = _elapsed_ms_since(llm_started_perf)
+            usage_subtitles = get_last_llm_usage(reset=True)
+            _billing_log_openai_usage(
+                user_id=int(user_id),
+                action_type="youtube_subtitles_translate",
+                source_lang=source_lang,
+                target_lang=target_lang,
+                usage=usage_subtitles,
+                seed=f"yt_subtitles:{user_id}:{video_id}:{start_index}:{len(missing_lines)}:{time.time_ns()}",
+                metadata={
+                    "video_id": video_id,
+                    "source_subtitle_lang": detected_source_lang,
+                    "target_subtitle_lang": subtitle_target_lang,
+                    "lines_count": len(missing_lines),
+                },
+            )
+            update_map = {}
+            for idx_int, text in zip(missing_indices, translated):
+                idx = str(idx_int)
+                update_map[_youtube_translation_key(subtitle_target_lang, idx)] = text
+                if subtitle_target_lang == "ru":
+                    update_map[idx] = text
+            translations_map.update(update_map)
+            persist_started_perf = time.perf_counter()
+            try:
+                upsert_youtube_translations(video_id, update_map)
+            except Exception:
+                pass
+            persist_duration_ms = _elapsed_ms_since(persist_started_perf)
+            for idx_int in missing_indices:
+                pos = idx_int - start_index
+                idx = str(idx_int)
+                if 0 <= pos < len(results):
+                    results[pos] = update_map.get(
+                        _youtube_translation_key(subtitle_target_lang, idx),
+                        "",
+                    )
+            cached = _yt_transcript_cache.get(video_id)
+            if cached and cached.get("data"):
+                cached["data"]["translations"] = translations_map
+
+        response_payload = {"ok": True, "translations": results, "translation_lang": subtitle_target_lang}
+        _log_flow_observation(
+            "youtube_translate",
+            "youtube_translate_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            video_id=video_id,
+            start_index=start_index,
+            requested_lines_count=len(lines),
+            missing_lines_count=len(missing_lines),
+            cached_hits=cached_hits,
+            target_subtitle_lang=subtitle_target_lang,
+            language_pair_lookup_mode=language_pair_lookup_mode,
+            language_pair_lookup_duration_ms=language_pair_duration_ms,
+            cache_read_duration_ms=cache_read_duration_ms,
+            llm_translate_duration_ms=llm_translate_duration_ms,
+            persist_duration_ms=persist_duration_ms,
+            cache_hit=(len(missing_lines) == 0),
+            cache_tier="db_translations" if len(missing_lines) == 0 else "miss",
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
 
 
 @app.route("/api/webapp/reader/ingest", methods=["POST"])
@@ -23645,97 +28990,277 @@ def ingest_reader_content():
 
 @app.route("/api/webapp/reader/library", methods=["POST"])
 def reader_library_list():
-    payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
-    limit = int(payload.get("limit", 100))
-    include_archived = bool(payload.get("include_archived"))
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="reader_library")
+    with db_acquire_scope("reader_library") as db_acquire_events:
+        payload = request.get_json(silent=True) or {}
+        init_data = payload.get("initData")
+        limit = int(payload.get("limit", 100))
+        include_archived = bool(payload.get("include_archived"))
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
+        if not init_data:
+            _log_flow_observation(
+                "reader_library",
+                "reader_library_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="missing_init_data",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "initData обязателен"}), 400
+        if not _telegram_hash_is_valid(init_data):
+            _log_flow_observation(
+                "reader_library",
+                "reader_library_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="invalid_init_data",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=401,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "initData не прошёл проверку"}), 401
 
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    try:
-        items = list_reader_library_documents(
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            limit=limit,
-            include_archived=include_archived,
-        )
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка загрузки библиотеки: {exc}"}), 500
-    entitlement = resolve_entitlement(user_id=int(user_id))
-    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
-    if effective_mode == "free":
-        for item in items:
-            expired, expires_at = _is_reader_doc_expired_for_free(item)
-            item["is_free_storage_expired"] = bool(expired)
-            item["free_storage_expires_at"] = expires_at
-    return jsonify(
-        {
+        parsed = _parse_telegram_init_data(init_data)
+        user_data = parsed.get("user") or {}
+        user_id = user_data.get("id")
+        if not user_id:
+            _log_flow_observation(
+                "reader_library",
+                "reader_library_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="missing_user_id",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+        language_pair_started_perf = time.perf_counter()
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+        list_started_perf = time.perf_counter()
+        try:
+            items = list_reader_library_documents(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                limit=limit,
+                include_archived=include_archived,
+            )
+        except Exception as exc:
+            _log_flow_observation(
+                "reader_library",
+                "reader_library_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                include_archived=include_archived,
+                limit=limit,
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=500,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": f"Ошибка загрузки библиотеки: {exc}"}), 500
+        list_duration_ms = _elapsed_ms_since(list_started_perf)
+
+        entitlement_started_perf = time.perf_counter()
+        entitlement = resolve_entitlement(user_id=int(user_id))
+        entitlement_duration_ms = _elapsed_ms_since(entitlement_started_perf)
+        effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+        if effective_mode == "free":
+            for item in items:
+                expired, expires_at = _is_reader_doc_expired_for_free(item)
+                item["is_free_storage_expired"] = bool(expired)
+                item["free_storage_expires_at"] = expires_at
+        response_payload = {
             "ok": True,
             "items": items,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
-    )
+        _log_flow_observation(
+            "reader_library",
+            "reader_library_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            include_archived=include_archived,
+            limit=limit,
+            items_count=len(items or []),
+            effective_mode=effective_mode,
+            language_pair_lookup_duration_ms=language_pair_duration_ms,
+            list_duration_ms=list_duration_ms,
+            entitlement_duration_ms=entitlement_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
 
 
 @app.route("/api/webapp/reader/library/open", methods=["POST"])
 def reader_library_open():
-    payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
-    document_id = payload.get("document_id")
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="reader_open")
+    with db_acquire_scope("reader_library_open") as db_acquire_events:
+        payload = request.get_json(silent=True) or {}
+        init_data = payload.get("initData")
+        document_id = payload.get("document_id")
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
-    if document_id is None:
-        return jsonify({"error": "document_id обязателен"}), 400
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
+        if not init_data:
+            _log_flow_observation(
+                "reader_open",
+                "reader_open_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="missing_init_data",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "initData обязателен"}), 400
+        if document_id is None:
+            _log_flow_observation(
+                "reader_open",
+                "reader_open_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="missing_document_id",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "document_id обязателен"}), 400
+        if not _telegram_hash_is_valid(init_data):
+            _log_flow_observation(
+                "reader_open",
+                "reader_open_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="invalid_init_data",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=401,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "initData не прошёл проверку"}), 401
 
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    try:
-        doc = get_reader_library_document(
-            user_id=int(user_id),
-            document_id=int(document_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка открытия книги: {exc}"}), 500
-    if not doc:
-        return jsonify({"error": "Книга не найдена"}), 404
-    entitlement = resolve_entitlement(user_id=int(user_id))
-    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
-    if effective_mode == "free":
-        expired, expires_at = _is_reader_doc_expired_for_free(doc)
-        if expired:
-            return jsonify(
-                {
-                    "error": (
-                        f"Срок хранения книги на Free истек ({FREE_READER_STORAGE_DAYS} дней). "
-                        "Удалите книгу, чтобы добавить новую."
-                    ),
-                    "error_code": "reader_free_storage_expired",
-                    "expires_at": expires_at,
-                    "storage_days_limit": int(FREE_READER_STORAGE_DAYS),
-                }
-            ), 403
-    detected_lang = _detect_reader_language(str(doc.get("content_text") or ""), fallback=target_lang)
-    return jsonify(
-        {
+        parsed = _parse_telegram_init_data(init_data)
+        user_data = parsed.get("user") or {}
+        user_id = user_data.get("id")
+        if not user_id:
+            _log_flow_observation(
+                "reader_open",
+                "reader_open_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="missing_user_id",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+        language_pair_started_perf = time.perf_counter()
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+        doc_started_perf = time.perf_counter()
+        try:
+            doc = get_reader_library_document(
+                user_id=int(user_id),
+                document_id=int(document_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        except Exception as exc:
+            _log_flow_observation(
+                "reader_open",
+                "reader_open_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                document_id=int(document_id),
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=500,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": f"Ошибка открытия книги: {exc}"}), 500
+        doc_duration_ms = _elapsed_ms_since(doc_started_perf)
+        if not doc:
+            _log_flow_observation(
+                "reader_open",
+                "reader_open_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                document_id=int(document_id),
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                document_lookup_duration_ms=doc_duration_ms,
+                final_status="error",
+                error_code="not_found",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=404,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "Книга не найдена"}), 404
+        entitlement_started_perf = time.perf_counter()
+        entitlement = resolve_entitlement(user_id=int(user_id))
+        entitlement_duration_ms = _elapsed_ms_since(entitlement_started_perf)
+        effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+        if effective_mode == "free":
+            expired, expires_at = _is_reader_doc_expired_for_free(doc)
+            if expired:
+                _log_flow_observation(
+                    "reader_open",
+                    "reader_open_completed",
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    user_id=int(user_id),
+                    document_id=int(document_id),
+                    effective_mode=effective_mode,
+                    language_pair_lookup_duration_ms=language_pair_duration_ms,
+                    document_lookup_duration_ms=doc_duration_ms,
+                    entitlement_duration_ms=entitlement_duration_ms,
+                    final_status="error",
+                    error_code="reader_free_storage_expired",
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    http_status=403,
+                    **summarize_db_acquire_events(db_acquire_events),
+                )
+                return jsonify(
+                    {
+                        "error": (
+                            f"Срок хранения книги на Free истек ({FREE_READER_STORAGE_DAYS} дней). "
+                            "Удалите книгу, чтобы добавить новую."
+                        ),
+                        "error_code": "reader_free_storage_expired",
+                        "expires_at": expires_at,
+                        "storage_days_limit": int(FREE_READER_STORAGE_DAYS),
+                    }
+                ), 403
+        detect_started_perf = time.perf_counter()
+        detected_lang = _detect_reader_language(str(doc.get("content_text") or ""), fallback=target_lang)
+        detect_duration_ms = _elapsed_ms_since(detect_started_perf)
+        response_payload = {
             "ok": True,
             "document": doc,
             "text": str(doc.get("content_text") or ""),
@@ -23746,7 +29271,26 @@ def reader_library_open():
             "detected_language_label": _language_label(detected_lang),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
-    )
+        _log_flow_observation(
+            "reader_open",
+            "reader_open_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            document_id=int(document_id),
+            effective_mode=effective_mode,
+            content_chars=len(str(doc.get("content_text") or "")),
+            language_pair_lookup_duration_ms=language_pair_duration_ms,
+            document_lookup_duration_ms=doc_duration_ms,
+            entitlement_duration_ms=entitlement_duration_ms,
+            detect_language_duration_ms=detect_duration_ms,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
 
 
 @app.route("/api/webapp/reader/library/state", methods=["POST"])
@@ -24283,6 +29827,8 @@ def get_webapp_sentences():
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
+    username = _extract_display_name(user_data)
+    requested_session_id = _extract_webapp_session_id(payload)
 
     if not user_id:
         _log_flow_observation(
@@ -24299,28 +29845,77 @@ def get_webapp_sentences():
 
     with db_acquire_scope("webapp_sentences") as db_acquire_events:
         language_pair_started_perf = time.perf_counter()
-        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        source_lang, target_lang, _profile, language_pair_lookup_mode = _get_user_language_pair_for_webapp_request(
+            int(user_id),
+            payload=payload,
+        )
         language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
         sentence_lookup_started_perf = time.perf_counter()
+        session_lookup_mode = "header_session" if requested_session_id else "active_discovery_fallback"
         sentences = get_pending_daily_sentences(
             user_id=user_id,
             limit=limit,
             source_lang=source_lang,
             target_lang=target_lang,
             close_stale_sessions=False,
+            session_id=requested_session_id,
         )
         sentence_lookup_duration_ms = _elapsed_ms_since(sentence_lookup_started_perf)
     dedupe_started_perf = time.perf_counter()
     deduped = _dedupe_sentences(sentences)
     dedupe_duration_ms = _elapsed_ms_since(dedupe_started_perf)
+    delivered_mark_duration_ms = 0
+    if deduped:
+        delivered_mark_started_perf = time.perf_counter()
+        _mark_translation_sentences_delivered(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            items=deduped,
+        )
+        delivered_mark_duration_ms = _elapsed_ms_since(delivered_mark_started_perf)
+    generation_status_payload: dict[str, Any] | None = None
+    if requested_session_id and is_translation_sentence_fill_async_enabled():
+        try:
+            generation_status_payload = get_translation_fill_job_status(int(requested_session_id))
+        except Exception:
+            generation_status_payload = None
+    ready_count = len(deduped)
+    expected_total = 7
+    if requested_session_id and ready_count < expected_total:
+        generation_status_payload = _maybe_restart_translation_session_fill(
+            user_id=int(user_id),
+            username=username,
+            session_id=int(requested_session_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            ready_count=ready_count,
+            expected_total=expected_total,
+            generation_status_payload=generation_status_payload,
+        )
+    raw_generation_status = str((generation_status_payload or {}).get("status") or "").strip().lower()
+    if ready_count >= expected_total:
+        generation_status = "ready"
+    elif raw_generation_status in {"pending", "running"}:
+        generation_status = raw_generation_status
+    elif raw_generation_status == "failed":
+        generation_status = "failed"
+    elif requested_session_id and not is_translation_sentence_fill_async_enabled() and _translation_session_fill_runner_is_active(int(requested_session_id)):
+        generation_status = "running"
+    else:
+        generation_status = "idle"
+    generation_in_progress = generation_status in {"pending", "running"} and ready_count < expected_total
     response_payload = {
         "ok": True,
         "items": deduped,
-        "ready_count": len(deduped),
-        "expected_total": 7,
+        "ready_count": ready_count,
+        "expected_total": expected_total,
+        "generation_in_progress": generation_in_progress,
+        "generation_status": generation_status,
+        "generation_error": str((generation_status_payload or {}).get("error") or "").strip() or None,
         "language_pair": _build_language_pair_payload(source_lang, target_lang),
     }
-    source_session_id = str(deduped[0].get("source_session_id") or "").strip() if deduped else None
+    source_session_id = str(deduped[0].get("source_session_id") or "").strip() if deduped else requested_session_id
     _log_flow_observation(
         "webapp_translation",
         "sentences_completed",
@@ -24328,12 +29923,20 @@ def get_webapp_sentences():
         correlation_id=correlation_id,
         user_id=int(user_id),
         source_session_id=source_session_id or None,
+        requested_session_id=requested_session_id or None,
+        session_lookup_mode=session_lookup_mode,
         requested_limit=limit,
-        ready_count=len(deduped),
-        expected_total=7,
+        ready_count=ready_count,
+        expected_total=expected_total,
+        generation_in_progress=generation_in_progress,
+        generation_status=generation_status,
         language_pair_lookup_duration_ms=language_pair_duration_ms,
+        language_pair_lookup_mode=language_pair_lookup_mode,
         sentence_lookup_duration_ms=sentence_lookup_duration_ms,
         dedupe_duration_ms=dedupe_duration_ms,
+        delivered_mark_duration_ms=delivered_mark_duration_ms,
+        access_guard_cache_source=getattr(g, "webapp_access_guard_cache_source", None),
+        instance_guard_cache_source=getattr(g, "webapp_instance_guard_cache_source", None),
         response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
         final_status="success",
         duration_ms=_elapsed_ms_since(started_perf),
@@ -24419,7 +30022,10 @@ def ack_webapp_sentences_shown():
         )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    source_lang, target_lang, _profile, language_pair_lookup_mode = _get_user_language_pair_for_webapp_request(
+        int(user_id),
+        payload=payload,
+    )
     try:
         db_started_perf = time.perf_counter()
         result = mark_translation_sentences_shown(
@@ -24448,7 +30054,21 @@ def ack_webapp_sentences_shown():
         )
         return jsonify({"error": f"Ошибка подтверждения показа предложений: {exc}"}), 500
 
-    response_payload = {"ok": True, **result}
+    response_payload = {
+        "ok": True,
+        **result,
+        "session": {
+            "session_id": str(result.get("session_id") or "").strip() or None,
+            "status": str(result.get("status") or "").strip() or None,
+            "total_sentences": int(result.get("total_sentences") or 0) if result.get("total_sentences") is not None else None,
+            "translated_count": int(result.get("translated_count") or 0) if result.get("translated_count") is not None else None,
+            "completed": str(result.get("status") or "").strip().lower() == "completed",
+        },
+        "home_refresh": {
+            "refreshing": True,
+            "manual_refresh_recommended": True,
+        },
+    }
     _log_flow_observation(
         "webapp_translation",
         "sentences_ack_completed",
@@ -24460,6 +30080,7 @@ def ack_webapp_sentences_shown():
         updated_sentence_count=int(result.get("updated") or 0),
         source_lang=source_lang,
         target_lang=target_lang,
+        language_pair_lookup_mode=language_pair_lookup_mode,
         db_update_duration_ms=db_update_duration_ms,
         response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
         final_status="success",
@@ -24479,20 +30100,30 @@ def _build_translation_session_start_payload(
     topic: str,
     level: str | None,
     grammar_focus: dict[str, Any] | None,
+    tested_skill_profile_seed: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    session_id = int(result.get("session_id") or 0) if isinstance(result, dict) and result.get("session_id") else None
     ready_items = get_pending_daily_sentences(
         user_id=user_id,
         limit=7,
         source_lang=source_lang,
         target_lang=target_lang,
         close_stale_sessions=False,
+        session_id=session_id,
     )
     deduped_items = _dedupe_sentences(ready_items)
-    session_id = int(result.get("session_id") or 0) if isinstance(result, dict) and result.get("session_id") else None
+    if deduped_items:
+        _mark_translation_sentences_delivered(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            items=deduped_items,
+        )
     ready_count = len(deduped_items)
     expected_total = int(result.get("expected_total") or 7) if isinstance(result, dict) else 7
     remaining_count = max(0, expected_total - ready_count)
-    generation_started = bool(session_id and remaining_count > 0 and not bool(result.get("blocked")))
+    generation_started = bool(session_id and remaining_count > 0 and not bool(result.get("completion_required")))
+    generation_status_payload: dict[str, Any] | None = None
     if generation_started and session_id is not None:
         _start_translation_session_fill_runner(
             user_id=int(user_id),
@@ -24503,7 +30134,25 @@ def _build_translation_session_start_payload(
             source_lang=source_lang,
             target_lang=target_lang,
             grammar_focus=grammar_focus,
+            tested_skill_profile_seed=tested_skill_profile_seed,
         )
+        if is_translation_sentence_fill_async_enabled():
+            generation_status_payload = get_translation_fill_job_status(int(session_id))
+    elif session_id is not None and is_translation_sentence_fill_async_enabled():
+        generation_status_payload = get_translation_fill_job_status(int(session_id))
+
+    raw_generation_status = str((generation_status_payload or {}).get("status") or "").strip().lower()
+    if ready_count >= expected_total:
+        generation_status = "ready"
+    elif raw_generation_status in {"pending", "running"}:
+        generation_status = raw_generation_status
+    elif raw_generation_status == "failed":
+        generation_status = "failed"
+    elif generation_started:
+        generation_status = "pending" if is_translation_sentence_fill_async_enabled() else "running"
+    else:
+        generation_status = "idle"
+    generation_in_progress = generation_status in {"pending", "running"} and ready_count < expected_total
     response_payload = {
         **(result or {}),
         "type": "regular",
@@ -24511,9 +30160,108 @@ def _build_translation_session_start_payload(
         "ready_count": ready_count,
         "expected_total": expected_total,
         "remaining_count": remaining_count,
-        "generation_in_progress": generation_started,
+        "generation_in_progress": generation_in_progress,
+        "generation_status": generation_status,
+        "generation_error": str((generation_status_payload or {}).get("error") or "").strip() or None,
     }
     return response_payload
+
+
+def _get_translation_session_fill_recovery_payload(
+    *,
+    user_id: int,
+    session_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict[str, Any] | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(NULLIF(ds.focus_key, ''), ''),
+                    COALESCE(NULLIF(ds.level, ''), ''),
+                    COALESCE(up.username, ''),
+                    COALESCE(up.completed, FALSE)
+                FROM bt_3_daily_sentences ds
+                LEFT JOIN bt_3_user_progress up
+                  ON up.user_id = ds.user_id
+                 AND up.session_id = ds.session_id
+                WHERE ds.user_id = %s
+                  AND ds.session_id = %s
+                  AND COALESCE(ds.source_lang, 'ru') = %s
+                  AND COALESCE(ds.target_lang, 'de') = %s
+                ORDER BY ds.unique_id ASC, ds.id ASC
+                LIMIT 1;
+                """,
+                (int(user_id), int(session_id), source_lang, target_lang),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    focus_key = str(row[0] or "").strip()
+    level = str(row[1] or "").strip().lower() or None
+    recovered_username = str(row[2] or "").strip() or None
+    if bool(row[3]):
+        return None
+    grammar_focus = get_grammar_focus_by_key(focus_key) if focus_key else None
+    topic = str((grammar_focus or {}).get("prompt_topic") or "Random sentences").strip() or "Random sentences"
+    return {
+        "username": recovered_username,
+        "topic": topic,
+        "level": level,
+        "grammar_focus": grammar_focus,
+    }
+
+
+def _maybe_restart_translation_session_fill(
+    *,
+    user_id: int,
+    username: str | None,
+    session_id: int | None,
+    source_lang: str,
+    target_lang: str,
+    ready_count: int,
+    expected_total: int,
+    generation_status_payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    safe_session_id = int(session_id or 0)
+    if safe_session_id <= 0 or ready_count >= expected_total:
+        return generation_status_payload
+    current_status = str((generation_status_payload or {}).get("status") or "").strip().lower()
+    if current_status in {"pending", "running", "ready"}:
+        return generation_status_payload
+    recovery_payload = _get_translation_session_fill_recovery_payload(
+        user_id=int(user_id),
+        session_id=safe_session_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if not recovery_payload:
+        return generation_status_payload
+    try:
+        _start_translation_session_fill_runner(
+            user_id=int(user_id),
+            username=username or recovery_payload.get("username"),
+            session_id=safe_session_id,
+            topic=str(recovery_payload.get("topic") or "Random sentences").strip() or "Random sentences",
+            level=recovery_payload.get("level"),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            grammar_focus=recovery_payload.get("grammar_focus"),
+            tested_skill_profile_seed=None,
+        )
+        if is_translation_sentence_fill_async_enabled():
+            refreshed_payload = get_translation_fill_job_status(safe_session_id)
+            if refreshed_payload:
+                return refreshed_payload
+    except Exception:
+        logging.exception(
+            "translation session fill recovery enqueue failed: user_id=%s session_id=%s",
+            int(user_id),
+            safe_session_id,
+        )
+    return generation_status_payload
 
 
 def _run_translation_session_fill(
@@ -24526,7 +30274,16 @@ def _run_translation_session_fill(
     source_lang: str,
     target_lang: str,
     grammar_focus: dict[str, Any] | None,
-) -> None:
+    tested_skill_profile_seed: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    launched_at_ms = _pop_translation_session_fill_launched_at(int(session_id))
+    if launched_at_ms:
+        logging.info(
+            "translation session background fill runner started: user_id=%s session_id=%s launch_delay_ms=%s",
+            int(user_id),
+            int(session_id),
+            max(0, int(time.time() * 1000) - int(launched_at_ms)),
+        )
     try:
         result = asyncio.run(
             fill_translation_session_webapp(
@@ -24537,6 +30294,7 @@ def _run_translation_session_fill(
                 level=level,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                tested_skill_profile_seed=tested_skill_profile_seed,
                 grammar_focus=grammar_focus,
             )
         )
@@ -24560,6 +30318,7 @@ def _run_translation_session_fill(
                     ready_count,
                     expected_total,
                 )
+        return result if isinstance(result, dict) else {"ready_count": 0, "expected_total": 0}
     except Exception as exc:
         logging.error(
             "Translation session background fill failed: user_id=%s session_id=%s error=%s",
@@ -24568,6 +30327,7 @@ def _run_translation_session_fill(
             exc,
             exc_info=True,
         )
+        return {"error": str(exc), "ready_count": 0, "expected_total": 0}
     finally:
         with _TRANSLATION_SESSION_FILL_RUNNERS_LOCK:
             _TRANSLATION_SESSION_FILL_RUNNERS.discard(int(session_id))
@@ -24583,11 +30343,26 @@ def _start_translation_session_fill_runner(
     source_lang: str,
     target_lang: str,
     grammar_focus: dict[str, Any] | None,
+    tested_skill_profile_seed: dict[str, Any] | None = None,
 ) -> None:
+    if is_translation_sentence_fill_async_enabled():
+        enqueue_translation_fill_job(
+            user_id=int(user_id),
+            username=username,
+            session_id=int(session_id),
+            topic=topic,
+            level=level,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            grammar_focus=grammar_focus,
+            tested_skill_profile_seed=tested_skill_profile_seed,
+        )
+        return
     with _TRANSLATION_SESSION_FILL_RUNNERS_LOCK:
         if int(session_id) in _TRANSLATION_SESSION_FILL_RUNNERS:
             return
         _TRANSLATION_SESSION_FILL_RUNNERS.add(int(session_id))
+    _remember_translation_session_fill_launched_at(int(session_id), int(time.time() * 1000))
     threading.Thread(
         target=_run_translation_session_fill,
         kwargs={
@@ -24599,6 +30374,7 @@ def _start_translation_session_fill_runner(
             "source_lang": source_lang,
             "target_lang": target_lang,
             "grammar_focus": grammar_focus,
+            "tested_skill_profile_seed": tested_skill_profile_seed,
         },
         daemon=True,
     ).start()
@@ -24664,7 +30440,10 @@ def start_webapp_translation():
 
     with db_acquire_scope("webapp_start") as db_acquire_events:
         language_pair_started_perf = time.perf_counter()
-        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        source_lang, target_lang, _profile, language_pair_lookup_mode = _get_user_language_pair_for_webapp_request(
+            int(user_id),
+            payload=payload,
+        )
         language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
         focus_started_perf = time.perf_counter()
         resolved_focus = resolve_webapp_focus(topic, custom_focus)
@@ -24681,6 +30460,7 @@ def start_webapp_translation():
                 focus_kind=str(resolved_focus.get("kind") or "").strip(),
                 focus_key=str(resolved_focus.get("key") or "").strip() or None,
                 language_pair_lookup_duration_ms=language_pair_duration_ms,
+                language_pair_lookup_mode=language_pair_lookup_mode,
                 focus_duration_ms=focus_duration_ms,
                 final_status="error",
                 duration_ms=_elapsed_ms_since(started_at),
@@ -24716,7 +30496,10 @@ def start_webapp_translation():
                 focus_kind=str(resolved_focus.get("kind") or "").strip(),
                 focus_key=str(resolved_focus.get("key") or "").strip() or None,
                 level=str(level or "").strip().lower(),
+                access_guard_cache_source=getattr(g, "webapp_access_guard_cache_source", None),
+                instance_guard_cache_source=getattr(g, "webapp_instance_guard_cache_source", None),
                 language_pair_lookup_duration_ms=language_pair_duration_ms,
+                language_pair_lookup_mode=language_pair_lookup_mode,
                 focus_duration_ms=focus_duration_ms,
                 final_status="error",
                 error_code=exc.__class__.__name__,
@@ -24729,6 +30512,7 @@ def start_webapp_translation():
         if isinstance(result, dict) and result.get("error"):
             error_code = str(result.get("error") or "").strip().lower()
             status_code = 429 if error_code in {"feature_limit_exceeded", "cost_cap_exceeded"} else 500
+            start_phase_metrics = dict(result.get("phase_metrics") or {})
             _log_flow_observation(
                 "webapp_translation",
                 "start_completed",
@@ -24740,9 +30524,22 @@ def start_webapp_translation():
                 focus_kind=str(resolved_focus.get("kind") or "").strip(),
                 focus_key=str(resolved_focus.get("key") or "").strip() or None,
                 level=str(level or "").strip().lower(),
+                access_guard_cache_source=getattr(g, "webapp_access_guard_cache_source", None),
+                instance_guard_cache_source=getattr(g, "webapp_instance_guard_cache_source", None),
                 language_pair_lookup_duration_ms=language_pair_duration_ms,
+                language_pair_lookup_mode=language_pair_lookup_mode,
                 focus_duration_ms=focus_duration_ms,
                 workflow_duration_ms=workflow_elapsed_ms,
+                start_active_lookup_duration_ms=int(start_phase_metrics.get("active_lookup_ms") or 0),
+                start_session_state_duration_ms=int(start_phase_metrics.get("session_state_ms") or 0),
+                start_close_empty_active_duration_ms=int(start_phase_metrics.get("close_empty_active_ms") or 0),
+                start_feature_limit_duration_ms=int(start_phase_metrics.get("feature_limit_ms") or 0),
+                start_session_insert_duration_ms=int(start_phase_metrics.get("session_insert_ms") or 0),
+                start_recent_keys_duration_ms=int(start_phase_metrics.get("recent_keys_ms") or 0),
+                start_seed_collect_duration_ms=int(start_phase_metrics.get("seed_collect_ms") or 0),
+                start_seed_topup_duration_ms=int(start_phase_metrics.get("seed_topup_ms") or 0),
+                start_seed_insert_duration_ms=int(start_phase_metrics.get("seed_insert_ms") or 0),
+                start_commit_duration_ms=int(start_phase_metrics.get("commit_ms") or 0),
                 final_status="error",
                 error_code=error_code or "workflow_error",
                 duration_ms=_elapsed_ms_since(started_at),
@@ -24763,6 +30560,7 @@ def start_webapp_translation():
             topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
             level=level,
             grammar_focus=resolved_focus,
+            tested_skill_profile_seed=None,
         )
         build_payload_duration_ms = _elapsed_ms_since(build_payload_started_perf)
         session_id = int(response_payload.get("session_id") or 0) if response_payload.get("session_id") else None
@@ -24770,6 +30568,7 @@ def start_webapp_translation():
         expected_total = int(response_payload.get("expected_total") or 7)
         remaining_count = int(response_payload.get("remaining_count") or 0)
         generation_started = bool(response_payload.get("generation_in_progress"))
+        start_phase_metrics = dict(result.get("phase_metrics") or {}) if isinstance(result, dict) else {}
 
         total_elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         logging.info(
@@ -24808,10 +30607,25 @@ def start_webapp_translation():
             expected_total=expected_total,
             remaining_count=remaining_count,
             generation_in_progress=bool(generation_started),
+            ready_items_lookup_mode="session_id" if session_id else "active_discovery_fallback",
+            sync_cleanup_mode="removed_from_start_path",
+            access_guard_cache_source=getattr(g, "webapp_access_guard_cache_source", None),
+            instance_guard_cache_source=getattr(g, "webapp_instance_guard_cache_source", None),
             language_pair_lookup_duration_ms=language_pair_duration_ms,
+            language_pair_lookup_mode=language_pair_lookup_mode,
             focus_duration_ms=focus_duration_ms,
             workflow_duration_ms=workflow_elapsed_ms,
             build_payload_duration_ms=build_payload_duration_ms,
+            start_active_lookup_duration_ms=int(start_phase_metrics.get("active_lookup_ms") or 0),
+            start_session_state_duration_ms=int(start_phase_metrics.get("session_state_ms") or 0),
+            start_close_empty_active_duration_ms=int(start_phase_metrics.get("close_empty_active_ms") or 0),
+            start_feature_limit_duration_ms=int(start_phase_metrics.get("feature_limit_ms") or 0),
+            start_session_insert_duration_ms=int(start_phase_metrics.get("session_insert_ms") or 0),
+            start_recent_keys_duration_ms=int(start_phase_metrics.get("recent_keys_ms") or 0),
+            start_seed_collect_duration_ms=int(start_phase_metrics.get("seed_collect_ms") or 0),
+            start_seed_topup_duration_ms=int(start_phase_metrics.get("seed_topup_ms") or 0),
+            start_seed_insert_duration_ms=int(start_phase_metrics.get("seed_insert_ms") or 0),
+            start_commit_duration_ms=int(start_phase_metrics.get("commit_ms") or 0),
             response_size_bytes=_estimate_json_payload_size_bytes(response_body),
             final_status="success",
             duration_ms=_elapsed_ms_since(started_at),
@@ -25007,8 +30821,16 @@ def get_webapp_session():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     with db_acquire_scope("webapp_session") as db_acquire_events:
+        language_pair_started_perf = time.perf_counter()
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+        language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
         lookup_started_perf = time.perf_counter()
-        info = get_active_session_type(user_id=user_id, close_stale_sessions=False)
+        info = get_active_session_type(
+            user_id=user_id,
+            close_stale_sessions=True,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
         lookup_duration_ms = _elapsed_ms_since(lookup_started_perf)
     response_payload = {"ok": True, **info}
     _log_flow_observation(
@@ -25019,6 +30841,9 @@ def get_webapp_session():
         user_id=int(user_id),
         session_type=str(info.get("type") or "").strip() or "none",
         session_id=str(info.get("session_id") or "").strip() or None,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        language_pair_lookup_duration_ms=language_pair_duration_ms,
         session_lookup_duration_ms=lookup_duration_ms,
         response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
         final_status="success",
@@ -25456,12 +31281,35 @@ def _run_audio_scheduler_job() -> None:
     target_date = now.date()
     if mode == "yesterday":
         target_date = target_date - timedelta(days=1)
+    run_period = target_date.isoformat()
+    if not claim_scheduler_run_guard(
+        job_key="daily_audio_auto",
+        run_period=run_period,
+        target_scope="global",
+        metadata={"tz": tz_name, "mode": mode},
+    ):
+        logging.info("ℹ️ Audio scheduler skipped: run guard already claimed for %s", run_period)
+        return
     try:
         result = _dispatch_daily_audio(target_date)
+        finish_scheduler_run_guard(
+            job_key="daily_audio_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="completed",
+            metadata=result if isinstance(result, dict) else {},
+        )
         logging.info("✅ Audio scheduler finished: %s", result)
         if isinstance(result, dict) and result.get("errors"):
             logging.warning("⚠️ Audio scheduler delivery errors: %s", result.get("errors"))
-    except Exception:
+    except Exception as exc:
+        finish_scheduler_run_guard(
+            job_key="daily_audio_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="failed",
+            metadata={"error": str(exc)[:1000], "tz": tz_name, "mode": mode},
+        )
         logging.exception("❌ Audio scheduler failed")
 
 
@@ -26445,10 +32293,33 @@ def _run_private_analytics_scheduler_job() -> None:
     target_date = now.date()
     if mode == "yesterday":
         target_date = target_date - timedelta(days=1)
+    run_period = target_date.isoformat()
+    if not claim_scheduler_run_guard(
+        job_key="private_analytics_auto",
+        run_period=run_period,
+        target_scope="global",
+        metadata={"tz": tz_name, "mode": mode},
+    ):
+        logging.info("ℹ️ Private analytics scheduler skipped: run guard already claimed for %s", run_period)
+        return
     try:
         result = _dispatch_private_analytics(target_date)
+        finish_scheduler_run_guard(
+            job_key="private_analytics_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="completed",
+            metadata=result if isinstance(result, dict) else {},
+        )
         logging.info("✅ Private analytics scheduler finished: %s", result)
-    except Exception:
+    except Exception as exc:
+        finish_scheduler_run_guard(
+            job_key="private_analytics_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="failed",
+            metadata={"error": str(exc)[:1000], "tz": tz_name, "mode": mode},
+        )
         logging.exception("❌ Private analytics scheduler failed")
 
 
@@ -26567,13 +32438,6 @@ def _build_semantic_audit_digest_text(
         f"- missing benchmark: {summary.get('missing_benchmark_rows', 0)}",
         f"- source sessions in audit: {summary.get('source_session_count', 0)}",
         "",
-        "Benchmark pipeline",
-        f"- queue unique sentences: {queue_payload.get('unique_sentence_count', 0)}",
-        f"- queue pending: {queue_payload.get('queued_pending_count', 0)}",
-        f"- queue ready: {queue_payload.get('queued_ready_count', 0)}",
-        f"- generated benchmarks: {generation_payload.get('ready_count', 0)}",
-        f"- generator failures: {generation_payload.get('failed_count', 0)}",
-        "",
         "Semantic metrics",
         (
             f"- primary_skill_accuracy: {metrics.get('primary_skill_accuracy')} "
@@ -26598,6 +32462,17 @@ def _build_semantic_audit_digest_text(
         "",
     ]
 
+    if queue_payload or generation_payload:
+        lines[8:8] = [
+            "Benchmark pipeline",
+            f"- queue unique sentences: {queue_payload.get('unique_sentence_count', 0)}",
+            f"- queue pending: {queue_payload.get('queued_pending_count', 0)}",
+            f"- queue ready: {queue_payload.get('queued_ready_count', 0)}",
+            f"- generated benchmarks: {generation_payload.get('ready_count', 0)}",
+            f"- generator failures: {generation_payload.get('failed_count', 0)}",
+            "",
+        ]
+
     if highlights["likely_incorrect"]:
         lines.append("Likely incorrect")
         lines.extend(highlights["likely_incorrect"][:3])
@@ -26620,6 +32495,124 @@ def _build_semantic_audit_digest_text(
         if artifacts.get("evaluator_md"):
             lines.append(f"- evaluator md: {artifacts.get('evaluator_md')}")
     return "\n".join(lines).strip()
+
+
+def _build_semantic_benchmark_queue_command(*, output_json_path: Path, days_back: int, min_attempts: int, limit: int) -> list[str]:
+    return [
+        sys.executable,
+        "scripts/build_semantic_benchmark_queue.py",
+        "--source-lang",
+        "ru",
+        "--target-lang",
+        "de",
+        "--days-back",
+        str(int(days_back)),
+        "--min-attempts",
+        str(int(min_attempts)),
+        "--limit",
+        str(int(limit)),
+        "--output-json",
+        str(output_json_path),
+    ]
+
+
+def _build_semantic_benchmark_generator_command(*, output_json_path: Path, limit: int) -> list[str]:
+    return [
+        sys.executable,
+        "scripts/generate_semantic_benchmark_library.py",
+        "--source-lang",
+        "ru",
+        "--target-lang",
+        "de",
+        "--limit",
+        str(int(limit)),
+        "--output-json",
+        str(output_json_path),
+    ]
+
+
+def _build_semantic_weekly_audit_command(*, output_json_path: Path) -> list[str]:
+    audit_command = [
+        sys.executable,
+        "scripts/run_semantic_weekly_audit.py",
+        "--source-lang",
+        "ru",
+        "--target-lang",
+        "de",
+        "--days-back",
+        str(int(SEMANTIC_AUDIT_DAYS_BACK)),
+        "--min-attempts",
+        str(int(SEMANTIC_AUDIT_MIN_ATTEMPTS)),
+        "--run-scope",
+        "weekly",
+        "--enqueue-missing",
+        "--output-json",
+        str(output_json_path),
+    ]
+    if SEMANTIC_AUDIT_ALL_USERS:
+        audit_command.append("--all-users")
+    if SEMANTIC_AUDIT_LOCAL_REPLAY_TARGETING:
+        audit_command.append("--local-replay-targeting")
+    return audit_command
+
+
+def _run_semantic_benchmark_prep_scheduler_job() -> None:
+    try:
+        now_local = datetime.now(ZoneInfo(SEMANTIC_BENCHMARK_PREP_SCHEDULER_TZ))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    run_period = now_local.date().isoformat()
+    if has_admin_scheduler_run(
+        job_key="semantic_benchmark_prep",
+        run_period=run_period,
+        target_chat_id=0,
+    ):
+        logging.info("ℹ️ Semantic benchmark prep skipped: already completed for %s", run_period)
+        return
+
+    SEMANTIC_AUDIT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    report_prefix = SEMANTIC_AUDIT_REPORTS_DIR / f"semantic_daily_prep_{run_period}"
+    queue_json_path = report_prefix.with_name(report_prefix.name + "_queue.json")
+    generator_json_path = report_prefix.with_name(report_prefix.name + "_generator.json")
+
+    queue_command = _build_semantic_benchmark_queue_command(
+        output_json_path=queue_json_path,
+        days_back=SEMANTIC_BENCHMARK_PREP_DAYS_BACK,
+        min_attempts=SEMANTIC_BENCHMARK_PREP_MIN_ATTEMPTS,
+        limit=SEMANTIC_BENCHMARK_PREP_QUEUE_LIMIT,
+    )
+    generator_command = _build_semantic_benchmark_generator_command(
+        output_json_path=generator_json_path,
+        limit=SEMANTIC_BENCHMARK_PREP_GENERATION_LIMIT,
+    )
+
+    try:
+        _run_local_python_script(queue_command, label="semantic benchmark daily queue builder")
+        _run_local_python_script(generator_command, label="semantic benchmark daily generator")
+        queue_payload = json.loads(queue_json_path.read_text(encoding="utf-8")) if queue_json_path.exists() else {}
+        generation_payload = json.loads(generator_json_path.read_text(encoding="utf-8")) if generator_json_path.exists() else {}
+        mark_admin_scheduler_run(
+            job_key="semantic_benchmark_prep",
+            run_period=run_period,
+            target_chat_id=0,
+            metadata={
+                "source": "scheduler",
+                "queued_pending_count": queue_payload.get("queued_pending_count"),
+                "queued_ready_count": queue_payload.get("queued_ready_count"),
+                "generator_ready_count": generation_payload.get("ready_count"),
+                "generator_failed_count": generation_payload.get("failed_count"),
+            },
+        )
+        logging.info(
+            "✅ Semantic benchmark prep finished: run_period=%s queue_unique=%s queued_pending=%s generated_ready=%s generated_failed=%s",
+            run_period,
+            queue_payload.get("unique_sentence_count"),
+            queue_payload.get("queued_pending_count"),
+            generation_payload.get("ready_count"),
+            generation_payload.get("failed_count"),
+        )
+    except Exception:
+        logging.exception("❌ Semantic benchmark prep failed")
 
 
 def _run_semantic_audit_scheduler_job() -> None:
@@ -26648,67 +32641,12 @@ def _run_semantic_audit_scheduler_job() -> None:
 
     SEMANTIC_AUDIT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     report_prefix = SEMANTIC_AUDIT_REPORTS_DIR / f"semantic_weekly_{run_period}"
-    queue_json_path = report_prefix.with_name(report_prefix.name + "_queue.json")
-    generator_json_path = report_prefix.with_name(report_prefix.name + "_generator.json")
     audit_json_path = report_prefix.with_name(report_prefix.name + "_audit.json")
-
-    queue_command = [
-        sys.executable,
-        "scripts/build_semantic_benchmark_queue.py",
-        "--source-lang",
-        "ru",
-        "--target-lang",
-        "de",
-        "--days-back",
-        str(int(SEMANTIC_AUDIT_DAYS_BACK)),
-        "--min-attempts",
-        str(int(SEMANTIC_AUDIT_MIN_ATTEMPTS)),
-        "--limit",
-        str(int(SEMANTIC_AUDIT_QUEUE_LIMIT)),
-        "--output-json",
-        str(queue_json_path),
-    ]
-    generator_command = [
-        sys.executable,
-        "scripts/generate_semantic_benchmark_library.py",
-        "--source-lang",
-        "ru",
-        "--target-lang",
-        "de",
-        "--limit",
-        str(int(SEMANTIC_AUDIT_GENERATION_LIMIT)),
-        "--output-json",
-        str(generator_json_path),
-    ]
-    audit_command = [
-        sys.executable,
-        "scripts/run_semantic_weekly_audit.py",
-        "--source-lang",
-        "ru",
-        "--target-lang",
-        "de",
-        "--days-back",
-        str(int(SEMANTIC_AUDIT_DAYS_BACK)),
-        "--min-attempts",
-        str(int(SEMANTIC_AUDIT_MIN_ATTEMPTS)),
-        "--run-scope",
-        "weekly",
-        "--enqueue-missing",
-        "--output-json",
-        str(audit_json_path),
-    ]
-    if SEMANTIC_AUDIT_ALL_USERS:
-        audit_command.append("--all-users")
-    if SEMANTIC_AUDIT_LOCAL_REPLAY_TARGETING:
-        audit_command.append("--local-replay-targeting")
+    audit_command = _build_semantic_weekly_audit_command(output_json_path=audit_json_path)
 
     try:
-        _run_local_python_script(queue_command, label="semantic benchmark queue builder")
-        _run_local_python_script(generator_command, label="semantic benchmark generator")
         _run_local_python_script(audit_command, label="semantic weekly audit runner")
 
-        queue_payload = json.loads(queue_json_path.read_text(encoding="utf-8")) if queue_json_path.exists() else {}
-        generation_payload = json.loads(generator_json_path.read_text(encoding="utf-8")) if generator_json_path.exists() else {}
         audit_payload = json.loads(audit_json_path.read_text(encoding="utf-8")) if audit_json_path.exists() else {}
         audit_run = dict(audit_payload.get("audit_run") or {})
         audit_run_id = int(audit_run.get("id") or 0) or None
@@ -26716,8 +32654,8 @@ def _run_semantic_audit_scheduler_job() -> None:
         previous_run = next((item for item in recent_runs if int(item.get("id") or 0) != int(audit_run_id or 0)), None)
         digest_text = _build_semantic_audit_digest_text(
             audit_payload=audit_payload,
-            queue_payload=queue_payload,
-            generation_payload=generation_payload,
+            queue_payload={},
+            generation_payload={},
             previous_run=previous_run,
         )
         sent = 0
@@ -26768,9 +32706,19 @@ def _run_semantic_audit_scheduler_job() -> None:
 def _run_weekly_goals_scheduler_job() -> None:
     tz_name = (os.getenv("WEEKLY_GOALS_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     target_date = _get_local_today_date(tz_name)
+    run_period = target_date.isoformat()
+    if not claim_scheduler_run_guard(
+        job_key="weekly_goals_auto",
+        run_period=run_period,
+        target_scope="global",
+        metadata={"tz": tz_name},
+    ):
+        logging.info("ℹ️ Weekly goals scheduler skipped: run guard already claimed for %s", run_period)
+        return
     try:
         result_week = _dispatch_plan_period_progress(target_date=target_date, period="week")
         logging.info("✅ Weekly goals scheduler finished (week): %s", result_week)
+        metadata: dict[str, Any] = {"week": result_week} if isinstance(result_week, dict) else {}
         weekly_badges_enabled = (os.getenv("WEEKLY_BADGES_GROUP_ENABLED") or "1").strip().lower()
         if weekly_badges_enabled in ("1", "true", "yes", "on") and target_date.weekday() == 0:
             badges_result = _dispatch_weekly_group_badges(
@@ -26778,21 +32726,40 @@ def _run_weekly_goals_scheduler_job() -> None:
                 tz_name=tz_name,
                 include_current_week=False,
             )
+            metadata["weekly_badges"] = badges_result
             logging.info("✅ Weekly badges scheduler finished: %s", badges_result)
         if target_date.day == 1:
             prev_day = target_date - timedelta(days=1)
             result_month = _dispatch_plan_period_progress(target_date=prev_day, period="month")
+            metadata["month"] = result_month
             logging.info("✅ Weekly goals scheduler finished (month): %s", result_month)
             if target_date.month in {1, 4, 7, 10}:
                 result_quarter = _dispatch_plan_period_progress(target_date=prev_day, period="quarter")
+                metadata["quarter"] = result_quarter
                 logging.info("✅ Weekly goals scheduler finished (quarter): %s", result_quarter)
             if target_date.month in {1, 7}:
                 result_half = _dispatch_plan_period_progress(target_date=prev_day, period="half-year")
+                metadata["half_year"] = result_half
                 logging.info("✅ Weekly goals scheduler finished (half-year): %s", result_half)
             if target_date.month == 1:
                 result_year = _dispatch_plan_period_progress(target_date=prev_day, period="year")
+                metadata["year"] = result_year
                 logging.info("✅ Weekly goals scheduler finished (year): %s", result_year)
-    except Exception:
+        finish_scheduler_run_guard(
+            job_key="weekly_goals_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="completed",
+            metadata=metadata,
+        )
+    except Exception as exc:
+        finish_scheduler_run_guard(
+            job_key="weekly_goals_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="failed",
+            metadata={"error": str(exc)[:1000], "tz": tz_name},
+        )
         logging.exception("❌ Weekly goals scheduler failed")
 
 
@@ -27314,20 +33281,76 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
 def _run_daily_group_summary_scheduler_job() -> None:
     tz_name = (os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     target_date = _get_local_today_date(tz_name)
+    run_period = target_date.isoformat()
+    if not claim_scheduler_run_guard(
+        job_key="daily_group_summary_auto",
+        run_period=run_period,
+        target_scope="global",
+        metadata={"tz": tz_name},
+    ):
+        logging.info("ℹ️ Daily group summary scheduler skipped: run guard already claimed for %s", run_period)
+        return
     try:
         result = _dispatch_daily_group_summary(target_date=target_date, tz_name=tz_name)
+        finish_scheduler_run_guard(
+            job_key="daily_group_summary_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="completed",
+            metadata=result if isinstance(result, dict) else {},
+        )
         logging.info("✅ Daily group summary scheduler finished: %s", result)
-    except Exception:
+    except Exception as exc:
+        finish_scheduler_run_guard(
+            job_key="daily_group_summary_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="failed",
+            metadata={"error": str(exc)[:1000], "tz": tz_name},
+        )
         logging.exception("❌ Daily group summary scheduler failed")
 
 
 def _run_weekly_group_summary_scheduler_job() -> None:
     tz_name = (os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     target_date = _get_local_today_date(tz_name)
+    bounds = get_period_bounds("week", today=target_date)
+    run_period = bounds.end_date.isoformat()
+    if not claim_scheduler_run_guard(
+        job_key="weekly_group_summary_auto",
+        run_period=run_period,
+        target_scope="global",
+        metadata={
+            "tz": tz_name,
+            "week_start": bounds.start_date.isoformat(),
+            "week_end": bounds.end_date.isoformat(),
+        },
+    ):
+        logging.info("ℹ️ Weekly group summary scheduler skipped: run guard already claimed for %s", run_period)
+        return
     try:
         result = _dispatch_weekly_group_summary(target_date=target_date, tz_name=tz_name)
+        finish_scheduler_run_guard(
+            job_key="weekly_group_summary_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="completed",
+            metadata=result if isinstance(result, dict) else {},
+        )
         logging.info("✅ Weekly group summary scheduler finished: %s", result)
-    except Exception:
+    except Exception as exc:
+        finish_scheduler_run_guard(
+            job_key="weekly_group_summary_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="failed",
+            metadata={
+                "error": str(exc)[:1000],
+                "tz": tz_name,
+                "week_start": bounds.start_date.isoformat(),
+                "week_end": bounds.end_date.isoformat(),
+            },
+        )
         logging.exception("❌ Weekly group summary scheduler failed")
 
 
@@ -27602,6 +33625,50 @@ def _count_translation_session_completed_sentences(
     return max(0, int(row[0] or 0)) if row else 0
 
 
+def _count_today_translation_completed_sentences(
+    *,
+    user_id: int,
+    plan_date: date | str | None,
+    source_lang: str,
+    target_lang: str,
+) -> int:
+    resolved_plan_date = _parse_today_plan_date(plan_date)
+    if resolved_plan_date is None:
+        return 0
+
+    normalized_source_lang = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT tr.sentence_id)
+                FROM bt_3_translations tr
+                JOIN bt_3_daily_sentences ds
+                  ON ds.id = tr.sentence_id
+                WHERE tr.user_id = %s
+                  AND ds.user_id = %s
+                  AND ds.date = %s
+                  AND COALESCE(tr.source_lang, 'ru') = %s
+                  AND COALESCE(tr.target_lang, 'de') = %s
+                  AND COALESCE(ds.source_lang, 'ru') = %s
+                  AND COALESCE(ds.target_lang, 'de') = %s;
+                """,
+                (
+                    int(user_id),
+                    int(user_id),
+                    resolved_plan_date,
+                    normalized_source_lang,
+                    normalized_target_lang,
+                    normalized_source_lang,
+                    normalized_target_lang,
+                ),
+            )
+            row = cursor.fetchone()
+    return max(0, int(row[0] or 0)) if row else 0
+
+
 def _sync_today_translation_item_progress(
     *,
     user_id: int,
@@ -27633,15 +33700,22 @@ def _sync_today_translation_item_progress(
             source_lang=effective_source_lang,
             target_lang=effective_target_lang,
         )
-    if not translation_session_id:
-        return item
-
-    completed_count = _count_translation_session_completed_sentences(
+    completed_count = _count_today_translation_completed_sentences(
         user_id=int(user_id),
-        translation_session_id=translation_session_id,
+        plan_date=plan_date,
         source_lang=effective_source_lang,
         target_lang=effective_target_lang,
     )
+    if translation_session_id:
+        completed_count = max(
+            completed_count,
+            _count_translation_session_completed_sentences(
+                user_id=int(user_id),
+                translation_session_id=translation_session_id,
+                source_lang=effective_source_lang,
+                target_lang=effective_target_lang,
+            ),
+        )
     progress_percent = min(100.0, (float(completed_count) / float(target_count)) * 100.0) if target_count > 0 else 0.0
     current_status = str(item.get("status") or "todo").strip().lower() or "todo"
 
@@ -27755,7 +33829,8 @@ def _sync_today_translation_task_progress_for_session(
     if not normalized_session_id:
         return None
     today_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
-    plan = get_daily_plan(user_id=int(user_id), plan_date=today_date)
+    with db_acquire_scope("today_translation_task_sync"):
+        plan = get_daily_plan(user_id=int(user_id), plan_date=today_date)
     if not plan:
         return None
 
@@ -27783,16 +33858,17 @@ def _sync_today_translation_task_progress_for_session(
     if target_item is None:
         return None
 
-    return _sync_today_translation_item_progress(
-        user_id=int(user_id),
-        username=username,
-        item=target_item,
-        source_lang=source_lang,
-        target_lang=target_lang,
-        trigger=trigger,
-        plan_date=plan.get("plan_date"),
-        fallback_translation_session_id=normalized_session_id,
-    )
+    with db_acquire_scope("today_translation_task_sync"):
+        return _sync_today_translation_item_progress(
+            user_id=int(user_id),
+            username=username,
+            item=target_item,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            trigger=trigger,
+            plan_date=plan.get("plan_date"),
+            fallback_translation_session_id=normalized_session_id,
+        )
 
 
 def _normalize_stale_today_plan_timers(
@@ -28055,20 +34131,66 @@ def _dispatch_today_plans(target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_T
 def _run_today_plan_scheduler_job() -> None:
     tz_name = (os.getenv("TODAY_PLAN_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     target_date = _get_local_today_date(tz_name)
+    run_period = target_date.isoformat()
+    if not claim_scheduler_run_guard(
+        job_key="today_plan_auto",
+        run_period=run_period,
+        target_scope="global",
+        metadata={"tz": tz_name},
+    ):
+        logging.info("ℹ️ Today plan scheduler skipped: run guard already claimed for %s", run_period)
+        return
     try:
         result = _dispatch_today_plans(target_date=target_date, tz_name=tz_name)
+        finish_scheduler_run_guard(
+            job_key="today_plan_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="completed",
+            metadata=result if isinstance(result, dict) else {},
+        )
         logging.info("✅ Today plan scheduler finished: %s", result)
-    except Exception:
+    except Exception as exc:
+        finish_scheduler_run_guard(
+            job_key="today_plan_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="failed",
+            metadata={"error": str(exc)[:1000], "tz": tz_name},
+        )
         logging.exception("❌ Today plan scheduler failed")
 
 
 def _run_today_evening_reminders_scheduler_job() -> None:
     tz_name = (os.getenv("TODAY_PLAN_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     target_date = _get_local_today_date(tz_name)
+    run_period = target_date.isoformat()
+    if not claim_scheduler_run_guard(
+        job_key="today_evening_reminders_auto",
+        run_period=run_period,
+        target_scope="global",
+        metadata={"tz": tz_name},
+    ):
+        logging.info("ℹ️ Today evening reminders scheduler skipped: run guard already claimed for %s", run_period)
+        return
     try:
         result = _dispatch_today_evening_reminders(target_date=target_date, tz_name=tz_name)
+        finish_scheduler_run_guard(
+            job_key="today_evening_reminders_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="completed",
+            metadata=result if isinstance(result, dict) else {},
+        )
         logging.info("✅ Today evening reminders scheduler finished: %s", result)
-    except Exception:
+    except Exception as exc:
+        finish_scheduler_run_guard(
+            job_key="today_evening_reminders_auto",
+            run_period=run_period,
+            target_scope="global",
+            status="failed",
+            metadata={"error": str(exc)[:1000], "tz": tz_name},
+        )
         logging.exception("❌ Today evening reminders scheduler failed")
 
 
@@ -28491,7 +34613,6 @@ def _run_skill_state_v2_aggregation_scheduler_job() -> None:
 
 def _start_audio_scheduler() -> None:
     global _audio_scheduler
-    _bootstrap_backend_schema_or_raise()
     if BackgroundScheduler is None:
         logging.warning("⚠️ APScheduler not installed; audio scheduler disabled")
         return
@@ -28629,6 +34750,17 @@ def _start_audio_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=300,
+        )
+    if SEMANTIC_BENCHMARK_PREP_SCHEDULER_ENABLED:
+        _audio_scheduler.add_job(
+            _run_semantic_benchmark_prep_scheduler_job,
+            "cron",
+            hour=SEMANTIC_BENCHMARK_PREP_SCHEDULER_HOUR,
+            minute=SEMANTIC_BENCHMARK_PREP_SCHEDULER_MINUTE,
+            timezone=SEMANTIC_BENCHMARK_PREP_SCHEDULER_TZ,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
         )
     if SEMANTIC_AUDIT_SCHEDULER_ENABLED:
         _audio_scheduler.add_job(
@@ -28773,6 +34905,28 @@ def _start_audio_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=180,
+        )
+    if TRANSLATION_FOCUS_POOL_REFILL_ENABLED:
+        _audio_scheduler.add_job(
+            _run_translation_focus_pool_refill_scheduler_job,
+            "cron",
+            hour=TRANSLATION_FOCUS_POOL_REFILL_HOUR,
+            minute=TRANSLATION_FOCUS_POOL_REFILL_MINUTE,
+            timezone=TRANSLATION_FOCUS_POOL_REFILL_TZ,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+    if TRANSLATION_FOCUS_POOL_ADMIN_REPORT_ENABLED:
+        _audio_scheduler.add_job(
+            _run_translation_focus_pool_admin_report_scheduler_job,
+            "cron",
+            hour=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_HOUR,
+            minute=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_MINUTE,
+            timezone=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TZ,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
         )
     if SKILL_STATE_V2_AGGREGATION_ENABLED:
         _audio_scheduler.add_job(
@@ -29038,6 +35192,66 @@ def prewarm_sentence_cards_now():
     tz_name = str(payload.get("tz") or os.getenv("AUDIO_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     result = _dispatch_sentence_prewarm(force=force, tz_name=tz_name)
     return jsonify(result)
+
+
+@app.route("/api/admin/prewarm-translation-bucket", methods=["POST"])
+def prewarm_translation_bucket_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = (os.getenv("AUDIO_DISPATCH_TOKEN") or os.getenv("ADMIN_TOKEN") or "").strip()
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    topic = str(payload.get("topic") or "").strip()
+    custom_focus = str(payload.get("custom_focus") or "").strip()
+    resolved_focus = resolve_webapp_focus(topic, custom_focus)
+    focus_kind = str((resolved_focus or {}).get("kind") or "").strip().lower()
+    if focus_kind not in {"preset", "custom"}:
+        return jsonify({"error": "Требуется preset/custom grammar focus"}), 400
+
+    level = str(payload.get("level") or "b1").strip().lower() or "b1"
+    source_lang = str(payload.get("source_lang") or "ru").strip().lower() or "ru"
+    target_lang = str(payload.get("target_lang") or "de").strip().lower() or "de"
+    min_ready = max(1, int(payload.get("min_ready") or 12))
+    target_ready = max(min_ready, int(payload.get("target_ready") or 24))
+    max_generate = max(1, int(payload.get("max_generate") or 12))
+
+    if focus_kind == "custom":
+        return jsonify({"error": "Exact bucket prewarm supports preset focus only"}), 400
+
+    bucket_key = (str((resolved_focus or {}).get("key") or "").strip(), level)
+    try:
+        result = asyncio.run(
+            prewarm_shared_translation_sentence_pool(
+                focuses=[resolved_focus],
+                levels=[level],
+                source_lang=source_lang,
+                target_lang=target_lang,
+                min_ready_by_bucket={bucket_key: min_ready},
+                target_ready_by_bucket={bucket_key: target_ready},
+                target_ready_per_bucket=target_ready,
+                max_generate_per_bucket=max_generate,
+            )
+        )
+    except Exception:
+        logging.exception("Admin exact translation bucket prewarm failed")
+        return jsonify({"error": "prewarm_failed"}), 500
+
+    return jsonify(
+        {
+            "ok": bool(result.get("ok", True)),
+            "focus": resolved_focus,
+            "level": level,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "min_ready": min_ready,
+            "target_ready": target_ready,
+            "max_generate": max_generate,
+            **result,
+        }
+    )
 
 
 @app.route("/api/admin/send-weekly-goals", methods=["POST"])
@@ -29750,13 +35964,36 @@ def explain_webapp_translation():
 
 @app.route("/api/webapp/finish", methods=["POST"])
 def finish_webapp_translation():
+    started_perf = time.perf_counter()
     payload = request.get_json(silent=True) or {}
+    request_id = _extract_observability_request_id(payload)
+    correlation_id = _build_observability_correlation_id(payload=payload, prefix="webapp_finish")
     init_data = payload.get("initData")
 
     if not init_data:
+        _log_flow_observation(
+            "webapp_translation",
+            "finish_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="missing_init_data",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "initData обязателен"}), 400
 
     if not _telegram_hash_is_valid(init_data):
+        _log_flow_observation(
+            "webapp_translation",
+            "finish_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="invalid_init_data",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=401,
+        )
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
     parsed = _parse_telegram_init_data(init_data)
@@ -29766,29 +36003,100 @@ def finish_webapp_translation():
     username = _extract_display_name(user_data)
 
     if not user_id:
+        _log_flow_observation(
+            "webapp_translation",
+            "finish_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="missing_user_id",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
+    finish_started_perf = time.perf_counter()
     result = finish_translation_webapp(user_id)
-    summary = None
+    finish_translation_webapp_ms = int((time.perf_counter() - finish_started_perf) * 1000)
     group_warning = None
-    try:
-        summary = build_user_daily_summary(user_id=user_id, username=username or user_name)
-    except Exception as exc:
-        logging.warning("finish_webapp_translation: daily summary build failed for user_id=%s: %s", user_id, exc, exc_info=True)
-        group_warning = f"Не удалось собрать сводку: {exc}"
-    if summary:
+    daily_summary_ms = 0
+    summary_delivery_ms = 0
+    summary_enqueue_ms = 0
+    summary_job_enqueued = False
+    summary_job_id = None
+    summary_delivery_attempted = False
+    summary_delivery_target = None
+    if can_enqueue_background_jobs():
         try:
-            target_chat_id = _resolve_user_delivery_chat_id(int(user_id), job_name="finish_webapp_translation")
-            if int(target_chat_id) < 0:
-                _send_group_message(summary, chat_id=int(target_chat_id))
-            else:
-                _send_private_message(user_id=int(target_chat_id), text=summary)
+            summary_enqueue_started_perf = time.perf_counter()
+            summary_job_id = enqueue_finish_daily_summary_job(
+                user_id=int(user_id),
+                username=username or user_name,
+                user_name=user_name,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            )
+            summary_enqueue_ms = int((time.perf_counter() - summary_enqueue_started_perf) * 1000)
+            summary_job_enqueued = True
         except Exception as exc:
-            # Delivery is optional for WebApp flow; do not fail finish.
-            group_warning = f"Не удалось отправить сводку: {exc}"
+            summary_enqueue_ms = int((time.perf_counter() - summary_enqueue_started_perf) * 1000)
+            logging.warning(
+                "finish_webapp_translation: async daily summary enqueue failed for user_id=%s: %s",
+                user_id,
+                exc,
+                exc_info=True,
+            )
+            group_warning = f"Не удалось поставить сводку в очередь: {exc}"
+    else:
+        group_warning = "Фоновая очередь недоступна для отправки сводки."
     response_payload = {"ok": True, **result}
     if group_warning:
         response_payload["group_warning"] = group_warning
+    plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    stale_mark_started_perf = time.perf_counter()
+    _mark_today_plan_snapshot_stale(user_id=int(user_id), plan_date=plan_date)
+    _mark_skill_progress_snapshot_stale(user_id=int(user_id), lookback_days=7)
+    _mark_weekly_plan_snapshot_stale(user_id=int(user_id), anchor_date=plan_date)
+    _mark_plan_analytics_snapshot_stale(user_id=int(user_id))
+    stale_mark_ms = int((time.perf_counter() - stale_mark_started_perf) * 1000)
+    ensured_hotpaths = {"today": False, "skills": False, "today_duration_ms": 0, "skills_duration_ms": 0}
+    ensure_hotpaths_ms = 0
+    schedule_refresh_ms = 0
+    schedule_started_perf = time.perf_counter()
+    _schedule_today_plan_snapshot_refresh(user_id=int(user_id), username=username or user_name, plan_date=plan_date)
+    _schedule_skill_progress_snapshot_refresh(user_id=int(user_id), username=username or user_name, lookback_days=7)
+    _schedule_weekly_plan_snapshot_refresh(user_id=int(user_id), anchor_date=plan_date)
+    _schedule_plan_analytics_snapshot_refresh(user_id=int(user_id), period="week", as_of_date=plan_date)
+    schedule_refresh_ms = int((time.perf_counter() - schedule_started_perf) * 1000)
+    _log_flow_observation(
+        "webapp_translation",
+        "finish_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        finish_status=str(result.get("status") or "").strip() or None,
+        total_sentences=int(result.get("total_sentences") or 0) if result.get("total_sentences") is not None else None,
+        translated_count=int(result.get("translated_count") or 0) if result.get("translated_count") is not None else None,
+        finish_translation_webapp_ms=finish_translation_webapp_ms,
+        daily_summary_ms=daily_summary_ms,
+        summary_delivery_ms=summary_delivery_ms,
+        summary_enqueue_ms=summary_enqueue_ms,
+        summary_job_enqueued=summary_job_enqueued,
+        summary_job_id=summary_job_id,
+        summary_delivery_attempted=summary_delivery_attempted,
+        summary_delivery_target=summary_delivery_target,
+        stale_mark_ms=stale_mark_ms,
+        ensure_hotpaths_ms=ensure_hotpaths_ms,
+        ensure_today_snapshot_ms=int(ensured_hotpaths.get("today_duration_ms") or 0),
+        ensure_skills_snapshot_ms=int(ensured_hotpaths.get("skills_duration_ms") or 0),
+        ensured_today_snapshot=bool(ensured_hotpaths.get("today")),
+        ensured_skills_snapshot=bool(ensured_hotpaths.get("skills")),
+        schedule_refresh_ms=schedule_refresh_ms,
+        response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+        final_status="success",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+    )
     return jsonify(response_payload)
 
 
@@ -29804,7 +36112,7 @@ try:
 except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 
-if not _imported_by_bot_process:
+if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(
             target=_resume_all_active_translation_check_sessions,
@@ -29813,11 +36121,19 @@ if not _imported_by_bot_process:
     except Exception as exc:
         logging.warning("Translation check recovery startup failed: %s", exc)
 
-    _bootstrap_backend_schema_or_raise()
+    if _BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED or _force_backend_schema_bootstrap:
+        _bootstrap_backend_schema_or_raise()
+    else:
+        logging.info("Skipping runtime backend schema bootstrap in web process")
     _start_audio_scheduler()
     _start_skill_resource_domain_autoseed()
 else:
-    logging.info("Skipping backend runtime side effects during bot import")
+    logging.info(
+        "Skipping backend runtime side effects: imported_by_bot=%s railway_service=%s argv=%s",
+        _imported_by_bot_process,
+        _railway_service_name or "-",
+        " ".join(sys.argv[:4]),
+    )
 
 
 if __name__ == "__main__":
