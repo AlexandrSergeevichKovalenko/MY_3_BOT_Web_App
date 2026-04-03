@@ -1149,6 +1149,13 @@ def _is_admin_user(user_id: int | None) -> bool:
     return int(user_id) in get_admin_telegram_ids()
 
 
+def _can_use_image_quiz_test_commands(user_id: int | None) -> bool:
+    if not user_id:
+        return False
+    safe_user_id = int(user_id)
+    return _is_admin_user(safe_user_id) or is_telegram_user_allowed(safe_user_id)
+
+
 def _format_admin_datetime(value: str | None) -> str:
     raw_value = str(value or "").strip()
     if not raw_value:
@@ -11959,6 +11966,38 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
         return []
 
 
+async def _collect_quiz_delivery_user_routes(context: CallbackContext) -> list[dict]:
+    try:
+        user_ids = await _collect_scheduler_candidate_user_ids(
+            lookback_days=30,
+            include_allowed=True,
+            include_admins=True,
+        )
+        delivery_map = await _build_user_delivery_map(context, user_ids, job_name="send_scheduled_quiz")
+        routes: list[dict] = []
+        skipped = 0
+        for user_id in sorted(user_ids):
+            safe_user_id = int(user_id)
+            target_chat_id = int(delivery_map.get(safe_user_id) or 0)
+            if target_chat_id == 0:
+                continue
+            if _is_quiz_delivery_target_suppressed(target_chat_id):
+                skipped += 1
+                continue
+            routes.append(
+                {
+                    "user_id": safe_user_id,
+                    "chat_id": target_chat_id,
+                }
+            )
+        if skipped > 0:
+            logging.info("ℹ️ scheduled image quiz: suppressed %s user route(s)", skipped)
+        return routes
+    except Exception:
+        logging.warning("⚠️ Не удалось собрать user routes для scheduled image quiz", exc_info=True)
+        return []
+
+
 def _build_image_quiz_keyboard(dispatch_id: int, answer_options: list[str]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     current_row: list[InlineKeyboardButton] = []
@@ -11991,6 +12030,7 @@ async def _send_image_quiz_for_target(
     candidate_user_ids: list[int],
     delivery_slot: str,
     delivery_date_local: date,
+    photo_override: str | None = None,
 ) -> bool:
     chosen_user_id: int | None = None
     chosen_template: dict | None = None
@@ -12065,10 +12105,11 @@ async def _send_image_quiz_for_target(
         return False
 
     dispatch_id = int(dispatch["id"])
+    photo_to_send = str(photo_override).strip() if photo_override is not None else image_url
     try:
         photo_message = await context.bot.send_photo(
             chat_id=int(target_chat_id),
-            photo=image_url,
+            photo=photo_to_send,
             caption=_build_image_quiz_caption(chosen_template),
             reply_markup=_build_image_quiz_keyboard(dispatch_id, answer_options),
         )
@@ -12113,138 +12154,250 @@ async def _send_image_quiz_for_target(
     return True
 
 
+async def _send_poll_quiz_for_target(
+    context: CallbackContext,
+    *,
+    target_chat_id: int,
+    ordered: list[dict] | None = None,
+) -> bool:
+    generators = ordered or _get_scheduled_quiz_generators(context)
+    selection = await _select_scheduled_quiz_for_target(int(target_chat_id), generators)
+    if not selection:
+        logging.warning("⚠️ Не удалось подобрать scheduled quiz для chat_id=%s", target_chat_id)
+        return False
+
+    quiz = selection.get("quiz") or {}
+    chosen_entry = selection.get("entry") or {}
+    desired_mode = str(selection.get("desired_mode") or "new")
+    used_mode = str(selection.get("used_mode") or "new")
+    resolved_quiz_type = str(selection.get("resolved_quiz_type") or quiz.get("quiz_type") or "generated")
+    shuffled_quiz = _shuffle_quiz_options(quiz)
+    if shuffled_quiz:
+        quiz = shuffled_quiz
+    try:
+        poll_message = await context.bot.send_poll(
+            chat_id=int(target_chat_id),
+            question=quiz["question"],
+            options=quiz["options"],
+            type=Poll.QUIZ,
+            correct_option_id=quiz["correct_option_id"],
+            is_anonymous=False,
+            allows_multiple_answers=False,
+        )
+    except Exception as exc:
+        if _is_permanent_quiz_delivery_error(exc):
+            _suppress_quiz_delivery_target(int(target_chat_id))
+            logging.warning(
+                "⚠️ suppressing scheduled quiz target chat_id=%s for %ss after permanent sendPoll failure: %s",
+                int(target_chat_id),
+                QUIZ_DELIVERY_SUPPRESS_SECONDS,
+                exc,
+            )
+        logging.warning(
+            "⚠️ Не удалось отправить quiz в chat_id=%s: %s",
+            target_chat_id,
+            exc,
+        )
+        return False
+
+    active_quizzes[poll_message.poll.id] = {
+        "chat_id": int(target_chat_id),
+        "correct_option_id": quiz["correct_option_id"],
+        "correct_text": quiz.get("correct_text"),
+        "options": quiz["options"],
+        "freeform_option": QUIZ_FREEFORM_OPTION,
+        "message_id": poll_message.message_id,
+        "quiz_type": quiz.get("quiz_type", resolved_quiz_type),
+        "word_ru": quiz.get("word_ru"),
+    }
+    try:
+        await asyncio.to_thread(
+            upsert_active_quiz,
+            str(poll_message.poll.id),
+            chat_id=int(target_chat_id),
+            message_id=int(poll_message.message_id),
+            correct_option_id=int(quiz["correct_option_id"]),
+            options=[str(option) for option in (quiz.get("options") or [])],
+            correct_text=(quiz.get("correct_text") or ""),
+            freeform_option=QUIZ_FREEFORM_OPTION,
+            quiz_type=(quiz.get("quiz_type") or resolved_quiz_type or "generated"),
+            word_ru=(quiz.get("word_ru") or ""),
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось сохранить активный квиз в БД", exc_info=True)
+    try:
+        await asyncio.to_thread(
+            record_telegram_quiz_delivery,
+            int(target_chat_id),
+            poll_id=str(poll_message.poll.id),
+            word_ru=(quiz.get("word_ru") or chosen_entry.get("word_ru") or ""),
+            quiz_type=(quiz.get("quiz_type") or resolved_quiz_type or "generated"),
+            delivery_mode=used_mode,
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось записать историю Telegram quiz delivery", exc_info=True)
+    try:
+        await asyncio.to_thread(
+            set_telegram_quiz_next_mode,
+            int(target_chat_id),
+            _toggle_quiz_delivery_mode(desired_mode),
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось обновить состояние чередования Telegram quiz", exc_info=True)
+
+    context.job_queue.run_once(
+        cleanup_quiz_cache,
+        when=QUIZ_CACHE_TTL_SECONDS,
+        data={"poll_id": poll_message.poll.id},
+    )
+    try:
+        await asyncio.to_thread(record_quiz_word, (chosen_entry or {}).get("word_ru"))
+    except Exception:
+        logging.warning("⚠️ Не удалось записать global quiz history", exc_info=True)
+    logging.info(
+        "✅ Quiz sent: chat_id=%s mode_slot=%s mode_used=%s type=%s options=%s correct_option_id=%s word_ru=%s",
+        int(target_chat_id),
+        desired_mode,
+        used_mode,
+        quiz.get("quiz_type", resolved_quiz_type or "generated"),
+        len(quiz.get("options", [])),
+        quiz.get("correct_option_id"),
+        (chosen_entry or {}).get("word_ru"),
+    )
+    return True
+
+
+def _build_manual_test_delivery_slot(prefix: str) -> str:
+    now = _get_quiz_schedule_now()
+    return f"{prefix}_{now.strftime('%H%M%S')}"
+
+
 async def send_scheduled_quiz(context: CallbackContext) -> None:
     ordered = _get_scheduled_quiz_generators(context)
-    delivery_targets = await _collect_quiz_delivery_user_targets(context)
-    if not delivery_targets:
-        logging.info("ℹ️ scheduled quiz: нет targets для рассылки")
-        return
     slot_now = _get_quiz_schedule_now()
     delivery_slot = _format_quiz_delivery_slot(slot_now)
     delivery_date_local = slot_now.date()
     image_slot = _is_image_quiz_slot(slot_now)
     sent_count = 0
-    for target in delivery_targets:
-        target_chat_id = int(target.get("chat_id") or 0)
-        target_user_ids = [int(user_id) for user_id in (target.get("user_ids") or []) if int(user_id) > 0]
-        if image_slot:
+    if image_slot:
+        delivery_targets = await _collect_quiz_delivery_user_targets(context)
+        if not delivery_targets:
+            logging.info("ℹ️ scheduled image quiz: нет targets для рассылки")
+            return
+        for target in delivery_targets:
+            target_chat_id = int(target.get("chat_id") or 0)
+            candidate_user_ids = [
+                int(user_id)
+                for user_id in (target.get("user_ids") or [])
+                if int(user_id or 0) > 0
+            ]
+            if target_chat_id == 0 or not candidate_user_ids:
+                continue
             image_sent = await _send_image_quiz_for_target(
                 context,
-                target_chat_id=int(target_chat_id),
-                candidate_user_ids=target_user_ids,
+                target_chat_id=target_chat_id,
+                candidate_user_ids=candidate_user_ids,
                 delivery_slot=delivery_slot,
                 delivery_date_local=delivery_date_local,
             )
             if image_sent:
                 sent_count += 1
                 continue
-        selection = await _select_scheduled_quiz_for_target(int(target_chat_id), ordered)
-        if not selection:
-            logging.warning("⚠️ Не удалось подобрать scheduled quiz для chat_id=%s", target_chat_id)
-            continue
-        quiz = selection.get("quiz") or {}
-        chosen_entry = selection.get("entry") or {}
-        desired_mode = str(selection.get("desired_mode") or "new")
-        used_mode = str(selection.get("used_mode") or "new")
-        resolved_quiz_type = str(selection.get("resolved_quiz_type") or quiz.get("quiz_type") or "generated")
-        shuffled_quiz = _shuffle_quiz_options(quiz)
-        if shuffled_quiz:
-            quiz = shuffled_quiz
-        try:
-            poll_message = await context.bot.send_poll(
-                chat_id=int(target_chat_id),
-                question=quiz["question"],
-                options=quiz["options"],
-                type=Poll.QUIZ,
-                correct_option_id=quiz["correct_option_id"],
-                is_anonymous=False,
-                allows_multiple_answers=False,
+            poll_sent = await _send_poll_quiz_for_target(
+                context,
+                target_chat_id=target_chat_id,
+                ordered=ordered,
             )
-        except Exception as exc:
-            if _is_permanent_quiz_delivery_error(exc):
-                _suppress_quiz_delivery_target(int(target_chat_id))
-                logging.warning(
-                    "⚠️ suppressing scheduled quiz target chat_id=%s for %ss after permanent sendPoll failure: %s",
-                    int(target_chat_id),
-                    QUIZ_DELIVERY_SUPPRESS_SECONDS,
-                    exc,
-                )
-            logging.warning(
-                "⚠️ Не удалось отправить quiz в chat_id=%s: %s",
-                target_chat_id,
-                exc,
+            if poll_sent:
+                sent_count += 1
+    else:
+        delivery_targets = await _collect_quiz_delivery_user_targets(context)
+        if not delivery_targets:
+            logging.info("ℹ️ scheduled quiz: нет targets для рассылки")
+            return
+        for target in delivery_targets:
+            target_chat_id = int(target.get("chat_id") or 0)
+            poll_sent = await _send_poll_quiz_for_target(
+                context,
+                target_chat_id=int(target_chat_id),
+                ordered=ordered,
             )
-            continue
-
-        sent_count += 1
-        active_quizzes[poll_message.poll.id] = {
-            "chat_id": int(target_chat_id),
-            "correct_option_id": quiz["correct_option_id"],
-            "correct_text": quiz.get("correct_text"),
-            "options": quiz["options"],
-            "freeform_option": QUIZ_FREEFORM_OPTION,
-            "message_id": poll_message.message_id,
-            "quiz_type": quiz.get("quiz_type", resolved_quiz_type),
-            "word_ru": quiz.get("word_ru"),
-        }
-        try:
-            await asyncio.to_thread(
-                upsert_active_quiz,
-                str(poll_message.poll.id),
-                chat_id=int(target_chat_id),
-                message_id=int(poll_message.message_id),
-                correct_option_id=int(quiz["correct_option_id"]),
-                options=[str(option) for option in (quiz.get("options") or [])],
-                correct_text=(quiz.get("correct_text") or ""),
-                freeform_option=QUIZ_FREEFORM_OPTION,
-                quiz_type=(quiz.get("quiz_type") or resolved_quiz_type or "generated"),
-                word_ru=(quiz.get("word_ru") or ""),
-            )
-        except Exception:
-            logging.warning("⚠️ Не удалось сохранить активный квиз в БД", exc_info=True)
-        try:
-            await asyncio.to_thread(
-                record_telegram_quiz_delivery,
-                int(target_chat_id),
-                poll_id=str(poll_message.poll.id),
-                word_ru=(quiz.get("word_ru") or chosen_entry.get("word_ru") or ""),
-                quiz_type=(quiz.get("quiz_type") or resolved_quiz_type or "generated"),
-                delivery_mode=used_mode,
-            )
-        except Exception:
-            logging.warning("⚠️ Не удалось записать историю Telegram quiz delivery", exc_info=True)
-        try:
-            await asyncio.to_thread(
-                set_telegram_quiz_next_mode,
-                int(target_chat_id),
-                _toggle_quiz_delivery_mode(desired_mode),
-            )
-        except Exception:
-            logging.warning("⚠️ Не удалось обновить состояние чередования Telegram quiz", exc_info=True)
-
-        context.job_queue.run_once(
-            cleanup_quiz_cache,
-            when=QUIZ_CACHE_TTL_SECONDS,
-            data={"poll_id": poll_message.poll.id},
-        )
-        try:
-            await asyncio.to_thread(record_quiz_word, (chosen_entry or {}).get("word_ru"))
-        except Exception:
-            logging.warning("⚠️ Не удалось записать global quiz history", exc_info=True)
-        logging.info(
-            "✅ Quiz sent: chat_id=%s mode_slot=%s mode_used=%s type=%s options=%s correct_option_id=%s word_ru=%s",
-            int(target_chat_id),
-            desired_mode,
-            used_mode,
-            quiz.get("quiz_type", resolved_quiz_type or "generated"),
-            len(quiz.get("options", [])),
-            quiz.get("correct_option_id"),
-            (chosen_entry or {}).get("word_ru"),
-        )
+            if poll_sent:
+                sent_count += 1
     if sent_count <= 0:
         logging.warning("⚠️ Scheduled quiz run finished without successful deliveries.")
     else:
         logging.info("✅ Scheduled quiz run completed with successful deliveries: %s", sent_count)
+
+
+async def test_image_quiz_command(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+
+    logging.info(
+        "🧪 /test_image_quiz invoked: user_id=%s chat_id=%s chat_type=%s",
+        int(user.id),
+        int(chat.id),
+        str(getattr(chat, "type", "") or ""),
+    )
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    sent = await _send_image_quiz_for_target(
+        context,
+        target_chat_id=int(chat.id),
+        candidate_user_ids=[int(user.id)],
+        delivery_slot=_build_manual_test_delivery_slot("manual_image_test"),
+        delivery_date_local=_get_quiz_schedule_now().date(),
+    )
+    if sent:
+        await message.reply_text("Image quiz test sent.")
+    else:
+        await message.reply_text("Image quiz test did not send. No ready template or send failed.")
+
+
+async def test_image_quiz_fallback_command(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+
+    logging.info(
+        "🧪 /test_image_quiz_fallback invoked: user_id=%s chat_id=%s chat_type=%s",
+        int(user.id),
+        int(chat.id),
+        str(getattr(chat, "type", "") or ""),
+    )
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    delivery_date_local = _get_quiz_schedule_now().date()
+    image_sent = await _send_image_quiz_for_target(
+        context,
+        target_chat_id=int(chat.id),
+        candidate_user_ids=[int(user.id)],
+        delivery_slot=_build_manual_test_delivery_slot("manual_image_fail"),
+        delivery_date_local=delivery_date_local,
+        photo_override="not_a_valid_photo_ref",
+    )
+    if image_sent:
+        await message.reply_text("Unexpected: image send succeeded during fallback test.")
+        return
+
+    poll_sent = await _send_poll_quiz_for_target(
+        context,
+        target_chat_id=int(chat.id),
+    )
+    if poll_sent:
+        await message.reply_text("Fallback test completed: image failed, poll sent.")
+    else:
+        await message.reply_text("Fallback test failed: image failed and poll did not send.")
 
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -12496,6 +12649,8 @@ def main():
     application.add_handler(CommandHandler("budgets", budgets_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
+    application.add_handler(CommandHandler("test_image_quiz", test_image_quiz_command))
+    application.add_handler(CommandHandler("test_image_quiz_fallback", test_image_quiz_fallback_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)

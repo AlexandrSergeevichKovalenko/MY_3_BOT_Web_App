@@ -819,6 +819,7 @@ SEMANTIC_AUDIT_REPORTS_DIR = BASE_DIR / "reports" / "semantic_audit"
 _TTS_PREWARM_LOCK = threading.Lock()
 _TTS_GENERATION_JOBS_LOCK = threading.Lock()
 _TTS_GENERATION_JOBS: set[str] = set()
+_SINGLETON_STARTUP_LOCKS: dict[str, Any] = {}
 _LANGUAGE_PAIR_CACHE_LOCK = threading.Lock()
 _LANGUAGE_PAIR_CACHE: dict[int, dict] = {}
 _DICTIONARY_LOOKUP_CACHE_LOCK = threading.Lock()
@@ -896,7 +897,7 @@ HOTPATH_FRONT_CACHE_MAX_ENTRIES = max(
 )
 HOTPATH_REFRESH_WORKERS = max(
     1,
-    min(32, int((os.getenv("HOTPATH_REFRESH_WORKERS") or "4").strip() or "4")),
+    min(32, int((os.getenv("HOTPATH_REFRESH_WORKERS") or "2").strip() or "2")),
 )
 TRANSLATION_CHECK_GLOBAL_ITEM_CONCURRENCY = max(
     1,
@@ -1000,21 +1001,25 @@ _HOTPATH_TODAY_CACHE = HotPathCacheManager(
     name="today_snapshot",
     max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
     refresh_workers=HOTPATH_REFRESH_WORKERS,
+    shared_executor_name="webapp_snapshot",
 )
 _HOTPATH_SKILL_PROGRESS_CACHE = HotPathCacheManager(
     name="skill_progress_snapshot",
     max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
     refresh_workers=HOTPATH_REFRESH_WORKERS,
+    shared_executor_name="webapp_snapshot",
 )
 _HOTPATH_WEEKLY_PLAN_CACHE = HotPathCacheManager(
     name="weekly_plan_snapshot",
     max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
     refresh_workers=HOTPATH_REFRESH_WORKERS,
+    shared_executor_name="webapp_snapshot",
 )
 _HOTPATH_PLAN_ANALYTICS_CACHE = HotPathCacheManager(
     name="plan_analytics_snapshot",
     max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
     refresh_workers=HOTPATH_REFRESH_WORKERS,
+    shared_executor_name="webapp_snapshot",
 )
 _TRANSLATION_CHECK_GLOBAL_ITEM_SEMAPHORE = threading.BoundedSemaphore(TRANSLATION_CHECK_GLOBAL_ITEM_CONCURRENCY)
 _HOTPATH_ALLOWLIST_CACHE = HotPathCacheManager(
@@ -11884,6 +11889,20 @@ def _acquire_audio_scheduler_lock() -> bool:
         return False
 
 
+def _acquire_singleton_startup_lock(lock_name: str) -> bool:
+    try:
+        import fcntl
+
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(lock_name or "startup").strip()) or "startup"
+        lock_path = f"/tmp/{safe_name}.lock"
+        lock_file = open(lock_path, "w")
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _SINGLETON_STARTUP_LOCKS[safe_name] = lock_file
+        return True
+    except Exception:
+        return False
+
+
 def _chunk_sentence_simple(sentence: str, max_len: int = 60) -> list[str]:
     if not sentence:
         return []
@@ -16231,13 +16250,12 @@ def bootstrap_webapp_session():
         parsed_user = parsed.get("user") if isinstance(parsed.get("user"), dict) else {}
         parsed_user_id = _safe_int(parsed_user.get("id"))
         if parsed_user_id is not None and parsed_user_id > 0:
-            starter_dictionary = _build_starter_dictionary_offer(user_id=int(parsed_user_id))
             _prime_webapp_home_snapshots_async(
                 user_id=int(parsed_user_id),
                 username=_extract_display_name(parsed_user),
             )
     except Exception as exc:
-        logging.warning("Starter dictionary bootstrap payload failed: %s", exc)
+        logging.warning("Webapp bootstrap async prime failed: %s", exc)
     return jsonify(
         {
             "ok": True,
@@ -21670,29 +21688,120 @@ def _schedule_plan_analytics_snapshot_refresh(
     _HOTPATH_PLAN_ANALYTICS_CACHE.enqueue_refresh(front_key, _refresh)
 
 
+def _snapshot_prime_refresh_needed(
+    *,
+    user_id: int,
+    snapshot_kind: str,
+    snapshot_key: str,
+    front_key: tuple,
+    cache_manager: HotPathCacheManager,
+    fresh_ttl_sec: int,
+    stale_ttl_sec: int,
+) -> bool:
+    fresh_front = cache_manager.get(front_key)
+    if fresh_front is not None:
+        return False
+
+    stale_front = cache_manager.get(front_key, allow_stale=True)
+    if stale_front is not None:
+        return True
+
+    snapshot = get_user_api_snapshot(
+        user_id=int(user_id),
+        snapshot_kind=snapshot_kind,
+        snapshot_key=snapshot_key,
+    )
+    if isinstance(snapshot, dict):
+        _store_snapshot_in_front_cache(
+            cache_manager,
+            front_key=front_key,
+            snapshot=snapshot,
+            fresh_ttl_sec=fresh_ttl_sec,
+            stale_ttl_sec=stale_ttl_sec,
+        )
+        return not _snapshot_is_fresh(snapshot)
+    return True
+
+
+def _maybe_prime_today_plan_snapshot_refresh(*, user_id: int, username: str | None, plan_date: date) -> bool:
+    snapshot_key = _today_plan_snapshot_key(plan_date)
+    front_key = ("today_plan", int(user_id), snapshot_key)
+    if not _snapshot_prime_refresh_needed(
+        user_id=int(user_id),
+        snapshot_kind="today_plan",
+        snapshot_key=snapshot_key,
+        front_key=front_key,
+        cache_manager=_HOTPATH_TODAY_CACHE,
+        fresh_ttl_sec=TODAY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_sec=TODAY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+    ):
+        return False
+    _schedule_today_plan_snapshot_refresh(
+        user_id=int(user_id),
+        username=username,
+        plan_date=plan_date,
+    )
+    return True
+
+
+def _maybe_prime_skill_progress_snapshot_refresh(*, user_id: int, username: str | None, lookback_days: int) -> bool:
+    snapshot_key = _skill_progress_snapshot_key(lookback_days)
+    front_key = ("skill_progress", int(user_id), snapshot_key)
+    if not _snapshot_prime_refresh_needed(
+        user_id=int(user_id),
+        snapshot_kind="skill_progress",
+        snapshot_key=snapshot_key,
+        front_key=front_key,
+        cache_manager=_HOTPATH_SKILL_PROGRESS_CACHE,
+        fresh_ttl_sec=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_sec=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+    ):
+        return False
+    _schedule_skill_progress_snapshot_refresh(
+        user_id=int(user_id),
+        username=username,
+        lookback_days=int(lookback_days),
+    )
+    return True
+
+
+def _maybe_prime_weekly_plan_snapshot_refresh(*, user_id: int, anchor_date: date | None = None) -> bool:
+    snapshot_key = _weekly_plan_snapshot_key(anchor_date)
+    front_key = ("weekly_plan", int(user_id), snapshot_key)
+    if not _snapshot_prime_refresh_needed(
+        user_id=int(user_id),
+        snapshot_kind="weekly_plan",
+        snapshot_key=snapshot_key,
+        front_key=front_key,
+        cache_manager=_HOTPATH_WEEKLY_PLAN_CACHE,
+        fresh_ttl_sec=WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+        stale_ttl_sec=WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+    ):
+        return False
+    _schedule_weekly_plan_snapshot_refresh(
+        user_id=int(user_id),
+        anchor_date=anchor_date,
+    )
+    return True
+
+
 def _prime_webapp_home_snapshots_async(*, user_id: int, username: str | None) -> None:
-    """Warm the most visible home-screen snapshots outside the request path."""
+    """Warm visible home-screen snapshots only when missing or stale."""
     try:
         plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
-        _schedule_today_plan_snapshot_refresh(
+        _maybe_prime_today_plan_snapshot_refresh(
             user_id=int(user_id),
             username=username,
             plan_date=plan_date,
         )
-        _schedule_skill_progress_snapshot_refresh(
+        _maybe_prime_skill_progress_snapshot_refresh(
             user_id=int(user_id),
             username=username,
             lookback_days=7,
         )
-        _schedule_weekly_plan_snapshot_refresh(
+        _maybe_prime_weekly_plan_snapshot_refresh(
             user_id=int(user_id),
             anchor_date=plan_date,
-        )
-        _schedule_plan_analytics_snapshot_refresh(
-            user_id=int(user_id),
-            period="week",
-            week_start=None,
-            as_of_date=plan_date,
         )
     except Exception:
         logging.warning("Failed to prime webapp home snapshots: user_id=%s", user_id, exc_info=True)
@@ -32864,7 +32973,7 @@ def _fetch_group_daily_summary_rows(*, target_date: date, cohort_user_ids: list[
                         user_id,
                         AVG({build_translation_session_minutes_sql('p')}) AS avg_time,
                         SUM({build_translation_session_minutes_sql('p')}) AS total_time
-                    FROM bt_3_user_progress
+                    FROM bt_3_user_progress p
                     WHERE completed = TRUE
                       AND start_time::date = %s
                       AND user_id = ANY(%s)
@@ -36102,13 +36211,16 @@ def finish_webapp_translation():
 
 try:
     if str(os.getenv("BILLING_OPENAI_SNAPSHOT_SYNC_ON_STARTUP") or "1").strip().lower() in {"1", "true", "yes", "on"}:
-        snapshot_sync_result = _sync_openai_price_snapshots_public_then_env()
-        logging.info(
-            "Billing OpenAI snapshot sync: created=%s skipped=%s errors=%s",
-            (snapshot_sync_result.get("summary") or {}).get("created_count"),
-            (snapshot_sync_result.get("summary") or {}).get("skipped_count"),
-            (snapshot_sync_result.get("summary") or {}).get("errors_count"),
-        )
+        if _acquire_singleton_startup_lock("billing_openai_snapshot_sync"):
+            snapshot_sync_result = _sync_openai_price_snapshots_public_then_env()
+            logging.info(
+                "Billing OpenAI snapshot sync: created=%s skipped=%s errors=%s",
+                (snapshot_sync_result.get("summary") or {}).get("created_count"),
+                (snapshot_sync_result.get("summary") or {}).get("skipped_count"),
+                (snapshot_sync_result.get("summary") or {}).get("errors_count"),
+            )
+        else:
+            logging.info("Billing OpenAI snapshot sync skipped in this worker: singleton lock not acquired")
 except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 

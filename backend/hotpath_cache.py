@@ -5,6 +5,24 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 
+_SHARED_EXECUTOR_LOCK = threading.Lock()
+_SHARED_EXECUTORS: dict[tuple[str, int], ThreadPoolExecutor] = {}
+
+
+def _get_shared_executor(*, name: str, max_workers: int) -> ThreadPoolExecutor:
+    safe_workers = max(1, int(max_workers or 1))
+    key = (str(name or "hotpath").strip() or "hotpath", safe_workers)
+    with _SHARED_EXECUTOR_LOCK:
+        executor = _SHARED_EXECUTORS.get(key)
+        if executor is None:
+            executor = ThreadPoolExecutor(
+                max_workers=safe_workers,
+                thread_name_prefix=f"{key[0]}_refresh",
+            )
+            _SHARED_EXECUTORS[key] = executor
+        return executor
+
+
 class HotPathCacheManager:
     def __init__(
         self,
@@ -12,20 +30,26 @@ class HotPathCacheManager:
         name: str,
         max_entries: int = 10000,
         refresh_workers: int = 0,
+        shared_executor_name: str | None = None,
     ) -> None:
         self.name = str(name or "hotpath").strip() or "hotpath"
         self.max_entries = max(128, int(max_entries or 10000))
         self._lock = threading.Lock()
         self._entries: dict[Any, dict[str, Any]] = {}
         self._inflight_refreshes: set[Any] = set()
-        self._executor = (
-            ThreadPoolExecutor(
-                max_workers=max(1, int(refresh_workers)),
-                thread_name_prefix=f"{self.name}_refresh",
-            )
-            if int(refresh_workers or 0) > 0
-            else None
-        )
+        if int(refresh_workers or 0) > 0:
+            if shared_executor_name:
+                self._executor = _get_shared_executor(
+                    name=str(shared_executor_name),
+                    max_workers=max(1, int(refresh_workers)),
+                )
+            else:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=max(1, int(refresh_workers)),
+                    thread_name_prefix=f"{self.name}_refresh",
+                )
+        else:
+            self._executor = None
 
     def get(self, key: Any, *, allow_stale: bool = False) -> dict[str, Any] | None:
         now_ts = time.time()

@@ -63,8 +63,10 @@ _TRANSLATION_SENTENCE_LLM_SEMAPHORE = threading.BoundedSemaphore(TRANSLATION_SEN
 
 
 def _translation_sentence_fill_async_enabled() -> bool:
-    if str((os.getenv("TRANSLATION_SENTENCE_FILL_ASYNC_ENABLED") or "0")).strip().lower() not in {"1", "true", "yes", "on"}:
-        return False
+    raw = str(os.getenv("TRANSLATION_SENTENCE_FILL_ASYNC_ENABLED") or "").strip().lower()
+    if raw:
+        if raw not in {"1", "true", "yes", "on"}:
+            return False
     return bool(
         (os.getenv("REDIS_URL") or "").strip()
         or (os.getenv("RAILWAY_REDIS_URL") or "").strip()
