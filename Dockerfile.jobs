@@ -1,0 +1,21 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ffmpeg \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 -r /app/backend/requirements.txt
+
+COPY backend/ /app/backend/
+
+ENV PYTHONPATH=/app
+ENV BACKGROUND_JOBS_PROCESSES=2
+ENV BACKGROUND_JOBS_THREADS=8
+ENV TRANSLATION_CHECK_GLOBAL_ITEM_CONCURRENCY=12
+ENV TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY=4
+
+CMD ["sh", "-c", "python -m dramatiq backend.background_jobs --processes ${BACKGROUND_JOBS_PROCESSES:-1} --threads ${BACKGROUND_JOBS_THREADS:-8}"]
