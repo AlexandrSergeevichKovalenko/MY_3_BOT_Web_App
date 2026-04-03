@@ -3753,22 +3753,62 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 llm_response,
                 source_lang=llm_payload["source_language"],
                 target_lang=llm_payload["target_language"],
+                fallback_pairs=[
+                    {
+                        "source_text": llm_payload["studied_text"],
+                        "target_text": llm_payload["translation_text"],
+                    }
+                ],
             )
             save_key = None
-            if normalized["save_source_text"] and normalized["save_target_text"]:
+            save_variants = normalized.get("save_variants") or []
+            feel_key = None
+            if save_variants:
+                primary_variant = save_variants[0]
+                feel_key = _store_pending_quiz_feel_request(
+                    user_id=int(user_id),
+                    source_text=str(primary_variant.get("source_text") or "").strip(),
+                    target_text=str(primary_variant.get("target_text") or "").strip(),
+                    source_lang=normalized["source_lang"],
+                    target_lang=normalized["target_lang"],
+                )
                 save_key = _store_pending_quiz_question_save_request(
                     user_id=int(user_id),
                     request_key=request_key,
-                    source_text=normalized["save_source_text"],
-                    target_text=normalized["save_target_text"],
+                    source_text=str(primary_variant.get("source_text") or "").strip(),
+                    target_text=str(primary_variant.get("target_text") or "").strip(),
                     source_lang=normalized["source_lang"],
                     target_lang=normalized["target_lang"],
+                    options=[
+                        {
+                            "source": str(item.get("source_text") or "").strip(),
+                            "target": str(item.get("target_text") or "").strip(),
+                        }
+                        for item in save_variants
+                        if isinstance(item, dict)
+                    ],
+                    feel_key=feel_key,
+                    speak_key=feel_key,
+                )
+            elif str(request_payload.get("source_text") or "").strip() and str(request_payload.get("target_text") or "").strip():
+                feel_key = _store_pending_quiz_feel_request(
+                    user_id=int(user_id),
+                    source_text=str(request_payload.get("source_text") or "").strip(),
+                    target_text=str(request_payload.get("target_text") or "").strip(),
+                    source_lang=str(request_payload.get("source_lang") or "").strip().lower(),
+                    target_lang=str(request_payload.get("target_lang") or "").strip().lower(),
                 )
             reply_text = _build_quiz_question_reply_message(normalized)
             await update.message.reply_text(
                 reply_text,
                 disable_web_page_preview=True,
-                reply_markup=_build_quiz_question_answer_keyboard(request_key=request_key, save_key=save_key),
+                reply_markup=_build_quiz_question_answer_keyboard(
+                    request_key=request_key,
+                    save_key=save_key,
+                    save_options_count=len(save_variants),
+                    feel_key=feel_key,
+                    speak_key=feel_key,
+                ),
             )
         except Exception:
             logging.exception("❌ Ошибка ответа на quiz follow-up user_id=%s", user_id)
@@ -3851,21 +3891,54 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 "updated_at": pytime.time(),
             }
             save_key = None
-            if normalized_tutor["save_source_text"] and normalized_tutor["save_target_text"]:
+            save_variants = normalized_tutor.get("save_variants") or []
+            feel_key = None
+            if save_variants:
+                primary_variant = save_variants[0]
+                feel_key = _store_pending_quiz_feel_request(
+                    user_id=int(user_id),
+                    source_text=str(primary_variant.get("source_text") or "").strip(),
+                    target_text=str(primary_variant.get("target_text") or "").strip(),
+                    source_lang=normalized_tutor["source_lang"],
+                    target_lang=normalized_tutor["target_lang"],
+                )
                 save_key = _store_pending_quiz_question_save_request(
                     user_id=int(user_id),
                     request_key=f"langgpt:{int(user_id)}",
-                    source_text=normalized_tutor["save_source_text"],
-                    target_text=normalized_tutor["save_target_text"],
+                    source_text=str(primary_variant.get("source_text") or "").strip(),
+                    target_text=str(primary_variant.get("target_text") or "").strip(),
                     source_lang=normalized_tutor["source_lang"],
                     target_lang=normalized_tutor["target_lang"],
+                    options=[
+                        {
+                            "source": str(item.get("source_text") or "").strip(),
+                            "target": str(item.get("target_text") or "").strip(),
+                        }
+                        for item in save_variants
+                        if isinstance(item, dict)
+                    ],
                     continue_callback_data="langgpt:continue",
                     continue_button_text="❓ Задать вопрос",
+                    feel_key=feel_key,
+                    speak_key=feel_key,
                 )
+            answer_message = _build_quiz_question_reply_message(
+                {
+                    "reply_text": answer,
+                    "save_variants": save_variants,
+                    "source_lang": normalized_tutor["source_lang"],
+                    "target_lang": normalized_tutor["target_lang"],
+                }
+            )
             await update.message.reply_text(
-                _truncate_telegram_reply_text(answer, max_chars=3000),
+                _truncate_telegram_reply_text(answer_message, max_chars=3000),
                 disable_web_page_preview=True,
-                reply_markup=_build_language_tutor_answer_keyboard(save_key=save_key),
+                reply_markup=_build_language_tutor_answer_keyboard(
+                    save_key=save_key,
+                    save_options_count=len(save_variants),
+                    feel_key=feel_key,
+                    speak_key=feel_key,
+                ),
             )
         except Exception:
             logging.exception("❌ Ошибка language tutor answer user_id=%s", user_id)
@@ -5391,6 +5464,41 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
             if len(options) >= 3:
                 return options[:3]
 
+    usage_examples = lookup.get("usage_examples") if isinstance(lookup, dict) else None
+    if isinstance(usage_examples, list):
+        for item in usage_examples:
+            if not isinstance(item, dict):
+                continue
+            _add_option(
+                item.get("source") or item.get("example_source") or "",
+                item.get("target") or item.get("example_target") or "",
+                is_original=False,
+            )
+            if len(options) >= 3:
+                return options[:3]
+
+    meanings = lookup.get("meanings") if isinstance(lookup, dict) else None
+    if isinstance(meanings, dict):
+        primary = meanings.get("primary") if isinstance(meanings.get("primary"), dict) else {}
+        _add_option(
+            primary.get("example_source") or "",
+            primary.get("example_target") or "",
+            is_original=False,
+        )
+        if len(options) >= 3:
+            return options[:3]
+        secondary = meanings.get("secondary") if isinstance(meanings.get("secondary"), list) else []
+        for item in secondary:
+            if not isinstance(item, dict):
+                continue
+            _add_option(
+                item.get("example_source") or "",
+                item.get("example_target") or "",
+                is_original=False,
+            )
+            if len(options) >= 3:
+                return options[:3]
+
     if isinstance(items, list):
         for item in items:
             if not isinstance(item, dict):
@@ -6398,11 +6506,12 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
 
     data = str(query.data or "").strip()
     parts = data.split(":")
-    if len(parts) != 2:
+    if len(parts) not in {2, 3}:
         await query.answer("Неверный формат кнопки.", show_alert=True)
         return
 
     save_key = parts[1].strip()
+    selector = parts[2].strip().lower() if len(parts) == 3 else "0"
     payload = pending_quiz_question_save_requests.get(save_key)
     if not payload or _is_quiz_question_payload_expired(payload):
         pending_quiz_question_save_requests.pop(save_key, None)
@@ -6417,34 +6526,57 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
         await query.answer("Эта фраза уже сохранена.")
         return
 
-    source_text = str(payload.get("source_text") or "").strip()
-    target_text = str(payload.get("target_text") or "").strip()
     source_lang = str(payload.get("source_lang") or "").strip().lower()
     target_lang = str(payload.get("target_lang") or "").strip().lower()
-    if not source_text or not target_text or not source_lang or not target_lang:
+    options = payload.get("options") if isinstance(payload.get("options"), list) else []
+    if not options:
+        fallback_source = str(payload.get("source_text") or "").strip()
+        fallback_target = str(payload.get("target_text") or "").strip()
+        if fallback_source and fallback_target:
+            options = [{"source": fallback_source, "target": fallback_target}]
+    if not options or not source_lang or not target_lang:
         await query.answer("Не удалось определить языковую пару для сохранения.", show_alert=True)
         return
+
+    if selector == "all":
+        selected_idxs = list(range(min(2, len(options))))
+    else:
+        try:
+            selected_idx = int(selector)
+        except ValueError:
+            await query.answer("Неверный вариант сохранения.", show_alert=True)
+            return
+        if selected_idx < 0 or selected_idx >= len(options):
+            await query.answer("Выбранный вариант не найден.", show_alert=True)
+            return
+        selected_idxs = [selected_idx]
 
     save_payload = {
         "source_lang": source_lang,
         "target_lang": target_lang,
         "direction": f"{source_lang}-{target_lang}",
         "lookup": {
-            "word_source": source_text,
-            "word_target": target_text,
+            "word_source": str(options[0].get("source") or "").strip(),
+            "word_target": str(options[0].get("target") or "").strip(),
         },
     }
-    chosen = {
-        "source": source_text,
-        "target": target_text,
-    }
-    save_ok, save_msg = _save_dictionary_option_for_user(
-        payload=save_payload,
-        chosen=chosen,
-        user_id=int(user.id),
-    )
-    if not save_ok:
-        await query.answer(save_msg or "Ошибка сохранения. Попробуйте позже.", show_alert=True)
+    saved_lines: list[str] = []
+    for idx in selected_idxs:
+        chosen = options[idx]
+        save_ok, save_msg = _save_dictionary_option_for_user(
+            payload=save_payload,
+            chosen=chosen,
+            user_id=int(user.id),
+        )
+        if not save_ok:
+            logging.warning("Quiz follow-up save skipped idx=%s: %s", idx, save_msg)
+            continue
+        source_text = str(chosen.get("source") or "").strip()
+        target_text = str(chosen.get("target") or "").strip()
+        saved_lines.append(f"• {source_text} -> {target_text}")
+
+    if not saved_lines:
+        await query.answer("Не удалось сохранить выбранные варианты.", show_alert=True)
         return
 
     payload["saved"] = True
@@ -6461,6 +6593,9 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
                         continue_callback_data=continue_callback_data,
                         continue_button_text=continue_button_text,
                         save_key=None,
+                        save_options_count=0,
+                        feel_key=str(payload.get("feel_key") or "").strip() or None,
+                        speak_key=str(payload.get("speak_key") or "").strip() or None,
                     )
                 )
     except Exception:
@@ -6469,7 +6604,10 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
         await query.answer("✅ Сохранено")
     except Exception:
         pass
-    await query.message.reply_text(f"✅ Сохранена фраза: {source_text} -> {target_text}")
+    if len(saved_lines) == 1:
+        await query.message.reply_text("✅ Сохранён вариант:\n" + saved_lines[0])
+    else:
+        await query.message.reply_text("✅ Сохранены варианты:\n" + "\n".join(saved_lines))
 
 
 async def handle_flashcard_feel_feedback_callback(update: Update, context: CallbackContext) -> None:
@@ -10334,6 +10472,31 @@ def _store_pending_quiz_phrase_request(
     return key
 
 
+def _store_pending_quiz_feel_request(
+    *,
+    user_id: int,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    key = hashlib.sha1(
+        f"quizfeel:{user_id}:{source_lang}:{target_lang}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
+    ).hexdigest()[:20]
+    pending_quiz_feel_requests[key] = {
+        "user_id": int(user_id),
+        "source_text": str(source_text or "").strip(),
+        "target_text": str(target_text or "").strip(),
+        "source_lang": str(source_lang or "").strip().lower(),
+        "target_lang": str(target_lang or "").strip().lower(),
+        "started_at": pytime.time(),
+    }
+    if len(pending_quiz_feel_requests) > 500:
+        oldest_key = next(iter(pending_quiz_feel_requests))
+        pending_quiz_feel_requests.pop(oldest_key, None)
+    return key
+
+
 def _store_pending_quiz_question_save_request(
     *,
     user_id: int,
@@ -10342,12 +10505,52 @@ def _store_pending_quiz_question_save_request(
     target_text: str,
     source_lang: str,
     target_lang: str,
+    options: list[dict] | None = None,
     continue_callback_data: str | None = None,
     continue_button_text: str | None = None,
     hide_continue_after_save: bool = False,
+    feel_key: str | None = None,
+    speak_key: str | None = None,
 ) -> str:
+    normalized_options: list[dict[str, str]] = []
+    seen_options: set[tuple[str, str]] = set()
+    raw_options = options if isinstance(options, list) and options else [
+        {
+            "source": source_text,
+            "target": target_text,
+        }
+    ]
+    for item in raw_options:
+        if not isinstance(item, dict):
+            continue
+        source_value = str(item.get("source") or item.get("source_text") or "").strip()
+        target_value = str(item.get("target") or item.get("target_text") or "").strip()
+        if not source_value or not target_value:
+            continue
+        compare_key = (
+            _normalize_dictionary_compare_key(source_value),
+            _normalize_dictionary_compare_key(target_value),
+        )
+        if compare_key in seen_options:
+            continue
+        seen_options.add(compare_key)
+        normalized_options.append(
+            {
+                "source": source_value,
+                "target": target_value,
+            }
+        )
+        if len(normalized_options) >= 2:
+            break
+
+    primary_source_text = str(source_text or "").strip()
+    primary_target_text = str(target_text or "").strip()
+    if normalized_options:
+        primary_source_text = str(normalized_options[0].get("source") or "").strip() or primary_source_text
+        primary_target_text = str(normalized_options[0].get("target") or "").strip() or primary_target_text
+
     save_key = hashlib.sha1(
-        f"quizqsave:{user_id}:{request_key}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
+        f"quizqsave:{user_id}:{request_key}:{primary_source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
     ).hexdigest()[:20]
     resolved_continue_callback = str(continue_callback_data or "").strip() or (
         f"quizask:{str(request_key or '').strip()}"
@@ -10358,13 +10561,16 @@ def _store_pending_quiz_question_save_request(
     pending_quiz_question_save_requests[save_key] = {
         "user_id": int(user_id),
         "request_key": str(request_key or "").strip(),
-        "source_text": str(source_text or "").strip(),
-        "target_text": str(target_text or "").strip(),
+        "source_text": primary_source_text,
+        "target_text": primary_target_text,
         "source_lang": str(source_lang or "").strip().lower(),
         "target_lang": str(target_lang or "").strip().lower(),
+        "options": normalized_options,
         "continue_callback_data": resolved_continue_callback,
         "continue_button_text": resolved_continue_button_text,
         "hide_continue_after_save": bool(hide_continue_after_save),
+        "feel_key": str(feel_key or "").strip(),
+        "speak_key": str(speak_key or "").strip(),
         "started_at": pytime.time(),
         "saved": False,
     }
@@ -10379,17 +10585,29 @@ def _build_followup_answer_keyboard(
     continue_callback_data: str,
     continue_button_text: str,
     save_key: str | None = None,
+    save_options_count: int = 0,
+    feel_key: str | None = None,
+    speak_key: str | None = None,
 ) -> InlineKeyboardMarkup:
     rows = []
     if save_key:
-        rows.append([InlineKeyboardButton("💾 Сохранить эту фразу", callback_data=f"quizqsave:{save_key}")])
+        if int(save_options_count or 0) >= 2:
+            rows.append([InlineKeyboardButton("💾 Сохранить 1", callback_data=f"quizqsave:{save_key}:0")])
+            rows.append([InlineKeyboardButton("💾 Сохранить 2", callback_data=f"quizqsave:{save_key}:1")])
+            rows.append([InlineKeyboardButton("💾 Сохранить обе", callback_data=f"quizqsave:{save_key}:all")])
+        else:
+            rows.append([InlineKeyboardButton("💾 Сохранить эту фразу", callback_data=f"quizqsave:{save_key}:0")])
+    if speak_key:
+        rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"quizspeak:{speak_key}")])
+    if feel_key:
+        rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"quizfeel:{feel_key}")])
     rows.append([InlineKeyboardButton(str(continue_button_text or "❓ Ещё вопрос"), callback_data=str(continue_callback_data or "langgpt:continue"))])
     return InlineKeyboardMarkup(rows)
 
 
 def _build_save_only_keyboard(*, save_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💾 Сохранить это сочетание", callback_data=f"quizqsave:{save_key}")]
+        [InlineKeyboardButton("💾 Сохранить это сочетание", callback_data=f"quizqsave:{save_key}:0")]
     ])
 
 
@@ -10414,19 +10632,38 @@ def _build_quiz_result_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
-def _build_quiz_question_answer_keyboard(*, request_key: str, save_key: str | None = None) -> InlineKeyboardMarkup:
+def _build_quiz_question_answer_keyboard(
+    *,
+    request_key: str,
+    save_key: str | None = None,
+    save_options_count: int = 0,
+    feel_key: str | None = None,
+    speak_key: str | None = None,
+) -> InlineKeyboardMarkup:
     return _build_followup_answer_keyboard(
         continue_callback_data=f"quizask:{request_key}",
         continue_button_text="❓ Ещё вопрос",
         save_key=save_key,
+        save_options_count=save_options_count,
+        feel_key=feel_key,
+        speak_key=speak_key,
     )
 
 
-def _build_language_tutor_answer_keyboard(*, save_key: str | None = None) -> InlineKeyboardMarkup:
+def _build_language_tutor_answer_keyboard(
+    *,
+    save_key: str | None = None,
+    save_options_count: int = 0,
+    feel_key: str | None = None,
+    speak_key: str | None = None,
+) -> InlineKeyboardMarkup:
     return _build_followup_answer_keyboard(
         continue_callback_data="langgpt:continue",
         continue_button_text="❓ Задать вопрос",
         save_key=save_key,
+        save_options_count=save_options_count,
+        feel_key=feel_key,
+        speak_key=speak_key,
     )
 
 
@@ -10436,35 +10673,95 @@ def _build_quiz_question_prompt_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def _normalize_followup_save_variants(
+    raw_payload: dict,
+    *,
+    source_lang: str,
+    target_lang: str,
+    fallback_pairs: list[dict] | None = None,
+) -> list[dict]:
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
+    normalized_source_lang = str(source_lang or "").strip().lower()
+    normalized_target_lang = str(target_lang or "").strip().lower()
+    variants: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add_variant(source_value: str, target_value: str) -> None:
+        source_text = str(source_value or "").strip()
+        target_text = str(target_value or "").strip()
+        if len(source_text) > 180:
+            source_text = source_text[:177].rstrip() + "..."
+        if len(target_text) > 220:
+            target_text = target_text[:217].rstrip() + "..."
+        if not source_text or not target_text:
+            return
+        if source_text and not _text_matches_language_side(source_text, normalized_source_lang):
+            return
+        if target_text and not _text_matches_language_side(target_text, normalized_target_lang):
+            return
+        compare_key = (
+            _normalize_dictionary_compare_key(source_text),
+            _normalize_dictionary_compare_key(target_text),
+        )
+        if compare_key in seen:
+            return
+        seen.add(compare_key)
+        variants.append(
+            {
+                "source_text": source_text,
+                "target_text": target_text,
+            }
+        )
+
+    raw_variants = payload.get("save_variants")
+    if isinstance(raw_variants, list):
+        for item in raw_variants:
+            if not isinstance(item, dict):
+                continue
+            _add_variant(
+                item.get("source_text") or item.get("source") or "",
+                item.get("target_text") or item.get("target") or "",
+            )
+            if len(variants) >= 2:
+                return variants[:2]
+
+    _add_variant(payload.get("save_source_text") or "", payload.get("save_target_text") or "")
+    if len(variants) >= 2:
+        return variants[:2]
+
+    for item in fallback_pairs or []:
+        if not isinstance(item, dict):
+            continue
+        _add_variant(
+            item.get("source_text") or item.get("source") or "",
+            item.get("target_text") or item.get("target") or "",
+        )
+        if len(variants) >= 2:
+            break
+
+    return variants[:2]
+
+
 def _normalize_quiz_question_llm_response(
     raw_payload: dict,
     *,
     source_lang: str,
     target_lang: str,
+    fallback_pairs: list[dict] | None = None,
 ) -> dict:
     payload = raw_payload if isinstance(raw_payload, dict) else {}
     reply_text = _truncate_telegram_reply_text(str(payload.get("reply_text") or "").strip())
-    save_source_text = str(payload.get("save_source_text") or "").strip()
-    save_target_text = str(payload.get("save_target_text") or "").strip()
+    save_variants = _normalize_followup_save_variants(
+        payload,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        fallback_pairs=fallback_pairs,
+    )
     if not reply_text:
         reply_text = "Не удалось подготовить ответ. Попробуйте переформулировать вопрос чуть короче."
-    if len(save_source_text) > 180:
-        save_source_text = save_source_text[:177].rstrip() + "..."
-    if len(save_target_text) > 220:
-        save_target_text = save_target_text[:217].rstrip() + "..."
-    if save_source_text and not _text_matches_language_side(save_source_text, source_lang):
-        save_source_text = ""
-        save_target_text = ""
-    if save_target_text and not _text_matches_language_side(save_target_text, target_lang):
-        save_source_text = ""
-        save_target_text = ""
-    if not save_source_text or not save_target_text:
-        save_source_text = ""
-        save_target_text = ""
     return {
         "reply_text": reply_text,
-        "save_source_text": save_source_text,
-        "save_target_text": save_target_text,
+        "save_variants": save_variants,
         "source_lang": str(source_lang or "").strip().lower(),
         "target_lang": str(target_lang or "").strip().lower(),
     }
@@ -10472,16 +10769,19 @@ def _normalize_quiz_question_llm_response(
 
 def _build_quiz_question_reply_message(normalized: dict) -> str:
     reply_text = str((normalized or {}).get("reply_text") or "").strip()
-    save_source_text = str((normalized or {}).get("save_source_text") or "").strip()
-    save_target_text = str((normalized or {}).get("save_target_text") or "").strip()
-    if not save_source_text or not save_target_text:
+    source_lang = str((normalized or {}).get("source_lang") or "").strip().lower()
+    target_lang = str((normalized or {}).get("target_lang") or "").strip().lower()
+    save_variants = (normalized or {}).get("save_variants") if isinstance((normalized or {}).get("save_variants"), list) else []
+    if not save_variants:
         return _truncate_telegram_reply_text(reply_text)
-    combined = (
-        f"{reply_text}\n\n"
-        f"💾 Фраза для сохранения: {save_source_text}\n"
-        f"Перевод: {save_target_text}"
-    )
-    return _truncate_telegram_reply_text(combined)
+    lines = [reply_text, "", "💾 Варианты для сохранения:", ""]
+    for idx, item in enumerate(save_variants[:2], start=1):
+        source_text = str(item.get("source_text") or "").strip() or "—"
+        target_text = str(item.get("target_text") or "").strip() or "—"
+        lines.append(f"{idx}. {source_lang.upper()}: {source_text}")
+        lines.append(f"   {target_lang.upper()}: {target_text}")
+        lines.append("")
+    return _truncate_telegram_reply_text("\n".join(lines).strip())
 
 
 async def _generate_quiz_phrase_suggestion(payload: dict) -> dict:
@@ -10561,32 +10861,23 @@ def _normalize_language_tutor_llm_response(
     *,
     source_lang: str,
     target_lang: str,
+    fallback_pairs: list[dict] | None = None,
 ) -> dict:
     payload = raw_payload if isinstance(raw_payload, dict) else {}
     is_language_question = bool(payload.get("is_language_question"))
     answer = _truncate_telegram_reply_text(str(payload.get("answer") or "").strip(), max_chars=3000)
     suggested_rephrase = str(payload.get("suggested_rephrase") or "").strip()
-    save_source_text = str(payload.get("save_source_text") or "").strip()
-    save_target_text = str(payload.get("save_target_text") or "").strip()
-    if len(save_source_text) > 180:
-        save_source_text = save_source_text[:177].rstrip() + "..."
-    if len(save_target_text) > 220:
-        save_target_text = save_target_text[:217].rstrip() + "..."
-    if save_source_text and not _text_matches_language_side(save_source_text, source_lang):
-        save_source_text = ""
-        save_target_text = ""
-    if save_target_text and not _text_matches_language_side(save_target_text, target_lang):
-        save_source_text = ""
-        save_target_text = ""
-    if not save_source_text or not save_target_text:
-        save_source_text = ""
-        save_target_text = ""
+    save_variants = _normalize_followup_save_variants(
+        payload,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        fallback_pairs=fallback_pairs,
+    )
     return {
         "is_language_question": is_language_question,
         "answer": answer,
         "suggested_rephrase": suggested_rephrase,
-        "save_source_text": save_source_text,
-        "save_target_text": save_target_text,
+        "save_variants": save_variants,
         "source_lang": str(source_lang or "").strip().lower(),
         "target_lang": str(target_lang or "").strip().lower(),
     }

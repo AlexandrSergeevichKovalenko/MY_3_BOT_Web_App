@@ -909,8 +909,16 @@ Input JSON:
 Return STRICT JSON only with this schema:
 {
   "reply_text": "...",
-  "save_source_text": "...",
-  "save_target_text": "..."
+  "save_variants": [
+    {
+      "source_text": "...",
+      "target_text": "..."
+    },
+    {
+      "source_text": "...",
+      "target_text": "..."
+    }
+  ]
 }
 
 Rules:
@@ -926,11 +934,16 @@ Rules:
 - Use short paragraphs or short bullet-style lines separated by \\n, but keep it plain text.
 - If useful, you may include 1-2 short examples in source_language with immediate target_language translation.
 - Do not write academic lectures or long introductions.
-- save_source_text must be ONE useful phrase/example in source_language that is worth saving to the learner's dictionary.
-- save_target_text must be the direct translation of save_source_text in target_language.
-- save_source_text should usually be at most 140 characters.
-- save_target_text should usually be at most 180 characters.
-- If there is no good save candidate, return empty strings for save_source_text and save_target_text.
+- save_variants should contain 2 distinct useful items whenever possible.
+- Each source_text must be in source_language and must be worth memorizing:
+  either a natural collocation or a short complete sentence, not a broken fragment.
+- The items must reflect characteristic real usage of studied_text.
+- target_text must be the direct natural translation of source_text in target_language.
+- Prefer finished, everyday, learner-useful options over abstract or clumsy wording.
+- source_text should usually be at most 140 characters.
+- target_text should usually be at most 180 characters.
+- If there is only 1 genuinely good item, return 1 item.
+- If there is no good save candidate, return an empty array for save_variants.
 - Never swap source and target languages.
 - Output ONLY valid JSON. No markdown fences. No extra commentary.
 """,
@@ -976,8 +989,16 @@ Return STRICT JSON only with this schema:
   "is_language_question": true,
   "answer": "...",
   "suggested_rephrase": "...",
-  "save_source_text": "...",
-  "save_target_text": "..."
+  "save_variants": [
+    {
+      "source_text": "...",
+      "target_text": "..."
+    },
+    {
+      "source_text": "...",
+      "target_text": "..."
+    }
+  ]
 }
 
 Rules:
@@ -985,18 +1006,22 @@ Rules:
 - For off-topic questions, do not answer the off-topic content even partially.
 - For off-topic questions, answer briefly that you only answer language-learning questions.
 - For off-topic questions, suggested_rephrase must contain one short valid example question.
-- For off-topic questions, return empty strings for save_source_text and save_target_text.
+- For off-topic questions, return an empty array for save_variants.
 - For on-topic questions, answer directly, practically, and concisely.
 - If conversation_context is present and the learner asks a short follow-up like "why?", "and examples?", "what is the difference?", use the previous exchange to resolve references.
 - Use conversation_context only to continue the same language-learning discussion; do not invent missing facts beyond the previous exchange.
 - Use short examples when useful.
 - Answer in the same language as the learner question when reasonable; otherwise use source_language.
-- save_source_text must be ONE useful phrase/example in source_language that is worth saving to the learner's dictionary.
-- save_target_text must be the direct translation of save_source_text in target_language.
-- For on-topic questions, prefer returning a non-empty save_source_text/save_target_text pair whenever you can extract at least one practical phrase, pattern, or mini-example from the answer.
-- save_source_text should usually be at most 140 characters.
-- save_target_text should usually be at most 180 characters.
-- If there is no good save candidate, return empty strings for save_source_text and save_target_text.
+- save_variants should contain up to 2 distinct useful items whenever possible.
+- Each source_text must be in source_language and must be worth memorizing:
+  either a natural collocation or a short complete sentence, not a broken fragment.
+- target_text must be the direct natural translation of source_text in target_language.
+- For on-topic questions, prefer returning 2 learner-useful save_variants whenever you can extract them from the answer.
+- Prefer characteristic real usage over awkward or generic filler.
+- source_text should usually be at most 140 characters.
+- target_text should usually be at most 180 characters.
+- If there is only 1 genuinely good item, return 1 item.
+- If there is no good save candidate, return an empty array for save_variants.
 - Never swap source and target languages.
 - Do not use markdown tables.
 - Output ONLY valid JSON. No markdown fences. No extra commentary.
@@ -1833,12 +1858,16 @@ translation: the base translation in the target language (if available)
 
 Return STRICT JSON:
 items: array of exactly 3 objects with keys:
-source: short phrase in source language (2-5 words)
-target: natural translation in target language (2-6 words)
+source: natural collocation, short phrase, or short complete everyday sentence in source language
+target: direct natural translation in target language
 
 Rules:
-- Include the original word/phrase as part of each source phrase.
-- Keep phrases short and common for everyday usage.
+- Include the original word/phrase naturally inside each source item.
+- Every source item must be complete and learner-worthy: either a real collocation or a short finished sentence.
+- Prefer the kind of phrases a learner would genuinely memorize and reuse.
+- The first 2 items must be the strongest and most typical real-life options.
+- Avoid broken fragments, awkward literal wording, textbook filler, obscure contexts, and half-finished expressions.
+- Keep items compact: usually 2-8 words, but a short complete sentence is allowed if it sounds much more natural.
 - Return exactly 3 distinct items.
 - Do NOT add extra commentary.
 Respond ONLY with JSON.
@@ -1866,7 +1895,11 @@ Rules:
 - Exactly 3 items.
 - Keep source phrase in source_language and target phrase in target_language.
 - Include the provided base word/phrase naturally in each source phrase.
-- Keep phrases short and practical.
+- Every source item must be a natural collocation, short reusable phrase, or short complete everyday sentence.
+- Make the items feel finished and worth memorizing, not like broken fragments.
+- Prefer characteristic real-life usage over generic classroom filler.
+- The first 2 items must be the strongest and most typical options.
+- Keep items compact: usually 2-8 words, but a short complete sentence is allowed if it is more natural.
 - Output ONLY JSON.
 """,
 "dictionary_assistant_multilang": """
