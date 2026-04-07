@@ -20063,6 +20063,43 @@ def claim_next_ready_template(
             return _map_image_quiz_template_row(cursor.fetchone())
 
 
+def count_available_image_quiz_templates(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_image_quiz_templates t
+                WHERE t.user_id = %s
+                  AND t.source_lang = %s
+                  AND t.target_lang = %s
+                  AND t.generation_status = 'ready'
+                  AND t.visual_status = 'valid'
+                  AND (t.last_used_at IS NULL OR t.last_used_at <= NOW() - (%s || ' hours')::interval)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM bt_3_image_quiz_dispatches d
+                      WHERE d.template_id = t.id
+                        AND d.target_user_id = %s
+                  );
+                """,
+                (
+                    int(user_id),
+                    str(source_lang or "").strip().lower(),
+                    str(target_lang or "").strip().lower(),
+                    str(max(1, int(IMAGE_QUIZ_TEMPLATE_REUSE_COOLDOWN_HOURS or 1))),
+                    int(user_id),
+                ),
+            )
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+
 def claim_next_ready_image_quiz_template(
     *,
     user_id: int,

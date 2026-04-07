@@ -209,6 +209,41 @@ def enqueue_image_quiz_template_render_job(
         raise
 
 
+def enqueue_image_quiz_template_refresh_job(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    requested_count: int = 1,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+) -> str | None:
+    if not can_enqueue_background_jobs():
+        raise RuntimeError("background_jobs_unavailable")
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_image_quiz_template_refresh_job
+
+        message = run_image_quiz_template_refresh_job.send(
+            user_id=int(user_id),
+            source_lang=str(source_lang or "").strip().lower() or "ru",
+            target_lang=str(target_lang or "").strip().lower() or "de",
+            requested_count=max(1, int(requested_count or 1)),
+            request_id=str(request_id or "").strip() or None,
+            correlation_id=str(correlation_id or "").strip() or None,
+        )
+        return str(getattr(message, "message_id", None) or "").strip() or None
+    except Exception:
+        logging.exception(
+            "enqueue_image_quiz_template_refresh_job failed user_id=%s source_lang=%s target_lang=%s requested_count=%s",
+            user_id,
+            source_lang,
+            target_lang,
+            requested_count,
+        )
+        raise
+
+
 def _youtube_transcript_job_key(video_id: str, lang: str | None) -> str:
     normalized_video_id = str(video_id or "").strip()
     normalized_lang = str(lang or "").strip().lower() or "auto"

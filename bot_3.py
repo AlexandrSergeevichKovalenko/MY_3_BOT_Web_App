@@ -135,6 +135,7 @@ from backend.database import (
     delete_active_quiz,
     store_prepared_telegram_quiz,
     count_prepared_telegram_quizzes,
+    count_available_image_quiz_templates,
     claim_prepared_telegram_quiz,
     claim_next_ready_image_quiz_template,
     create_image_quiz_dispatch,
@@ -145,6 +146,10 @@ from backend.database import (
     record_image_quiz_answer,
     mark_image_quiz_answer_feedback_sent,
     list_top_weak_topics,
+)
+from backend.job_queue import (
+    can_enqueue_background_jobs,
+    enqueue_image_quiz_template_refresh_job,
 )
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
 from load_data_from_db import load_data_for_analytics 
@@ -173,6 +178,9 @@ QUIZ_REPEAT_CANDIDATE_LIMIT = max(1, int(os.getenv("QUIZ_REPEAT_CANDIDATE_LIMIT"
 QUIZ_PREPARED_TARGET_PER_TYPE = max(2, int((os.getenv("QUIZ_PREPARED_TARGET_PER_TYPE") or "8").strip() or "8"))
 QUIZ_PREPARED_STARTUP_DELAY_SECONDS = max(10, int((os.getenv("QUIZ_PREPARED_STARTUP_DELAY_SECONDS") or "45").strip() or "45"))
 QUIZ_PREPARED_HOURLY_TOPUP_MINUTE = max(0, min(59, int((os.getenv("QUIZ_PREPARED_HOURLY_TOPUP_MINUTE") or "35").strip() or "35")))
+IMAGE_QUIZ_READY_TARGET_PER_USER = max(1, int((os.getenv("IMAGE_QUIZ_READY_TARGET_PER_USER") or "1").strip() or "1"))
+IMAGE_QUIZ_TOPUP_LOOKBACK_DAYS = max(1, int((os.getenv("IMAGE_QUIZ_TOPUP_LOOKBACK_DAYS") or "30").strip() or "30"))
+IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT = max(1, int((os.getenv("IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT") or "32").strip() or "32"))
 FLASHCARD_REMINDER_TIMES = [(7, 0), (16, 30)]
 active_quizzes = {}
 pending_quiz_freeform = {}
@@ -11909,6 +11917,68 @@ async def prepare_scheduled_quiz_pool(context: CallbackContext, target_per_type:
     logging.info("✅ prepared scheduled quiz pool updated: %s", ", ".join(summary))
 
 
+async def prepare_image_quiz_pool(context: CallbackContext, target_ready_per_user: int | None = None) -> None:
+    desired_ready = max(1, int(target_ready_per_user or IMAGE_QUIZ_READY_TARGET_PER_USER))
+    if not can_enqueue_background_jobs():
+        logging.info("ℹ️ image quiz pool topup skipped: background jobs unavailable")
+        return
+    candidate_user_ids = await _collect_scheduler_candidate_user_ids(
+        lookback_days=IMAGE_QUIZ_TOPUP_LOOKBACK_DAYS,
+        include_allowed=True,
+        include_admins=True,
+    )
+    if not candidate_user_ids:
+        logging.info("ℹ️ image quiz pool topup skipped: no active users")
+        return
+
+    queued_users = 0
+    already_ready_users = 0
+    failed_users = 0
+    total_requested = 0
+    for user_id in sorted(candidate_user_ids)[:IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT]:
+        try:
+            ready_count = await asyncio.to_thread(
+                count_available_image_quiz_templates,
+                user_id=int(user_id),
+                source_lang="ru",
+                target_lang="de",
+            )
+        except Exception:
+            failed_users += 1
+            logging.warning("⚠️ Не удалось посчитать image quiz templates для user_id=%s", int(user_id), exc_info=True)
+            continue
+
+        missing = max(0, desired_ready - int(ready_count or 0))
+        if missing <= 0:
+            already_ready_users += 1
+            continue
+
+        try:
+            await asyncio.to_thread(
+                enqueue_image_quiz_template_refresh_job,
+                user_id=int(user_id),
+                source_lang="ru",
+                target_lang="de",
+                requested_count=missing,
+                request_id=f"image_quiz_topup:{int(user_id)}:{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            )
+            queued_users += 1
+            total_requested += missing
+        except Exception:
+            failed_users += 1
+            logging.warning("⚠️ Не удалось enqueue image quiz refresh для user_id=%s missing=%s", int(user_id), missing, exc_info=True)
+
+    logging.info(
+        "✅ image quiz pool topup queued: candidates=%s queued_users=%s requested=%s already_ready=%s failed=%s desired_ready=%s",
+        min(len(candidate_user_ids), IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT),
+        queued_users,
+        total_requested,
+        already_ready_users,
+        failed_users,
+        desired_ready,
+    )
+
+
 async def delete_temporary_message(context: CallbackContext) -> None:
     chat_id = context.job.data.get("chat_id")
     message_id = context.job.data.get("message_id")
@@ -12016,6 +12086,12 @@ async def _send_image_quiz_for_target(
             break
 
     if chosen_user_id is None or not chosen_template:
+        logging.info(
+            "ℹ️ No ready image quiz template for chat_id=%s candidate_user_ids=%s slot=%s",
+            int(target_chat_id),
+            [int(user_id) for user_id in candidate_user_ids[:8]],
+            delivery_slot,
+        )
         return False
 
     answer_options = [str(option).strip() for option in (chosen_template.get("answer_options") or []) if str(option).strip()]
@@ -12138,6 +12214,11 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
             if image_sent:
                 sent_count += 1
                 continue
+            logging.info(
+                "ℹ️ Falling back to poll quiz for chat_id=%s slot=%s because image quiz was unavailable",
+                int(target_chat_id),
+                delivery_slot,
+            )
         selection = await _select_scheduled_quiz_for_target(int(target_chat_id), ordered)
         if not selection:
             logging.warning("⚠️ Не удалось подобрать scheduled quiz для chat_id=%s", target_chat_id)
@@ -12549,6 +12630,7 @@ def main():
     if application.job_queue and bot_scheduler_enabled:
         application.job_queue.run_once(backfill_group_enrollment_prompts, when=20)
         application.job_queue.run_once(prepare_scheduled_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS)
+        application.job_queue.run_once(prepare_image_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 20)
     elif application.job_queue:
         logging.info("Skipping bot startup run_once jobs in this process")
     
@@ -12645,6 +12727,15 @@ def main():
                 prepare_scheduled_quiz_pool,
                 CallbackContext(application=application),
                 QUIZ_PREPARED_TARGET_PER_TYPE,
+            ),
+            "cron",
+            minute=QUIZ_PREPARED_HOURLY_TOPUP_MINUTE,
+        )
+        scheduler.add_job(
+            lambda: submit_async(
+                prepare_image_quiz_pool,
+                CallbackContext(application=application),
+                IMAGE_QUIZ_READY_TARGET_PER_USER,
             ),
             "cron",
             minute=QUIZ_PREPARED_HOURLY_TOPUP_MINUTE,

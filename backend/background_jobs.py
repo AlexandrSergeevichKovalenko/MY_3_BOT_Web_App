@@ -948,6 +948,67 @@ def run_image_quiz_template_render_job(
         raise
 
 
+@dramatiq.actor(max_retries=0, queue_name=_IMAGE_QUIZ_PREP_QUEUE_NAME)
+def run_image_quiz_template_refresh_job(
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    requested_count: int = 1,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+) -> None:
+    safe_user_id = int(user_id)
+    normalized_source_lang = str(source_lang or "").strip().lower() or "ru"
+    normalized_target_lang = str(target_lang or "").strip().lower() or "de"
+    safe_requested_count = max(1, min(int(requested_count or 1), 10))
+    started_at = time.perf_counter()
+    try:
+        prepare_result = asyncio.run(
+            _run_image_quiz_template_prepare_job_async(
+                user_id=safe_user_id,
+                source_lang=normalized_source_lang,
+                target_lang=normalized_target_lang,
+                requested_count=safe_requested_count,
+            )
+        )
+        render_result = _run_image_quiz_template_render_job_sync(
+            user_id=safe_user_id,
+            source_lang=normalized_source_lang,
+            target_lang=normalized_target_lang,
+            requested_count=safe_requested_count,
+        )
+        total_ms = int((time.perf_counter() - started_at) * 1000)
+        logging.info(
+            "image_quiz_template_refresh_job completed user_id=%s source_lang=%s target_lang=%s requested_count=%s prepared=%s rejected=%s prepare_failed=%s prepare_empty=%s render_ready=%s render_failed=%s render_empty=%s recovered_stale=%s request_id=%s correlation_id=%s total_ms=%s",
+            safe_user_id,
+            normalized_source_lang,
+            normalized_target_lang,
+            safe_requested_count,
+            prepare_result.get("prepared_count"),
+            prepare_result.get("rejected_count"),
+            prepare_result.get("failed_count"),
+            prepare_result.get("empty_count"),
+            render_result.get("ready_count"),
+            render_result.get("failed_count"),
+            render_result.get("empty_count"),
+            render_result.get("recovered_stale_count"),
+            request_id,
+            correlation_id,
+            total_ms,
+        )
+    except Exception:
+        logging.exception(
+            "image_quiz_template_refresh_job failed user_id=%s source_lang=%s target_lang=%s requested_count=%s request_id=%s correlation_id=%s",
+            safe_user_id,
+            normalized_source_lang,
+            normalized_target_lang,
+            safe_requested_count,
+            request_id,
+            correlation_id,
+        )
+        raise
+
+
 @dramatiq.actor(max_retries=0, queue_name="translation_side_effects")
 def run_translation_result_side_effects_job(
     *,
