@@ -3426,6 +3426,63 @@ body {
   padding: 10px;
 }
 
+.voice-assistant-review {
+  width: 100%;
+  max-width: 960px;
+  display: grid;
+  gap: 12px;
+}
+
+.voice-assistant-review-head {
+  display: grid;
+  gap: 8px;
+}
+
+.voice-assistant-review-head h3 {
+  margin: 0;
+}
+
+.voice-assistant-review-summary {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.voice-assistant-review-block {
+  display: grid;
+  gap: 6px;
+}
+
+.voice-assistant-review-block strong {
+  font-size: 13px;
+}
+
+.voice-assistant-review-block p {
+  margin: 0;
+  color: rgba(248, 250, 252, 0.88);
+  line-height: 1.5;
+}
+
+.voice-assistant-review-details {
+  display: grid;
+  gap: 10px;
+}
+
+.voice-assistant-review-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.voice-assistant-review-detail-list {
+  display: grid;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.voice-assistant-review-empty {
+  max-width: 960px;
+}
+
 @media (min-width: 901px) {
   .webapp-section.voice-assistant-section {
     padding: 16px 18px;
@@ -3504,6 +3561,11 @@ body {
     border-radius: 12px;
     border-color: #334155;
     background: #0b1220;
+  }
+
+  .voice-assistant-review {
+    padding: 14px;
+    border-radius: 14px;
   }
 }
 

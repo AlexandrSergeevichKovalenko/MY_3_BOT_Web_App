@@ -11518,6 +11518,8 @@ function AppInner() {
   const [assistantConnecting, setAssistantConnecting] = useState(false);
   const [assistantError, setAssistantError] = useState('');
   const [assistantSessionId, setAssistantSessionId] = useState(null);
+  const [assistantSessionAssessment, setAssistantSessionAssessment] = useState(null);
+  const [assistantSessionReviewRequested, setAssistantSessionReviewRequested] = useState(false);
   const [readerSessionId, setReaderSessionId] = useState(null);
 
   // LiveKit login state
@@ -11600,19 +11602,34 @@ function AppInner() {
       setAssistantError(tr('Не удалось определить пользователя Telegram. Обновите страницу.', 'Telegram-Nutzer konnte nicht bestimmt werden. Bitte Seite aktualisieren.'));
       return;
     }
+    let boundSessionId = null;
+    let startedSessionDuringConnect = false;
     try {
       setAssistantConnecting(true);
       setAssistantError('');
+      setAssistantSessionAssessment(null);
+      setAssistantSessionReviewRequested(false);
+      boundSessionId = assistantSessionId;
+      if (!boundSessionId) {
+        boundSessionId = await startAssistantSessionTracking();
+        startedSessionDuringConnect = Boolean(boundSessionId);
+      }
+      if (!boundSessionId) {
+        throw new Error(tr('Не удалось подготовить голосовую сессию.', 'Sprachsession konnte nicht vorbereitet werden.'));
+      }
       const response = await fetch(
-        `/api/token?user_id=${encodeURIComponent(userId)}&username=${encodeURIComponent(displayName)}`
+        `/api/token?user_id=${encodeURIComponent(userId)}&username=${encodeURIComponent(displayName)}&voice_session_id=${encodeURIComponent(boundSessionId)}`
       );
       if (!response.ok) {
         throw new Error(await response.text());
       }
       const data = await response.json();
       setAssistantToken(data.token);
-      setAssistantSessionId(null);
     } catch (error) {
+      if (startedSessionDuringConnect && boundSessionId) {
+        await stopAssistantSessionTracking(boundSessionId, { skipRefresh: true });
+      }
+      setAssistantToken(null);
       setAssistantError(`${tr('Ошибка подключения ассистента', 'Assistent-Verbindungsfehler')}: ${error.message}`);
     } finally {
       setAssistantConnecting(false);
@@ -11620,7 +11637,8 @@ function AppInner() {
   };
 
   const startAssistantSessionTracking = async () => {
-    if (!initData || assistantSessionId) return;
+    if (!initData) return null;
+    if (assistantSessionId) return assistantSessionId;
     try {
       const response = await fetch('/api/assistant/session/start', {
         method: 'POST',
@@ -11633,11 +11651,14 @@ function AppInner() {
       const data = await response.json();
       const nextSessionId = data?.session?.session_id;
       if (nextSessionId !== undefined && nextSessionId !== null) {
-        setAssistantSessionId(Number(nextSessionId));
+        const numericSessionId = Number(nextSessionId);
+        setAssistantSessionId(numericSessionId);
+        return numericSessionId;
       }
     } catch (error) {
       setAssistantError(`${tr('Ошибка старта сессии ассистента', 'Fehler beim Start der Assistent-Session')}: ${error.message}`);
     }
+    return null;
   };
 
   const stopAssistantSessionTracking = async (sessionIdOverride = null, options = {}) => {
@@ -11656,6 +11677,9 @@ function AppInner() {
       if (!response.ok) {
         throw new Error(await response.text());
       }
+      const data = await response.json().catch(() => null);
+      setAssistantSessionAssessment(data?.assessment || null);
+      setAssistantSessionReviewRequested(true);
       if (!shouldSkipRefresh) {
         await loadWeeklyPlan();
       }
@@ -26072,7 +26096,6 @@ function AppInner() {
                         video={false}
                         onConnected={() => {
                           setAssistantError('');
-                          startAssistantSessionTracking();
                         }}
                         onDisconnected={() => {
                           const sid = assistantSessionId;
@@ -26110,6 +26133,81 @@ function AppInner() {
                       </LazyLiveKitRuntime>
                     </Suspense>
                   </div>
+                )}
+
+                {!assistantToken && assistantSessionReviewRequested && (
+                  assistantSessionAssessment ? (
+                    <div className={`webapp-card voice-assistant-review ${isLightTheme ? 'is-theme-light' : ''}`}>
+                      <div className="voice-assistant-review-head">
+                        <span className="pill">{tr('После сессии', 'Nach der Session')}</span>
+                        <h3>{tr('Краткий review', 'Kurzes Review')}</h3>
+                      </div>
+                      <p className="voice-assistant-review-summary">
+                        {String(assistantSessionAssessment?.summary || '')}
+                      </p>
+                      <div className="voice-assistant-review-block">
+                        <strong>{tr('Строгий фидбек', 'Strenges Feedback')}</strong>
+                        <p>{String(assistantSessionAssessment?.strict_feedback || '')}</p>
+                      </div>
+                      {String(assistantSessionAssessment?.recommended_next_focus || '').trim() && (
+                        <div className="voice-assistant-review-block">
+                          <strong>{tr('Следующий фокус', 'Naechster Fokus')}</strong>
+                          <p>{String(assistantSessionAssessment?.recommended_next_focus || '')}</p>
+                        </div>
+                      )}
+                      <details className="voice-assistant-review-details">
+                        <summary>{tr('Подробнее', 'Mehr Details')}</summary>
+                        <div className="voice-assistant-review-detail-list">
+                          {String(assistantSessionAssessment?.lexical_range_note || '').trim() && (
+                            <div className="voice-assistant-review-block">
+                              <strong>{tr('Лексика', 'Lexik')}</strong>
+                              <p>{String(assistantSessionAssessment?.lexical_range_note || '')}</p>
+                            </div>
+                          )}
+                          {String(assistantSessionAssessment?.grammar_control_note || '').trim() && (
+                            <div className="voice-assistant-review-block">
+                              <strong>{tr('Грамматика', 'Grammatik')}</strong>
+                              <p>{String(assistantSessionAssessment?.grammar_control_note || '')}</p>
+                            </div>
+                          )}
+                          {String(assistantSessionAssessment?.fluency_note || '').trim() && (
+                            <div className="voice-assistant-review-block">
+                              <strong>{tr('Беглость', 'Fluessigkeit')}</strong>
+                              <p>{String(assistantSessionAssessment?.fluency_note || '')}</p>
+                            </div>
+                          )}
+                          {String(assistantSessionAssessment?.coherence_relevance_note || '').trim() && (
+                            <div className="voice-assistant-review-block">
+                              <strong>{tr('Связность и релевантность', 'Kohärenz und Relevanz')}</strong>
+                              <p>{String(assistantSessionAssessment?.coherence_relevance_note || '')}</p>
+                            </div>
+                          )}
+                          {String(assistantSessionAssessment?.self_correction_note || '').trim() && (
+                            <div className="voice-assistant-review-block">
+                              <strong>{tr('Самокоррекция', 'Selbstkorrektur')}</strong>
+                              <p>{String(assistantSessionAssessment?.self_correction_note || '')}</p>
+                            </div>
+                          )}
+                          {Array.isArray(assistantSessionAssessment?.target_vocab_used) && assistantSessionAssessment.target_vocab_used.length > 0 && (
+                            <div className="voice-assistant-review-block">
+                              <strong>{tr('Использовано', 'Verwendet')}</strong>
+                              <p>{assistantSessionAssessment.target_vocab_used.join(', ')}</p>
+                            </div>
+                          )}
+                          {Array.isArray(assistantSessionAssessment?.target_vocab_missed) && assistantSessionAssessment.target_vocab_missed.length > 0 && (
+                            <div className="voice-assistant-review-block">
+                              <strong>{tr('Пока не прозвучало', 'Noch nicht verwendet')}</strong>
+                              <p>{assistantSessionAssessment.target_vocab_missed.join(', ')}</p>
+                            </div>
+                          )}
+                        </div>
+                      </details>
+                    </div>
+                  ) : (
+                    <div className="webapp-muted voice-assistant-review-empty">
+                      {tr('Краткий post-session review пока не готов.', 'Das kurze Post-Session-Review ist noch nicht bereit.')}
+                    </div>
+                  )
                 )}
               </section>
             )}

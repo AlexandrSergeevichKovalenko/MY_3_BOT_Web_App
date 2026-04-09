@@ -62,6 +62,7 @@ import math
 import hashlib
 import io
 import queue
+from dataclasses import asdict
 from collections import Counter, deque
 from urllib.parse import urlparse
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -116,6 +117,19 @@ from backend.job_queue import (
     is_youtube_transcript_async_enabled,
 )
 from backend.translation_workflow import _extract_correct_translation
+from backend.voice_preparation_service import (
+    create_voice_prep_pack as create_voice_prep_pack_service,
+    get_voice_prep_pack as get_voice_prep_pack_service,
+)
+from backend.voice_assessment_service import (
+    build_and_store_voice_assessment,
+    load_voice_assessment,
+)
+from backend.voice_skill_bridge_service import apply_voice_skill_bridge
+from backend.voice_scenario_service import (
+    create_voice_scenario as create_voice_scenario_service,
+    get_voice_scenario as get_voice_scenario_service,
+)
 from livekit.api import AccessToken, VideoGrants
 from pathlib import Path
 try:
@@ -378,6 +392,9 @@ from backend.database import (
     get_weekly_plan_progress,
     get_plan_progress,
     start_agent_voice_session,
+    get_agent_voice_session,
+    get_voice_scenario,
+    get_voice_prep_pack,
     finish_agent_voice_session,
     start_reader_session,
     finish_reader_session,
@@ -1483,6 +1500,7 @@ def serve_frontend(path):
 def get_token_api():
     user_id = request.args.get("user_id")
     username = request.args.get("username")
+    voice_session_id_raw = request.args.get("voice_session_id")
 
     if not username or not user_id:
         return jsonify({"error": "Нужны и user_id, и username"}), 400
@@ -1494,6 +1512,21 @@ def get_token_api():
     voice_limit_state = _check_voice_minutes_daily_limit(user_id=user_id_int)
     if voice_limit_state.get("error"):
         return jsonify(voice_limit_state.get("error")), 429
+
+    participant_attributes = None
+    if voice_session_id_raw is not None and str(voice_session_id_raw).strip() != "":
+        try:
+            voice_session_id = int(str(voice_session_id_raw).strip())
+        except Exception:
+            return jsonify({"error": "voice_session_id должен быть числом"}), 400
+        session = get_agent_voice_session(voice_session_id)
+        if not session:
+            return jsonify({"error": "Голосовая сессия не найдена"}), 400
+        if int(session.get("user_id") or 0) != user_id_int:
+            return jsonify({"error": "voice_session_id не принадлежит user_id"}), 400
+        if session.get("ended_at"):
+            return jsonify({"error": "Голосовая сессия уже завершена"}), 400
+        participant_attributes = {"voice_session_id": str(voice_session_id)}
 
     _ensure_livekit_config()
     grant = VideoGrants(
@@ -1507,6 +1540,8 @@ def get_token_api():
         .with_name(username)
         .with_grants(grant)
     )
+    if participant_attributes:
+        access_token = access_token.with_attributes(participant_attributes)
 
     return jsonify({"token": access_token.to_jwt()})
 
@@ -23567,19 +23602,177 @@ def start_assistant_session():
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
+    payload = request.get_json(silent=True) or {}
     voice_limit_state = _check_voice_minutes_daily_limit(user_id=int(user_id))
     if voice_limit_state.get("error"):
         return jsonify(voice_limit_state.get("error")), 429
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    scenario_id = None
+    scenario_id_raw = payload.get("scenario_id")
+    if scenario_id_raw is not None and str(scenario_id_raw).strip() != "":
+        try:
+            scenario_id = int(scenario_id_raw)
+        except Exception:
+            return jsonify({"error": "scenario_id должен быть числом"}), 400
+        scenario = get_voice_scenario(scenario_id)
+        if not scenario:
+            return jsonify({"error": "scenario_id не найден"}), 400
+
+    prep_pack_id = None
+    prep_pack = None
+    prep_pack_id_raw = payload.get("prep_pack_id")
+    if prep_pack_id_raw is not None and str(prep_pack_id_raw).strip() != "":
+        try:
+            prep_pack_id = int(prep_pack_id_raw)
+        except Exception:
+            return jsonify({"error": "prep_pack_id должен быть числом"}), 400
+        prep_pack = get_voice_prep_pack(prep_pack_id)
+        if not prep_pack:
+            return jsonify({"error": "prep_pack_id не найден"}), 400
+        if int(prep_pack.get("user_id") or 0) != int(user_id):
+            return jsonify({"error": "prep_pack_id не принадлежит текущему пользователю"}), 400
+
+    valid_topic_modes = {"scenario", "custom_topic"}
+    topic_mode_raw = payload.get("topic_mode")
+    topic_mode = None
+    if topic_mode_raw is not None and str(topic_mode_raw).strip() != "":
+        topic_mode = str(topic_mode_raw).strip().lower()
+        if topic_mode not in valid_topic_modes:
+            return jsonify({"error": "topic_mode должен быть одним из: scenario, custom_topic"}), 400
+
+    custom_topic_text = None
+    custom_topic_text_raw = payload.get("custom_topic_text")
+    if custom_topic_text_raw is not None:
+        custom_topic_text = str(custom_topic_text_raw).strip() or None
+        if custom_topic_text and len(custom_topic_text) > 500:
+            return jsonify({"error": "custom_topic_text слишком длинный"}), 400
+
+    if scenario_id is None and prep_pack and prep_pack.get("scenario_id") is not None:
+        scenario_id = int(prep_pack["scenario_id"])
+    if custom_topic_text is None and prep_pack:
+        prep_pack_custom_topic = str(prep_pack.get("custom_topic_text") or "").strip()
+        if prep_pack_custom_topic:
+            custom_topic_text = prep_pack_custom_topic
+
+    if topic_mode is None:
+        if scenario_id is not None:
+            topic_mode = "scenario"
+        elif custom_topic_text:
+            topic_mode = "custom_topic"
+
+    if scenario_id is not None and prep_pack and prep_pack.get("scenario_id") is not None:
+        if int(prep_pack["scenario_id"]) != int(scenario_id):
+            return jsonify({"error": "scenario_id не совпадает с prep_pack.scenario_id"}), 400
+
+    if topic_mode == "scenario" and scenario_id is None:
+        return jsonify({"error": "topic_mode=scenario требует scenario_id"}), 400
+    if topic_mode == "custom_topic" and not custom_topic_text:
+        return jsonify({"error": "topic_mode=custom_topic требует custom_topic_text"}), 400
+
     try:
         session = start_agent_voice_session(
             user_id=int(user_id),
             source_lang=source_lang,
             target_lang=target_lang,
+            scenario_id=scenario_id,
+            prep_pack_id=prep_pack_id,
+            topic_mode=topic_mode,
+            custom_topic_text=custom_topic_text,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка старта голосовой сессии: {exc}"}), 500
     return jsonify({"ok": True, "session": session})
+
+
+@app.route("/api/assistant/scenario/create", methods=["POST"])
+def create_assistant_voice_scenario():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    _ = user_id
+    payload = request.get_json(silent=True) or {}
+    try:
+        scenario = create_voice_scenario_service(
+            slug=payload.get("slug"),
+            title=payload.get("title"),
+            topic=payload.get("topic"),
+            level=payload.get("level"),
+            system_prompt=payload.get("system_prompt"),
+            is_active=bool(payload.get("is_active", True)),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка создания voice scenario: {exc}"}), 500
+    if not scenario:
+        return jsonify({"error": "Не удалось создать voice scenario"}), 500
+    return jsonify({"ok": True, "scenario": asdict(scenario)})
+
+
+@app.route("/api/assistant/scenario/get", methods=["POST"])
+def get_assistant_voice_scenario():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    _ = user_id
+    payload = request.get_json(silent=True) or {}
+    scenario_id_raw = payload.get("scenario_id")
+    if scenario_id_raw is None or str(scenario_id_raw).strip() == "":
+        return jsonify({"error": "scenario_id обязателен"}), 400
+    try:
+        scenario = get_voice_scenario_service(int(scenario_id_raw))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка загрузки voice scenario: {exc}"}), 500
+    if not scenario:
+        return jsonify({"error": "voice scenario не найден"}), 404
+    return jsonify({"ok": True, "scenario": asdict(scenario)})
+
+
+@app.route("/api/assistant/prep-pack/create", methods=["POST"])
+def create_assistant_voice_prep_pack():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    payload = request.get_json(silent=True) or {}
+    try:
+        prep_pack = create_voice_prep_pack_service(
+            user_id=int(user_id),
+            scenario_id=payload.get("scenario_id"),
+            custom_topic_text=payload.get("custom_topic_text"),
+            target_vocab=payload.get("target_vocab"),
+            target_expressions=payload.get("target_expressions"),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка создания voice prep pack: {exc}"}), 500
+    if not prep_pack:
+        return jsonify({"error": "Не удалось создать voice prep pack"}), 500
+    return jsonify({"ok": True, "prep_pack": asdict(prep_pack)})
+
+
+@app.route("/api/assistant/prep-pack/get", methods=["POST"])
+def get_assistant_voice_prep_pack():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    payload = request.get_json(silent=True) or {}
+    prep_pack_id_raw = payload.get("prep_pack_id")
+    if prep_pack_id_raw is None or str(prep_pack_id_raw).strip() == "":
+        return jsonify({"error": "prep_pack_id обязателен"}), 400
+    try:
+        prep_pack = get_voice_prep_pack_service(int(prep_pack_id_raw))
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка загрузки voice prep pack: {exc}"}), 500
+    if not prep_pack:
+        return jsonify({"error": "voice prep pack не найден"}), 404
+    if int(prep_pack.user_id) != int(user_id):
+        return jsonify({"error": "prep_pack_id не принадлежит текущему пользователю"}), 403
+    return jsonify({"ok": True, "prep_pack": asdict(prep_pack)})
 
 
 @app.route("/api/assistant/session/complete", methods=["POST"])
@@ -23606,10 +23799,51 @@ def complete_assistant_session():
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка завершения голосовой сессии: {exc}"}), 500
+    assessment_payload = None
     if isinstance(session, dict):
         duration_seconds = max(0, int(session.get("duration_seconds") or 0))
         session_minutes = duration_seconds / 60.0
         resolved_session_id = int(session.get("session_id") or (session_id or 0))
+        if resolved_session_id > 0:
+            try:
+                assessment = asyncio.run(
+                    build_and_store_voice_assessment(session_id=resolved_session_id)
+                )
+                if assessment:
+                    logging.info(
+                        "Voice session assessment persisted for session_id=%s",
+                        resolved_session_id,
+                    )
+            except Exception as exc:
+                logging.warning(
+                    "Voice session assessment persistence failed for session_id=%s: %s",
+                    resolved_session_id,
+                    exc,
+                )
+            try:
+                bridge_result = apply_voice_skill_bridge(session_id=resolved_session_id)
+                logging.info(
+                    "Voice skill bridge finished for session_id=%s applied=%s notes=%s",
+                    resolved_session_id,
+                    bool(bridge_result.applied),
+                    bridge_result.notes,
+                )
+            except Exception as exc:
+                logging.warning(
+                    "Voice skill bridge failed for session_id=%s: %s",
+                    resolved_session_id,
+                    exc,
+                )
+            try:
+                stored_assessment = load_voice_assessment(session_id=resolved_session_id)
+                if stored_assessment:
+                    assessment_payload = asdict(stored_assessment)
+            except Exception as exc:
+                logging.warning(
+                    "Voice session assessment readback failed for session_id=%s: %s",
+                    resolved_session_id,
+                    exc,
+                )
         if session_minutes > 0 and resolved_session_id > 0:
             whisper_snapshot = get_effective_billing_price_snapshot(
                 provider="openai",
@@ -23694,7 +23928,38 @@ def complete_assistant_session():
                 )
             except Exception:
                 pass
-    return jsonify({"ok": True, "session": session})
+    return jsonify({"ok": True, "session": session, "assessment": assessment_payload})
+
+
+@app.route("/api/assistant/session/assessment/get", methods=["POST"])
+def get_assistant_session_assessment():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    payload = request.get_json(silent=True) or {}
+    session_id_raw = payload.get("session_id")
+    if session_id_raw is None or str(session_id_raw).strip() == "":
+        return jsonify({"error": "session_id обязателен"}), 400
+    try:
+        session_id = int(session_id_raw)
+    except Exception:
+        return jsonify({"error": "session_id должен быть числом"}), 400
+
+    session = get_agent_voice_session(session_id)
+    if not session:
+        return jsonify({"error": "Голосовая сессия не найдена"}), 404
+    if int(session.get("user_id") or 0) != int(user_id):
+        return jsonify({"error": "Доступ к assessment этой сессии запрещён"}), 403
+
+    try:
+        assessment = load_voice_assessment(session_id=session_id)
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка загрузки assessment: {exc}"}), 500
+    if not assessment:
+        return jsonify({"error": "Assessment для этой сессии ещё не найден"}), 404
+
+    return jsonify({"ok": True, "assessment": asdict(assessment)})
 
 
 @app.route("/api/reader/session/start", methods=["POST"])

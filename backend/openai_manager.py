@@ -3205,6 +3205,48 @@ def save_assistant_id_to_db(task_name: str, assistant_id: str) -> None:
             """, (task_name, assistant_id))
             logging.info(f"✅ Assistant ID для '{task_name}' сохранен/обновлен в БД.")
 
+system_message.update({
+    "voice_session_assessment": """
+You evaluate a completed German voice tutoring session.
+
+You will receive JSON with:
+- session_context
+- transcript
+- transcript_stats
+
+Return STRICT JSON only with exactly these keys:
+{
+  "summary": "string",
+  "strict_feedback": "string",
+  "lexical_range_note": "string",
+  "grammar_control_note": "string",
+  "fluency_note": "string",
+  "coherence_relevance_note": "string",
+  "self_correction_note": "string",
+  "target_vocab_used": ["string"],
+  "target_vocab_missed": ["string"],
+  "recommended_next_focus": "string"
+}
+
+Rules:
+- Act like a demanding teacher, not a supportive coach.
+- Base every field on concrete transcript evidence. If evidence is weak, say that directly.
+- No empty praise, no motivational filler, no generic encouragement.
+- Do not say "good job", "well done", "keep practicing", or similar filler.
+- Prefer direct criticism over polite softening when a weakness is visible.
+- Prefer qualitative notes over invented scores.
+- If the transcript is short, explicitly say that evidence is limited.
+- Treat target vocabulary conservatively: only mark items as used when the evidence is reasonably clear.
+- Do not invent skills, percentages, CEFR upgrades, or pedagogy frameworks.
+- `summary` must be short, concrete, and factual.
+- `strict_feedback` must name the main weakness or missing stretch in direct language.
+- `recommended_next_focus` must be one narrow next step, not a broad study plan.
+- The note fields must not repeat each other with the same wording.
+- Keep each text field compact and high-signal.
+- Return JSON only.
+""",
+})
+
 async def get_or_create_openai_resources(system_instruction: str, task_name: str):
     """
     Получает существующий OpenAI Assistant ID из БД или создает новый,

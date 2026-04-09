@@ -4443,6 +4443,120 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_agent_voice_sessions (user_id, source_lang, target_lang, started_at, ended_at);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_agent_voice_transcript_segments (
+                    id BIGSERIAL PRIMARY KEY,
+                    session_id BIGINT NOT NULL REFERENCES bt_3_agent_voice_sessions(id) ON DELETE CASCADE,
+                    seq_no INTEGER NOT NULL,
+                    speaker TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    metadata JSONB,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (session_id, seq_no)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_transcript_segments_session_seq
+                ON bt_3_agent_voice_transcript_segments (session_id, seq_no);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_voice_session_assessments (
+                    id BIGSERIAL PRIMARY KEY,
+                    session_id BIGINT NOT NULL UNIQUE REFERENCES bt_3_agent_voice_sessions(id) ON DELETE CASCADE,
+                    summary TEXT,
+                    strict_feedback TEXT,
+                    lexical_range_note TEXT,
+                    grammar_control_note TEXT,
+                    fluency_note TEXT,
+                    coherence_relevance_note TEXT,
+                    self_correction_note TEXT,
+                    target_vocab_used JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    target_vocab_missed JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    recommended_next_focus TEXT,
+                    skill_bridge_status TEXT NOT NULL DEFAULT 'pending',
+                    skill_bridge_notes JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    skill_bridge_updated_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_voice_session_assessments
+                ADD COLUMN IF NOT EXISTS skill_bridge_status TEXT NOT NULL DEFAULT 'pending';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_voice_session_assessments
+                ADD COLUMN IF NOT EXISTS skill_bridge_notes JSONB NOT NULL DEFAULT '{}'::jsonb;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_voice_session_assessments
+                ADD COLUMN IF NOT EXISTS skill_bridge_updated_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_voice_session_assessments_updated
+                ON bt_3_voice_session_assessments (updated_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_voice_session_assessments_bridge_status
+                ON bt_3_voice_session_assessments (skill_bridge_status, updated_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_voice_scenarios (
+                    id BIGSERIAL PRIMARY KEY,
+                    slug TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    level TEXT NOT NULL DEFAULT 'mixed',
+                    system_prompt TEXT,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_voice_scenarios_active
+                ON bt_3_voice_scenarios (is_active, updated_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_voice_prep_packs (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    scenario_id BIGINT REFERENCES bt_3_voice_scenarios(id) ON DELETE SET NULL,
+                    custom_topic_text TEXT,
+                    target_vocab JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    target_expressions JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_voice_prep_packs_user_created
+                ON bt_3_voice_prep_packs (user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_agent_voice_sessions
+                ADD COLUMN IF NOT EXISTS scenario_id BIGINT REFERENCES bt_3_voice_scenarios(id) ON DELETE SET NULL;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_agent_voice_sessions
+                ADD COLUMN IF NOT EXISTS prep_pack_id BIGINT REFERENCES bt_3_voice_prep_packs(id) ON DELETE SET NULL;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_agent_voice_sessions
+                ADD COLUMN IF NOT EXISTS topic_mode TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_agent_voice_sessions
+                ADD COLUMN IF NOT EXISTS custom_topic_text TEXT;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_scenario
+                ON bt_3_agent_voice_sessions (scenario_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_prep_pack
+                ON bt_3_agent_voice_sessions (prep_pack_id);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_daily_plan_items (
                     id BIGSERIAL PRIMARY KEY,
                     plan_id BIGINT NOT NULL REFERENCES bt_3_daily_plans(id) ON DELETE CASCADE,
@@ -14429,10 +14543,16 @@ def start_agent_voice_session(
     user_id: int,
     source_lang: str = "ru",
     target_lang: str = "de",
+    scenario_id: int | None = None,
+    prep_pack_id: int | None = None,
+    topic_mode: str | None = None,
+    custom_topic_text: str | None = None,
     started_at: datetime | None = None,
 ) -> dict:
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
+    normalized_topic_mode = str(topic_mode or "").strip().lower() or None
+    normalized_custom_topic_text = str(custom_topic_text or "").strip() or None
     started = started_at or datetime.now(timezone.utc)
     if started.tzinfo is None:
         started = started.replace(tzinfo=timezone.utc)
@@ -14458,19 +14578,646 @@ def start_agent_voice_session(
                     user_id,
                     source_lang,
                     target_lang,
+                    scenario_id,
+                    prep_pack_id,
+                    topic_mode,
+                    custom_topic_text,
                     started_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 RETURNING id, started_at;
                 """,
-                (int(user_id), normalized_source, normalized_target, started),
+                (
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                    int(scenario_id) if scenario_id is not None else None,
+                    int(prep_pack_id) if prep_pack_id is not None else None,
+                    normalized_topic_mode,
+                    normalized_custom_topic_text,
+                    started,
+                ),
             )
             row = cursor.fetchone()
     return {
         "session_id": int(row[0]),
         "started_at": row[1].isoformat() if row and row[1] else started.isoformat(),
+        "scenario_id": int(scenario_id) if scenario_id is not None else None,
+        "prep_pack_id": int(prep_pack_id) if prep_pack_id is not None else None,
+        "topic_mode": normalized_topic_mode,
+        "custom_topic_text": normalized_custom_topic_text,
     }
+
+
+def _agent_voice_session_row_to_dict(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "session_id": int(row[0]),
+        "user_id": int(row[1]),
+        "source_lang": str(row[2] or "ru"),
+        "target_lang": str(row[3] or "de"),
+        "scenario_id": int(row[4]) if row[4] is not None else None,
+        "prep_pack_id": int(row[5]) if row[5] is not None else None,
+        "topic_mode": str(row[6] or "").strip().lower() or None,
+        "custom_topic_text": str(row[7] or "").strip() or None,
+        "started_at": row[8].isoformat() if row[8] else None,
+        "ended_at": row[9].isoformat() if row[9] else None,
+        "duration_seconds": int(row[10] or 0) if row[10] is not None else None,
+        "created_at": row[11].isoformat() if row[11] else None,
+        "updated_at": row[12].isoformat() if row[12] else None,
+    }
+
+
+def _agent_voice_transcript_segment_row_to_dict(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "session_id": int(row[1]),
+        "seq_no": int(row[2]),
+        "speaker": str(row[3] or "").strip().lower() or "unknown",
+        "text": str(row[4] or ""),
+        "metadata": dict(row[5] or {}) if isinstance(row[5], dict) else None,
+        "created_at": row[6].isoformat() if row[6] else None,
+    }
+
+
+def _voice_scenario_row_to_dict(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "scenario_id": int(row[0]),
+        "slug": str(row[1] or "").strip(),
+        "title": str(row[2] or "").strip(),
+        "topic": str(row[3] or "").strip(),
+        "level": str(row[4] or "mixed").strip() or "mixed",
+        "system_prompt": str(row[5] or "").strip() or None,
+        "is_active": bool(row[6]),
+        "created_at": row[7].isoformat() if row[7] else None,
+        "updated_at": row[8].isoformat() if row[8] else None,
+    }
+
+
+def _voice_prep_pack_row_to_dict(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    raw_vocab = row[4] if isinstance(row[4], list) else []
+    raw_expressions = row[5] if isinstance(row[5], list) else []
+    return {
+        "prep_pack_id": int(row[0]),
+        "user_id": int(row[1]),
+        "scenario_id": int(row[2]) if row[2] is not None else None,
+        "custom_topic_text": str(row[3] or "").strip() or None,
+        "target_vocab": [str(item).strip() for item in raw_vocab if str(item).strip()],
+        "target_expressions": [str(item).strip() for item in raw_expressions if str(item).strip()],
+        "created_at": row[6].isoformat() if row[6] else None,
+        "updated_at": row[7].isoformat() if row[7] else None,
+    }
+
+
+def _voice_session_assessment_row_to_dict(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    raw_used = row[9] if isinstance(row[9], list) else []
+    raw_missed = row[10] if isinstance(row[10], list) else []
+    raw_bridge_notes = row[15] if isinstance(row[15], dict) else {}
+    return {
+        "assessment_id": int(row[0]),
+        "session_id": int(row[1]),
+        "summary": str(row[2] or "").strip() or None,
+        "strict_feedback": str(row[3] or "").strip() or None,
+        "lexical_range_note": str(row[4] or "").strip() or None,
+        "grammar_control_note": str(row[5] or "").strip() or None,
+        "fluency_note": str(row[6] or "").strip() or None,
+        "coherence_relevance_note": str(row[7] or "").strip() or None,
+        "self_correction_note": str(row[8] or "").strip() or None,
+        "target_vocab_used": [str(item).strip() for item in raw_used if str(item).strip()],
+        "target_vocab_missed": [str(item).strip() for item in raw_missed if str(item).strip()],
+        "recommended_next_focus": str(row[11] or "").strip() or None,
+        "created_at": row[12].isoformat() if row[12] else None,
+        "updated_at": row[13].isoformat() if row[13] else None,
+        "skill_bridge_status": str(row[14] or "").strip().lower() or "pending",
+        "skill_bridge_notes": raw_bridge_notes if isinstance(raw_bridge_notes, dict) else {},
+        "skill_bridge_updated_at": row[16].isoformat() if row[16] else None,
+    }
+
+
+def create_voice_scenario(
+    *,
+    slug: str,
+    title: str,
+    topic: str,
+    level: str | None = None,
+    system_prompt: str | None = None,
+    is_active: bool = True,
+) -> dict | None:
+    normalized_slug = str(slug or "").strip()
+    normalized_title = str(title or "").strip()
+    normalized_topic = str(topic or "").strip()
+    if not normalized_slug or not normalized_title or not normalized_topic:
+        return None
+    normalized_level = str(level or "mixed").strip().lower() or "mixed"
+    normalized_prompt = str(system_prompt or "").strip() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_voice_scenarios (
+                    slug,
+                    title,
+                    topic,
+                    level,
+                    system_prompt,
+                    is_active,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                RETURNING id, slug, title, topic, level, system_prompt, is_active, created_at, updated_at;
+                """,
+                (
+                    normalized_slug,
+                    normalized_title,
+                    normalized_topic,
+                    normalized_level,
+                    normalized_prompt,
+                    bool(is_active),
+                ),
+            )
+            return _voice_scenario_row_to_dict(cursor.fetchone())
+
+
+def get_voice_scenario(scenario_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    slug,
+                    title,
+                    topic,
+                    level,
+                    system_prompt,
+                    is_active,
+                    created_at,
+                    updated_at
+                FROM bt_3_voice_scenarios
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(scenario_id),),
+            )
+            return _voice_scenario_row_to_dict(cursor.fetchone())
+
+
+def create_voice_prep_pack(
+    *,
+    user_id: int,
+    scenario_id: int | None = None,
+    custom_topic_text: str | None = None,
+    target_vocab: list[str] | None = None,
+    target_expressions: list[str] | None = None,
+) -> dict | None:
+    normalized_custom_topic_text = str(custom_topic_text or "").strip() or None
+    normalized_vocab = [
+        str(item).strip()
+        for item in (target_vocab or [])
+        if str(item).strip()
+    ]
+    normalized_expressions = [
+        str(item).strip()
+        for item in (target_expressions or [])
+        if str(item).strip()
+    ]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_voice_prep_packs (
+                    user_id,
+                    scenario_id,
+                    custom_topic_text,
+                    target_vocab,
+                    target_expressions,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                RETURNING
+                    id,
+                    user_id,
+                    scenario_id,
+                    custom_topic_text,
+                    target_vocab,
+                    target_expressions,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    int(user_id),
+                    int(scenario_id) if scenario_id is not None else None,
+                    normalized_custom_topic_text,
+                    Json(normalized_vocab),
+                    Json(normalized_expressions),
+                ),
+            )
+            return _voice_prep_pack_row_to_dict(cursor.fetchone())
+
+
+def get_voice_prep_pack(prep_pack_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    user_id,
+                    scenario_id,
+                    custom_topic_text,
+                    target_vocab,
+                    target_expressions,
+                    created_at,
+                    updated_at
+                FROM bt_3_voice_prep_packs
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(prep_pack_id),),
+            )
+            return _voice_prep_pack_row_to_dict(cursor.fetchone())
+
+
+def get_agent_voice_session(session_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    scenario_id,
+                    prep_pack_id,
+                    topic_mode,
+                    custom_topic_text,
+                    started_at,
+                    ended_at,
+                    duration_seconds,
+                    created_at,
+                    updated_at
+                FROM bt_3_agent_voice_sessions
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(session_id),),
+            )
+            return _agent_voice_session_row_to_dict(cursor.fetchone())
+
+
+def get_latest_active_agent_voice_session(
+    *,
+    user_id: int,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    scenario_id,
+                    prep_pack_id,
+                    topic_mode,
+                    custom_topic_text,
+                    started_at,
+                    ended_at,
+                    duration_seconds,
+                    created_at,
+                    updated_at
+                FROM bt_3_agent_voice_sessions
+                WHERE user_id = %s
+                  AND ended_at IS NULL
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            return _agent_voice_session_row_to_dict(cursor.fetchone())
+
+
+def get_agent_voice_session_context(session_id: int) -> dict | None:
+    session = get_agent_voice_session(int(session_id))
+    if not session:
+        return None
+    scenario = None
+    if session.get("scenario_id") is not None:
+        scenario = get_voice_scenario(int(session["scenario_id"]))
+    prep_pack = None
+    if session.get("prep_pack_id") is not None:
+        prep_pack = get_voice_prep_pack(int(session["prep_pack_id"]))
+    return {
+        "session": session,
+        "scenario": scenario,
+        "prep_pack": prep_pack,
+    }
+
+
+def append_agent_voice_transcript_segment(
+    *,
+    session_id: int,
+    speaker: str,
+    text: str,
+    metadata: dict | None = None,
+) -> dict | None:
+    normalized_text = str(text or "").strip()
+    if not normalized_text:
+        return None
+    normalized_speaker = str(speaker or "").strip().lower() or "unknown"
+    safe_metadata = dict(metadata) if isinstance(metadata, dict) else None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH locked_session AS (
+                    SELECT id
+                    FROM bt_3_agent_voice_sessions
+                    WHERE id = %s
+                    FOR UPDATE
+                ),
+                next_seq AS (
+                    SELECT COALESCE(MAX(seq_no), 0) + 1 AS seq_no
+                    FROM bt_3_agent_voice_transcript_segments
+                    WHERE session_id = %s
+                )
+                INSERT INTO bt_3_agent_voice_transcript_segments (
+                    session_id,
+                    seq_no,
+                    speaker,
+                    text,
+                    metadata
+                )
+                SELECT
+                    %s,
+                    next_seq.seq_no,
+                    %s,
+                    %s,
+                    %s
+                FROM locked_session, next_seq
+                RETURNING id, session_id, seq_no, speaker, text, metadata, created_at;
+                """,
+                (
+                    int(session_id),
+                    int(session_id),
+                    int(session_id),
+                    normalized_speaker,
+                    normalized_text,
+                    Json(safe_metadata) if safe_metadata is not None else None,
+                ),
+            )
+            return _agent_voice_transcript_segment_row_to_dict(cursor.fetchone())
+
+
+def fetch_agent_voice_transcript_segments(
+    *,
+    session_id: int,
+) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    session_id,
+                    seq_no,
+                    speaker,
+                    text,
+                    metadata,
+                    created_at
+                FROM bt_3_agent_voice_transcript_segments
+                WHERE session_id = %s
+                ORDER BY seq_no ASC, id ASC;
+                """,
+                (int(session_id),),
+            )
+            return [
+                item
+                for item in (
+                    _agent_voice_transcript_segment_row_to_dict(row)
+                    for row in (cursor.fetchall() or [])
+                )
+                if item
+            ]
+
+
+def upsert_voice_session_assessment(
+    *,
+    session_id: int,
+    summary: str | None = None,
+    strict_feedback: str | None = None,
+    lexical_range_note: str | None = None,
+    grammar_control_note: str | None = None,
+    fluency_note: str | None = None,
+    coherence_relevance_note: str | None = None,
+    self_correction_note: str | None = None,
+    target_vocab_used: list[str] | None = None,
+    target_vocab_missed: list[str] | None = None,
+    recommended_next_focus: str | None = None,
+) -> dict | None:
+    normalized_used = [
+        str(item).strip()
+        for item in (target_vocab_used or [])
+        if str(item).strip()
+    ]
+    normalized_missed = [
+        str(item).strip()
+        for item in (target_vocab_missed or [])
+        if str(item).strip()
+    ]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_voice_session_assessments (
+                    session_id,
+                    summary,
+                    strict_feedback,
+                    lexical_range_note,
+                    grammar_control_note,
+                    fluency_note,
+                    coherence_relevance_note,
+                    self_correction_note,
+                    target_vocab_used,
+                    target_vocab_missed,
+                    recommended_next_focus,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (session_id) DO UPDATE
+                SET
+                    summary = EXCLUDED.summary,
+                    strict_feedback = EXCLUDED.strict_feedback,
+                    lexical_range_note = EXCLUDED.lexical_range_note,
+                    grammar_control_note = EXCLUDED.grammar_control_note,
+                    fluency_note = EXCLUDED.fluency_note,
+                    coherence_relevance_note = EXCLUDED.coherence_relevance_note,
+                    self_correction_note = EXCLUDED.self_correction_note,
+                    target_vocab_used = EXCLUDED.target_vocab_used,
+                    target_vocab_missed = EXCLUDED.target_vocab_missed,
+                    recommended_next_focus = EXCLUDED.recommended_next_focus,
+                    updated_at = NOW()
+                RETURNING
+                    id,
+                    session_id,
+                    summary,
+                    strict_feedback,
+                    lexical_range_note,
+                    grammar_control_note,
+                    fluency_note,
+                    coherence_relevance_note,
+                    self_correction_note,
+                    target_vocab_used,
+                    target_vocab_missed,
+                    recommended_next_focus,
+                    created_at,
+                    updated_at,
+                    skill_bridge_status,
+                    skill_bridge_notes,
+                    skill_bridge_updated_at;
+                """,
+                (
+                    int(session_id),
+                    str(summary or "").strip() or None,
+                    str(strict_feedback or "").strip() or None,
+                    str(lexical_range_note or "").strip() or None,
+                    str(grammar_control_note or "").strip() or None,
+                    str(fluency_note or "").strip() or None,
+                    str(coherence_relevance_note or "").strip() or None,
+                    str(self_correction_note or "").strip() or None,
+                    Json(normalized_used),
+                    Json(normalized_missed),
+                    str(recommended_next_focus or "").strip() or None,
+                ),
+            )
+            return _voice_session_assessment_row_to_dict(cursor.fetchone())
+
+
+def get_voice_session_assessment(session_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    session_id,
+                    summary,
+                    strict_feedback,
+                    lexical_range_note,
+                    grammar_control_note,
+                    fluency_note,
+                    coherence_relevance_note,
+                    self_correction_note,
+                    target_vocab_used,
+                    target_vocab_missed,
+                    recommended_next_focus,
+                    created_at,
+                    updated_at,
+                    skill_bridge_status,
+                    skill_bridge_notes,
+                    skill_bridge_updated_at
+                FROM bt_3_voice_session_assessments
+                WHERE session_id = %s
+                LIMIT 1;
+                """,
+                (int(session_id),),
+            )
+            return _voice_session_assessment_row_to_dict(cursor.fetchone())
+
+
+def claim_voice_session_assessment_for_skill_bridge(session_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_voice_session_assessments
+                SET
+                    skill_bridge_status = 'in_progress',
+                    skill_bridge_updated_at = NOW()
+                WHERE session_id = %s
+                  AND COALESCE(skill_bridge_status, 'pending') IN ('pending', 'failed')
+                RETURNING
+                    id,
+                    session_id,
+                    summary,
+                    strict_feedback,
+                    lexical_range_note,
+                    grammar_control_note,
+                    fluency_note,
+                    coherence_relevance_note,
+                    self_correction_note,
+                    target_vocab_used,
+                    target_vocab_missed,
+                    recommended_next_focus,
+                    created_at,
+                    updated_at,
+                    skill_bridge_status,
+                    skill_bridge_notes,
+                    skill_bridge_updated_at;
+                """,
+                (int(session_id),),
+            )
+            return _voice_session_assessment_row_to_dict(cursor.fetchone())
+
+
+def set_voice_session_assessment_skill_bridge_status(
+    session_id: int,
+    *,
+    status: str,
+    notes: dict | None = None,
+) -> dict | None:
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"pending", "in_progress", "applied", "skipped", "failed"}:
+        raise ValueError("invalid skill bridge status")
+    safe_notes = dict(notes or {})
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_voice_session_assessments
+                SET
+                    skill_bridge_status = %s,
+                    skill_bridge_notes = %s,
+                    skill_bridge_updated_at = NOW()
+                WHERE session_id = %s
+                RETURNING
+                    id,
+                    session_id,
+                    summary,
+                    strict_feedback,
+                    lexical_range_note,
+                    grammar_control_note,
+                    fluency_note,
+                    coherence_relevance_note,
+                    self_correction_note,
+                    target_vocab_used,
+                    target_vocab_missed,
+                    recommended_next_focus,
+                    created_at,
+                    updated_at,
+                    skill_bridge_status,
+                    skill_bridge_notes,
+                    skill_bridge_updated_at;
+                """,
+                (
+                    normalized_status,
+                    Json(safe_notes),
+                    int(session_id),
+                ),
+            )
+            return _voice_session_assessment_row_to_dict(cursor.fetchone())
 
 
 def finish_agent_voice_session(
