@@ -6,6 +6,7 @@ into one persisted qualitative assessment record per voice session.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -31,6 +32,9 @@ except Exception:
 
 _SHORT_TRANSCRIPT_SEGMENT_THRESHOLD = 4
 _SHORT_TRANSCRIPT_CHAR_THRESHOLD = 220
+_MIN_USER_SEGMENT_RETRY_THRESHOLD = 2
+_MIN_USER_CHAR_RETRY_THRESHOLD = 40
+_ASSESSMENT_TRANSCRIPT_RETRY_DELAYS_SECONDS = (1.5, 3.0)
 _ASSESSMENT_TEXT_LIMITS = {
     "summary": 220,
     "strict_feedback": 320,
@@ -83,6 +87,79 @@ class VoiceAssessment:
     recommended_next_focus: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+def _summarize_transcript_material(segments: list[dict]) -> dict[str, int]:
+    total_chars = 0
+    assistant_segments = 0
+    user_segments = 0
+    user_chars = 0
+    for segment in segments:
+        speaker = str(segment.get("speaker") or "").strip().lower()
+        text = str(segment.get("text") or "").strip()
+        if not text:
+            continue
+        total_chars += len(text)
+        if speaker == "user":
+            user_segments += 1
+            user_chars += len(text)
+        elif speaker == "assistant":
+            assistant_segments += 1
+    return {
+        "segment_count": len([segment for segment in segments if str(segment.get("text") or "").strip()]),
+        "assistant_segments": assistant_segments,
+        "user_segments": user_segments,
+        "total_chars": total_chars,
+        "user_chars": user_chars,
+    }
+
+
+def _transcript_looks_premature(snapshot: dict[str, int]) -> tuple[bool, str]:
+    segment_count = int(snapshot.get("segment_count") or 0)
+    assistant_segments = int(snapshot.get("assistant_segments") or 0)
+    user_segments = int(snapshot.get("user_segments") or 0)
+    total_chars = int(snapshot.get("total_chars") or 0)
+    user_chars = int(snapshot.get("user_chars") or 0)
+    if segment_count <= 0:
+        return True, "no_transcript_rows"
+    if user_segments <= 0:
+        return True, "assistant_only_transcript"
+    if (
+        user_segments < _MIN_USER_SEGMENT_RETRY_THRESHOLD
+        and user_chars < _MIN_USER_CHAR_RETRY_THRESHOLD
+    ):
+        return True, "very_low_user_material"
+    if (
+        total_chars < _MIN_USER_CHAR_RETRY_THRESHOLD
+        and assistant_segments > 0
+        and user_segments <= 1
+    ):
+        return True, "extremely_low_total_material"
+    return False, ""
+
+
+async def _load_transcript_segments_for_assessment(*, session_id: int) -> list[dict]:
+    segments = fetch_agent_voice_transcript_segments(session_id=int(session_id))
+    snapshot = _summarize_transcript_material(segments)
+    should_retry, reason = _transcript_looks_premature(snapshot)
+    if not should_retry:
+        return segments
+
+    for delay_seconds in _ASSESSMENT_TRANSCRIPT_RETRY_DELAYS_SECONDS:
+        logging.info(
+            "Voice assessment waiting for transcript settlement for session_id=%s reason=%s delay=%.1fs snapshot=%s",
+            int(session_id),
+            reason,
+            float(delay_seconds),
+            snapshot,
+        )
+        await asyncio.sleep(float(delay_seconds))
+        segments = fetch_agent_voice_transcript_segments(session_id=int(session_id))
+        snapshot = _summarize_transcript_material(segments)
+        should_retry, reason = _transcript_looks_premature(snapshot)
+        if not should_retry:
+            break
+    return segments
 
 
 def _trim_sentence_boundary(text: str, *, limit: int) -> str:
@@ -333,6 +410,70 @@ async def _build_llm_assessment(
     )
 
 
+async def _build_voice_assessment_from_segments(
+    *,
+    session_id: int,
+    transcript_segments: list[dict],
+    session_context: dict | None = None,
+) -> VoiceAssessment | None:
+    resolved_context = session_context if session_context is not None else get_agent_voice_session_context(int(session_id))
+    transcript_text = _build_transcript_text(transcript_segments)
+    prep_pack = dict((resolved_context or {}).get("prep_pack") or {})
+    fallback_used, fallback_missed = _compute_target_vocab_heuristics(
+        transcript_text=transcript_text,
+        prep_pack=prep_pack,
+    )
+
+    if not transcript_text:
+        return _build_short_transcript_fallback(
+            session_id=int(session_id),
+            transcript_text="",
+            prep_pack=prep_pack,
+        )
+
+    if (
+        len(transcript_segments) < _SHORT_TRANSCRIPT_SEGMENT_THRESHOLD
+        or len(transcript_text) < _SHORT_TRANSCRIPT_CHAR_THRESHOLD
+    ):
+        return _build_short_transcript_fallback(
+            session_id=int(session_id),
+            transcript_text=transcript_text,
+            prep_pack=prep_pack,
+        )
+
+    try:
+        assessment = await _build_llm_assessment(
+            session_id=int(session_id),
+            transcript_text=transcript_text,
+            session_context=resolved_context,
+            fallback_used=fallback_used,
+            fallback_missed=fallback_missed,
+            transcript_segments=transcript_segments,
+        )
+        if assessment:
+            return assessment
+    except Exception as exc:
+        logging.warning(
+            "Voice assessment LLM pass failed for session_id=%s: %s",
+            int(session_id),
+            exc,
+        )
+
+    return VoiceAssessment(
+        session_id=int(session_id),
+        summary="A full structured assessment could not be generated, but the session transcript was stored.",
+        strict_feedback="Use the stored transcript as review material and rerun the assessment path later if needed.",
+        lexical_range_note="Assessment generation fallback was used; lexical detail is limited.",
+        grammar_control_note="Assessment generation fallback was used; grammar detail is limited.",
+        fluency_note="Assessment generation fallback was used; fluency detail is limited.",
+        coherence_relevance_note="Assessment generation fallback was used; coherence detail is limited.",
+        self_correction_note="Assessment generation fallback was used; self-correction detail is limited.",
+        target_vocab_used=fallback_used,
+        target_vocab_missed=fallback_missed,
+        recommended_next_focus="Review the transcript manually or rerun assessment generation later.",
+    )
+
+
 def get_stored_voice_assessment(*, session_id: int) -> VoiceAssessment | None:
     payload = get_voice_session_assessment(int(session_id))
     if not payload:
@@ -364,61 +505,9 @@ async def build_voice_assessment(*, session_id: int) -> VoiceAssessment | None:
     """Build a minimal qualitative voice assessment from transcript plus context."""
 
     transcript_segments = fetch_agent_voice_transcript_segments(session_id=int(session_id))
-    session_context = get_agent_voice_session_context(int(session_id))
-    transcript_text = _build_transcript_text(transcript_segments)
-    prep_pack = dict((session_context or {}).get("prep_pack") or {})
-    fallback_used, fallback_missed = _compute_target_vocab_heuristics(
-        transcript_text=transcript_text,
-        prep_pack=prep_pack,
-    )
-
-    if not transcript_text:
-        return _build_short_transcript_fallback(
-            session_id=int(session_id),
-            transcript_text="",
-            prep_pack=prep_pack,
-        )
-
-    if (
-        len(transcript_segments) < _SHORT_TRANSCRIPT_SEGMENT_THRESHOLD
-        or len(transcript_text) < _SHORT_TRANSCRIPT_CHAR_THRESHOLD
-    ):
-        return _build_short_transcript_fallback(
-            session_id=int(session_id),
-            transcript_text=transcript_text,
-            prep_pack=prep_pack,
-        )
-
-    try:
-        assessment = await _build_llm_assessment(
-            session_id=int(session_id),
-            transcript_text=transcript_text,
-            session_context=session_context,
-            fallback_used=fallback_used,
-            fallback_missed=fallback_missed,
-            transcript_segments=transcript_segments,
-        )
-        if assessment:
-            return assessment
-    except Exception as exc:
-        logging.warning(
-            "Voice assessment LLM pass failed for session_id=%s: %s",
-            int(session_id),
-            exc,
-        )
-
-    return VoiceAssessment(
+    return await _build_voice_assessment_from_segments(
         session_id=int(session_id),
-        summary="A full structured assessment could not be generated, but the session transcript was stored.",
-        strict_feedback="Use the stored transcript as review material and rerun the assessment path later if needed.",
-        lexical_range_note="Assessment generation fallback was used; lexical detail is limited.",
-        grammar_control_note="Assessment generation fallback was used; grammar detail is limited.",
-        fluency_note="Assessment generation fallback was used; fluency detail is limited.",
-        coherence_relevance_note="Assessment generation fallback was used; coherence detail is limited.",
-        self_correction_note="Assessment generation fallback was used; self-correction detail is limited.",
-        target_vocab_used=fallback_used,
-        target_vocab_missed=fallback_missed,
-        recommended_next_focus="Review the transcript manually or rerun assessment generation later.",
+        transcript_segments=transcript_segments,
     )
 
 
@@ -446,7 +535,11 @@ def store_voice_assessment(assessment: VoiceAssessment) -> VoiceAssessment | Non
 async def build_and_store_voice_assessment(*, session_id: int) -> VoiceAssessment | None:
     """Build and persist a best-effort assessment for one completed voice session."""
 
-    assessment = await build_voice_assessment(session_id=int(session_id))
+    transcript_segments = await _load_transcript_segments_for_assessment(session_id=int(session_id))
+    assessment = await _build_voice_assessment_from_segments(
+        session_id=int(session_id),
+        transcript_segments=transcript_segments,
+    )
     if not assessment:
         return None
     return store_voice_assessment(assessment)

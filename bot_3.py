@@ -10125,6 +10125,9 @@ def _normalize_quiz_payload(payload: dict, fallback: dict) -> dict:
             return fallback
         correct_option_id = cleaned_options.index(correct_text)
 
+    if any(_contains_cyrillic_text(option) or not _contains_latin_text(option) for option in cleaned_options):
+        return fallback
+
     if len(cleaned_options) < 4:
         for option in fallback["options"]:
             if option not in cleaned_options:
@@ -12029,13 +12032,27 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
         return []
 
 
+def _build_image_quiz_button_label(option_index: int) -> str:
+    labels = ["1", "2", "3", "4"]
+    if 0 <= option_index < len(labels):
+        return labels[option_index]
+    return str(option_index + 1)
+
+
+def _format_image_quiz_option_text(option_text: str, *, max_chars: int = 84) -> str:
+    compact = " ".join(str(option_text or "").strip().split())
+    if not compact:
+        return "—"
+    return _truncate_telegram_reply_text(compact, max_chars=max_chars)
+
+
 def _build_image_quiz_keyboard(dispatch_id: int, answer_options: list[str]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     current_row: list[InlineKeyboardButton] = []
-    for idx, option in enumerate(answer_options[:4]):
+    for idx, _option in enumerate(answer_options[:4]):
         current_row.append(
             InlineKeyboardButton(
-                str(option),
+                _build_image_quiz_button_label(idx),
                 callback_data=f"iq:{int(dispatch_id)}:{int(idx)}",
             )
         )
@@ -12047,11 +12064,21 @@ def _build_image_quiz_keyboard(dispatch_id: int, answer_options: list[str]) -> I
     return InlineKeyboardMarkup(rows)
 
 
-def _build_image_quiz_caption(template: dict) -> str:
+def _build_image_quiz_caption(template: dict, answer_options: list[str]) -> str:
     question = str(template.get("question_de") or "").strip()
-    if question:
-        return question
-    return "Was passt zum Bild?"
+    lines = [question or "Was passt zum Bild?"]
+    normalized_options = [
+        _format_image_quiz_option_text(option)
+        for option in (answer_options or [])[:4]
+        if str(option or "").strip()
+    ]
+    if normalized_options:
+        lines.append("")
+        lines.extend(
+            f"{_build_image_quiz_button_label(idx)}. {option_text}"
+            for idx, option_text in enumerate(normalized_options)
+        )
+    return _truncate_telegram_reply_text("\n".join(lines), max_chars=900)
 
 
 async def _send_image_quiz_for_target(
@@ -12145,7 +12172,7 @@ async def _send_image_quiz_for_target(
         photo_message = await context.bot.send_photo(
             chat_id=int(target_chat_id),
             photo=image_url,
-            caption=_build_image_quiz_caption(chosen_template),
+            caption=_build_image_quiz_caption(chosen_template, answer_options),
             reply_markup=_build_image_quiz_keyboard(dispatch_id, answer_options),
         )
     except Exception as exc:

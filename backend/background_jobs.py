@@ -57,6 +57,26 @@ def _looks_like_sentence(value: str | None) -> bool:
     return len(tokens) >= 4 or bool(re.search(r"[.!?]", text))
 
 
+def _contains_cyrillic_text(value: str | None) -> bool:
+    return bool(re.search(r"[А-Яа-яЁё]", str(value or "")))
+
+
+def _contains_latin_text(value: str | None) -> bool:
+    return bool(re.search(r"[A-Za-zÄÖÜäöüß]", str(value or "")))
+
+
+def _text_matches_expected_language(value: str | None, language_code: str | None) -> bool:
+    text = _normalize_space(value)
+    code = str(language_code or "").strip().lower()
+    if not text or not code:
+        return False
+    if code == "de":
+        return _contains_latin_text(text) and not _contains_cyrillic_text(text)
+    if code == "ru":
+        return _contains_cyrillic_text(text) and not _contains_latin_text(text)
+    return True
+
+
 def _answer_language_for_candidate(candidate: dict) -> str:
     source_lang = str(candidate.get("source_lang") or "").strip().lower()
     target_lang = str(candidate.get("target_lang") or "").strip().lower()
@@ -141,7 +161,12 @@ def _build_image_quiz_object_key(*, user_id: int, template_id: int, mime_type: s
     return f"{_IMAGE_QUIZ_R2_PREFIX}/{date_prefix}/{int(user_id)}/{int(template_id)}{extension}"
 
 
-def _sanitize_image_quiz_blueprint(payload: dict, *, expected_correct_answer: str) -> dict:
+def _sanitize_image_quiz_blueprint(
+    payload: dict,
+    *,
+    expected_correct_answer: str,
+    answer_language: str,
+) -> dict:
     source_sentence = _normalize_space(payload.get("source_sentence"))
     image_prompt = _normalize_space(payload.get("image_prompt"))
     question_de = _normalize_space(payload.get("question_de")) or "Was zeigt das Bild?"
@@ -172,6 +197,12 @@ def _sanitize_image_quiz_blueprint(payload: dict, *, expected_correct_answer: st
     options[correct_index] = normalized_expected
     if len(set(options)) != 4:
         raise ValueError("blueprint_options_conflict_with_correct_answer")
+    if not _text_matches_expected_language(source_sentence, answer_language):
+        raise ValueError("blueprint_source_sentence_language_invalid")
+    if any(not _text_matches_expected_language(option, answer_language) for option in options):
+        raise ValueError("blueprint_options_language_invalid")
+    if not _text_matches_expected_language(question_de, "de"):
+        question_de = "Was zeigt das Bild?"
     return {
         "source_sentence": source_sentence,
         "image_prompt": image_prompt,
@@ -331,6 +362,7 @@ async def _prepare_single_image_quiz_template_async(
         sanitized_blueprint = _sanitize_image_quiz_blueprint(
             blueprint_payload if isinstance(blueprint_payload, dict) else {},
             expected_correct_answer=correct_answer,
+            answer_language=answer_language,
         )
     except Exception as exc:
         mark_image_quiz_template_failed(

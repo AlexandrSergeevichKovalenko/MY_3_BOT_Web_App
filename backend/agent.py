@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import sys
+from collections import deque
 from livekit import rtc
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, llm
 from livekit.plugins import openai, silero
@@ -154,6 +155,89 @@ def _truncate_context_items(items, limit: int = 8) -> list[str]:
     normalized = [str(item or "").strip() for item in (items or []) if str(item or "").strip()]
     return normalized[:limit]
 
+
+def _normalize_intent_text(text: object) -> str:
+    normalized = str(text or "").casefold()
+    normalized = normalized.replace("ü", "u").replace("ä", "a").replace("ö", "o").replace("ß", "ss")
+    normalized = normalized.replace("ё", "е")
+    normalized = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in normalized)
+    normalized = " ".join(normalized.split())
+    return normalized
+
+
+def _contains_any_intent_cue(text: str, cues: tuple[str, ...]) -> bool:
+    normalized = _normalize_intent_text(text)
+    return any(cue in normalized for cue in cues)
+
+
+def _detect_translation_drill_intent(text: str) -> dict | None:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return None
+
+    sentence_cues = (
+        "ein satz",
+        "einen satz",
+        "nur einen satz",
+        "ein paar satze",
+        "auf russisch",
+        "russisch sagen",
+        "gib mir einen satz",
+        "sag einen satz",
+    )
+    translate_cues = (
+        "ich ubersetze",
+        "ich muss ubersetzen",
+        "ubersetzen",
+        "ubersetzt",
+        "translate",
+        "translation",
+        "ins deutsche",
+        "in deutsche sprache",
+    )
+    check_cues = (
+        "uberpruf",
+        "prufst du",
+        "pruft du",
+        "korrig",
+        "check",
+        "dann uberprufst du",
+        "dann kontrollierst du",
+    )
+    telegram_focus_cues = (
+        "telegram",
+        "fehler",
+        "falle",
+        "artikeln",
+        "artikel",
+        "praposition",
+        "grammatik",
+        "weak spots",
+        "schwach",
+    )
+
+    has_sentence = _contains_any_intent_cue(normalized, sentence_cues)
+    has_translate = _contains_any_intent_cue(normalized, translate_cues)
+    has_check = _contains_any_intent_cue(normalized, check_cues)
+    has_telegram_focus = _contains_any_intent_cue(normalized, telegram_focus_cues)
+
+    score = 0
+    if has_sentence:
+        score += 1
+    if has_translate:
+        score += 1
+    if has_check:
+        score += 1
+    if has_telegram_focus:
+        score += 1
+
+    if (has_sentence and has_translate) or (has_translate and has_check) or score >= 3:
+        return {
+            "mode": "translation_drill",
+            "telegram_focus": bool(has_telegram_focus),
+        }
+    return None
+
 # === ТОЧКА ВХОДА ===
 async def entrypoint(ctx: JobContext):
     logging.info("✨ Starting German Teacher Agent...")
@@ -223,6 +307,11 @@ async def entrypoint(ctx: JobContext):
     teacher_logic = GermanTeacherAgent(llm_instance=my_llm)
     teacher_logic._greeted_user_ids = set() # Для анти-спама приветствий
     teacher_logic._ongoing_context_refresh_logged = False
+    teacher_logic._translation_drill_logged = False
+    teacher_logic._translation_drill_activation_pending = False
+    teacher_logic.current_translation_drill_mode = False
+    teacher_logic.current_translation_drill_use_telegram_focus = False
+    teacher_logic.recent_user_transcript_fragments = deque(maxlen=12)
 
     def _build_runtime_context_block(*, include_turn_guidance: bool = False) -> str:
         lines = [
@@ -278,6 +367,35 @@ async def entrypoint(ctx: JobContext):
                     "ONGOING PREP GUIDANCE: Keep some target vocabulary and expressions softly active in later turns through natural follow-up questions."
                 )
 
+        if getattr(teacher_logic, "current_translation_drill_mode", False):
+            lines.append("VOICE MODE OVERRIDE: translation_drill")
+            if getattr(teacher_logic, "current_translation_drill_use_telegram_focus", False):
+                lines.append(
+                    "TRANSLATION DRILL FOCUS: Prefer one sentence that softly targets the learner's Telegram weaknesses or known grammar weak spots when possible."
+                )
+            elif context and (context.prep_pack or context.scenario):
+                lines.append(
+                    "TRANSLATION DRILL FOCUS: Prefer one sentence that softly matches the active prep/scenario focus when possible."
+                )
+            else:
+                lines.append(
+                    "TRANSLATION DRILL FOCUS: Use a practical everyday sentence in Russian for translation into German."
+                )
+            lines.append(
+                "TRANSLATION DRILL RULES: Stop menu-style tutoring and stop long grammar lectures. Work in a simple loop: give exactly one Russian sentence, wait for the learner's German translation, then check/correct that exact attempt briefly before offering the next one."
+            )
+            lines.append(
+                "TRANSLATION DRILL RULES: Do not give multiple numbered examples unless the learner explicitly asks for several sentences."
+            )
+            if include_turn_guidance:
+                lines.append(
+                    "ONGOING DRILL ADHERENCE: Stay in one-sentence translation-check mode across later turns unless the learner clearly asks to switch tasks."
+                )
+            if getattr(teacher_logic, "_translation_drill_activation_pending", False):
+                lines.append(
+                    "IMMEDIATE NEXT RESPONSE: Give exactly one Russian sentence to translate into German and say briefly that you will check the learner's attempt after they answer."
+                )
+
         return "\n".join(lines)
 
     async def _apply_runtime_context_to_agent(
@@ -311,6 +429,14 @@ async def entrypoint(ctx: JobContext):
                     teacher_logic.current_voice_session_id,
                     getattr(teacher_logic.current_voice_session_context, "topic_mode", None),
                     "yes" if getattr(teacher_logic.current_voice_session_context, "prep_pack", None) else "no",
+                )
+        if include_turn_guidance and getattr(teacher_logic, "current_translation_drill_mode", False):
+            if not teacher_logic._translation_drill_logged:
+                teacher_logic._translation_drill_logged = True
+                logging.info(
+                    "🎯 Translation drill runtime mode active for session_id=%s telegram_focus=%s",
+                    teacher_logic.current_voice_session_id,
+                    bool(getattr(teacher_logic, "current_translation_drill_use_telegram_focus", False)),
                 )
         return True
 
@@ -565,6 +691,36 @@ async def entrypoint(ctx: JobContext):
                 exc_info=True,
             )
 
+    async def _activate_translation_drill_mode_if_needed(user_text: str) -> bool:
+        normalized_text = str(user_text or "").strip()
+        if not normalized_text:
+            return False
+        teacher_logic.recent_user_transcript_fragments.append(normalized_text)
+        joined_recent_text = " ".join(teacher_logic.recent_user_transcript_fragments)
+        detection = _detect_translation_drill_intent(joined_recent_text)
+        if not detection:
+            return False
+        teacher_logic.current_translation_drill_use_telegram_focus = bool(
+            getattr(teacher_logic, "current_translation_drill_use_telegram_focus", False)
+            or detection.get("telegram_focus")
+        )
+        if getattr(teacher_logic, "current_translation_drill_mode", False):
+            return False
+        teacher_logic.current_translation_drill_mode = True
+        teacher_logic._translation_drill_activation_pending = True
+        logging.info(
+            "🎯 Detected translation-drill intent for session_id=%s buffer=%r telegram_focus=%s",
+            teacher_logic.current_voice_session_id,
+            joined_recent_text[:300],
+            bool(teacher_logic.current_translation_drill_use_telegram_focus),
+        )
+        await _apply_runtime_context_to_agent(
+            force=True,
+            include_turn_guidance=True,
+            log_reason="translation_drill_intent",
+        )
+        return True
+
     @llm.function_tool
     async def get_student_context() -> str:
         if not teacher_logic.current_user_id:
@@ -707,7 +863,8 @@ async def entrypoint(ctx: JobContext):
                 # при первом пользовательском сообщении пытаемся резолвить ID+имя
                 if not teacher_logic.current_user_id:
                     asyncio.create_task(_resolve_user_id_from_room())
-                elif teacher_logic.current_voice_session_context:
+                asyncio.create_task(_activate_translation_drill_mode_if_needed(text))
+                if teacher_logic.current_voice_session_context:
                     asyncio.create_task(
                         _apply_runtime_context_to_agent(
                             force=True,
@@ -715,6 +872,24 @@ async def entrypoint(ctx: JobContext):
                             log_reason="user_turn",
                         )
                     )
+                elif teacher_logic.current_translation_drill_mode:
+                    asyncio.create_task(
+                        _apply_runtime_context_to_agent(
+                            force=True,
+                            include_turn_guidance=True,
+                            log_reason="translation_drill_user_turn",
+                        )
+                    )
+
+            if role == "assistant" and getattr(teacher_logic, "_translation_drill_activation_pending", False):
+                teacher_logic._translation_drill_activation_pending = False
+                asyncio.create_task(
+                    _apply_runtime_context_to_agent(
+                        force=True,
+                        include_turn_guidance=True,
+                        log_reason="translation_drill_ack",
+                    )
+                )
 
             if role in ("user", "assistant"):
                 save_transcript(role.capitalize(), text)

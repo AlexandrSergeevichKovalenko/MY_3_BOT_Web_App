@@ -2483,6 +2483,8 @@ Rules:
 - answer_options must contain exactly 4 distinct strings.
 - correct_option_index must be 0-based.
 - The correct option must be the best match for the image prompt and source_sentence.
+- Every answer option must be written only in answer_language.
+- If answer_language is "de", never use Russian or Cyrillic in answer_options.
 - explanation should be short and optional in spirit, but always include a brief string.
 - Output ONLY JSON.
 """,

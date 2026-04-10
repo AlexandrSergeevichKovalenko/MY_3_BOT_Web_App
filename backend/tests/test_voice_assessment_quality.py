@@ -1,7 +1,7 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from backend.voice_assessment_service import build_voice_assessment
+from backend.voice_assessment_service import build_and_store_voice_assessment, build_voice_assessment
 
 
 QUALITY_FIXTURES = {
@@ -182,6 +182,58 @@ class VoiceAssessmentQualityTests(unittest.IsolatedAsyncioTestCase):
             assessment.self_correction_note,
         ]
         self.assertGreater(len(set(notes)), 1)
+
+    async def test_build_and_store_waits_for_late_transcript_material_before_fallback(self):
+        fixture = QUALITY_FIXTURES["weak_coherence_but_vocab_ok"]
+        late_segments = [
+            [],
+            [{"speaker": "assistant", "text": "Hallo Aleksandr!"}],
+            fixture["segments"],
+        ]
+        with patch(
+            "backend.voice_assessment_service.fetch_agent_voice_transcript_segments",
+            side_effect=late_segments,
+        ) as fetch_mock, patch(
+            "backend.voice_assessment_service.get_agent_voice_session_context",
+            return_value=fixture["context"],
+        ), patch(
+            "backend.voice_assessment_service.llm_execute",
+            return_value=fixture["llm_payload"],
+        ), patch(
+            "backend.voice_assessment_service.asyncio.sleep",
+            new=AsyncMock(return_value=None),
+        ) as sleep_mock, patch(
+            "backend.voice_assessment_service.store_voice_assessment",
+            side_effect=lambda assessment: assessment,
+        ):
+            assessment = await build_and_store_voice_assessment(session_id=105)
+
+        self.assertIsNotNone(assessment)
+        self.assertNotIn("too short", assessment.summary.lower())
+        self.assertTrue(fetch_mock.call_count >= 3)
+        self.assertEqual(sleep_mock.await_count, 2)
+
+    async def test_build_and_store_keeps_fallback_when_transcript_stays_premature(self):
+        assistant_only_segments = [{"speaker": "assistant", "text": "Hallo Aleksandr!"}]
+        with patch(
+            "backend.voice_assessment_service.fetch_agent_voice_transcript_segments",
+            side_effect=[assistant_only_segments, assistant_only_segments, assistant_only_segments],
+        ) as fetch_mock, patch(
+            "backend.voice_assessment_service.get_agent_voice_session_context",
+            return_value={"session": {"session_id": 106}, "scenario": None, "prep_pack": None},
+        ), patch(
+            "backend.voice_assessment_service.asyncio.sleep",
+            new=AsyncMock(return_value=None),
+        ) as sleep_mock, patch(
+            "backend.voice_assessment_service.store_voice_assessment",
+            side_effect=lambda assessment: assessment,
+        ):
+            assessment = await build_and_store_voice_assessment(session_id=106)
+
+        self.assertIsNotNone(assessment)
+        self.assertIn("too short", assessment.summary.lower())
+        self.assertEqual(fetch_mock.call_count, 3)
+        self.assertEqual(sleep_mock.await_count, 2)
 
 
 if __name__ == "__main__":
