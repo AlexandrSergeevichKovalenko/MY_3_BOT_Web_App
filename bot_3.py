@@ -75,6 +75,11 @@ from backend.openai_manager import (
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
 )
+from backend.image_quiz_utils import (
+    build_image_quiz_feedback_alert,
+    build_image_quiz_feedback_payload,
+    normalize_image_quiz_option_text,
+)
 from backend.database import (
     init_db,
     build_translation_session_minutes_sql,
@@ -141,6 +146,7 @@ from backend.database import (
     create_image_quiz_dispatch,
     mark_image_quiz_dispatch_sent,
     mark_image_quiz_dispatch_failed,
+    mark_image_quiz_template_failed,
     get_image_quiz_dispatch,
     get_image_quiz_template,
     record_image_quiz_answer,
@@ -10638,6 +10644,9 @@ async def _send_quiz_result_private(
         f"Правильный вариант (DE): {de_text or '—'}",
         f"Перевод (RU): {ru_text or '—'}",
     ])
+    explanation_text = _truncate_telegram_reply_text(str(quiz_data.get("explanation") or "").strip(), max_chars=220)
+    if explanation_text:
+        lines.append(f"Пояснение: {explanation_text}")
 
     reply_markup = None
     fallback_reply_markup = None
@@ -12040,7 +12049,7 @@ def _build_image_quiz_button_label(option_index: int) -> str:
 
 
 def _format_image_quiz_option_text(option_text: str, *, max_chars: int = 84) -> str:
-    compact = " ".join(str(option_text or "").strip().split())
+    compact = normalize_image_quiz_option_text(option_text)
     if not compact:
         return "—"
     return _truncate_telegram_reply_text(compact, max_chars=max_chars)
@@ -12121,10 +12130,23 @@ async def _send_image_quiz_for_target(
         )
         return False
 
-    answer_options = [str(option).strip() for option in (chosen_template.get("answer_options") or []) if str(option).strip()]
-    correct_option_index = chosen_template.get("correct_option_index")
+    quiz_data = build_image_quiz_feedback_payload(chosen_template)
     image_url = str(chosen_template.get("image_url") or "").strip()
-    if len(answer_options) != 4 or correct_option_index is None or not image_url:
+    if not quiz_data or not image_url:
+        try:
+            await asyncio.to_thread(
+                mark_image_quiz_template_failed,
+                int(chosen_template["id"]),
+                last_error="image_quiz_ready_template_invalid",
+                visual_status="rejected",
+                provider_name="telegram_bot_send",
+            )
+        except Exception:
+            logging.warning(
+                "⚠️ Не удалось отметить invalid ready image quiz template template_id=%s",
+                chosen_template.get("id"),
+                exc_info=True,
+            )
         logging.warning(
             "⚠️ Ready image quiz template is incomplete template_id=%s user_id=%s chat_id=%s",
             chosen_template.get("id"),
@@ -12132,6 +12154,7 @@ async def _send_image_quiz_for_target(
             int(target_chat_id),
         )
         return False
+    answer_options = list(quiz_data["options"])
 
     delivery_scope = "group" if int(target_chat_id) < 0 else "private"
     dispatch = None
@@ -12502,18 +12525,18 @@ async def handle_image_quiz_callback(update: Update, context: CallbackContext) -
         await query.answer("Quiz unavailable")
         return
 
-    answer_options = [str(option).strip() for option in (template.get("answer_options") or []) if str(option).strip()]
-    correct_option_index = template.get("correct_option_index")
-    if (
-        selected_option_index < 0
-        or selected_option_index >= len(answer_options)
-        or correct_option_index is None
-    ):
+    quiz_data = build_image_quiz_feedback_payload(template)
+    if not quiz_data:
+        await query.answer("Quiz unavailable")
+        return
+    answer_options = list(quiz_data["options"])
+    correct_option_index = int(quiz_data["correct_option_id"])
+    if selected_option_index < 0 or selected_option_index >= len(answer_options):
         await query.answer("Quiz unavailable")
         return
 
     selected_text = answer_options[selected_option_index]
-    is_correct = int(selected_option_index) == int(correct_option_index)
+    is_correct = int(selected_option_index) == correct_option_index
     try:
         answer = await asyncio.to_thread(
             record_image_quiz_answer,
@@ -12537,25 +12560,77 @@ async def handle_image_quiz_callback(update: Update, context: CallbackContext) -
         await query.answer("Quiz unavailable")
         return
 
-    if not bool(answer.get("created")):
-        await query.answer("Already answered")
+    answer_created = bool(answer.get("created"))
+    feedback_sent_at = answer.get("feedback_sent_at")
+    stored_selected_text = str(answer.get("selected_text") or selected_text).strip() or selected_text
+    stored_is_correct = bool(answer.get("is_correct")) if answer.get("is_correct") is not None else bool(is_correct)
+
+    if (not answer_created) and feedback_sent_at:
+        await query.answer(
+            build_image_quiz_feedback_alert(
+                is_correct=stored_is_correct,
+                correct_text=quiz_data.get("correct_text"),
+                answer_accepted=False,
+            ),
+            show_alert=True,
+        )
         return
 
     try:
-        await asyncio.to_thread(
-            mark_image_quiz_answer_feedback_sent,
-            int(dispatch_id),
-            int(user.id),
+        await query.answer(
+            build_image_quiz_feedback_alert(
+                is_correct=stored_is_correct,
+                correct_text=quiz_data.get("correct_text"),
+                answer_accepted=answer_created,
+            ),
+            show_alert=True,
         )
     except Exception:
         logging.warning(
-            "⚠️ Не удалось отметить feedback sent для image quiz dispatch_id=%s user_id=%s",
+            "⚠️ Не удалось показать image quiz alert dispatch_id=%s user_id=%s",
             dispatch_id,
             int(user.id),
             exc_info=True,
         )
 
-    await query.answer("✅ Correct" if is_correct else "❌ Incorrect")
+    sent_private = await _send_quiz_result_private(
+        context=context,
+        user_id=int(user.id),
+        quiz_data=quiz_data,
+        is_correct=stored_is_correct,
+        selected_text=stored_selected_text,
+    )
+
+    if sent_private:
+        try:
+            await asyncio.to_thread(
+                mark_image_quiz_answer_feedback_sent,
+                int(dispatch_id),
+                int(user.id),
+            )
+        except Exception:
+            logging.warning(
+                "⚠️ Не удалось отметить feedback sent для image quiz dispatch_id=%s user_id=%s",
+                dispatch_id,
+                int(user.id),
+                exc_info=True,
+            )
+        return
+
+    try:
+        if int(dispatch.get("chat_id") or 0) != int(user.id):
+            await context.bot.send_message(
+                chat_id=int(dispatch.get("chat_id") or 0),
+                text=f"{user.first_name}, откройте личку с ботом (/start), чтобы получить результат image quiz.",
+                reply_to_message_id=int(dispatch.get("message_id") or 0) or None,
+            )
+    except Exception:
+        logging.warning(
+            "⚠️ Не удалось отправить image quiz fallback в чат dispatch_id=%s user_id=%s",
+            dispatch_id,
+            int(user.id),
+            exc_info=True,
+        )
 
 
 
