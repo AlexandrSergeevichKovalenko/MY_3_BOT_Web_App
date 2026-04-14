@@ -687,9 +687,17 @@ TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES = max(
 )
 TTS_OBJECT_PREFIX = str(os.getenv("TTS_OBJECT_PREFIX") or "tts").strip().strip("/") or "tts"
 KEY_SALT = (os.getenv("KEY_SALT") or "").strip()
-_TTS_CACHE_HMAC_SECRET = KEY_SALT or TELEGRAM_Deutsch_BOT_TOKEN or "dev-unsafe-key-salt"
-if not KEY_SALT:
-    logging.warning("⚠️ KEY_SALT is not set. Using fallback secret for TTS cache keys.")
+_RAILWAY_RUNTIME_DETECTED = any(
+    str(os.getenv(env_name) or "").strip()
+    for env_name in ("RAILWAY_SERVICE_NAME", "RAILWAY_PROJECT_ID", "RAILWAY_ENVIRONMENT_NAME")
+)
+if KEY_SALT:
+    _TTS_CACHE_HMAC_SECRET = KEY_SALT
+elif _RAILWAY_RUNTIME_DETECTED:
+    raise RuntimeError("KEY_SALT must be set in Railway/production for TTS object cache keys.")
+else:
+    _TTS_CACHE_HMAC_SECRET = TELEGRAM_Deutsch_BOT_TOKEN or "dev-unsafe-key-salt"
+    logging.warning("⚠️ KEY_SALT is not set outside Railway runtime. Using local/dev fallback secret for TTS cache keys.")
 FSRS_PROFILING_ENABLED = str(os.getenv("FSRS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 FLASHCARDS_SET_PROFILING_ENABLED = str(os.getenv("FLASHCARDS_SET_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 DICTIONARY_PROFILING_ENABLED = str(os.getenv("DICTIONARY_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
