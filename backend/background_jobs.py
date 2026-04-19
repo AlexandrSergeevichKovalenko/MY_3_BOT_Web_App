@@ -5,11 +5,14 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
 
 import dramatiq
 
 from backend.job_queue import (
+    get_translation_check_dispatch_state,
     get_dramatiq_broker,
+    set_translation_check_dispatch_state,
     set_translation_check_job_status,
     set_translation_fill_job_status,
     set_youtube_transcript_job_status,
@@ -21,6 +24,15 @@ dramatiq.set_broker(get_dramatiq_broker())
 _TRANSLATION_CHECK_QUEUE_NAME = str(
     os.getenv("TRANSLATION_CHECK_QUEUE_NAME") or "translation_check"
 ).strip() or "translation_check"
+_TRANSLATION_CHECK_COMPLETION_QUEUE_NAME = str(
+    os.getenv("TRANSLATION_CHECK_COMPLETION_QUEUE_NAME") or "translation_check_completion"
+).strip() or "translation_check_completion"
+_PROJECTION_MATERIALIZATION_LIVE_QUEUE_NAME = str(
+    os.getenv("PROJECTION_MATERIALIZATION_LIVE_QUEUE_NAME") or "projection_materialization_live"
+).strip() or "projection_materialization_live"
+_PROJECTION_MATERIALIZATION_BACKFILL_QUEUE_NAME = str(
+    os.getenv("PROJECTION_MATERIALIZATION_BACKFILL_QUEUE_NAME") or "projection_materialization_backfill"
+).strip() or "projection_materialization_backfill"
 _IMAGE_QUIZ_PREP_QUEUE_NAME = "image_quiz_prepare"
 _IMAGE_QUIZ_RENDER_QUEUE_NAME = "image_quiz_render"
 _IMAGE_QUIZ_R2_PREFIX = str(
@@ -683,11 +695,56 @@ def run_translation_check_job(
 ) -> None:
     safe_session_id = int(session_id)
     normalized_dispatch_job_id = str(dispatch_job_id or "").strip() or None
-    set_translation_check_job_status(
-        safe_session_id,
-        status="running",
-        job_id=normalized_dispatch_job_id,
+    worker_received_at_ms = int(time.time() * 1000)
+    current_dispatch_state = get_translation_check_dispatch_state(safe_session_id) or {}
+    current_dispatch_job_id = str(current_dispatch_state.get("worker_job_id") or "").strip() or None
+    stale_message = bool(
+        normalized_dispatch_job_id
+        and current_dispatch_job_id
+        and current_dispatch_job_id != normalized_dispatch_job_id
     )
+    if stale_message:
+        logging.warning(
+            "translation_check_dispatch transition=stale_message_received queue=%s session_id=%s worker_job_id=%s active_dispatch_job_id=%s message_id=%s dispatch_generation=%s redispatch_count=%s ts_ms=%s",
+            _TRANSLATION_CHECK_QUEUE_NAME,
+            safe_session_id,
+            normalized_dispatch_job_id,
+            current_dispatch_job_id,
+            current_dispatch_state.get("message_id"),
+            current_dispatch_state.get("dispatch_generation"),
+            current_dispatch_state.get("redispatch_count"),
+            worker_received_at_ms,
+        )
+    set_translation_check_dispatch_state(
+        safe_session_id,
+        {
+            "status": current_dispatch_state.get("status") if stale_message else "worker_received",
+            "worker_job_id": current_dispatch_job_id if stale_message else normalized_dispatch_job_id,
+            "message_id": current_dispatch_state.get("message_id"),
+            "queue_name": _TRANSLATION_CHECK_QUEUE_NAME,
+            "dispatched_at_ms": current_dispatch_state.get("dispatched_at_ms"),
+            "broker_enqueued_at_ms": current_dispatch_state.get("broker_enqueued_at_ms"),
+            "worker_received_at_ms": current_dispatch_state.get("worker_received_at_ms") if stale_message else worker_received_at_ms,
+            "claimed_at_ms": current_dispatch_state.get("claimed_at_ms"),
+            "first_heartbeat_at_ms": current_dispatch_state.get("first_heartbeat_at_ms"),
+            "last_heartbeat_ms": current_dispatch_state.get("last_heartbeat_ms"),
+            "dispatch_generation": current_dispatch_state.get("dispatch_generation"),
+            "redispatch_count": current_dispatch_state.get("redispatch_count"),
+            "last_force_dispatch_at_ms": current_dispatch_state.get("last_force_dispatch_at_ms"),
+            "runtime_status": current_dispatch_state.get("runtime_status") if stale_message else "queued",
+        },
+    )
+    if not stale_message:
+        logging.info(
+            "translation_check_dispatch transition=worker_received queue=%s session_id=%s dispatch_job_id=%s message_id=%s dispatch_generation=%s redispatch_count=%s ts_ms=%s",
+            _TRANSLATION_CHECK_QUEUE_NAME,
+            safe_session_id,
+            normalized_dispatch_job_id,
+            current_dispatch_state.get("message_id"),
+            current_dispatch_state.get("dispatch_generation"),
+            current_dispatch_state.get("redispatch_count"),
+            worker_received_at_ms,
+        )
     try:
         from backend.backend_server import _run_translation_check_session
 
@@ -710,6 +767,31 @@ def run_translation_check_job(
             status="failed",
             job_id=normalized_dispatch_job_id,
             error=str(exc),
+        )
+        raise
+
+
+@dramatiq.actor(max_retries=2, queue_name=_TRANSLATION_CHECK_COMPLETION_QUEUE_NAME)
+def run_translation_check_completion_job(
+    session_id: int,
+    correlation_id: str | None = None,
+    request_id: str | None = None,
+) -> None:
+    safe_session_id = int(session_id)
+    try:
+        from backend.backend_server import _run_translation_check_completion_side_effects
+
+        _run_translation_check_completion_side_effects(
+            session_id=safe_session_id,
+            correlation_id=correlation_id,
+            request_id=request_id,
+        )
+    except Exception:
+        logging.exception(
+            "translation_check_completion_job failed session_id=%s request_id=%s correlation_id=%s",
+            safe_session_id,
+            request_id,
+            correlation_id,
         )
         raise
 
@@ -843,6 +925,198 @@ def run_finish_daily_summary_job(
             correlation_id,
         )
         raise
+
+
+def _run_projection_materialization_job_impl(
+    *,
+    job_id: int,
+    expected_job_source: str,
+    queue_name: str,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+) -> None:
+    safe_job_id = int(job_id or 0)
+    if safe_job_id <= 0:
+        logging.warning(
+            "projection_materialization_job skipped invalid job_id=%s job_source=%s queue_name=%s request_id=%s correlation_id=%s",
+            job_id,
+            expected_job_source,
+            queue_name,
+            request_id,
+            correlation_id,
+        )
+        return
+    started_perf = time.perf_counter()
+    lease_token = None
+    projection_job = None
+    try:
+        from backend.database import (
+            claim_projection_job,
+            complete_projection_job,
+            fail_projection_job,
+            get_projection_job_status_counts,
+        )
+        from backend.backend_server import materialize_projection_job_payload
+
+        projection_job = claim_projection_job(
+            job_id=safe_job_id,
+            expected_job_source=expected_job_source,
+            expected_queue_name=queue_name,
+        )
+        if not projection_job:
+            counts = get_projection_job_status_counts(job_source=expected_job_source)
+            logging.info(
+                "projection_materialization_job no_claim job_id=%s job_source=%s queue_name=%s request_id=%s correlation_id=%s pending=%s running=%s done=%s failed=%s retrying=%s",
+                safe_job_id,
+                expected_job_source,
+                queue_name,
+                request_id,
+                correlation_id,
+                counts.get("pending"),
+                counts.get("running"),
+                counts.get("done"),
+                counts.get("failed"),
+                counts.get("retrying"),
+            )
+            return
+        lease_token = str(projection_job.get("lease_token") or "").strip() or None
+        enqueued_at = projection_job.get("enqueued_at")
+        started_at = projection_job.get("started_at")
+        enqueue_to_claim_ms = None
+        try:
+            if enqueued_at and started_at:
+                enqueue_to_claim_ms = max(
+                    0,
+                    int(
+                        (
+                            datetime.fromisoformat(str(started_at))
+                            - datetime.fromisoformat(str(enqueued_at))
+                        ).total_seconds()
+                        * 1000
+                    ),
+                )
+        except Exception:
+            enqueue_to_claim_ms = None
+        counts = get_projection_job_status_counts(job_source=expected_job_source)
+        logging.info(
+            "projection_materialization_job started job_id=%s job_source=%s queue_name=%s projection_kind=%s user_id=%s enqueued_at=%s started_at=%s enqueue_to_claim_ms=%s attempt_count=%s request_id=%s correlation_id=%s pending=%s running=%s done=%s failed=%s retrying=%s",
+            safe_job_id,
+            expected_job_source,
+            queue_name,
+            projection_job.get("projection_kind"),
+            projection_job.get("user_id"),
+            enqueued_at,
+            started_at,
+            enqueue_to_claim_ms,
+            projection_job.get("attempt_count"),
+            request_id,
+            correlation_id,
+            counts.get("pending"),
+            counts.get("running"),
+            counts.get("done"),
+            counts.get("failed"),
+            counts.get("retrying"),
+        )
+        materialize_projection_job_payload(projection_job)
+        completed_job = complete_projection_job(job_id=safe_job_id, lease_token=lease_token or "")
+        counts = get_projection_job_status_counts(job_source=expected_job_source)
+        logging.info(
+            "projection_materialization_job completed job_id=%s job_source=%s queue_name=%s projection_kind=%s user_id=%s enqueued_at=%s started_at=%s completed_at=%s enqueue_to_claim_ms=%s total_ms=%s attempt_count=%s request_id=%s correlation_id=%s pending=%s running=%s done=%s failed=%s retrying=%s",
+            safe_job_id,
+            expected_job_source,
+            queue_name,
+            projection_job.get("projection_kind"),
+            projection_job.get("user_id"),
+            enqueued_at,
+            started_at,
+            (completed_job or {}).get("completed_at") if isinstance(completed_job, dict) else None,
+            enqueue_to_claim_ms,
+            int((time.perf_counter() - started_perf) * 1000),
+            projection_job.get("attempt_count"),
+            request_id,
+            correlation_id,
+            counts.get("pending"),
+            counts.get("running"),
+            counts.get("done"),
+            counts.get("failed"),
+            counts.get("retrying"),
+        )
+    except Exception as exc:
+        if lease_token:
+            try:
+                from backend.database import fail_projection_job, get_projection_job_status_counts
+
+                failed_job = fail_projection_job(
+                    job_id=safe_job_id,
+                    lease_token=lease_token,
+                    error_text=str(exc),
+                )
+                counts = get_projection_job_status_counts(job_source=expected_job_source)
+                logging.warning(
+                    "projection_materialization_job failed job_id=%s job_source=%s queue_name=%s projection_kind=%s status=%s last_error=%s request_id=%s correlation_id=%s pending=%s running=%s done=%s failed=%s retrying=%s",
+                    safe_job_id,
+                    expected_job_source,
+                    queue_name,
+                    projection_job.get("projection_kind") if isinstance(projection_job, dict) else None,
+                    (failed_job or {}).get("status") if isinstance(failed_job, dict) else None,
+                    (failed_job or {}).get("last_error") if isinstance(failed_job, dict) else None,
+                    request_id,
+                    correlation_id,
+                    counts.get("pending"),
+                    counts.get("running"),
+                    counts.get("done"),
+                    counts.get("failed"),
+                    counts.get("retrying"),
+                )
+            except Exception:
+                logging.exception(
+                    "projection_materialization_job retry bookkeeping failed job_id=%s job_source=%s queue_name=%s request_id=%s correlation_id=%s",
+                    safe_job_id,
+                    expected_job_source,
+                    queue_name,
+                    request_id,
+                    correlation_id,
+                )
+        logging.exception(
+            "projection_materialization_job crashed job_id=%s job_source=%s queue_name=%s projection_kind=%s request_id=%s correlation_id=%s",
+            safe_job_id,
+            expected_job_source,
+            queue_name,
+            projection_job.get("projection_kind") if isinstance(projection_job, dict) else None,
+            request_id,
+            correlation_id,
+        )
+        raise
+
+
+@dramatiq.actor(max_retries=0, queue_name=_PROJECTION_MATERIALIZATION_LIVE_QUEUE_NAME)
+def run_projection_materialization_live_job(
+    job_id: int,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+) -> None:
+    _run_projection_materialization_job_impl(
+        job_id=job_id,
+        expected_job_source="live",
+        queue_name=_PROJECTION_MATERIALIZATION_LIVE_QUEUE_NAME,
+        request_id=request_id,
+        correlation_id=correlation_id,
+    )
+
+
+@dramatiq.actor(max_retries=0, queue_name=_PROJECTION_MATERIALIZATION_BACKFILL_QUEUE_NAME)
+def run_projection_materialization_backfill_job(
+    job_id: int,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+) -> None:
+    _run_projection_materialization_job_impl(
+        job_id=job_id,
+        expected_job_source="backfill",
+        queue_name=_PROJECTION_MATERIALIZATION_BACKFILL_QUEUE_NAME,
+        request_id=request_id,
+        correlation_id=correlation_id,
+    )
 
 
 @dramatiq.actor(max_retries=0, queue_name="translation_pool_refill")
@@ -1083,3 +1357,138 @@ def run_translation_result_side_effects_job(
             sentence_id_for_mistake,
         )
         raise
+
+
+# ---------------------------------------------------------------------------
+# Scheduler-dispatched actors
+# Each actor is a thin wrapper that calls the corresponding _run_*_scheduler_job
+# function from backend_server via a deferred import (same pattern used throughout
+# this module).  The scheduler service enqueues these; the worker executes them.
+# All use max_retries=0 — the underlying functions already carry their own
+# DB-level deduplication (claim_scheduler_run_guard / has_admin_scheduler_run).
+# ---------------------------------------------------------------------------
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_daily_audio_scheduler_actor() -> None:
+    from backend.backend_server import _run_audio_scheduler_job
+    _run_audio_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_private_analytics_scheduler_actor() -> None:
+    from backend.backend_server import _run_private_analytics_scheduler_job
+    _run_private_analytics_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_weekly_goals_scheduler_actor() -> None:
+    from backend.backend_server import _run_weekly_goals_scheduler_job
+    _run_weekly_goals_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_daily_group_summary_scheduler_actor() -> None:
+    from backend.backend_server import _run_daily_group_summary_scheduler_job
+    _run_daily_group_summary_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_weekly_group_summary_scheduler_actor() -> None:
+    from backend.backend_server import _run_weekly_group_summary_scheduler_job
+    _run_weekly_group_summary_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_today_plan_scheduler_actor() -> None:
+    from backend.backend_server import _run_today_plan_scheduler_job
+    _run_today_plan_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_today_evening_reminders_scheduler_actor() -> None:
+    from backend.backend_server import _run_today_evening_reminders_scheduler_job
+    _run_today_evening_reminders_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_translation_sessions_auto_close_actor() -> None:
+    from backend.backend_server import _run_translation_sessions_auto_close_job
+    _run_translation_sessions_auto_close_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_system_message_cleanup_actor() -> None:
+    from backend.backend_server import _run_system_message_cleanup_job
+    _run_system_message_cleanup_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_flashcard_feel_cleanup_actor() -> None:
+    from backend.backend_server import _run_flashcard_feel_cleanup_job
+    _run_flashcard_feel_cleanup_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_tts_db_cache_cleanup_actor() -> None:
+    from backend.backend_server import _run_tts_db_cache_cleanup_job
+    _run_tts_db_cache_cleanup_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_tts_r2_cache_cleanup_actor() -> None:
+    from backend.backend_server import _run_tts_r2_cache_cleanup_job
+    _run_tts_r2_cache_cleanup_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_database_table_sizes_report_actor() -> None:
+    from backend.backend_server import _run_database_table_sizes_report_job
+    _run_database_table_sizes_report_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_tts_prewarm_scheduler_actor() -> None:
+    from backend.backend_server import _run_tts_prewarm_scheduler_job
+    _run_tts_prewarm_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_tts_generation_recovery_actor() -> None:
+    from backend.backend_server import _run_tts_generation_recovery_scheduler_job
+    _run_tts_generation_recovery_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_tts_prewarm_quota_control_actor() -> None:
+    from backend.backend_server import _run_tts_prewarm_quota_control_scheduler_job
+    _run_tts_prewarm_quota_control_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_sentence_prewarm_actor() -> None:
+    from backend.backend_server import _run_sentence_prewarm_scheduler_job
+    _run_sentence_prewarm_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_translation_focus_pool_admin_report_actor() -> None:
+    from backend.backend_server import _run_translation_focus_pool_admin_report_scheduler_job
+    _run_translation_focus_pool_admin_report_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_semantic_benchmark_prep_actor() -> None:
+    from backend.backend_server import _run_semantic_benchmark_prep_scheduler_job
+    _run_semantic_benchmark_prep_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_semantic_audit_actor() -> None:
+    from backend.backend_server import _run_semantic_audit_scheduler_job
+    _run_semantic_audit_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_skill_state_v2_aggregation_actor() -> None:
+    from backend.backend_server import _run_skill_state_v2_aggregation_scheduler_job
+    _run_skill_state_v2_aggregation_scheduler_job()
