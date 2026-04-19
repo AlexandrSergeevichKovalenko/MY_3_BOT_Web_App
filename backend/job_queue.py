@@ -270,7 +270,6 @@ def enqueue_projection_materialization_job(
             run_projection_materialization_backfill_job,
             run_projection_materialization_live_job,
         )
-        from backend.database import get_projection_job_status_counts
 
         actor = (
             run_projection_materialization_backfill_job
@@ -289,27 +288,19 @@ def enqueue_projection_materialization_job(
             correlation_id=str(correlation_id or "").strip() or None,
         )
         send_duration_ms = int((time.perf_counter() - send_started_perf) * 1000)
-        counts_started_perf = time.perf_counter()
-        counts = get_projection_job_status_counts(job_source=normalized_job_source)
-        counts_duration_ms = int((time.perf_counter() - counts_started_perf) * 1000)
         logging.info(
-            "projection_materialization_enqueue job_id=%s job_source=%s queue_name=%s request_id=%s correlation_id=%s pending=%s running=%s done=%s failed=%s retrying=%s",
+            "projection_materialization_enqueue job_id=%s job_source=%s queue_name=%s request_id=%s correlation_id=%s",
             safe_job_id,
             normalized_job_source,
             queue_name,
             request_id,
             correlation_id,
-            counts.get("pending"),
-            counts.get("running"),
-            counts.get("done"),
-            counts.get("failed"),
-            counts.get("retrying"),
         )
         if isinstance(timing_breakdown, dict):
             total_duration_ms = int((time.perf_counter() - enqueue_started_perf) * 1000)
             timing_breakdown["send_ms"] = send_duration_ms
-            timing_breakdown["status_count_ms"] = counts_duration_ms
-            timing_breakdown["other_ms"] = max(0, total_duration_ms - send_duration_ms - counts_duration_ms)
+            timing_breakdown["status_count_ms"] = 0
+            timing_breakdown["other_ms"] = max(0, total_duration_ms - send_duration_ms)
         return str(getattr(message, "message_id", None) or "").strip() or None
     except Exception:
         logging.exception(
