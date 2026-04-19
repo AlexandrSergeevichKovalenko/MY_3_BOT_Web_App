@@ -24756,6 +24756,7 @@ def _run_post_finish_snapshot_bookkeeping(
     user_id: int,
     username: str | None,
     plan_date: date,
+    finished_session_id: str | None = None,
 ) -> None:
     try:
         _mark_weekly_plan_snapshot_stale(user_id=int(user_id), anchor_date=plan_date)
@@ -24769,6 +24770,15 @@ def _run_post_finish_snapshot_bookkeeping(
             plan_date.isoformat() if hasattr(plan_date, "isoformat") else str(plan_date),
             exc_info=True,
         )
+    if finished_session_id:
+        try:
+            # Keep draft cleanup out of the synchronous finish request path.
+            delete_translation_draft_state(user_id=int(user_id), source_session_id=finished_session_id)
+        except Exception:
+            logging.warning(
+                "Post-finish draft clear failed: user_id=%s session_id=%s",
+                int(user_id), finished_session_id, exc_info=True,
+            )
 
 
 def _dispatch_post_finish_snapshot_bookkeeping(
@@ -24776,6 +24786,7 @@ def _dispatch_post_finish_snapshot_bookkeeping(
     user_id: int,
     username: str | None,
     plan_date: date,
+    finished_session_id: str | None = None,
 ) -> None:
     threading.Thread(
         target=_run_post_finish_snapshot_bookkeeping,
@@ -24783,6 +24794,7 @@ def _dispatch_post_finish_snapshot_bookkeeping(
             "user_id": int(user_id),
             "username": username,
             "plan_date": plan_date,
+            "finished_session_id": finished_session_id,
         },
         daemon=True,
     ).start()
@@ -40547,6 +40559,7 @@ def finish_webapp_translation():
             user_id=int(user_id),
             username=username or user_name,
             plan_date=plan_date,
+            finished_session_id=finished_session_id or None,
         )
         finish_bookkeeping_dispatch_ms = int((time.perf_counter() - bookkeeping_dispatch_started_perf) * 1000)
         _log_finish_request_event(

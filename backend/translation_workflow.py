@@ -41,7 +41,6 @@ from backend.database import (
     apply_skill_events_for_error,
     close_stale_open_translation_sessions_for_user,
     get_skill_mapping_for_error,
-    delete_translation_draft_state,
     build_translation_session_minutes_sql,
     enforce_feature_limit,
 )
@@ -7485,18 +7484,6 @@ def finish_translation_webapp(user_id: int, timing_breakdown: dict | None = None
         )
         if isinstance(timing_breakdown, dict):
             timing_breakdown["finish_core_redis_ms"] = int((time.perf_counter() - _t_redis) * 1000)
-        try:
-            _t_draft = time.perf_counter()
-            delete_translation_draft_state(user_id=int(user_id), source_session_id=str(session_id))
-            if isinstance(timing_breakdown, dict):
-                timing_breakdown["finish_core_draft_clear_ms"] = int((time.perf_counter() - _t_draft) * 1000)
-        except Exception:
-            logging.warning(
-                "finish_translation_webapp: failed to clear translation drafts for user_id=%s session_id=%s",
-                user_id,
-                session_id,
-                exc_info=True,
-            )
 
         if total_sentences == 0:
             message = (
