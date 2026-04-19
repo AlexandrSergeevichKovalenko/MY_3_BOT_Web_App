@@ -37873,13 +37873,17 @@ def _sync_today_translation_task_progress_for_session(
     target_lang: str,
     translation_session_id: str | None,
     trigger: str,
+    timing_breakdown: dict[str, int] | None = None,
 ) -> dict | None:
     normalized_session_id = _normalize_today_translation_session_id(translation_session_id)
     if not normalized_session_id:
         return None
     today_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    sync_plan_fetch_started_perf = time.perf_counter()
     with db_acquire_scope("today_translation_task_sync"):
         plan = get_daily_plan(user_id=int(user_id), plan_date=today_date)
+    if isinstance(timing_breakdown, dict):
+        timing_breakdown["sync_plan_fetch_ms"] = int((time.perf_counter() - sync_plan_fetch_started_perf) * 1000)
     if not plan:
         return None
 
@@ -37907,8 +37911,9 @@ def _sync_today_translation_task_progress_for_session(
     if target_item is None:
         return None
 
+    sync_item_write_started_perf = time.perf_counter()
     with db_acquire_scope("today_translation_task_sync"):
-        return _sync_today_translation_item_progress(
+        result = _sync_today_translation_item_progress(
             user_id=int(user_id),
             username=username,
             item=target_item,
@@ -37918,6 +37923,9 @@ def _sync_today_translation_task_progress_for_session(
             plan_date=plan.get("plan_date"),
             fallback_translation_session_id=normalized_session_id,
         )
+    if isinstance(timing_breakdown, dict):
+        timing_breakdown["sync_item_write_ms"] = int((time.perf_counter() - sync_item_write_started_perf) * 1000)
+    return result
 
 
 def _normalize_stale_today_plan_timers(
@@ -40379,6 +40387,8 @@ def finish_webapp_translation():
         ensured_hotpaths = {"today": False, "skills": False, "today_duration_ms": 0, "skills_duration_ms": 0}
         ensure_hotpaths_ms = 0
         schedule_refresh_ms = 0
+        finish_today_sync_plan_fetch_ms = 0
+        finish_today_sync_item_write_ms = 0
         if str(result.get("status") or "").strip().lower() == "completed":
             finished_session_id = str(result.get("session_id") or "").strip()
             if finished_session_id:
@@ -40388,6 +40398,7 @@ def finish_webapp_translation():
                     total_sentences=int(result.get("total_sentences") or 0),
                 )
                 try:
+                    today_sync_timing: dict[str, int] = {}
                     today_sync_started_perf = time.perf_counter()
                     _sync_today_translation_task_progress_for_session(
                         user_id=int(user_id),
@@ -40396,7 +40407,10 @@ def finish_webapp_translation():
                         target_lang=target_lang,
                         translation_session_id=finished_session_id,
                         trigger="finish_complete",
+                        timing_breakdown=today_sync_timing,
                     )
+                    finish_today_sync_plan_fetch_ms = int(today_sync_timing.get("sync_plan_fetch_ms") or 0)
+                    finish_today_sync_item_write_ms = int(today_sync_timing.get("sync_item_write_ms") or 0)
                     finish_today_sync_ms = int((time.perf_counter() - today_sync_started_perf) * 1000)
                     today_plan_fetch_started_perf = time.perf_counter()
                     with db_acquire_scope("today_card_finish_seed"):
@@ -40535,6 +40549,8 @@ def finish_webapp_translation():
             session_presence_other_ms=session_presence_other_ms,
             finish_recent_finish_marker_ms=finish_recent_finish_marker_ms,
             finish_today_sync_ms=finish_today_sync_ms,
+            finish_today_sync_plan_fetch_ms=finish_today_sync_plan_fetch_ms,
+            finish_today_sync_item_write_ms=finish_today_sync_item_write_ms,
             finish_today_plan_fetch_ms=finish_today_plan_fetch_ms,
             finish_today_card_store_ms=finish_today_card_store_ms,
             finish_skills_seed_read_ms=finish_skills_seed_read_ms,
