@@ -24370,13 +24370,16 @@ def _enqueue_phase1_projection_job(
     lookback_days: int | None = None,
     request_id: str | None = None,
     correlation_id: str | None = None,
+    timing_breakdown: dict[str, int] | None = None,
 ) -> dict | None:
+    enqueue_started_perf = time.perf_counter()
     normalized_job_source = str(job_source or "").strip().lower() or "live"
     queue_name = (
         "projection_materialization_backfill"
         if normalized_job_source == "backfill"
         else "projection_materialization_live"
     )
+    upsert_started_perf = time.perf_counter()
     job = upsert_projection_job(
         job_kind=_PHASE1_PROJECTION_JOB_KIND,
         projection_kind=str(projection_kind or "").strip(),
@@ -24387,14 +24390,17 @@ def _enqueue_phase1_projection_job(
         job_source=normalized_job_source,
         queue_name=queue_name,
     )
+    upsert_duration_ms = int((time.perf_counter() - upsert_started_perf) * 1000)
     if not isinstance(job, dict):
         return None
     try:
+        enqueue_timing: dict[str, int] = {}
         enqueue_projection_materialization_job(
             job_id=int(job.get("id") or 0),
             job_source=normalized_job_source,
             request_id=request_id,
             correlation_id=correlation_id,
+            timing_breakdown=enqueue_timing,
         )
     except Exception:
         logging.warning(
@@ -24405,6 +24411,20 @@ def _enqueue_phase1_projection_job(
             int(user_id),
             job.get("id"),
             exc_info=True,
+        )
+    if isinstance(timing_breakdown, dict):
+        total_duration_ms = int((time.perf_counter() - enqueue_started_perf) * 1000)
+        timing_breakdown["upsert_ms"] = upsert_duration_ms
+        timing_breakdown["queue_enqueue_ms"] = int(enqueue_timing.get("send_ms") or 0)
+        timing_breakdown["status_count_ms"] = int(enqueue_timing.get("status_count_ms") or 0)
+        timing_breakdown["helper_other_ms"] = int(enqueue_timing.get("other_ms") or 0)
+        timing_breakdown["other_ms"] = max(
+            0,
+            total_duration_ms
+            - int(timing_breakdown["upsert_ms"])
+            - int(timing_breakdown["queue_enqueue_ms"])
+            - int(timing_breakdown["status_count_ms"])
+            - int(timing_breakdown["helper_other_ms"]),
         )
     return job
 
@@ -40328,6 +40348,14 @@ def finish_webapp_translation():
         finish_skills_seed_store_ms = 0
         finish_enqueue_today_job_ms = 0
         finish_enqueue_skills_job_ms = 0
+        finish_enqueue_today_upsert_ms = 0
+        finish_enqueue_today_queue_enqueue_ms = 0
+        finish_enqueue_today_status_count_ms = 0
+        finish_enqueue_today_other_ms = 0
+        finish_enqueue_skills_upsert_ms = 0
+        finish_enqueue_skills_queue_enqueue_ms = 0
+        finish_enqueue_skills_status_count_ms = 0
+        finish_enqueue_skills_other_ms = 0
         finish_bookkeeping_dispatch_ms = 0
         _log_finish_request_event(
             "finish_projection_publish_started",
@@ -40505,6 +40533,8 @@ def finish_webapp_translation():
                     _pd = plan_date
                     _rid = request_id
                     _cid = correlation_id
+                    today_enqueue_timing: dict[str, int] = {}
+                    skills_enqueue_timing: dict[str, int] = {}
                     with ThreadPoolExecutor(max_workers=2) as _exec:
                         _fut_today = _exec.submit(
                             lambda: _enqueue_phase1_projection_job(
@@ -40515,6 +40545,7 @@ def finish_webapp_translation():
                                 plan_date=_pd,
                                 request_id=_rid,
                                 correlation_id=_cid,
+                                timing_breakdown=today_enqueue_timing,
                             )
                         )
                         _fut_skills = _exec.submit(
@@ -40526,6 +40557,7 @@ def finish_webapp_translation():
                                 lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
                                 request_id=_rid,
                                 correlation_id=_cid,
+                                timing_breakdown=skills_enqueue_timing,
                             )
                         )
                         try:
@@ -40536,6 +40568,17 @@ def finish_webapp_translation():
                                 _uid, _fsid, exc_info=True,
                             )
                         finish_enqueue_today_job_ms = int((time.perf_counter() - _enqueue_jobs_started_perf) * 1000)
+                        finish_enqueue_today_upsert_ms = int(today_enqueue_timing.get("upsert_ms") or 0)
+                        finish_enqueue_today_queue_enqueue_ms = int(
+                            today_enqueue_timing.get("queue_enqueue_ms") or 0
+                        )
+                        finish_enqueue_today_status_count_ms = int(
+                            today_enqueue_timing.get("status_count_ms") or 0
+                        )
+                        finish_enqueue_today_other_ms = int(
+                            (today_enqueue_timing.get("helper_other_ms") or 0)
+                            + (today_enqueue_timing.get("other_ms") or 0)
+                        )
                         try:
                             _fut_skills.result()
                         except Exception:
@@ -40544,6 +40587,17 @@ def finish_webapp_translation():
                                 _uid, _fsid, exc_info=True,
                             )
                         finish_enqueue_skills_job_ms = int((time.perf_counter() - _enqueue_jobs_started_perf) * 1000)
+                        finish_enqueue_skills_upsert_ms = int(skills_enqueue_timing.get("upsert_ms") or 0)
+                        finish_enqueue_skills_queue_enqueue_ms = int(
+                            skills_enqueue_timing.get("queue_enqueue_ms") or 0
+                        )
+                        finish_enqueue_skills_status_count_ms = int(
+                            skills_enqueue_timing.get("status_count_ms") or 0
+                        )
+                        finish_enqueue_skills_other_ms = int(
+                            (skills_enqueue_timing.get("helper_other_ms") or 0)
+                            + (skills_enqueue_timing.get("other_ms") or 0)
+                        )
                 except Exception:
                     logging.warning(
                         "Phase1 projection job enqueue failed on finish: user_id=%s session_id=%s",
@@ -40616,6 +40670,14 @@ def finish_webapp_translation():
             finish_skills_seed_store_ms=finish_skills_seed_store_ms,
             finish_enqueue_today_job_ms=finish_enqueue_today_job_ms,
             finish_enqueue_skills_job_ms=finish_enqueue_skills_job_ms,
+            finish_enqueue_today_upsert_ms=finish_enqueue_today_upsert_ms,
+            finish_enqueue_today_queue_enqueue_ms=finish_enqueue_today_queue_enqueue_ms,
+            finish_enqueue_today_status_count_ms=finish_enqueue_today_status_count_ms,
+            finish_enqueue_today_other_ms=finish_enqueue_today_other_ms,
+            finish_enqueue_skills_upsert_ms=finish_enqueue_skills_upsert_ms,
+            finish_enqueue_skills_queue_enqueue_ms=finish_enqueue_skills_queue_enqueue_ms,
+            finish_enqueue_skills_status_count_ms=finish_enqueue_skills_status_count_ms,
+            finish_enqueue_skills_other_ms=finish_enqueue_skills_other_ms,
             finish_bookkeeping_dispatch_ms=finish_bookkeeping_dispatch_ms,
             ensured_today_snapshot=bool(ensured_hotpaths.get("today")),
             ensured_skills_snapshot=bool(ensured_hotpaths.get("skills")),

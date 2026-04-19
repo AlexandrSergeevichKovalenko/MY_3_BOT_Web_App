@@ -255,6 +255,7 @@ def enqueue_projection_materialization_job(
     job_source: str | None = None,
     request_id: str | None = None,
     correlation_id: str | None = None,
+    timing_breakdown: dict[str, int] | None = None,
 ) -> str | None:
     if not can_enqueue_background_jobs():
         raise RuntimeError("background_jobs_unavailable")
@@ -262,6 +263,7 @@ def enqueue_projection_materialization_job(
     if safe_job_id <= 0:
         raise ValueError("job_id is required")
     normalized_job_source = str(job_source or "").strip().lower() or "live"
+    enqueue_started_perf = time.perf_counter()
     try:
         get_dramatiq_broker()
         from backend.background_jobs import (
@@ -280,12 +282,16 @@ def enqueue_projection_materialization_job(
             if normalized_job_source == "backfill"
             else _PROJECTION_MATERIALIZATION_LIVE_QUEUE_NAME
         )
+        send_started_perf = time.perf_counter()
         message = actor.send(
             job_id=safe_job_id,
             request_id=str(request_id or "").strip() or None,
             correlation_id=str(correlation_id or "").strip() or None,
         )
+        send_duration_ms = int((time.perf_counter() - send_started_perf) * 1000)
+        counts_started_perf = time.perf_counter()
         counts = get_projection_job_status_counts(job_source=normalized_job_source)
+        counts_duration_ms = int((time.perf_counter() - counts_started_perf) * 1000)
         logging.info(
             "projection_materialization_enqueue job_id=%s job_source=%s queue_name=%s request_id=%s correlation_id=%s pending=%s running=%s done=%s failed=%s retrying=%s",
             safe_job_id,
@@ -299,6 +305,11 @@ def enqueue_projection_materialization_job(
             counts.get("failed"),
             counts.get("retrying"),
         )
+        if isinstance(timing_breakdown, dict):
+            total_duration_ms = int((time.perf_counter() - enqueue_started_perf) * 1000)
+            timing_breakdown["send_ms"] = send_duration_ms
+            timing_breakdown["status_count_ms"] = counts_duration_ms
+            timing_breakdown["other_ms"] = max(0, total_duration_ms - send_duration_ms - counts_duration_ms)
         return str(getattr(message, "message_id", None) or "").strip() or None
     except Exception:
         logging.exception(
