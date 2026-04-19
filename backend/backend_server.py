@@ -24271,12 +24271,17 @@ def _write_skills_card_projection_seed(
     recent_session_seed: dict[str, Any],
     projection_status: str,
     pending_finish_session_id: str | None,
+    timing_breakdown: dict[str, int] | None = None,
 ) -> dict | None:
+    read_started_perf = time.perf_counter()
     existing_snapshot = get_user_api_snapshot(
         user_id=int(user_id),
         snapshot_kind=_SKILLS_CARD_KIND,
         snapshot_key=_skills_card_projection_key(int(lookback_days)),
     ) or {}
+    read_duration_ms = int((time.perf_counter() - read_started_perf) * 1000)
+    if isinstance(timing_breakdown, dict):
+        timing_breakdown["read_ms"] = read_duration_ms
     existing_payload = dict(existing_snapshot.get("payload") or {})
     payload, meta = _build_skills_card_seed_payload(
         user_id=int(user_id),
@@ -24289,7 +24294,8 @@ def _write_skills_card_projection_seed(
         pending_finish_session_id=pending_finish_session_id,
         existing_projection_payload=existing_payload,
     )
-    return _store_phase1_projection(
+    store_started_perf = time.perf_counter()
+    snapshot = _store_phase1_projection(
         user_id=int(user_id),
         snapshot_kind=_SKILLS_CARD_KIND,
         snapshot_key=_skills_card_projection_key(int(lookback_days)),
@@ -24298,6 +24304,9 @@ def _write_skills_card_projection_seed(
         target_lang=payload.get("target_lang"),
         meta=meta,
     )
+    if isinstance(timing_breakdown, dict):
+        timing_breakdown["store_ms"] = int((time.perf_counter() - store_started_perf) * 1000)
+    return snapshot
 
 
 def _enqueue_phase1_projection_job(
@@ -40214,6 +40223,18 @@ def finish_webapp_translation():
         if group_warning:
             response_payload["group_warning"] = group_warning
         plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+        finish_session_state_clear_ms = 0
+        finish_translation_state_cache_ms = 0
+        finish_session_presence_publish_ms = 0
+        finish_recent_finish_marker_ms = 0
+        finish_today_sync_ms = 0
+        finish_today_plan_fetch_ms = 0
+        finish_today_card_store_ms = 0
+        finish_skills_seed_read_ms = 0
+        finish_skills_seed_store_ms = 0
+        finish_enqueue_today_job_ms = 0
+        finish_enqueue_skills_job_ms = 0
+        finish_bookkeeping_dispatch_ms = 0
         _log_finish_request_event(
             "finish_projection_publish_started",
             classification="success",
@@ -40221,8 +40242,11 @@ def finish_webapp_translation():
         )
         if str(result.get("status") or "").strip().lower() == "completed":
             source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+            session_state_clear_started_perf = time.perf_counter()
             clear_active_translation_session_state(int(user_id))
+            finish_session_state_clear_ms = int((time.perf_counter() - session_state_clear_started_perf) * 1000)
             if finished_session_id:
+                translation_state_cache_started_perf = time.perf_counter()
                 set_translation_session_state(
                     finished_session_id,
                     {
@@ -40241,7 +40265,11 @@ def finish_webapp_translation():
                         "background_fill_required": False,
                     },
                 )
+                finish_translation_state_cache_ms = int(
+                    (time.perf_counter() - translation_state_cache_started_perf) * 1000
+                )
                 try:
+                    session_presence_publish_started_perf = time.perf_counter()
                     _write_session_presence_projection_post_finish(
                         user_id=int(user_id),
                         source_lang=source_lang,
@@ -40250,14 +40278,22 @@ def finish_webapp_translation():
                         translated_count=int(result.get("translated_count") or 0),
                         total_sentences=int(result.get("total_sentences") or 0),
                     )
+                    finish_session_presence_publish_ms = int(
+                        (time.perf_counter() - session_presence_publish_started_perf) * 1000
+                    )
                 except Exception:
+                    finish_session_presence_publish_ms = int(
+                        (time.perf_counter() - session_presence_publish_started_perf) * 1000
+                    )
                     logging.warning(
                         "Phase1 session_presence_card publish failed on finish: user_id=%s session_id=%s",
                         int(user_id),
                         finished_session_id,
                         exc_info=True,
                     )
+            recent_finish_marker_started_perf = time.perf_counter()
             _remember_recent_finish_no_active_session(int(user_id))
+            finish_recent_finish_marker_ms = int((time.perf_counter() - recent_finish_marker_started_perf) * 1000)
         stale_mark_ms = 0
         ensured_hotpaths = {"today": False, "skills": False, "today_duration_ms": 0, "skills_duration_ms": 0}
         ensure_hotpaths_ms = 0
@@ -40271,7 +40307,7 @@ def finish_webapp_translation():
                     total_sentences=int(result.get("total_sentences") or 0),
                 )
                 try:
-                    ensure_hotpaths_started_perf = time.perf_counter()
+                    today_sync_started_perf = time.perf_counter()
                     _sync_today_translation_task_progress_for_session(
                         user_id=int(user_id),
                         username=username or user_name,
@@ -40280,9 +40316,13 @@ def finish_webapp_translation():
                         translation_session_id=finished_session_id,
                         trigger="finish_complete",
                     )
+                    finish_today_sync_ms = int((time.perf_counter() - today_sync_started_perf) * 1000)
+                    today_plan_fetch_started_perf = time.perf_counter()
                     with db_acquire_scope("today_card_finish_seed"):
                         today_plan = get_daily_plan(user_id=int(user_id), plan_date=plan_date)
+                    finish_today_plan_fetch_ms = int((time.perf_counter() - today_plan_fetch_started_perf) * 1000)
                     if isinstance(today_plan, dict):
+                        today_card_store_started_perf = time.perf_counter()
                         _write_today_card_projection_from_daily_plan(
                             user_id=int(user_id),
                             plan_date=plan_date,
@@ -40291,8 +40331,15 @@ def finish_webapp_translation():
                             target_lang=target_lang,
                             card_version=f"finish:{finished_session_id}",
                         )
+                        finish_today_card_store_ms = int(
+                            (time.perf_counter() - today_card_store_started_perf) * 1000
+                        )
                         ensured_hotpaths["today"] = True
-                    ensured_hotpaths["today_duration_ms"] = int((time.perf_counter() - ensure_hotpaths_started_perf) * 1000)
+                    ensured_hotpaths["today_duration_ms"] = (
+                        int(finish_today_sync_ms)
+                        + int(finish_today_plan_fetch_ms)
+                        + int(finish_today_card_store_ms)
+                    )
                 except Exception:
                     logging.warning(
                         "Phase1 today_card finish seed failed: user_id=%s session_id=%s",
@@ -40301,7 +40348,7 @@ def finish_webapp_translation():
                         exc_info=True,
                     )
                 try:
-                    skills_seed_started_perf = time.perf_counter()
+                    skills_seed_timing: dict[str, int] = {}
                     _write_skills_card_projection_seed(
                         user_id=int(user_id),
                         lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
@@ -40311,9 +40358,15 @@ def finish_webapp_translation():
                         recent_session_seed=recent_session_seed,
                         projection_status="refreshing",
                         pending_finish_session_id=finished_session_id,
+                        timing_breakdown=skills_seed_timing,
                     )
+                    finish_skills_seed_read_ms = int(skills_seed_timing.get("read_ms") or 0)
+                    finish_skills_seed_store_ms = int(skills_seed_timing.get("store_ms") or 0)
                     ensured_hotpaths["skills"] = True
-                    ensured_hotpaths["skills_duration_ms"] = int((time.perf_counter() - skills_seed_started_perf) * 1000)
+                    ensured_hotpaths["skills_duration_ms"] = (
+                        int(finish_skills_seed_read_ms)
+                        + int(finish_skills_seed_store_ms)
+                    )
                 except Exception:
                     logging.warning(
                         "Phase1 skills_card finish seed failed: user_id=%s session_id=%s",
@@ -40322,6 +40375,7 @@ def finish_webapp_translation():
                         exc_info=True,
                     )
                 try:
+                    enqueue_today_job_started_perf = time.perf_counter()
                     _enqueue_phase1_projection_job(
                         projection_kind=_TODAY_CARD_KIND,
                         user_id=int(user_id),
@@ -40331,6 +40385,8 @@ def finish_webapp_translation():
                         request_id=request_id,
                         correlation_id=correlation_id,
                     )
+                    finish_enqueue_today_job_ms = int((time.perf_counter() - enqueue_today_job_started_perf) * 1000)
+                    enqueue_skills_job_started_perf = time.perf_counter()
                     _enqueue_phase1_projection_job(
                         projection_kind=_SKILLS_CARD_KIND,
                         user_id=int(user_id),
@@ -40340,6 +40396,7 @@ def finish_webapp_translation():
                         request_id=request_id,
                         correlation_id=correlation_id,
                     )
+                    finish_enqueue_skills_job_ms = int((time.perf_counter() - enqueue_skills_job_started_perf) * 1000)
                 except Exception:
                     logging.warning(
                         "Phase1 projection job enqueue failed on finish: user_id=%s session_id=%s",
@@ -40350,11 +40407,13 @@ def finish_webapp_translation():
             ensure_hotpaths_ms = int(ensured_hotpaths.get("today_duration_ms") or 0) + int(
                 ensured_hotpaths.get("skills_duration_ms") or 0
             )
+        bookkeeping_dispatch_started_perf = time.perf_counter()
         _dispatch_post_finish_snapshot_bookkeeping(
             user_id=int(user_id),
             username=username or user_name,
             plan_date=plan_date,
         )
+        finish_bookkeeping_dispatch_ms = int((time.perf_counter() - bookkeeping_dispatch_started_perf) * 1000)
         _log_finish_request_event(
             "finish_completed",
             classification="success",
@@ -40383,6 +40442,18 @@ def finish_webapp_translation():
             ensure_hotpaths_ms=ensure_hotpaths_ms,
             ensure_today_snapshot_ms=int(ensured_hotpaths.get("today_duration_ms") or 0),
             ensure_skills_snapshot_ms=int(ensured_hotpaths.get("skills_duration_ms") or 0),
+            finish_session_state_clear_ms=finish_session_state_clear_ms,
+            finish_translation_state_cache_ms=finish_translation_state_cache_ms,
+            finish_session_presence_publish_ms=finish_session_presence_publish_ms,
+            finish_recent_finish_marker_ms=finish_recent_finish_marker_ms,
+            finish_today_sync_ms=finish_today_sync_ms,
+            finish_today_plan_fetch_ms=finish_today_plan_fetch_ms,
+            finish_today_card_store_ms=finish_today_card_store_ms,
+            finish_skills_seed_read_ms=finish_skills_seed_read_ms,
+            finish_skills_seed_store_ms=finish_skills_seed_store_ms,
+            finish_enqueue_today_job_ms=finish_enqueue_today_job_ms,
+            finish_enqueue_skills_job_ms=finish_enqueue_skills_job_ms,
+            finish_bookkeeping_dispatch_ms=finish_bookkeeping_dispatch_ms,
             ensured_today_snapshot=bool(ensured_hotpaths.get("today")),
             ensured_skills_snapshot=bool(ensured_hotpaths.get("skills")),
             schedule_refresh_ms=schedule_refresh_ms,
