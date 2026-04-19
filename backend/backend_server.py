@@ -40564,6 +40564,12 @@ def finish_webapp_translation():
 
 
 try:
+    ensure_phase1_projection_schema()
+    logging.info("Phase1 projection schema ensured at worker startup")
+except Exception as exc:
+    logging.warning("Phase1 projection schema ensure at startup failed: %s", exc)
+
+try:
     if str(os.getenv("BILLING_OPENAI_SNAPSHOT_SYNC_ON_STARTUP") or "1").strip().lower() in {"1", "true", "yes", "on"}:
         snapshot_sync_result = _sync_openai_price_snapshots_public_then_env()
         logging.info(
