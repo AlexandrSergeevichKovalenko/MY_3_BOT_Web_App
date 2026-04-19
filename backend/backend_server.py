@@ -40480,28 +40480,51 @@ def finish_webapp_translation():
                         exc_info=True,
                     )
                 try:
-                    enqueue_today_job_started_perf = time.perf_counter()
-                    _enqueue_phase1_projection_job(
-                        projection_kind=_TODAY_CARD_KIND,
-                        user_id=int(user_id),
-                        job_source="live",
-                        source_session_id=finished_session_id,
-                        plan_date=plan_date,
-                        request_id=request_id,
-                        correlation_id=correlation_id,
-                    )
-                    finish_enqueue_today_job_ms = int((time.perf_counter() - enqueue_today_job_started_perf) * 1000)
-                    enqueue_skills_job_started_perf = time.perf_counter()
-                    _enqueue_phase1_projection_job(
-                        projection_kind=_SKILLS_CARD_KIND,
-                        user_id=int(user_id),
-                        job_source="live",
-                        source_session_id=finished_session_id,
-                        lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
-                        request_id=request_id,
-                        correlation_id=correlation_id,
-                    )
-                    finish_enqueue_skills_job_ms = int((time.perf_counter() - enqueue_skills_job_started_perf) * 1000)
+                    _enqueue_jobs_started_perf = time.perf_counter()
+                    _uid = int(user_id)
+                    _fsid = finished_session_id
+                    _pd = plan_date
+                    _rid = request_id
+                    _cid = correlation_id
+                    with ThreadPoolExecutor(max_workers=2) as _exec:
+                        _fut_today = _exec.submit(
+                            lambda: _enqueue_phase1_projection_job(
+                                projection_kind=_TODAY_CARD_KIND,
+                                user_id=_uid,
+                                job_source="live",
+                                source_session_id=_fsid,
+                                plan_date=_pd,
+                                request_id=_rid,
+                                correlation_id=_cid,
+                            )
+                        )
+                        _fut_skills = _exec.submit(
+                            lambda: _enqueue_phase1_projection_job(
+                                projection_kind=_SKILLS_CARD_KIND,
+                                user_id=_uid,
+                                job_source="live",
+                                source_session_id=_fsid,
+                                lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
+                                request_id=_rid,
+                                correlation_id=_cid,
+                            )
+                        )
+                        try:
+                            _fut_today.result()
+                        except Exception:
+                            logging.warning(
+                                "Phase1 today_card projection enqueue failed on finish: user_id=%s session_id=%s",
+                                _uid, _fsid, exc_info=True,
+                            )
+                        finish_enqueue_today_job_ms = int((time.perf_counter() - _enqueue_jobs_started_perf) * 1000)
+                        try:
+                            _fut_skills.result()
+                        except Exception:
+                            logging.warning(
+                                "Phase1 skills_card projection enqueue failed on finish: user_id=%s session_id=%s",
+                                _uid, _fsid, exc_info=True,
+                            )
+                        finish_enqueue_skills_job_ms = int((time.perf_counter() - _enqueue_jobs_started_perf) * 1000)
                 except Exception:
                     logging.warning(
                         "Phase1 projection job enqueue failed on finish: user_id=%s session_id=%s",
