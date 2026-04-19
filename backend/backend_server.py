@@ -24777,6 +24777,8 @@ def _run_post_finish_snapshot_bookkeeping(
     username: str | None,
     plan_date: date,
     finished_session_id: str | None = None,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
 ) -> None:
     try:
         _mark_weekly_plan_snapshot_stale(user_id=int(user_id), anchor_date=plan_date)
@@ -24792,11 +24794,40 @@ def _run_post_finish_snapshot_bookkeeping(
         )
     if finished_session_id:
         try:
-            # Keep draft cleanup out of the synchronous finish request path.
             delete_translation_draft_state(user_id=int(user_id), source_session_id=finished_session_id)
         except Exception:
             logging.warning(
                 "Post-finish draft clear failed: user_id=%s session_id=%s",
+                int(user_id), finished_session_id, exc_info=True,
+            )
+        try:
+            _enqueue_phase1_projection_job(
+                projection_kind=_TODAY_CARD_KIND,
+                user_id=int(user_id),
+                job_source="live",
+                source_session_id=finished_session_id,
+                plan_date=plan_date,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            )
+        except Exception:
+            logging.warning(
+                "Post-finish today projection enqueue failed: user_id=%s session_id=%s",
+                int(user_id), finished_session_id, exc_info=True,
+            )
+        try:
+            _enqueue_phase1_projection_job(
+                projection_kind=_SKILLS_CARD_KIND,
+                user_id=int(user_id),
+                job_source="live",
+                source_session_id=finished_session_id,
+                lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            )
+        except Exception:
+            logging.warning(
+                "Post-finish skills projection enqueue failed: user_id=%s session_id=%s",
                 int(user_id), finished_session_id, exc_info=True,
             )
 
@@ -24807,6 +24838,8 @@ def _dispatch_post_finish_snapshot_bookkeeping(
     username: str | None,
     plan_date: date,
     finished_session_id: str | None = None,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
 ) -> None:
     threading.Thread(
         target=_run_post_finish_snapshot_bookkeeping,
@@ -24815,6 +24848,8 @@ def _dispatch_post_finish_snapshot_bookkeeping(
             "username": username,
             "plan_date": plan_date,
             "finished_session_id": finished_session_id,
+            "request_id": request_id,
+            "correlation_id": correlation_id,
         },
         daemon=True,
     ).start()
@@ -40526,85 +40561,6 @@ def finish_webapp_translation():
                         finished_session_id,
                         exc_info=True,
                     )
-                try:
-                    _enqueue_jobs_started_perf = time.perf_counter()
-                    _uid = int(user_id)
-                    _fsid = finished_session_id
-                    _pd = plan_date
-                    _rid = request_id
-                    _cid = correlation_id
-                    today_enqueue_timing: dict[str, int] = {}
-                    skills_enqueue_timing: dict[str, int] = {}
-                    with ThreadPoolExecutor(max_workers=2) as _exec:
-                        _fut_today = _exec.submit(
-                            lambda: _enqueue_phase1_projection_job(
-                                projection_kind=_TODAY_CARD_KIND,
-                                user_id=_uid,
-                                job_source="live",
-                                source_session_id=_fsid,
-                                plan_date=_pd,
-                                request_id=_rid,
-                                correlation_id=_cid,
-                                timing_breakdown=today_enqueue_timing,
-                            )
-                        )
-                        _fut_skills = _exec.submit(
-                            lambda: _enqueue_phase1_projection_job(
-                                projection_kind=_SKILLS_CARD_KIND,
-                                user_id=_uid,
-                                job_source="live",
-                                source_session_id=_fsid,
-                                lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
-                                request_id=_rid,
-                                correlation_id=_cid,
-                                timing_breakdown=skills_enqueue_timing,
-                            )
-                        )
-                        try:
-                            _fut_today.result()
-                        except Exception:
-                            logging.warning(
-                                "Phase1 today_card projection enqueue failed on finish: user_id=%s session_id=%s",
-                                _uid, _fsid, exc_info=True,
-                            )
-                        finish_enqueue_today_job_ms = int((time.perf_counter() - _enqueue_jobs_started_perf) * 1000)
-                        finish_enqueue_today_upsert_ms = int(today_enqueue_timing.get("upsert_ms") or 0)
-                        finish_enqueue_today_queue_enqueue_ms = int(
-                            today_enqueue_timing.get("queue_enqueue_ms") or 0
-                        )
-                        finish_enqueue_today_status_count_ms = int(
-                            today_enqueue_timing.get("status_count_ms") or 0
-                        )
-                        finish_enqueue_today_other_ms = int(
-                            (today_enqueue_timing.get("helper_other_ms") or 0)
-                            + (today_enqueue_timing.get("other_ms") or 0)
-                        )
-                        try:
-                            _fut_skills.result()
-                        except Exception:
-                            logging.warning(
-                                "Phase1 skills_card projection enqueue failed on finish: user_id=%s session_id=%s",
-                                _uid, _fsid, exc_info=True,
-                            )
-                        finish_enqueue_skills_job_ms = int((time.perf_counter() - _enqueue_jobs_started_perf) * 1000)
-                        finish_enqueue_skills_upsert_ms = int(skills_enqueue_timing.get("upsert_ms") or 0)
-                        finish_enqueue_skills_queue_enqueue_ms = int(
-                            skills_enqueue_timing.get("queue_enqueue_ms") or 0
-                        )
-                        finish_enqueue_skills_status_count_ms = int(
-                            skills_enqueue_timing.get("status_count_ms") or 0
-                        )
-                        finish_enqueue_skills_other_ms = int(
-                            (skills_enqueue_timing.get("helper_other_ms") or 0)
-                            + (skills_enqueue_timing.get("other_ms") or 0)
-                        )
-                except Exception:
-                    logging.warning(
-                        "Phase1 projection job enqueue failed on finish: user_id=%s session_id=%s",
-                        int(user_id),
-                        finished_session_id,
-                        exc_info=True,
-                    )
             ensure_hotpaths_ms = int(ensured_hotpaths.get("today_duration_ms") or 0) + int(
                 ensured_hotpaths.get("skills_duration_ms") or 0
             )
@@ -40614,6 +40570,8 @@ def finish_webapp_translation():
             username=username or user_name,
             plan_date=plan_date,
             finished_session_id=finished_session_id or None,
+            request_id=request_id,
+            correlation_id=correlation_id,
         )
         finish_bookkeeping_dispatch_ms = int((time.perf_counter() - bookkeeping_dispatch_started_perf) * 1000)
         _log_finish_request_event(
