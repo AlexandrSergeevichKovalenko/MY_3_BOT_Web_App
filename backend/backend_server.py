@@ -40575,11 +40575,13 @@ def finish_webapp_translation():
                         )
                     return _r
 
+                _t_hotpaths = time.perf_counter()
                 with ThreadPoolExecutor(max_workers=2) as _exec:
                     _fut_today_hp = _exec.submit(_run_today_hotpath)
                     _fut_skills_hp = _exec.submit(_run_skills_hotpath)
                     _today_hp = _fut_today_hp.result()
                     _skills_hp = _fut_skills_hp.result()
+                ensured_hotpaths["wall_ms"] = int((time.perf_counter() - _t_hotpaths) * 1000)
                 finish_today_plan_fetch_ms = _today_hp["finish_today_plan_fetch_ms"]
                 finish_today_sync_plan_fetch_ms = _today_hp["finish_today_sync_plan_fetch_ms"]
                 finish_today_sync_item_write_ms = _today_hp["finish_today_sync_item_write_ms"]
@@ -40591,9 +40593,7 @@ def finish_webapp_translation():
                 ensured_hotpaths["today_duration_ms"] = _today_hp["today_duration_ms"]
                 ensured_hotpaths["skills"] = _skills_hp["ensured_skills"]
                 ensured_hotpaths["skills_duration_ms"] = _skills_hp["skills_duration_ms"]
-            ensure_hotpaths_ms = int(ensured_hotpaths.get("today_duration_ms") or 0) + int(
-                ensured_hotpaths.get("skills_duration_ms") or 0
-            )
+            ensure_hotpaths_ms = int(ensured_hotpaths.get("wall_ms") or 0)
         bookkeeping_dispatch_started_perf = time.perf_counter()
         _dispatch_post_finish_snapshot_bookkeeping(
             user_id=int(user_id),
