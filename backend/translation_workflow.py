@@ -7358,12 +7358,16 @@ async def check_user_translation_webapp(
     return results
 
 
-def finish_translation_webapp(user_id: int) -> dict[str, Any]:
+def finish_translation_webapp(user_id: int, timing_breakdown: dict | None = None) -> dict[str, Any]:
+    _t_conn = time.perf_counter()
     with db_acquire_scope("translation_session_finish"):
         conn = get_db_connection()
+    if isinstance(timing_breakdown, dict):
+        timing_breakdown["finish_core_conn_ms"] = int((time.perf_counter() - _t_conn) * 1000)
     cursor = conn.cursor()
 
     try:
+        _t_session_lookup = time.perf_counter()
         cursor.execute(
             """
             SELECT session_id, start_time
@@ -7375,6 +7379,8 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
             (user_id,),
         )
         session_rows = list(cursor.fetchall() or [])
+        if isinstance(timing_breakdown, dict):
+            timing_breakdown["finish_core_session_lookup_ms"] = int((time.perf_counter() - _t_session_lookup) * 1000)
         if not session_rows or session_rows[0][0] is None:
             return {
                 "message": (
@@ -7389,6 +7395,7 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
         total_sentences = 0
         translated_count = 0
         if session_id is not None:
+            _t_counts = time.perf_counter()
             cursor.execute(
                 """
                 SELECT COUNT(*)
@@ -7419,6 +7426,8 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
                 (user_id, session_id, user_id, session_id),
             )
             translated_count = int((cursor.fetchone() or [0])[0] or 0)
+            if isinstance(timing_breakdown, dict):
+                timing_breakdown["finish_core_counts_ms"] = int((time.perf_counter() - _t_counts) * 1000)
 
         if len(active_session_ids) > 1:
             logging.warning(
@@ -7427,6 +7436,7 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
                 active_session_ids,
             )
 
+        _t_commit = time.perf_counter()
         cursor.execute(
             """
             UPDATE bt_3_user_progress
@@ -7451,6 +7461,9 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
             (user_id, active_session_ids),
         )
         conn.commit()
+        if isinstance(timing_breakdown, dict):
+            timing_breakdown["finish_core_commit_ms"] = int((time.perf_counter() - _t_commit) * 1000)
+        _t_redis = time.perf_counter()
         _clear_active_translation_session_pointer(user_id=int(user_id))
         clear_translation_session_card(int(user_id))
         set_translation_session_state(
@@ -7470,8 +7483,13 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
                 background_fill_required=False,
             ),
         )
+        if isinstance(timing_breakdown, dict):
+            timing_breakdown["finish_core_redis_ms"] = int((time.perf_counter() - _t_redis) * 1000)
         try:
+            _t_draft = time.perf_counter()
             delete_translation_draft_state(user_id=int(user_id), source_session_id=str(session_id))
+            if isinstance(timing_breakdown, dict):
+                timing_breakdown["finish_core_draft_clear_ms"] = int((time.perf_counter() - _t_draft) * 1000)
         except Exception:
             logging.warning(
                 "finish_translation_webapp: failed to clear translation drafts for user_id=%s session_id=%s",
