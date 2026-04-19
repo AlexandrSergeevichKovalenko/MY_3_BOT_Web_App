@@ -37865,6 +37865,9 @@ def _sync_today_plan_translation_progress(
     }
 
 
+_PLAN_NOT_PROVIDED = object()
+
+
 def _sync_today_translation_task_progress_for_session(
     *,
     user_id: int,
@@ -37874,12 +37877,12 @@ def _sync_today_translation_task_progress_for_session(
     translation_session_id: str | None,
     trigger: str,
     timing_breakdown: dict[str, int] | None = None,
-    prefetched_plan: dict | None = None,
+    prefetched_plan: dict | None | object = _PLAN_NOT_PROVIDED,
 ) -> dict | None:
     normalized_session_id = _normalize_today_translation_session_id(translation_session_id)
     if not normalized_session_id:
         return None
-    if prefetched_plan is not None:
+    if prefetched_plan is not _PLAN_NOT_PROVIDED:
         plan = prefetched_plan
         if isinstance(timing_breakdown, dict):
             timing_breakdown["sync_plan_fetch_ms"] = 0
