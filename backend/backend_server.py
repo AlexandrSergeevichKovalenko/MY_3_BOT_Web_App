@@ -23814,9 +23814,12 @@ def _store_phase1_projection(
     source_lang: str | None,
     target_lang: str | None,
     meta: dict[str, Any] | None = None,
+    timing_breakdown: dict[str, int] | None = None,
 ) -> dict | None:
+    store_started_perf = time.perf_counter()
     ensure_phase1_projection_schema()
     fresh_ttl_sec, stale_ttl_sec = _phase1_projection_ttls(snapshot_kind)
+    upsert_started_perf = time.perf_counter()
     snapshot = upsert_user_api_snapshot(
         user_id=int(user_id),
         snapshot_kind=snapshot_kind,
@@ -23828,14 +23831,19 @@ def _store_phase1_projection(
         fresh_ttl_seconds=fresh_ttl_sec,
         stale_ttl_seconds=stale_ttl_sec,
     )
+    upsert_duration_ms = int((time.perf_counter() - upsert_started_perf) * 1000)
+    redis_mirror_duration_ms = 0
     try:
+        redis_mirror_started_perf = time.perf_counter()
         if snapshot_kind == _SESSION_PRESENCE_CARD_KIND:
             set_session_presence_card(int(user_id), payload)
         elif snapshot_kind == _TODAY_CARD_KIND:
             set_today_card(int(user_id), str(snapshot_key or "").strip(), payload)
         elif snapshot_kind == _SKILLS_CARD_KIND:
             set_skills_card(int(user_id), str(snapshot_key or "").strip(), payload)
+        redis_mirror_duration_ms = int((time.perf_counter() - redis_mirror_started_perf) * 1000)
     except Exception:
+        redis_mirror_duration_ms = int((time.perf_counter() - redis_mirror_started_perf) * 1000)
         logging.warning(
             "Phase1 projection Redis mirror update failed: kind=%s user_id=%s key=%s",
             snapshot_kind,
@@ -23843,6 +23851,11 @@ def _store_phase1_projection(
             str(snapshot_key or "").strip(),
             exc_info=True,
         )
+    if isinstance(timing_breakdown, dict):
+        total_duration_ms = int((time.perf_counter() - store_started_perf) * 1000)
+        timing_breakdown["upsert_user_api_snapshot_ms"] = upsert_duration_ms
+        timing_breakdown["set_projection_card_ms"] = redis_mirror_duration_ms
+        timing_breakdown["other_ms"] = max(0, total_duration_ms - upsert_duration_ms - redis_mirror_duration_ms)
     return snapshot
 
 
@@ -24153,10 +24166,12 @@ def _write_session_presence_projection_post_finish(
     finished_session_id: str,
     translated_count: int,
     total_sentences: int,
+    timing_breakdown: dict[str, int] | None = None,
 ) -> dict | None:
     recent_finish_until_ms = int(
         (time.time() + float(WEBAPP_RECENT_FINISH_SESSION_CACHE_TTL_SEC)) * 1000
     )
+    build_payload_started_perf = time.perf_counter()
     payload = _build_session_presence_card_payload(
         user_id=int(user_id),
         state="post_finish_none",
@@ -24168,7 +24183,10 @@ def _write_session_presence_projection_post_finish(
         total_sentences=int(total_sentences),
         recent_finish_until_ms=recent_finish_until_ms,
     )
-    return _store_phase1_projection(
+    build_payload_duration_ms = int((time.perf_counter() - build_payload_started_perf) * 1000)
+    store_timing_breakdown: dict[str, int] = {}
+    store_phase1_started_perf = time.perf_counter()
+    snapshot = _store_phase1_projection(
         user_id=int(user_id),
         snapshot_kind=_SESSION_PRESENCE_CARD_KIND,
         snapshot_key=_SESSION_PRESENCE_CARD_KEY,
@@ -24176,7 +24194,21 @@ def _write_session_presence_projection_post_finish(
         source_lang=source_lang,
         target_lang=target_lang,
         meta={"projection_status": "ready", "state": "post_finish_none"},
+        timing_breakdown=store_timing_breakdown,
     )
+    if isinstance(timing_breakdown, dict):
+        timing_breakdown["session_presence_build_payload_ms"] = build_payload_duration_ms
+        timing_breakdown["session_presence_store_phase1_projection_ms"] = int(
+            (time.perf_counter() - store_phase1_started_perf) * 1000
+        )
+        timing_breakdown["session_presence_upsert_user_api_snapshot_ms"] = int(
+            store_timing_breakdown.get("upsert_user_api_snapshot_ms") or 0
+        )
+        timing_breakdown["session_presence_set_session_presence_card_ms"] = int(
+            store_timing_breakdown.get("set_projection_card_ms") or 0
+        )
+        timing_breakdown["session_presence_other_ms"] = int(store_timing_breakdown.get("other_ms") or 0)
+    return snapshot
 
 
 def _write_today_card_projection_from_today_snapshot(
@@ -40226,6 +40258,11 @@ def finish_webapp_translation():
         finish_session_state_clear_ms = 0
         finish_translation_state_cache_ms = 0
         finish_session_presence_publish_ms = 0
+        session_presence_build_payload_ms = 0
+        session_presence_store_phase1_projection_ms = 0
+        session_presence_upsert_user_api_snapshot_ms = 0
+        session_presence_set_session_presence_card_ms = 0
+        session_presence_other_ms = 0
         finish_recent_finish_marker_ms = 0
         finish_today_sync_ms = 0
         finish_today_plan_fetch_ms = 0
@@ -40270,6 +40307,7 @@ def finish_webapp_translation():
                 )
                 try:
                     session_presence_publish_started_perf = time.perf_counter()
+                    session_presence_timing: dict[str, int] = {}
                     _write_session_presence_projection_post_finish(
                         user_id=int(user_id),
                         source_lang=source_lang,
@@ -40277,9 +40315,25 @@ def finish_webapp_translation():
                         finished_session_id=finished_session_id,
                         translated_count=int(result.get("translated_count") or 0),
                         total_sentences=int(result.get("total_sentences") or 0),
+                        timing_breakdown=session_presence_timing,
                     )
                     finish_session_presence_publish_ms = int(
                         (time.perf_counter() - session_presence_publish_started_perf) * 1000
+                    )
+                    session_presence_build_payload_ms = int(
+                        session_presence_timing.get("session_presence_build_payload_ms") or 0
+                    )
+                    session_presence_store_phase1_projection_ms = int(
+                        session_presence_timing.get("session_presence_store_phase1_projection_ms") or 0
+                    )
+                    session_presence_upsert_user_api_snapshot_ms = int(
+                        session_presence_timing.get("session_presence_upsert_user_api_snapshot_ms") or 0
+                    )
+                    session_presence_set_session_presence_card_ms = int(
+                        session_presence_timing.get("session_presence_set_session_presence_card_ms") or 0
+                    )
+                    session_presence_other_ms = int(
+                        session_presence_timing.get("session_presence_other_ms") or 0
                     )
                 except Exception:
                     finish_session_presence_publish_ms = int(
@@ -40445,6 +40499,11 @@ def finish_webapp_translation():
             finish_session_state_clear_ms=finish_session_state_clear_ms,
             finish_translation_state_cache_ms=finish_translation_state_cache_ms,
             finish_session_presence_publish_ms=finish_session_presence_publish_ms,
+            session_presence_build_payload_ms=session_presence_build_payload_ms,
+            session_presence_store_phase1_projection_ms=session_presence_store_phase1_projection_ms,
+            session_presence_upsert_user_api_snapshot_ms=session_presence_upsert_user_api_snapshot_ms,
+            session_presence_set_session_presence_card_ms=session_presence_set_session_presence_card_ms,
+            session_presence_other_ms=session_presence_other_ms,
             finish_recent_finish_marker_ms=finish_recent_finish_marker_ms,
             finish_today_sync_ms=finish_today_sync_ms,
             finish_today_plan_fetch_ms=finish_today_plan_fetch_ms,
